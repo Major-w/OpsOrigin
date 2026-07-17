@@ -1,0 +1,479 @@
+'use client'
+
+import { useEffect, useState } from 'react'
+import { useCMDBStore, type CIModel, type AttributeChange, type CIRelation } from '@/stores/cmdb'
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
+import { Button } from '@/components/ui/button'
+import { Badge } from '@/components/ui/badge'
+import { Input } from '@/components/ui/input'
+import { Dialog, DialogFooter } from '@/components/ui/dialog'
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
+import { formatTime, apiFetch } from '@/lib/utils'
+import TopologyGraph from '@/components/TopologyGraph'
+import { Plus, Pencil, Trash2, Network, Search, ChevronLeft, ChevronRight, Link2, Unlink, AlertTriangle } from 'lucide-react'
+
+interface TopologyNode { id: string; name: string; type: string }
+interface TopologyEdge { source: string; target: string; type: string }
+
+const CI_TYPES = ['server', 'web-server', 'database', 'switch', 'loadbalancer', 'dns-server', 'firewall', 'storage']
+const PAGE_SIZE = 20
+
+function statusVariant(s: string): 'success' | 'destructive' | 'outline' {
+  if (s === 'active') return 'success'
+  if (s === 'inactive') return 'outline'
+  return 'destructive'
+}
+
+export default function CMDBPage() {
+  const { items, relations, loading, fetch, search, create, update, remove, getAudit, fetchRelations, createRelation, deleteRelation } = useCMDBStore()
+  const [dialogOpen, setDialogOpen] = useState(false)
+  const [editId, setEditId] = useState<string | null>(null)
+  const [form, setForm] = useState<{ name: string; type_id: string; description: string; attributes: Record<string, any>; labels: Record<string, string> }>({ name: '', type_id: 'server', description: '', attributes: {}, labels: {} })
+  const [searchQ, setSearchQ] = useState('')
+  const [typeFilter, setTypeFilter] = useState('')
+  const [page, setPage] = useState(0)
+  const [selectedCI, setSelectedCI] = useState<CIModel | null>(null)
+  const [detailTab, setDetailTab] = useState('attrs')
+  const [auditLog, setAuditLog] = useState<AttributeChange[]>([])
+  const [ciRelations, setCiRelations] = useState<CIRelation[]>([])
+  const [topology, setTopology] = useState<{ nodes: TopologyNode[]; edges: TopologyEdge[] }>({ nodes: [], edges: [] })
+  const [topoLoading, setTopoLoading] = useState(false)
+  const [relDialogOpen, setRelDialogOpen] = useState(false)
+  const [relForm, setRelForm] = useState({ source_id: '', target_id: '', relation_type: 'depends_on' })
+  const [impactResult, setImpactResult] = useState<{ source_ci: string; affected_ci: string[]; has_cycle: boolean } | null>(null)
+  const [editAttrsOpen, setEditAttrsOpen] = useState(false)
+  const [attrForm, setAttrForm] = useState<Record<string, string>>({})
+
+  useEffect(() => {
+    fetch({ limit: PAGE_SIZE, offset: page * PAGE_SIZE, sort_by: 'updated_at', sort_order: 'desc' })
+    fetchRelations()
+  }, [])
+
+  const loadData = () => {
+    const params: any = { limit: PAGE_SIZE, offset: page * PAGE_SIZE, sort_by: 'updated_at', sort_order: 'desc' }
+    if (typeFilter) params.type_id = typeFilter
+    if (searchQ) search(searchQ, typeFilter)
+    else fetch(params)
+  }
+
+  useEffect(() => { loadData() }, [page, typeFilter])
+
+  const handleSearch = () => {
+    if (searchQ) search(searchQ, typeFilter)
+    else loadData()
+  }
+
+  const handleSubmit = async () => {
+    if (editId) await update(editId, form)
+    else await create(form)
+    setDialogOpen(false); setEditId(null); setForm({ name: '', type_id: 'server', description: '', attributes: {}, labels: {} })
+    loadData()
+  }
+
+  const handleEdit = (item: CIModel) => {
+    setEditId(item.id)
+    setForm({ name: item.name, type_id: item.type_id, description: item.description || '', attributes: item.attributes || {}, labels: item.labels || {} })
+    setDialogOpen(true)
+  }
+
+  const handleSelectCI = async (item: CIModel) => {
+    setSelectedCI(item)
+    setDetailTab('attrs')
+    setImpactResult(null)
+    try {
+      const [audit, rels] = await Promise.all([getAudit(item.id), apiFetch<CIRelation[]>('/cmdb/relation')])
+      setAuditLog(audit || [])
+      setCiRelations((rels || []).filter((r: CIRelation) => r.source_id === item.id || r.target_id === item.id))
+    } catch { setAuditLog([]); setCiRelations([]) }
+  }
+
+  const handleTopology = async (ciId: string) => {
+    setTopoLoading(true); setDetailTab('topo')
+    try {
+      const data = await apiFetch<any>(`/cmdb/topology/${ciId}`)
+      if (data?.nodes) setTopology(data)
+      else {
+        const relNodes = new Set<string>()
+        const relEdges: TopologyEdge[] = []
+        ciRelations.forEach(r => { relNodes.add(r.source_id); relNodes.add(r.target_id); relEdges.push({ source: r.source_id, target: r.target_id, type: r.relation_type }) })
+        setTopology({
+          nodes: Array.from(relNodes).map(id => {
+            const ci = items.find(i => i.id === id)
+            return { id, name: ci?.name || id.slice(0, 8), type: ci?.type_id || 'host' }
+          }),
+          edges: relEdges,
+        })
+      }
+    } catch {
+      setTopology({ nodes: [{ id: ciId, name: selectedCI?.name || ciId, type: selectedCI?.type_id || 'host' }], edges: [] })
+    } finally { setTopoLoading(false) }
+  }
+
+  const handleImpact = async (ciId: string) => {
+    setDetailTab('impact'); setTopoLoading(true)
+    try {
+      const result = await apiFetch<any>(`/cmdb/impact/${ciId}`)
+      setImpactResult(result)
+    } catch { setImpactResult(null) } finally { setTopoLoading(false) }
+  }
+
+  const handleCreateRel = async () => {
+    await createRelation(relForm)
+    setRelDialogOpen(false)
+    fetchRelations()
+    if (selectedCI) handleSelectCI(selectedCI)
+  }
+
+  const handleDeleteRel = async (id: string) => {
+    await deleteRelation(id)
+    fetchRelations()
+    if (selectedCI) handleSelectCI(selectedCI)
+  }
+
+  const handleEditAttrs = () => {
+    if (!selectedCI) return
+    const attrs: Record<string, string> = {}
+    for (const [k, v] of Object.entries(selectedCI.attributes || {})) {
+      attrs[k] = typeof v === 'string' ? v : JSON.stringify(v)
+    }
+    setAttrForm(attrs); setEditAttrsOpen(true)
+  }
+
+  const handleSaveAttrs = async () => {
+    if (!selectedCI) return
+    const parsed: Record<string, any> = {}
+    for (const [k, v] of Object.entries(attrForm)) {
+      try { parsed[k] = JSON.parse(v) } catch { parsed[k] = v }
+    }
+    await update(selectedCI.id, { ...selectedCI, name: selectedCI.name, description: selectedCI.description, attributes: parsed, labels: selectedCI.labels, channel: 100 })
+    setEditAttrsOpen(false)
+    const items = await apiFetch<CIModel[]>('/cmdb/ci')
+    const updated = items.find(i => i.id === selectedCI.id)
+    if (updated) setSelectedCI(updated)
+  }
+
+  return (
+    <div className="p-6 space-y-4">
+      <div className="flex items-center justify-between">
+        <div><h1 className="text-2xl font-bold">CMDB 资产</h1><p className="text-sm text-muted-foreground">配置项管理与拓扑</p></div>
+        <Button onClick={() => { setEditId(null); setForm({ name: '', type_id: 'server', description: '', attributes: {}, labels: {} }); setDialogOpen(true) }}><Plus className="h-4 w-4" />新建资产</Button>
+      </div>
+
+      <div className="flex gap-2 items-center">
+        <div className="relative flex-1 max-w-sm">
+          <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground" />
+          <Input className="pl-8" placeholder="搜索资产名称..." value={searchQ} onChange={e => setSearchQ(e.target.value)} onKeyDown={e => e.key === 'Enter' && handleSearch()} />
+        </div>
+        <select className="h-10 rounded-md border border-input bg-background px-3 py-2 text-sm" value={typeFilter} onChange={e => { setTypeFilter(e.target.value); setPage(0) }}>
+          <option value="">所有类型</option>
+          {CI_TYPES.map(t => <option key={t} value={t}>{t}</option>)}
+        </select>
+        <Button variant="outline" onClick={handleSearch}>搜索</Button>
+      </div>
+
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+        <div className="lg:col-span-1 space-y-4">
+          <Card>
+            <CardHeader className="py-3"><CardTitle className="text-sm">资产列表 ({items.length})</CardTitle></CardHeader>
+            <CardContent className="p-0">
+              {loading && items.length === 0 ? <p className="px-4 text-sm text-muted-foreground">加载中...</p> : items.length === 0 ? <p className="px-4 text-sm text-muted-foreground">暂无资产。</p> : (
+                <div className="flex flex-col">
+                  {items.map(item => (
+                    <div key={item.id} onClick={() => handleSelectCI(item)}
+                      className={`px-4 py-3 border-b last:border-0 cursor-pointer hover:bg-accent transition-colors ${selectedCI?.id === item.id ? 'bg-accent border-l-2 border-l-emerald-500' : ''}`}>
+                      <div className="flex items-center justify-between">
+                        <span className="font-medium text-sm truncate">{item.name}</span>
+                        <div className="flex gap-1 shrink-0">
+                          <Button variant="ghost" size="icon" className="h-6 w-6" onClick={e => { e.stopPropagation(); handleEdit(item) }}><Pencil className="h-3 w-3" /></Button>
+                          <Button variant="ghost" size="icon" className="h-6 w-6" onClick={e => { e.stopPropagation(); remove(item.id); setSelectedCI(null) }}><Trash2 className="h-3 w-3" /></Button>
+                        </div>
+                      </div>
+                      <div className="flex gap-2 mt-1">
+                        <Badge variant="secondary" className="text-xs">{item.type_id}</Badge>
+                        <Badge variant={statusVariant(item.status)} className="text-xs">{item.status}</Badge>
+                      </div>
+                      <p className="text-xs text-muted-foreground mt-1">{formatTime(item.updated_at)}</p>
+                    </div>
+                  ))}
+                  <div className="flex items-center justify-between px-4 py-2 border-t">
+                    <Button variant="ghost" size="sm" disabled={page === 0} onClick={() => setPage(p => p - 1)}><ChevronLeft className="h-4 w-4" /></Button>
+                    <span className="text-xs text-muted-foreground">第 {page + 1} 页</span>
+                    <Button variant="ghost" size="sm" disabled={items.length < PAGE_SIZE} onClick={() => setPage(p => p + 1)}><ChevronRight className="h-4 w-4" /></Button>
+                  </div>
+                </div>
+              )}
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardHeader className="py-3"><CardTitle className="text-sm">关联关系</CardTitle></CardHeader>
+            <CardContent className="p-0">
+              {relations.length === 0 ? <p className="px-4 py-2 text-sm text-muted-foreground">暂无关系。</p> : (
+                <div className="flex flex-col">
+                  {relations.slice(0, 10).map(rel => {
+                    const src = items.find(i => i.id === rel.source_id)
+                    const tgt = items.find(i => i.id === rel.target_id)
+                    return (
+                      <div key={rel.id} className="px-4 py-2 border-b last:border-0 flex items-center justify-between text-xs">
+                        <span>{src?.name || rel.source_id.slice(0, 8)} <Badge variant="outline" className="text-[10px] px-1">{rel.relation_type}</Badge> {tgt?.name || rel.target_id.slice(0, 8)}</span>
+                        <Button variant="ghost" size="icon" className="h-5 w-5" onClick={() => handleDeleteRel(rel.id)}><Unlink className="h-3 w-3" /></Button>
+                      </div>
+                    )
+                  })}
+                </div>
+              )}
+              <div className="px-4 py-2 border-t">
+                <Button variant="outline" size="sm" className="w-full" onClick={() => { setRelForm({ source_id: selectedCI?.id || '', target_id: '', relation_type: 'depends_on' }); setRelDialogOpen(true) }}><Link2 className="h-3 w-3 mr-1" />新建关联</Button>
+              </div>
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardHeader className="py-3"><CardTitle className="text-sm">拓扑总览</CardTitle></CardHeader>
+            <CardContent>
+              <Tabs defaultValue="list">
+                <TabsList className="w-full">
+                  <TabsTrigger value="list" className="flex-1">列表</TabsTrigger>
+                  <TabsTrigger value="topology" className="flex-1"><Network className="w-3 h-3 mr-1" />拓扑</TabsTrigger>
+                </TabsList>
+                <TabsContent value="list" className="mt-2 max-h-64 overflow-auto">
+                  {items.slice(0, 20).map(item => (
+                    <div key={item.id} className="flex items-center justify-between py-1 text-xs">
+                      <span>{item.name}</span>
+                      <Badge variant="secondary" className="text-[10px]">{item.type_id}</Badge>
+                    </div>
+                  ))}
+                </TabsContent>
+                <TabsContent value="topology" className="mt-2">
+                  <div className="border rounded-lg bg-muted/20" style={{ minHeight: 200 }}>
+                    <TopologyGraph data={topology} width={300} height={200} />
+                  </div>
+                </TabsContent>
+              </Tabs>
+            </CardContent>
+          </Card>
+        </div>
+
+        <div className="lg:col-span-2">
+          {selectedCI ? (
+            <Card>
+              <CardHeader className="py-3">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <CardTitle className="text-lg">{selectedCI.name}</CardTitle>
+                    <p className="text-xs text-muted-foreground">ID: {selectedCI.id.slice(0, 12)}... · {selectedCI.type_id} · {selectedCI.status}</p>
+                  </div>
+                  <div className="flex gap-1">
+                    <Button variant="outline" size="sm" onClick={handleEditAttrs}>编辑属性</Button>
+                    <Button variant="outline" size="sm" onClick={e => { e.stopPropagation(); handleEdit(selectedCI) }}><Pencil className="h-3 w-3" /></Button>
+                    <Button variant="outline" size="sm" onClick={() => { remove(selectedCI.id); setSelectedCI(null) }}><Trash2 className="h-3 w-3" /></Button>
+                  </div>
+                </div>
+              </CardHeader>
+              <CardContent>
+                <Tabs value={detailTab} onValueChange={setDetailTab}>
+                  <TabsList>
+                    <TabsTrigger value="attrs">属性</TabsTrigger>
+                    <TabsTrigger value="rels">关系 ({ciRelations.length})</TabsTrigger>
+                    <TabsTrigger value="audit">审计 ({auditLog.length})</TabsTrigger>
+                    <TabsTrigger value="topo" onClick={() => handleTopology(selectedCI.id)}>拓扑</TabsTrigger>
+                    <TabsTrigger value="impact" onClick={() => handleImpact(selectedCI.id)}><AlertTriangle className="w-3 h-3 mr-1" />影响</TabsTrigger>
+                  </TabsList>
+
+                  <TabsContent value="attrs" className="mt-4 space-y-3">
+                    <div className="grid grid-cols-2 gap-2 text-sm">
+                      <div><span className="text-muted-foreground">名称:</span> {selectedCI.name}</div>
+                      <div><span className="text-muted-foreground">类型:</span> <Badge variant="secondary">{selectedCI.type_id}</Badge></div>
+                      <div><span className="text-muted-foreground">状态:</span> <Badge variant={statusVariant(selectedCI.status)}>{selectedCI.status}</Badge></div>
+                      <div><span className="text-muted-foreground">信道:</span> {selectedCI.channel}</div>
+                      <div className="col-span-2"><span className="text-muted-foreground">描述:</span> {selectedCI.description || '无'}</div>
+                      <div className="col-span-2"><span className="text-muted-foreground">创建:</span> {formatTime(selectedCI.created_at)}</div>
+                      <div className="col-span-2"><span className="text-muted-foreground">更新:</span> {formatTime(selectedCI.updated_at)}</div>
+                    </div>
+                    {Object.keys(selectedCI.attributes || {}).length > 0 && (
+                      <div>
+                        <h4 className="text-sm font-medium mb-2">自定义属性</h4>
+                        <table className="w-full text-sm border">
+                          <thead><tr className="bg-muted"><th className="px-2 py-1 text-left text-xs">属性</th><th className="px-2 py-1 text-left text-xs">值</th></tr></thead>
+                          <tbody>
+                            {Object.entries(selectedCI.attributes || {}).map(([k, v]) => (
+                              <tr key={k} className="border-t"><td className="px-2 py-1 text-xs font-medium">{k}</td><td className="px-2 py-1 text-xs">{typeof v === 'object' ? JSON.stringify(v) : String(v)}</td></tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    )}
+                    {Object.keys(selectedCI.labels || {}).length > 0 && (
+                      <div>
+                        <h4 className="text-sm font-medium mb-2">标签</h4>
+                        <div className="flex gap-1 flex-wrap">
+                          {Object.entries(selectedCI.labels || {}).map(([k, v]) => (
+                            <Badge key={k} variant="outline" className="text-xs">{k}={v}</Badge>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                  </TabsContent>
+
+                  <TabsContent value="rels" className="mt-4">
+                    {ciRelations.length === 0 ? <p className="text-sm text-muted-foreground">无关联关系。</p> : (
+                      <table className="w-full text-sm">
+                        <thead><tr className="border-b text-muted-foreground"><th className="pb-2 text-left text-xs">源</th><th className="pb-2 text-left text-xs">类型</th><th className="pb-2 text-left text-xs">目标</th><th className="pb-2 text-left text-xs">操作</th></tr></thead>
+                        <tbody>
+                          {ciRelations.map(rel => {
+                            const src = items.find(i => i.id === rel.source_id)
+                            const tgt = items.find(i => i.id === rel.target_id)
+                            return (
+                              <tr key={rel.id} className="border-b last:border-0">
+                                <td className="py-1 text-xs">{src?.name || rel.source_id.slice(0, 8)}</td>
+                                <td className="py-1 text-xs"><Badge variant="outline" className="text-[10px]">{rel.relation_type}</Badge></td>
+                                <td className="py-1 text-xs">{tgt?.name || rel.target_id.slice(0, 8)}</td>
+                                <td className="py-1"><Button variant="ghost" size="icon" className="h-5 w-5" onClick={() => handleDeleteRel(rel.id)}><Unlink className="h-3 w-3" /></Button></td>
+                              </tr>
+                            )
+                          })}
+                        </tbody>
+                      </table>
+                    )}
+                  </TabsContent>
+
+                  <TabsContent value="audit" className="mt-4">
+                    {auditLog.length === 0 ? <p className="text-sm text-muted-foreground">无变更记录。</p> : (
+                      <table className="w-full text-sm">
+                        <thead><tr className="border-b text-muted-foreground"><th className="pb-2 text-left text-xs">属性</th><th className="pb-2 text-left text-xs">旧值</th><th className="pb-2 text-left text-xs">新值</th><th className="pb-2 text-left text-xs">信道</th><th className="pb-2 text-left text-xs">时间</th></tr></thead>
+                        <tbody>
+                          {auditLog.map((ch, i) => (
+                            <tr key={i} className="border-b last:border-0">
+                              <td className="py-1 text-xs font-medium">{ch.attr_name}</td>
+                              <td className="py-1 text-xs text-muted-foreground">{String(ch.old_value || '').slice(0, 40)}</td>
+                              <td className="py-1 text-xs">{String(ch.new_value || '').slice(0, 40)}</td>
+                              <td className="py-1 text-xs"><Badge variant="outline" className="text-[10px]">{ch.channel}</Badge></td>
+                              <td className="py-1 text-xs text-muted-foreground">{formatTime(ch.changed_at)}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    )}
+                  </TabsContent>
+
+                  <TabsContent value="topo" className="mt-4">
+                    {topoLoading ? <p className="text-sm text-muted-foreground">加载中...</p> : topology.nodes.length === 0 ? <p className="text-sm text-muted-foreground">无拓扑数据。</p> : (
+                      <div className="border rounded-lg bg-muted/20" style={{ minHeight: 300 }}>
+                        <TopologyGraph data={topology} width={600} height={300} />
+                      </div>
+                    )}
+                  </TabsContent>
+
+                  <TabsContent value="impact" className="mt-4">
+                    {topoLoading ? <p className="text-sm text-muted-foreground">分析中...</p> : !impactResult ? <p className="text-sm text-muted-foreground">无法分析影响范围。</p> : (
+                      <div className="space-y-3">
+                        <div className="flex items-center gap-2">
+                          <AlertTriangle className="h-4 w-4 text-amber-400" />
+                          <span className="text-sm font-medium">影响分析: {selectedCI.name}</span>
+                          {impactResult.has_cycle && <Badge variant="destructive" className="text-xs">检测到拓扑环</Badge>}
+                        </div>
+                        <p className="text-sm">深度影响 <strong>{impactResult.affected_ci?.length || 0}</strong> 个资产:</p>
+                        <div className="flex flex-wrap gap-1">
+                          {(impactResult.affected_ci || []).map(ciId => {
+                            const ci = items.find(i => i.id === ciId)
+                            return <Badge key={ciId} variant="outline" className="text-xs">{ci?.name || ciId.slice(0, 8)}</Badge>
+                          })}
+                        </div>
+                      </div>
+                    )}
+                  </TabsContent>
+                </Tabs>
+              </CardContent>
+            </Card>
+          ) : (
+            <Card className="h-full flex items-center justify-center min-h-[400px]">
+              <CardContent className="text-center text-muted-foreground">
+                <p>选择一个资产查看详情</p>
+              </CardContent>
+            </Card>
+          )}
+        </div>
+      </div>
+
+      <Dialog open={dialogOpen} onClose={() => setDialogOpen(false)} title={editId ? '编辑资产' : '新建资产'}>
+        <div className="space-y-3 max-h-[60vh] overflow-y-auto">
+          <div><label className="text-sm font-medium">名称 *</label><Input value={form.name} onChange={e => setForm(f => ({ ...f, name: e.target.value }))} /></div>
+          <div><label className="text-sm font-medium">类型</label>
+            <select className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm" value={form.type_id} onChange={e => setForm(f => ({ ...f, type_id: e.target.value }))}>
+              {CI_TYPES.map(t => <option key={t} value={t}>{t}</option>)}
+            </select>
+          </div>
+          <div><label className="text-sm font-medium">描述</label><textarea className="flex h-16 w-full rounded-md border border-input bg-background px-3 py-2 text-sm" value={form.description} onChange={e => setForm(f => ({ ...f, description: e.target.value }))} /></div>
+          <div>
+            <label className="text-sm font-medium">自定义属性 (JSON)</label>
+            <textarea className="flex h-24 w-full rounded-md border border-input bg-background px-3 py-2 text-sm font-mono"
+              value={JSON.stringify(form.attributes, null, 2)}
+              onChange={e => { try { setForm(f => ({ ...f, attributes: JSON.parse(e.target.value) })) } catch {}}}
+              placeholder='{"ip": "10.0.0.1", "os": "Ubuntu 22.04"}' />
+          </div>
+          <div>
+            <label className="text-sm font-medium">标签 (key=value, 逗号分隔)</label>
+            <Input value={Object.entries(form.labels || {}).map(([k,v]) => `${k}=${v}`).join(',')}
+              onChange={e => {
+                const labels: Record<string, string> = {}
+                e.target.value.split(',').forEach(pair => {
+                  const [k, v] = pair.split('=')
+                  if (k && v) labels[k.trim()] = v.trim()
+                })
+                setForm(f => ({ ...f, labels }))
+              }}
+              placeholder="env=prod,region=us-east-1" />
+          </div>
+        </div>
+        <DialogFooter><Button variant="outline" onClick={() => setDialogOpen(false)}>取消</Button><Button onClick={handleSubmit} disabled={!form.name}>{editId ? '保存' : '创建'}</Button></DialogFooter>
+      </Dialog>
+
+      <Dialog open={relDialogOpen} onClose={() => setRelDialogOpen(false)} title="新建关联">
+        <div className="space-y-3">
+          <div><label className="text-sm font-medium">源资产</label>
+            <select className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm" value={relForm.source_id} onChange={e => setRelForm(f => ({ ...f, source_id: e.target.value }))}>
+              <option value="">选择资产</option>
+              {items.map(i => <option key={i.id} value={i.id}>{i.name}</option>)}
+            </select>
+          </div>
+          <div><label className="text-sm font-medium">目标资产</label>
+            <select className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm" value={relForm.target_id} onChange={e => setRelForm(f => ({ ...f, target_id: e.target.value }))}>
+              <option value="">选择资产</option>
+              {items.map(i => <option key={i.id} value={i.id}>{i.name}</option>)}
+            </select>
+          </div>
+          <div><label className="text-sm font-medium">关联类型</label>
+            <select className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm" value={relForm.relation_type} onChange={e => setRelForm(f => ({ ...f, relation_type: e.target.value }))}>
+              <option value="depends_on">depends_on</option>
+              <option value="connects_to">connects_to</option>
+              <option value="contains">contains</option>
+              <option value="backup_of">backup_of</option>
+            </select>
+          </div>
+        </div>
+        <DialogFooter><Button variant="outline" onClick={() => setRelDialogOpen(false)}>取消</Button><Button onClick={handleCreateRel} disabled={!relForm.source_id || !relForm.target_id}>创建</Button></DialogFooter>
+      </Dialog>
+
+      <Dialog open={editAttrsOpen} onClose={() => setEditAttrsOpen(false)} title="编辑自定义属性">
+        <div className="space-y-3 max-h-[60vh] overflow-y-auto">
+          {Object.entries(attrForm).map(([k, v]) => (
+            <div key={k} className="flex gap-2 items-center">
+              <Input className="flex-1 text-xs" value={k} onChange={e => {
+                const newAttrs = { ...attrForm }
+                delete newAttrs[k]
+                newAttrs[e.target.value] = v
+                setAttrForm(newAttrs)
+              }} placeholder="属性名" />
+              <Input className="flex-1 text-xs" value={v} onChange={e => setAttrForm(f => ({ ...f, [k]: e.target.value }))} placeholder="值" />
+              <Button variant="ghost" size="icon" className="h-8 w-8 shrink-0" onClick={() => {
+                const newAttrs = { ...attrForm }; delete newAttrs[k]; setAttrForm(newAttrs)
+              }}><Trash2 className="h-3 w-3" /></Button>
+            </div>
+          ))}
+          <Button variant="outline" size="sm" onClick={() => setAttrForm(f => ({ ...f, '': '' }))}><Plus className="h-3 w-3 mr-1" />添加属性</Button>
+        </div>
+        <DialogFooter><Button variant="outline" onClick={() => setEditAttrsOpen(false)}>取消</Button><Button onClick={handleSaveAttrs}>保存</Button></DialogFooter>
+      </Dialog>
+    </div>
+  )
+}

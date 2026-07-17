@@ -1,0 +1,216 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --background: #FFFFFF;
+  --foreground: #1E293B;
+  --card: #FFFFFF;
+  --card-border: #E2E8F0;
+  --card-hover-border: rgba(52, 211, 153, 0.3);
+  --popover: #FFFFFF;
+  --popover-foreground: #1E293B;
+  --primary: #10B981;
+  --primary-foreground: #FFFFFF;
+  --secondary: #F1F5F9;
+  --secondary-foreground: #475569;
+  --muted: #F1F5F9;
+  --muted-foreground: #64748B;
+  --accent: rgba(52, 211, 153, 0.1);
+  --accent-foreground: #059669;
+  --destructive: #EF4444;
+  --destructive-foreground: #FFFFFF;
+  --warning: #F59E0B;
+  --warning-foreground: #FFFFFF;
+  --border: #E2E8F0;
+  --input: #E2E8F0;
+  --ring: rgba(16, 185, 129, 0.4);
+  --radius: 0.75rem;
+
+  --card-shadow: 0 1px 3px rgba(0, 0, 0, 0.08), 0 1px 2px rgba(0, 0, 0, 0.06);
+  --emerald-glow: 0 0 24px rgba(52, 211, 153, 0.15);
+}
+
+.dark {
+  --background: #0B0F19;
+  --foreground: #E2E8F0;
+  --card: rgba(15, 23, 42, 0.6);
+  --card-border: rgba(255, 255, 255, 0.06);
+  --card-hover-border: rgba(52, 211, 153, 0.2);
+  --popover: #0F172A;
+  --popover-foreground: #E2E8F0;
+  --primary: #34D399;
+  --primary-foreground: #0B0F19;
+  --secondary: rgba(30, 41, 59, 0.8);
+  --secondary-foreground: #94A3B8;
+  --muted: rgba(30, 41, 59, 0.5);
+  --muted-foreground: #64748B;
+  --accent: rgba(52, 211, 153, 0.1);
+  --accent-foreground: #34D399;
+  --destructive: #F87171;
+  --destructive-foreground: #FEF2F2;
+  --warning: #FBBF24;
+  --warning-foreground: #0B0F19;
+  --border: rgba(255, 255, 255, 0.06);
+  --input: rgba(255, 255, 255, 0.08);
+  --ring: rgba(52, 211, 153, 0.3);
+
+  --card-shadow: 0 0 0 1px rgba(255, 255, 255, 0.03), 0 8px 32px rgba(0, 0, 0, 0.3);
+}
+
+@layer base {
+  * {
+    border-color: var(--border);
+  }
+  body {
+    background: var(--background);
+    color: var(--foreground);
+    -webkit-font-smoothing: antialiased;
+    font-family: 'Inter', system-ui, sans-serif;
+  }
+  ::selection {
+    background: rgba(16, 185, 129, 0.2);
+    color: #059669;
+  }
+  .dark ::selection {
+    background: rgba(52, 211, 153, 0.2);
+    color: #34D399;
+  }
+  ::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+  }
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  ::-webkit-scrollbar-thumb {
+    background: rgba(0, 0, 0, 0.15);
+    border-radius: 3px;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background: rgba(0, 0, 0, 0.25);
+  }
+  .dark ::-webkit-scrollbar-thumb {
+    background: rgba(255, 255, 255, 0.08);
+  }
+  .dark ::-webkit-scrollbar-thumb:hover {
+    background: rgba(255, 255, 255, 0.12);
+  }
+}
+
+@layer components {
+  .card-glass {
+    background: var(--card);
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
+    border: 1px solid var(--card-border);
+    box-shadow: var(--card-shadow);
+    transition: border-color 0.3s ease, box-shadow 0.3s ease;
+  }
+  .card-glass:hover {
+    border-color: var(--card-hover-border);
+    box-shadow: var(--card-shadow), var(--emerald-glow);
+  }
+  .card-glass-static {
+    background: var(--card);
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
+    border: 1px solid var(--card-border);
+    box-shadow: var(--card-shadow);
+  }
+  .glow-border {
+    position: relative;
+  }
+  .glow-border::before {
+    content: '';
+    position: absolute;
+    inset: -1px;
+    border-radius: inherit;
+    padding: 1px;
+    background: linear-gradient(135deg, rgba(52, 211, 153, 0.3), transparent 50%, transparent);
+    -webkit-mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
+    -webkit-mask-composite: xor;
+    mask-composite: exclude;
+    opacity: 0;
+    transition: opacity 0.5s ease;
+  }
+  .glow-border.active::before {
+    opacity: 1;
+  }
+  .radial-glow {
+    background: radial-gradient(ellipse 80% 60% at 50% -20%, rgba(52, 211, 153, 0.06), transparent);
+  }
+  .radial-glow-purple {
+    background: radial-gradient(ellipse 80% 60% at 50% -20%, rgba(139, 92, 246, 0.06), transparent);
+  }
+  .metric-value {
+    font-family: 'JetBrains Mono', monospace;
+    font-weight: 600;
+    letter-spacing: -0.02em;
+    line-height: 1;
+  }
+  .text-glow-emerald {
+    text-shadow: 0 0 20px rgba(52, 211, 153, 0.3);
+  }
+  .text-glow-red {
+    text-shadow: 0 0 20px rgba(248, 113, 113, 0.3);
+  }
+}
+
+@layer utilities {
+  @keyframes pulse-soft {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.6; }
+  }
+  @keyframes pulse-ring {
+    0% { box-shadow: 0 0 0 0 rgba(52, 211, 153, 0.4); }
+    70% { box-shadow: 0 0 0 8px rgba(52, 211, 153, 0); }
+    100% { box-shadow: 0 0 0 0 rgba(52, 211, 153, 0); }
+  }
+  @keyframes border-glow {
+    0%, 100% { border-color: rgba(52, 211, 153, 0.2); }
+    50% { border-color: rgba(52, 211, 153, 0.5); }
+  }
+  @keyframes breathing {
+    0%, 100% { opacity: 0.4; transform: scale(0.95); }
+    50% { opacity: 0.8; transform: scale(1.05); }
+  }
+  @keyframes data-flow {
+    0% { transform: translateX(-100%); }
+    100% { transform: translateX(100%); }
+  }
+  @keyframes fade-in-up {
+    from { opacity: 0; transform: translateY(8px); }
+    to { opacity: 1; transform: translateY(0); }
+  }
+  @keyframes slide-in-right {
+    from { opacity: 0; transform: translateX(12px); }
+    to { opacity: 1; transform: translateX(0); }
+  }
+  .animate-pulse-soft {
+    animation: pulse-soft 2s ease-in-out infinite;
+  }
+  .animate-pulse-ring {
+    animation: pulse-ring 2s ease-in-out infinite;
+  }
+  .animate-breathing {
+    animation: breathing 3s ease-in-out infinite;
+  }
+  .animate-border-glow {
+    animation: border-glow 2s ease-in-out infinite;
+  }
+  .animate-fade-in-up {
+    animation: fade-in-up 0.4s ease-out both;
+  }
+  .animate-slide-in-right {
+    animation: slide-in-right 0.3s ease-out both;
+  }
+  .stagger-1 { animation-delay: 0.05s; }
+  .stagger-2 { animation-delay: 0.1s; }
+  .stagger-3 { animation-delay: 0.15s; }
+  .stagger-4 { animation-delay: 0.2s; }
+  .stagger-5 { animation-delay: 0.25s; }
+  .stagger-6 { animation-delay: 0.3s; }
+}

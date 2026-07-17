@@ -1,0 +1,71 @@
+// OpsOrigin Reverse Tunnel Protocol
+// Core ↔ Proxy ↔ Agent 三层边缘穿透通信协议
+syntax = "proto3";
+package tunnel;
+
+service TunnelService {
+  // Proxy 通过此接口与 Core 建立双向多路复用隧道
+  rpc Connect(stream TunnelMessage) returns (stream TunnelMessage);
+}
+
+message TunnelMessage {
+  string message_id = 1;
+  string trace_id = 2;
+  string proxy_id = 3;
+  oneof payload {
+    RegisterRequest register = 10;
+    RegisterResponse register_resp = 11;
+    Heartbeat heartbeat = 20;
+    CommandRequest command = 30;
+    CommandResponse command_resp = 31;
+    AgentCommand forward = 40;
+    AgentResponse forward_resp = 41;
+  }
+}
+
+message RegisterRequest {
+  string proxy_id = 1;
+  string version = 2;
+  string hostname = 3;
+  repeated string capabilities = 4;
+}
+
+message RegisterResponse {
+  bool accepted = 1;
+  string session_id = 2;
+  string error = 3;
+}
+
+message Heartbeat {
+  int64 timestamp = 1;
+  int32 active_agents = 2;
+}
+
+message CommandRequest {
+  string command_id = 1;
+  string target = 2;
+  string action = 3;
+  bytes payload = 4;
+  int32 timeout_seconds = 5;
+}
+
+message CommandResponse {
+  string command_id = 1;
+  bool success = 2;
+  bytes output = 3;
+  string error = 4;
+}
+
+message AgentCommand {
+  string command_id = 1;
+  string agent_id = 2;
+  string action = 3;
+  bytes payload = 4;
+}
+
+message AgentResponse {
+  string command_id = 1;
+  string agent_id = 2;
+  bool success = 3;
+  bytes output = 4;
+}

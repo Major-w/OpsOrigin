@@ -1,0 +1,78 @@
+version: "3.9"
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: opsnexus
+      POSTGRES_USER: opsnexus
+      POSTGRES_PASSWORD: opsnexus
+    ports:
+      - "5432:5432"
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+      - ./migrations/001_init.sql:/docker-entrypoint-initdb.d/001_init.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U opsnexus"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  dgraph-zero:
+    image: dgraph/dgraph:latest
+    command: dgraph zero --my=dgraph-zero:5080
+    ports:
+      - "5080:5080"
+      - "6080:6080"
+    volumes:
+      - dgraph_zero:/data
+
+  dgraph-alpha:
+    image: dgraph/dgraph:latest
+    command: dgraph alpha --my=dgraph-alpha:7080 --zero=dgraph-zero:5080 --security whitelist=0.0.0.0/0
+    ports:
+      - "7080:7080"
+      - "8081:8080"
+      - "9080:9080"
+    depends_on:
+      dgraph-zero:
+        condition: service_started
+    volumes:
+      - dgraph_alpha:/data
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  core:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    ports:
+      - "8080:8080"
+    environment:
+      OPSNEXUS_CORE_PORT: 8080
+      OPSNEXUS_POSTGRES_DSN: postgres://opsnexus:opsnexus@postgres:5432/opsnexus?sslmode=disable
+      OPSNEXUS_DGRAPH_TARGET: dgraph-alpha:9080
+      OPSNEXUS_REDIS_ADDR: redis:6379
+    depends_on:
+      postgres:
+        condition: service_healthy
+      dgraph-alpha:
+        condition: service_started
+      redis:
+        condition: service_healthy
+
+volumes:
+  pg_data:
+  dgraph_zero:
+  dgraph_alpha:
+  redis_data:

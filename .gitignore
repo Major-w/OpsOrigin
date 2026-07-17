@@ -1,0 +1,15 @@
+bin/
+core
+proxy
+agent
+*.exe
+*.test
+*.out
+.DS_Store
+node_modules/
+dist/
+.git/
+*.log
+logs/
+.run/
+.env

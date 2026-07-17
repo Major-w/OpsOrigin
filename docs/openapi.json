@@ -1,0 +1,258 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "OpsOrigin Core API",
+    "version": "1.0.0",
+    "description": "AI-native full-automation operations control plane"
+  },
+  "servers": [{ "url": "/api/v1", "description": "Core API" }],
+  "components": {
+    "securitySchemes": {
+      "BearerAuth": { "type": "http", "scheme": "bearer" }
+    },
+    "schemas": {
+      "Error": {
+        "type": "object",
+        "properties": { "error": { "type": "string" } }
+      },
+      "CIModel": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string" },
+          "type_id": { "type": "string" },
+          "name": { "type": "string" },
+          "status": { "type": "string", "enum": ["active", "inactive", "deleted"] },
+          "attributes": { "type": "object" },
+          "labels": { "type": "object" },
+          "channel": { "type": "integer" },
+          "created_at": { "type": "string", "format": "date-time" },
+          "updated_at": { "type": "string", "format": "date-time" }
+        }
+      },
+      "Ticket": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string" },
+          "title": { "type": "string" },
+          "description": { "type": "string" },
+          "risk_level": { "type": "string", "enum": ["low", "medium", "high", "critical"] },
+          "status": { "type": "string" },
+          "change_plan": { "type": "string" },
+          "created_by": { "type": "string" },
+          "created_by_type": { "type": "string" },
+          "created_at": { "type": "string", "format": "date-time" }
+        }
+      },
+      "AgentInstance": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string" },
+          "name": { "type": "string" },
+          "model_name": { "type": "string" },
+          "status": { "type": "string" },
+          "created_at": { "type": "string", "format": "date-time" }
+        }
+      },
+      "ToolDefinition": {
+        "type": "object",
+        "properties": {
+          "name": { "type": "string" },
+          "description": { "type": "string" },
+          "parameters": { "type": "object" }
+        }
+      },
+      "AuditEvent": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string" },
+          "trace_id": { "type": "string" },
+          "event_type": { "type": "string" },
+          "actor": { "type": "string" },
+          "action": { "type": "string" },
+          "target": { "type": "string" },
+          "success": { "type": "boolean" },
+          "timestamp": { "type": "string", "format": "date-time" }
+        }
+      },
+      "MonitorTarget": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string" },
+          "address": { "type": "string" },
+          "protocol": { "type": "string" },
+          "interval": { "type": "integer" },
+          "status": { "type": "string" }
+        }
+      },
+      "ProbeRequest": {
+        "type": "object",
+        "required": ["address", "protocol"],
+        "properties": {
+          "address": { "type": "string" },
+          "port": { "type": "integer" },
+          "protocol": { "type": "string", "enum": ["icmp", "tcp", "http", "dns", "ssl"] }
+        }
+      }
+    }
+  },
+  "security": [{ "BearerAuth": [] }],
+  "paths": {
+    "/auth/login": {
+      "post": {
+        "tags": ["Auth"],
+        "summary": "用户登录",
+        "security": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "username": { "type": "string" },
+                  "password": { "type": "string" }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": { "description": "Login successful, returns JWT token" },
+          "401": { "description": "Invalid credentials" }
+        }
+      }
+    },
+    "/users": {
+      "get": {
+        "tags": ["Users"],
+        "summary": "用户列表（admin only）",
+        "responses": {
+          "200": { "description": "User list" },
+          "403": { "description": "Forbidden" }
+        }
+      }
+    },
+    "/cmdb/ci": {
+      "get": {
+        "tags": ["CMDB"],
+        "summary": "资产列表",
+        "parameters": [
+          { "name": "type_id", "in": "query", "schema": { "type": "string" } }
+        ],
+        "responses": {
+          "200": {
+            "description": "CI list",
+            "content": { "application/json": { "schema": { "type": "array", "items": { "$ref": "#/components/schemas/CIModel" } } } }
+          }
+        }
+      },
+      "post": {
+        "tags": ["CMDB"],
+        "summary": "创建资产",
+        "requestBody": {
+          "required": true,
+          "content": { "application/json": { "schema": { "$ref": "#/components/schemas/CIModel" } } }
+        },
+        "responses": { "201": { "description": "Created" } }
+      }
+    },
+    "/cmdb/ci/{id}": {
+      "get": { "tags": ["CMDB"], "summary": "资产详情", "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "string" } }], "responses": { "200": { "description": "CI detail" } } },
+      "put": { "tags": ["CMDB"], "summary": "更新资产", "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "string" } }], "responses": { "200": { "description": "Updated" } } },
+      "delete": { "tags": ["CMDB"], "summary": "删除资产", "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "string" } }], "responses": { "200": { "description": "Deleted" } } }
+    },
+    "/cmdb/topology/{id}": {
+      "get": { "tags": ["CMDB"], "summary": "拓扑查询", "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "string" } }], "responses": { "200": { "description": "Topology graph" } } }
+    },
+    "/cmdb/impact/{id}": {
+      "get": { "tags": ["CMDB"], "summary": "影响分析", "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "string" } }], "responses": { "200": { "description": "Impact analysis" } } }
+    },
+    "/itsm/tickets": {
+      "get": {
+        "tags": ["ITSM"],
+        "summary": "工单列表",
+        "responses": {
+          "200": { "description": "Ticket list", "content": { "application/json": { "schema": { "type": "array", "items": { "$ref": "#/components/schemas/Ticket" } } } } }
+        }
+      },
+      "post": {
+        "tags": ["ITSM"],
+        "summary": "创建工单",
+        "requestBody": {
+          "required": true,
+          "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Ticket" } } }
+        },
+        "responses": { "201": { "description": "Created" } }
+      }
+    },
+    "/itsm/tickets/{id}/approve": {
+      "post": { "tags": ["ITSM"], "summary": "审批工单", "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "string" } }], "responses": { "200": { "description": "Approved" } } }
+    },
+    "/itsm/tickets/{id}/reject": {
+      "post": { "tags": ["ITSM"], "summary": "驳回工单", "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "string" } }], "responses": { "200": { "description": "Rejected" } } }
+    },
+    "/itsm/tickets/{id}/execute": {
+      "post": { "tags": ["ITSM"], "summary": "执行工单", "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "string" } }], "responses": { "200": { "description": "Executed" } } }
+    },
+    "/itsm/tickets/{id}/complete": {
+      "post": { "tags": ["ITSM"], "summary": "完成工单", "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "string" } }], "responses": { "200": { "description": "Completed" } } }
+    },
+    "/itsm/tickets/{id}/rollback": {
+      "post": { "tags": ["ITSM"], "summary": "回滚工单", "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "string" } }], "responses": { "200": { "description": "Rolled back" } } }
+    },
+    "/monitor/targets": {
+      "get": { "tags": ["Monitor"], "summary": "监控目标列表", "responses": { "200": { "description": "Target list", "content": { "application/json": { "schema": { "type": "array", "items": { "$ref": "#/components/schemas/MonitorTarget" } } } } } } }
+    },
+    "/monitor/alerts": {
+      "get": { "tags": ["Monitor"], "summary": "告警列表", "responses": { "200": { "description": "Alert list" } } }
+    },
+    "/monitor/probe": {
+      "post": {
+        "tags": ["Monitor"],
+        "summary": "手动拨测",
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ProbeRequest" } } } },
+        "responses": { "200": { "description": "Probe result" } }
+      }
+    },
+    "/monitor/alert-stats": {
+      "get": { "tags": ["Monitor"], "summary": "告警统计", "responses": { "200": { "description": "Alert statistics" } } }
+    },
+    "/ai/agents": {
+      "post": {
+        "tags": ["AI"],
+        "summary": "创建 AI Agent",
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/AgentInstance" } } } },
+        "responses": { "201": { "description": "Created" } }
+      }
+    },
+    "/ai/tools": {
+      "get": { "tags": ["AI"], "summary": "工具列表", "responses": { "200": { "description": "Tool list", "content": { "application/json": { "schema": { "type": "array", "items": { "$ref": "#/components/schemas/ToolDefinition" } } } } } } }
+    },
+    "/ai/plans": {
+      "post": {
+        "tags": ["AI"],
+        "summary": "执行计划",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "agent_id": { "type": "string" },
+                  "risk_level": { "type": "string" },
+                  "steps": { "type": "array" }
+                }
+              }
+            }
+          }
+        },
+        "responses": { "200": { "description": "Plan result" } }
+      }
+    },
+    "/audit/events": {
+      "get": { "tags": ["Audit"], "summary": "审计事件列表", "responses": { "200": { "description": "Audit events" } } },
+      "post": { "tags": ["Audit"], "summary": "记录审计事件", "responses": { "200": { "description": "Recorded" } } }
+    }
+  }
+}
