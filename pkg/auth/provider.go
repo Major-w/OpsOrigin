@@ -72,6 +72,7 @@ func (p *Provider) Middleware(next http.Handler) http.Handler {
 		// 这些路径由 Agent 进程调用,不走用户 JWT 认证
 		agentPaths := []string{
 			"/api/v1/agents/download",
+			"/api/v1/agents/sandbox",
 		}
 		for _, ap := range agentPaths {
 			if path == ap {

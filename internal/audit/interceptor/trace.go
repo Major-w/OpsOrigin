@@ -55,6 +55,7 @@ var skipPaths = map[string]bool{
 	"/api/v1/agents/install-script": true,
 	"/api/v1/agents/test-ssh":       true,
 	"/api/v1/agents/batch-install":  true,
+	"/api/v1/agents/sandbox":        true,
 }
 
 var skipPrefixes = []string{

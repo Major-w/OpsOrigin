@@ -5,8 +5,9 @@ import "time"
 type AgentType string
 
 const (
-	AgentTypeAgent    AgentType = "agent"
+	AgentTypeAgent     AgentType = "agent"
 	AgentTypeAgentless AgentType = "agentless"
+	AgentTypeSandbox   AgentType = "sandbox"
 )
 
 type InstallMethod string
@@ -41,7 +42,7 @@ type AgentHost struct {
 	SSHPassword   string            `json:"-"`
 	SSHKey        string            `json:"-"`
 	Status        AgentStatus       `json:"status"`
-	ProxyID       string            `json:"proxy_id,omitempty"` // 该 Agent 通过哪个 Proxy 连接,空表示直连
+	ProxyID       string            `json:"proxy_id,omitempty"`
 	InstallMethod InstallMethod     `json:"install_method"`
 	Version       string            `json:"version,omitempty"`
 	CPU           string            `json:"cpu,omitempty"`
@@ -49,6 +50,7 @@ type AgentHost struct {
 	Disk          string            `json:"disk,omitempty"`
 	Hostname      string            `json:"hostname,omitempty"`
 	Labels        map[string]string `json:"labels,omitempty"`
+	Environment   string            `json:"environment,omitempty"` // sandbox, production
 	LastSeen      *time.Time        `json:"last_seen,omitempty"`
 	LastHeartbeat *time.Time        `json:"last_heartbeat,omitempty"`
 	FirstSeen     *time.Time        `json:"first_seen,omitempty"`

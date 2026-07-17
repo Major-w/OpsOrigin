@@ -251,6 +251,7 @@ func shouldSkipPermission(path string) bool {
 		"/api/v1/agents/install-script",
 		"/api/v1/agents/test-ssh",
 		"/api/v1/agents/batch-install",
+		"/api/v1/agents/sandbox",
 	}
 	for _, p := range skipPaths {
 		if path == p {

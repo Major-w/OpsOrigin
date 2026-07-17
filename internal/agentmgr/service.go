@@ -7,7 +7,10 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"os"
+	"path/filepath"
 	"regexp"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -305,6 +308,7 @@ type Service struct {
 	tlsEnabled      bool        // 是否全局启用 HTTPS(影响安装脚本中的 scheme)
 	agentWSPort     int         // Agent WebSocket 端口(默认 5588)
 	tunnelServer    *tunnel.Server // Proxy 隧道服务(可选,启用后支持通过 Proxy 下发命令)
+	sandboxID       string      // 沙箱 Agent ID(自动注册)
 }
 
 func NewService() *Service {
@@ -350,6 +354,61 @@ func (s *Service) SetAgentWSPort(port int) {
 // SetTunnelServer 注入 tunnel server,启用后支持通过 Proxy 下发命令。
 func (s *Service) SetTunnelServer(ts *tunnel.Server) {
 	s.tunnelServer = ts
+}
+
+// InitSandbox 初始化沙箱环境,在 Server 端自动注册一个本地 Agent 用于脚本调试。
+func (s *Service) InitSandbox() {
+	hostname, _ := os.Hostname()
+	if hostname == "" {
+		hostname = "sandbox-server"
+	}
+
+	// 获取本机 IP
+	localIP := "127.0.0.1"
+	ifaces, _ := net.Interfaces()
+	for _, iface := range ifaces {
+		if iface.Flags&net.FlagUp == 0 || iface.Flags&net.FlagLoopback != 0 {
+			continue
+		}
+		addrs, _ := iface.Addrs()
+		for _, addr := range addrs {
+			if ipnet, ok := addr.(*net.IPNet); ok && ipnet.IP.To4() != nil {
+				localIP = ipnet.IP.String()
+				break
+			}
+		}
+	}
+
+	sandbox := &AgentHost{
+		TenantID:      "default",
+		Name:          hostname + " (Sandbox)",
+		Type:          AgentTypeSandbox,
+		Address:       localIP,
+		Port:          0,
+		OSType:        runtime.GOOS,
+		AuthType:      "local",
+		Status:        AgentStatusOnline,
+		InstallMethod: InstallManual,
+		Environment:   "sandbox",
+		Labels: map[string]string{
+			"environment": "sandbox",
+			"managed-by":  "server",
+		},
+		Capabilities: []string{"shell", "script", "file_transfer", "monitor"},
+	}
+
+	if err := s.store.Register(context.Background(), sandbox); err != nil {
+		slog.Error("failed to register sandbox agent", "error", err)
+		return
+	}
+
+	s.sandboxID = sandbox.ID
+	slog.Info("sandbox agent registered", "id", sandbox.ID, "name", sandbox.Name, "address", localIP)
+}
+
+// GetSandboxID 返回沙箱 Agent 的 ID。
+func (s *Service) GetSandboxID() string {
+	return s.sandboxID
 }
 
 // Close 停止后台离线检测 goroutine。
@@ -402,12 +461,43 @@ func (s *Service) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/v1/agents/{id}/uninstall", s.handleUninstallAgent)
 	mux.HandleFunc("POST /api/v1/agents/{id}/cmdb", s.handleCMDBReport)
 	mux.HandleFunc("GET /api/v1/agents/{id}/download-tasks", s.handleDownloadTasks)
+	// Sandbox
+	mux.HandleFunc("GET /api/v1/agents/sandbox", s.handleGetSandbox)
 	// Proxy CRUD
 	mux.HandleFunc("GET /api/v1/proxies", s.handleListProxies)
 	mux.HandleFunc("POST /api/v1/proxies", s.handleRegisterProxy)
 	mux.HandleFunc("GET /api/v1/proxies/{id}", s.handleGetProxy)
 	mux.HandleFunc("PUT /api/v1/proxies/{id}", s.handleUpdateProxy)
 	mux.HandleFunc("DELETE /api/v1/proxies/{id}", s.handleDeleteProxy)
+}
+
+func (s *Service) handleGetSandbox(w http.ResponseWriter, r *http.Request) {
+	if s.sandboxID == "" {
+		writeJSON(w, http.StatusOK, map[string]any{
+			"exists": false,
+			"message": "sandbox agent not initialized",
+		})
+		return
+	}
+
+	tenantID := tenantFromCtx(r.Context())
+	host, err := s.store.Get(r.Context(), s.sandboxID, tenantID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if host == nil {
+		writeJSON(w, http.StatusOK, map[string]any{
+			"exists": false,
+			"message": "sandbox agent not found",
+		})
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"exists": true,
+		"agent":  host,
+	})
 }
 
 func (s *Service) handleRegister(w http.ResponseWriter, r *http.Request) {
@@ -1158,16 +1248,68 @@ func (s *Service) handleDownloadAgent(w http.ResponseWriter, r *http.Request) {
 	scheme := s.determineScheme(r)
 	serverAddr := fmt.Sprintf("%s://%s", scheme, r.Host)
 
+	// 二进制文件下载
+	if downloadType == "proxy-bin" || downloadType == "agent-bin" {
+		cwd, _ := os.Getwd()
+		
+		// 支持的二进制文件名列表
+		var binaryNames []string
+		if downloadType == "agent-bin" {
+			binaryNames = []string{"opsagent", "agent"}
+		} else {
+			binaryNames = []string{"opsproxy", "proxy"}
+		}
+		
+		if osType == "darwin" {
+			for i, n := range binaryNames {
+				binaryNames[i] = n + "-darwin"
+			}
+		} else if osType == "windows" {
+			for i, n := range binaryNames {
+				binaryNames[i] = n + ".exe"
+			}
+		}
+		if arch == "arm64" {
+			for i, n := range binaryNames {
+				binaryNames[i] = n + "-arm64"
+			}
+		}
+		
+		var binPath string
+		for _, name := range binaryNames {
+			candidate := filepath.Join(cwd, "bin", name)
+			if _, err := os.Stat(candidate); err == nil {
+				binPath = candidate
+				break
+			}
+		}
+		if binPath == "" {
+			writeError(w, 404, "binary not found, please build first: make build")
+			return
+		}
+
+		fileName := filepath.Base(binPath)
+		w.Header().Set("Content-Type", "application/octet-stream")
+		w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=%s", fileName))
+		http.ServeFile(w, r, binPath)
+		return
+	}
+
 	if downloadType == "proxy" {
-		w.Header().Set("Content-Type", "text/x-shellscript; charset=utf-8")
-		w.Header().Set("Content-Disposition", "attachment; filename=opsproxy")
-		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(`#!/bin/bash
-# opsproxy placeholder - real binary will be served in production
-# Usage: opsproxy -config /path/to/config.yaml
-echo "OpsOrigin Proxy (placeholder)"
-echo "Config: $@"
-exec sleep infinity`))
+		switch osType {
+		case "linux", "darwin":
+			w.Header().Set("Content-Type", "text/x-shellscript; charset=utf-8")
+			w.Header().Set("Content-Disposition", "attachment; filename=install_proxy.sh")
+			w.WriteHeader(http.StatusOK)
+			w.Write([]byte(generateProxyInstallScript(serverAddr, osType, arch)))
+		case "windows":
+			w.Header().Set("Content-Type", "application/x-powershell; charset=utf-8")
+			w.Header().Set("Content-Disposition", "attachment; filename=install_proxy.ps1")
+			w.WriteHeader(http.StatusOK)
+			w.Write([]byte(generateWindowsProxyInstallScript(serverAddr, arch)))
+		default:
+			writeError(w, http.StatusBadRequest, "os parameter required: linux, darwin, or windows")
+		}
 		return
 	}
 
@@ -1400,6 +1542,223 @@ Write-Host "  Service:      $ServiceName"
 Write-Host ""
 Write-Host "  Check Status: Get-Service $ServiceName"
 Write-Host "  View Logs:    Get-EventLog -LogName Application -Source 'OpsOriginAgent'"
+Write-Host ""
+Write-Host "=========================================" -ForegroundColor Green
+Write-Host ""
+pause
+`, serverAddr, arch)
+}
+
+// generateProxyInstallScript 生成 Proxy 的 Linux/macOS 安装脚本。
+func generateProxyInstallScript(serverAddr, osType, arch string) string {
+	binaryName := "opsproxy"
+	if osType == "darwin" {
+		binaryName = "opsproxy-darwin"
+	}
+	installDir := "/opt/opsorigin/proxy"
+	serviceName := "opsorigin-proxy"
+
+	return fmt.Sprintf(`#!/bin/bash
+# OpsOrigin Proxy Installer
+# Usage: bash install_proxy.sh
+
+set -e
+
+SERVER_ADDR="%s"
+INSTALL_DIR="%s"
+SERVICE_NAME="%s"
+BINARY_NAME="%s"
+ARCH="%s"
+
+echo "========================================="
+echo "  OpsOrigin Proxy Installer"
+echo "========================================="
+echo ""
+
+# Check root
+if [ "$EUID" -ne 0 ]; then
+  echo "[ERROR] Please run as root (sudo bash install_proxy.sh)"
+  exit 1
+fi
+
+# Detect OS
+OS=$(uname -s | tr '[:upper:]' '[:lower:]')
+echo "[INFO] Detected OS: $OS ($ARCH)"
+
+# Create install directory
+echo "[INFO] Creating install directory: $INSTALL_DIR"
+mkdir -p "$INSTALL_DIR"
+
+# Download proxy binary
+echo "[INFO] Downloading proxy binary from server..."
+curl -fsSL "${SERVER_ADDR}/api/v1/agents/download?os=%s&arch=${ARCH}&type=proxy-bin" -o "$INSTALL_DIR/$BINARY_NAME"
+chmod +x "$INSTALL_DIR/$BINARY_NAME"
+echo "[INFO] Proxy binary installed to: $INSTALL_DIR/$BINARY_NAME"
+
+# Extract host:port from SERVER_ADDR
+SERVER_HOST=$(echo "$SERVER_ADDR" | sed 's|^[a-z]*://||')
+
+# Create config file
+echo "[INFO] Creating configuration file..."
+cat > "$INSTALL_DIR/config.yaml" << EOF
+core:
+  address: "$SERVER_ADDR"
+proxy:
+  id: ""
+  listen: ":9090"
+  agent_listen: ":9091"
+log:
+  level: info
+EOF
+echo "[INFO] Configuration created at: $INSTALL_DIR/config.yaml"
+
+# Create systemd service (Linux) or launchd plist (macOS)
+if [ "$OS" = "linux" ]; then
+  echo "[INFO] Creating systemd service..."
+  cat > "/etc/systemd/system/${SERVICE_NAME}.service" << EOF
+[Unit]
+Description=OpsOrigin Proxy
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=$INSTALL_DIR/$BINARY_NAME -config $INSTALL_DIR/config.yaml
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
+EOF
+  systemctl daemon-reload
+  systemctl enable "$SERVICE_NAME"
+  systemctl start "$SERVICE_NAME"
+  echo "[INFO] Service started: $SERVICE_NAME"
+
+elif [ "$OS" = "darwin" ]; then
+  echo "[INFO] Creating launchd plist..."
+  PLIST_PATH="/Library/LaunchDaemons/com.opsorigin.proxy.plist"
+  cat > "$PLIST_PATH" << EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.opsorigin.proxy</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>$INSTALL_DIR/$BINARY_NAME</string>
+        <string>-config</string>
+        <string>$INSTALL_DIR/config.yaml</string>
+    </array>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+    <key>StandardOutPath</key>
+    <string>/var/log/opsorigin-proxy.log</string>
+    <key>StandardErrorPath</key>
+    <string>/var/log/opsorigin-proxy.log</string>
+</dict>
+</plist>
+EOF
+  launchctl unload "$PLIST_PATH" 2>/dev/null || true
+  launchctl load "$PLIST_PATH"
+  echo "[INFO] Launchd service installed: com.opsorigin.proxy"
+fi
+
+echo ""
+echo "========================================="
+echo "  Installation Complete!"
+echo "========================================="
+echo ""
+echo "  Install Dir:  $INSTALL_DIR"
+echo "  Config File:  $INSTALL_DIR/config.yaml"
+echo "  Log File:     /var/log/opsorigin-proxy.log"
+echo ""
+echo "  Service:      $SERVICE_NAME"
+echo "  Status:       systemctl status $SERVICE_NAME"
+echo "  Logs:         journalctl -u $SERVICE_NAME -f"
+echo ""
+echo "========================================="
+`, serverAddr, installDir, serviceName, binaryName, arch, osType)
+}
+
+// generateWindowsProxyInstallScript 生成 Proxy 的 Windows 安装脚本。
+func generateWindowsProxyInstallScript(serverAddr, arch string) string {
+	return fmt.Sprintf(`# OpsOrigin Proxy Installer for Windows
+# Usage: Right-click -> Run with PowerShell, or: powershell -ExecutionPolicy Bypass -File install_proxy.ps1
+
+$ErrorActionPreference = "Stop"
+
+$ServerAddr = "%s"
+$Arch = "%s"
+$InstallDir = "$env:LOCALAPPDATA\OpsOrigin\Proxy"
+$ServiceName = "OpsOriginProxy"
+
+Write-Host "=========================================" -ForegroundColor Green
+Write-Host "  OpsOrigin Proxy Installer"
+Write-Host "=========================================" -ForegroundColor Green
+Write-Host ""
+
+# Check admin
+$isAdmin = ([Security.Principal.WindowsPrincipal] [Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+if (-not $isAdmin) {
+    Write-Host "[ERROR] Please run as Administrator" -ForegroundColor Red
+    pause
+    exit 1
+}
+
+# Create install directory
+Write-Host "[INFO] Creating install directory: $InstallDir"
+New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
+
+# Download proxy binary
+Write-Host "[INFO] Downloading proxy binary from server..."
+$binaryUrl = "$ServerAddr/api/v1/agents/download?os=windows&arch=$Arch&type=proxy-bin"
+$binaryPath = "$InstallDir\proxy.exe"
+try {
+    [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+    Invoke-WebRequest -Uri $binaryUrl -OutFile $binaryPath -UseBasicParsing
+} catch {
+    Write-Host "[ERROR] Failed to download: $_" -ForegroundColor Red
+    pause
+    exit 1
+}
+Write-Host "[INFO] Proxy binary downloaded to: $binaryPath"
+
+# Create config file
+Write-Host "[INFO] Creating configuration file..."
+$configContent = @"
+core:
+  address: "$ServerAddr"
+proxy:
+  id: ""
+  listen: ":9090"
+  agent_listen: ":9091"
+log:
+  level: info
+"@
+$configPath = "$InstallDir\config.yaml"
+Set-Content -Path $configPath -Value $configContent -Encoding UTF8
+Write-Host "[INFO] Configuration created at: $configPath"
+
+# Install Windows service
+Write-Host "[INFO] Installing Windows service..."
+New-Service -Name $ServiceName -BinaryPathName "$InstallDir\proxy.exe -config $configPath" -DisplayName "OpsOrigin Proxy" -StartupType Automatic -Description "OpsOrigin Proxy - Agent relay and tunnel service"
+
+Start-Service $ServiceName
+Write-Host "[INFO] Service started: $ServiceName"
+
+Write-Host ""
+Write-Host "=========================================" -ForegroundColor Green
+Write-Host "  Installation Complete!"
+Write-Host "=========================================" -ForegroundColor Green
+Write-Host ""
+Write-Host "  Install Dir:  $InstallDir"
+Write-Host "  Config File:  $configPath"
+Write-Host "  Service:      $ServiceName"
+Write-Host ""
+Write-Host "  Check Status: Get-Service $ServiceName"
 Write-Host ""
 Write-Host "=========================================" -ForegroundColor Green
 Write-Host ""

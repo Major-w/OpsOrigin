@@ -9,7 +9,7 @@ export interface AgentHost {
   os_type?: string; os_version?: string; hostname?: string
   version?: string; cpu?: string; memory?: string; disk?: string
   install_method?: string; auth_type?: string; ssh_user?: string
-  status: string; capabilities?: string[]
+  status: string; capabilities?: string[]; environment?: string
   last_seen?: string; last_heartbeat?: string; first_seen?: string
   labels?: Record<string,string>; created_at: string; updated_at: string
   cmdb_data?: {
@@ -40,7 +40,7 @@ interface AgentState {
   register: (data: any) => Promise<boolean>
   update: (id: string, data: any) => Promise<boolean>
   remove: (id: string) => Promise<boolean>
-  batchInstall: (data: { addresses: string[]; username: string; password?: string; ssh_key?: string; port?: number; use_key?: boolean; as_proxy?: boolean; proxy_id?: string }) => Promise<any>
+  batchInstall: (data: { addresses: string[]; username: string; password?: string; ssh_key?: string; port?: number; use_key?: boolean; proxy_id?: string }) => Promise<any>
   testSSH: (data: { address: string; port: number; username: string; password?: string; ssh_key?: string; use_key?: boolean }) => Promise<any>
   getInstallScript: (os: string) => Promise<string>
   fetchProxies: () => Promise<void>
@@ -54,6 +54,7 @@ interface AgentState {
   uninstallAgent: (id: string) => Promise<boolean>
   fetchTasks: (id: string) => Promise<TaskInfo[]>
   createTask: (id: string, data: { action: string; script?: string; params?: Record<string, any>; timeout?: number }) => Promise<boolean>
+  fetchSandbox: () => Promise<{ exists: boolean; agent?: AgentHost }>
 }
 
 export const useAgentStore = create<AgentState>((set, get) => ({
@@ -252,6 +253,13 @@ export const useAgentStore = create<AgentState>((set, get) => ({
     } catch (e: any) {
       toast.error(`任务下发失败: ${e.message}`)
       return false
+    }
+  },
+  fetchSandbox: async () => {
+    try {
+      return await apiFetch<{ exists: boolean; agent?: AgentHost }>('/agents/sandbox')
+    } catch (e: any) {
+      return { exists: false }
     }
   },
 }))

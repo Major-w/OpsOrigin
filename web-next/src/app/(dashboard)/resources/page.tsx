@@ -59,17 +59,18 @@ function stringToLabels(s: string): Record<string, string> {
 }
 
 export default function ResourcesPage() {
-  const { agents, proxies, fetch, register, update, remove, batchInstall, testSSH, getInstallScript, fetchProxies, registerProxy, updateProxy, deleteProxy, getCircuitBreaker, setCircuitBreaker, restartAgent, upgradeAgent, uninstallAgent, fetchTasks, createTask } = useAgentStore()
+  const { agents, proxies, fetch, register, update, remove, batchInstall, testSSH, getInstallScript, fetchProxies, registerProxy, updateProxy, deleteProxy, getCircuitBreaker, setCircuitBreaker, restartAgent, upgradeAgent, uninstallAgent, fetchTasks, createTask, fetchSandbox } = useAgentStore()
   const { keys, fetch: fetchKeys, create: createKey } = useKeyStore()
   const serverBase = typeof window !== 'undefined' ? `${window.location.protocol}//${window.location.host}` : ''
   const [mainTab, setMainTab] = useState('host')
   const [hostTab, setHostTab] = useState<string>('list')
   const [agentViewMode, setAgentViewMode] = useState<ViewMode>('list')
   const [proxyViewMode, setProxyViewMode] = useState<ViewMode>('list')
+  const [sandbox, setSandbox] = useState<{ exists: boolean; agent?: AgentHost }>({ exists: false })
 
   const [regMethod, setRegMethod] = useState<'auto' | 'manual' | 'ssh'>('auto')
-  const [autoForm, setAutoForm] = useState({ addresses: '', username: 'root', password: '', port: 22, credentialType: 'password', credentialId: '', keyName: '', keyContent: '', asProxy: false, proxyId: '' })
-  const [sshForm, setSSHForm] = useState({ name: '', address: '', port: 22, username: 'root', password: '', credentialType: 'password', credentialId: '', keyName: '', keyContent: '', asProxy: false, proxyId: '' })
+  const [autoForm, setAutoForm] = useState({ addresses: '', username: 'root', password: '', port: 22, credentialType: 'password', credentialId: '', keyName: '', keyContent: '', proxyId: '' })
+  const [sshForm, setSSHForm] = useState({ name: '', address: '', port: 22, username: 'root', password: '', credentialType: 'password', credentialId: '', keyName: '', keyContent: '', proxyId: '' })
   const [sshResult, setSSHResult] = useState<{ reachable: boolean; address: string; detail?: string } | null>(null)
   const [sshTestedAddress, setSSHTestedAddress] = useState<string>('')
   const [scriptOS, setScriptOS] = useState('linux')
@@ -133,6 +134,7 @@ export default function ResourcesPage() {
     fetch('')
     fetchKeys('ssh_private')
     fetchProxies()
+    fetchSandbox().then(setSandbox)
   }, [])
 
   // 打开主机详情时加载编辑表单、熔断器、任务列表
@@ -165,6 +167,7 @@ export default function ResourcesPage() {
     fetch('')
     fetchKeys('ssh_private')
     fetchProxies()
+    fetchSandbox().then(setSandbox)
   }
 
   const openDetailHost = (a: AgentHost) => {
@@ -178,7 +181,7 @@ export default function ResourcesPage() {
     let password = '', sshKey = '', useKey = false
     if (autoForm.credentialType === 'password') { password = autoForm.password }
     else { useKey = true; if (autoForm.credentialId) { const key = keys.find(k => k.id === autoForm.credentialId); if (key) sshKey = key.content } else { sshKey = autoForm.keyContent } }
-    const result = await batchInstall({ addresses: addrList, username: autoForm.username, password, ssh_key: sshKey, port: autoForm.port, use_key: useKey, as_proxy: autoForm.asProxy, proxy_id: autoForm.proxyId })
+    const result = await batchInstall({ addresses: addrList, username: autoForm.username, password, ssh_key: sshKey, port: autoForm.port, use_key: useKey, proxy_id: autoForm.proxyId || undefined })
     setAutoResult(result); setAutoDialog(true); refresh()
   }
 
@@ -210,11 +213,10 @@ export default function ResourcesPage() {
         ssh_password: password,
         ssh_key: sshKey,
         install_method: 'manual',
-        as_proxy: sshForm.asProxy,
-        proxy_id: sshForm.proxyId,
+        proxy_id: sshForm.proxyId || undefined,
       })
     }
-    setSSHForm({ name: '', address: '', port: 22, username: 'root', password: '', credentialType: 'password', credentialId: '', keyName: '', keyContent: '', asProxy: false, proxyId: '' })
+    setSSHForm({ name: '', address: '', port: 22, username: 'root', password: '', credentialType: 'password', credentialId: '', keyName: '', keyContent: '', proxyId: '' })
     setSSHResult(null); setSSHTestedAddress(''); refresh()
   }
 
@@ -351,6 +353,7 @@ export default function ResourcesPage() {
       <div className="flex items-center gap-2 min-w-0 flex-1">
         {a.type === 'agent' ? <Terminal className="h-4 w-4 text-emerald-400 shrink-0" /> : <Monitor className="h-4 w-4 text-blue-400 shrink-0" />}
         <span className="text-sm font-medium truncate min-w-0">{a.name}</span>
+        {a.environment === 'sandbox' && <Badge variant="outline" className="text-xs bg-amber-100 text-amber-700 border-amber-300">沙箱</Badge>}
       </div>
       <div className="w-16 shrink-0"><Badge variant={statusVariant(a.status)} className="text-xs">{statusLabel(a.status)}</Badge></div>
       <div className="w-20 shrink-0"><Badge variant="outline" className="text-xs">{a.type === 'agent' ? 'Agent' : 'Agentless'}</Badge></div>
@@ -361,7 +364,7 @@ export default function ResourcesPage() {
       <div className="w-24 shrink-0 text-xs text-muted-foreground/50 hidden md:block"><Clock className="h-3 w-3 inline mr-0.5" />{a.last_heartbeat ? formatTime(a.last_heartbeat) : '无心跳'}</div>
       <div className="w-24 shrink-0 flex justify-end gap-1">
         <Button variant="ghost" size="icon" className="h-6 w-6" onClick={() => openDetailHost(a)}><Eye className="h-3 w-3" /></Button>
-        <Button variant="ghost" size="icon" className="h-6 w-6" onClick={() => setConfirmDeleteHost(a)}><Trash2 className="h-3 w-3" /></Button>
+        {a.environment !== 'sandbox' && <Button variant="ghost" size="icon" className="h-6 w-6" onClick={() => setConfirmDeleteHost(a)}><Trash2 className="h-3 w-3" /></Button>}
       </div>
     </>
   )
@@ -373,10 +376,11 @@ export default function ResourcesPage() {
           <div className="flex items-center gap-2 min-w-0">
             {a.type === 'agent' ? <Terminal className="h-4 w-4 text-emerald-400 shrink-0" /> : <Monitor className="h-4 w-4 text-blue-400 shrink-0" />}
             <span className="text-sm font-medium truncate">{a.name}</span>
+            {a.environment === 'sandbox' && <Badge variant="outline" className="text-xs bg-amber-100 text-amber-700 border-amber-300">沙箱</Badge>}
           </div>
           <div className="flex gap-1 shrink-0">
             <Button variant="ghost" size="icon" className="h-6 w-6" onClick={() => openDetailHost(a)}><Eye className="h-3 w-3" /></Button>
-            <Button variant="ghost" size="icon" className="h-6 w-6" onClick={() => setConfirmDeleteHost(a)}><Trash2 className="h-3 w-3" /></Button>
+            {a.environment !== 'sandbox' && <Button variant="ghost" size="icon" className="h-6 w-6" onClick={() => setConfirmDeleteHost(a)}><Trash2 className="h-3 w-3" /></Button>}
           </div>
         </div>
       </CardHeader>
@@ -426,6 +430,26 @@ export default function ResourcesPage() {
             <Card><CardHeader className="py-3"><CardTitle className="text-xs text-muted-foreground"><Terminal className="h-3 w-3 inline mr-1" />Agent</CardTitle></CardHeader><CardContent className="pt-0"><span className="text-2xl font-bold">{agentCount}</span></CardContent></Card>
             <Card><CardHeader className="py-3"><CardTitle className="text-xs text-muted-foreground"><Monitor className="h-3 w-3 inline mr-1" />Agentless</CardTitle></CardHeader><CardContent className="pt-0"><span className="text-2xl font-bold">{agentlessCount}</span></CardContent></Card>
           </div>
+
+          {sandbox.exists && sandbox.agent && (
+            <Card className="border-amber-200 bg-amber-50/50">
+              <CardHeader className="py-3">
+                <CardTitle className="text-sm flex items-center gap-2">
+                  <span className="h-2 w-2 rounded-full bg-amber-500 animate-pulse" />
+                  沙箱环境
+                  <Badge variant="outline" className="text-xs bg-amber-100 text-amber-700 border-amber-300">Sandbox</Badge>
+                </CardTitle>
+              </CardHeader>
+              <CardContent className="pt-0">
+                <div className="flex items-center gap-4 text-sm">
+                  <span className="text-muted-foreground">名称: {sandbox.agent.name}</span>
+                  <span className="text-muted-foreground">地址: {sandbox.agent.address}</span>
+                  <Badge variant={statusVariant(sandbox.agent.status)} className="text-xs">{statusLabel(sandbox.agent.status)}</Badge>
+                  <span className="text-xs text-muted-foreground">用于脚本调试和测试</span>
+                </div>
+              </CardContent>
+            </Card>
+          )}
 
           <Tabs value={hostTab} onValueChange={setHostTab}>
             <TabsList>
@@ -496,25 +520,19 @@ export default function ResourcesPage() {
                           </div>
                         </div>
                         <div><label className="text-sm font-medium">SSH 端口</label><Input type="number" value={autoForm.port} onChange={e => setAutoForm(f => ({ ...f, port: parseInt(e.target.value) || 22 }))} /></div>
-                        <label className="flex items-center gap-2 cursor-pointer select-none">
-                          <input type="checkbox" checked={autoForm.asProxy} onChange={e => setAutoForm(f => ({ ...f, asProxy: e.target.checked }))} className="h-4 w-4 rounded border-input" />
-                          <span className="text-sm">设置为 Proxy（勾选后将目标主机注册为 Proxy 节点，不安装 Agent）</span>
-                        </label>
-                        {!autoForm.asProxy && (
-                          <div className="space-y-2">
-                            <label className="flex items-center gap-2 cursor-pointer select-none">
-                              <input type="checkbox" checked={!!autoForm.proxyId} onChange={e => setAutoForm(f => ({ ...f, proxyId: e.target.checked ? (proxies[0]?.id || '') : '' }))} className="h-4 w-4 rounded border-input" disabled={proxies.length === 0} />
-                              <span className="text-sm">通过 Proxy 连接 Server{proxies.length === 0 && '（需先注册 Proxy）'}</span>
-                            </label>
-                            {autoForm.proxyId && proxies.length > 0 && (
-                              <select className="h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm" value={autoForm.proxyId} onChange={e => setAutoForm(f => ({ ...f, proxyId: e.target.value }))}>
-                                {proxies.map(p => <option key={p.id} value={p.id}>{p.name} ({p.address}:{p.port})</option>)}
-                              </select>
-                            )}
-                          </div>
-                        )}
+                        <div className="space-y-2">
+                          <label className="flex items-center gap-2 cursor-pointer select-none">
+                            <input type="checkbox" checked={!!autoForm.proxyId} onChange={e => setAutoForm(f => ({ ...f, proxyId: e.target.checked ? (proxies[0]?.id || '') : '' }))} className="h-4 w-4 rounded border-input" disabled={proxies.length === 0} />
+                            <span className="text-sm">通过 Proxy 连接 Server{proxies.length === 0 && '（需先注册 Proxy）'}</span>
+                          </label>
+                          {autoForm.proxyId && proxies.length > 0 && (
+                            <select className="h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm" value={autoForm.proxyId} onChange={e => setAutoForm(f => ({ ...f, proxyId: e.target.value }))}>
+                              {proxies.map(p => <option key={p.id} value={p.id}>{p.name} ({p.address}:{p.port})</option>)}
+                            </select>
+                          )}
+                        </div>
                         <Button onClick={handleAutoInstall} disabled={!validateIPs(autoForm.addresses) || !autoForm.addresses.trim() || (!autoForm.password && !autoForm.credentialId)}>
-                          <Download className="h-4 w-4 mr-1" />{autoForm.asProxy ? '批量注册 Proxy' : '批量安装 Agent'}
+                          <Download className="h-4 w-4 mr-1" />批量安装 Agent
                         </Button>
                       </div>
                     </TabsContent>
@@ -598,23 +616,17 @@ export default function ResourcesPage() {
                             )}
                           </div>
                         </div>
-                        <label className="flex items-center gap-2 cursor-pointer select-none">
-                          <input type="checkbox" checked={sshForm.asProxy} onChange={e => setSSHForm(f => ({ ...f, asProxy: e.target.checked }))} className="h-4 w-4 rounded border-input" />
-                          <span className="text-sm">设置为 Proxy（勾选后将该主机注册为 Proxy 节点）</span>
-                        </label>
-                        {!sshForm.asProxy && (
-                          <div className="space-y-2">
-                            <label className="flex items-center gap-2 cursor-pointer select-none">
-                              <input type="checkbox" checked={!!sshForm.proxyId} onChange={e => setSSHForm(f => ({ ...f, proxyId: e.target.checked ? (proxies[0]?.id || '') : '' }))} className="h-4 w-4 rounded border-input" disabled={proxies.length === 0} />
-                              <span className="text-sm">通过 Proxy 连接 Server{proxies.length === 0 && '（需先注册 Proxy）'}</span>
-                            </label>
-                            {sshForm.proxyId && proxies.length > 0 && (
-                              <select className="h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm" value={sshForm.proxyId} onChange={e => setSSHForm(f => ({ ...f, proxyId: e.target.value }))}>
-                                {proxies.map(p => <option key={p.id} value={p.id}>{p.name} ({p.address}:{p.port})</option>)}
-                              </select>
-                            )}
-                          </div>
-                        )}
+                        <div className="space-y-2">
+                          <label className="flex items-center gap-2 cursor-pointer select-none">
+                            <input type="checkbox" checked={!!sshForm.proxyId} onChange={e => setSSHForm(f => ({ ...f, proxyId: e.target.checked ? (proxies[0]?.id || '') : '' }))} className="h-4 w-4 rounded border-input" disabled={proxies.length === 0} />
+                            <span className="text-sm">通过 Proxy 连接 Server{proxies.length === 0 && '（需先注册 Proxy）'}</span>
+                          </label>
+                          {sshForm.proxyId && proxies.length > 0 && (
+                            <select className="h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm" value={sshForm.proxyId} onChange={e => setSSHForm(f => ({ ...f, proxyId: e.target.value }))}>
+                              {proxies.map(p => <option key={p.id} value={p.id}>{p.name} ({p.address}:{p.port})</option>)}
+                            </select>
+                          )}
+                        </div>
                         <div className="flex gap-2">
                           <Button variant="outline" onClick={handleTestSSH} disabled={!validateIPs(sshForm.address) || (!sshForm.password && !sshForm.credentialId)}><Wifi className="h-4 w-4 mr-1" />连接测试</Button>
                           <Button onClick={handleRegisterSSH} disabled={!sshResult?.reachable || !sshResult || sshTestedAddress !== sshForm.address.split(',')[0].trim()}><CheckCircle className="h-4 w-4 mr-1" />保存到主机列表</Button>
