@@ -1,11 +1,18 @@
 package itsm
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
+	"encoding/csv"
 	"encoding/json"
+	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
+	"strconv"
+	"strings"
+	"sync"
 	"time"
 
 	"github.com/opsorigin/core/internal/itsm/model"
@@ -16,11 +23,13 @@ import (
 )
 
 type Service struct {
-	cfg     *config.Config
-	store   store.Store
-	risk    *risk.Classifier
-	webhook *webhook.Callback
-	wsHub   interface{ BroadcastToTenant(interface{}, string) }
+	cfg      *config.Config
+	store    store.Store
+	risk     *risk.Classifier
+	webhook  *webhook.Callback
+	wsHub    interface{ BroadcastToTenant(interface{}, string) }
+	stopCh   chan struct{}
+	stopOnce sync.Once
 }
 
 func NewService(cfg *config.Config, db *sql.DB) *Service {
@@ -45,6 +54,7 @@ func NewService(cfg *config.Config, db *sql.DB) *Service {
 		store:   s,
 		risk:    risk.New(),
 		webhook: webhook.New(),
+		stopCh:  make(chan struct{}),
 	}
 }
 
@@ -63,6 +73,29 @@ func (s *Service) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/v1/itsm/tickets/{id}/rollback", s.handleRollback)
 	mux.HandleFunc("GET /api/v1/itsm/tickets/{id}/events", s.handleGetEvents)
 	mux.HandleFunc("GET /api/v1/itsm/stats", s.handleStats)
+	// Comments
+	mux.HandleFunc("POST /api/v1/itsm/tickets/{id}/comments", s.handleAddComment)
+	mux.HandleFunc("GET /api/v1/itsm/tickets/{id}/comments", s.handleListComments)
+	mux.HandleFunc("DELETE /api/v1/itsm/tickets/{id}/comments/{cid}", s.handleDeleteComment)
+	// Attachments
+	mux.HandleFunc("POST /api/v1/itsm/tickets/{id}/attachments", s.handleUploadAttachment)
+	mux.HandleFunc("GET /api/v1/itsm/tickets/{id}/attachments", s.handleListAttachments)
+	mux.HandleFunc("GET /api/v1/itsm/tickets/{id}/attachments/{aid}", s.handleDownloadAttachment)
+	mux.HandleFunc("DELETE /api/v1/itsm/tickets/{id}/attachments/{aid}", s.handleDeleteAttachment)
+	// SLA
+	mux.HandleFunc("GET /api/v1/itsm/sla/stats", s.handleSLAStats)
+	mux.HandleFunc("GET /api/v1/itsm/sla/breached", s.handleSLABreached)
+	mux.HandleFunc("GET /api/v1/itsm/tickets/{id}/sla", s.handleTicketSLA)
+	// Change Management
+	mux.HandleFunc("POST /api/v1/itsm/changes", s.handleCreateChange)
+	mux.HandleFunc("GET /api/v1/itsm/changes", s.handleListChanges)
+	mux.HandleFunc("GET /api/v1/itsm/changes/{id}", s.handleGetChange)
+	mux.HandleFunc("POST /api/v1/itsm/changes/{id}/vote", s.handleVoteChange)
+	mux.HandleFunc("POST /api/v1/itsm/changes/{id}/execute", s.handleExecuteChange)
+	// Import / Export
+	mux.HandleFunc("POST /api/v1/itsm/tickets/import", s.handleImportTickets)
+	mux.HandleFunc("GET /api/v1/itsm/tickets/export/csv", s.handleExportTicketsCSV)
+	mux.HandleFunc("GET /api/v1/itsm/stats/export/csv", s.handleExportStatsCSV)
 }
 
 func (s *Service) handleCreate(w http.ResponseWriter, r *http.Request) {
@@ -410,6 +443,192 @@ func (s *Service) handleStats(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, stats)
 }
 
+func (s *Service) handleAddComment(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	tenantID := tenantFromCtx(r.Context())
+
+	var req struct {
+		Author  string `json:"author"`
+		Content string `json:"content"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if req.Author == "" || req.Content == "" {
+		writeError(w, http.StatusBadRequest, "author and content are required")
+		return
+	}
+
+	_, err := s.store.Get(r.Context(), id, tenantID)
+	if err != nil {
+		if err == store.ErrNotFound {
+			writeError(w, http.StatusNotFound, "ticket not found")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	comment := &model.Comment{
+		TicketID: id,
+		TenantID: tenantID,
+		Author:   req.Author,
+		Content:  req.Content,
+	}
+	if err := s.store.AddComment(r.Context(), comment); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to add comment")
+		return
+	}
+	writeJSON(w, http.StatusCreated, comment)
+}
+
+func (s *Service) handleListComments(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	tenantID := tenantFromCtx(r.Context())
+
+	comments, err := s.store.ListComments(r.Context(), id, tenantID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if comments == nil {
+		comments = []*model.Comment{}
+	}
+	writeJSON(w, http.StatusOK, comments)
+}
+
+func (s *Service) handleDeleteComment(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	cidStr := r.PathValue("cid")
+	tenantID := tenantFromCtx(r.Context())
+
+	cid, err := strconv.ParseInt(cidStr, 10, 64)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid comment id")
+		return
+	}
+
+	if err := s.store.DeleteComment(r.Context(), cid, id, tenantID); err != nil {
+		if err == store.ErrNotFound {
+			writeError(w, http.StatusNotFound, "comment not found")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
+}
+
+func (s *Service) handleUploadAttachment(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	tenantID := tenantFromCtx(r.Context())
+
+	if err := r.ParseMultipartForm(32 << 20); err != nil {
+		writeError(w, http.StatusBadRequest, "failed to parse form")
+		return
+	}
+
+	file, header, err := r.FormFile("file")
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "file is required")
+		return
+	}
+	defer file.Close()
+
+	data, err := io.ReadAll(file)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to read file")
+		return
+	}
+
+	uploadedBy := r.FormValue("uploaded_by")
+	if uploadedBy == "" {
+		uploadedBy = "anonymous"
+	}
+
+	att := &model.Attachment{
+		TicketID:   id,
+		TenantID:   tenantID,
+		FileName:   header.Filename,
+		FileSize:   header.Size,
+		FileType:   header.Header.Get("Content-Type"),
+		UploadedBy: uploadedBy,
+		Data:       data,
+	}
+	if err := s.store.AddAttachment(r.Context(), att); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to save attachment")
+		return
+	}
+	writeJSON(w, http.StatusCreated, att)
+}
+
+func (s *Service) handleListAttachments(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	tenantID := tenantFromCtx(r.Context())
+
+	atts, err := s.store.ListAttachments(r.Context(), id, tenantID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if atts == nil {
+		atts = []*model.Attachment{}
+	}
+	writeJSON(w, http.StatusOK, atts)
+}
+
+func (s *Service) handleDownloadAttachment(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	aidStr := r.PathValue("aid")
+	tenantID := tenantFromCtx(r.Context())
+
+	aid, err := strconv.ParseInt(aidStr, 10, 64)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid attachment id")
+		return
+	}
+
+	att, err := s.store.GetAttachment(r.Context(), aid, id, tenantID)
+	if err != nil {
+		if err == store.ErrNotFound {
+			writeError(w, http.StatusNotFound, "attachment not found")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	w.Header().Set("Content-Disposition", "attachment; filename=\""+att.FileName+"\"")
+	if att.FileType != "" {
+		w.Header().Set("Content-Type", att.FileType)
+	}
+	w.Header().Set("Content-Length", strconv.FormatInt(att.FileSize, 10))
+	w.Write(att.Data)
+}
+
+func (s *Service) handleDeleteAttachment(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	aidStr := r.PathValue("aid")
+	tenantID := tenantFromCtx(r.Context())
+
+	aid, err := strconv.ParseInt(aidStr, 10, 64)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid attachment id")
+		return
+	}
+
+	if err := s.store.DeleteAttachment(r.Context(), aid, id, tenantID); err != nil {
+		if err == store.ErrNotFound {
+			writeError(w, http.StatusNotFound, "attachment not found")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
+}
+
 func (s *Service) recordEvent(ctx context.Context, ticket *model.Ticket, from, to model.TicketStatus, changedBy string, comment string) {
 	event := &model.TicketEvent{
 		TicketID:   ticket.ID,
@@ -455,6 +674,516 @@ func (s *Service) fireWebhook(ctx context.Context, event string, ticket *model.T
 			slog.Warn("webhook notify failed", "event", event, "ticket_id", ticket.ID, "error", err)
 		}
 	}()
+}
+
+// --- SLA Checker ---
+
+func (s *Service) StartSLAChecker(ctx context.Context) {
+	go func() {
+		ticker := time.NewTicker(60 * time.Second)
+		defer ticker.Stop()
+		slog.Info("itsm: SLA checker started")
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-s.stopCh:
+				return
+			case <-ticker.C:
+				s.checkSLA(ctx)
+			}
+		}
+	}()
+}
+
+func (s *Service) Stop() {
+	s.stopOnce.Do(func() { close(s.stopCh) })
+}
+
+func (s *Service) checkSLA(ctx context.Context) {
+	tickets, err := s.store.ListActiveTicketsWithDeadline(ctx, "default")
+	if err != nil {
+		slog.Error("itsm: SLA check failed", "error", err)
+		return
+	}
+	now := time.Now()
+	for _, t := range tickets {
+		if t.DeadlineAt == nil {
+			continue
+		}
+		deadline := *t.DeadlineAt
+		totalDuration := deadline.Sub(t.CreatedAt)
+		elapsed := now.Sub(t.CreatedAt)
+
+		// SLA breached
+		if now.After(deadline) && !t.SLABreached {
+			t.SLABreached = true
+			t.SLABreachedAt = &now
+			t.SLAEscalationLevel = 2
+			if err := s.store.Update(ctx, t); err != nil {
+				slog.Error("itsm: failed to mark SLA breached", "ticket_id", t.ID, "error", err)
+				continue
+			}
+			slog.Warn("itsm: SLA breached", "ticket_id", t.ID, "title", t.Title, "deadline", deadline)
+			s.broadcastTicketUpdate(t)
+			continue
+		}
+
+		// SLA warning at 80%
+		if totalDuration > 0 && elapsed.Seconds()/totalDuration.Seconds() >= 0.8 && !t.SLAWarningNotified && !t.SLABreached {
+			t.SLAWarningNotified = true
+			t.SLAEscalationLevel = 1
+			if err := s.store.Update(ctx, t); err != nil {
+				slog.Error("itsm: failed to mark SLA warning", "ticket_id", t.ID, "error", err)
+				continue
+			}
+			slog.Info("itsm: SLA warning (80%)", "ticket_id", t.ID, "title", t.Title, "deadline", deadline)
+			s.broadcastTicketUpdate(t)
+		}
+	}
+}
+
+func (s *Service) handleSLAStats(w http.ResponseWriter, r *http.Request) {
+	tenantID := tenantFromCtx(r.Context())
+	stats, err := s.store.GetSLAStats(r.Context(), tenantID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, stats)
+}
+
+func (s *Service) handleSLABreached(w http.ResponseWriter, r *http.Request) {
+	tenantID := tenantFromCtx(r.Context())
+	tickets, err := s.store.List(r.Context(), tenantID, "")
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	var breached []*model.Ticket
+	for _, t := range tickets {
+		if t.SLABreached {
+			breached = append(breached, t)
+		}
+	}
+	if breached == nil {
+		breached = []*model.Ticket{}
+	}
+	writeJSON(w, http.StatusOK, breached)
+}
+
+func (s *Service) handleTicketSLA(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	tenantID := tenantFromCtx(r.Context())
+	ticket, err := s.store.Get(r.Context(), id, tenantID)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "ticket not found")
+		return
+	}
+	now := time.Now()
+	result := map[string]any{
+		"ticket_id":          ticket.ID,
+		"deadline_at":        ticket.DeadlineAt,
+		"sla_breached":       ticket.SLABreached,
+		"sla_breached_at":    ticket.SLABreachedAt,
+		"sla_warning":        ticket.SLAWarningNotified,
+		"escalation_level":   ticket.SLAEscalationLevel,
+	}
+	if ticket.DeadlineAt != nil {
+		remaining := time.Until(*ticket.DeadlineAt)
+		result["remaining_ms"] = remaining.Milliseconds()
+		result["remaining_human"] = formatDuration(remaining)
+		totalElapsed := now.Sub(ticket.CreatedAt)
+		totalDuration := ticket.DeadlineAt.Sub(ticket.CreatedAt)
+		if totalDuration > 0 {
+			result["elapsed_percent"] = float64(totalElapsed) / float64(totalDuration) * 100
+		}
+	}
+	writeJSON(w, http.StatusOK, result)
+}
+
+func formatDuration(d time.Duration) string {
+	if d < 0 {
+		return "已超时"
+	}
+	h := int(d.Hours())
+	m := int(d.Minutes()) % 60
+	if h > 24 {
+		days := h / 24
+		h = h % 24
+		return fmt.Sprintf("%dd %dh %dm", days, h, m)
+	}
+	return fmt.Sprintf("%dh %dm", h, m)
+}
+
+// --- Change Management Handlers ---
+
+func (s *Service) handleCreateChange(w http.ResponseWriter, r *http.Request) {
+	var req model.CreateChangeRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if req.Title == "" {
+		writeError(w, http.StatusBadRequest, "title is required")
+		return
+	}
+	tenantID := tenantFromCtx(r.Context())
+	if req.RiskLevel == "" || !req.RiskLevel.Valid() {
+		req.RiskLevel = s.risk.Classify(req.Title, req.Description, req.Plan)
+	}
+	if req.ChangeType == "" {
+		req.ChangeType = "normal"
+	}
+	change := &model.ChangeRequest{
+		TenantID:     tenantID,
+		TicketID:     req.TicketID,
+		Title:        req.Title,
+		Description:  req.Description,
+		RiskLevel:    req.RiskLevel,
+		ChangeType:   req.ChangeType,
+		Impact:       req.Impact,
+		Urgency:      req.Urgency,
+		CABMembers:   req.CABMembers,
+		Approvals:    []model.CABApproval{},
+		Plan:         req.Plan,
+		RollbackPlan: req.RollbackPlan,
+		CreatedBy:    req.CreatedBy,
+	}
+	if err := s.store.CreateChange(r.Context(), change); err != nil {
+		slog.Error("create change failed", "error", err)
+		writeError(w, http.StatusInternalServerError, "failed to create change request")
+		return
+	}
+	writeJSON(w, http.StatusCreated, change)
+}
+
+func (s *Service) handleListChanges(w http.ResponseWriter, r *http.Request) {
+	tenantID := tenantFromCtx(r.Context())
+	changes, err := s.store.ListChanges(r.Context(), tenantID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if changes == nil {
+		changes = []*model.ChangeRequest{}
+	}
+	writeJSON(w, http.StatusOK, changes)
+}
+
+func (s *Service) handleGetChange(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	tenantID := tenantFromCtx(r.Context())
+	change, err := s.store.GetChange(r.Context(), id, tenantID)
+	if err != nil {
+		if err == store.ErrNotFound {
+			writeError(w, http.StatusNotFound, "change request not found")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, change)
+}
+
+func (s *Service) handleVoteChange(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	tenantID := tenantFromCtx(r.Context())
+
+	var req model.VoteChangeRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if req.Member == "" {
+		writeError(w, http.StatusBadRequest, "member is required")
+		return
+	}
+
+	change, err := s.store.GetChange(r.Context(), id, tenantID)
+	if err != nil {
+		if err == store.ErrNotFound {
+			writeError(w, http.StatusNotFound, "change request not found")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	if change.Status != model.ChangeStatusPending {
+		writeError(w, http.StatusConflict, "change request is not in pending status")
+		return
+	}
+
+	found := false
+	for _, m := range change.CABMembers {
+		if m == req.Member {
+			found = true
+			break
+		}
+	}
+	if !found {
+		writeError(w, http.StatusBadRequest, "member is not a CAB member")
+		return
+	}
+
+	for i, a := range change.Approvals {
+		if a.Member == req.Member {
+			change.Approvals[i].Approved = req.Approved
+			change.Approvals[i].Comment = req.Comment
+			change.Approvals[i].VotedAt = time.Now()
+			if err := s.store.UpdateChange(r.Context(), change); err != nil {
+				writeError(w, http.StatusInternalServerError, "failed to update vote")
+				return
+			}
+			writeJSON(w, http.StatusOK, change)
+			return
+		}
+	}
+
+	change.Approvals = append(change.Approvals, model.CABApproval{
+		Member:   req.Member,
+		Approved: req.Approved,
+		Comment:  req.Comment,
+		VotedAt:  time.Now(),
+	})
+
+	allApproved := true
+	for _, m := range change.CABMembers {
+		voted := false
+		for _, a := range change.Approvals {
+			if a.Member == m && a.Approved {
+				voted = true
+				break
+			}
+		}
+		if !voted {
+			allApproved = false
+			break
+		}
+	}
+	if allApproved && len(change.CABMembers) > 0 {
+		change.Status = model.ChangeStatusApproved
+	}
+
+	if err := s.store.UpdateChange(r.Context(), change); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to update change request")
+		return
+	}
+	writeJSON(w, http.StatusOK, change)
+}
+
+func (s *Service) handleExecuteChange(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	tenantID := tenantFromCtx(r.Context())
+
+	change, err := s.store.GetChange(r.Context(), id, tenantID)
+	if err != nil {
+		if err == store.ErrNotFound {
+			writeError(w, http.StatusNotFound, "change request not found")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	if change.Status != model.ChangeStatusApproved {
+		writeError(w, http.StatusConflict, "change request must be approved before execution")
+		return
+	}
+
+	change.Status = model.ChangeStatusExecuted
+	if err := s.store.UpdateChange(r.Context(), change); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to execute change request")
+		return
+	}
+	writeJSON(w, http.StatusOK, change)
+}
+
+// --- CSV Import Handler ---
+
+func (s *Service) handleImportTickets(w http.ResponseWriter, r *http.Request) {
+	if err := r.ParseMultipartForm(32 << 20); err != nil {
+		writeError(w, http.StatusBadRequest, "failed to parse form")
+		return
+	}
+
+	file, _, err := r.FormFile("file")
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "file is required")
+		return
+	}
+	defer file.Close()
+
+	reader := csv.NewReader(file)
+	records, err := reader.ReadAll()
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "failed to parse CSV: "+err.Error())
+		return
+	}
+
+	tenantID := tenantFromCtx(r.Context())
+	type importError struct {
+		Row     int    `json:"row"`
+		Message string `json:"message"`
+	}
+	var errors []importError
+	success := 0
+
+	for i, row := range records {
+		if i == 0 {
+			continue
+		}
+		if len(row) < 2 {
+			errors = append(errors, importError{Row: i + 1, Message: "insufficient columns"})
+			continue
+		}
+		title := strings.TrimSpace(row[0])
+		description := strings.TrimSpace(row[1])
+		if title == "" {
+			errors = append(errors, importError{Row: i + 1, Message: "title is empty"})
+			continue
+		}
+
+		riskLevel := model.RiskLow
+		if len(row) > 2 && strings.TrimSpace(row[2]) != "" {
+			rl := model.RiskLevel(strings.TrimSpace(row[2]))
+			if rl.Valid() {
+				riskLevel = rl
+			}
+		}
+		createdBy := "import"
+		if len(row) > 3 && strings.TrimSpace(row[3]) != "" {
+			createdBy = strings.TrimSpace(row[3])
+		}
+		changePlan := ""
+		if len(row) > 4 {
+			changePlan = strings.TrimSpace(row[4])
+		}
+		rollbackPlan := ""
+		if len(row) > 5 {
+			rollbackPlan = strings.TrimSpace(row[5])
+		}
+
+		ticket := &model.Ticket{
+			TenantID:     tenantID,
+			Title:        title,
+			Description:  description,
+			RiskLevel:    riskLevel,
+			Status:       model.StatusDraft,
+			ChangePlan:   changePlan,
+			RollbackPlan: rollbackPlan,
+			CreatedBy:    createdBy,
+			TraceID:      traceIDFromCtx(r.Context()),
+		}
+		if err := s.store.Create(r.Context(), ticket); err != nil {
+			errors = append(errors, importError{Row: i + 1, Message: err.Error()})
+			continue
+		}
+		success++
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"total":   len(records) - 1,
+		"success": success,
+		"errors":  errors,
+	})
+}
+
+// --- CSV Export Handlers ---
+
+func (s *Service) handleExportTicketsCSV(w http.ResponseWriter, r *http.Request) {
+	tenantID := tenantFromCtx(r.Context())
+	tickets, err := s.store.List(r.Context(), tenantID, "")
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	var buf bytes.Buffer
+	writer := csv.NewWriter(&buf)
+
+	writer.Write([]string{
+		"id", "title", "description", "risk_level", "status", "change_plan", "rollback_plan",
+		"created_by", "created_by_type", "approved_by", "reject_reason",
+		"completed_by", "rolled_back_by", "rollback_reason",
+		"created_at", "updated_at", "approved_at", "executed_at", "completed_at", "rolled_back_at",
+		"deadline_at", "scheduled_at", "sla_breached",
+	})
+
+	for _, t := range tickets {
+		approvedAt := ""
+		if t.ApprovedAt != nil {
+			approvedAt = t.ApprovedAt.Format(time.RFC3339)
+		}
+		executedAt := ""
+		if t.ExecutedAt != nil {
+			executedAt = t.ExecutedAt.Format(time.RFC3339)
+		}
+		completedAt := ""
+		if t.CompletedAt != nil {
+			completedAt = t.CompletedAt.Format(time.RFC3339)
+		}
+		rolledBackAt := ""
+		if t.RolledBackAt != nil {
+			rolledBackAt = t.RolledBackAt.Format(time.RFC3339)
+		}
+		deadlineAt := ""
+		if t.DeadlineAt != nil {
+			deadlineAt = t.DeadlineAt.Format(time.RFC3339)
+		}
+		scheduledAt := ""
+		if t.ScheduledAt != nil {
+			scheduledAt = t.ScheduledAt.Format(time.RFC3339)
+		}
+
+		writer.Write([]string{
+			t.ID, t.Title, t.Description, string(t.RiskLevel), string(t.Status),
+			t.ChangePlan, t.RollbackPlan, t.CreatedBy, t.CreatedByType,
+			t.ApprovedBy, t.RejectReason, t.CompletedBy, t.RolledBackBy, t.RollbackReason,
+			t.CreatedAt.Format(time.RFC3339), t.UpdatedAt.Format(time.RFC3339),
+			approvedAt, executedAt, completedAt, rolledBackAt,
+			deadlineAt, scheduledAt, strconv.FormatBool(t.SLABreached),
+		})
+	}
+	writer.Flush()
+
+	w.Header().Set("Content-Type", "text/csv; charset=utf-8")
+	w.Header().Set("Content-Disposition", "attachment; filename=tickets.csv")
+	w.Write([]byte("\xEF\xBB\xBF"))
+	w.Write(buf.Bytes())
+}
+
+func (s *Service) handleExportStatsCSV(w http.ResponseWriter, r *http.Request) {
+	tenantID := tenantFromCtx(r.Context())
+	stats, err := s.store.GetStats(r.Context(), tenantID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	var buf bytes.Buffer
+	writer := csv.NewWriter(&buf)
+
+	writer.Write([]string{"metric", "value"})
+	writer.Write([]string{"total", strconv.Itoa(stats.Total)})
+	writer.Write([]string{"approval_rate", fmt.Sprintf("%.4f", stats.ApprovalRate)})
+	writer.Write([]string{"avg_approval_ms", strconv.FormatInt(stats.AvgApprovalMs, 10)})
+	writer.Write([]string{"avg_execution_ms", strconv.FormatInt(stats.AvgExecutionMs, 10)})
+
+	for k, v := range stats.ByStatus {
+		writer.Write([]string{"status_" + k, strconv.Itoa(v)})
+	}
+	for k, v := range stats.ByRisk {
+		writer.Write([]string{"risk_" + k, strconv.Itoa(v)})
+	}
+
+	writer.Flush()
+
+	w.Header().Set("Content-Type", "text/csv; charset=utf-8")
+	w.Header().Set("Content-Disposition", "attachment; filename=itsm_stats.csv")
+	w.Write([]byte("\xEF\xBB\xBF"))
+	w.Write(buf.Bytes())
 }
 
 func tenantFromCtx(ctx context.Context) string {

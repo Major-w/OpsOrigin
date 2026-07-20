@@ -48,7 +48,11 @@ func (s *PGStore) Init(ctx context.Context) error {
 			approved_at     TIMESTAMPTZ,
 			executed_at     TIMESTAMPTZ,
 			completed_at    TIMESTAMPTZ,
-			rolled_back_at  TIMESTAMPTZ
+			rolled_back_at  TIMESTAMPTZ,
+			sla_warning_notified BOOLEAN DEFAULT FALSE,
+			sla_breached        BOOLEAN DEFAULT FALSE,
+			sla_breached_at     TIMESTAMPTZ,
+			sla_escalation_level INTEGER DEFAULT 0
 		)`)
 	if err != nil {
 		return fmt.Errorf("init itsm_tickets table: %w", err)
@@ -59,6 +63,75 @@ func (s *PGStore) Init(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("init itsm_tickets index: %w", err)
 	}
+
+	_, err = s.db.ExecContext(ctx, `
+		CREATE TABLE IF NOT EXISTS itsm_comments (
+			id         BIGSERIAL PRIMARY KEY,
+			ticket_id  TEXT NOT NULL,
+			tenant_id  TEXT NOT NULL,
+			author     TEXT NOT NULL,
+			content    TEXT NOT NULL,
+			created_at TIMESTAMPTZ NOT NULL
+		)`)
+	if err != nil {
+		return fmt.Errorf("init itsm_comments table: %w", err)
+	}
+	_, err = s.db.ExecContext(ctx, `
+		CREATE INDEX IF NOT EXISTS idx_itsm_comments_ticket ON itsm_comments(ticket_id, tenant_id)`)
+	if err != nil {
+		return fmt.Errorf("init itsm_comments index: %w", err)
+	}
+
+	_, err = s.db.ExecContext(ctx, `
+		CREATE TABLE IF NOT EXISTS itsm_attachments (
+			id          BIGSERIAL PRIMARY KEY,
+			ticket_id   TEXT NOT NULL,
+			tenant_id   TEXT NOT NULL,
+			file_name   TEXT NOT NULL,
+			file_size   BIGINT NOT NULL,
+			file_type   TEXT NOT NULL,
+			uploaded_by TEXT NOT NULL,
+			data        BYTEA,
+			created_at  TIMESTAMPTZ NOT NULL
+		)`)
+	if err != nil {
+		return fmt.Errorf("init itsm_attachments table: %w", err)
+	}
+	_, err = s.db.ExecContext(ctx, `
+		CREATE INDEX IF NOT EXISTS idx_itsm_attachments_ticket ON itsm_attachments(ticket_id, tenant_id)`)
+	if err != nil {
+		return fmt.Errorf("init itsm_attachments index: %w", err)
+	}
+
+	_, err = s.db.ExecContext(ctx, `
+		CREATE TABLE IF NOT EXISTS itsm_changes (
+			id            TEXT PRIMARY KEY,
+			tenant_id     TEXT NOT NULL,
+			ticket_id     TEXT,
+			title         TEXT NOT NULL,
+			description   TEXT,
+			risk_level    TEXT NOT NULL,
+			status        TEXT NOT NULL DEFAULT 'pending',
+			change_type   TEXT,
+			impact        TEXT,
+			urgency       TEXT,
+			cab_members   TEXT DEFAULT '[]',
+			approvals     TEXT DEFAULT '[]',
+			plan          TEXT,
+			rollback_plan TEXT,
+			created_by    TEXT,
+			created_at    TIMESTAMPTZ NOT NULL,
+			updated_at    TIMESTAMPTZ NOT NULL
+		)`)
+	if err != nil {
+		return fmt.Errorf("init itsm_changes table: %w", err)
+	}
+	_, err = s.db.ExecContext(ctx, `
+		CREATE INDEX IF NOT EXISTS idx_itsm_changes_tenant ON itsm_changes(tenant_id)`)
+	if err != nil {
+		return fmt.Errorf("init itsm_changes index: %w", err)
+	}
+
 	return nil
 }
 
@@ -73,6 +146,10 @@ func (s *PGStore) migrate(ctx context.Context) {
 		`ALTER TABLE itsm_tickets ADD COLUMN IF NOT EXISTS deadline_at TIMESTAMPTZ`,
 		`ALTER TABLE itsm_tickets ADD COLUMN IF NOT EXISTS completed_at TIMESTAMPTZ`,
 		`ALTER TABLE itsm_tickets ADD COLUMN IF NOT EXISTS rolled_back_at TIMESTAMPTZ`,
+		`ALTER TABLE itsm_tickets ADD COLUMN IF NOT EXISTS sla_warning_notified BOOLEAN DEFAULT FALSE`,
+		`ALTER TABLE itsm_tickets ADD COLUMN IF NOT EXISTS sla_breached BOOLEAN DEFAULT FALSE`,
+		`ALTER TABLE itsm_tickets ADD COLUMN IF NOT EXISTS sla_breached_at TIMESTAMPTZ`,
+		`ALTER TABLE itsm_tickets ADD COLUMN IF NOT EXISTS sla_escalation_level INTEGER DEFAULT 0`,
 	}
 	for _, m := range migrations {
 		s.db.ExecContext(ctx, m)
@@ -396,4 +473,310 @@ func nullableStr(ns sql.NullString) string {
 
 func nullableTime(t *time.Time) *time.Time {
 	return t
+}
+
+func (s *PGStore) AddComment(ctx context.Context, comment *model.Comment) error {
+	comment.CreatedAt = time.Now()
+	err := s.db.QueryRowContext(ctx, `
+		INSERT INTO itsm_comments (ticket_id, tenant_id, author, content, created_at)
+		VALUES ($1, $2, $3, $4, $5) RETURNING id`,
+		comment.TicketID, comment.TenantID, comment.Author, comment.Content, comment.CreatedAt).Scan(&comment.ID)
+	return err
+}
+
+func (s *PGStore) ListComments(ctx context.Context, ticketID, tenantID string) ([]*model.Comment, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT id, ticket_id, tenant_id, author, content, created_at
+		FROM itsm_comments WHERE ticket_id = $1 AND tenant_id = $2
+		ORDER BY created_at ASC`, ticketID, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var comments []*model.Comment
+	for rows.Next() {
+		c := &model.Comment{}
+		if err := rows.Scan(&c.ID, &c.TicketID, &c.TenantID, &c.Author, &c.Content, &c.CreatedAt); err != nil {
+			return nil, err
+		}
+		comments = append(comments, c)
+	}
+	return comments, rows.Err()
+}
+
+func (s *PGStore) DeleteComment(ctx context.Context, id int64, ticketID, tenantID string) error {
+	result, err := s.db.ExecContext(ctx, `
+		DELETE FROM itsm_comments WHERE id = $1 AND ticket_id = $2 AND tenant_id = $3`, id, ticketID, tenantID)
+	if err != nil {
+		return err
+	}
+	rows, _ := result.RowsAffected()
+	if rows == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+func (s *PGStore) AddAttachment(ctx context.Context, att *model.Attachment) error {
+	att.CreatedAt = time.Now()
+	err := s.db.QueryRowContext(ctx, `
+		INSERT INTO itsm_attachments (ticket_id, tenant_id, file_name, file_size, file_type, uploaded_by, data, created_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING id`,
+		att.TicketID, att.TenantID, att.FileName, att.FileSize, att.FileType, att.UploadedBy, att.Data, att.CreatedAt).Scan(&att.ID)
+	return err
+}
+
+func (s *PGStore) ListAttachments(ctx context.Context, ticketID, tenantID string) ([]*model.Attachment, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT id, ticket_id, tenant_id, file_name, file_size, file_type, uploaded_by, created_at
+		FROM itsm_attachments WHERE ticket_id = $1 AND tenant_id = $2
+		ORDER BY created_at ASC`, ticketID, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var atts []*model.Attachment
+	for rows.Next() {
+		a := &model.Attachment{}
+		if err := rows.Scan(&a.ID, &a.TicketID, &a.TenantID, &a.FileName, &a.FileSize, &a.FileType, &a.UploadedBy, &a.CreatedAt); err != nil {
+			return nil, err
+		}
+		atts = append(atts, a)
+	}
+	return atts, rows.Err()
+}
+
+func (s *PGStore) GetAttachment(ctx context.Context, id int64, ticketID, tenantID string) (*model.Attachment, error) {
+	a := &model.Attachment{}
+	err := s.db.QueryRowContext(ctx, `
+		SELECT id, ticket_id, tenant_id, file_name, file_size, file_type, uploaded_by, data, created_at
+		FROM itsm_attachments WHERE id = $1 AND ticket_id = $2 AND tenant_id = $3`, id, ticketID, tenantID).Scan(
+		&a.ID, &a.TicketID, &a.TenantID, &a.FileName, &a.FileSize, &a.FileType, &a.UploadedBy, &a.Data, &a.CreatedAt)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return nil, ErrNotFound
+		}
+		return nil, err
+	}
+	return a, nil
+}
+
+func (s *PGStore) DeleteAttachment(ctx context.Context, id int64, ticketID, tenantID string) error {
+	result, err := s.db.ExecContext(ctx, `
+		DELETE FROM itsm_attachments WHERE id = $1 AND ticket_id = $2 AND tenant_id = $3`, id, ticketID, tenantID)
+	if err != nil {
+		return err
+	}
+	rows, _ := result.RowsAffected()
+	if rows == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+func (s *PGStore) ListActiveTicketsWithDeadline(ctx context.Context, tenantID string) ([]*model.Ticket, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT id, tenant_id, title, description, risk_level, status, change_plan, rollback_plan,
+			created_by, created_by_type, approved_by, reject_reason, completed_by, rolled_back_by,
+			rollback_reason, ci_ids, webhook_url, labels, trace_id, scheduled_at, deadline_at,
+			created_at, updated_at, approved_at, executed_at, completed_at, rolled_back_at,
+			sla_warning_notified, sla_breached, sla_breached_at, sla_escalation_level
+		FROM itsm_tickets
+		WHERE tenant_id = $1 AND status IN ('draft','pending_review','approved','executing') AND deadline_at IS NOT NULL`,
+		tenantID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var result []*model.Ticket
+	for rows.Next() {
+		t := &model.Ticket{}
+		var ciIDsJSON, labelsJSON []byte
+		var scheduledAt, deadlineAt, approvedAt, executedAt, completedAt, rolledBackAt, slaBreachedAt sql.NullTime
+		err := rows.Scan(
+			&t.ID, &t.TenantID, &t.Title, &t.Description, &t.RiskLevel, &t.Status,
+			&t.ChangePlan, &t.RollbackPlan, &t.CreatedBy, &t.CreatedByType,
+			&t.ApprovedBy, &t.RejectReason, &t.CompletedBy, &t.RolledBackBy,
+			&t.RollbackReason, &ciIDsJSON, &t.WebhookURL, &labelsJSON, &t.TraceID,
+			&scheduledAt, &deadlineAt, &t.CreatedAt, &t.UpdatedAt,
+			&approvedAt, &executedAt, &completedAt, &rolledBackAt,
+			&t.SLAWarningNotified, &t.SLABreached, &slaBreachedAt, &t.SLAEscalationLevel,
+		)
+		if err != nil {
+			return nil, err
+		}
+		if scheduledAt.Valid { t.ScheduledAt = &scheduledAt.Time }
+		if deadlineAt.Valid { t.DeadlineAt = &deadlineAt.Time }
+		if approvedAt.Valid { t.ApprovedAt = &approvedAt.Time }
+		if executedAt.Valid { t.ExecutedAt = &executedAt.Time }
+		if completedAt.Valid { t.CompletedAt = &completedAt.Time }
+		if rolledBackAt.Valid { t.RolledBackAt = &rolledBackAt.Time }
+		if slaBreachedAt.Valid { t.SLABreachedAt = &slaBreachedAt.Time }
+		if ciIDsJSON != nil { json.Unmarshal(ciIDsJSON, &t.CIIDs) }
+		if labelsJSON != nil { json.Unmarshal(labelsJSON, &t.Labels) }
+		result = append(result, t)
+	}
+	return result, nil
+}
+
+func (s *PGStore) GetSLAStats(ctx context.Context, tenantID string) (*model.SLAStats, error) {
+	stats := &model.SLAStats{}
+	// Total active with deadline
+	s.db.QueryRowContext(ctx, `
+		SELECT COUNT(*) FROM itsm_tickets
+		WHERE tenant_id = $1 AND deadline_at IS NOT NULL AND status IN ('draft','pending_review','approved','executing')`,
+		tenantID).Scan(&stats.TotalActive)
+	// SLA breached
+	s.db.QueryRowContext(ctx, `
+		SELECT COUNT(*) FROM itsm_tickets
+		WHERE tenant_id = $1 AND sla_breached = true`,
+		tenantID).Scan(&stats.SLABreached)
+	// SLA met (completed without breach)
+	s.db.QueryRowContext(ctx, `
+		SELECT COUNT(*) FROM itsm_tickets
+		WHERE tenant_id = $1 AND deadline_at IS NOT NULL AND sla_breached = false
+		AND status IN ('succeeded','rejected','failed','rolled_back')`,
+		tenantID).Scan(&stats.SLAMet)
+	// SLA warning
+	s.db.QueryRowContext(ctx, `
+		SELECT COUNT(*) FROM itsm_tickets
+		WHERE tenant_id = $1 AND sla_warning_notified = true AND sla_breached = false
+		AND status IN ('draft','pending_review','approved','executing')`,
+		tenantID).Scan(&stats.SLAWarning)
+	total := stats.SLAMet + stats.SLABreached
+	if total > 0 {
+		stats.ComplianceRate = float64(stats.SLAMet) / float64(total)
+	}
+	return stats, nil
+}
+
+func (s *PGStore) CreateChange(ctx context.Context, change *model.ChangeRequest) error {
+	change.ID = uuid.New().String()
+	now := time.Now()
+	change.CreatedAt = now
+	change.UpdatedAt = now
+	if change.Status == "" {
+		change.Status = model.ChangeStatusPending
+	}
+	cabMembersJSON, _ := json.Marshal(change.CABMembers)
+	approvalsJSON, _ := json.Marshal(change.Approvals)
+	_, err := s.db.ExecContext(ctx, `
+		INSERT INTO itsm_changes
+			(id, tenant_id, ticket_id, title, description, risk_level, status,
+			 change_type, impact, urgency, cab_members, approvals, plan,
+			 rollback_plan, created_by, created_at, updated_at)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)`,
+		change.ID, change.TenantID, nullable(change.TicketID),
+		change.Title, nullable(change.Description), string(change.RiskLevel),
+		string(change.Status), nullable(change.ChangeType),
+		nullable(change.Impact), nullable(change.Urgency),
+		string(cabMembersJSON), string(approvalsJSON),
+		nullable(change.Plan), nullable(change.RollbackPlan),
+		nullable(change.CreatedBy), change.CreatedAt, change.UpdatedAt)
+	if err != nil {
+		return fmt.Errorf("insert change: %w", err)
+	}
+	return nil
+}
+
+func (s *PGStore) GetChange(ctx context.Context, id, tenantID string) (*model.ChangeRequest, error) {
+	c := &model.ChangeRequest{}
+	var desc, changeType, impact, urgency, plan, rollbackPlan, createdBy, ticketID sql.NullString
+	var cabMembersJSON, approvalsJSON []byte
+	err := s.db.QueryRowContext(ctx, `
+		SELECT id, tenant_id, ticket_id, title, description, risk_level, status,
+		       change_type, impact, urgency, cab_members, approvals, plan,
+		       rollback_plan, created_by, created_at, updated_at
+		FROM itsm_changes WHERE id = $1 AND tenant_id = $2`, id, tenantID).Scan(
+		&c.ID, &c.TenantID, &ticketID, &c.Title, &desc, &c.RiskLevel, &c.Status,
+		&changeType, &impact, &urgency, &cabMembersJSON, &approvalsJSON,
+		&plan, &rollbackPlan, &createdBy, &c.CreatedAt, &c.UpdatedAt)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return nil, ErrNotFound
+		}
+		return nil, fmt.Errorf("query change: %w", err)
+	}
+	c.TicketID = nullableStr(ticketID)
+	c.Description = nullableStr(desc)
+	c.ChangeType = nullableStr(changeType)
+	c.Impact = nullableStr(impact)
+	c.Urgency = nullableStr(urgency)
+	c.Plan = nullableStr(plan)
+	c.RollbackPlan = nullableStr(rollbackPlan)
+	c.CreatedBy = nullableStr(createdBy)
+	if cabMembersJSON != nil {
+		json.Unmarshal(cabMembersJSON, &c.CABMembers)
+	}
+	if approvalsJSON != nil {
+		json.Unmarshal(approvalsJSON, &c.Approvals)
+	}
+	return c, nil
+}
+
+func (s *PGStore) ListChanges(ctx context.Context, tenantID string) ([]*model.ChangeRequest, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT id, tenant_id, ticket_id, title, description, risk_level, status,
+		       change_type, impact, urgency, cab_members, approvals, plan,
+		       rollback_plan, created_by, created_at, updated_at
+		FROM itsm_changes WHERE tenant_id = $1 ORDER BY created_at DESC`, tenantID)
+	if err != nil {
+		return nil, fmt.Errorf("list changes: %w", err)
+	}
+	defer rows.Close()
+	var result []*model.ChangeRequest
+	for rows.Next() {
+		c := &model.ChangeRequest{}
+		var desc, changeType, impact, urgency, plan, rollbackPlan, createdBy, ticketID sql.NullString
+		var cabMembersJSON, approvalsJSON []byte
+		if err := rows.Scan(
+			&c.ID, &c.TenantID, &ticketID, &c.Title, &desc, &c.RiskLevel, &c.Status,
+			&changeType, &impact, &urgency, &cabMembersJSON, &approvalsJSON,
+			&plan, &rollbackPlan, &createdBy, &c.CreatedAt, &c.UpdatedAt); err != nil {
+			return nil, fmt.Errorf("scan change: %w", err)
+		}
+		c.TicketID = nullableStr(ticketID)
+		c.Description = nullableStr(desc)
+		c.ChangeType = nullableStr(changeType)
+		c.Impact = nullableStr(impact)
+		c.Urgency = nullableStr(urgency)
+		c.Plan = nullableStr(plan)
+		c.RollbackPlan = nullableStr(rollbackPlan)
+		c.CreatedBy = nullableStr(createdBy)
+		if cabMembersJSON != nil {
+			json.Unmarshal(cabMembersJSON, &c.CABMembers)
+		}
+		if approvalsJSON != nil {
+			json.Unmarshal(approvalsJSON, &c.Approvals)
+		}
+		result = append(result, c)
+	}
+	return result, rows.Err()
+}
+
+func (s *PGStore) UpdateChange(ctx context.Context, change *model.ChangeRequest) error {
+	change.UpdatedAt = time.Now()
+	cabMembersJSON, _ := json.Marshal(change.CABMembers)
+	approvalsJSON, _ := json.Marshal(change.Approvals)
+	result, err := s.db.ExecContext(ctx, `
+		UPDATE itsm_changes SET
+			ticket_id=$1, title=$2, description=$3, risk_level=$4, status=$5,
+			change_type=$6, impact=$7, urgency=$8, cab_members=$9, approvals=$10,
+			plan=$11, rollback_plan=$12, created_by=$13, updated_at=$14
+		WHERE id=$15 AND tenant_id=$16`,
+		nullable(change.TicketID), change.Title, nullable(change.Description),
+		string(change.RiskLevel), string(change.Status),
+		nullable(change.ChangeType), nullable(change.Impact), nullable(change.Urgency),
+		string(cabMembersJSON), string(approvalsJSON),
+		nullable(change.Plan), nullable(change.RollbackPlan),
+		nullable(change.CreatedBy), change.UpdatedAt,
+		change.ID, change.TenantID)
+	if err != nil {
+		return fmt.Errorf("update change: %w", err)
+	}
+	rows, _ := result.RowsAffected()
+	if rows == 0 {
+		return ErrNotFound
+	}
+	return nil
 }

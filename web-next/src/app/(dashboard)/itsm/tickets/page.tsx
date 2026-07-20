@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useState } from 'react'
+import { useEffect, useState, useRef, useCallback } from 'react'
 import { useITSMStore, type Ticket, type TicketEvent, type ITSMStats } from '@/stores/itsm'
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
@@ -8,8 +8,8 @@ import { Badge } from '@/components/ui/badge'
 import { Input } from '@/components/ui/input'
 import { Dialog, DialogFooter } from '@/components/ui/dialog'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
-import { formatTime } from '@/lib/utils'
-import { Plus, Check, X, Play, RotateCcw, Clock, FileText, Activity, ChevronRight } from 'lucide-react'
+import { formatTime, apiFetch } from '@/lib/utils'
+import { Plus, Check, X, Play, RotateCcw, Clock, FileText, Activity, ChevronRight, Paperclip, MessageSquare, Upload, Download, Trash2, FileUp, FileDown } from 'lucide-react'
 
 const riskBadge: Record<string, 'destructive' | 'warning' | 'secondary' | 'success'> = { critical: 'destructive', high: 'warning', medium: 'secondary', low: 'success' }
 const riskLabels: Record<string, string> = { critical: '致命', high: '高危', medium: '中危', low: '低危' }
@@ -19,11 +19,37 @@ const statusLabels: Record<string, string> = {
 }
 const SLA_BY_RISK: Record<string, string> = { critical: '4小时', high: '24小时', medium: '48小时', low: '72小时' }
 
+interface Comment {
+  id: number
+  ticket_id: string
+  tenant_id: string
+  author: string
+  content: string
+  created_at: string
+}
+
+interface Attachment {
+  id: number
+  ticket_id: string
+  tenant_id: string
+  file_name: string
+  file_size: number
+  file_type: string
+  uploaded_by: string
+  created_at: string
+}
+
 function statusVariant(s: string): 'success' | 'destructive' | 'secondary' | 'outline' {
   if (s === 'approved' || s === 'succeeded') return 'success'
   if (s === 'rejected' || s === 'failed') return 'destructive'
   if (s === 'executing') return 'secondary'
   return 'outline'
+}
+
+function formatFileSize(bytes: number): string {
+  if (bytes < 1024) return bytes + ' B'
+  if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB'
+  return (bytes / (1024 * 1024)).toFixed(1) + ' MB'
 }
 
 export default function ITSMPage() {
@@ -45,6 +71,37 @@ export default function ITSMPage() {
   const [ciIds, setCiIds] = useState<string[]>([])
   const [ticketFormOpen, setTicketFormOpen] = useState(false)
 
+  // Comments
+  const [comments, setComments] = useState<Comment[]>([])
+  const [commentAuthor, setCommentAuthor] = useState('admin')
+  const [commentContent, setCommentContent] = useState('')
+  const [commentLoading, setCommentLoading] = useState(false)
+
+  // Attachments
+  const [attachments, setAttachments] = useState<Attachment[]>([])
+  const [uploading, setUploading] = useState(false)
+  const fileInputRef = useRef<HTMLInputElement>(null)
+
+  // Import
+  const [importing, setImporting] = useState(false)
+  const [importResult, setImportResult] = useState<{ total: number; success: number; errors: { row: number; message: string }[] } | null>(null)
+  const [importDialog, setImportDialog] = useState(false)
+  const importFileRef = useRef<HTMLInputElement>(null)
+
+  const fetchComments = useCallback(async (ticketId: string) => {
+    try {
+      const data = await apiFetch<Comment[]>(`/itsm/tickets/${ticketId}/comments`)
+      setComments(data || [])
+    } catch { setComments([]) }
+  }, [])
+
+  const fetchAttachments = useCallback(async (ticketId: string) => {
+    try {
+      const data = await apiFetch<Attachment[]>(`/itsm/tickets/${ticketId}/attachments`)
+      setAttachments(data || [])
+    } catch { setAttachments([]) }
+  }, [])
+
   useEffect(() => { fetch(); fetchStats() }, [])
 
   const handleCreate = async () => {
@@ -61,6 +118,8 @@ export default function ITSMPage() {
       const events = await getEvents(ticket.id)
       setTicketEvents(events || [])
     } catch { setTicketEvents([]) }
+    fetchComments(ticket.id)
+    fetchAttachments(ticket.id)
   }
 
   const handleApprove = async () => {
@@ -102,10 +161,88 @@ export default function ITSMPage() {
     fetchStats()
   }
 
+  const handleAddComment = async () => {
+    if (!selectedTicket || !commentContent.trim()) return
+    setCommentLoading(true)
+    try {
+      await apiFetch<Comment>(`/itsm/tickets/${selectedTicket.id}/comments`, {
+        method: 'POST',
+        body: JSON.stringify({ author: commentAuthor, content: commentContent }),
+      })
+      setCommentContent('')
+      fetchComments(selectedTicket.id)
+    } catch { /* ignore */ }
+    setCommentLoading(false)
+  }
+
+  const handleDeleteComment = async (cid: number) => {
+    if (!selectedTicket) return
+    try {
+      await apiFetch(`/itsm/tickets/${selectedTicket.id}/comments/${cid}`, { method: 'DELETE' })
+      fetchComments(selectedTicket.id)
+    } catch { /* ignore */ }
+  }
+
+  const handleUploadFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0]
+    if (!file || !selectedTicket) return
+    setUploading(true)
+    try {
+      const formData = new FormData()
+      formData.append('file', file)
+      formData.append('uploaded_by', commentAuthor)
+      await apiFetch<Attachment>(`/itsm/tickets/${selectedTicket.id}/attachments`, {
+        method: 'POST',
+        headers: {},
+        body: formData,
+      })
+      fetchAttachments(selectedTicket.id)
+    } catch { /* ignore */ }
+    setUploading(false)
+    if (fileInputRef.current) fileInputRef.current.value = ''
+  }
+
+  const handleDeleteAttachment = async (aid: number) => {
+    if (!selectedTicket) return
+    try {
+      await apiFetch(`/itsm/tickets/${selectedTicket.id}/attachments/${aid}`, { method: 'DELETE' })
+      fetchAttachments(selectedTicket.id)
+    } catch { /* ignore */ }
+  }
+
   const addCiId = () => {
     if (ciIdInput.trim() && !ciIds.includes(ciIdInput.trim())) {
       setCiIds([...ciIds, ciIdInput.trim()]); setCiIdInput('')
     }
+  }
+
+  const handleImportCSV = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0]
+    if (!file) return
+    setImporting(true)
+    try {
+      const formData = new FormData()
+      formData.append('file', file)
+      const result = await apiFetch<{ total: number; success: number; errors: { row: number; message: string }[] }>('/itsm/tickets/import', {
+        method: 'POST',
+        headers: {},
+        body: formData,
+      })
+      setImportResult(result)
+      setImportDialog(true)
+      fetch()
+      fetchStats()
+    } catch { /* ignore */ }
+    setImporting(false)
+    if (importFileRef.current) importFileRef.current.value = ''
+  }
+
+  const handleExportTickets = () => {
+    window.open('/api/v1/itsm/tickets/export/csv', '_blank')
+  }
+
+  const handleExportStats = () => {
+    window.open('/api/v1/itsm/stats/export/csv', '_blank')
   }
 
   const isOverdue = (ticket: Ticket) => {
@@ -117,7 +254,13 @@ export default function ITSMPage() {
     <div className="p-6 space-y-4">
       <div className="flex items-center justify-between">
         <div><h1 className="text-2xl font-bold">ITSM 工单</h1><p className="text-sm text-muted-foreground">变更审批与风险控制</p></div>
-        <Button onClick={() => setDialogOpen(true)}><Plus className="h-4 w-4" />新建工单</Button>
+        <div className="flex gap-2">
+          <input ref={importFileRef} type="file" accept=".csv" className="hidden" onChange={handleImportCSV} />
+          <Button variant="outline" onClick={() => importFileRef.current?.click()} disabled={importing}><FileUp className="h-4 w-4" />{importing ? '导入中...' : '批量导入'}</Button>
+          <Button variant="outline" onClick={handleExportTickets}><FileDown className="h-4 w-4" />导出工单</Button>
+          <Button variant="outline" onClick={handleExportStats}><FileDown className="h-4 w-4" />导出统计</Button>
+          <Button onClick={() => setDialogOpen(true)}><Plus className="h-4 w-4" />新建工单</Button>
+        </div>
       </div>
 
       {stats && (
@@ -225,6 +368,8 @@ export default function ITSMPage() {
                   <TabsList>
                     <TabsTrigger value="detail"><FileText className="w-3 h-3 mr-1" />详情</TabsTrigger>
                     <TabsTrigger value="events"><Activity className="w-3 h-3 mr-1" />事件 ({ticketEvents.length})</TabsTrigger>
+                    <TabsTrigger value="comments"><MessageSquare className="w-3 h-3 mr-1" />评论 ({comments.length})</TabsTrigger>
+                    <TabsTrigger value="attachments"><Paperclip className="w-3 h-3 mr-1" />附件 ({attachments.length})</TabsTrigger>
                   </TabsList>
                   <TabsContent value="detail" className="mt-3 space-y-3">
                     {selectedTicket.description && (
@@ -277,6 +422,107 @@ export default function ITSMPage() {
                         ))}
                       </div>
                     )}
+                  </TabsContent>
+                  <TabsContent value="comments" className="mt-3">
+                    <div className="space-y-3">
+                      <div className="border rounded-md p-3 bg-muted/30 space-y-2">
+                        <div className="flex gap-2 items-center">
+                          <label className="text-xs text-muted-foreground shrink-0">用户:</label>
+                          <Input className="h-8 text-xs" value={commentAuthor} onChange={e => setCommentAuthor(e.target.value)} placeholder="用户名" />
+                        </div>
+                        <textarea
+                          className="flex h-16 w-full rounded-md border border-input bg-background px-3 py-2 text-sm resize-none"
+                          value={commentContent}
+                          onChange={e => setCommentContent(e.target.value)}
+                          placeholder="输入评论内容..."
+                          onKeyDown={e => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) handleAddComment() }}
+                        />
+                        <div className="flex justify-end">
+                          <Button size="sm" onClick={handleAddComment} disabled={!commentContent.trim() || commentLoading}>
+                            {commentLoading ? '发送中...' : '发送评论'}
+                          </Button>
+                        </div>
+                      </div>
+                      {comments.length === 0 ? (
+                        <p className="text-sm text-muted-foreground text-center py-4">暂无评论</p>
+                      ) : (
+                        <div className="space-y-2">
+                          {comments.map(c => (
+                            <div key={c.id} className="border rounded-md p-3 text-sm group">
+                              <div className="flex items-center justify-between">
+                                <div className="flex items-center gap-2">
+                                  <Badge variant="secondary" className="text-xs">{c.author}</Badge>
+                                  <span className="text-xs text-muted-foreground">{formatTime(c.created_at)}</span>
+                                </div>
+                                <Button
+                                  variant="ghost"
+                                  size="sm"
+                                  className="h-6 w-6 p-0 opacity-0 group-hover:opacity-100 transition-opacity"
+                                  onClick={() => handleDeleteComment(c.id)}
+                                >
+                                  <Trash2 className="h-3 w-3" />
+                                </Button>
+                              </div>
+                              <p className="mt-1 text-sm whitespace-pre-wrap">{c.content}</p>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  </TabsContent>
+                  <TabsContent value="attachments" className="mt-3">
+                    <div className="space-y-3">
+                      <div className="flex items-center gap-2">
+                        <input
+                          ref={fileInputRef}
+                          type="file"
+                          className="hidden"
+                          onChange={handleUploadFile}
+                        />
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={() => fileInputRef.current?.click()}
+                          disabled={uploading}
+                        >
+                          <Upload className="h-3 w-3 mr-1" />
+                          {uploading ? '上传中...' : '上传附件'}
+                        </Button>
+                      </div>
+                      {attachments.length === 0 ? (
+                        <p className="text-sm text-muted-foreground text-center py-4">暂无附件</p>
+                      ) : (
+                        <div className="space-y-1">
+                          {attachments.map(a => (
+                            <div key={a.id} className="flex items-center justify-between border rounded-md px-3 py-2 text-sm group">
+                              <div className="flex items-center gap-2 min-w-0">
+                                <Paperclip className="h-3 w-3 text-muted-foreground shrink-0" />
+                                <span className="truncate">{a.file_name}</span>
+                                <span className="text-xs text-muted-foreground shrink-0">({formatFileSize(a.file_size)})</span>
+                                <span className="text-xs text-muted-foreground shrink-0">{a.uploaded_by}</span>
+                              </div>
+                              <div className="flex items-center gap-1 shrink-0">
+                                <a
+                                  href={`/api/v1/itsm/tickets/${selectedTicket.id}/attachments/${a.id}`}
+                                  download={a.file_name}
+                                  className="inline-flex items-center justify-center h-7 w-7 rounded-md hover:bg-accent transition-colors"
+                                >
+                                  <Download className="h-3 w-3" />
+                                </a>
+                                <Button
+                                  variant="ghost"
+                                  size="sm"
+                                  className="h-7 w-7 p-0 opacity-0 group-hover:opacity-100 transition-opacity"
+                                  onClick={() => handleDeleteAttachment(a.id)}
+                                >
+                                  <Trash2 className="h-3 w-3" />
+                                </Button>
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
                   </TabsContent>
                 </Tabs>
               </CardContent>
@@ -345,6 +591,30 @@ export default function ITSMPage() {
           <div><label className="text-sm font-medium">回滚原因</label><textarea className="flex h-20 w-full rounded-md border border-input bg-background px-3 py-2 text-sm" value={rollbackReason} onChange={e => setRollbackReason(e.target.value)} placeholder="请填写回滚原因（可选）" /></div>
         </div>
         <DialogFooter><Button variant="outline" onClick={() => setRollbackDialog(false)}>取消</Button><Button onClick={handleRollback}>确认回滚</Button></DialogFooter>
+      </Dialog>
+
+      <Dialog open={importDialog} onClose={() => setImportDialog(false)} title="导入结果">
+        {importResult && (
+          <div className="space-y-3">
+            <div className="grid grid-cols-2 gap-3 text-sm">
+              <div><span className="text-muted-foreground">总行数:</span> {importResult.total}</div>
+              <div><span className="text-muted-foreground">成功:</span> <span className="text-emerald-600 font-medium">{importResult.success}</span></div>
+            </div>
+            {importResult.errors.length > 0 && (
+              <div>
+                <h4 className="text-sm font-medium text-destructive mb-1">失败记录 ({importResult.errors.length})</h4>
+                <div className="max-h-40 overflow-y-auto space-y-1">
+                  {importResult.errors.map((err, i) => (
+                    <div key={i} className="text-xs border rounded px-2 py-1">
+                      <span className="text-muted-foreground">行 {err.row}:</span> {err.message}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+        <DialogFooter><Button onClick={() => setImportDialog(false)}>关闭</Button></DialogFooter>
       </Dialog>
     </div>
   )

@@ -1,0 +1,309 @@
+package main
+
+import (
+	"context"
+	"database/sql"
+	"fmt"
+	"log"
+	"log/slog"
+	"net"
+	"net/http"
+	"os"
+	"os/signal"
+	"syscall"
+	"time"
+
+	"github.com/opsorigin/core/internal/cmdb"
+	"github.com/opsorigin/core/internal/cmdb/dgraph"
+	"github.com/opsorigin/core/internal/cmdb/outbox"
+	"github.com/opsorigin/core/internal/cmdb/pg"
+	"github.com/opsorigin/core/internal/itsm"
+	"github.com/opsorigin/core/internal/ai"
+	"github.com/opsorigin/core/internal/audit"
+	"github.com/opsorigin/core/internal/monitor"
+	"github.com/opsorigin/core/internal/ops"
+	"github.com/opsorigin/core/internal/tunnel"
+	"github.com/opsorigin/core/internal/user"
+	"github.com/opsorigin/core/internal/ws"
+	"github.com/opsorigin/core/internal/agentmgr"
+	"github.com/opsorigin/core/internal/automation/script"
+	"github.com/opsorigin/core/internal/automation/workflow"
+	"github.com/opsorigin/core/internal/automation/scheduler"
+	"github.com/opsorigin/core/internal/iam"
+	"github.com/opsorigin/core/internal/notification"
+	"github.com/opsorigin/core/internal/itsm/knowledge"
+	"github.com/opsorigin/core/internal/itsm/oncall"
+	"github.com/opsorigin/core/internal/keystore"
+	"github.com/opsorigin/core/internal/lowcode/service"
+	"github.com/opsorigin/core/internal/sysconfig"
+	"github.com/opsorigin/core/pkg/auth"
+	"github.com/opsorigin/core/pkg/config"
+	"github.com/opsorigin/core/pkg/llm"
+	"github.com/redis/go-redis/v9"
+	redisclient "github.com/opsorigin/core/pkg/redis"
+)
+
+func main() {
+	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
+	slog.SetDefault(logger)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+
+	cfg, err := config.Load()
+	if err != nil {
+		log.Fatalf("failed to load config: %v", err)
+	}
+
+	pgRepo, err := pg.NewRepository(cfg.CMDB.PostgresDSN)
+	if err != nil {
+		slog.Warn("pg not available, running in stub mode", "error", err)
+	}
+
+	dgClient, err := dgraph.NewClient(cfg.CMDB.DgraphTarget)
+	if err != nil {
+		slog.Warn("dgraph not available, running in stub mode", "error", err)
+	}
+
+	if dgClient != nil {
+		if err := dgClient.SetupSchema(ctx); err != nil {
+			slog.Warn("dgraph schema setup failed", "error", err)
+		}
+	}
+
+	if pgRepo != nil {
+		outboxWorker := outbox.NewWorker(cfg.Outbox, pgRepo, dgClient)
+		go func() {
+			if err := outboxWorker.Start(ctx); err != nil {
+				slog.Error("outbox worker stopped", "error", err)
+			}
+		}()
+	} else {
+		slog.Warn("outbox worker disabled (pg not available)")
+	}
+
+	var rdbClient *redisclient.Client
+	rdbClient, err = redisclient.NewClient(cfg.RedisAddr)
+	if err != nil {
+		slog.Warn("redis not available, running without distributed rate limiting / stream subscription", "error", err)
+		rdbClient = nil
+	}
+
+	var ldapProv *auth.LDAPProvider
+	if cfg.LDAP.Enabled {
+		ldapProv = auth.NewLDAPProvider(cfg.LDAP)
+	}
+
+	var ssoProv *auth.SSOProvider
+	if cfg.SSO.Enabled {
+		ssoProv = auth.NewSSOProvider(cfg.SSO)
+	}
+
+	authProvider := auth.NewProvider(cfg.Auth.JWTSecret, ldapProv, ssoProv)
+
+	var db *sql.DB
+	if pgRepo != nil {
+		db = pgRepo.DB()
+	}
+
+	auditSvc := audit.NewService(cfg, db)
+
+	server := NewServer(cfg)
+	server.RegisterService(auditSvc)
+	server.WithMiddleware(authProvider.Middleware)
+	server.WithMiddleware(auditSvc.Middleware)
+
+	var rdb *redis.Client
+	if rdbClient != nil {
+		rdb = rdbClient.Conn()
+	}
+
+	cmdbSvc := cmdb.NewService(cfg, pgRepo, dgClient)
+	server.RegisterService(cmdbSvc)
+
+	monitorSvc := monitor.NewService(cfg, rdb)
+	server.RegisterService(monitorSvc)
+	monitorSvc.Start(ctx)
+
+	monitorTopo := monitorSvc.Topology()
+	cmdbSvc.OnCICreated(func(ctx context.Context, ciID, tenantID string) {
+		monitorTopo.RecordTenant(ctx, ciID, tenantID)
+	})
+
+	wsHub := ws.NewHub()
+	server.WithMiddleware(func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path == "/api/v1/ws" {
+				wsHub.ServeHTTP(w, r)
+				return
+			}
+			next.ServeHTTP(w, r)
+		})
+	})
+
+	monitorSvc.SetWebSocketHub(wsHub)
+
+	itsmSvc := itsm.NewService(cfg, db)
+	server.RegisterService(itsmSvc)
+	itsmSvc.SetWebSocketHub(wsHub)
+	itsmSvc.StartSLAChecker(ctx)
+
+	// 创建 tunnel server,监听 Proxy 连接(用于通过 Proxy 下发命令给 Agent)
+	tunnelServer := tunnel.NewServer(cfg.Proxy.Listen)
+	tunnelServer.OnCommand(func(ctx context.Context, proxyID string, cmd *tunnel.CommandRequest) *tunnel.CommandResponse {
+		slog.Info("tunnel command routed", "proxy_id", proxyID, "action", cmd.Action, "target", cmd.TargetID)
+		return &tunnel.CommandResponse{
+			CommandID: cmd.CommandID,
+			Success:   true,
+			Output:    []byte("routed"),
+		}
+	})
+
+	agentSvc := agentmgr.NewService()
+	// 设置 TLS 状态(影响安装脚本中下载链接的 scheme)
+	if cfg.TLS.Enabled {
+		agentSvc.SetTLSEnable(true)
+	}
+	// 创建 Agent WebSocket Hub,启用长连接通信
+	agentWSHub := agentmgr.NewAgentWSHub()
+	agentSvc.SetWSHub(agentWSHub)
+	agentSvc.SetAgentWSPort(cfg.AgentWS.Port)
+	agentSvc.SetTunnelServer(tunnelServer)
+	server.RegisterService(agentSvc)
+
+	// 初始化沙箱环境:在 Server 端自动注册一个本地 Agent,用于脚本调试
+	agentSvc.InitSandbox()
+
+	// 系统配置管理服务
+	sysconfigSvc := sysconfig.NewService(cfg)
+	server.RegisterService(sysconfigSvc)
+
+	scriptSvc := script.NewService()
+	server.RegisterService(scriptSvc)
+
+	workflowSvc := workflow.NewService()
+	workflowSvc.SetScriptExecutor(scriptSvc)
+	server.RegisterService(workflowSvc)
+
+	schedulerSvc := scheduler.NewService()
+	server.RegisterService(schedulerSvc)
+
+	knowledgeSvc := knowledge.NewService()
+	server.RegisterService(knowledgeSvc)
+
+	oncallSvc := oncall.NewService()
+	server.RegisterService(oncallSvc)
+
+	keySvc := keystore.NewService()
+	server.RegisterService(keySvc)
+
+	// 初始化低代码引擎
+	var lowcodeSvc *service.Service
+	if db != nil {
+		lowcodeStore := service.NewPostgresStore(db)
+		lowcodeSvc = service.NewService(lowcodeStore)
+		lowcodeHandler := service.NewHandler(lowcodeSvc)
+		server.RegisterService(lowcodeHandler)
+
+		// 组件市场
+		marketHandler := service.NewMarketHandler(lowcodeSvc.GetMarket())
+		server.RegisterService(marketHandler)
+
+		// 版本管理
+		versionHandler := service.NewVersionHandler(lowcodeSvc.GetVersion())
+		server.RegisterService(versionHandler)
+	} else {
+		slog.Warn("lowcode engine disabled (pg not available)")
+	}
+
+	llmClient := llm.NewClient(llm.Config{
+		APIKey:  cfg.LLM.APIKey,
+		Model:   cfg.LLM.Model,
+		BaseURL: cfg.LLM.BaseURL,
+		Timeout: time.Duration(cfg.LLM.Timeout) * time.Second,
+	})
+
+	userSvc := user.NewService(db, authProvider)
+	server.RegisterService(userSvc)
+
+	// IAM:角色/用户组/权限管理(独立内存存储,预置 3 个内置角色 + 14 个权限点)
+	iamSvc := iam.NewService()
+	server.RegisterService(iamSvc)
+
+	// 通知管理:邮件/钉钉/企业微信/飞书/Webhook 五种渠道 + 事件订阅策略
+	notifySvc := notification.NewService()
+	server.RegisterService(notifySvc)
+
+	// 初始化RBAC中间件
+	rbacMiddleware := auth.NewRBACMiddleware(authProvider)
+	server.WithMiddleware(rbacMiddleware.AutoPermissionMiddleware)
+
+	aiSvc := ai.NewService(cfg, llmClient, rdbClient)
+	server.RegisterService(aiSvc)
+	aiSvc.Start(ctx)
+
+	opsSvc := ops.NewService(cfg, db)
+	server.RegisterService(opsSvc)
+
+	go func() {
+		if err := tunnelServer.Start(ctx); err != nil {
+			slog.Error("tunnel server stopped", "error", err)
+		}
+	}()
+
+	// 启动 Agent WebSocket 长连接服务(独立端口 5588,不走 8080 中间件链)
+	// Agent 通过此端口与 Server 保持长连接,任务下发和结果上报走此通道
+	if cfg.AgentWS.Enabled {
+		go func() {
+			wsAddr := fmt.Sprintf(":%d", cfg.AgentWS.Port)
+			wsMux := http.NewServeMux()
+			wsMux.HandleFunc("/agent-ws", agentWSHub.ServeHTTP)
+			wsMux.HandleFunc("/agent-ws/health", func(w http.ResponseWriter, r *http.Request) {
+				w.Write([]byte(`{"status":"ok","online":` + fmt.Sprintf("%d", len(agentWSHub.OnlineAgentIDs())) + `}`))
+			})
+			wsHTTPServer := &http.Server{
+				Addr:    wsAddr,
+				Handler: wsMux,
+				BaseContext: func(_ net.Listener) context.Context {
+					return ctx
+				},
+			}
+			slog.Info("agent websocket server starting", "addr", wsAddr, "tls", cfg.AgentWS.UseTLS)
+			if cfg.AgentWS.UseTLS && cfg.AgentWS.CertFile != "" && cfg.AgentWS.KeyFile != "" {
+				if err := wsHTTPServer.ListenAndServeTLS(cfg.AgentWS.CertFile, cfg.AgentWS.KeyFile); err != nil {
+					slog.Error("agent ws server (tls) stopped", "error", err)
+				}
+			} else {
+				ln, err := net.Listen("tcp", wsAddr)
+				if err != nil {
+					slog.Error("agent ws listen failed", "error", err)
+					return
+				}
+				if err := wsHTTPServer.Serve(ln); err != nil {
+					slog.Error("agent ws server stopped", "error", err)
+				}
+			}
+		}()
+	}
+
+	go func() {
+		if err := server.Serve(ctx); err != nil {
+			slog.Error("server stopped", "error", err)
+			cancel()
+		}
+	}()
+
+	slog.Info("core server started", "addr", cfg.Core.Addr)
+	<-sigCh
+	slog.Info("shutting down...")
+	server.GracefulStop()
+
+	if rdbClient != nil {
+		if err := rdbClient.Close(); err != nil {
+			slog.Error("redis close error", "error", err)
+		}
+	}
+}
