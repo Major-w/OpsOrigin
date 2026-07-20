@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/opsorigin/core/internal/remoteexec"
 	"github.com/opsorigin/core/internal/tunnel"
 	"golang.org/x/crypto/ssh"
 )
@@ -309,6 +310,7 @@ type Service struct {
 	agentWSPort     int         // Agent WebSocket 端口(默认 5588)
 	tunnelServer    *tunnel.Server // Proxy 隧道服务(可选,启用后支持通过 Proxy 下发命令)
 	sandboxID       string      // 沙箱 Agent ID(自动注册)
+	remoteExec      *remoteexec.Service // SSH 远程执行服务(agentless 主机命令执行)
 }
 
 func NewService() *Service {
@@ -317,6 +319,7 @@ func NewService() *Service {
 		circuitBreakers: make(map[string]*CircuitBreakerConfig),
 		stopCh:          make(chan struct{}),
 		agentWSPort:     5588,
+		remoteExec:      remoteexec.NewService(),
 	}
 	go s.offlineDetector()
 	return s
@@ -463,6 +466,10 @@ func (s *Service) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/v1/agents/{id}/download-tasks", s.handleDownloadTasks)
 	// Sandbox
 	mux.HandleFunc("GET /api/v1/agents/sandbox", s.handleGetSandbox)
+	// Remote Execution (SSH)
+	mux.HandleFunc("POST /api/v1/agents/batch-execute", s.handleBatchExecute)
+	mux.HandleFunc("GET /api/v1/agents/exec-tasks/{task_id}", s.handleGetExecTask)
+	mux.HandleFunc("POST /api/v1/agents/ssh-execute", s.handleSSHExecute)
 	// Proxy CRUD
 	mux.HandleFunc("GET /api/v1/proxies", s.handleListProxies)
 	mux.HandleFunc("POST /api/v1/proxies", s.handleRegisterProxy)
@@ -497,6 +504,100 @@ func (s *Service) handleGetSandbox(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"exists": true,
 		"agent":  host,
+	})
+}
+
+// handleBatchExecute 在多台主机上并发执行命令(SSH 远程执行)。
+func (s *Service) handleBatchExecute(w http.ResponseWriter, r *http.Request) {
+	var req remoteexec.BatchExecRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+
+	if len(req.Hosts) == 0 {
+		writeError(w, http.StatusBadRequest, "hosts is required")
+		return
+	}
+	if req.Command == "" {
+		writeError(w, http.StatusBadRequest, "command is required")
+		return
+	}
+
+	result := s.remoteExec.Execute(r.Context(), req)
+	writeJSON(w, http.StatusOK, result)
+}
+
+// handleGetExecTask 查询批量执行任务状态。
+func (s *Service) handleGetExecTask(w http.ResponseWriter, r *http.Request) {
+	taskID := r.PathValue("task_id")
+	if taskID == "" {
+		writeError(w, http.StatusBadRequest, "task_id is required")
+		return
+	}
+
+	result, ok := s.remoteExec.GetTask(taskID)
+	if !ok {
+		writeError(w, http.StatusNotFound, "task not found")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, result)
+}
+
+// handleSSHExecute 在单台主机上通过 SSH 执行命令。
+func (s *Service) handleSSHExecute(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Host     string `json:"host"`
+		Port     int    `json:"port,omitempty"`
+		Username string `json:"username"`
+		Password string `json:"password,omitempty"`
+		SSHKey   string `json:"ssh_key,omitempty"`
+		Command  string `json:"command"`
+		Timeout  int    `json:"timeout,omitempty"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+
+	if req.Host == "" || req.Command == "" {
+		writeError(w, http.StatusBadRequest, "host and command are required")
+		return
+	}
+
+	port := req.Port
+	if port == 0 {
+		port = 22
+	}
+
+	cred := remoteexec.Credential{
+		User:     req.Username,
+		Password: req.Password,
+		Key:      req.SSHKey,
+	}
+
+	timeout := time.Duration(req.Timeout) * time.Second
+	if timeout == 0 {
+		timeout = 30 * time.Second
+	}
+
+	execReq := remoteexec.ExecRequest{
+		Host:       req.Host,
+		Port:       port,
+		Credential: cred,
+		Command:    req.Command,
+		Timeout:    timeout,
+	}
+
+	result := s.remoteExec.ExecuteSingle(r.Context(), execReq)
+	writeJSON(w, http.StatusOK, map[string]any{
+		"host":      result.Host,
+		"port":      result.Port,
+		"output":    result.Output,
+		"exit_code": result.ExitCode,
+		"error":     result.Error,
+		"duration":  result.Duration.Milliseconds(),
 	})
 }
 

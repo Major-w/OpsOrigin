@@ -42,14 +42,16 @@ type SSOConfig struct {
 }
 
 type CoreConfig struct {
-	Port int    `json:"port"`
-	Addr string `json:"addr"`
+	Port       int    `json:"port"`
+	Addr       string `json:"addr"`
+	GRPCListen string `json:"grpc_listen"`
 }
 
 type ProxyConfig struct {
-	ID       string `json:"id"`
-	CoreAddr string `json:"core_addr"`
-	Listen   string `json:"listen"`
+	ID         string `json:"id"`
+	CoreAddr   string `json:"core_addr"`
+	Listen     string `json:"listen"`
+	GRPCListen string `json:"grpc_listen"`
 }
 
 type AgentConfig struct {
@@ -100,12 +102,14 @@ func Load() (*Config, error) {
 
 	cfg := &Config{
 		Core: CoreConfig{
-			Port: envInt("OPSNEXUS_CORE_PORT", 8080),
+			Port:       envInt("OPSNEXUS_CORE_PORT", 8080),
+			GRPCListen: envStr("OPSNEXUS_CORE_GRPC_LISTEN", ":9091"),
 		},
 		Proxy: ProxyConfig{
-			ID:       envStr("OPSNEXUS_PROXY_ID", "proxy-001"),
-			CoreAddr: envStr("OPSNEXUS_PROXY_CORE_ADDR", "localhost:8080"),
-			Listen:   envStr("OPSNEXUS_PROXY_LISTEN", ":9090"),
+			ID:         envStr("OPSNEXUS_PROXY_ID", "proxy-001"),
+			CoreAddr:   envStr("OPSNEXUS_PROXY_CORE_ADDR", "localhost:8080"),
+			Listen:     envStr("OPSNEXUS_PROXY_LISTEN", ":9090"),
+			GRPCListen: envStr("OPSNEXUS_PROXY_GRPC_LISTEN", ":9092"),
 		},
 		Agent: AgentConfig{
 			ProxyAddr: envStr("OPSNEXUS_AGENT_PROXY_ADDR", "localhost:9090"),

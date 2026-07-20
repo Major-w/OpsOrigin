@@ -2,6 +2,7 @@
 // Core ↔ Proxy ↔ Agent 三层边缘穿透通信协议
 syntax = "proto3";
 package tunnel;
+option go_package = "./;tunnel";
 
 service TunnelService {
   // Proxy 通过此接口与 Core 建立双向多路复用隧道
@@ -68,4 +69,5 @@ message AgentResponse {
   string agent_id = 2;
   bool success = 3;
   bytes output = 4;
+  string error = 5;
 }

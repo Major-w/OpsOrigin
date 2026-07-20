@@ -162,6 +162,17 @@ func main() {
 		}
 	})
 
+	// 创建 gRPC tunnel server,支持 Agent 直连 Core(绕过 Proxy)
+	grpcTunnelServer := tunnel.NewGRPCServer(cfg.Core.GRPCListen)
+	grpcTunnelServer.OnCommand(func(ctx context.Context, proxyID string, cmd *tunnel.CommandRequest) *tunnel.CommandResponse {
+		slog.Info("grpc tunnel command routed", "proxy_id", proxyID, "action", cmd.Action, "target", cmd.TargetID)
+		return &tunnel.CommandResponse{
+			CommandID: cmd.CommandID,
+			Success:   true,
+			Output:    []byte("routed"),
+		}
+	})
+
 	agentSvc := agentmgr.NewService()
 	// 设置 TLS 状态(影响安装脚本中下载链接的 scheme)
 	if cfg.TLS.Enabled {
@@ -251,6 +262,13 @@ func main() {
 	go func() {
 		if err := tunnelServer.Start(ctx); err != nil {
 			slog.Error("tunnel server stopped", "error", err)
+		}
+	}()
+
+	// 启动 gRPC tunnel server(Agent 直连 Core 通道)
+	go func() {
+		if err := grpcTunnelServer.Start(ctx); err != nil {
+			slog.Error("grpc tunnel server stopped", "error", err)
 		}
 	}()
 
