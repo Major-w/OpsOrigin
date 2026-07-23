@@ -534,7 +534,8 @@ export default function ScriptDetailPage() {
                         参数通过环境变量注入脚本进程：<br/>
                         <code className="bg-emerald-500/20 px-1 rounded">PARAM_大写参数名</code><br/>
                         Shell: <code className="bg-emerald-500/20 px-1 rounded">$PARAM_HOST</code><br/>
-                        Python: <code className="bg-emerald-500/20 px-1 rounded">os.environ['PARAM_HOST']</code>
+                        Python: <code className="bg-emerald-500/20 px-1 rounded">os.environ['PARAM_HOST']</code><br/>
+                        Batch: <code className="bg-emerald-500/20 px-1 rounded">%PARAM_HOST%</code>
                       </span>
                     </span>
                   </div>
@@ -569,9 +570,10 @@ export default function ScriptDetailPage() {
                       <span className="text-[11px] text-muted-foreground border rounded-full w-4 h-4 inline-flex items-center justify-center hover:bg-muted">?</span>
                       <span className="absolute left-0 bottom-full mb-1 w-64 p-2 rounded-md bg-gray-900 dark:bg-gray-800 text-white dark:text-gray-200 text-[10px] leading-relaxed opacity-0 group-hover:opacity-100 pointer-events-none transition-opacity z-50 shadow-lg">
                         用 <code className="bg-emerald-500/20 px-1 rounded">OUT_参数名=动态值</code> 输出<br/>
-                        如 <code className="bg-emerald-500/20 px-1 rounded">OUT_hostname=$(hostname)</code><br/>
-                        或末行输出 JSON：<br/>
-                        <code className="bg-emerald-500/20 px-1 rounded">{'{"status":"ok"}'}</code>
+                        Shell:   <code className="bg-emerald-500/20 px-1 rounded">OUT_hostname=$(hostname)</code><br/>
+                        Python: <code className="bg-emerald-500/20 px-1 rounded">print(f'OUT_hostname={v}')</code><br/>
+                        Batch:  <code className="bg-emerald-500/20 px-1 rounded">echo OUT_hostname=%COMPUTERNAME%</code><br/>
+                        或末行 JSON: <code className="bg-emerald-500/20 px-1 rounded">{'{"status":"ok"}'}</code>
                       </span>
                     </span>
                   </div>
