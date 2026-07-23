@@ -682,18 +682,40 @@ func buildParamEnv(params map[string]string) []string {
 	return env
 }
 
-// parseOutput 按 OutputParams 定义从 stdout 中解析 JSON 出参。
+// parseOutput 从 stdout 中提取出参：优先整段JSON → 末行JSON → KEY=VALUE行。
 func (r *ExecutionResult) parseOutput(outputParams []ParamDef) {
 	if len(outputParams) == 0 || r.Output == "" { return }
-	// 尝试从 stdout 最后一行提取 JSON
-	lines := strings.Split(strings.TrimSpace(r.Output), "\n")
-	lastLine := lines[len(lines)-1]
-	var parsed map[string]any
-	if err := json.Unmarshal([]byte(lastLine), &parsed); err != nil { return }
-	// 只提取 OutputParams 中定义的字段
 	out := make(map[string]any)
-	for _, p := range outputParams {
-		if v, ok := parsed[p.Name]; ok { out[p.Name] = v }
+
+	// 策略1: 整段 stdout 就是 JSON
+	var full map[string]any
+	if json.Unmarshal([]byte(strings.TrimSpace(r.Output)), &full) == nil {
+		for _, p := range outputParams {
+			if v, ok := full[p.Name]; ok { out[p.Name] = v }
+		}
+		if len(out) > 0 { r.ParsedOutput = out; return }
+	}
+
+	// 策略2: 取最后一行 JSON
+	lines := strings.Split(strings.TrimSpace(r.Output), "\n")
+	lastLine := strings.TrimSpace(lines[len(lines)-1])
+	var last map[string]any
+	if json.Unmarshal([]byte(lastLine), &last) == nil {
+		for _, p := range outputParams {
+			if v, ok := last[p.Name]; ok { out[p.Name] = v }
+		}
+		if len(out) > 0 { r.ParsedOutput = out; return }
+	}
+
+	// 策略3: KEY=VALUE 行 (匹配 OutputParams 中定义的字段名)
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if idx := strings.Index(line, "="); idx > 0 {
+			k, v := line[:idx], line[idx+1:]
+			for _, p := range outputParams {
+				if p.Name == k { out[k] = v }
+			}
+		}
 	}
 	if len(out) > 0 { r.ParsedOutput = out }
 }

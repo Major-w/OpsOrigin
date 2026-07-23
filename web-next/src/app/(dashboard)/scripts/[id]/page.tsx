@@ -558,6 +558,7 @@ export default function ScriptDetailPage() {
                     <Plus className="h-3 w-3 mr-1" />添加参数
                   </Button>
                 </div>
+                <p className="text-[10px] text-muted-foreground mb-2">脚本末尾输出 JSON 或 <code className="bg-muted px-1 rounded">KEY=VALUE</code> 行，自动提取字段并格式化展示</p>
                 {outputParamForm.length > 0 && (
                   <div className="space-y-2">
                     {outputParamForm.map((p, i) => (
@@ -1079,15 +1080,37 @@ export default function ScriptDetailPage() {
                 </div>
               )}
 
-              {/* 解析后的出参 */}
-              {executeResult.parsed_output && Object.keys(executeResult.parsed_output).length > 0 && (
+              {/* 解析后的出参 — 带定义元数据 */}
+              {(executeResult.parsed_output && Object.keys(executeResult.parsed_output).length > 0) && (
                 <div>
-                  <div className="text-[10px] uppercase tracking-wider text-blue-500 font-medium mb-1 flex items-center gap-1">📋 解析出参</div>
-                  <div className="grid grid-cols-2 gap-1 text-xs">
-                    {Object.entries(executeResult.parsed_output).map(([k, v]) => (
-                      <div key={k} className="flex items-center gap-2 p-1.5 rounded bg-blue-50 dark:bg-blue-500/5 border border-blue-100 dark:border-blue-500/10">
-                        <span className="font-mono text-[10px] text-muted-foreground shrink-0">{k}</span>
-                        <code className="font-mono text-emerald-600 dark:text-emerald-400 truncate">{JSON.stringify(v)}</code>
+                  <div className="text-[10px] uppercase tracking-wider text-blue-500 font-medium mb-1 flex items-center gap-1">📋 出参结果</div>
+                  <div className="space-y-1">
+                    {(viewScript?.output_params || []).map(op => {
+                      const val = executeResult.parsed_output?.[op.name]
+                      const found = val !== undefined
+                      return (
+                        <div key={op.name} className={cn(
+                          "flex items-center gap-3 p-2 rounded text-xs border",
+                          found
+                            ? "bg-blue-50 dark:bg-blue-500/5 border-blue-100 dark:border-blue-500/10"
+                            : "bg-gray-50 dark:bg-white/[0.02] border-gray-100 dark:border-white/[0.03] opacity-50"
+                        )}>
+                          <span className="font-mono font-medium w-24 shrink-0">{op.name}</span>
+                          <Badge variant="outline" className="text-[9px] h-4">{op.type}</Badge>
+                          {op.description && <span className="text-[10px] text-muted-foreground flex-1 truncate">{op.description}</span>}
+                          <code className={cn("font-mono text-xs shrink-0 max-w-[200px] truncate", found ? "text-emerald-600 dark:text-emerald-400" : "text-muted-foreground")}>
+                            {found ? JSON.stringify(val) : '—'}
+                          </code>
+                        </div>
+                      )
+                    })}
+                    {/* 只显示已定义出参中没匹配到的额外字段 */}
+                    {Object.keys(executeResult.parsed_output).filter(k => !(viewScript?.output_params || []).some(op => op.name === k)).map(k => (
+                      <div key={k} className="flex items-center gap-3 p-2 rounded text-xs border bg-amber-50 dark:bg-amber-500/5 border-amber-100 dark:border-amber-500/10">
+                        <span className="font-mono font-medium w-24 shrink-0">{k}</span>
+                        <Badge variant="outline" className="text-[9px] h-4">额外</Badge>
+                        <span className="text-[10px] text-muted-foreground flex-1">未在出参中定义</span>
+                        <code className="font-mono text-xs text-amber-600 dark:text-amber-400 shrink-0 max-w-[200px] truncate">{JSON.stringify(executeResult.parsed_output[k])}</code>
                       </div>
                     ))}
                   </div>
