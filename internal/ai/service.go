@@ -3,6 +3,7 @@ package ai
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"time"
@@ -46,6 +47,9 @@ func NewService(cfg *config.Config, llmClient *llm.Client, redisClient *rediscli
 	}
 }
 
+// LLMConfigHook 在 sysconfig 修改 LLM 设置后被调用(热生效)。nil 表示未设置。
+var LLMConfigHook func(cfg llm.Config)
+
 func (s *Service) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/v1/ai/agents", s.handleCreateAgent)
 	mux.HandleFunc("GET /api/v1/ai/agents", s.handleListAgents)
@@ -56,19 +60,23 @@ func (s *Service) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/v1/ai/plans", s.handleListPlans)
 	mux.HandleFunc("GET /api/v1/ai/rate-limit/{agent_id}", s.handleGetRateLimit)
 	mux.HandleFunc("POST /api/v1/ai/chat", s.handleChat)
+	mux.HandleFunc("GET /api/v1/ai/conversations", s.handleListConversations)
+	mux.HandleFunc("GET /api/v1/ai/conversations/{id}", s.handleGetConversation)
+	mux.HandleFunc("POST /api/v1/ai/conversations", s.handleSaveConversation)
 }
 
 func (s *Service) Start(ctx context.Context) error {
 	return s.engine.Start()
 }
 
-// handleChat 处理 AI 助手聊天请求:把用户 prompt 与可选历史透传给引擎,
-// 返回模型生成的文本。LLM 后端故障归为 502,便于前端区分请求错误与模型不可用。
+// handleChat 处理 AI 助手聊天请求。
+// req.stream=true 时返回 SSE(text/event-stream)流式输出; 否则返回 JSON。
 func (s *Service) handleChat(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		Prompt  string         `json:"prompt"`
-		AgentID string         `json:"agent_id"`
+		Prompt  string        `json:"prompt"`
+		AgentID string        `json:"agent_id"`
 		History []llm.Message `json:"history"`
+		Stream  bool          `json:"stream"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
@@ -78,6 +86,12 @@ func (s *Service) handleChat(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "prompt is required")
 		return
 	}
+
+	if req.Stream {
+		s.handleChatStream(w, r, &req)
+		return
+	}
+
 	out, err := s.engine.Chat(r.Context(), req.AgentID, req.Prompt, req.History)
 	if err != nil {
 		writeError(w, http.StatusBadGateway, err.Error())
@@ -85,6 +99,78 @@ func (s *Service) handleChat(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]string{"content": out})
+}
+
+// handleChatStream SSE 流式输出。
+func (s *Service) handleChatStream(w http.ResponseWriter, r *http.Request, req *struct {
+	Prompt  string        `json:"prompt"`
+	AgentID string        `json:"agent_id"`
+	History []llm.Message `json:"history"`
+	Stream  bool          `json:"stream"`
+}) {
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		writeError(w, http.StatusInternalServerError, "streaming not supported")
+		return
+	}
+
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+
+	ch, err := s.engine.ChatStream(r.Context(), req.AgentID, req.Prompt, req.History)
+	if err != nil {
+		fmt.Fprintf(w, "event: error\ndata: %s\n\n", err.Error())
+		flusher.Flush()
+		return
+	}
+
+	for token := range ch {
+		// SSE data 字段中的换行需转义; 简单实现: 用 JSON 字符串包裹 token。
+		b, _ := json.Marshal(token)
+		fmt.Fprintf(w, "data: %s\n\n", b)
+		flusher.Flush()
+	}
+	fmt.Fprint(w, "data: [DONE]\n\n")
+	flusher.Flush()
+}
+
+// UpdateLLMConfig 热更新 LLM 配置(sysconfig 修改 LLM 设置后调用)。
+func (s *Service) UpdateLLMConfig(cfg llm.Config) {
+	s.engine.UpdateClient(llm.NewClient(cfg))
+}
+
+// ——— 对话持久 ———
+
+func (s *Service) handleSaveConversation(w http.ResponseWriter, r *http.Request) {
+	var conv agentic.Conversation
+	if err := json.NewDecoder(r.Body).Decode(&conv); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	conv.TenantID = tenantFromCtx(r.Context())
+	if err := s.engine.SaveConversation(r.Context(), &conv); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, conv)
+}
+
+func (s *Service) handleListConversations(w http.ResponseWriter, r *http.Request) {
+	tenantID := tenantFromCtx(r.Context())
+	agentID := r.URL.Query().Get("agent_id")
+	convs := s.engine.LoadConversations(tenantID, agentID, 50)
+	writeJSON(w, http.StatusOK, convs)
+}
+
+func (s *Service) handleGetConversation(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	conv, err := s.engine.GetConversation(id)
+	if err != nil {
+		writeError(w, http.StatusNotFound, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, conv)
 }
 
 func (s *Service) handleCreateAgent(w http.ResponseWriter, r *http.Request) {

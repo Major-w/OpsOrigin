@@ -11,7 +11,9 @@ import (
 	"sync"
 	"time"
 
+	"github.com/opsorigin/core/internal/ai"
 	"github.com/opsorigin/core/pkg/config"
+	"github.com/opsorigin/core/pkg/llm"
 )
 
 // ConfigItem 描述一个可配置项的元数据。
@@ -283,12 +285,16 @@ func (s *Service) applyUpdate(key, value string) {
 		cfg.Auth.JWTSecret = value
 	case "OPSNEXUS_LLM_API_KEY":
 		cfg.LLM.APIKey = value
+		pushLLMUpdate(cfg)
 	case "OPSNEXUS_LLM_MODEL":
 		cfg.LLM.Model = value
+		pushLLMUpdate(cfg)
 	case "OPSNEXUS_LLM_BASE_URL":
 		cfg.LLM.BaseURL = value
+		pushLLMUpdate(cfg)
 	case "OPSNEXUS_LLM_TIMEOUT":
 		cfg.LLM.Timeout = atoiSafe(value, 60)
+		pushLLMUpdate(cfg)
 	case "OPSNEXUS_OUTBOX_POLL_INTERVAL":
 		cfg.Outbox.PollInterval = parseDurationSafe(value)
 	case "OPSNEXUS_OUTBOX_BATCH_SIZE":
@@ -317,6 +323,17 @@ func (s *Service) applyUpdate(key, value string) {
 		cfg.SSO.RedirectURL = value
 	case "OPSNEXUS_SSO_ISSUER_URL":
 		cfg.SSO.IssuerURL = value
+	}
+}
+
+func pushLLMUpdate(cfg *config.Config) {
+	if ai.LLMConfigHook != nil {
+		ai.LLMConfigHook(llm.Config{
+			APIKey:  cfg.LLM.APIKey,
+			Model:   cfg.LLM.Model,
+			BaseURL: cfg.LLM.BaseURL,
+			Timeout: time.Duration(cfg.LLM.Timeout) * time.Second,
+		})
 	}
 }
 

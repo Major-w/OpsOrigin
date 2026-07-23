@@ -27,13 +27,14 @@ import (
 // 存储当前为进程内 map(与仓库内 iam/notification 等服务一致)。
 // 多副本部署时如需持久化,应将 agents/plans 落到 Postgres(outbox 模式)。
 type Engine struct {
-	mu       sync.RWMutex
-	agents   map[string]*model.AgentInstance
-	plans    map[string]*model.ExecutionPlan
-	reg      *mcp.Registry
-	lim      ratelimit.RateLimiter
-	llmClient *llm.Client
-	ready    bool
+	mu          sync.RWMutex
+	agents      map[string]*model.AgentInstance
+	plans       map[string]*model.ExecutionPlan
+	convs       map[string]*Conversation // threadID -> conversation
+	reg         *mcp.Registry
+	lim         ratelimit.RateLimiter
+	llmClient   *llm.Client
+	ready       bool
 }
 
 // NewEngine 构造引擎并注册内建工具。
@@ -41,9 +42,10 @@ type Engine struct {
 // 此处仅注册与引擎强耦合的、安全的内建工具。
 func NewEngine(reg *mcp.Registry, lim ratelimit.RateLimiter, llmClient *llm.Client) *Engine {
 	e := &Engine{
-		agents:   make(map[string]*model.AgentInstance),
-		plans:    make(map[string]*model.ExecutionPlan),
-		reg:      reg,
+		agents:    make(map[string]*model.AgentInstance),
+		plans:     make(map[string]*model.ExecutionPlan),
+		convs:     make(map[string]*Conversation),
+		reg:       reg,
 		lim:      lim,
 		llmClient: llmClient,
 	}
@@ -326,4 +328,126 @@ func (e *Engine) agentCount() int {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
 	return len(e.agents)
+}
+
+// ——— 热更新 ———
+
+// UpdateClient 热更新底层 LLM 客户端(sysconfig 修改 LLM 配置后调用)。
+func (e *Engine) UpdateClient(c *llm.Client) {
+	e.mu.Lock()
+	e.llmClient = c
+	e.mu.Unlock()
+	slog.Info("engine llm client updated")
+}
+
+// ——— 流式输出 ———
+
+// ChatStream 非流式 Chat 的流式版本:逐 token 推送到返回的 channel。
+// 调用方负责消费 channel 直到关闭; ctx 取消时后台收束。
+func (e *Engine) ChatStream(ctx context.Context, agentID, prompt string, history []llm.Message) (<-chan string, error) {
+	if prompt == "" {
+		return nil, fmt.Errorf("prompt is required")
+	}
+	if e.lim != nil && agentID != "" && !e.lim.Allow(agentID) {
+		return nil, fmt.Errorf("rate limit exceeded for agent %s", agentID)
+	}
+
+	const sysPrompt = "你是 OpsOrigin 智能运维助手,帮助用户完成主机巡检、故障排查、报告生成等运维任务。回答应简洁、专业、可操作。"
+	msgs := []llm.Message{{Role: "system", Content: sysPrompt}}
+	if len(history) > 20 {
+		history = history[len(history)-20:]
+	}
+	msgs = append(msgs, history...)
+	msgs = append(msgs, llm.Message{Role: "user", Content: prompt})
+
+	chunkCh, err := e.llmClient.StreamChat(ctx, llm.ChatRequest{
+		Messages:    msgs,
+		MaxTokens:   1024,
+		Temperature: 0.7,
+	})
+	if err != nil {
+		return nil, err
+	}
+	out := make(chan string, 32)
+	go func() {
+		defer close(out)
+		for c := range chunkCh {
+			if c.Content != "" {
+				out <- c.Content
+			}
+		}
+	}()
+	return out, nil
+}
+
+// ——— 对话持久(内存) ———
+
+// Conversation 一次完整对话(多轮)。
+type Conversation struct {
+	ID        string       `json:"id"`
+	TenantID  string       `json:"tenant_id"`
+	AgentID   string       `json:"agent_id"`
+	Title     string       `json:"title"`
+	Messages  []llm.Message `json:"messages"`
+	CreatedAt time.Time    `json:"created_at"`
+	UpdatedAt time.Time    `json:"updated_at"`
+}
+
+// SaveConversation 保存/更新对话。ID 为空时自动生成; title 取首条 user 消息前 40 字。
+func (e *Engine) SaveConversation(ctx context.Context, conv *Conversation) error {
+	if conv.TenantID == "" {
+		conv.TenantID = "default"
+	}
+	now := time.Now()
+	if conv.ID == "" {
+		conv.ID = uuid.New().String()
+		conv.CreatedAt = now
+	}
+	if conv.Title == "" && len(conv.Messages) > 0 {
+		conv.Title = trunc(conv.Messages[0].Content, 40)
+	}
+	conv.UpdatedAt = now
+	e.mu.Lock()
+	e.convs[conv.ID] = conv
+	e.mu.Unlock()
+	return nil
+}
+
+// LoadConversations 按 tenant + agent 加载最近 n 条对话摘要(不含 Messages, 需按单条 GetConversation 取详情)。
+func (e *Engine) LoadConversations(tenantID, agentID string, limit int) []*Conversation {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	var out []*Conversation
+	for _, c := range e.convs {
+		if c.TenantID != tenantID {
+			continue
+		}
+		if agentID != "" && c.AgentID != agentID {
+			continue
+		}
+		out = append(out, c)
+		if len(out) >= limit {
+			break
+		}
+	}
+	return out
+}
+
+// GetConversation 取单条对话详情(含 Messages)。
+func (e *Engine) GetConversation(id string) (*Conversation, error) {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	c, ok := e.convs[id]
+	if !ok {
+		return nil, fmt.Errorf("conversation not found: %s", id)
+	}
+	return c, nil
+}
+
+func trunc(s string, n int) string {
+	runes := []rune(s)
+	if len(runes) <= n {
+		return s
+	}
+	return string(runes[:n])
 }

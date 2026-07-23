@@ -17,6 +17,28 @@ interface Message {
   timestamp: Date
 }
 
+// 轻量内联 Markdown→HTML。生产中可替换为 react-markdown+remark-gfm 获得完整 GFM 支持
+// (cd web-next && npm install react-markdown remark-gfm)
+function renderMarkdown(text: string): string {
+  let html = text
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+  // 代码块 ```...```
+  html = html.replace(/```(\w*)\n([\s\S]*?)```/g, '<pre class="rounded bg-gray-900 text-gray-100 p-3 my-2 overflow-x-auto text-xs"><code>$2</code></pre>')
+  // 行内代码 `...`
+  html = html.replace(/`([^`]+)`/g, '<code class="rounded bg-gray-200 dark:bg-gray-700 px-1 text-xs">$1</code>')
+  // 加粗 **...**
+  html = html.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
+  // 斜体 *...*
+  html = html.replace(/\*([^*\n]+?)\*/g, '<em>$1</em>')
+  // 链接 [text](url)
+  html = html.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a class="text-blue-500 underline" href="$2" target="_blank">$1</a>')
+  // 换行
+  html = html.replace(/\n/g, '<br/>')
+  return html
+}
+
 const QUICK_ACTIONS = [
   { label: '查询主机状态', icon: Server, prompt: '帮我查询所有主机的运行状态' },
   { label: '执行巡检任务', icon: Terminal, prompt: '执行一次自动化巡检任务' },
@@ -25,7 +47,7 @@ const QUICK_ACTIONS = [
 ]
 
 export default function AIPage() {
-  const { agents, fetchAgents, chat } = useAIStore()
+  const { agents, fetchAgents, streamChat } = useAIStore()
   const { theme } = useThemeStore()
   const [messages, setMessages] = useState<Message[]>([
     { id: '0', role: 'assistant', content: '你好！我是 OpsOrigin AI 助手，可以帮你完成运维任务。你可以直接告诉我需要什么，或者选择下方的快捷操作。', timestamp: new Date() }
@@ -55,23 +77,24 @@ export default function AIPage() {
     setInput('')
     setLoading(true)
 
-    // 透传最近对话历史给后端,保持多轮连贯(最多最近 20 条)
+    // 预留 AI 消息位(流式填充)
+    const aiId = (Date.now() + 1).toString()
+    const aiMsg: Message = { id: aiId, role: 'assistant', content: '', timestamp: new Date() }
+    setMessages(prev => [...prev, aiMsg])
+
     const history = next
       .filter(m => m.role === 'user' || m.role === 'assistant')
       .slice(-20)
       .map(m => ({ role: m.role, content: m.content }))
 
-    const reply = await chat(content, history)
-    setLoading(false)
-    if (reply == null) return // 错误已由 store 内 toast 提示
-
-    const aiMsg: Message = {
-      id: (Date.now() + 1).toString(),
-      role: 'assistant',
-      content: reply,
-      timestamp: new Date()
-    }
-    setMessages(prev => [...prev, aiMsg])
+    // SSE 流式接收 token
+    let full = ''
+    await streamChat(content, (token) => {
+      full += token
+      setMessages(prev => prev.map(m => m.id === aiId ? { ...m, content: full } : m))
+    }, () => {
+      setLoading(false)
+    }, history)
   }
 
   return (
@@ -101,12 +124,14 @@ export default function AIPage() {
                   </div>
                 )}
                 <div className={cn(
-                  "max-w-[70%] rounded-lg px-4 py-2 text-sm whitespace-pre-wrap",
+                  "max-w-[70%] rounded-lg px-4 py-2 text-sm",
                   msg.role === 'user'
-                    ? "bg-emerald-600 text-white"
-                    : "bg-gray-100 dark:bg-gray-800"
+                    ? "bg-emerald-600 text-white whitespace-pre-wrap"
+                    : "bg-gray-100 dark:bg-gray-800 prose-sm max-w-none"
                 )}>
-                  {msg.content}
+                  {msg.role === 'user' ? msg.content : (
+                    <div dangerouslySetInnerHTML={{ __html: renderMarkdown(msg.content) }} />
+                  )}
                 </div>
                 {msg.role === 'user' && (
                   <div className="h-8 w-8 rounded-full bg-gray-200 dark:bg-gray-700 flex items-center justify-center shrink-0">

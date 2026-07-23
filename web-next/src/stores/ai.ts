@@ -16,6 +16,9 @@ interface AIState {
   createAgent: (data: any) => Promise<boolean>
   executePlan: (data: any) => Promise<boolean>
   chat: (prompt: string, history?: { role: string; content: string }[]) => Promise<string | null>
+  streamChat: (prompt: string, onToken: (t: string) => void, onDone: () => void, history?: { role: string; content: string }[]) => Promise<void>
+  loadConversations: (agentId?: string) => Promise<any[]>
+  saveConversation: (conv: any) => Promise<any | null>
 }
 
 export const useAIStore = create<AIState>((set, get) => ({
@@ -81,6 +84,62 @@ export const useAIStore = create<AIState>((set, get) => ({
       return res.content
     } catch (e: any) {
       toast.error(`AI 响应失败: ${e.message}`)
+      return null
+    }
+  },
+  streamChat: async (prompt, onToken, onDone, history = []) => {
+    try {
+      const resp = await fetch(`${window.location.origin}/api/v1/ai/chat`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ prompt, history, stream: true }),
+      })
+      if (!resp.ok) {
+        toast.error(`AI 响应失败: ${resp.status}`)
+        onDone()
+        return
+      }
+      const reader = resp.body?.getReader()
+      if (!reader) { onDone(); return }
+      const decoder = new TextDecoder()
+      let buf = ''
+      while (true) {
+        const { done, value } = await reader.read()
+        if (done) break
+        buf += decoder.decode(value, { stream: true })
+        const lines = buf.split('\n')
+        buf = lines.pop() || ''
+        for (const line of lines) {
+          if (!line.startsWith('data: ')) continue
+          const data = line.slice(6)
+          if (data === '[DONE]') { onDone(); return }
+          try {
+            const token = JSON.parse(data) as string
+            onToken(token)
+          } catch {}
+        }
+      }
+      onDone()
+    } catch (e: any) {
+      toast.error(`AI 流式响应失败: ${e.message}`)
+      onDone()
+    }
+  },
+  loadConversations: async (agentId) => {
+    try {
+      const params = agentId ? `?agent_id=${encodeURIComponent(agentId)}` : ''
+      return await apiFetch<any[]>(`/ai/conversations${params}`)
+    } catch {
+      return []
+    }
+  },
+  saveConversation: async (conv) => {
+    try {
+      return await apiFetch<any>('/ai/conversations', {
+        method: 'POST',
+        body: JSON.stringify(conv),
+      })
+    } catch {
       return null
     }
   },
