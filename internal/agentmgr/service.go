@@ -503,7 +503,7 @@ func (s *Service) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/v1/sandbox/exec", s.handleExecSandbox)
 	// Remote Execution (SSH)
 	mux.HandleFunc("POST /api/v1/agents/batch-execute", s.handleBatchExecute)
-	mux.HandleFunc("GET /api/v1/agents/exec-tasks/{task_id}", s.handleGetExecTask)
+	mux.HandleFunc("GET /api/v1/agent-tasks/{task_id}", s.handleGetExecTask)
 	mux.HandleFunc("POST /api/v1/agents/ssh-execute", s.handleSSHExecute)
 	// Proxy CRUD
 	mux.HandleFunc("GET /api/v1/proxies", s.handleListProxies)
