@@ -22,6 +22,7 @@ export interface ScriptVersion {
 export interface ExecutionResult {
   id: string; script_id: string; status: string; output: string; error?: string
   exit_code: number; duration_ms: number; params?: Record<string,string>
+  parsed_output?: Record<string,any>
   run_as?: string; started_at: string; finished_at?: string
 }
 

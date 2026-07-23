@@ -531,6 +531,7 @@ func (s *Service) executeScript(sc *Script, req *ExecuteRequest) *ExecutionResul
 		}
 		result.Output = output
 		result.finish("success", exitCode, "", started)
+		result.parseOutput(sc.OutputParams)
 		return result
 	}
 
@@ -658,6 +659,7 @@ func (s *Service) executeScript(sc *Script, req *ExecuteRequest) *ExecutionResul
 		result.Status = "success"
 		result.ExitCode = 0
 	}
+	result.parseOutput(sc.OutputParams)
 	return result
 }
 
@@ -678,6 +680,22 @@ func buildParamEnv(params map[string]string) []string {
 		env = append(env, fmt.Sprintf("PARAM_%s=%s", strings.ToUpper(k), v))
 	}
 	return env
+}
+
+// parseOutput 按 OutputParams 定义从 stdout 中解析 JSON 出参。
+func (r *ExecutionResult) parseOutput(outputParams []ParamDef) {
+	if len(outputParams) == 0 || r.Output == "" { return }
+	// 尝试从 stdout 最后一行提取 JSON
+	lines := strings.Split(strings.TrimSpace(r.Output), "\n")
+	lastLine := lines[len(lines)-1]
+	var parsed map[string]any
+	if err := json.Unmarshal([]byte(lastLine), &parsed); err != nil { return }
+	// 只提取 OutputParams 中定义的字段
+	out := make(map[string]any)
+	for _, p := range outputParams {
+		if v, ok := parsed[p.Name]; ok { out[p.Name] = v }
+	}
+	if len(out) > 0 { r.ParsedOutput = out }
 }
 
 // diffVersions compares two script versions field by field.

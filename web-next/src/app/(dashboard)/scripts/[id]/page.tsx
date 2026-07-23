@@ -1079,6 +1079,21 @@ export default function ScriptDetailPage() {
                 </div>
               )}
 
+              {/* 解析后的出参 */}
+              {executeResult.parsed_output && Object.keys(executeResult.parsed_output).length > 0 && (
+                <div>
+                  <div className="text-[10px] uppercase tracking-wider text-blue-500 font-medium mb-1 flex items-center gap-1">📋 解析出参</div>
+                  <div className="grid grid-cols-2 gap-1 text-xs">
+                    {Object.entries(executeResult.parsed_output).map(([k, v]) => (
+                      <div key={k} className="flex items-center gap-2 p-1.5 rounded bg-blue-50 dark:bg-blue-500/5 border border-blue-100 dark:border-blue-500/10">
+                        <span className="font-mono text-[10px] text-muted-foreground shrink-0">{k}</span>
+                        <code className="font-mono text-emerald-600 dark:text-emerald-400 truncate">{JSON.stringify(v)}</code>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
               {/* stderr — 红色终端风格 */}
               {executeResult.error && (
                 <div>

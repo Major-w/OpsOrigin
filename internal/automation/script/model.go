@@ -66,18 +66,19 @@ type ExecuteRequest struct {
 
 // ExecutionResult 脚本执行结果
 type ExecutionResult struct {
-	ID         string    `json:"id"`
-	ScriptID   string    `json:"script_id"`
-	TenantID   string    `json:"tenant_id"`
-	Status     string    `json:"status"` // running / success / failed / timeout
-	Output     string    `json:"output"`
-	Error      string    `json:"error,omitempty"`
-	ExitCode   int       `json:"exit_code"`
-	Duration   int64     `json:"duration_ms"`
-	Params     map[string]string `json:"params,omitempty"`
-	RunAs      string    `json:"run_as,omitempty"`
-	StartedAt time.Time `json:"started_at"`
-	FinishedAt *time.Time `json:"finished_at,omitempty"`
+	ID           string            `json:"id"`
+	ScriptID     string            `json:"script_id"`
+	TenantID     string            `json:"tenant_id"`
+	Status       string            `json:"status"`
+	Output       string            `json:"output"`
+	Error        string            `json:"error,omitempty"`
+	ExitCode     int               `json:"exit_code"`
+	Duration     int64             `json:"duration_ms"`
+	Params       map[string]string `json:"params,omitempty"`
+	ParsedOutput map[string]any    `json:"parsed_output,omitempty"`
+	RunAs        string            `json:"run_as,omitempty"`
+	StartedAt    time.Time         `json:"started_at"`
+	FinishedAt   *time.Time        `json:"finished_at,omitempty"`
 }
 
 // DiffResult 版本比对结果
