@@ -15,6 +15,7 @@ type Provider struct {
 	jwtManager *JWTManager
 	ldap       *LDAPProvider
 	sso        *SSOProvider
+	devMode    bool
 }
 
 type Claims struct {
@@ -29,6 +30,7 @@ func NewProvider(secret string, ldapCfg *LDAPProvider, ssoCfg *SSOProvider) *Pro
 		jwtManager: NewJWTManager(secret),
 		ldap:       ldapCfg,
 		sso:        ssoCfg,
+		devMode:    secret == "opsnexus-dev-secret-do-not-use-in-production",
 	}
 }
 
@@ -108,6 +110,18 @@ func (p *Provider) Middleware(next http.Handler) http.Handler {
 			return
 		}
 		if path == "/api/v1/agents/batch-install" {
+			next.ServeHTTP(w, r)
+			return
+		}
+
+		// DEV 模式：JWT secret 是默认值时自动注入 admin 角色，免登录
+		if p.devMode {
+			ctx := context.WithValue(r.Context(), "role", "admin")
+			ctx = context.WithValue(ctx, "tenant_id", "default")
+			ctx = context.WithValue(ctx, "user_id", "dev")
+			r.Header.Set("X-Principal-Type", "human")
+			r.Header.Set("X-Principal-ID", "dev")
+			r = r.WithContext(ctx)
 			next.ServeHTTP(w, r)
 			return
 		}
