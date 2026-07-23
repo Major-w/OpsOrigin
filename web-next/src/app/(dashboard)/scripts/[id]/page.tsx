@@ -521,7 +521,7 @@ export default function ScriptDetailPage() {
                     <Plus className="h-3 w-3 mr-1" />添加参数
                   </Button>
                 </div>
-                <p className="text-[10px] text-muted-foreground mb-2">入参通过 <code className="bg-muted px-1 rounded">stdin</code> 传入脚本，出参从 <code className="bg-muted px-1 rounded">stdout</code>/<code className="bg-muted px-1 rounded">stderr</code> 捕获</p>
+                <p className="text-[10px] text-muted-foreground mb-2">参数通过环境变量注入：<code className="bg-muted px-1 rounded">PARAM_大写参数名</code>，如 <code className="bg-muted px-1 rounded">$PARAM_HOST</code> (Shell) / <code className="bg-muted px-1 rounded">os.environ['PARAM_HOST']</code> (Python)</p>
                 {paramForm.length > 0 && (
                   <div className="space-y-1.5">
                     {paramForm.map((p, i) => (
