@@ -558,7 +558,7 @@ export default function ScriptDetailPage() {
                     <Plus className="h-3 w-3 mr-1" />添加参数
                   </Button>
                 </div>
-                <p className="text-[10px] text-muted-foreground mb-2">脚本末尾输出 JSON 或 <code className="bg-muted px-1 rounded">KEY=VALUE</code> 行，自动提取字段并格式化展示</p>
+                <p className="text-[10px] text-muted-foreground mb-2">脚本中用 <code className="bg-muted px-1 rounded">OUT_变量名=值</code> 输出动态内容，如 <code className="bg-muted px-1 rounded">OUT_hostname=$(hostname)</code>，系统自动提取并格式化</p>
                 {outputParamForm.length > 0 && (
                   <div className="space-y-2">
                     {outputParamForm.map((p, i) => (

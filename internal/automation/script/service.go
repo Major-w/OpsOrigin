@@ -707,14 +707,16 @@ func (r *ExecutionResult) parseOutput(outputParams []ParamDef) {
 		if len(out) > 0 { r.ParsedOutput = out; return }
 	}
 
-	// 策略3: KEY=VALUE 行 (匹配 OutputParams 中定义的字段名)
+	// 策略3: KV行 — 匹配 OutputParams 中定义的名字, 也支持 OUT_<NAME>=<VALUE> 前缀
 	for _, line := range lines {
 		line = strings.TrimSpace(line)
-		if idx := strings.Index(line, "="); idx > 0 {
-			k, v := line[:idx], line[idx+1:]
-			for _, p := range outputParams {
-				if p.Name == k { out[k] = v }
-			}
+		eq := strings.Index(line, "=")
+		if eq <= 0 { continue }
+		k, v := line[:eq], line[eq+1:]
+		// 去掉 OUT_ 前缀 (约定: 脚本中用 OUT_HOSTNAME=value 输出)
+		if strings.HasPrefix(k, "OUT_") { k = k[4:] }
+		for _, p := range outputParams {
+			if p.Name == k { out[k] = v }
 		}
 	}
 	if len(out) > 0 { r.ParsedOutput = out }
