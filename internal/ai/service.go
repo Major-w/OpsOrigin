@@ -83,10 +83,11 @@ func (s *Service) Start(ctx context.Context) error {
 // req.stream=true 时返回 SSE(text/event-stream)流式输出; 否则返回 JSON。
 func (s *Service) handleChat(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		Prompt  string        `json:"prompt"`
-		AgentID string        `json:"agent_id"`
-		History []llm.Message `json:"history"`
-		Stream  bool          `json:"stream"`
+		Prompt    string        `json:"prompt"`
+		AgentID   string        `json:"agent_id"`
+		History   []llm.Message `json:"history"`
+		Stream    bool          `json:"stream"`
+		Reasoning bool          `json:"reasoning"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
@@ -102,6 +103,17 @@ func (s *Service) handleChat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if req.Reasoning && !req.Stream {
+		thinking, answer, err := s.engine.ChatReasoning(r.Context(), req.AgentID, req.Prompt, req.History)
+		if err != nil {
+			writeError(w, http.StatusBadGateway, err.Error())
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]string{"content": answer, "thinking": thinking})
+		return
+	}
+
 	out, err := s.engine.Chat(r.Context(), req.AgentID, req.Prompt, req.History)
 	if err != nil {
 		writeError(w, http.StatusBadGateway, err.Error())
@@ -113,10 +125,11 @@ func (s *Service) handleChat(w http.ResponseWriter, r *http.Request) {
 
 // handleChatStream SSE 流式输出。
 func (s *Service) handleChatStream(w http.ResponseWriter, r *http.Request, req *struct {
-	Prompt  string        `json:"prompt"`
-	AgentID string        `json:"agent_id"`
-	History []llm.Message `json:"history"`
-	Stream  bool          `json:"stream"`
+	Prompt    string        `json:"prompt"`
+	AgentID   string        `json:"agent_id"`
+	History   []llm.Message `json:"history"`
+	Stream    bool          `json:"stream"`
+	Reasoning bool          `json:"reasoning"`
 }) {
 	flusher, ok := w.(http.Flusher)
 	if !ok {

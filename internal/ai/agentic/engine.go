@@ -7,6 +7,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -135,6 +136,20 @@ func (e *Engine) Start() error {
 // 与 ExecutePlan 的"无 Tool 步骤"共用底层 llm.Client,但此处直接构造消息,
 // 支持把对话历史透传进来,使多轮对话连贯。
 func (e *Engine) Chat(ctx context.Context, agentID, prompt string, history []llm.Message) (string, error) {
+	return e.chatImpl(ctx, agentID, prompt, history, false)
+}
+
+// ChatReasoning 思维链模式:返回思考过程和最终答案。
+func (e *Engine) ChatReasoning(ctx context.Context, agentID, prompt string, history []llm.Message) (thinking string, answer string, err error) {
+	full, err := e.chatImpl(ctx, agentID, prompt, history, true)
+	if err != nil {
+		return "", "", err
+	}
+	thinking, answer = parseCoT(full)
+	return
+}
+
+func (e *Engine) chatImpl(ctx context.Context, agentID, prompt string, history []llm.Message, reasoning bool) (string, error) {
 	if prompt == "" {
 		return "", fmt.Errorf("prompt is required")
 	}
@@ -147,7 +162,12 @@ func (e *Engine) Chat(ctx context.Context, agentID, prompt string, history []llm
 		history = history[len(history)-20:]
 	}
 	msgs = append(msgs, history...)
-	msgs = append(msgs, llm.Message{Role: "user", Content: prompt})
+
+	userPrompt := prompt
+	if reasoning {
+		userPrompt = "请按以下格式回答：\n\n<think>\n先进行分步推理分析\n</think>\n<answer>\n再给出最终答案\n</answer>\n\n用户问题：" + prompt
+	}
+	msgs = append(msgs, llm.Message{Role: "user", Content: userPrompt})
 
 	resp, err := e.llmClient.Chat(ctx, llm.ChatRequest{
 		Messages:    msgs,
@@ -432,6 +452,10 @@ func (e *Engine) UpdateClient(c *llm.Client) {
 // ChatStream 非流式 Chat 的流式版本:逐 token 推送到返回的 channel。
 // 调用方负责消费 channel 直到关闭; ctx 取消时后台收束。
 func (e *Engine) ChatStream(ctx context.Context, agentID, prompt string, history []llm.Message) (<-chan string, error) {
+	return e.chatStreamImpl(ctx, agentID, prompt, history, false)
+}
+
+func (e *Engine) chatStreamImpl(ctx context.Context, agentID, prompt string, history []llm.Message, reasoning bool) (<-chan string, error) {
 	if prompt == "" {
 		return nil, fmt.Errorf("prompt is required")
 	}
@@ -445,7 +469,11 @@ func (e *Engine) ChatStream(ctx context.Context, agentID, prompt string, history
 		history = history[len(history)-20:]
 	}
 	msgs = append(msgs, history...)
-	msgs = append(msgs, llm.Message{Role: "user", Content: prompt})
+	userPrompt := prompt
+	if reasoning {
+		userPrompt = "请按以下格式回答：\n\n<think>\n先进行分步推理分析\n</think>\n<answer>\n再给出最终答案\n</answer>\n\n用户问题：" + prompt
+	}
+	msgs = append(msgs, llm.Message{Role: "user", Content: userPrompt})
 
 	chunkCh, err := e.llmClient.StreamChat(ctx, llm.ChatRequest{
 		Messages:    msgs,
@@ -547,6 +575,31 @@ func (e *Engine) GetConversation(id string) (*Conversation, error) {
 		return nil, fmt.Errorf("conversation not found: %s", id)
 	}
 	return c, nil
+}
+
+// parseCoT 从 CoT 格式的回复中提取思考过程和最终答案。
+func parseCoT(full string) (thinking string, answer string) {
+	// 尝试解析 <think>...</think> 和 <answer>...</answer>
+	thinkStart := strings.Index(full, "<think>")
+	thinkEnd := strings.Index(full, "</think>")
+	answerStart := strings.Index(full, "<answer>")
+	answerEnd := strings.Index(full, "</answer>")
+
+	if thinkStart >= 0 && thinkEnd > thinkStart {
+		thinking = strings.TrimSpace(full[thinkStart+len("<think>"): thinkEnd])
+	}
+	if answerStart >= 0 && answerEnd > answerStart {
+		answer = strings.TrimSpace(full[answerStart+len("<answer>"): answerEnd])
+	}
+	if answer == "" {
+		// 没有 <answer> 标签: 把 <think> 之外的部分当做答案
+		if thinkEnd > 0 && thinkEnd < len(full) {
+			answer = strings.TrimSpace(full[thinkEnd+len("</think>"):])
+		} else {
+			answer = full
+		}
+	}
+	return
 }
 
 func trunc(s string, n int) string {

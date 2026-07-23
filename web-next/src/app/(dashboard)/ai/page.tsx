@@ -15,6 +15,7 @@ interface Message {
   id: string
   role: 'user' | 'assistant'
   content: string
+  thinking?: string
   timestamp: Date
 }
 
@@ -58,6 +59,7 @@ export default function AIPage() {
   const [loading, setLoading] = useState(false)
   const [selectedAgent, setSelectedAgent] = useState<any>(null)
   const [showHistory, setShowHistory] = useState(false)
+  const [reasoning, setReasoning] = useState(false)
   const [conversations, setConversations] = useState<any[]>([])
   const messagesEndRef = useRef<HTMLDivElement>(null)
 
@@ -118,7 +120,24 @@ export default function AIPage() {
       .slice(-20)
       .map(m => ({ role: m.role, content: m.content }))
 
-    // SSE 流式接收 token
+    // CoT 模式:走非流式, 拿到 thinking + answer 一起渲染
+    if (reasoning) {
+      setLoading(true)
+      const aiId = (Date.now() + 1).toString()
+      const aiMsg: Message = { id: aiId, role: 'assistant', content: '...', timestamp: new Date() }
+      setMessages(prev => [...prev, aiMsg])
+
+      try {
+        const resp = await fetch('/api/v1/ai/chat', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ prompt: content, history, stream: false, reasoning: true, agent_id: selectedAgent?.id }),
+        })
+        const data = await resp.json()
+        setMessages(prev => prev.map(m => m.id === aiId ? { ...m, content: data.content || data.error || '无应答', thinking: data.thinking } : m))
+      } catch { setMessages(prev => prev.filter(m => m.id !== aiId)) }
+      setLoading(false)
+      return
+    }
     let full = ''
     await streamChat(content, (token) => {
       full += token
@@ -139,6 +158,7 @@ export default function AIPage() {
           <p className="text-sm text-muted-foreground">智能运维助手，帮你高效完成运维任务</p>
         </div>
         <div className="flex gap-2">
+          <Button variant={reasoning ? "default" : "outline"} size="sm" onClick={() => setReasoning(!reasoning)}>💭</Button>
           <Button variant="outline" size="sm" onClick={() => router.push('/ai/analytics')}><BarChart3 className="h-4 w-4" />分析</Button>
           <Button variant="outline" size="sm" onClick={handleOpenHistory}><History className="h-4 w-4" />{showHistory ? '返回' : '历史'}</Button>
           <Button variant="outline" size="sm" onClick={() => router.push('/ai/settings')}><Settings className="h-4 w-4" />设置</Button>
@@ -182,7 +202,15 @@ export default function AIPage() {
                     : "bg-gray-100 dark:bg-gray-800 prose-sm max-w-none"
                 )}>
                   {msg.role === 'user' ? msg.content : (
-                    <div dangerouslySetInnerHTML={{ __html: renderMarkdown(msg.content) }} />
+                    <>
+                      {msg.thinking && (
+                        <details className="mb-2">
+                          <summary className="text-xs text-muted-foreground cursor-pointer hover:text-foreground">💭 思维链 ({msg.thinking.slice(0, 30)}...)</summary>
+                          <div className="mt-1 p-2 rounded bg-gray-200 dark:bg-gray-700 text-xs whitespace-pre-wrap text-muted-foreground">{msg.thinking}</div>
+                        </details>
+                      )}
+                      <div dangerouslySetInnerHTML={{ __html: renderMarkdown(msg.content) }} />
+                    </>
                   )}
                 </div>
                 {msg.role === 'user' && (
