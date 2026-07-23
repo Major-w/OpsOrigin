@@ -28,10 +28,10 @@ interface NavGroup {
 
 const navGroups: (NavItem | NavGroup)[] = [
   { to: '/dashboard', label: '仪表盘', icon: LayoutDashboard },
-  { to: '/guide', label: '接入指引', icon: BookOpen },
   {
     label: '基础功能管理', icon: Settings, items: [
       { to: '/resources', label: '资源纳管', icon: Server },
+      { to: '/guide', label: '接入指引', icon: BookOpen },
       { to: '/credentials', label: '凭证管理', icon: Key },
       { to: '/lowcode', label: '低代码编排', icon: Blocks },
       { to: '/scripts', label: '脚本管理', icon: Terminal },

@@ -1,6 +1,6 @@
 'use client'
 
-import * as React from 'react'
+import React, { useState } from 'react'
 import { Copy, Check, Terminal, Server, Cloud, Network, ShieldCheck, Rocket, Cpu, Database, Globe, AlertTriangle, BookOpen, Boxes, Container, ArrowRight } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
 import { Card, CardHeader, CardTitle, CardDescription, CardContent } from '@/components/ui/card'
