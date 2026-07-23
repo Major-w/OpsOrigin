@@ -140,10 +140,7 @@ func (e *Engine) Chat(ctx context.Context, agentID, prompt string, history []llm
 		return "", fmt.Errorf("rate limit exceeded for agent %s", agentID)
 	}
 
-	const sysPrompt = "你是 OpsOrigin 智能运维助手,帮助用户完成主机巡检、故障排查、报告生成等运维任务。回答应简洁、专业、可操作。"
-
-	msgs := []llm.Message{{Role: "system", Content: sysPrompt}}
-	// 透传历史(限制最近 20 条,避免超出上下文窗口)
+	msgs := []llm.Message{{Role: "system", Content: e.resolveSystemPrompt(agentID)}}
 	if len(history) > 20 {
 		history = history[len(history)-20:]
 	}
@@ -332,6 +329,19 @@ func (e *Engine) agentCount() int {
 	return len(e.agents)
 }
 
+// resolveSystemPrompt 按 agentID 查找 Agent 的 system_prompt, 未设时返回默认值。
+func (e *Engine) resolveSystemPrompt(agentID string) string {
+	if agentID != "" {
+		e.mu.RLock()
+		a, ok := e.agents[agentID]
+		e.mu.RUnlock()
+		if ok && a.SystemPrompt != "" {
+			return a.SystemPrompt
+		}
+	}
+	return "你是 OpsOrigin 智能运维助手,帮助用户完成主机巡检、故障排查、报告生成等运维任务。回答应简洁、专业、可操作。"
+}
+
 // ——— 热更新 ———
 
 // UpdateClient 热更新底层 LLM 客户端(sysconfig 修改 LLM 配置后调用)。
@@ -354,7 +364,7 @@ func (e *Engine) ChatStream(ctx context.Context, agentID, prompt string, history
 		return nil, fmt.Errorf("rate limit exceeded for agent %s", agentID)
 	}
 
-	const sysPrompt = "你是 OpsOrigin 智能运维助手,帮助用户完成主机巡检、故障排查、报告生成等运维任务。回答应简洁、专业、可操作。"
+	sysPrompt := e.resolveSystemPrompt(agentID)
 	msgs := []llm.Message{{Role: "system", Content: sysPrompt}}
 	if len(history) > 20 {
 		history = history[len(history)-20:]

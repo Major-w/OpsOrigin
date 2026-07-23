@@ -184,8 +184,9 @@ func (s *Service) handleGetConversation(w http.ResponseWriter, r *http.Request) 
 
 func (s *Service) handleCreateAgent(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		Name      string `json:"name"`
-		ModelName string `json:"model_name"`
+		Name         string `json:"name"`
+		ModelName    string `json:"model_name"`
+		SystemPrompt string `json:"system_prompt"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
@@ -193,9 +194,10 @@ func (s *Service) handleCreateAgent(w http.ResponseWriter, r *http.Request) {
 	}
 
 	agent := &model.AgentInstance{
-		Name:      req.Name,
-		ModelName: req.ModelName,
-		TenantID:  tenantFromCtx(r.Context()),
+		Name:         req.Name,
+		ModelName:    req.ModelName,
+		SystemPrompt: req.SystemPrompt,
+		TenantID:     tenantFromCtx(r.Context()),
 	}
 
 	if err := s.engine.CreateAgent(r.Context(), agent); err != nil {
