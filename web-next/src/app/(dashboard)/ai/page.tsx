@@ -140,7 +140,7 @@ export default function AIPage() {
         </div>
         <div className="flex gap-2">
           <Button variant="outline" size="sm" onClick={handleOpenHistory}><History className="h-4 w-4" />{showHistory ? '返回' : '历史'}</Button>
-          <Button variant="outline" size="sm" onClick={() => router.push('/system')}><Settings className="h-4 w-4" />设置</Button>
+          <Button variant="outline" size="sm" onClick={() => router.push('/ai/settings')}><Settings className="h-4 w-4" />设置</Button>
         </div>
       </div>
 
