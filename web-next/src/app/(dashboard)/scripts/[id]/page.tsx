@@ -516,12 +516,22 @@ export default function ScriptDetailPage() {
               {/* 入参定义 */}
               <div>
                 <div className="flex items-center justify-between mb-2">
-                  <label className="text-sm font-medium">入参定义</label>
+                  <div className="flex items-center gap-1.5">
+                    <label className="text-sm font-medium">入参定义</label>
+                    <span className="relative group cursor-help">
+                      <span className="text-[11px] text-muted-foreground border rounded-full w-4 h-4 inline-flex items-center justify-center hover:bg-muted">?</span>
+                      <span className="absolute left-0 bottom-full mb-1 w-64 p-2 rounded-md bg-gray-900 dark:bg-gray-800 text-white dark:text-gray-200 text-[10px] leading-relaxed opacity-0 group-hover:opacity-100 pointer-events-none transition-opacity z-50 shadow-lg">
+                        参数通过环境变量注入脚本进程：<br/>
+                        <code className="bg-emerald-500/20 px-1 rounded">PARAM_大写参数名</code><br/>
+                        Shell: <code className="bg-emerald-500/20 px-1 rounded">$PARAM_HOST</code><br/>
+                        Python: <code className="bg-emerald-500/20 px-1 rounded">os.environ['PARAM_HOST']</code>
+                      </span>
+                    </span>
+                  </div>
                   <Button variant="outline" size="sm" className="h-7 text-xs" onClick={() => setParamForm([...paramForm, { name: '', type: 'string', required: false, description: '', default_value: '' }])}>
                     <Plus className="h-3 w-3 mr-1" />添加参数
                   </Button>
                 </div>
-                <p className="text-[10px] text-muted-foreground mb-2">参数通过环境变量注入：<code className="bg-muted px-1 rounded">PARAM_大写参数名</code>，如 <code className="bg-muted px-1 rounded">$PARAM_HOST</code> (Shell) / <code className="bg-muted px-1 rounded">os.environ['PARAM_HOST']</code> (Python)</p>
                 {paramForm.length > 0 && (
                   <div className="space-y-1.5">
                     {paramForm.map((p, i) => (
