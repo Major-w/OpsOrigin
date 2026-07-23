@@ -2,6 +2,7 @@ package ai
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -25,7 +26,7 @@ type Service struct {
 	limiter  ratelimit.RateLimiter
 }
 
-func NewService(cfg *config.Config, llmClient *llm.Client, redisClient *redisclient.Client) *Service {
+func NewService(cfg *config.Config, llmClient *llm.Client, redisClient *redisclient.Client, db *sql.DB) *Service {
 	reg := mcp.NewRegistry()
 
 	var lim ratelimit.RateLimiter
@@ -37,7 +38,15 @@ func NewService(cfg *config.Config, llmClient *llm.Client, redisClient *rediscli
 		slog.Info("ai rate limiter: using in-memory backend")
 	}
 
-	eng := agentic.NewEngine(reg, lim, llmClient)
+	var convStore agentic.ConversationStore
+	if db != nil {
+		convStore = agentic.NewPGConvStore(db)
+		slog.Info("ai conversation store: using postgres backend")
+	} else {
+		slog.Info("ai conversation store: using in-memory backend")
+	}
+
+	eng := agentic.NewEngine(reg, lim, llmClient, convStore)
 
 	return &Service{
 		cfg:      cfg,

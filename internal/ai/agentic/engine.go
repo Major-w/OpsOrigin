@@ -30,7 +30,8 @@ type Engine struct {
 	mu          sync.RWMutex
 	agents      map[string]*model.AgentInstance
 	plans       map[string]*model.ExecutionPlan
-	convs       map[string]*Conversation // threadID -> conversation
+	convStore   ConversationStore // PG 优先; nil 时回退内存 convs map
+	convs       map[string]*Conversation
 	reg         *mcp.Registry
 	lim         ratelimit.RateLimiter
 	llmClient   *llm.Client
@@ -40,10 +41,11 @@ type Engine struct {
 // NewEngine 构造引擎并注册内建工具。
 // reg 中的业务工具应由调用方在 NewEngine 之后(或之前)通过 reg.Register 注入;
 // 此处仅注册与引擎强耦合的、安全的内建工具。
-func NewEngine(reg *mcp.Registry, lim ratelimit.RateLimiter, llmClient *llm.Client) *Engine {
+func NewEngine(reg *mcp.Registry, lim ratelimit.RateLimiter, llmClient *llm.Client, store ConversationStore) *Engine {
 	e := &Engine{
 		agents:    make(map[string]*model.AgentInstance),
 		plans:     make(map[string]*model.ExecutionPlan),
+		convStore: store,
 		convs:     make(map[string]*Conversation),
 		reg:       reg,
 		lim:      lim,
@@ -407,6 +409,10 @@ func (e *Engine) SaveConversation(ctx context.Context, conv *Conversation) error
 		conv.Title = trunc(conv.Messages[0].Content, 40)
 	}
 	conv.UpdatedAt = now
+
+	if e.convStore != nil {
+		return e.convStore.Save(ctx, conv)
+	}
 	e.mu.Lock()
 	e.convs[conv.ID] = conv
 	e.mu.Unlock()
@@ -415,6 +421,10 @@ func (e *Engine) SaveConversation(ctx context.Context, conv *Conversation) error
 
 // LoadConversations 按 tenant + agent 加载最近 n 条对话摘要(不含 Messages, 需按单条 GetConversation 取详情)。
 func (e *Engine) LoadConversations(tenantID, agentID string, limit int) []*Conversation {
+	if e.convStore != nil {
+		convs, _ := e.convStore.List(context.Background(), tenantID, agentID, limit)
+		return convs
+	}
 	e.mu.RLock()
 	defer e.mu.RUnlock()
 	var out []*Conversation
@@ -435,6 +445,16 @@ func (e *Engine) LoadConversations(tenantID, agentID string, limit int) []*Conve
 
 // GetConversation 取单条对话详情(含 Messages)。
 func (e *Engine) GetConversation(id string) (*Conversation, error) {
+	if e.convStore != nil {
+		c, err := e.convStore.Get(context.Background(), id)
+		if err != nil {
+			return nil, err
+		}
+		if c == nil {
+			return nil, fmt.Errorf("conversation not found: %s", id)
+		}
+		return c, nil
+	}
 	e.mu.RLock()
 	defer e.mu.RUnlock()
 	c, ok := e.convs[id]

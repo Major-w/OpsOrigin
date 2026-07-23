@@ -272,7 +272,7 @@ func main() {
 	rbacMiddleware := auth.NewRBACMiddleware(authProvider)
 	server.WithMiddleware(rbacMiddleware.AutoPermissionMiddleware)
 
-	aiSvc := ai.NewService(cfg, llmClient, rdbClient)
+	aiSvc := ai.NewService(cfg, llmClient, rdbClient, db)
 	ai.LLMConfigHook = func(cfg2 llm.Config) { aiSvc.UpdateLLMConfig(cfg2) }
 	server.RegisterService(aiSvc)
 	aiSvc.Start(ctx)
