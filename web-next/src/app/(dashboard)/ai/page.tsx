@@ -7,7 +7,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { Input } from '@/components/ui/input'
-import { Bot, Send, History, Settings, Sparkles, Terminal, FileText, Server, ChevronRight, Loader2, User } from 'lucide-react'
+import { Bot, Send, History, Settings, Sparkles, Terminal, FileText, Server, ChevronRight, Loader2, User, BarChart3 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { useThemeStore } from '@/stores/theme'
 
@@ -139,6 +139,7 @@ export default function AIPage() {
           <p className="text-sm text-muted-foreground">智能运维助手，帮你高效完成运维任务</p>
         </div>
         <div className="flex gap-2">
+          <Button variant="outline" size="sm" onClick={() => router.push('/ai/analytics')}><BarChart3 className="h-4 w-4" />分析</Button>
           <Button variant="outline" size="sm" onClick={handleOpenHistory}><History className="h-4 w-4" />{showHistory ? '返回' : '历史'}</Button>
           <Button variant="outline" size="sm" onClick={() => router.push('/ai/settings')}><Settings className="h-4 w-4" />设置</Button>
         </div>

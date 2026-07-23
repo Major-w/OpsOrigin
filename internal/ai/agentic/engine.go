@@ -30,12 +30,14 @@ type Engine struct {
 	mu          sync.RWMutex
 	agents      map[string]*model.AgentInstance
 	plans       map[string]*model.ExecutionPlan
-	convStore   ConversationStore // PG 优先; nil 时回退内存 convs map
+	convStore   ConversationStore
 	convs       map[string]*Conversation
 	reg         *mcp.Registry
 	lim         ratelimit.RateLimiter
 	llmClient   *llm.Client
 	ready       bool
+	tokenRecs   []model.TokenRecord
+	tokenMu     sync.Mutex
 }
 
 // NewEngine 构造引擎并注册内建工具。
@@ -158,7 +160,80 @@ func (e *Engine) Chat(ctx context.Context, agentID, prompt string, history []llm
 	if len(resp.Choices) == 0 {
 		return "", fmt.Errorf("llm: empty response")
 	}
+	e.recordTokens(agentID, resp)
 	return resp.Choices[0].Message.Content, nil
+}
+
+// recordTokens 记录本次 LLM 调用的 token 用量。
+func (e *Engine) recordTokens(agentID string, resp *llm.ChatResponse) {
+	if resp.Usage == nil { return }
+	e.tokenMu.Lock()
+	e.tokenRecs = append(e.tokenRecs, model.TokenRecord{
+		Time:       time.Now(),
+		AgentID:    agentID,
+		Model:      resp.Model,
+		Prompt:     resp.Usage.PromptTokens,
+		Completion: resp.Usage.CompletionTokens,
+		Total:      resp.Usage.TotalTokens,
+	})
+	if len(e.tokenRecs) > 2000 {
+		e.tokenRecs = e.tokenRecs[len(e.tokenRecs)-2000:]
+	}
+	e.tokenMu.Unlock()
+}
+
+// GetTokenStats 返回 token 用量统计。
+func (e *Engine) GetTokenStats(period string) *model.TokenStats {
+	e.tokenMu.Lock()
+	recs := make([]model.TokenRecord, len(e.tokenRecs))
+	copy(recs, e.tokenRecs)
+	e.tokenMu.Unlock()
+
+	now := time.Now()
+	var cutoff time.Time
+	switch period {
+	case "today":
+		y, m, d := now.Date()
+		cutoff = time.Date(y, m, d, 0, 0, 0, 0, now.Location())
+	case "24h":
+		cutoff = now.Add(-24 * time.Hour)
+	case "7d":
+		cutoff = now.Add(-7 * 24 * time.Hour)
+	default:
+		cutoff = now.Add(-24 * time.Hour)
+	}
+
+	stats := &model.TokenStats{Period: period}
+	hourMap := map[string]*model.HourBucket{}
+	dayMap := map[string]*model.DayBucket{}
+
+	for _, r := range recs {
+		if r.Time.Before(cutoff) { continue }
+		stats.TotalCalls++
+		stats.Prompt += r.Prompt
+		stats.Completion += r.Completion
+		stats.Total += r.Total
+
+		hk := r.Time.Format("15:00")
+		if _, ok := hourMap[hk]; !ok { hourMap[hk] = &model.HourBucket{Hour: hk} }
+		hourMap[hk].Total += r.Total
+		hourMap[hk].Calls++
+
+		dk := r.Time.Format("01-02")
+		if _, ok := dayMap[dk]; !ok { dayMap[dk] = &model.DayBucket{Date: dk} }
+		dayMap[dk].Total += r.Total
+		dayMap[dk].Calls++
+	}
+
+	for h := 0; h < 24; h++ {
+		hk := fmt.Sprintf("%02d:00", h)
+		if _, ok := hourMap[hk]; !ok { hourMap[hk] = &model.HourBucket{Hour: hk} }
+		stats.ByHour = append(stats.ByHour, *hourMap[hk])
+	}
+	for _, d := range dayMap {
+		stats.ByDay = append(stats.ByDay, *d)
+	}
+	return stats
 }
 
 // CreateAgent 注册一个 Agent 实例。若调用方未提供 ID/状态,此处补全默认值。

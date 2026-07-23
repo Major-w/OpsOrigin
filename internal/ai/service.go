@@ -68,6 +68,7 @@ func (s *Service) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/v1/ai/plans", s.handleExecutePlan)
 	mux.HandleFunc("GET /api/v1/ai/plans", s.handleListPlans)
 	mux.HandleFunc("GET /api/v1/ai/rate-limit/{agent_id}", s.handleGetRateLimit)
+	mux.HandleFunc("GET /api/v1/ai/token-stats", s.handleTokenStats)
 	mux.HandleFunc("POST /api/v1/ai/chat", s.handleChat)
 	mux.HandleFunc("GET /api/v1/ai/conversations", s.handleListConversations)
 	mux.HandleFunc("GET /api/v1/ai/conversations/{id}", s.handleGetConversation)
@@ -329,4 +330,11 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 
 func writeError(w http.ResponseWriter, status int, msg string) {
 	writeJSON(w, status, map[string]string{"error": msg})
+}
+
+func (s *Service) handleTokenStats(w http.ResponseWriter, r *http.Request) {
+	period := r.URL.Query().Get("period")
+	if period == "" { period = "24h" }
+	stats := s.engine.GetTokenStats(period)
+	writeJSON(w, http.StatusOK, stats)
 }

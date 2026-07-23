@@ -57,3 +57,36 @@ type TokenUsage struct {
 	Completion int `json:"completion"`
 	Total      int `json:"total"`
 }
+
+// TokenRecord 单次调用的 token 消耗记录。
+type TokenRecord struct {
+	Time       time.Time `json:"time"`
+	AgentID    string    `json:"agent_id,omitempty"`
+	Model      string    `json:"model"`
+	Prompt     int       `json:"prompt_tokens"`
+	Completion int       `json:"completion_tokens"`
+	Total      int       `json:"total_tokens"`
+}
+
+// TokenStats 聚合统计。
+type TokenStats struct {
+	Period    string        `json:"period"`
+	TotalCalls int          `json:"total_calls"`
+	Prompt     int          `json:"prompt_tokens"`
+	Completion int          `json:"completion_tokens"`
+	Total      int          `json:"total_tokens"`
+	ByHour     []HourBucket `json:"by_hour,omitempty"`
+	ByDay      []DayBucket  `json:"by_day,omitempty"`
+}
+
+type HourBucket struct {
+	Hour  string `json:"hour"`
+	Total int    `json:"tokens"`
+	Calls int    `json:"calls"`
+}
+
+type DayBucket struct {
+	Date  string `json:"date"`
+	Total int    `json:"tokens"`
+	Calls int    `json:"calls"`
+}
