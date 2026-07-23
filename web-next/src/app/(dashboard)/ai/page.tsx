@@ -158,7 +158,6 @@ export default function AIPage() {
           <p className="text-sm text-muted-foreground">智能运维助手，帮你高效完成运维任务</p>
         </div>
         <div className="flex gap-2">
-          <Button variant={reasoning ? "default" : "outline"} size="sm" onClick={() => setReasoning(!reasoning)}>💭</Button>
           <Button variant="outline" size="sm" onClick={() => router.push('/ai/analytics')}><BarChart3 className="h-4 w-4" />分析</Button>
           <Button variant="outline" size="sm" onClick={handleOpenHistory}><History className="h-4 w-4" />{showHistory ? '返回' : '历史'}</Button>
           <Button variant="outline" size="sm" onClick={() => router.push('/ai/settings')}><Settings className="h-4 w-4" />设置</Button>
@@ -248,6 +247,34 @@ export default function AIPage() {
               <Button onClick={() => sendMessage(input)} disabled={!input.trim() || loading}>
                 <Send className="h-4 w-4" />
               </Button>
+            </div>
+
+            {/* 消息模式选择器 */}
+            <div className="flex gap-2 mt-2">
+              <button
+                onClick={() => setReasoning(false)}
+                className={cn(
+                  "flex-1 text-xs px-3 py-1.5 rounded-md border transition-colors text-left",
+                  !reasoning
+                    ? "bg-emerald-50 border-emerald-200 text-emerald-700 dark:bg-emerald-500/10 dark:border-emerald-500/30 dark:text-emerald-400"
+                    : "border-gray-200 text-muted-foreground hover:border-gray-300 dark:border-gray-700 dark:hover:border-gray-600"
+                )}
+              >
+                <span className="font-medium">⚡ 普通模式</span>
+                <span className="block text-[10px] opacity-60 mt-0.5">快速回答，流式输出</span>
+              </button>
+              <button
+                onClick={() => setReasoning(true)}
+                className={cn(
+                  "flex-1 text-xs px-3 py-1.5 rounded-md border transition-colors text-left",
+                  reasoning
+                    ? "bg-emerald-50 border-emerald-200 text-emerald-700 dark:bg-emerald-500/10 dark:border-emerald-500/30 dark:text-emerald-400"
+                    : "border-gray-200 text-muted-foreground hover:border-gray-300 dark:border-gray-700 dark:hover:border-gray-600"
+                )}
+              >
+                <span className="font-medium">💭 思维链模式</span>
+                <span className="block text-[10px] opacity-60 mt-0.5">展示推理过程，适合复杂问题</span>
+              </button>
             </div>
           </div>
         </div>
