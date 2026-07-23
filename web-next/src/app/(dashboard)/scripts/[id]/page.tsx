@@ -479,11 +479,21 @@ export default function ScriptDetailPage() {
                   />
                 </div>
                 <div>
-                  <label className="text-sm font-medium">执行用户 (run_as)</label>
+                  <div className="flex items-center gap-1.5 mb-1">
+                    <label className="text-sm font-medium">执行用户 (run_as)</label>
+                    <span className="relative group cursor-help">
+                      <span className="text-[11px] text-muted-foreground border rounded-full w-4 h-4 inline-flex items-center justify-center hover:bg-muted">?</span>
+                      <span className="absolute left-0 bottom-full mb-1 w-56 p-2 rounded-md bg-gray-900 dark:bg-gray-800 text-white dark:text-gray-200 text-[10px] leading-relaxed opacity-0 group-hover:opacity-100 pointer-events-none transition-opacity z-50 shadow-lg">
+                        通过 <code className="bg-emerald-500/20 px-1 rounded">sudo -u 用户</code> 切换身份<br/>
+                        留空 = 当前运行 Core 的用户<br/>
+                        需配置无密码 sudo
+                      </span>
+                    </span>
+                  </div>
                   <Input
                     value={form.run_as}
                     onChange={e => setForm(f => ({ ...f, run_as: e.target.value }))}
-                    placeholder="留空使用默认"
+                    placeholder="留空使用当前用户"
                     className="mt-1"
                   />
                 </div>
@@ -1034,11 +1044,21 @@ export default function ScriptDetailPage() {
                   />
                 </div>
                 <div>
-                  <label className="text-sm font-medium">执行用户 (run_as)</label>
+                  <div className="flex items-center gap-1.5 mb-1">
+                    <label className="text-sm font-medium">执行用户 (run_as)</label>
+                    <span className="relative group cursor-help">
+                      <span className="text-[11px] text-muted-foreground border rounded-full w-4 h-4 inline-flex items-center justify-center hover:bg-muted">?</span>
+                      <span className="absolute right-0 bottom-full mb-1 w-56 p-2 rounded-md bg-gray-900 dark:bg-gray-800 text-white dark:text-gray-200 text-[10px] leading-relaxed opacity-0 group-hover:opacity-100 pointer-events-none transition-opacity z-50 shadow-lg">
+                        <code className="bg-emerald-500/20 px-1 rounded">sudo -u 用户</code> 切换身份<br/>
+                        留空 = 当前 Core 用户<br/>
+                        需无密码 sudo
+                      </span>
+                    </span>
+                  </div>
                   <Input
                     value={executeRunAs}
                     onChange={e => setExecuteRunAs(e.target.value)}
-                    placeholder="留空使用默认"
+                    placeholder="留空使用当前用户"
                   />
                 </div>
               </div>
