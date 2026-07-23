@@ -220,7 +220,7 @@ export function Layout({ children }: { children: React.ReactNode }) {
         <div className={cn("h-14 flex items-center gap-2.5 px-5 border-b sticky top-0 backdrop-blur-2xl", theme === 'dark' ? 'border-[rgba(255,255,255,0.04)] bg-[rgba(11,15,25,0.95)]' : 'border-gray-200 bg-gray-50/95')}>
           <div className="relative flex items-center justify-center w-7 h-7">
             <Hexagon className="w-7 h-7 text-emerald-400" strokeWidth={1.5} />
-            <span className="absolute text-[8px] font-bold text-[#0B0F19] font-mono">ON</span>
+            <span className={cn("absolute text-[8px] font-bold font-mono", theme === 'dark' ? 'text-white' : 'text-[#0B0F19]')}>ON</span>
           </div>
           <div className="flex-1">
             <span className={cn("text-sm font-semibold tracking-tight", theme === 'dark' ? 'text-white' : 'text-gray-900')}>OpsOrigin</span>
