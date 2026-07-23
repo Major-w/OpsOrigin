@@ -205,7 +205,7 @@ export function Layout({ children }: { children: React.ReactNode }) {
   const pathname = usePathname()
   const router = useRouter()
   const { user, logout } = useAuthStore()
-  const [collapsed, setCollapsed] = useState<Record<string, boolean>>({})
+  const [collapsed, setCollapsed] = useState<Record<string, boolean>>({ 'CMDB': true, 'ITSM': true })
   const { theme, toggle } = useThemeStore()
 
   const toggleGroup = (label: string) => {
