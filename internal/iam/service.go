@@ -2,6 +2,7 @@ package iam
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"net/http"
 	"sync"
@@ -211,9 +212,13 @@ type Service struct {
 }
 
 // NewService 创建 Service 并 seed 预置权限与内置角色。
-func NewService() *Service {
+func NewService(db *sql.DB) *Service {
+	var st Store = NewMemoryStore()
+	if db != nil {
+		st = newPGStore(db)
+	}
 	s := &Service{
-		store:       NewMemoryStore(),
+		store:       st,
 		permissions: seedPermissions(),
 	}
 	s.seedBuiltinRoles()

@@ -2,6 +2,7 @@ package notification
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -211,9 +212,13 @@ type Service struct {
 }
 
 // NewService 创建通知服务,注入 5 种内置 Sender 实现。
-func NewService() *Service {
+func NewService(db *sql.DB) *Service {
+	var st Store = NewMemoryStore()
+	if db != nil {
+		st = newPGStore(db)
+	}
 	return &Service{
-		store:   NewMemoryStore(),
+		store:   st,
 		senders: Senders(),
 	}
 }

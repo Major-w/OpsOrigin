@@ -228,7 +228,7 @@ func main() {
 	oncallSvc := oncall.NewService()
 	server.RegisterService(oncallSvc)
 
-	keySvc := keystore.NewService()
+	keySvc := keystore.NewService(db)
 	server.RegisterService(keySvc)
 
 	// 初始化低代码引擎
@@ -261,11 +261,11 @@ func main() {
 	server.RegisterService(userSvc)
 
 	// IAM:角色/用户组/权限管理(独立内存存储,预置 3 个内置角色 + 14 个权限点)
-	iamSvc := iam.NewService()
+	iamSvc := iam.NewService(db)
 	server.RegisterService(iamSvc)
 
 	// 通知管理:邮件/钉钉/企业微信/飞书/Webhook 五种渠道 + 事件订阅策略
-	notifySvc := notification.NewService()
+	notifySvc := notification.NewService(db)
 	server.RegisterService(notifySvc)
 
 	// 初始化RBAC中间件

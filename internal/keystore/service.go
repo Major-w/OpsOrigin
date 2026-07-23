@@ -3,6 +3,7 @@ package keystore
 import (
 	"context"
 	"crypto/sha256"
+	"database/sql"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
@@ -120,8 +121,12 @@ type Service struct {
 	store Store
 }
 
-func NewService() *Service {
-	return &Service{store: NewMemoryStore()}
+func NewService(db *sql.DB) *Service {
+	var st Store = NewMemoryStore()
+	if db != nil {
+		st = newPGStore(db)
+	}
+	return &Service{store: st}
 }
 
 func tenantFromCtx(ctx context.Context) string {
