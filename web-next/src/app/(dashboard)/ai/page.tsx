@@ -53,7 +53,7 @@ export default function AIPage() {
   const router = useRouter()
   const { theme } = useThemeStore()
   const [messages, setMessages] = useState<Message[]>([
-    { id: '0', role: 'assistant', content: '你好！我是 OpsOrigin AI 助手，可以帮你完成运维任务。你可以直接告诉我需要什么，或者选择下方的快捷操作。', timestamp: new Date() }
+    { id: '0', role: 'assistant', content: '你好！我是 OpsOrigin AI 助手，可以帮你完成运维任务。\n\n👉 **快速开始：** 点击右上角「设置」→「模型」配置 LLM API Key 即可使用。\n\n配置完成后可直接提问，或选择右侧快捷操作。', timestamp: new Date() }
   ])
   const [input, setInput] = useState('')
   const [loading, setLoading] = useState(false)

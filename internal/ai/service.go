@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -106,7 +107,7 @@ func (s *Service) handleChat(w http.ResponseWriter, r *http.Request) {
 	if req.Reasoning && !req.Stream {
 		thinking, answer, err := s.engine.ChatReasoning(r.Context(), req.AgentID, req.Prompt, req.History)
 		if err != nil {
-			writeError(w, http.StatusBadGateway, err.Error())
+			writeError(w, http.StatusBadGateway, chatFriendlyError(err.Error()))
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
@@ -116,7 +117,7 @@ func (s *Service) handleChat(w http.ResponseWriter, r *http.Request) {
 
 	out, err := s.engine.Chat(r.Context(), req.AgentID, req.Prompt, req.History)
 	if err != nil {
-		writeError(w, http.StatusBadGateway, err.Error())
+		writeError(w, http.StatusBadGateway, chatFriendlyError(err.Error()))
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
@@ -350,4 +351,21 @@ func (s *Service) handleTokenStats(w http.ResponseWriter, r *http.Request) {
 	if period == "" { period = "24h" }
 	stats := s.engine.GetTokenStats(period)
 	writeJSON(w, http.StatusOK, stats)
+}
+
+// chatFriendlyError 将底层 LLM 错误转为用户友好的提示。
+func chatFriendlyError(raw string) string {
+	if strings.Contains(raw, "401") || strings.Contains(raw, "Auth") || strings.Contains(raw, "auth") {
+		return "LLM API Key 无效或未配置，请在「设置 → 模型」中填写正确的 API Key"
+	}
+	if strings.Contains(raw, "rate limit") {
+		return "请求频率过高，请稍后再试"
+	}
+	if strings.Contains(raw, "timeout") || strings.Contains(raw, "deadline") {
+		return "LLM 响应超时，请检查网络或增加超时时间"
+	}
+	if strings.Contains(raw, "connection refused") {
+		return "LLM 服务连接失败，请检查 Base URL 和网络"
+	}
+	return raw
 }
