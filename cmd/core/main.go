@@ -27,6 +27,7 @@ import (
 	"github.com/opsorigin/core/internal/automation/script"
 	"github.com/opsorigin/core/internal/automation/workflow"
 	"github.com/opsorigin/core/internal/automation/scheduler"
+	"github.com/opsorigin/core/internal/command"
 	"github.com/opsorigin/core/internal/iam"
 	"github.com/opsorigin/core/internal/notification"
 	"github.com/opsorigin/core/internal/itsm/knowledge"
@@ -198,6 +199,17 @@ func main() {
 	// 让脚本/工作流在指定 AgentID 时，通过 Tunnel 派发到被管主机执行
 	// （而非 Core 本机 os/exec），并复用 Agent 端命令白名单校验。
 	scriptSvc.SetAgentRunner(agentSvc)
+
+	// 本地兜底执行路径(无 Agent 时)的命令白名单：仅允许 bash/python3/cmd/sudo。
+	// dev 期宽松，生产应替换为 sysconfig 加载的租户白名单。
+	wl, _ := command.New("dev-allowlist", []command.Rule{
+		{Type: command.RulePrefix, Pattern: "bash"},
+		{Type: command.RulePrefix, Pattern: "python3"},
+		{Type: command.RulePrefix, Pattern: "cmd"},
+		{Type: command.RulePrefix, Pattern: "sudo"},
+	})
+	scriptSvc.SetCommandWhitelist(wl)
+
 	server.RegisterService(workflowSvc)
 
 	schedulerSvc := scheduler.NewService(db)

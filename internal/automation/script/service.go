@@ -4,6 +4,8 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+
+	"github.com/opsorigin/core/internal/command"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -212,12 +214,20 @@ type AgentRunner interface {
 type Service struct {
 	store       Store
 	agentRunner AgentRunner
+	cmdWhitelist *command.Whitelist // 本地兜底执行路径的命令白名单(§6)
 }
 
 // SetAgentRunner 注入 Agent 派发器。未注入（或脚本未指定 AgentID）时，
 // 脚本回退到 Core 本机 os/exec 执行（调试/沙箱场景）。
 func (s *Service) SetAgentRunner(r AgentRunner) {
 	s.agentRunner = r
+}
+
+// SetCommandWhitelist 注入本地执行路径的命令白名单。
+// 当脚本在 Core 本机兜底运行(无 Agent)时,若白名单已设且含 sudo/runAs, 则校验基础命令。
+// nil 表示未启用(不拦截, dev 期可用)。
+func (s *Service) SetCommandWhitelist(wl *command.Whitelist) {
+	s.cmdWhitelist = wl
 }
 
 // NewService creates a Service backed by an in-memory store.
@@ -372,6 +382,19 @@ func (s *Service) handleExecute(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	req.TenantID = tenantID
+
+	// 校验必填输入参数
+	if sc.InputParams != nil {
+		for _, p := range sc.InputParams {
+			if p.Required {
+				if _, ok := req.Params[p.Name]; !ok {
+					writeError(w, http.StatusBadRequest, "missing required param: "+p.Name)
+					return
+				}
+			}
+		}
+	}
+
 	result := s.executeScript(sc, &req)
 	if err := s.store.SaveExecution(r.Context(), result); err != nil {
 		slog.Error("failed to save execution", "script_id", sc.ID, "error", err)
@@ -552,6 +575,31 @@ func (s *Service) executeScript(sc *Script, req *ExecuteRequest) *ExecutionResul
 	runAs := req.RunAs
 	if runAs == "" {
 		runAs = sc.RunAs
+	}
+
+	// 本地执行路径白名单校验(与 Agent 端校验对齐 §6)
+	if s.cmdWhitelist != nil {
+		var checkCmd string
+		switch sc.Type {
+		case ScriptTypeShell:
+			checkCmd = "bash"
+		case ScriptTypePython:
+			checkCmd = "python3"
+		case ScriptTypeBat:
+			checkCmd = "cmd"
+		}
+		if checkCmd != "" {
+			if err := s.cmdWhitelist.Verify(checkCmd); err != nil {
+				result.finish("failed", -1, "local exec denied by whitelist: "+err.Error(), started)
+				return result
+			}
+		}
+		if runAs != "" {
+			if err := s.cmdWhitelist.Verify("sudo"); err != nil {
+				result.finish("failed", -1, "local exec with runAs denied by whitelist: "+err.Error(), started)
+				return result
+			}
+		}
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(timeout)*time.Second)
