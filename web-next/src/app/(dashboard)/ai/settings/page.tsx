@@ -19,8 +19,12 @@ export default function AISettingsPage() {
   const [form, setForm] = useState({ name: '', model_name: '', system_prompt: '' })
   const [sysConfig, setSysConfig] = useState<any>(null)
   const [llmForm, setLlmForm] = useState({ api_key: '', model: '', base_url: '', timeout: 60 })
+  const [editing, setEditing] = useState<string | null>(null)
   const [saving, setSaving] = useState(false)
+  const [editForm, setEditForm] = useState({ name: '', model_name: '', system_prompt: '' })
   const [tools, setTools] = useState<any[]>([])
+  const [testing, setTesting] = useState(false)
+  const [testStatus, setTestStatus] = useState<string | null>(null)
 
   useEffect(() => { fetchAgents(); loadTools(); loadSysConfig() }, [])
   
@@ -44,6 +48,33 @@ export default function AISettingsPage() {
     const ok = await createAgent({ name: form.name, model_name: form.model_name, system_prompt: form.system_prompt })
     setSaving(false)
     if (ok) { setForm({ name: '', model_name: '', system_prompt: '' }); fetchAgents() }
+  }
+
+  const handleDeleteAgent = async (id: string) => {
+    if (!confirm('确定删除该 Agent？')) return
+    await fetch(`/api/v1/ai/agents/${id}`, { method: 'DELETE' })
+    toast.success('Agent 已删除')
+    fetchAgents()
+  }
+
+  const handleTestConnection = async () => {
+    setTesting(true); setTestStatus(null)
+    try {
+      const r = await fetch('/api/v1/ai/chat', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ prompt: 'ping', reasoning: false, stream: false }) })
+      const d = await r.json()
+      setTestStatus(d.content || d.thinking ? '✅ 连接成功！LLM 正常响应' : '❌ ' + (d.error || '未知错误'))
+    } catch { setTestStatus('❌ 网络错误，请检查 Base URL') }
+    setTesting(false)
+  }
+
+  const handleSaveEdit = async (id: string) => {
+    setSaving(true)
+    await fetch(`/api/v1/ai/agents/${id}`, {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: editForm.name, model_name: editForm.model_name, system_prompt: editForm.system_prompt }),
+    })
+    toast.success('Agent 已更新')
+    setSaving(false); setEditing(null); fetchAgents()
   }
 
   const handleUpdateLLM = async (key: string, value: string) => {
@@ -101,17 +132,34 @@ export default function AISettingsPage() {
             ) : (
               agents.map((a: any) => (
                 <Card key={a.id} className="hover:shadow-sm transition-shadow">
-                  <CardContent className="p-4 flex items-center justify-between">
-                    <div className="flex-1 min-w-0">
-                      <div className="flex items-center gap-2">
-                        <Bot className="h-4 w-4 text-emerald-500 shrink-0" />
-                        <span className="font-medium text-sm truncate">{a.name}</span>
-                        <Badge variant={a.status === 'active' ? 'default' : 'secondary'} className="text-[10px]">{a.status}</Badge>
+                  <CardContent className="p-4">
+                    {editing === a.id ? (
+                      <div className="space-y-2">
+                        <Input value={editForm.name} onChange={e => setEditForm({...editForm, name: e.target.value})} placeholder="名称" />
+                        <Input value={editForm.model_name} onChange={e => setEditForm({...editForm, model_name: e.target.value})} placeholder="模型名" />
+                        <textarea rows={3} value={editForm.system_prompt} onChange={e => setEditForm({...editForm, system_prompt: e.target.value})} className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm resize-none" placeholder="系统提示词" />
+                        <div className="flex gap-2">
+                          <Button size="sm" onClick={() => handleSaveEdit(a.id)} disabled={saving}><Save className="h-3.5 w-3.5 mr-1" />保存</Button>
+                          <Button size="sm" variant="outline" onClick={() => setEditing(null)}>取消</Button>
+                        </div>
                       </div>
-                      {a.system_prompt && <p className="text-xs text-muted-foreground mt-1 truncate">{a.system_prompt.slice(0, 80)}</p>}
-                      {a.model_name && <p className="text-[10px] text-muted-foreground mt-0.5">模型: {a.model_name}</p>}
-                    </div>
-                    <Button variant="ghost" size="sm"><Trash2 className="h-4 w-4 text-red-400" /></Button>
+                    ) : (
+                      <div className="flex items-center justify-between">
+                        <div className="flex-1 min-w-0">
+                          <div className="flex items-center gap-2">
+                            <Bot className="h-4 w-4 text-emerald-500 shrink-0" />
+                            <span className="font-medium text-sm truncate">{a.name}</span>
+                            <Badge variant={a.status === 'active' ? 'default' : 'secondary'} className="text-[10px]">{a.status}</Badge>
+                          </div>
+                          {a.system_prompt && <p className="text-xs text-muted-foreground mt-1 truncate">{a.system_prompt.slice(0, 80)}</p>}
+                          {a.model_name && <p className="text-[10px] text-muted-foreground mt-0.5">模型: {a.model_name}</p>}
+                        </div>
+                        <div className="flex gap-1 shrink-0">
+                          <Button variant="ghost" size="sm" onClick={() => { setEditing(a.id); setEditForm({ name: a.name, model_name: a.model_name || '', system_prompt: a.system_prompt || '' }) }}><Save className="h-3.5 w-3.5" /></Button>
+                          <Button variant="ghost" size="sm" onClick={() => handleDeleteAgent(a.id)}><Trash2 className="h-3.5 w-3.5 text-red-400" /></Button>
+                        </div>
+                      </div>
+                    )}
                   </CardContent>
                 </Card>
               ))
@@ -184,6 +232,12 @@ export default function AISettingsPage() {
               <div className={cn("flex items-center gap-2 text-xs p-3 rounded-lg", theme === 'dark' ? 'bg-emerald-500/5 border border-emerald-500/10' : 'bg-emerald-50 border border-emerald-200')}>
                 <CheckCircle2 className="h-4 w-4 text-emerald-500" />
                 <span>修改后即时热生效，已连接的 Agent 无需重启</span>
+              </div>
+              <div className="flex items-center gap-2 pt-2">
+                <Button variant="outline" size="sm" onClick={handleTestConnection} disabled={testing}>
+                  {testing ? <Loader2 className="h-3.5 w-3.5 mr-1 animate-spin" /> : null} 测试连接
+                </Button>
+                {testStatus && <span className="text-xs">{testStatus}</span>}
               </div>
             </CardContent>
           </Card>

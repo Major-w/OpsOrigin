@@ -282,6 +282,32 @@ func (e *Engine) CreateAgent(ctx context.Context, a *model.AgentInstance) error 
 	return nil
 }
 
+// UpdateAgent 更新 Agent 的 system_prompt, model 等字段。
+func (e *Engine) UpdateAgent(ctx context.Context, a *model.AgentInstance) error {
+	if a.ID == "" { return fmt.Errorf("agent id is required") }
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	existing, ok := e.agents[a.ID]
+	if !ok { return fmt.Errorf("agent not found: %s", a.ID) }
+	if a.Name != "" { existing.Name = a.Name }
+	if a.ModelName != "" { existing.ModelName = a.ModelName }
+	existing.SystemPrompt = a.SystemPrompt
+	existing.UpdatedAt = time.Now()
+	slog.Info("agent updated", "id", a.ID, "name", existing.Name)
+	return nil
+}
+
+// DeleteAgent 删除 Agent。
+func (e *Engine) DeleteAgent(ctx context.Context, id, tenantID string) error {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	_, ok := e.agents[id]
+	if !ok { return fmt.Errorf("agent not found: %s", id) }
+	delete(e.agents, id)
+	slog.Info("agent deleted", "id", id)
+	return nil
+}
+
 // ListAgents 返回所有已注册的 Agent(调用方负责租户过滤)。
 func (e *Engine) ListAgents() []*model.AgentInstance {
 	e.mu.RLock()

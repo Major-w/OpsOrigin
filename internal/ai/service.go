@@ -64,6 +64,8 @@ func (s *Service) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/v1/ai/agents", s.handleCreateAgent)
 	mux.HandleFunc("GET /api/v1/ai/agents", s.handleListAgents)
 	mux.HandleFunc("GET /api/v1/ai/agents/{id}", s.handleGetAgent)
+	mux.HandleFunc("PUT /api/v1/ai/agents/{id}", s.handleUpdateAgent)
+	mux.HandleFunc("DELETE /api/v1/ai/agents/{id}", s.handleDeleteAgent)
 	mux.HandleFunc("GET /api/v1/ai/tools", s.handleListTools)
 	mux.HandleFunc("POST /api/v1/ai/tools/{name}/execute", s.handleExecuteTool)
 	mux.HandleFunc("POST /api/v1/ai/plans", s.handleExecutePlan)
@@ -351,6 +353,32 @@ func (s *Service) handleTokenStats(w http.ResponseWriter, r *http.Request) {
 	if period == "" { period = "24h" }
 	stats := s.engine.GetTokenStats(period)
 	writeJSON(w, http.StatusOK, stats)
+}
+
+func (s *Service) handleUpdateAgent(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	var ag model.AgentInstance
+	if err := json.NewDecoder(r.Body).Decode(&ag); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid body")
+		return
+	}
+	ag.ID = id
+	ag.TenantID = tenantFromCtx(r.Context())
+	if err := s.engine.UpdateAgent(r.Context(), &ag); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, ag)
+}
+
+func (s *Service) handleDeleteAgent(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	tenant := tenantFromCtx(r.Context())
+	if err := s.engine.DeleteAgent(r.Context(), id, tenant); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
 }
 
 // chatFriendlyError 将底层 LLM 错误转为用户友好的提示。

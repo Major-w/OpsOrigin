@@ -222,10 +222,10 @@ func main() {
 	// 启动定时扫描（按 CronExpr 触发 workflow）。
 	go schedulerSvc.Start(ctx)
 
-	knowledgeSvc := knowledge.NewService()
+	knowledgeSvc := knowledge.NewService(db)
 	server.RegisterService(knowledgeSvc)
 
-	oncallSvc := oncall.NewService()
+	oncallSvc := oncall.NewService(db)
 	server.RegisterService(oncallSvc)
 
 	keySvc := keystore.NewService(db)

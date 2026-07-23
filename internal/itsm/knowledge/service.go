@@ -2,6 +2,7 @@ package knowledge
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"net/http"
 	"sync"
@@ -81,8 +82,10 @@ type Service struct {
 	store Store
 }
 
-func NewService() *Service {
-	return &Service{store: NewMemoryStore()}
+func NewService(db *sql.DB) *Service {
+	var st Store = NewMemoryStore()
+	if db != nil { st = newPGStore(db) }
+	return &Service{store: st}
 }
 
 func tenantFromCtx(ctx context.Context) string {
