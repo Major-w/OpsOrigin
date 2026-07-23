@@ -521,24 +521,19 @@ export default function ScriptDetailPage() {
                     <Plus className="h-3 w-3 mr-1" />添加参数
                   </Button>
                 </div>
+                <p className="text-[10px] text-muted-foreground mb-2">入参通过 <code className="bg-muted px-1 rounded">stdin</code> 传入脚本，出参从 <code className="bg-muted px-1 rounded">stdout</code>/<code className="bg-muted px-1 rounded">stderr</code> 捕获</p>
                 {paramForm.length > 0 && (
-                  <div className="space-y-2">
+                  <div className="space-y-1.5">
                     {paramForm.map((p, i) => (
-                      <div key={i} className="p-2 rounded-md border border-gray-100 dark:border-[rgba(255,255,255,0.04)] bg-gray-50/50 dark:bg-transparent space-y-2">
-                        <div className="flex gap-1">
-                          <Input className="text-xs flex-1" value={p.name} onChange={e => { const pf = [...paramForm]; pf[i].name = e.target.value; setParamForm(pf) }} placeholder="参数名" />
-                          <select className="text-xs h-8 w-24 rounded-md border border-input bg-background" value={p.type} onChange={e => { const pf = [...paramForm]; pf[i].type = e.target.value; setParamForm(pf) }}>
-                            <option value="string">string</option>
-                            <option value="number">number</option>
-                            <option value="boolean">bool</option>
-                          </select>
-                          <label className="text-xs flex items-center gap-1 px-2"><input type="checkbox" checked={p.required} onChange={e => { const pf = [...paramForm]; pf[i].required = e.target.checked; setParamForm(pf) }} />必填</label>
-                          <Button variant="ghost" size="icon" className="h-8 w-8 shrink-0" onClick={() => setParamForm(paramForm.filter((_, pi) => pi !== i))}><Trash2 className="h-3 w-3" /></Button>
-                        </div>
-                        <div className="flex gap-1">
-                          <Input className="text-xs h-7 flex-1" value={p.description} onChange={e => { const pf = [...paramForm]; pf[i].description = e.target.value; setParamForm(pf) }} placeholder="参数描述（可选）" />
-                          <Input className="text-xs h-7 w-32" value={p.default_value} onChange={e => { const pf = [...paramForm]; pf[i].default_value = e.target.value; setParamForm(pf) }} placeholder="默认值" />
-                        </div>
+                      <div key={i} className="flex items-center gap-1.5 p-1.5 rounded-md border border-gray-200 dark:border-[rgba(255,255,255,0.06)] bg-gray-50/50 dark:bg-white/[0.01]">
+                        <Input className="text-xs h-7 w-24 shrink-0" value={p.name} onChange={e => { const pf = [...paramForm]; pf[i].name = e.target.value; setParamForm(pf) }} placeholder="参数名" />
+                        <select className="text-xs h-7 w-18 rounded-md border border-input bg-background shrink-0" value={p.type} onChange={e => { const pf = [...paramForm]; pf[i].type = e.target.value; setParamForm(pf) }}>
+                          <option value="string">string</option><option value="number">number</option><option value="boolean">bool</option>
+                        </select>
+                        <label className="text-[10px] flex items-center gap-0.5 shrink-0"><input type="checkbox" checked={p.required} onChange={e => { const pf = [...paramForm]; pf[i].required = e.target.checked; setParamForm(pf) }} />必填</label>
+                        <Input className="text-xs h-7 w-20 shrink-0" value={p.default_value} onChange={e => { const pf = [...paramForm]; pf[i].default_value = e.target.value; setParamForm(pf) }} placeholder="默认值" />
+                        <Input className="text-xs h-7 flex-1 min-w-0" value={p.description} onChange={e => { const pf = [...paramForm]; pf[i].description = e.target.value; setParamForm(pf) }} placeholder="描述（可选）" />
+                        <Button variant="ghost" size="icon" className="h-7 w-7 shrink-0" onClick={() => setParamForm(paramForm.filter((_, pi) => pi !== i))}><Trash2 className="h-3 w-3 text-red-400" /></Button>
                       </div>
                     ))}
                   </div>
@@ -1058,24 +1053,27 @@ export default function ScriptDetailPage() {
                 )}
               </div>
 
+              {/* stdin — 展示参数如何传入 */}
               {executeResult.params && Object.keys(executeResult.params).length > 0 && (
-                <div className="text-xs">
-                  <span className="text-muted-foreground">入参：</span>
-                  <code className="font-mono bg-muted px-1.5 py-0.5 rounded ml-1">{JSON.stringify(executeResult.params)}</code>
+                <div>
+                  <div className="text-[10px] uppercase tracking-wider text-amber-500 font-medium mb-1 flex items-center gap-1">📥 stdin</div>
+                  <pre className="text-[11px] font-mono bg-amber-50 dark:bg-amber-500/5 text-amber-800 dark:text-amber-300 rounded p-3 overflow-x-auto max-h-32 overflow-auto whitespace-pre-wrap break-all">{JSON.stringify(executeResult.params, null, 2)}</pre>
                 </div>
               )}
 
+              {/* stdout — 绿色终端风格 */}
               {executeResult.output && (
                 <div>
-                  <div className="text-[10px] text-muted-foreground mb-1">输出</div>
-                  <pre className="text-[11px] font-mono bg-black text-green-400 dark:text-green-300 rounded p-3 overflow-x-auto whitespace-pre-wrap break-all max-h-72 overflow-auto">{executeResult.output}</pre>
+                  <div className="text-[10px] uppercase tracking-wider text-green-500 font-medium mb-1 flex items-center gap-1">📤 stdout</div>
+                  <pre className="text-[11px] font-mono bg-black text-green-400 dark:text-green-300 rounded p-3 overflow-x-auto whitespace-pre-wrap break-all max-h-96 overflow-auto">{executeResult.output}</pre>
                 </div>
               )}
 
+              {/* stderr — 红色终端风格 */}
               {executeResult.error && (
                 <div>
-                  <div className="text-[10px] text-muted-foreground mb-1">错误</div>
-                  <pre className="text-[11px] font-mono bg-red-950/40 text-red-400 rounded p-3 overflow-x-auto whitespace-pre-wrap break-all max-h-72 overflow-auto">{executeResult.error}</pre>
+                  <div className="text-[10px] uppercase tracking-wider text-red-500 font-medium mb-1 flex items-center gap-1">⚠️ stderr</div>
+                  <pre className="text-[11px] font-mono bg-red-950/30 text-red-400 dark:text-red-300 rounded p-3 overflow-x-auto whitespace-pre-wrap break-all max-h-96 overflow-auto">{executeResult.error}</pre>
                 </div>
               )}
 
