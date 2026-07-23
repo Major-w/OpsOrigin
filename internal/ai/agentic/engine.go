@@ -125,6 +125,41 @@ func (e *Engine) Start() error {
 	return nil
 }
 
+// Chat 执行一次单轮(可带历史)的 LLM 推理,供 AI 助手聊天端点使用。
+// 与 ExecutePlan 的"无 Tool 步骤"共用底层 llm.Client,但此处直接构造消息,
+// 支持把对话历史透传进来,使多轮对话连贯。
+func (e *Engine) Chat(ctx context.Context, agentID, prompt string, history []llm.Message) (string, error) {
+	if prompt == "" {
+		return "", fmt.Errorf("prompt is required")
+	}
+	if e.lim != nil && agentID != "" && !e.lim.Allow(agentID) {
+		return "", fmt.Errorf("rate limit exceeded for agent %s", agentID)
+	}
+
+	const sysPrompt = "你是 OpsOrigin 智能运维助手,帮助用户完成主机巡检、故障排查、报告生成等运维任务。回答应简洁、专业、可操作。"
+
+	msgs := []llm.Message{{Role: "system", Content: sysPrompt}}
+	// 透传历史(限制最近 20 条,避免超出上下文窗口)
+	if len(history) > 20 {
+		history = history[len(history)-20:]
+	}
+	msgs = append(msgs, history...)
+	msgs = append(msgs, llm.Message{Role: "user", Content: prompt})
+
+	resp, err := e.llmClient.Chat(ctx, llm.ChatRequest{
+		Messages:    msgs,
+		MaxTokens:   1024,
+		Temperature: 0.7,
+	})
+	if err != nil {
+		return "", err
+	}
+	if len(resp.Choices) == 0 {
+		return "", fmt.Errorf("llm: empty response")
+	}
+	return resp.Choices[0].Message.Content, nil
+}
+
 // CreateAgent 注册一个 Agent 实例。若调用方未提供 ID/状态,此处补全默认值。
 func (e *Engine) CreateAgent(ctx context.Context, a *model.AgentInstance) error {
 	if a == nil {

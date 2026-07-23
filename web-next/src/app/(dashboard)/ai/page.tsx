@@ -25,7 +25,7 @@ const QUICK_ACTIONS = [
 ]
 
 export default function AIPage() {
-  const { agents, fetchAgents } = useAIStore()
+  const { agents, fetchAgents, chat } = useAIStore()
   const { theme } = useThemeStore()
   const [messages, setMessages] = useState<Message[]>([
     { id: '0', role: 'assistant', content: '你好！我是 OpsOrigin AI 助手，可以帮你完成运维任务。你可以直接告诉我需要什么，或者选择下方的快捷操作。', timestamp: new Date() }
@@ -40,46 +40,38 @@ export default function AIPage() {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [messages])
 
-  const sendMessage = (text: string) => {
-    if (!text.trim()) return
+  const sendMessage = async (text: string) => {
+    const content = text.trim()
+    if (!content) return
 
     const userMsg: Message = {
       id: Date.now().toString(),
       role: 'user',
-      content: text,
+      content,
       timestamp: new Date()
     }
-    setMessages(prev => [...prev, userMsg])
+    const next = [...messages, userMsg]
+    setMessages(next)
     setInput('')
     setLoading(true)
 
-    setTimeout(() => {
-      const aiMsg: Message = {
-        id: (Date.now() + 1).toString(),
-        role: 'assistant',
-        content: getAIResponse(text),
-        timestamp: new Date()
-      }
-      setMessages(prev => [...prev, aiMsg])
-      setLoading(false)
-    }, 1000 + Math.random() * 1500)
-  }
+    // 透传最近对话历史给后端,保持多轮连贯(最多最近 20 条)
+    const history = next
+      .filter(m => m.role === 'user' || m.role === 'assistant')
+      .slice(-20)
+      .map(m => ({ role: m.role, content: m.content }))
 
-  const getAIResponse = (input: string): string => {
-    const lower = input.toLowerCase()
-    if (lower.includes('主机') || lower.includes('状态')) {
-      return '已为你查询主机状态：\n\n• web-server-01: 运行中 (CPU 23%, 内存 45%)\n• web-server-02: 运行中 (CPU 18%, 内存 38%)\n• db-master: 运行中 (CPU 67%, 内存 82%)\n• db-slave-01: 运行中 (CPU 12%, 内存 35%)\n\n所有主机运行正常，db-master 内存使用率较高，建议关注。'
+    const reply = await chat(content, history)
+    setLoading(false)
+    if (reply == null) return // 错误已由 store 内 toast 提示
+
+    const aiMsg: Message = {
+      id: (Date.now() + 1).toString(),
+      role: 'assistant',
+      content: reply,
+      timestamp: new Date()
     }
-    if (lower.includes('巡检')) {
-      return '正在执行自动化巡检任务...\n\n✓ 检查系统服务状态 - 正常\n✓ 检查磁盘使用率 - 正常\n✓ 检查网络连通性 - 正常\n✓ 检查安全更新 - 发现 3 个待更新\n\n巡检完成，未发现严重问题。建议尽快安装安全更新。'
-    }
-    if (lower.includes('报告') || lower.includes('运维')) {
-      return '已为你生成本周运维报告，主要内容：\n\n📊 总览\n• 系统可用率: 99.95%\n• 处理工单: 47 个\n• 执行脚本: 128 次\n• 巡检次数: 7 次\n\n⚠️ 告警\n• 告警总数: 12 次\n• 已处理: 11 次\n• 待处理: 1 次\n\n报告已保存到「运维报告」目录。'
-    }
-    if (lower.includes('故障') || lower.includes('排查')) {
-      return '正在排查系统异常...\n\n🔍 检查服务状态... 正常\n🔍 检查网络连接... 正常\n🔍 检查磁盘 I/O... 发现异常\n🔍 检查日志... 发现错误\n\n📋 排查结果：\n发现 db-master 磁盘 I/O 偏高，日志中出现多次慢查询告警。建议：\n1. 检查数据库慢查询日志\n2. 考虑优化索引\n3. 临时增加磁盘缓存'
-    }
-    return `收到你的请求：「${input}」\n\n我已记录并正在处理中。如果需要进一步操作，请告诉我。`
+    setMessages(prev => [...prev, aiMsg])
   }
 
   return (

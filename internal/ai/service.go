@@ -55,10 +55,36 @@ func (s *Service) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/v1/ai/plans", s.handleExecutePlan)
 	mux.HandleFunc("GET /api/v1/ai/plans", s.handleListPlans)
 	mux.HandleFunc("GET /api/v1/ai/rate-limit/{agent_id}", s.handleGetRateLimit)
+	mux.HandleFunc("POST /api/v1/ai/chat", s.handleChat)
 }
 
 func (s *Service) Start(ctx context.Context) error {
 	return s.engine.Start()
+}
+
+// handleChat 处理 AI 助手聊天请求:把用户 prompt 与可选历史透传给引擎,
+// 返回模型生成的文本。LLM 后端故障归为 502,便于前端区分请求错误与模型不可用。
+func (s *Service) handleChat(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Prompt  string         `json:"prompt"`
+		AgentID string         `json:"agent_id"`
+		History []llm.Message `json:"history"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if req.Prompt == "" {
+		writeError(w, http.StatusBadRequest, "prompt is required")
+		return
+	}
+	out, err := s.engine.Chat(r.Context(), req.AgentID, req.Prompt, req.History)
+	if err != nil {
+		writeError(w, http.StatusBadGateway, err.Error())
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]string{"content": out})
 }
 
 func (s *Service) handleCreateAgent(w http.ResponseWriter, r *http.Request) {

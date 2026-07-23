@@ -2,6 +2,7 @@ package script
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -201,14 +202,31 @@ func snapshot(sc *Script, at time.Time, changeNote, createdBy string) *ScriptVer
 	}
 }
 
+// AgentRunner 把脚本下发到被管主机上的 Agent 执行。
+// 由 agentmgr.Service 通过 Tunnel 实现，使脚本真正在主机运行（而非 Core 本机）。
+type AgentRunner interface {
+	RunScriptOnAgent(ctx context.Context, agentID, tenantID, content string, params map[string]string, timeout int, runAs string) (output string, exitCode int, err error)
+}
+
 // Service exposes the script management HTTP API.
 type Service struct {
-	store Store
+	store       Store
+	agentRunner AgentRunner
+}
+
+// SetAgentRunner 注入 Agent 派发器。未注入（或脚本未指定 AgentID）时，
+// 脚本回退到 Core 本机 os/exec 执行（调试/沙箱场景）。
+func (s *Service) SetAgentRunner(r AgentRunner) {
+	s.agentRunner = r
 }
 
 // NewService creates a Service backed by an in-memory store.
-func NewService() *Service {
-	return &Service{store: NewMemoryStore()}
+func NewService(db *sql.DB) *Service {
+	var st Store = NewMemoryStore()
+	if db != nil {
+		st = NewPGStore(db)
+	}
+	return &Service{store: st}
 }
 
 // context keys for out-of-band request data.
@@ -353,6 +371,7 @@ func (s *Service) handleExecute(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
+	req.TenantID = tenantID
 	result := s.executeScript(sc, &req)
 	if err := s.store.SaveExecution(r.Context(), result); err != nil {
 		slog.Error("failed to save execution", "script_id", sc.ID, "error", err)
@@ -431,13 +450,18 @@ func (s *Service) handleDiff(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, diffVersions(from, to))
 }
 
-// Execute 为 workflow 引擎提供的公开接口,执行指定脚本并返回结果
-func (s *Service) Execute(scriptID string, params map[string]string, timeout int, runAs string) (string, int, error) {
-	sc, err := s.store.Get(context.Background(), scriptID, "default")
+// Execute 为 workflow 引擎提供的公开接口,执行指定脚本并返回结果。
+// agentID 非空时通过 AgentRunner 派发到主机执行；tenantID 用于多租户隔离
+// （修复原硬编码 "default" 导致非 default 租户脚本 not found 的 bug）。
+func (s *Service) Execute(scriptID string, params map[string]string, timeout int, runAs string, agentID string, tenantID string) (string, int, error) {
+	if tenantID == "" {
+		tenantID = "default"
+	}
+	sc, err := s.store.Get(context.Background(), scriptID, tenantID)
 	if err != nil || sc == nil {
 		return "", -1, fmt.Errorf("script not found: %s", scriptID)
 	}
-	req := &ExecuteRequest{Params: params, Timeout: timeout, RunAs: runAs}
+	req := &ExecuteRequest{Params: params, Timeout: timeout, RunAs: runAs, AgentID: agentID, TenantID: tenantID}
 	result := s.executeScript(sc, req)
 	s.store.SaveExecution(context.Background(), result)
 	if result.Error != "" {
@@ -457,6 +481,34 @@ func (s *Service) executeScript(sc *Script, req *ExecuteRequest) *ExecutionResul
 		Params:    req.Params,
 		RunAs:     req.RunAs,
 		StartedAt: started,
+	}
+
+	// 目标 Agent 派发：指定 AgentID 且已注入 AgentRunner 时，
+	// 把脚本下发到该 Agent 所在被管主机执行（复用 Agent 端白名单校验）。
+	if req.AgentID != "" && s.agentRunner != nil {
+		to := req.Timeout
+		if to <= 0 {
+			to = sc.Timeout
+		}
+		if to <= 0 {
+			to = 300
+		}
+		ra := req.RunAs
+		if ra == "" {
+			ra = sc.RunAs
+		}
+		tid := req.TenantID
+		if tid == "" {
+			tid = tenantFromCtx(context.Background())
+		}
+		output, exitCode, rerr := s.agentRunner.RunScriptOnAgent(context.Background(), req.AgentID, tid, sc.Content, req.Params, to, ra)
+		if rerr != nil {
+			result.finish("failed", exitCode, rerr.Error(), started)
+			return result
+		}
+		result.Output = output
+		result.finish("success", exitCode, "", started)
+		return result
 	}
 
 	if sc.Type == ScriptTypeAnsible {

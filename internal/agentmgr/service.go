@@ -733,6 +733,68 @@ func (s *Service) execViaProxy(proxyID, action string, payload any, timeoutSec i
 	return string(resp.Output), 0, nil
 }
 
+// RunScriptOnAgent 通过 Tunnel 把脚本下发到指定 Agent 所在被管主机执行，
+// 并同步等待结果返回。content 为脚本正文，params 透传给 Agent 端执行环境。
+// 这是 automation/script 引擎的 AgentRunner 实现，使脚本真正在主机上运行
+// （而非 Core 本机 os/exec），并复用 Agent 端命令白名单校验(§6)。
+func (s *Service) RunScriptOnAgent(ctx context.Context, agentID, tenantID, content string, params map[string]string, timeout int, runAs string) (string, int, error) {
+	if s.tunnelServer == nil {
+		return "", -1, fmt.Errorf("tunnel server not configured: cannot dispatch script to agent %s", agentID)
+	}
+	host, err := s.store.Get(ctx, agentID, tenantID)
+	if err != nil || host == nil {
+		return "", -1, fmt.Errorf("agent %s not found (tenant=%s)", agentID, tenantID)
+	}
+	if host.ProxyID == "" {
+		return "", -1, fmt.Errorf("agent %s has no proxy binding: cannot dispatch", agentID)
+	}
+	if timeout <= 0 {
+		timeout = 300
+	}
+	p := make(map[string]any, len(params))
+	for k, v := range params {
+		p[k] = v
+	}
+	task := &TaskRequest{
+		Action:  "script",
+		Script:  content,
+		Params:  p,
+		Timeout: timeout,
+		RunAs:  runAs,
+	}
+	body, mErr := json.Marshal(task)
+	if mErr != nil {
+		return "", -1, fmt.Errorf("marshal task: %w", mErr)
+	}
+	cmd := &tunnel.CommandRequest{
+		CommandID:     uuid.NewString(),
+		TargetID:      agentID,
+		Action:        "script",
+		Payload:       body,
+		TimeoutSecond: int32(timeout),
+	}
+	resp, e := s.tunnelServer.SendCommand(host.ProxyID, cmd)
+	if e != nil {
+		return "", -1, e
+	}
+	if resp == nil || !resp.Success {
+		msg := ""
+		if resp != nil {
+			msg = resp.Error
+		}
+		return "", -1, fmt.Errorf("agent script exec failed: %s", msg)
+	}
+	// Agent 端 executeScript 将 TaskResponse JSON 作为 Output 回传。
+	var tr TaskResponse
+	if json.Unmarshal(resp.Output, &tr) == nil {
+		if !tr.Success {
+			return tr.Output, tr.ExitCode, fmt.Errorf("%s", tr.Error)
+		}
+		return tr.Output, tr.ExitCode, nil
+	}
+	return string(resp.Output), 0, nil
+}
+
 // handleGetWhitelist 返回本租户的命令白名单(Agent 启动拉取,§6)。
 // enabled=false 表示未启用(放行一切);enabled=true 且 rules 为空表示拒绝一切。
 func (s *Service) handleGetWhitelist(w http.ResponseWriter, r *http.Request) {

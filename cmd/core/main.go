@@ -190,15 +190,25 @@ func main() {
 	sysconfigSvc := sysconfig.NewService(cfg)
 	server.RegisterService(sysconfigSvc)
 
-	scriptSvc := script.NewService()
+	scriptSvc := script.NewService(db)
 	server.RegisterService(scriptSvc)
 
-	workflowSvc := workflow.NewService()
+	workflowSvc := workflow.NewService(db)
 	workflowSvc.SetScriptExecutor(scriptSvc)
+	// 让脚本/工作流在指定 AgentID 时，通过 Tunnel 派发到被管主机执行
+	// （而非 Core 本机 os/exec），并复用 Agent 端命令白名单校验。
+	scriptSvc.SetAgentRunner(agentSvc)
 	server.RegisterService(workflowSvc)
 
-	schedulerSvc := scheduler.NewService()
+	schedulerSvc := scheduler.NewService(db)
+	// 让定时任务真正触发 workflow 执行（而非只存定义）。
+	schedulerSvc.SetWorkflowTrigger(func(ctx context.Context, tenantID, workflowID string) error {
+		_, err := workflowSvc.Trigger(ctx, tenantID, workflowID, nil, nil)
+		return err
+	})
 	server.RegisterService(schedulerSvc)
+	// 启动定时扫描（按 CronExpr 触发 workflow）。
+	go schedulerSvc.Start(ctx)
 
 	knowledgeSvc := knowledge.NewService()
 	server.RegisterService(knowledgeSvc)

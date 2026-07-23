@@ -2,6 +2,7 @@ package workflow
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -17,7 +18,7 @@ import (
 // ScriptExecutor executes a script by ID and returns its output, exit code and error.
 // It may be nil, in which case script nodes degrade gracefully with an error message.
 type ScriptExecutor interface {
-	Execute(scriptID string, params map[string]string, timeout int, runAs string) (output string, exitCode int, err error)
+	Execute(scriptID string, params map[string]string, timeout int, runAs string, agentID string, tenantID string) (output string, exitCode int, err error)
 }
 
 type Store interface {
@@ -202,8 +203,12 @@ type Service struct {
 	scriptExec ScriptExecutor
 }
 
-func NewService() *Service {
-	return &Service{store: NewMemoryStore()}
+func NewService(db *sql.DB) *Service {
+	var st Store = NewMemoryStore()
+	if db != nil {
+		st = NewPGStore(db)
+	}
+	return &Service{store: st}
 }
 
 // SetScriptExecutor injects a ScriptExecutor used by script/parallel steps.
@@ -335,18 +340,40 @@ func (s *Service) handleExecute(w http.ResponseWriter, r *http.Request) {
 	if len(wf.Steps) > 0 {
 		startStepID = wf.Steps[0].ID
 	}
-	s.runFromStep(r.Context(), exec, wf, startStepID)
-	writeJSON(w, http.StatusOK, exec)
+	// 异步驱动执行：HTTP 立即返回 202，执行在后台 goroutine 进行，
+	// 前端通过 GET /workflows/{id}/executions 轮询状态。
+	// 使用 WithoutCancel 派生，避免客户端断开导致后台执行被取消。
+	go s.runFromStep(context.WithoutCancel(r.Context()), exec, wf, startStepID)
+	writeJSON(w, http.StatusAccepted, exec)
 }
 
 // runFromStep drives execution starting at startStepID, following OnSuccess/OnFailure.
 // It pauses (returning nil) when an approval node is hit, persisting the pending state.
 func (s *Service) runFromStep(ctx context.Context, exec *WorkflowExecution, wf *Workflow, startStepID string) error {
+	const maxSteps = 1000
+	visited := make(map[string]int)
 	currentStepID := startStepID
 	for currentStepID != "" {
+		if len(visited) >= maxSteps {
+			exec.Status = ExecStatusFailed
+			finished := time.Now()
+			exec.FinishedAt = &finished
+			exec.PendingStepID = ""
+			s.store.UpdateExecution(ctx, exec)
+			return errors.New("workflow exceeded max steps (possible cycle)")
+		}
 		step := findStep(wf, currentStepID)
 		if step == nil {
 			break
+		}
+		visited[currentStepID]++
+		if visited[currentStepID] > 1 {
+			exec.Status = ExecStatusFailed
+			finished := time.Now()
+			exec.FinishedAt = &finished
+			exec.PendingStepID = ""
+			s.store.UpdateExecution(ctx, exec)
+			return fmt.Errorf("workflow cycle detected at step %s", currentStepID)
 		}
 		start := time.Now()
 		next, pending, err := s.executeStep(ctx, exec, wf, step)
@@ -398,9 +425,14 @@ func (s *Service) runFromStep(ctx context.Context, exec *WorkflowExecution, wf *
 // executeStep runs a single step and returns the next step ID, whether the
 // execution is paused pending approval, and any error.
 func (s *Service) executeStep(ctx context.Context, exec *WorkflowExecution, wf *Workflow, step *WorkflowStep) (nextStepID string, pending bool, err error) {
+	// 若本次执行指定了目标 Agent，脚本步骤派发到该 Agent 所在主机执行。
+	agentID := ""
+	if len(exec.AgentIDs) > 0 {
+		agentID = exec.AgentIDs[0]
+	}
 	switch step.Type {
 	case StepTypeScript:
-		if e := s.runScriptStep(step, exec.Context); e != nil {
+		if e := s.runScriptStep(step, exec.Context, agentID, exec.TenantID); e != nil {
 			if step.OnFailure != "" {
 				return step.OnFailure, false, nil
 			}
@@ -415,7 +447,7 @@ func (s *Service) executeStep(ctx context.Context, exec *WorkflowExecution, wf *
 		return step.OnFailure, false, nil
 
 	case StepTypeParallel:
-		if e := s.runParallelSteps(step, exec.Context); e != nil {
+		if e := s.runParallelSteps(step, exec.Context, agentID, exec.TenantID); e != nil {
 			if step.OnFailure != "" {
 				return step.OnFailure, false, nil
 			}
@@ -425,7 +457,13 @@ func (s *Service) executeStep(ctx context.Context, exec *WorkflowExecution, wf *
 
 	case StepTypeWait:
 		if step.WaitSeconds > 0 {
-			time.Sleep(time.Duration(step.WaitSeconds) * time.Second)
+			timer := time.NewTimer(time.Duration(step.WaitSeconds) * time.Second)
+			defer timer.Stop()
+			select {
+			case <-timer.C:
+			case <-ctx.Done():
+				return "", false, ctx.Err()
+			}
 		}
 		return step.OnSuccess, false, nil
 
@@ -450,8 +488,8 @@ func (s *Service) executeStep(ctx context.Context, exec *WorkflowExecution, wf *
 }
 
 // runScriptStep invokes the ScriptExecutor and stores parsed output under the step ID.
-func (s *Service) runScriptStep(step *WorkflowStep, ctx map[string]any) error {
-	out, err := s.executeScript(*step, ctx)
+func (s *Service) runScriptStep(step *WorkflowStep, ctx map[string]any, agentID string, tenantID string) error {
+	out, err := s.executeScript(*step, ctx, agentID, tenantID)
 	if err != nil {
 		return err
 	}
@@ -461,7 +499,7 @@ func (s *Service) runScriptStep(step *WorkflowStep, ctx map[string]any) error {
 
 // executeScript runs a single script node against the given context, returning
 // its parsed output. The context is only read (template resolution), never written.
-func (s *Service) executeScript(step WorkflowStep, ctx map[string]any) (map[string]any, error) {
+func (s *Service) executeScript(step WorkflowStep, ctx map[string]any, agentID string, tenantID string) (map[string]any, error) {
 	if s.scriptExec == nil {
 		return nil, errors.New("script executor not configured")
 	}
@@ -470,7 +508,7 @@ func (s *Service) executeScript(step WorkflowStep, ctx map[string]any) (map[stri
 	if v, ok := step.Inputs["run_as"].(string); ok {
 		runAs = v
 	}
-	output, exitCode, err := s.scriptExec.Execute(step.ScriptID, params, step.Timeout, runAs)
+	output, exitCode, err := s.scriptExec.Execute(step.ScriptID, params, step.Timeout, runAs, agentID, tenantID)
 	if err != nil {
 		return nil, err
 	}
@@ -483,7 +521,7 @@ func (s *Service) executeScript(step WorkflowStep, ctx map[string]any) (map[stri
 // runParallelSteps executes a step's ParallelSteps concurrently and merges their
 // outputs into the context after all complete. Per-step results are collected
 // locally to avoid concurrent writes to the shared context.
-func (s *Service) runParallelSteps(step *WorkflowStep, ctx map[string]any) error {
+func (s *Service) runParallelSteps(step *WorkflowStep, ctx map[string]any, agentID string, tenantID string) error {
 	type presult struct {
 		id  string
 		out map[string]any
@@ -495,7 +533,7 @@ func (s *Service) runParallelSteps(step *WorkflowStep, ctx map[string]any) error
 		wg.Add(1)
 		go func(idx int, ps WorkflowStep) {
 			defer wg.Done()
-			out, err := s.executeScript(ps, ctx)
+			out, err := s.executeScript(ps, ctx, agentID, tenantID)
 			results[idx] = presult{id: ps.ID, out: out, err: err}
 		}(i, step.ParallelSteps[i])
 	}
@@ -586,7 +624,8 @@ func (s *Service) decideApproval(w http.ResponseWriter, r *http.Request, status 
 		exec.Status = ExecStatusRunning
 		exec.PendingStepID = ""
 		s.store.UpdateExecution(r.Context(), exec)
-		s.runFromStep(r.Context(), exec, wf, nextStepID)
+		// 异步续跑：审批后的步骤在后台 goroutine 执行，避免长流程阻塞审批请求。
+		go s.runFromStep(context.WithoutCancel(r.Context()), exec, wf, nextStepID)
 	} else {
 		exec.Status = ExecStatusFailed
 		finished := time.Now()
@@ -729,4 +768,40 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 
 func writeError(w http.ResponseWriter, status int, msg string) {
 	writeJSON(w, status, map[string]string{"error": msg})
+}
+
+// Trigger 同步执行指定工作流，返回最终 execution。供 scheduler 定时触发复用，
+// 调用方（API handler / scheduler）自行决定是否异步驱动。
+func (s *Service) Trigger(ctx context.Context, tenantID, workflowID string, agentIDs []string, inputs map[string]any) (*WorkflowExecution, error) {
+	wf, err := s.store.Get(ctx, workflowID, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	if wf == nil {
+		return nil, fmt.Errorf("workflow not found: %s", workflowID)
+	}
+	now := time.Now()
+	exec := &WorkflowExecution{
+		WorkflowID:  wf.ID,
+		TenantID:    tenantID,
+		AgentIDs:    agentIDs,
+		Inputs:      inputs,
+		Status:      ExecStatusRunning,
+		StartedAt:   &now,
+		StepResults: make(map[string]StepResult),
+		Context:     make(map[string]any),
+	}
+	if inputs != nil {
+		exec.Context["inputs"] = inputs
+	}
+	if err := s.store.CreateExecution(ctx, exec); err != nil {
+		return nil, err
+	}
+	exec.Status = ExecStatusRunning
+	startStepID := ""
+	if len(wf.Steps) > 0 {
+		startStepID = wf.Steps[0].ID
+	}
+	s.runFromStep(ctx, exec, wf, startStepID)
+	return exec, nil
 }

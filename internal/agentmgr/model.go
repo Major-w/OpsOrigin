@@ -129,6 +129,7 @@ type TaskRequest struct {
 	Script  string         `json:"script,omitempty"`
 	Params  map[string]any `json:"params,omitempty"`
 	Timeout int            `json:"timeout,omitempty"`
+	RunAs  string          `json:"run_as,omitempty"` // 以指定系统用户身份执行(Agent 端可 honor)
 
 	// 文件分发(§5)相关字段。Agent 拉取 download-tasks 时,这些字段直接映射
 	// 到 Agent 端 FileDownloadRequest(file_url/file_path/expected_checksum/checksum_algo),

@@ -58,6 +58,7 @@ type ScriptVersion struct {
 // ExecuteRequest 脚本执行请求
 type ExecuteRequest struct {
 	AgentID  string            `json:"agent_id,omitempty"`
+	TenantID string            `json:"tenant_id,omitempty"`
 	Params   map[string]string `json:"params,omitempty"`
 	Timeout  int               `json:"timeout,omitempty"`
 	RunAs    string            `json:"run_as,omitempty"`

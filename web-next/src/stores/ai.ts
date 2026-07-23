@@ -15,6 +15,7 @@ interface AIState {
   fetchPlans: () => Promise<void>
   createAgent: (data: any) => Promise<boolean>
   executePlan: (data: any) => Promise<boolean>
+  chat: (prompt: string, history?: { role: string; content: string }[]) => Promise<string | null>
 }
 
 export const useAIStore = create<AIState>((set, get) => ({
@@ -69,6 +70,18 @@ export const useAIStore = create<AIState>((set, get) => ({
     } catch (e: any) {
       toast.error(`执行计划失败: ${e.message}`)
       return false
+    }
+  },
+  chat: async (prompt, history = []) => {
+    try {
+      const res = await apiFetch<{ content: string }>('/ai/chat', {
+        method: 'POST',
+        body: JSON.stringify({ prompt, history }),
+      })
+      return res.content
+    } catch (e: any) {
+      toast.error(`AI 响应失败: ${e.message}`)
+      return null
     }
   },
 }))
