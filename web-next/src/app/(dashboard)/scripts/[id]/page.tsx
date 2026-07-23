@@ -553,7 +553,18 @@ export default function ScriptDetailPage() {
               {/* 出参定义 */}
               <div>
                 <div className="flex items-center justify-between mb-2">
-                  <label className="text-sm font-medium">出参定义</label>
+                  <div className="flex items-center gap-1.5">
+                    <label className="text-sm font-medium">出参定义</label>
+                    <span className="relative group cursor-help">
+                      <span className="text-[11px] text-muted-foreground border rounded-full w-4 h-4 inline-flex items-center justify-center hover:bg-muted">?</span>
+                      <span className="absolute left-0 bottom-full mb-1 w-64 p-2 rounded-md bg-gray-900 dark:bg-gray-800 text-white dark:text-gray-200 text-[10px] leading-relaxed opacity-0 group-hover:opacity-100 pointer-events-none transition-opacity z-50 shadow-lg">
+                        用 <code className="bg-emerald-500/20 px-1 rounded">OUT_参数名=动态值</code> 输出<br/>
+                        如 <code className="bg-emerald-500/20 px-1 rounded">OUT_hostname=$(hostname)</code><br/>
+                        或末行输出 JSON：<br/>
+                        <code className="bg-emerald-500/20 px-1 rounded">{'{"status":"ok"}'}</code>
+                      </span>
+                    </span>
+                  </div>
                   <Button variant="outline" size="sm" className="h-7 text-xs" onClick={() => setOutputParamForm([...outputParamForm, { name: '', type: 'string', description: '' }])}>
                     <Plus className="h-3 w-3 mr-1" />添加参数
                   </Button>
