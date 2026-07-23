@@ -1,6 +1,7 @@
 'use client'
 
 import { useEffect, useState, useRef } from 'react'
+import { useRouter } from 'next/navigation'
 import { useAIStore } from '@/stores/ai'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
@@ -48,6 +49,7 @@ const QUICK_ACTIONS = [
 
 export default function AIPage() {
   const { agents, fetchAgents, streamChat, loadConversations } = useAIStore()
+  const router = useRouter()
   const { theme } = useThemeStore()
   const [messages, setMessages] = useState<Message[]>([
     { id: '0', role: 'assistant', content: '你好！我是 OpsOrigin AI 助手，可以帮你完成运维任务。你可以直接告诉我需要什么，或者选择下方的快捷操作。', timestamp: new Date() }
@@ -138,7 +140,7 @@ export default function AIPage() {
         </div>
         <div className="flex gap-2">
           <Button variant="outline" size="sm" onClick={handleOpenHistory}><History className="h-4 w-4" />{showHistory ? '返回' : '历史'}</Button>
-          <Button variant="outline" size="sm"><Settings className="h-4 w-4" />设置</Button>
+          <Button variant="outline" size="sm" onClick={() => router.push('/system')}><Settings className="h-4 w-4" />设置</Button>
         </div>
       </div>
 
