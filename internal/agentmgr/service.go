@@ -2,6 +2,7 @@ package agentmgr
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -325,9 +326,13 @@ type Service struct {
 	serverBaseURL   string              // Server 对外基址(如 http://host:8080),用于拓扑感知下发直连下载地址
 }
 
-func NewService() *Service {
+func NewService(db *sql.DB) *Service {
+	var st Store = NewMemoryStore()
+	if db != nil {
+		st = newPGStore(db)
+	}
 	s := &Service{
-		store:           NewMemoryStore(),
+		store:           st,
 		circuitBreakers: make(map[string]*CircuitBreakerConfig),
 		stopCh:          make(chan struct{}),
 		remoteExec:      remoteexec.NewService(),
