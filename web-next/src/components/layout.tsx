@@ -28,6 +28,7 @@ interface NavGroup {
 
 const navGroups: (NavItem | NavGroup)[] = [
   { to: '/dashboard', label: '仪表盘', icon: LayoutDashboard },
+  { to: '/guide', label: '接入指引', icon: BookOpen },
   {
     label: '基础功能管理', icon: Settings, items: [
       { to: '/resources', label: '资源纳管', icon: Server },

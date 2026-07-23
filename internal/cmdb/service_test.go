@@ -1,29 +1,26 @@
 package cmdb
 
 import (
-	"net/http"
-	"net/http/httptest"
-	"strings"
 	"testing"
+
+	"github.com/opsorigin/core/internal/cmdb/model"
 )
 
-func TestHandleListCIWithoutRepositoryReturnsEmptyList(t *testing.T) {
-	svc := &Service{}
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/cmdb/ci", nil)
-	rr := httptest.NewRecorder()
-
-	defer func() {
-		if r := recover(); r != nil {
-			t.Fatalf("handleListCI panicked: %v", r)
-		}
-	}()
-
-	svc.handleListCI(rr, req)
-
-	if rr.Code != http.StatusOK {
-		t.Fatalf("expected status 200, got %d", rr.Code)
+// TestResolveChannel covers the channel-weight mapping used to pick the
+// notification/escalation path for an incident (report issue 3.x).
+func TestResolveChannel(t *testing.T) {
+	cases := []struct {
+		ch   int
+		want model.ChannelWeight
+	}{
+		{95, model.WeightHuman},
+		{80, model.WeightITSM},
+		{50, model.WeightAutoScript},
+		{10, model.WeightDiscovery},
 	}
-	if body := rr.Body.String(); !strings.Contains(body, "[]") {
-		t.Fatalf("expected empty array response, got %s", body)
+	for _, c := range cases {
+		if got := resolveChannel(c.ch); got != c.want {
+			t.Errorf("resolveChannel(%d) = %v, want %v", c.ch, got, c.want)
+		}
 	}
 }

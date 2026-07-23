@@ -27,6 +27,7 @@ type RegisterRequest struct {
 	Version      string   `json:"version"`
 	Hostname     string   `json:"hostname"`
 	Capabilities []string `json:"capabilities,omitempty"`
+	Token        string   `json:"token,omitempty"`
 }
 
 type RegisterResponse struct {

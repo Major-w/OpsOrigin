@@ -9,18 +9,19 @@ import (
 )
 
 type Config struct {
-	Core      CoreConfig   `json:"core"`
-	Proxy     ProxyConfig  `json:"proxy"`
-	Agent     AgentConfig  `json:"agent"`
-	AgentWS   AgentWSConfig `json:"agent_ws"`
-	TLS       TLSConfig    `json:"tls"`
-	Outbox    OutboxConfig `json:"outbox"`
-	CMDB      CMDBConfig   `json:"cmdb"`
-	Auth      AuthConfig   `json:"auth"`
-	LLM       LLMConfig    `json:"llm"`
-	RedisAddr string       `json:"redis_addr"`
-	LDAP      LDAPConfig   `json:"ldap"`
-	SSO       SSOConfig    `json:"sso"`
+	Core      CoreConfig    `json:"core"`
+	Proxy     ProxyConfig   `json:"proxy"`
+	Agent     AgentConfig   `json:"agent"`
+	TLS       TLSConfig     `json:"tls"`
+	Outbox    OutboxConfig  `json:"outbox"`
+	CMDB      CMDBConfig    `json:"cmdb"`
+	Auth      AuthConfig    `json:"auth"`
+	LLM       LLMConfig     `json:"llm"`
+	RedisAddr string        `json:"redis_addr"`
+	LDAP      LDAPConfig    `json:"ldap"`
+	SSO       SSOConfig     `json:"sso"`
+	Tunnel    TunnelConfig  `json:"tunnel"`
+	FileStore FileStoreConfig `json:"file_store"` // §5 文件分发中心存储配置
 }
 
 type LDAPConfig struct {
@@ -45,6 +46,7 @@ type CoreConfig struct {
 	Port       int    `json:"port"`
 	Addr       string `json:"addr"`
 	GRPCListen string `json:"grpc_listen"`
+	PublicURL  string `json:"public_url"` // Server 对外基址(如 http://host:8080),用于下发直连 Agent 的下载地址
 }
 
 type ProxyConfig struct {
@@ -52,20 +54,19 @@ type ProxyConfig struct {
 	CoreAddr   string `json:"core_addr"`
 	Listen     string `json:"listen"`
 	GRPCListen string `json:"grpc_listen"`
+	FileListen string `json:"file_listen"` // §5 HTTP 文件代理监听地址(留空则不启用)
+}
+
+// FileStoreConfig 是 §5 文件分发中心存储配置。
+// Dir 为文件落盘目录(以 file_id 为文件名);TokenSecret 为 §6 短期下载令牌密钥,
+// Server 与 Proxy 必须配置为同一值(Proxy 在边缘校验令牌后再向 Core 拉取)。
+type FileStoreConfig struct {
+	Dir         string `json:"dir"`
+	TokenSecret string `json:"token_secret"`
 }
 
 type AgentConfig struct {
 	ProxyAddr string `json:"proxy_addr"`
-}
-
-// AgentWSConfig 是 Agent WebSocket 长连接服务的配置。
-// Agent 通信走独立端口(默认 5588),与主服务 8080 隔离,避免主服务故障影响 Agent 数据上报。
-type AgentWSConfig struct {
-	Port     int    `json:"port"`      // WebSocket 监听端口,默认 5588
-	Enabled  bool   `json:"enabled"`   // 是否启用 Agent WebSocket 长连接
-	UseTLS   bool   `json:"use_tls"`   // 是否启用 TLS(WSS)
-	CertFile string `json:"cert_file"` // TLS 证书文件路径
-	KeyFile  string `json:"key_file"`  // TLS 私钥文件路径
 }
 
 // TLSConfig 是全局 TLS 配置,影响下载链接的 scheme 判定。
@@ -90,6 +91,14 @@ type AuthConfig struct {
 	JWTSecret string `json:"jwt_secret"`
 }
 
+// TunnelConfig 是 Proxy/Core 隧道通信的认证配置。
+// 所有 Proxy 在注册到 Core 时必须携带与 Core 一致的 AuthSecret,
+// 否则注册会被拒绝 (fail-closed), 防止未授权节点接入控制面。
+type TunnelConfig struct {
+	AuthSecret string `json:"auth_secret"` // 隧道注册共享密钥, 必填
+	Insecure   bool   `json:"insecure"`    // 仅本地测试使用, 跳过校验并告警
+}
+
 type LLMConfig struct {
 	APIKey  string `json:"api_key"`
 	Model   string `json:"model"`
@@ -104,22 +113,17 @@ func Load() (*Config, error) {
 		Core: CoreConfig{
 			Port:       envInt("OPSNEXUS_CORE_PORT", 8080),
 			GRPCListen: envStr("OPSNEXUS_CORE_GRPC_LISTEN", ":9091"),
+			PublicURL:  envStr("OPSNEXUS_CORE_PUBLIC_URL", ""),
 		},
 		Proxy: ProxyConfig{
 			ID:         envStr("OPSNEXUS_PROXY_ID", "proxy-001"),
 			CoreAddr:   envStr("OPSNEXUS_PROXY_CORE_ADDR", "localhost:8080"),
 			Listen:     envStr("OPSNEXUS_PROXY_LISTEN", ":9090"),
 			GRPCListen: envStr("OPSNEXUS_PROXY_GRPC_LISTEN", ":9092"),
+			FileListen: envStr("OPSNEXUS_PROXY_FILE_LISTEN", ""),
 		},
 		Agent: AgentConfig{
 			ProxyAddr: envStr("OPSNEXUS_AGENT_PROXY_ADDR", "localhost:9090"),
-		},
-		AgentWS: AgentWSConfig{
-			Port:     envInt("OPSNEXUS_AGENT_WS_PORT", 5588),
-			Enabled:  envBool("OPSNEXUS_AGENT_WS_ENABLED", true),
-			UseTLS:   envBool("OPSNEXUS_AGENT_WS_TLS", false),
-			CertFile: envStr("OPSNEXUS_AGENT_WS_CERT", ""),
-			KeyFile:  envStr("OPSNEXUS_AGENT_WS_KEY", ""),
 		},
 		TLS: TLSConfig{
 			Enabled:  envBool("OPSNEXUS_TLS_ENABLED", false),
@@ -160,6 +164,14 @@ func Load() (*Config, error) {
 			ClientSecret: envStr("OPSNEXUS_SSO_CLIENT_SECRET", ""),
 			RedirectURL:  envStr("OPSNEXUS_SSO_REDIRECT_URL", "http://localhost:8080/api/v1/auth/callback"),
 			IssuerURL:    envStr("OPSNEXUS_SSO_ISSUER_URL", ""),
+		},
+		Tunnel: TunnelConfig{
+			AuthSecret: envStr("OPSNEXUS_TUNNEL_AUTH_SECRET", ""),
+			Insecure:   envBool("OPSNEXUS_TUNNEL_INSECURE", false),
+		},
+		FileStore: FileStoreConfig{
+			Dir:         envStr("OPSNEXUS_FILE_STORE_DIR", "./data/files"),
+			TokenSecret: envStr("OPSNEXUS_FILE_TOKEN_SECRET", ""),
 		},
 	}
 

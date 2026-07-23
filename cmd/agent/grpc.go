@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -12,6 +14,7 @@ import (
 
 	pb "github.com/opsorigin/core/api/proto"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/credentials/insecure"
 )
 
@@ -24,6 +27,9 @@ type GRPCAgentClient struct {
 	connected bool
 	onAction  func(action string, payload []byte) ([]byte, error)
 	pending   sync.Map
+
+	// tlsConfig 非 nil 时,以 mTLS 双向认证连接 Core(§3.1 / §6)。
+	tlsConfig *tls.Config
 }
 
 func NewGRPCAgentClient(coreAddr, agentID string) *GRPCAgentClient {
@@ -31,6 +37,30 @@ func NewGRPCAgentClient(coreAddr, agentID string) *GRPCAgentClient {
 		coreAddr: coreAddr,
 		agentID:  agentID,
 	}
+}
+
+// WithMTLS 配置客户端证书以启用双向 TLS(§3.1)。
+// certFile/keyFile 为 Agent 自身证书;caFile 为签发 Core 服务端证书的 CA(用于校验对端)。
+// 失败返回 error,由调用方决定是否退出(未配置证书时不应静默放行)。
+func (c *GRPCAgentClient) WithMTLS(certFile, keyFile, caFile string) error {
+	cert, err := tls.LoadX509KeyPair(certFile, keyFile)
+	if err != nil {
+		return fmt.Errorf("load agent client cert: %w", err)
+	}
+	caPEM, err := os.ReadFile(caFile)
+	if err != nil {
+		return fmt.Errorf("read core CA: %w", err)
+	}
+	pool := x509.NewCertPool()
+	if !pool.AppendCertsFromPEM(caPEM) {
+		return fmt.Errorf("parse core CA: no certificates found in %s", caFile)
+	}
+	c.tlsConfig = &tls.Config{
+		Certificates: []tls.Certificate{cert},
+		RootCAs:      pool,
+		MinVersion:   tls.VersionTLS13, // §6 TLS 1.3
+	}
+	return nil
 }
 
 func (c *GRPCAgentClient) OnAction(handler func(action string, payload []byte) ([]byte, error)) {
@@ -59,9 +89,11 @@ func (c *GRPCAgentClient) Start(ctx context.Context) error {
 }
 
 func (c *GRPCAgentClient) connectAndRun(ctx context.Context) error {
-	conn, err := grpc.NewClient(c.coreAddr,
-		grpc.WithTransportCredentials(insecure.NewCredentials()),
-	)
+	creds := grpc.WithTransportCredentials(insecure.NewCredentials())
+	if c.tlsConfig != nil {
+		creds = grpc.WithTransportCredentials(credentials.NewTLS(c.tlsConfig))
+	}
+	conn, err := grpc.NewClient(c.coreAddr, creds)
 	if err != nil {
 		return fmt.Errorf("grpc dial: %w", err)
 	}

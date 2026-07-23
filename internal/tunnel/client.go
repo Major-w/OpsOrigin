@@ -13,22 +13,24 @@ import (
 )
 
 type Client struct {
-	coreAddr   string
-	proxyID    string
-	hostname   string
+	coreAddr     string
+	proxyID      string
+	hostname     string
+	authToken    string
 	capabilities []string
-	conn       *Conn
-	mu         sync.Mutex
-	connected  bool
-	onCommand  func(cmd *AgentCommand) *AgentResponse
-	pending    sync.Map
+	conn         *Conn
+	mu           sync.Mutex
+	connected    bool
+	onCommand    func(cmd *AgentCommand) *AgentResponse
+	pending      sync.Map
 }
 
-func NewClient(coreAddr, proxyID, hostname string, capabilities []string) *Client {
+func NewClient(coreAddr, proxyID, hostname string, capabilities []string, authToken string) *Client {
 	return &Client{
 		coreAddr:     coreAddr,
 		proxyID:      proxyID,
 		hostname:     hostname,
+		authToken:    authToken,
 		capabilities: capabilities,
 	}
 }
@@ -74,6 +76,7 @@ func (c *Client) connect(ctx context.Context) error {
 		Version:      "1.0.0",
 		Hostname:     c.hostname,
 		Capabilities: c.capabilities,
+		Token:        c.authToken,
 	}
 	msgData, err := MarshalMessage(MsgRegister, reg, c.proxyID, "")
 	if err != nil {

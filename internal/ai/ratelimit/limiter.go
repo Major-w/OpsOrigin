@@ -23,16 +23,16 @@ type ContextRateLimiter interface {
 }
 
 type Limiter struct {
-	mu       sync.Mutex
-	window   time.Duration
-	limit    int
-	buckets  map[string]*tokenBucket
+	mu      sync.Mutex
+	window  time.Duration
+	limit   int
+	buckets map[string]*tokenBucket
 }
 
 type tokenBucket struct {
-	tokens    []time.Time
+	tokens      []time.Time
 	circuitOpen bool
-	lastFail   time.Time
+	lastFail    time.Time
 	consecFails int
 }
 
@@ -52,10 +52,46 @@ const (
 )
 
 func New() *Limiter {
-	return &Limiter{
+	l := &Limiter{
 		window:  DefaultWindow,
 		limit:   DefaultLimit,
 		buckets: make(map[string]*tokenBucket),
+	}
+	go l.reapLoop()
+	return l
+}
+
+// reapLoop periodically removes idle buckets so that agents registering and
+// deregistering over time do not leak memory indefinitely (see issue 3.6).
+func (l *Limiter) reapLoop() {
+	ticker := time.NewTicker(time.Minute)
+	defer ticker.Stop()
+	for range ticker.C {
+		l.reap()
+	}
+}
+
+// reap deletes buckets that have no recent request activity and are not in a
+// tripped (open) circuit state. Open circuits are kept so their state remains
+// observable until they reset naturally.
+func (l *Limiter) reap() {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	cutoff := time.Now().Add(-l.window)
+	for id, b := range l.buckets {
+		if b.circuitOpen {
+			continue
+		}
+		recent := false
+		for _, t := range b.tokens {
+			if t.After(cutoff) {
+				recent = true
+				break
+			}
+		}
+		if !recent {
+			delete(l.buckets, id)
+		}
 	}
 }
 

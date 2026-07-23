@@ -15,7 +15,7 @@ import (
 )
 
 var (
-	ErrAntiFlapping  = errors.New("channel weight is lower than existing")
+	ErrAntiFlapping   = errors.New("channel weight is lower than existing")
 	ErrValueUnchanged = errors.New("value diff is zero, update skipped")
 )
 
@@ -169,12 +169,12 @@ func (r *Repository) UpdateCI(ctx context.Context, ci *model.CIModel, channel mo
 		}
 		changed = true
 		changeLog = append(changeLog, model.AttributeChange{
-			CIID:        ci.ID,
-			AttrName:    k,
-			OldValue:    oldVal,
-			NewValue:    newVal,
-			Channel:     channel,
-			ChangedAt:   ci.UpdatedAt,
+			CIID:      ci.ID,
+			AttrName:  k,
+			OldValue:  oldVal,
+			NewValue:  newVal,
+			Channel:   channel,
+			ChangedAt: ci.UpdatedAt,
 		})
 	}
 
@@ -210,8 +210,8 @@ func (r *Repository) UpdateCI(ctx context.Context, ci *model.CIModel, channel mo
 		return errors.New("ci not found or tenant mismatch")
 	}
 
-		for _, ch := range changeLog {
-			_, err := tx.ExecContext(ctx, `
+	for _, ch := range changeLog {
+		_, err := tx.ExecContext(ctx, `
 			INSERT INTO cmdb_ci_audit (ci_id, attr_name, old_value, new_value, channel, trace_id, changed_at)
 			VALUES ($1, $2, $3, $4, $5, $6, $7)`,
 			ci.ID, ch.AttrName, toJSON(ch.OldValue), toJSON(ch.NewValue), int(ch.Channel), traceID, ch.ChangedAt)
@@ -221,9 +221,9 @@ func (r *Repository) UpdateCI(ctx context.Context, ci *model.CIModel, channel mo
 	}
 
 	payload, _ := json.Marshal(map[string]any{
-		"ci_id":       ci.ID,
-		"change_log":  changeLog,
-		"attributes":  ci.Attributes,
+		"ci_id":      ci.ID,
+		"change_log": changeLog,
+		"attributes": ci.Attributes,
 	})
 	if err := r.insertOutbox(ctx, tx, ci.TenantID, model.EventCIUpdated, "ci", ci.ID, string(payload), traceID); err != nil {
 		return err
@@ -302,6 +302,48 @@ func (r *Repository) GetCIAudit(ctx context.Context, ciID, tenantID string) ([]*
 
 func (r *Repository) ListCI(ctx context.Context, tenantID string, typeID string) ([]*model.CIModel, error) {
 	return r.ListCIPaginated(ctx, tenantID, typeID, "", "", 0, 0)
+}
+
+// ListCIByQuery lists CIs filtered by optional type and a free-text query,
+// pushing the filter down to SQL (ILIKE) instead of loading the whole table
+// into memory and filtering in Go (see report issue 3.3).
+func (r *Repository) ListCIByQuery(ctx context.Context, tenantID, typeID, q string) ([]*model.CIModel, error) {
+	query := `SELECT id, type_id, tenant_id, name, description, status, attributes, labels, channel, created_at, updated_at
+	FROM cmdb_ci WHERE tenant_id = $1`
+	args := []any{tenantID}
+	argIdx := 2
+
+	if typeID != "" {
+		query += fmt.Sprintf(` AND type_id = $%d`, argIdx)
+		args = append(args, typeID)
+		argIdx++
+	}
+	if q != "" {
+		// ILIKE gives case-insensitive substring matching. The pattern is a
+		// bound parameter, so user input cannot break out of the clause.
+		query += fmt.Sprintf(` AND (name ILIKE $%d OR description ILIKE $%d OR type_id ILIKE $%d)`, argIdx, argIdx+1, argIdx+2)
+		like := "%" + q + "%"
+		args = append(args, like, like, like)
+		argIdx += 3
+	}
+
+	query += ` ORDER BY created_at DESC LIMIT 100`
+
+	rows, err := r.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("list ci by query: %w", err)
+	}
+	defer rows.Close()
+
+	var cis []*model.CIModel
+	for rows.Next() {
+		ci, err := scanCI(rows)
+		if err != nil {
+			return nil, err
+		}
+		cis = append(cis, ci)
+	}
+	return cis, rows.Err()
 }
 
 func (r *Repository) ListCIPaginated(ctx context.Context, tenantID, typeID, sortBy, sortOrder string, limit, offset int) ([]*model.CIModel, error) {
@@ -561,19 +603,19 @@ func (r *Repository) ListCIModelTypes(ctx context.Context, tenantID string, limi
 		WHERE tenant_id = $1
 		ORDER BY created_at DESC
 		LIMIT $2 OFFSET $3`
-	
+
 	rows, err := r.db.QueryContext(ctx, query, tenantID, limit, offset)
 	if err != nil {
 		return nil, fmt.Errorf("query ci model types: %w", err)
 	}
 	defer rows.Close()
-	
+
 	var types []*model.CIModelType
 	for rows.Next() {
 		mt := &model.CIModelType{}
 		var schemaJSON []byte
 		var desc, parentID sql.NullString
-		
+
 		err := rows.Scan(&mt.ID, &mt.TenantID, &mt.Name, &desc, &parentID, &schemaJSON, &mt.CreatedAt, &mt.UpdatedAt)
 		if err != nil {
 			return nil, fmt.Errorf("scan ci model type: %w", err)
@@ -602,12 +644,12 @@ func (r *Repository) CountCIModelTypes(ctx context.Context, tenantID string) (in
 // UpdateCIModelType 更新CI模型类型
 func (r *Repository) UpdateCIModelType(ctx context.Context, mt *model.CIModelType) error {
 	mt.UpdatedAt = time.Now()
-	
+
 	schemaJSON, err := json.Marshal(mt.Schema)
 	if err != nil {
 		return fmt.Errorf("marshal schema: %w", err)
 	}
-	
+
 	_, err = r.db.ExecContext(ctx, `
 		UPDATE cmdb_ci_model_type
 		SET name = $1, description = $2, parent_id = $3, schema = $4, updated_at = $5

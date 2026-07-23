@@ -17,7 +17,11 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/opsorigin/core/internal/command"
+	"github.com/opsorigin/core/internal/filelimit"
 	"github.com/opsorigin/core/internal/remoteexec"
+	"github.com/opsorigin/core/internal/sandbox"
+	"github.com/opsorigin/core/internal/token"
 	"github.com/opsorigin/core/internal/tunnel"
 	"golang.org/x/crypto/ssh"
 )
@@ -305,12 +309,20 @@ type Service struct {
 	circuitBreakers map[string]*CircuitBreakerConfig
 	cbMu            sync.Mutex
 	stopCh          chan struct{}
-	wsHub           *AgentWSHub // Agent WebSocket 长连接 Hub(可选,启用后任务优先走 WS)
-	tlsEnabled      bool        // 是否全局启用 HTTPS(影响安装脚本中的 scheme)
-	agentWSPort     int         // Agent WebSocket 端口(默认 5588)
-	tunnelServer    *tunnel.Server // Proxy 隧道服务(可选,启用后支持通过 Proxy 下发命令)
-	sandboxID       string      // 沙箱 Agent ID(自动注册)
+	tlsEnabled      bool                // 是否全局启用 HTTPS(影响安装脚本中的 scheme)
+	tunnelServer    *tunnel.Server      // Proxy 隧道服务(可选,启用后支持通过 Proxy 下发命令)
+	sandboxID       string              // 沙箱 Agent ID(自动注册)
+	sandboxExec     *sandbox.Executor  // 本地沙箱执行器(勾选"沙箱执行"时使用)
 	remoteExec      *remoteexec.Service // SSH 远程执行服务(agentless 主机命令执行)
+
+	// §6 命令白名单:非 nil 时所有经 Server 直接下发的命令(SSH 直连 / 经 Proxy / 沙箱)
+	// 执行前均须命中白名单,否则拒绝。由上层从 command_whitelist 表加载后通过 SetWhitelist 注入。
+	whitelist       *command.Whitelist
+	whitelistMu     sync.RWMutex
+	fileTokenSecret string              // §6 文件下载短期令牌密钥(P1 文件代理启用)
+	fileStoreDir    string              // §5 文件分发中心存储目录(以 file_id 为文件名)
+	fileLimiter     *filelimit.Limiter // §5 文件下载限流/熔断器
+	serverBaseURL   string              // Server 对外基址(如 http://host:8080),用于拓扑感知下发直连下载地址
 }
 
 func NewService() *Service {
@@ -318,30 +330,12 @@ func NewService() *Service {
 		store:           NewMemoryStore(),
 		circuitBreakers: make(map[string]*CircuitBreakerConfig),
 		stopCh:          make(chan struct{}),
-		agentWSPort:     5588,
 		remoteExec:      remoteexec.NewService(),
+		sandboxExec:     sandbox.NewExecutor(),
+		fileLimiter:     filelimit.New(0, 0), // 0 ⇒ 使用 filelimit 包默认值
 	}
 	go s.offlineDetector()
 	return s
-}
-
-// SetWSHub 注入 Agent WebSocket Hub,启用后任务下发优先走长连接。
-func (s *Service) SetWSHub(hub *AgentWSHub) {
-	s.wsHub = hub
-	// 注册任务结果回调:Agent 通过 WS 上报结果时,直接写入 store
-	hub.SetTaskResultHandler(func(agentID string, msg *WSMessage) {
-		resp := &TaskResponse{
-			TaskID:   msg.TaskID,
-			Success:  msg.Success,
-			Output:   msg.Output,
-			ExitCode: msg.ExitCode,
-			Duration: msg.Duration,
-			Error:    msg.Error,
-		}
-		if err := s.store.CompleteTask(context.Background(), agentID, msg.TaskID, resp); err != nil {
-			slog.Warn("ws complete task failed", "error", err, "agent_id", agentID, "task_id", msg.TaskID)
-		}
-	})
 }
 
 // SetTLSEnable 设置是否启用 HTTPS(影响安装脚本的 scheme)。
@@ -349,14 +343,43 @@ func (s *Service) SetTLSEnable(enabled bool) {
 	s.tlsEnabled = enabled
 }
 
-// SetAgentWSPort 设置 Agent WebSocket 端口(用于安装脚本中写入 WS 地址)。
-func (s *Service) SetAgentWSPort(port int) {
-	s.agentWSPort = port
-}
-
 // SetTunnelServer 注入 tunnel server,启用后支持通过 Proxy 下发命令。
 func (s *Service) SetTunnelServer(ts *tunnel.Server) {
 	s.tunnelServer = ts
+}
+
+// SetWhitelist 注入本租户的命令白名单(§6)。传 nil 表示未启用(放行一切)。
+func (s *Service) SetWhitelist(wl *command.Whitelist) {
+	s.whitelistMu.Lock()
+	s.whitelist = wl
+	s.whitelistMu.Unlock()
+}
+
+// SetFileTokenSecret 配置文件下载短期令牌密钥(§6),供 P1 文件代理签发/校验。
+func (s *Service) SetFileTokenSecret(secret string) {
+	s.fileTokenSecret = secret
+}
+
+// SetFileStoreDir 配置文件分发中心存储目录(§5)。
+func (s *Service) SetFileStoreDir(dir string) {
+	s.fileStoreDir = dir
+}
+
+// SetServerBaseURL 配置 Server 对外基址(如 http://host:8080),
+// 用于拓扑感知下发"直连 Agent"的下载地址。留空则无法生成直连 URL。
+func (s *Service) SetServerBaseURL(url string) {
+	s.serverBaseURL = strings.TrimRight(url, "/")
+}
+
+// verifyCommand 服务端命令白名单校验。whitelist 为 nil(未启用)时直接放行。
+func (s *Service) verifyCommand(command string) error {
+	s.whitelistMu.RLock()
+	wl := s.whitelist
+	s.whitelistMu.RUnlock()
+	if wl == nil {
+		return nil
+	}
+	return wl.Verify(command)
 }
 
 // InitSandbox 初始化沙箱环境,在 Server 端自动注册一个本地 Agent 用于脚本调试。
@@ -454,6 +477,8 @@ func (s *Service) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/v1/agents/test-ssh", s.handleTestSSH)
 	mux.HandleFunc("GET /api/v1/agents/install-script", s.handleInstallScript)
 	mux.HandleFunc("GET /api/v1/agents/download", s.handleDownloadAgent)
+	// §5 文件分发:中心存储文件拉取端点(令牌保护,支持 Range 断点续传)。
+	mux.HandleFunc("GET /api/v1/files/{file_id}", s.handleServeFile)
 	mux.HandleFunc("POST /api/v1/agents/{id}/tasks", s.handleCreateTask)
 	mux.HandleFunc("GET /api/v1/agents/{id}/tasks", s.handleListTasks)
 	mux.HandleFunc("POST /api/v1/agents/{id}/tasks/{task_id}", s.handleCompleteTask)
@@ -464,8 +489,13 @@ func (s *Service) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/v1/agents/{id}/uninstall", s.handleUninstallAgent)
 	mux.HandleFunc("POST /api/v1/agents/{id}/cmdb", s.handleCMDBReport)
 	mux.HandleFunc("GET /api/v1/agents/{id}/download-tasks", s.handleDownloadTasks)
+	// §5 文件分发:创建下载任务,签发短期令牌并生成拓扑感知下载地址(POST)。
+	mux.HandleFunc("POST /api/v1/agents/{id}/download-tasks", s.handleCreateDownloadTask)
+	// 命令白名单(Agent 启动拉取,§6)
+	mux.HandleFunc("GET /api/v1/agents/{id}/whitelist", s.handleGetWhitelist)
 	// Sandbox
 	mux.HandleFunc("GET /api/v1/agents/sandbox", s.handleGetSandbox)
+	mux.HandleFunc("POST /api/v1/sandbox/exec", s.handleExecSandbox)
 	// Remote Execution (SSH)
 	mux.HandleFunc("POST /api/v1/agents/batch-execute", s.handleBatchExecute)
 	mux.HandleFunc("GET /api/v1/agents/exec-tasks/{task_id}", s.handleGetExecTask)
@@ -481,7 +511,7 @@ func (s *Service) RegisterRoutes(mux *http.ServeMux) {
 func (s *Service) handleGetSandbox(w http.ResponseWriter, r *http.Request) {
 	if s.sandboxID == "" {
 		writeJSON(w, http.StatusOK, map[string]any{
-			"exists": false,
+			"exists":  false,
 			"message": "sandbox agent not initialized",
 		})
 		return
@@ -495,7 +525,7 @@ func (s *Service) handleGetSandbox(w http.ResponseWriter, r *http.Request) {
 	}
 	if host == nil {
 		writeJSON(w, http.StatusOK, map[string]any{
-			"exists": false,
+			"exists":  false,
 			"message": "sandbox agent not found",
 		})
 		return
@@ -545,7 +575,11 @@ func (s *Service) handleGetExecTask(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, result)
 }
 
-// handleSSHExecute 在单台主机上通过 SSH 执行命令。
+// handleSSHExecute 在单台主机上执行命令。
+// 支持三种目标：
+//   - 默认：通过 SSH 直连目标主机（Core 出站）。
+//   - proxy_id 指定：目标位于隔离网段，由 Proxy 代为 SSH 执行（见 proxy 契约）。
+//   - sandbox=true：不指定目标主机，直接在 Server 本机沙箱环境执行（调试/冒烟）。
 func (s *Service) handleSSHExecute(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Host     string `json:"host"`
@@ -555,14 +589,46 @@ func (s *Service) handleSSHExecute(w http.ResponseWriter, r *http.Request) {
 		SSHKey   string `json:"ssh_key,omitempty"`
 		Command  string `json:"command"`
 		Timeout  int    `json:"timeout,omitempty"`
+		ProxyID  string `json:"proxy_id,omitempty"` // 指定则走 Proxy 代为执行
+		Sandbox  bool   `json:"sandbox,omitempty"`  // 勾选沙箱环境执行
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
 
-	if req.Host == "" || req.Command == "" {
-		writeError(w, http.StatusBadRequest, "host and command are required")
+	if req.Command == "" {
+		writeError(w, http.StatusBadRequest, "command is required")
+		return
+	}
+
+	// §6 命令白名单:服务端下发前强制校验(直连 / 经 Proxy / 沙箱 三条路径统一拦截)。
+	if err := s.verifyCommand(req.Command); err != nil {
+		slog.Warn("ssh-execute denied by whitelist", "host", req.Host, "error", err)
+		writeError(w, http.StatusForbidden, "command denied by whitelist: "+err.Error())
+		return
+	}
+
+	timeout := time.Duration(req.Timeout) * time.Second
+	if timeout == 0 {
+		timeout = 30 * time.Second
+	}
+
+	// 沙箱执行：不选择目标主机，直接在 Server 本机隔离运行
+	if req.Sandbox {
+		res, err := s.sandboxExec.Execute(r.Context(), req.Command, timeout)
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{
+			"host":      "sandbox(local)",
+			"output":    res.Output,
+			"exit_code": res.ExitCode,
+			"error":     res.Error,
+			"duration":  res.Duration.Milliseconds(),
+			"via":       "sandbox",
+		})
 		return
 	}
 
@@ -571,15 +637,40 @@ func (s *Service) handleSSHExecute(w http.ResponseWriter, r *http.Request) {
 		port = 22
 	}
 
+	// 通过 Proxy 执行：由 Proxy 代为 SSH（目标在隔离网段，Core 不可达）
+	if req.ProxyID != "" && s.tunnelServer != nil {
+		out, exitCode, execErr := s.execViaProxy(req.ProxyID, "ssh_exec", map[string]any{
+			"host":     req.Host,
+			"port":     port,
+			"username": req.Username,
+			"password": req.Password,
+			"ssh_key":  req.SSHKey,
+			"command":  req.Command,
+		}, int32(timeout.Seconds()))
+		if execErr == nil {
+			writeJSON(w, http.StatusOK, map[string]any{
+				"host":      req.Host,
+				"port":      port,
+				"output":    out,
+				"exit_code": exitCode,
+				"via":       "proxy",
+			})
+			return
+		}
+		slog.Warn("agentless via proxy failed, fallback to direct ssh",
+			"error", execErr, "proxy_id", req.ProxyID)
+		// 失败降级为直连
+	}
+
+	if req.Host == "" {
+		writeError(w, http.StatusBadRequest, "host is required when not using sandbox")
+		return
+	}
+
 	cred := remoteexec.Credential{
 		User:     req.Username,
 		Password: req.Password,
 		Key:      req.SSHKey,
-	}
-
-	timeout := time.Duration(req.Timeout) * time.Second
-	if timeout == 0 {
-		timeout = 30 * time.Second
 	}
 
 	execReq := remoteexec.ExecRequest{
@@ -598,6 +689,125 @@ func (s *Service) handleSSHExecute(w http.ResponseWriter, r *http.Request) {
 		"exit_code": result.ExitCode,
 		"error":     result.Error,
 		"duration":  result.Duration.Milliseconds(),
+		"via":       "direct",
+	})
+}
+
+// execViaProxy 通过 Proxy 隧道代为执行命令（Agentless 目标在隔离网段时）。
+// 约定：proxy 侧收到 CommandRequest 后，按 action 执行：
+//   - "ssh_exec"：以 payload 中的 host/port/user/key 做 SSH 并在目标上运行 command。
+//   - "ssh_test"：仅做连通性探测。
+// 返回结构化结果经 CommandResponse.Output（JSON：{output,exit_code,error}）回传。
+func (s *Service) execViaProxy(proxyID, action string, payload any, timeoutSec int32) (output string, exitCode int, err error) {
+	body, mErr := json.Marshal(payload)
+	if mErr != nil {
+		return "", -1, fmt.Errorf("marshal proxy payload: %w", mErr)
+	}
+	cmd := &tunnel.CommandRequest{
+		CommandID:     uuid.NewString(),
+		TargetID:      proxyID,
+		Action:        action,
+		Payload:       body,
+		TimeoutSecond: timeoutSec,
+	}
+	resp, e := s.tunnelServer.SendCommand(proxyID, cmd)
+	if e != nil {
+		return "", -1, e
+	}
+	if resp == nil || !resp.Success {
+		msg := ""
+		if resp != nil {
+			msg = resp.Error
+		}
+		return "", -1, fmt.Errorf("proxy exec failed: %s", msg)
+	}
+	// 尽力解析结构化结果；失败则整体作为输出
+	var structured struct {
+		Output   string `json:"output"`
+		ExitCode int    `json:"exit_code"`
+		Error    string `json:"error"`
+	}
+	if json.Unmarshal(resp.Output, &structured) == nil && structured.Output != "" {
+		return structured.Output, structured.ExitCode, nil
+	}
+	return string(resp.Output), 0, nil
+}
+
+// handleGetWhitelist 返回本租户的命令白名单(Agent 启动拉取,§6)。
+// enabled=false 表示未启用(放行一切);enabled=true 且 rules 为空表示拒绝一切。
+func (s *Service) handleGetWhitelist(w http.ResponseWriter, r *http.Request) {
+	s.whitelistMu.RLock()
+	wl := s.whitelist
+	s.whitelistMu.RUnlock()
+
+	if wl == nil {
+		writeJSON(w, http.StatusOK, map[string]any{
+			"enabled": false,
+			"version": 0,
+			"rules":   []any{},
+		})
+		return
+	}
+	// 序列化 rules 为 {type,pattern} 列表。
+	raw := wl.RawRules()
+	rules := make([]map[string]string, 0, len(raw))
+	for _, r := range raw {
+		rules = append(rules, map[string]string{"type": string(r.Type), "pattern": r.Pattern})
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"enabled": true,
+		"version": 1,
+		"rules":   rules,
+	})
+}
+
+// handleExecSandbox 在 Server 本机沙箱环境执行脚本。
+// 对应 UI 中"勾选沙箱环境执行"：无需选择目标主机，直接在
+// Server 部署所在机器上挑选一个沙箱环境做调试/冒烟测试。
+func (s *Service) handleExecSandbox(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Script    string `json:"script"`
+		Timeout   int    `json:"timeout,omitempty"`
+		SandboxID string `json:"sandbox_id,omitempty"` // 可选：指定某个沙箱环境
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if req.Script == "" {
+		writeError(w, http.StatusBadRequest, "script is required")
+		return
+	}
+	// §6 命令白名单:沙箱执行同样受控(白名单启用时)。
+	if err := s.verifyCommand(req.Script); err != nil {
+		slog.Warn("sandbox-exec denied by whitelist", "error", err)
+		writeError(w, http.StatusForbidden, "script denied by whitelist: "+err.Error())
+		return
+	}
+	timeout := time.Duration(req.Timeout) * time.Second
+	if timeout == 0 {
+		timeout = 60 * time.Second
+	}
+
+	env := []string{}
+	if req.SandboxID != "" {
+		// 记录了用户挑选的沙箱环境标识，便于审计与多环境区分
+		env = append(env, "OPSORIGIN_SANDBOX_ID="+req.SandboxID)
+	}
+	s.sandboxExec.Env = env
+
+	res, err := s.sandboxExec.Execute(r.Context(), req.Script, timeout)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"host":      "sandbox(local)",
+		"output":    res.Output,
+		"exit_code": res.ExitCode,
+		"error":     res.Error,
+		"duration":  res.Duration.Milliseconds(),
+		"via":       "sandbox",
 	})
 }
 
@@ -886,6 +1096,7 @@ func (s *Service) handleTestSSH(w http.ResponseWriter, r *http.Request) {
 		Password string `json:"password"`
 		SSHKey   string `json:"ssh_key,omitempty"`
 		UseKey   bool   `json:"use_key,omitempty"`
+		ProxyID  string `json:"proxy_id,omitempty"` // 指定则经 Proxy 探测
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
@@ -898,6 +1109,32 @@ func (s *Service) handleTestSSH(w http.ResponseWriter, r *http.Request) {
 	if req.UseKey || req.SSHKey != "" {
 		authType = "ssh_key"
 	}
+
+	// 通过 Proxy 探测：目标在隔离网段，由 Proxy 代为 SSH 连通性检测
+	if req.ProxyID != "" && s.tunnelServer != nil {
+		_, _, execErr := s.execViaProxy(req.ProxyID, "ssh_test", map[string]any{
+			"host":     req.Address,
+			"port":     req.Port,
+			"username": req.Username,
+			"password": req.Password,
+			"ssh_key":  req.SSHKey,
+		}, 5)
+		reachable := execErr == nil
+		detail := "connected via proxy"
+		if !reachable {
+			detail = execErr.Error()
+			slog.Warn("SSH test via proxy failed", "address", req.Address, "proxy_id", req.ProxyID, "detail", detail)
+		}
+		writeJSON(w, http.StatusOK, map[string]any{
+			"reachable": reachable,
+			"address":   fmt.Sprintf("%s:%d", req.Address, req.Port),
+			"auth_type": authType,
+			"via":       "proxy",
+			"detail":    detail,
+		})
+		return
+	}
+
 	reachable, detail := s.testSSHConnectivity(req.Address, req.Port, req.Username, req.Password, req.SSHKey)
 	if !reachable {
 		slog.Warn("SSH test failed", "address", req.Address, "detail", detail)
@@ -915,7 +1152,7 @@ func (s *Service) testSSHConnectivity(addr string, port int, username, password,
 	config := &ssh.ClientConfig{
 		User:            username,
 		Auth:            []ssh.AuthMethod{},
-		HostKeyCallback: ssh.InsecureIgnoreHostKey(),
+		HostKeyCallback: remoteexec.DefaultHostKeyCallback(),
 		Timeout:         5 * time.Second,
 	}
 	if sshKey != "" {
@@ -941,7 +1178,7 @@ func (s *Service) runSSHCommand(addr string, port int, username, password, sshKe
 	config := &ssh.ClientConfig{
 		User:            username,
 		Auth:            []ssh.AuthMethod{},
-		HostKeyCallback: ssh.InsecureIgnoreHostKey(),
+		HostKeyCallback: remoteexec.DefaultHostKeyCallback(),
 		Timeout:         10 * time.Second,
 	}
 	if sshKey != "" {
@@ -1068,15 +1305,6 @@ func (s *Service) handleInstallScript(w http.ResponseWriter, r *http.Request) {
 	}
 	// 确定 scheme:优先 X-Forwarded-Proto,其次 TLS 配置,再次 r.TLS,默认 http
 	scheme := s.determineScheme(r)
-	// Agent WebSocket 长连接地址(独立端口 5588)
-	wsScheme := "ws"
-	if scheme == "https" {
-		wsScheme = "wss"
-	}
-	wsPort := s.agentWSPort
-	if wsPort == 0 {
-		wsPort = 5588
-	}
 	// proxy 参数值为 Proxy 的地址(host:port),非空时在启动命令中追加 --proxy
 	proxyAddr := r.URL.Query().Get("proxy")
 	proxyFlag := ""
@@ -1093,15 +1321,14 @@ func (s *Service) handleInstallScript(w http.ResponseWriter, r *http.Request) {
 $ErrorActionPreference = "Stop"
 $server = "%s"
 $scheme = "%s"
-$wsScheme = "%s"
 $api = "$($scheme)://$($server)/api/v1/agents/download?os=windows&arch=%s"
 $installPath = "C:\Program Files\OpsOrigin"
 New-Item -ItemType Directory -Force -Path $installPath | Out-Null
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 Invoke-WebRequest -Uri $api -OutFile "$installPath\agent.exe"
-New-Service -Name "OpsOriginAgent" -BinaryPathName "$installPath\agent.exe --server $server --ws-server \"$($wsScheme)://$($server):%d/agent-ws\"%s" -DisplayName "OpsOrigin Agent" -StartupType Automatic
+New-Service -Name "OpsOriginAgent" -BinaryPathName "$installPath\agent.exe --server $server%s" -DisplayName "OpsOrigin Agent" -StartupType Automatic
 Start-Service -Name "OpsOriginAgent"
-Write-Host "OpsOrigin Agent installed successfully (arch=%s)"`, arch, serverAddr, scheme, wsScheme, arch, wsPort, proxyFlag, arch)
+Write-Host "OpsOrigin Agent installed successfully (arch=%s)"`, arch, serverAddr, scheme, arch, proxyFlag, arch)
 	case "linux":
 		filename = "install-agent.sh"
 		script = fmt.Sprintf(`#!/bin/bash
@@ -1109,8 +1336,6 @@ Write-Host "OpsOrigin Agent installed successfully (arch=%s)"`, arch, serverAddr
 set -e
 SERVER="%s"
 SCHEME="%s"
-WS_SCHEME="%s"
-WS_PORT="%d"
 API="$SCHEME://$SERVER/api/v1/agents/download?os=linux&arch=%s"
 INSTALL_DIR="/opt/opsorigin"
 sudo mkdir -p $INSTALL_DIR
@@ -1122,7 +1347,7 @@ Description=OpsOrigin Agent
 After=network.target
 [Service]
 Type=simple
-ExecStart=$INSTALL_DIR/agent --server $SERVER --ws-server $WS_SCHEME://$SERVER:$WS_PORT/agent-ws%s
+ExecStart=$INSTALL_DIR/agent --server $SERVER%s
 Restart=always
 RestartSec=10
 [Install]
@@ -1131,7 +1356,7 @@ EOF
 sudo systemctl daemon-reload
 sudo systemctl enable opsorigin-agent
 sudo systemctl start opsorigin-agent
-echo "OpsOrigin Agent installed successfully (arch=%s)"`, arch, serverAddr, scheme, wsScheme, wsPort, arch, proxyFlag, arch)
+echo "OpsOrigin Agent installed successfully (arch=%s)"`, arch, serverAddr, scheme, arch, proxyFlag, arch)
 	case "container":
 		filename = "install-agent-container.sh"
 		script = fmt.Sprintf(`#!/bin/bash
@@ -1139,8 +1364,6 @@ echo "OpsOrigin Agent installed successfully (arch=%s)"`, arch, serverAddr, sche
 set -e
 SERVER="%s"
 SCHEME="%s"
-WS_SCHEME="%s"
-WS_PORT="%d"
 
 # 检查 Docker 是否可用
 if ! command -v docker >/dev/null 2>&1; then
@@ -1153,29 +1376,27 @@ docker run -d \
   --name opsorigin-agent \
   --restart always \
   -e OPSORIGIN_SERVER="$SCHEME://%s" \
-  -e OPSORIGIN_WS_SERVER="$WS_SCHEME://%s:$WS_PORT/agent-ws" \
   -v /etc/hostname:/etc/hostname:ro \
   -v /etc/os-release:/etc/os-release:ro \
   -v /proc:/host/proc:ro \
   -v /sys:/host/sys:ro \
   -v /var/run/docker.sock:/var/run/docker.sock:ro \
   opsorigin/agent:latest \
-  --server "$SCHEME://%s" \
-  --ws-server "$WS_SCHEME://%s:$WS_PORT/agent-ws"%s
+  --server "$SCHEME://%s"%s
 
 echo "OpsOrigin Agent container started successfully"
-echo "View logs: docker logs -f opsorigin-agent"`, serverAddr, scheme, wsScheme, wsPort, serverAddr, serverAddr, serverAddr, serverAddr, proxyFlag)
-case "proxy":
-	proxyID := r.URL.Query().Get("proxy_id")
-	if proxyID == "" {
-		proxyID = fmt.Sprintf("proxy-%s", uuid.New().String()[:8])
-	}
-	listenPort := r.URL.Query().Get("port")
-	if listenPort == "" {
-		listenPort = "9090"
-	}
-	filename = "install-proxy.sh"
-	script = fmt.Sprintf(`#!/bin/bash
+echo "View logs: docker logs -f opsorigin-agent"`, serverAddr, scheme, serverAddr, serverAddr, proxyFlag)
+	case "proxy":
+		proxyID := r.URL.Query().Get("proxy_id")
+		if proxyID == "" {
+			proxyID = fmt.Sprintf("proxy-%s", uuid.New().String()[:8])
+		}
+		listenPort := r.URL.Query().Get("port")
+		if listenPort == "" {
+			listenPort = "9090"
+		}
+		filename = "install-proxy.sh"
+		script = fmt.Sprintf(`#!/bin/bash
 # OpsOrigin Proxy Installer
 set -e
 SERVER="%s"
@@ -1209,10 +1430,10 @@ sudo systemctl daemon-reload
 sudo systemctl enable opsorigin-proxy
 sudo systemctl start opsorigin-proxy
 echo "OpsOrigin Proxy installed successfully (id=$PROXY_ID, listen=:$LISTEN_PORT)"`, serverAddr, scheme, proxyID, listenPort)
-default:
-	writeError(w, http.StatusBadRequest, "os parameter required: linux, windows, container, or proxy")
-	return
-}
+	default:
+		writeError(w, http.StatusBadRequest, "os parameter required: linux, windows, container, or proxy")
+		return
+	}
 
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=%s", filename))
@@ -1280,24 +1501,6 @@ func (s *Service) handleCreateTask(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
-	// 如果 Agent 通过 WebSocket 在线,立即下发任务(无需等待 HTTP 轮询)
-	if s.wsHub != nil {
-		wsMsg := &WSMessage{
-			TaskID:  req.TaskID,
-			Action:  req.Action,
-			Script:  req.Script,
-			Params:  req.Params,
-			Timeout: req.Timeout,
-			Time:    time.Now().UnixMilli(),
-		}
-		if s.wsHub.SendTask(agentID, wsMsg) {
-			// WS 下发成功,任务状态置为 running
-			slog.Info("task dispatched via websocket", "agent_id", agentID, "task_id", req.TaskID)
-		} else {
-			slog.Info("agent not online via ws, task pending for http poll",
-				"agent_id", agentID, "task_id", req.TaskID)
-		}
-	}
 	writeJSON(w, http.StatusCreated, req)
 }
 
@@ -1352,7 +1555,7 @@ func (s *Service) handleDownloadAgent(w http.ResponseWriter, r *http.Request) {
 	// 二进制文件下载
 	if downloadType == "proxy-bin" || downloadType == "agent-bin" {
 		cwd, _ := os.Getwd()
-		
+
 		// 支持的二进制文件名列表
 		var binaryNames []string
 		if downloadType == "agent-bin" {
@@ -1360,7 +1563,7 @@ func (s *Service) handleDownloadAgent(w http.ResponseWriter, r *http.Request) {
 		} else {
 			binaryNames = []string{"opsproxy", "proxy"}
 		}
-		
+
 		if osType == "darwin" {
 			for i, n := range binaryNames {
 				binaryNames[i] = n + "-darwin"
@@ -1375,7 +1578,7 @@ func (s *Service) handleDownloadAgent(w http.ResponseWriter, r *http.Request) {
 				binaryNames[i] = n + "-arm64"
 			}
 		}
-		
+
 		var binPath string
 		for _, name := range binaryNames {
 			candidate := filepath.Join(cwd, "bin", name)
@@ -2050,15 +2253,6 @@ func (s *Service) handleUpgradeAgent(w http.ResponseWriter, r *http.Request) {
 			s.tunnelServer.SendCommand(host.ProxyID, cmd)
 		}
 	}
-	// WS 下发
-	if s.wsHub != nil {
-		s.wsHub.SendTask(id, &WSMessage{
-			TaskID: task.TaskID,
-			Action: "upgrade",
-			Params: task.Params,
-			Time:   time.Now().UnixMilli(),
-		})
-	}
 
 	slog.Info("agent upgrade task queued", "agent_id", id, "task_id", task.TaskID)
 	writeJSON(w, http.StatusOK, map[string]any{
@@ -2095,13 +2289,6 @@ func (s *Service) handleUninstallAgent(w http.ResponseWriter, r *http.Request) {
 			}
 			s.tunnelServer.SendCommand(host.ProxyID, cmd)
 		}
-	}
-	if s.wsHub != nil {
-		s.wsHub.SendTask(id, &WSMessage{
-			TaskID: task.TaskID,
-			Action: "uninstall",
-			Time:   time.Now().UnixMilli(),
-		})
 	}
 
 	slog.Info("agent uninstall task queued", "agent_id", id, "task_id", task.TaskID)
@@ -2211,6 +2398,161 @@ func (s *Service) handleDownloadTasks(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	writeJSON(w, http.StatusOK, pending)
+}
+
+// buildFileURL 依据基址生成含短期令牌的下载地址。base 形如 http://host:port/api/v1。
+func buildFileURL(base, fileID, tok string) string {
+	return fmt.Sprintf("%s/files/%s?token=%s", strings.TrimRight(base, "/"), fileID, tok)
+}
+
+// downloadTaskRequest 创建下载任务的请求体。
+type downloadTaskRequest struct {
+	FileID          string `json:"file_id"`
+	FilePath        string `json:"file_path"`
+	ExpectedChecksum string `json:"expected_checksum,omitempty"`
+	ChecksumAlgo   string `json:"checksum_algo,omitempty"`
+	TTLSec          int    `json:"ttl_sec,omitempty"` // 令牌有效期(秒),0 ⇒ 上限 10 分钟
+}
+
+// handleCreateDownloadTask 创建文件分发任务(§5):
+//  1. 校验目标 Agent 存在;
+//  2. 依拓扑(host.ProxyID)选择直连 Server 或经 Proxy 的基址;
+//  3. 签发 §6 短期下载令牌(file_id + agent_id 绑定);
+//  4. 生成含令牌的下载 URL,落库为 pending 任务,Agent 轮询后直连/经代理拉取。
+func (s *Service) handleCreateDownloadTask(w http.ResponseWriter, r *http.Request) {
+	agentID := r.PathValue("id")
+	tenantID := tenantFromCtx(r.Context())
+
+	var req downloadTaskRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if req.FileID == "" || req.FilePath == "" {
+		writeError(w, http.StatusBadRequest, "file_id and file_path are required")
+		return
+	}
+	if s.fileTokenSecret == "" {
+		writeError(w, http.StatusInternalServerError, "file token secret not configured")
+		return
+	}
+
+	host, err := s.store.Get(r.Context(), agentID, tenantID)
+	if err != nil || host == nil {
+		writeError(w, http.StatusNotFound, "agent not found")
+		return
+	}
+
+	// 拓扑感知:经 Proxy 的 Agent 从 Proxy 公网地址拉取,否则直连 Server。
+	base := s.serverBaseURL + "/api/v1"
+	if host.ProxyID != "" {
+		proxy, perr := s.store.GetProxy(r.Context(), host.ProxyID, tenantID)
+		if perr != nil || proxy == nil {
+			writeError(w, http.StatusBadRequest, "agent's proxy not found")
+			return
+		}
+		scheme := "http"
+		if s.tlsEnabled {
+			scheme = "https"
+		}
+		base = fmt.Sprintf("%s://%s:%d/api/v1", scheme, proxy.Address, proxy.Port)
+	} else if s.serverBaseURL == "" {
+		writeError(w, http.StatusInternalServerError, "server base url not configured")
+		return
+	}
+
+	ttl := time.Duration(req.TTLSec) * time.Second
+	if ttl <= 0 {
+		ttl = token.MaxTTL()
+	}
+	tok, err := token.Generate(s.fileTokenSecret, req.FileID, agentID, ttl)
+	if err != nil {
+		slog.Warn("mint download token failed", "error", err, "agent_id", agentID)
+		writeError(w, http.StatusInternalServerError, "mint token failed")
+		return
+	}
+
+	task := &TaskRequest{
+		TaskID:          uuid.New().String(),
+		FileID:          req.FileID,
+		FileURL:         buildFileURL(base, req.FileID, tok),
+		FilePath:        req.FilePath,
+		ExpectedChecksum: req.ExpectedChecksum,
+		ChecksumAlgo:   req.ChecksumAlgo,
+	}
+	if err := s.store.CreateTask(r.Context(), agentID, task); err != nil {
+		slog.Warn("create download task failed", "error", err, "agent_id", agentID)
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	slog.Info("download task created",
+		"agent_id", agentID, "file_id", req.FileID,
+		"via_proxy", host.ProxyID != "", "ttl", ttl.String())
+	writeJSON(w, http.StatusCreated, task)
+}
+
+// handleServeFile 中心存储文件拉取端点(§5):
+//  - 校验短期令牌(file_id 绑定 + 未过期);
+//  - 限流/熔断(按 agent_id);
+//  - 以 http.ServeContent 支持 Range 断点续传;
+//  - 失败计入熔断,成功清零。
+func (s *Service) handleServeFile(w http.ResponseWriter, r *http.Request) {
+	fileID := r.PathValue("file_id")
+	tok := r.URL.Query().Get("token")
+	if tok == "" {
+		writeError(w, http.StatusUnauthorized, "missing download token")
+		return
+	}
+	claims, err := token.Verify(s.fileTokenSecret, tok)
+	if err != nil {
+		status := http.StatusForbidden
+		if err == token.ErrExpired {
+			status = http.StatusUnauthorized
+		}
+		writeError(w, status, "invalid download token: "+err.Error())
+		return
+	}
+	if claims.FileID != fileID {
+		writeError(w, http.StatusForbidden, "token/file mismatch")
+		return
+	}
+
+	key := claims.AgentID
+	if !s.fileLimiter.Allow(key) {
+		writeError(w, http.StatusTooManyRequests, "download rate limited")
+		return
+	}
+
+	if s.fileStoreDir == "" {
+		s.fileLimiter.RecordFailure(key)
+		writeError(w, http.StatusInternalServerError, "file store not configured")
+		return
+	}
+	// 防目录穿越:file_id 必须是裸文件名,不含路径分隔符。
+	if filepath.Base(fileID) != fileID {
+		s.fileLimiter.RecordFailure(key)
+		writeError(w, http.StatusBadRequest, "invalid file_id")
+		return
+	}
+	fp := filepath.Join(s.fileStoreDir, fileID)
+	info, err := os.Stat(fp)
+	if err != nil {
+		s.fileLimiter.RecordFailure(key)
+		writeError(w, http.StatusNotFound, "file not found")
+		return
+	}
+	f, err := os.Open(fp)
+	if err != nil {
+		s.fileLimiter.RecordFailure(key)
+		writeError(w, http.StatusInternalServerError, "open file failed")
+		return
+	}
+	defer f.Close()
+
+	w.Header().Set("Accept-Ranges", "bytes")
+	w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=%q", fileID))
+	http.ServeContent(w, r, fileID, info.ModTime(), f)
+	s.fileLimiter.RecordSuccess(key)
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {

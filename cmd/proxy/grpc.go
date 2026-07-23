@@ -12,12 +12,14 @@ import (
 	pb "github.com/opsorigin/core/api/proto"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/metadata"
 )
 
 type GRPCProxyClient struct {
 	coreAddr  string
 	proxyID   string
 	hostname  string
+	authToken string
 	conn      *grpc.ClientConn
 	stream    pb.TunnelService_ConnectClient
 	mu        sync.Mutex
@@ -27,12 +29,13 @@ type GRPCProxyClient struct {
 	agents    *AgentRegistry
 }
 
-func NewGRPCProxyClient(coreAddr, proxyID, hostname string, agents *AgentRegistry) *GRPCProxyClient {
+func NewGRPCProxyClient(coreAddr, proxyID, hostname string, agents *AgentRegistry, authToken string) *GRPCProxyClient {
 	return &GRPCProxyClient{
-		coreAddr: coreAddr,
-		proxyID:  proxyID,
-		hostname: hostname,
-		agents:   agents,
+		coreAddr:  coreAddr,
+		proxyID:   proxyID,
+		hostname:  hostname,
+		authToken: authToken,
+		agents:    agents,
 	}
 }
 
@@ -75,6 +78,7 @@ func (c *GRPCProxyClient) connectAndRun(ctx context.Context) error {
 	c.mu.Unlock()
 
 	client := pb.NewTunnelServiceClient(conn)
+	ctx = metadata.AppendToOutgoingContext(ctx, "x-tunnel-token", c.authToken)
 	stream, err := client.Connect(ctx)
 	if err != nil {
 		return fmt.Errorf("grpc connect stream: %w", err)

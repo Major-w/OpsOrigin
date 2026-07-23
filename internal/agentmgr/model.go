@@ -129,6 +129,15 @@ type TaskRequest struct {
 	Script  string         `json:"script,omitempty"`
 	Params  map[string]any `json:"params,omitempty"`
 	Timeout int            `json:"timeout,omitempty"`
+
+	// 文件分发(§5)相关字段。Agent 拉取 download-tasks 时,这些字段直接映射
+	// 到 Agent 端 FileDownloadRequest(file_url/file_path/expected_checksum/checksum_algo),
+	// 无需额外转换。FileURL 由 Server 在签发下载任务时填充(含短期令牌)。
+	FileID          string `json:"file_id,omitempty"`          // 中心存储 object key,用于令牌绑定与文件寻址
+	FileURL         string `json:"file_url,omitempty"`         // 完整下载地址(含短期令牌),拓扑感知(直连 Server 或经 Proxy)
+	FilePath        string `json:"file_path,omitempty"`        // Agent 本地落盘路径
+	ExpectedChecksum string `json:"expected_checksum,omitempty"` // 非空时 Agent 下载完成后强制校验(§5.3)
+	ChecksumAlgo   string `json:"checksum_algo,omitempty"`   // "sha256"(默认) / "md5"
 }
 
 type TaskResponse struct {

@@ -2,6 +2,7 @@ package auth
 
 import (
 	"crypto"
+	"crypto/hmac"
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/sha256"
@@ -189,8 +190,12 @@ func (m *JWTManager) signToken(header JWTHeader, payload JWTPayload) (string, er
 }
 
 // signHS256 使用HMAC-SHA256签名
+// 注意: 必须使用 HMAC(secret, data), 不能仅对 data 做 SHA256, 否则任何人都能伪造 Token。
 func (m *JWTManager) signHS256(data string) ([]byte, error) {
-	h := sha256.New()
+	if len(m.secret) == 0 {
+		return nil, fmt.Errorf("JWT secret is not configured")
+	}
+	h := hmac.New(sha256.New, m.secret)
 	h.Write([]byte(data))
 	return h.Sum(nil), nil
 }
@@ -231,17 +236,9 @@ func (m *JWTManager) verifyRS256(data string, signature []byte) error {
 	return rsa.VerifyPKCS1v15(m.publicKey, crypto.SHA256, digest, signature)
 }
 
-// compareSignature 比较签名（常量时间比较）
+// compareSignature 比较签名（恒定时间比较，防止时序侧信道攻击）
 func compareSignature(a, b []byte) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for i := range a {
-		if a[i] != b[i] {
-			return false
-		}
-	}
-	return true
+	return hmac.Equal(a, b)
 }
 
 // base64URLEncode Base64 URL编码

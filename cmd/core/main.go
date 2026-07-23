@@ -3,10 +3,8 @@ package main
 import (
 	"context"
 	"database/sql"
-	"fmt"
 	"log"
 	"log/slog"
-	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -152,7 +150,7 @@ func main() {
 	itsmSvc.StartSLAChecker(ctx)
 
 	// 创建 tunnel server,监听 Proxy 连接(用于通过 Proxy 下发命令给 Agent)
-	tunnelServer := tunnel.NewServer(cfg.Proxy.Listen)
+	tunnelServer := tunnel.NewServer(cfg.Proxy.Listen, cfg.Tunnel.AuthSecret, cfg.Tunnel.Insecure)
 	tunnelServer.OnCommand(func(ctx context.Context, proxyID string, cmd *tunnel.CommandRequest) *tunnel.CommandResponse {
 		slog.Info("tunnel command routed", "proxy_id", proxyID, "action", cmd.Action, "target", cmd.TargetID)
 		return &tunnel.CommandResponse{
@@ -163,7 +161,7 @@ func main() {
 	})
 
 	// 创建 gRPC tunnel server,支持 Agent 直连 Core(绕过 Proxy)
-	grpcTunnelServer := tunnel.NewGRPCServer(cfg.Core.GRPCListen)
+	grpcTunnelServer := tunnel.NewGRPCServer(cfg.Core.GRPCListen, cfg.Tunnel.AuthSecret, cfg.Tunnel.Insecure)
 	grpcTunnelServer.OnCommand(func(ctx context.Context, proxyID string, cmd *tunnel.CommandRequest) *tunnel.CommandResponse {
 		slog.Info("grpc tunnel command routed", "proxy_id", proxyID, "action", cmd.Action, "target", cmd.TargetID)
 		return &tunnel.CommandResponse{
@@ -178,11 +176,11 @@ func main() {
 	if cfg.TLS.Enabled {
 		agentSvc.SetTLSEnable(true)
 	}
-	// 创建 Agent WebSocket Hub,启用长连接通信
-	agentWSHub := agentmgr.NewAgentWSHub()
-	agentSvc.SetWSHub(agentWSHub)
-	agentSvc.SetAgentWSPort(cfg.AgentWS.Port)
 	agentSvc.SetTunnelServer(tunnelServer)
+	// §5 文件分发:注入中心存储目录、短期令牌密钥、Server 对外基址(直连 Agent 下载地址)。
+	agentSvc.SetFileStoreDir(cfg.FileStore.Dir)
+	agentSvc.SetFileTokenSecret(cfg.FileStore.TokenSecret)
+	agentSvc.SetServerBaseURL(cfg.Core.PublicURL)
 	server.RegisterService(agentSvc)
 
 	// 初始化沙箱环境:在 Server 端自动注册一个本地 Agent,用于脚本调试
@@ -271,41 +269,6 @@ func main() {
 			slog.Error("grpc tunnel server stopped", "error", err)
 		}
 	}()
-
-	// 启动 Agent WebSocket 长连接服务(独立端口 5588,不走 8080 中间件链)
-	// Agent 通过此端口与 Server 保持长连接,任务下发和结果上报走此通道
-	if cfg.AgentWS.Enabled {
-		go func() {
-			wsAddr := fmt.Sprintf(":%d", cfg.AgentWS.Port)
-			wsMux := http.NewServeMux()
-			wsMux.HandleFunc("/agent-ws", agentWSHub.ServeHTTP)
-			wsMux.HandleFunc("/agent-ws/health", func(w http.ResponseWriter, r *http.Request) {
-				w.Write([]byte(`{"status":"ok","online":` + fmt.Sprintf("%d", len(agentWSHub.OnlineAgentIDs())) + `}`))
-			})
-			wsHTTPServer := &http.Server{
-				Addr:    wsAddr,
-				Handler: wsMux,
-				BaseContext: func(_ net.Listener) context.Context {
-					return ctx
-				},
-			}
-			slog.Info("agent websocket server starting", "addr", wsAddr, "tls", cfg.AgentWS.UseTLS)
-			if cfg.AgentWS.UseTLS && cfg.AgentWS.CertFile != "" && cfg.AgentWS.KeyFile != "" {
-				if err := wsHTTPServer.ListenAndServeTLS(cfg.AgentWS.CertFile, cfg.AgentWS.KeyFile); err != nil {
-					slog.Error("agent ws server (tls) stopped", "error", err)
-				}
-			} else {
-				ln, err := net.Listen("tcp", wsAddr)
-				if err != nil {
-					slog.Error("agent ws listen failed", "error", err)
-					return
-				}
-				if err := wsHTTPServer.Serve(ln); err != nil {
-					slog.Error("agent ws server stopped", "error", err)
-				}
-			}
-		}()
-	}
 
 	go func() {
 		if err := server.Serve(ctx); err != nil {

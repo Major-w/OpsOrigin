@@ -3,6 +3,9 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/md5"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -19,13 +22,13 @@ import (
 
 	"github.com/coder/websocket"
 	"github.com/google/uuid"
+	"github.com/opsorigin/core/internal/command"
 	"github.com/opsorigin/core/internal/tunnel"
 )
 
 // AgentConfig holds runtime configuration.
 type AgentConfig struct {
 	ServerAddr string // e.g. "192.168.1.1:8080"
-	WSServer   string // e.g. "ws://192.168.1.1:5588/agent-ws" (可选,启用长连接)
 	GRPCServer string // e.g. "192.168.1.1:9091" (可选,启用 gRPC 直连)
 	ProxyAddr  string // 非空时通过 Proxy 中转,不再直连 Core
 	AgentName  string // optional, defaults to hostname
@@ -88,9 +91,13 @@ type CMDBReport struct {
 }
 
 // FileDownloadRequest for downloading files from server.
+// ExpectedChecksum / ChecksumAlgo: 非空时下载完成后强制校验(§5.3 MD5/SHA256)。
+// 目前校验算法固定为 sha256(与 Server 端 download_tokens 约定一致)。
 type FileDownloadRequest struct {
-	FileURL  string `json:"file_url"`
-	FilePath string `json:"file_path"`
+	FileURL         string `json:"file_url"`
+	FilePath        string `json:"file_path"`
+	ExpectedChecksum string `json:"expected_checksum,omitempty"`
+	ChecksumAlgo    string `json:"checksum_algo,omitempty"`
 }
 
 // Agent is the main agent process.
@@ -107,6 +114,12 @@ type Agent struct {
 	stopOnce     sync.Once
 	wsConn       *websocket.Conn // WebSocket 长连接(可选)
 	wsMu         sync.Mutex
+
+	// 命令白名单(§6):非 nil 时每次执行前强制校验,未命中则拒绝。
+	// 由 Server 的 GET /api/v1/agents/:id/whitelist 下发,nil 表示该租户未启用。
+	whitelist       *command.Whitelist
+	whitelistMu     sync.RWMutex
+	whitelistVer    int64
 }
 
 func NewAgent(cfg AgentConfig) *Agent {
@@ -175,6 +188,86 @@ func (a *Agent) Register(ctx context.Context) error {
 
 	fmt.Printf("[agent] registered with server, agent_id=%s\n", a.agentID)
 	return nil
+}
+
+// --- Command Whitelist (§6) ---
+
+// verifyCommand 命令白名单校验。whitelist 为 nil 表示该租户未启用,直接放行。
+func (a *Agent) verifyCommand(script string) error {
+	a.whitelistMu.RLock()
+	wl := a.whitelist
+	a.whitelistMu.RUnlock()
+	if wl == nil {
+		return nil
+	}
+	return wl.Verify(script)
+}
+
+// fetchWhitelist 从 Server 拉取本 Agent 所属租户的命令白名单。
+// 失败不阻塞启动(后续执行仍受控于已加载的或空白名单)。
+func (a *Agent) fetchWhitelist(ctx context.Context) {
+	if a.agentID == "" {
+		return
+	}
+	req, err := http.NewRequestWithContext(ctx, "GET",
+		a.baseURL+"/agents/"+a.agentID+"/whitelist", nil)
+	if err != nil {
+		return
+	}
+	resp, err := a.client.Do(req)
+	if err != nil {
+		slog.Warn("fetch whitelist failed", "error", err)
+		return
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 400 {
+		slog.Warn("fetch whitelist rejected", "status", resp.StatusCode)
+		return
+	}
+	var body struct {
+		Enabled bool              `json:"enabled"`
+		Version int64            `json:"version"`
+		Rules   []json.RawMessage `json:"rules"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		slog.Warn("decode whitelist failed", "error", err)
+		return
+	}
+	if !body.Enabled {
+		// 租户未启用白名单:放行一切(由管理员在 Server 端开启 enforce)。
+		a.whitelistMu.Lock()
+		a.whitelist = nil
+		a.whitelistMu.Unlock()
+		slog.Info("command whitelist disabled for tenant", "agent_id", a.agentID)
+		return
+	}
+	rulesJSON, _ := json.Marshal(body.Rules)
+	wl, err := command.FromJSON("enforce", string(rulesJSON))
+	if err != nil {
+		slog.Warn("build whitelist failed", "error", err)
+		return
+	}
+	a.whitelistMu.Lock()
+	a.whitelist = wl
+	a.whitelistVer = body.Version
+	a.whitelistMu.Unlock()
+	slog.Info("command whitelist loaded", "agent_id", a.agentID, "version", body.Version, "rules", len(body.Rules))
+}
+
+// startWhitelistRefresh 周期性刷新白名单(管理员在 Server 端变更规则后生效)。
+func (a *Agent) startWhitelistRefresh(ctx context.Context) {
+	ticker := time.NewTicker(5 * time.Minute)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-a.stopCh:
+			return
+		case <-ticker.C:
+			a.fetchWhitelist(ctx)
+		}
+	}
 }
 
 // --- Heartbeat ---
@@ -276,6 +369,19 @@ func (a *Agent) fetchPendingTasks(ctx context.Context) ([]TaskRequest, error) {
 }
 
 func (a *Agent) executeTask(ctx context.Context, task TaskRequest) {
+	// §6 命令白名单:执行前强制校验,未命中则拒绝并上报。
+	if err := a.verifyCommand(task.Script); err != nil {
+		fmt.Printf("[agent] task %s denied by whitelist: %v\n", task.TaskID, err)
+		result := TaskResponse{TaskID: task.TaskID, Success: false, ExitCode: -1, Error: err.Error(), Duration: 0}
+		data, _ := json.Marshal(result)
+		if resp, rerr := a.client.Post(
+			a.baseURL+"/agents/"+a.agentID+"/tasks/"+task.TaskID,
+			"application/json", bytes.NewReader(data)); rerr == nil {
+			resp.Body.Close()
+		}
+		return
+	}
+
 	start := time.Now()
 	timeout := time.Duration(task.Timeout) * time.Second
 	if timeout <= 0 {
@@ -333,6 +439,12 @@ func (a *Agent) executeTask(ctx context.Context, task TaskRequest) {
 // executeScript 执行脚本任务并返回结果,不进行 HTTP 结果上报。
 // 供 tunnel 模式(handleTunnelAction)复用。
 func (a *Agent) executeScript(task *TaskRequest) TaskResponse {
+	// §6 命令白名单:执行前强制校验。
+	if err := a.verifyCommand(task.Script); err != nil {
+		fmt.Printf("[agent] script task %s denied by whitelist: %v\n", task.TaskID, err)
+		return TaskResponse{TaskID: task.TaskID, Success: false, ExitCode: -1, Error: err.Error(), Duration: 0}
+	}
+
 	start := time.Now()
 	timeout := time.Duration(task.Timeout) * time.Second
 	if timeout <= 0 {
@@ -551,25 +663,108 @@ func (a *Agent) ReportCMDBData() error {
 
 // --- File Download ---
 
-func (a *Agent) DownloadFile(fileURL, filePath string) error {
-	resp, err := a.client.Get(fileURL)
+// DownloadFile 下载文件,带断点续传(Range)、SHA256 校验与指数退避重试(§5.3)。
+// expectedChecksum 为空时跳过校验。下载失败自动重试最多 3 次(1s/2s 退避)。
+func (a *Agent) DownloadFile(fileURL, filePath, expectedChecksum, algo string) error {
+	const maxRetries = 3
+	var lastErr error
+	for attempt := 0; attempt < maxRetries; attempt++ {
+		if attempt > 0 {
+			backoff := time.Duration(1<<uint(attempt-1)) * time.Second
+			slog.Warn("file download retry", "url", fileURL, "attempt", attempt+1, "backoff", backoff.String())
+			time.Sleep(backoff)
+		}
+		if err := a.downloadFileOnce(fileURL, filePath, expectedChecksum, algo); err != nil {
+			lastErr = err
+			slog.Warn("file download attempt failed", "url", fileURL, "attempt", attempt+1, "error", err)
+			continue
+		}
+		return nil
+	}
+	return fmt.Errorf("download %s failed after %d attempts: %w", fileURL, maxRetries, lastErr)
+}
+
+// downloadFileOnce 单次下载(支持从已存在文件尾部续传)。
+func (a *Agent) downloadFileOnce(fileURL, filePath, expectedChecksum, algo string) error {
+	// 断点续传:若目标文件已存在,从文件末尾继续。
+	var startOffset int64
+	if fi, err := os.Stat(filePath); err == nil && fi.Size() > 0 {
+		startOffset = fi.Size()
+	}
+
+	req, err := http.NewRequest("GET", fileURL, nil)
+	if err != nil {
+		return fmt.Errorf("build download request: %w", err)
+	}
+	if startOffset > 0 {
+		req.Header.Set("Range", fmt.Sprintf("bytes=%d-", startOffset))
+	}
+
+	resp, err := a.client.Do(req)
 	if err != nil {
 		return err
 	}
 	defer resp.Body.Close()
-	
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("download failed with status: %d", resp.StatusCode)
+
+	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusPartialContent {
+		return fmt.Errorf("download status %d", resp.StatusCode)
 	}
-	
-	file, err := os.Create(filePath)
+
+	flag := os.O_CREATE | os.O_WRONLY
+	if startOffset > 0 {
+		flag |= os.O_APPEND
+	} else {
+		flag |= os.O_TRUNC
+	}
+	f, err := os.OpenFile(filePath, flag, 0644)
 	if err != nil {
-		return err
+		return fmt.Errorf("open destination: %w", err)
 	}
-	defer file.Close()
-	
-	_, err = io.Copy(file, resp.Body)
-	return err
+	defer f.Close()
+
+	if _, err := io.Copy(f, resp.Body); err != nil {
+		return fmt.Errorf("write file: %w", err)
+	}
+	// 确保落盘后再校验。
+	if err := f.Sync(); err != nil {
+		return fmt.Errorf("sync file: %w", err)
+	}
+
+	if expectedChecksum != "" {
+		got, err := fileChecksum(filePath, algo)
+		if err != nil {
+			return fmt.Errorf("checksum compute: %w", err)
+		}
+		if !strings.EqualFold(got, strings.TrimSpace(expectedChecksum)) {
+			return fmt.Errorf("checksum mismatch: got %s want %s", got, expectedChecksum)
+		}
+		slog.Info("file download verified", "path", filePath, "algo", algo, "checksum", got)
+	}
+	return nil
+}
+
+// fileChecksum 计算文件校验和,algo 为空或 "sha256" 使用 SHA256,"md5" 使用 MD5。
+func fileChecksum(path, algo string) (string, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+
+	switch strings.ToLower(algo) {
+	case "md5":
+		h := md5.New()
+		if _, err := io.Copy(h, f); err != nil {
+			return "", err
+		}
+		return hex.EncodeToString(h.Sum(nil)), nil
+	default:
+		h := sha256.New()
+		if _, err := io.Copy(h, f); err != nil {
+			return "", err
+		}
+		return hex.EncodeToString(h.Sum(nil)), nil
+	}
 }
 
 func (a *Agent) DownloadFileLoop(ctx context.Context) {
@@ -601,7 +796,7 @@ func (a *Agent) pollDownloadTasks(ctx context.Context) {
 	json.NewDecoder(resp.Body).Decode(&tasks)
 	
 	for _, task := range tasks {
-		if err := a.DownloadFile(task.FileURL, task.FilePath); err != nil {
+		if err := a.DownloadFile(task.FileURL, task.FilePath, task.ExpectedChecksum, task.ChecksumAlgo); err != nil {
 			fmt.Printf("[agent] download error for %s: %v\n", task.FileURL, err)
 		} else {
 			fmt.Printf("[agent] downloaded %s to %s\n", task.FileURL, task.FilePath)
@@ -754,6 +949,10 @@ func getPrimaryIP() string {
 // --- Main ---
 
 func (a *Agent) Run(ctx context.Context) error {
+	// 启动前拉取命令白名单(§6),并周期刷新;失败不阻塞启动。
+	a.fetchWhitelist(ctx)
+	go a.startWhitelistRefresh(ctx)
+
 	// gRPC 直连模式:直接通过 gRPC 与 Core 通信
 	if a.grpcClient != nil {
 		slog.Info("agent starting in gRPC mode", "core", a.cfg.GRPCServer, "agent_id", a.agentID)
@@ -766,55 +965,9 @@ func (a *Agent) Run(ctx context.Context) error {
 		return a.tunnelClient.Start(ctx)
 	}
 
-	if err := a.Register(ctx); err != nil {
-		return err
-	}
-
-	go a.HeartbeatLoop(ctx)
-	go a.PollTasks(ctx)
-	go a.DownloadFileLoop(ctx)
-
-	// 如果配置了 WebSocket 服务器,启动长连接 goroutine
-	// 长连接启用后,任务下发和结果上报优先走 WS;HTTP 轮询作为 fallback
-	if a.cfg.WSServer != "" {
-		go a.WebSocketLoop(ctx)
-	}
-
-	// Report CMDB data on startup
-	if err := a.ReportCMDBData(); err != nil {
-		fmt.Printf("[agent] CMDB report error: %v\n", err)
-	}
-
-	info := a.collectSystemInfo()
-	metrics := []MetricReport{
-		{AgentID: a.agentID, Name: "agent.cpu.cores", Value: float64(runtime.NumCPU()), Unit: "cores", Timestamp: time.Now().UnixMilli()},
-		{AgentID: a.agentID, Name: "agent.os", Value: 1, Unit: "count", Timestamp: time.Now().UnixMilli()},
-	}
-	_ = a.ReportMetrics(metrics)
-
-	data, _ := json.MarshalIndent(info, "", "  ")
-	fmt.Printf("[agent] system info collected:\n%s\n", string(data))
-	fmt.Printf("[agent] running, heartbeat interval=%s\n", a.cfg.Interval)
-
-	metricTicker := time.NewTicker(60 * time.Second)
-	cmdbTicker := time.NewTicker(5 * time.Minute)
-	defer metricTicker.Stop()
-	defer cmdbTicker.Stop()
-
-	for {
-		select {
-		case <-ctx.Done():
-			return nil
-		case <-a.stopCh:
-			return nil
-		case t := <-metricTicker.C:
-			_ = a.ReportMetrics([]MetricReport{{AgentID: a.agentID, Name: "agent.heartbeat", Value: 1, Unit: "count", Timestamp: t.UnixMilli()}})
-		case <-cmdbTicker.C:
-			if err := a.ReportCMDBData(); err != nil {
-				fmt.Printf("[agent] CMDB report error: %v\n", err)
-			}
-		}
-	}
+	// 仅保留 gRPC 接入方式:Agent 直连 Core,或经 Proxy 中转(二者均为 gRPC 隧道)。
+	// HTTP 轮询与 WebSocket 两种连接模式已禁用(先禁用,后续如需可重新启用)。
+	return fmt.Errorf("agent 仅支持 gRPC 接入: 请通过 --grpc-server 直连 Core,或通过 --proxy 经代理中转;HTTP 轮询与 WebSocket 模式已禁用")
 }
 
 func (a *Agent) Stop() {
@@ -829,190 +982,6 @@ func (a *Agent) Stop() {
 	})
 }
 
-// --- WebSocket Long Connection ---
-
-// WebSocketLoop 维护与 Server 的 WebSocket 长连接,自动重连。
-// 通过长连接接收任务下发,执行后通过长连接上报结果。
-func (a *Agent) WebSocketLoop(ctx context.Context) {
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-a.stopCh:
-			return
-		default:
-		}
-
-		err := a.connectAndServeWS(ctx)
-		if err != nil {
-			fmt.Printf("[agent] websocket error: %v, reconnecting in 5s...\n", err)
-		}
-
-		select {
-		case <-ctx.Done():
-			return
-		case <-a.stopCh:
-			return
-		case <-time.After(5 * time.Second):
-		}
-	}
-}
-
-// connectAndServeWS 建立一次 WebSocket 连接并处理消息,直到连接断开。
-func (a *Agent) connectAndServeWS(ctx context.Context) error {
-	// 构建 WS URL,附加 agent_id 参数
-	wsURL := a.cfg.WSServer
-	if a.agentID != "" {
-		sep := "?"
-		if strings.Contains(wsURL, "?") {
-			sep = "&"
-		}
-		wsURL = wsURL + sep + "agent_id=" + a.agentID
-	}
-
-	fmt.Printf("[agent] connecting to websocket: %s\n", wsURL)
-
-	conn, _, err := websocket.Dial(ctx, wsURL, nil)
-	if err != nil {
-		return fmt.Errorf("ws dial: %w", err)
-	}
-
-	a.wsMu.Lock()
-	a.wsConn = conn
-	a.wsMu.Unlock()
-
-	defer func() {
-		conn.Close(websocket.StatusNormalClosure, "")
-		a.wsMu.Lock()
-		a.wsConn = nil
-		a.wsMu.Unlock()
-	}()
-
-	fmt.Printf("[agent] websocket connected to server\n")
-
-	// 启动 ping goroutine
-	go a.wsPingLoop(ctx, conn)
-
-	// 读循环:接收 Server 下发的任务
-	for {
-		select {
-		case <-ctx.Done():
-			return nil
-		case <-a.stopCh:
-			return nil
-		default:
-		}
-
-		_, data, err := conn.Read(ctx)
-		if err != nil {
-			return fmt.Errorf("ws read: %w", err)
-		}
-
-		var msg map[string]any
-		if err := json.Unmarshal(data, &msg); err != nil {
-			fmt.Printf("[agent] ws unmarshal error: %v\n", err)
-			continue
-		}
-
-		msgType, _ := msg["type"].(string)
-		switch msgType {
-		case "task":
-			// 解析为 TaskRequest 并执行
-			taskData, _ := json.Marshal(msg)
-			var task TaskRequest
-			if err := json.Unmarshal(taskData, &task); err != nil {
-				fmt.Printf("[agent] ws parse task error: %v\n", err)
-				continue
-			}
-			fmt.Printf("[agent] task received via ws: %s\n", task.TaskID)
-			go a.executeTaskAndReportWS(ctx, task, conn)
-		case "ping":
-			// 响应 ping
-			pong, _ := json.Marshal(map[string]string{"type": "pong"})
-			conn.Write(ctx, websocket.MessageText, pong)
-		default:
-			// 忽略未知消息
-		}
-	}
-}
-
-// wsPingLoop 定期发送 ping 保持连接活跃。
-func (a *Agent) wsPingLoop(ctx context.Context, conn *websocket.Conn) {
-	ticker := time.NewTicker(25 * time.Second)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-a.stopCh:
-			return
-		case <-ticker.C:
-			ping, _ := json.Marshal(map[string]string{"type": "ping"})
-			if err := conn.Write(ctx, websocket.MessageText, ping); err != nil {
-				return
-			}
-		}
-	}
-}
-
-// executeTaskAndReportWS 执行任务并通过 WebSocket 上报结果。
-func (a *Agent) executeTaskAndReportWS(ctx context.Context, task TaskRequest, conn *websocket.Conn) {
-	start := time.Now()
-	timeout := time.Duration(task.Timeout) * time.Second
-	if timeout <= 0 {
-		timeout = 300 * time.Second
-	}
-	execCtx, cancel := context.WithTimeout(ctx, timeout)
-	defer cancel()
-
-	var cmd *exec.Cmd
-	switch {
-	case runtime.GOOS == "windows":
-		cmd = exec.CommandContext(execCtx, "cmd", "/C", task.Script)
-	default:
-		cmd = exec.CommandContext(execCtx, "/bin/sh", "-c", task.Script)
-	}
-
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-
-	err := cmd.Run()
-	duration := time.Since(start)
-
-	exitCode := 0
-	if err != nil {
-		if exitErr, ok := err.(*exec.ExitError); ok {
-			exitCode = exitErr.ExitCode()
-		} else {
-			exitCode = -1
-		}
-	}
-
-	// 构建 WS 结果消息
-	result := map[string]any{
-		"type":        "task_result",
-		"task_id":     task.TaskID,
-		"success":     exitCode == 0,
-		"output":      stdout.String(),
-		"exit_code":   exitCode,
-		"duration_ms": duration.Milliseconds(),
-		"error":       stderr.String(),
-		"time":        time.Now().UnixMilli(),
-	}
-
-	data, _ := json.Marshal(result)
-	writeCtx, writeCancel := context.WithTimeout(ctx, 10*time.Second)
-	defer writeCancel()
-	if err := conn.Write(writeCtx, websocket.MessageText, data); err != nil {
-		// WS 写失败,回退到 HTTP 上报
-		fmt.Printf("[agent] ws report failed, falling back to http: %v\n", err)
-		a.reportTaskResultHTTP(ctx, task, stdout.String(), stderr.String(), exitCode, duration)
-		return
-	}
-	fmt.Printf("[agent] task %s completed via ws in %dms, exit=%d\n",
-		task.TaskID, duration.Milliseconds(), exitCode)
-}
 
 // reportTaskResultHTTP 通过 HTTP 上报任务结果(WS 不可用时的 fallback)。
 func (a *Agent) reportTaskResultHTTP(ctx context.Context, task TaskRequest, stdout, stderr string, exitCode int, duration time.Duration) {

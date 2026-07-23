@@ -7,6 +7,11 @@ services:
       POSTGRES_DB: opsnexus
       POSTGRES_USER: opsnexus
       POSTGRES_PASSWORD: opsnexus
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: "1.0"
     ports:
       - "5432:5432"
     volumes:
@@ -19,7 +24,7 @@ services:
       retries: 5
 
   dgraph-zero:
-    image: dgraph/dgraph:latest
+    image: dgraph/dgraph:v24.0.0
     command: dgraph zero --my=dgraph-zero:5080
     ports:
       - "5080:5080"
@@ -28,8 +33,16 @@ services:
       - dgraph_zero:/data
 
   dgraph-alpha:
-    image: dgraph/dgraph:latest
-    command: dgraph alpha --my=dgraph-alpha:7080 --zero=dgraph-zero:5080 --security whitelist=0.0.0.0/0
+    image: dgraph/dgraph:v24.0.0
+    # Restrict the Dgraph security whitelist to loopback and the compose service
+    # network names. 0.0.0.0/0 exposed the entire cluster to any host that
+    # could reach the port (see report issue 1.6).
+    command: dgraph alpha --my=dgraph-alpha:7080 --zero=dgraph-zero:5080 --security whitelist=127.0.0.1,dgraph-alpha,dgraph-zero
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+          cpus: "1.0"
     ports:
       - "7080:7080"
       - "8081:8080"
@@ -42,6 +55,11 @@ services:
 
   redis:
     image: redis:7-alpine
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+          cpus: "0.5"
     ports:
       - "6379:6379"
     volumes:
@@ -56,6 +74,11 @@ services:
     build:
       context: ..
       dockerfile: deploy/Dockerfile
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+          cpus: "1.5"
     ports:
       - "8080:8080"
     environment:

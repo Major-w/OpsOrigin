@@ -2,6 +2,7 @@ package tunnel
 
 import (
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -10,24 +11,35 @@ import (
 	"sync"
 	"time"
 
+	"github.com/google/uuid"
+
 	pb "github.com/opsorigin/core/api/proto"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/credentials"
+	"google.golang.org/grpc/metadata"
+	"google.golang.org/grpc/peer"
 	"google.golang.org/grpc/status"
 )
 
 type GRPCServer struct {
 	pb.UnimplementedTunnelServiceServer
 	addr       string
+	authToken  string
+	insecure   bool
 	grpcServer *grpc.Server
 	proxies    sync.Map
 	sessions   sync.Map
 	onCommand  func(ctx context.Context, proxyID string, cmd *CommandRequest) *CommandResponse
+
+	// tlsConfig 非 nil 时启用 mTLS 双向认证(§3.1 / §6)。
+	tlsConfig *tls.Config
 }
 
 type GRPCProxySession struct {
 	ID           string
 	ProxyID      string
+	CertCN       string // 客户端证书 CN(§3.1 从证书解析 Agent/Proxy 身份)
 	Stream       grpc.BidiStreamingServer[pb.TunnelMessage, pb.TunnelMessage]
 	Hostname     string
 	Capabilities []string
@@ -35,8 +47,20 @@ type GRPCProxySession struct {
 	mu           sync.Mutex
 }
 
-func NewGRPCServer(addr string) *GRPCServer {
-	return &GRPCServer{addr: addr}
+func NewGRPCServer(addr, authToken string, insecure bool) *GRPCServer {
+	return &GRPCServer{addr: addr, authToken: authToken, insecure: insecure}
+}
+
+// EnableMTLS 开启双向 TLS(§3.1)。自动强制 ClientAuth=RequireAndVerifyClientCert,
+// 并锁定 TLS 1.3(§6 传输加密要求)。cfg.Certificates 为 Core 服务端证书。
+func (s *GRPCServer) EnableMTLS(cfg *tls.Config) {
+	if cfg.ClientAuth == tls.NoClientCert {
+		cfg.ClientAuth = tls.RequireAndVerifyClientCert
+	}
+	if cfg.MinVersion == 0 {
+		cfg.MinVersion = tls.VersionTLS13
+	}
+	s.tlsConfig = cfg
 }
 
 func (s *GRPCServer) OnCommand(handler func(ctx context.Context, proxyID string, cmd *CommandRequest) *CommandResponse) {
@@ -49,7 +73,11 @@ func (s *GRPCServer) Start(ctx context.Context) error {
 		return fmt.Errorf("grpc listen on %s: %w", s.addr, err)
 	}
 
-	s.grpcServer = grpc.NewServer()
+	opts := []grpc.ServerOption{}
+	if s.tlsConfig != nil {
+		opts = append(opts, grpc.Creds(credentials.NewTLS(s.tlsConfig)))
+	}
+	s.grpcServer = grpc.NewServer(opts...)
 	pb.RegisterTunnelServiceServer(s.grpcServer, s)
 
 	go func() {
@@ -66,6 +94,10 @@ func (s *GRPCServer) Start(ctx context.Context) error {
 }
 
 func (s *GRPCServer) Connect(stream grpc.BidiStreamingServer[pb.TunnelMessage, pb.TunnelMessage]) error {
+	if !s.verifyToken(stream.Context()) {
+		slog.Warn("proxy registration rejected: invalid or missing auth token / client certificate")
+		return status.Errorf(codes.Unauthenticated, "authentication required")
+	}
 	msg, err := stream.Recv()
 	if err != nil {
 		return fmt.Errorf("receive register: %w", err)
@@ -76,10 +108,14 @@ func (s *GRPCServer) Connect(stream grpc.BidiStreamingServer[pb.TunnelMessage, p
 		return status.Errorf(codes.InvalidArgument, "invalid register: %v", err)
 	}
 
-	sessionID := fmt.Sprintf("grpc-%s", time.Now().Format("20060102150405"))
+	// §3.1 从客户端证书 CN 解析身份(若启用 mTLS)。
+	cn := clientCertCN(stream.Context())
+
+	sessionID := fmt.Sprintf("grpc-%s", uuid.New().String())
 	session := &GRPCProxySession{
 		ID:           sessionID,
 		ProxyID:      reg.ProxyId,
+		CertCN:       cn,
 		Stream:       stream,
 		Hostname:     reg.Hostname,
 		Capabilities: reg.Capabilities,
@@ -91,6 +127,7 @@ func (s *GRPCServer) Connect(stream grpc.BidiStreamingServer[pb.TunnelMessage, p
 
 	slog.Info("proxy registered via gRPC",
 		"proxy_id", reg.ProxyId,
+		"cert_cn", cn,
 		"hostname", reg.Hostname,
 		"session_id", sessionID)
 
@@ -189,4 +226,49 @@ func extractPayload(msg *pb.TunnelMessage, out interface{}) error {
 		return err
 	}
 	return json.Unmarshal(data, out)
+}
+
+// verifyToken 校验 gRPC 流身份。优先级:
+//   1) mTLS 已启用且客户端证书有效(CN 非空) => 直接通过(证书即凭证,§3.1)。
+//   2) Insecure 模式 => 通过(仅本地测试)。
+//   3) 共享密钥(metadata: x-tunnel-token)匹配 => 通过。
+// 安全默认(fail-closed): 未配置密钥且非 mTLS/Insecure 时拒绝所有注册。
+func (s *GRPCServer) verifyToken(ctx context.Context) bool {
+	if s.tlsConfig != nil {
+		// mTLS:客户端证书已由 TLS 层校验,此处仅需 CN 非空即可确认身份。
+		return clientCertCN(ctx) != ""
+	}
+	if s.insecure {
+		return true
+	}
+	if s.authToken == "" {
+		slog.Error("grpc tunnel auth: AUTH_SECRET not configured - refusing proxy registration")
+		return false
+	}
+	md, ok := metadata.FromIncomingContext(ctx)
+	if !ok {
+		return false
+	}
+	tokens := md.Get("x-tunnel-token")
+	if len(tokens) == 0 {
+		return false
+	}
+	return tokens[0] == s.authToken
+}
+
+// clientCertCN 从 gRPC peer 证书提取客户端 CN(§3.1 身份解析)。
+// 无证书或解析失败返回空串。
+func clientCertCN(ctx context.Context) string {
+	p, ok := peer.FromContext(ctx)
+	if !ok {
+		return ""
+	}
+	tlsInfo, ok := p.AuthInfo.(credentials.TLSInfo)
+	if !ok {
+		return ""
+	}
+	if len(tlsInfo.State.PeerCertificates) == 0 {
+		return ""
+	}
+	return tlsInfo.State.PeerCertificates[0].Subject.CommonName
 }

@@ -1,0 +1,19 @@
+# 构建 K8s 探针镜像（cmd/k8s-probe 属于根模块，随 ./... 一并编译）。
+# 用法：
+#   docker build -f deploy/Dockerfile.k8s-probe -t <your-registry>/opsorigin-k8s-probe:latest .
+#   docker push <your-registry>/opsorigin-k8s-probe:latest
+# 然后在 deploy/k8s/probe-daemonset.yaml 里把 image 改成上面推送的地址。
+FROM golang:1.25-alpine AS builder
+
+WORKDIR /app
+COPY go.mod go.sum ./
+COPY cmd/ ./cmd/
+COPY internal/ ./internal/
+COPY pkg/ ./pkg/
+
+RUN go mod download && CGO_ENABLED=0 go build -o /k8s-probe ./cmd/k8s-probe
+
+FROM alpine:3.21
+RUN apk add --no-cache ca-certificates tzdata
+COPY --from=builder /k8s-probe /usr/local/bin/k8s-probe
+ENTRYPOINT ["k8s-probe"]

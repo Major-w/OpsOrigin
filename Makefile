@@ -1,7 +1,6 @@
-GOROOT := $(HOME)/go1.25/go
-GOPATH := $(HOME)/go/path
-PATH := $(GOROOT)/bin:$(GOPATH)/bin:$(PATH)
-GO := $(GOROOT)/bin/go
+# Use the go toolchain available on PATH (do not hardcode machine-specific
+# GOROOT/GOPATH, which breaks `make` on other developers' machines).
+GO := go
 GOPROXY := https://goproxy.cn,direct
 
 BINDIR := bin

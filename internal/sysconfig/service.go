@@ -76,17 +76,6 @@ func (s *Service) buildConfigItems() []ConfigGroup {
 			},
 		},
 		{
-			Category: "agent_ws",
-			Label:    "Agent 长连接",
-			Items: []ConfigItem{
-				{Key: "OPSNEXUS_AGENT_WS_PORT", Category: "agent_ws", Label: "Agent WS 端口", Description: "Agent WebSocket 长连接独立端口,与主服务隔离", Type: "int", CurrentValue: fmt.Sprintf("%d", cfg.AgentWS.Port), DefaultValue: "5588", RequiresRestart: true},
-				{Key: "OPSNEXUS_AGENT_WS_ENABLED", Category: "agent_ws", Label: "启用 Agent WS", Description: "是否启用 Agent WebSocket 长连接通信", Type: "bool", CurrentValue: fmt.Sprintf("%t", cfg.AgentWS.Enabled), DefaultValue: "true", RequiresRestart: true},
-				{Key: "OPSNEXUS_AGENT_WS_TLS", Category: "agent_ws", Label: "WS 启用 TLS", Description: "Agent WebSocket 是否启用 TLS(WSS)", Type: "bool", CurrentValue: fmt.Sprintf("%t", cfg.AgentWS.UseTLS), DefaultValue: "false", RequiresRestart: true},
-				{Key: "OPSNEXUS_AGENT_WS_CERT", Category: "agent_ws", Label: "WS 证书路径", Description: "Agent WebSocket TLS 证书文件路径", Type: "string", CurrentValue: cfg.AgentWS.CertFile, DefaultValue: "", RequiresRestart: true},
-				{Key: "OPSNEXUS_AGENT_WS_KEY", Category: "agent_ws", Label: "WS 私钥路径", Description: "Agent WebSocket TLS 私钥文件路径", Type: "string", CurrentValue: cfg.AgentWS.KeyFile, DefaultValue: "", RequiresRestart: true, Sensitive: true},
-			},
-		},
-		{
 			Category: "tls",
 			Label:    "全局 TLS",
 			Items: []ConfigItem{
@@ -268,16 +257,6 @@ func (s *Service) applyUpdate(key, value string) {
 	switch key {
 	case "OPSNEXUS_CORE_PORT":
 		cfg.Core.Port = atoiSafe(value, 8080)
-	case "OPSNEXUS_AGENT_WS_PORT":
-		cfg.AgentWS.Port = atoiSafe(value, 5588)
-	case "OPSNEXUS_AGENT_WS_ENABLED":
-		cfg.AgentWS.Enabled = value == "true" || value == "1"
-	case "OPSNEXUS_AGENT_WS_TLS":
-		cfg.AgentWS.UseTLS = value == "true" || value == "1"
-	case "OPSNEXUS_AGENT_WS_CERT":
-		cfg.AgentWS.CertFile = value
-	case "OPSNEXUS_AGENT_WS_KEY":
-		cfg.AgentWS.KeyFile = value
 	case "OPSNEXUS_TLS_ENABLED":
 		cfg.TLS.Enabled = value == "true" || value == "1"
 	case "OPSNEXUS_TLS_CERT":

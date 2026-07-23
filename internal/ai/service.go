@@ -8,7 +8,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/opsorigin/core/internal/ai/agent"
+	"github.com/opsorigin/core/internal/ai/agentic"
 	"github.com/opsorigin/core/internal/ai/mcp"
 	"github.com/opsorigin/core/internal/ai/model"
 	"github.com/opsorigin/core/internal/ai/ratelimit"
@@ -19,7 +19,7 @@ import (
 
 type Service struct {
 	cfg      *config.Config
-	engine   *agent.Engine
+	engine   *agentic.Engine
 	registry *mcp.Registry
 	limiter  ratelimit.RateLimiter
 }
@@ -36,7 +36,7 @@ func NewService(cfg *config.Config, llmClient *llm.Client, redisClient *rediscli
 		slog.Info("ai rate limiter: using in-memory backend")
 	}
 
-	eng := agent.NewEngine(reg, lim, llmClient)
+	eng := agentic.NewEngine(reg, lim, llmClient)
 
 	return &Service{
 		cfg:      cfg,

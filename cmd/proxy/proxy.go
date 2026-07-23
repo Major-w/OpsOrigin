@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"log/slog"
+	"net/http"
 	"os"
 	"sync"
 
@@ -29,6 +30,7 @@ func NewProxy(cfg *config.Config) *Proxy {
 			cfg.Proxy.ID,
 			hostname,
 			[]string{"shell", "script", "file"},
+			cfg.Tunnel.AuthSecret,
 		),
 	}
 }
@@ -45,6 +47,7 @@ func (p *Proxy) Start(ctx context.Context) error {
 			p.cfg.Proxy.ID,
 			hostname,
 			p.agents,
+			p.cfg.Tunnel.AuthSecret,
 		)
 
 		p.wg.Add(1)
@@ -98,6 +101,29 @@ func (p *Proxy) Start(ctx context.Context) error {
 		defer p.wg.Done()
 		p.agents.Serve(ctx, p.cfg.Proxy.Listen)
 	}()
+
+	// §5 HTTP 文件代理:若配置了 FileListen,启动独立 HTTP 服务,
+	// 拓扑上经 Proxy 接入的 Agent 由此拉取文件(令牌边缘校验 + Range 转发)。
+	if p.cfg.Proxy.FileListen != "" {
+		fp := NewFileProxy(p.cfg.Proxy.CoreAddr, p.cfg.FileStore.TokenSecret)
+		httpSrv := &http.Server{
+			Addr:    p.cfg.Proxy.FileListen,
+			Handler: fp.Handler(),
+		}
+		p.wg.Add(1)
+		go func() {
+			defer p.wg.Done()
+			slog.Info("file proxy listening", "addr", p.cfg.Proxy.FileListen)
+			if err := httpSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+				slog.Error("file proxy stopped", "error", err)
+			}
+		}()
+		// 上下文取消时关闭文件代理。
+		go func() {
+			<-ctx.Done()
+			_ = httpSrv.Close()
+		}()
+	}
 
 	slog.Info("proxy started",
 		"core", p.cfg.Proxy.CoreAddr,

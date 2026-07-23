@@ -1,0 +1,188 @@
+# OpsOrigin K8s 集群探针 DaemonSet
+# ---------------------------------------------------------------
+# 把 cmd/k8s-probe 以 DaemonSet 形态部署到集群每个节点，
+# 采集 nodes/pods/workloads/events/metrics，经 in-cluster ServiceAccount
+# 读取 K8s API，再通过 HTTP 上报 Core：POST {server}/api/v1/k8s/report
+# （对应 Core 的 /api/v1/k8s/report 端点）。
+#
+# 使用步骤：
+#   1) 构建并推送镜像（见 deploy/Dockerfile.k8s-probe）：
+#        docker build -f deploy/Dockerfile.k8s-probe \
+#          -t <your-registry>/opsorigin-k8s-probe:latest .
+#        docker push <your-registry>/opsorigin-k8s-probe:latest
+#      然后把下方 DaemonSet 的 image 改成该地址。
+#   2) 创建上报令牌 Secret（Core 侧分配的探针注册令牌）：
+#        kubectl -n opsorigin create secret generic opsorigin-probe-token \
+#          --from-literal=token=<CORE_ALLOCATED_PROBE_TOKEN>
+#      （Secret 未写进本清单，避免把令牌提交进 git。）
+#   3) 按需修改 ConfigMap 里的 server（Core 对外基址，/api/v1/k8s/report 所在）、
+#      cluster（Core 侧登记的集群标识）。
+#   4) kubectl apply -f deploy/k8s/probe-daemonset.yaml
+# ---------------------------------------------------------------
+
+# 1) 命名空间（如已存在可删掉这一段）
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: opsorigin
+  labels:
+    app.kubernetes.io/part-of: opsorigin
+---
+# 2) ServiceAccount（DaemonSet 用它做 in-cluster 认证）
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: opsorigin-probe
+  namespace: opsorigin
+# automountServiceAccountToken 默认即 true；显式声明以便审计
+automountServiceAccountToken: true
+---
+# 3) ClusterRole：最小只读权限，覆盖探针采集的全部资源
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: opsorigin-probe
+rules:
+  - apiGroups: [""]
+    resources: ["nodes", "pods", "events", "services", "endpoints", "namespaces"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["apps"]
+    resources: ["deployments", "statefulsets", "daemonsets"]
+    verbs: ["get", "list", "watch"]
+  # 新版事件 API（部分集群 events 走 events.k8s.io）
+  - apiGroups: ["events.k8s.io"]
+    resources: ["events"]
+    verbs: ["get", "list", "watch"]
+  # metrics-server 指标（探针上报含 metrics 字段时用到，未装则规则闲置无害）
+  - apiGroups: ["metrics.k8s.io"]
+    resources: ["nodes", "pods"]
+    verbs: ["get", "list", "watch"]
+---
+# 4) ClusterRoleBinding：把 SA 绑到上面的 ClusterRole（集群级，不限命名空间）
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: opsorigin-probe
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: opsorigin-probe
+subjects:
+  - kind: ServiceAccount
+    name: opsorigin-probe
+    namespace: opsorigin
+---
+# 5) ConfigMap：Core 基址 / 集群标识 / 采集间隔
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: opsorigin-probe-config
+  namespace: opsorigin
+data:
+  # Core 对外基址（/api/v1/k8s/report 所在的地址，通常是 ingress/LB 地址）
+  server: "https://core.ops.example.com"
+  # Core 侧登记的集群标识（也可通过 Pod env CLUSTER_NAME 覆盖）
+  cluster: "prod-cluster"
+  interval: "60s"
+---
+# 6) DaemonSet
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: opsorigin-probe
+  namespace: opsorigin
+  labels:
+    app.kubernetes.io/name: opsorigin-probe
+    app.kubernetes.io/part-of: opsorigin
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: opsorigin-probe
+  updateStrategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 1
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: opsorigin-probe
+        app.kubernetes.io/part-of: opsorigin
+    spec:
+      serviceAccountName: opsorigin-probe
+      # 探针用 in-cluster ServiceAccount 读 K8s API，需挂载令牌
+      automountServiceAccountToken: true
+      # 随控制面节点一起优先调度/驱逐保护
+      priorityClassName: system-node-critical
+      terminationGracePeriodSeconds: 30
+      # 容忍所有污点 → 在每个节点（含 master/control-plane）上都跑
+      tolerations:
+        - operator: Exists
+          effect: NoSchedule
+        - operator: Exists
+          effect: NoExecute
+      # 不需要 host 网络/PID：采集走 K8s API，不上节点文件系统
+      hostNetwork: false
+      dnsPolicy: ClusterFirst
+      containers:
+        - name: probe
+          # TODO: 替换为你的镜像仓库地址（见文件顶部构建说明）
+          image: "<your-registry>/opsorigin-k8s-probe:latest"
+          imagePullPolicy: IfNotPresent
+          args:
+            - "--server=$(SERVER)"
+            - "--token=$(TOKEN)"
+            - "--cluster=$(CLUSTER)"
+            - "--in-cluster"
+            - "--interval=$(INTERVAL)"
+          env:
+            - name: SERVER
+              valueFrom:
+                configMapKeyRef:
+                  name: opsorigin-probe-config
+                  key: server
+            - name: CLUSTER
+              valueFrom:
+                configMapKeyRef:
+                  name: opsorigin-probe-config
+                  key: cluster
+            - name: INTERVAL
+              valueFrom:
+                configMapKeyRef:
+                  name: opsorigin-probe-config
+                  key: interval
+            # 上报令牌从 Secret 注入（步骤 2 创建）
+            - name: TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: opsorigin-probe-token
+                  key: token
+          resources:
+            requests:
+              cpu: 100m
+              memory: 64Mi
+            limits:
+              cpu: 200m
+              memory: 128Mi
+          # 探针自身存活/就绪：能连上 Core 才健康
+          startupProbe:
+            httpGet:
+              path: /healthz
+              port: 8081
+            failureThreshold: 30
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8081
+            initialDelaySeconds: 15
+            periodSeconds: 30
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 8081
+            periodSeconds: 15
+          # 探针自身 metrics 端口（如需 Prometheus 抓取）
+          ports:
+            - name: health
+              containerPort: 8081
+              protocol: TCP

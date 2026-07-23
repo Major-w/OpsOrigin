@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/opsorigin/core/internal/cmdb/dgraph"
@@ -15,8 +16,6 @@ import (
 	"github.com/opsorigin/core/internal/cmdb/pg"
 	"github.com/opsorigin/core/pkg/config"
 )
-
-
 
 type Service struct {
 	cfg         *config.Config
@@ -108,7 +107,7 @@ func (s *Service) handleCreateCI(w http.ResponseWriter, r *http.Request) {
 
 	traceID := traceIDFromCtx(ctx)
 	if s.pg != nil {
-		if err := s.validateAttributes(ci.TypeID, ci.Attributes); err != nil {
+		if err := s.validateAttributes(ctx, ci.TypeID, ci.Attributes); err != nil {
 			writeError(w, http.StatusBadRequest, err.Error())
 			return
 		}
@@ -173,7 +172,7 @@ func (s *Service) handleUpdateCI(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	existing := s.mem.getCI(id, tenantID)
+	var existing *model.CIModel
 	if s.pg != nil {
 		var err error
 		existing, err = s.pg.GetCI(ctx, id, tenantID)
@@ -181,6 +180,9 @@ func (s *Service) handleUpdateCI(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
+	} else {
+		// PG 不可用时才回退到内存存储,避免每次都多查一次
+		existing = s.mem.getCI(id, tenantID)
 	}
 	if existing == nil {
 		writeError(w, http.StatusNotFound, "ci not found")
@@ -355,11 +357,26 @@ func (s *Service) handleSearchCI(w http.ResponseWriter, r *http.Request) {
 		if q != "" {
 			filtered := make([]*model.CIModel, 0)
 			for _, ci := range cis {
-				if contains(ci.Name, q) || contains(ci.Description, q) || contains(ci.TypeID, q) {
+				if strings.Contains(ci.Name, q) || strings.Contains(ci.Description, q) || strings.Contains(ci.TypeID, q) {
 					filtered = append(filtered, ci)
 				}
 			}
 			cis = filtered
+		}
+		if cis == nil {
+			cis = []*model.CIModel{}
+		}
+		writeJSON(w, http.StatusOK, cis)
+		return
+	}
+	if q != "" {
+		// Push the free-text filter down to SQL instead of loading the
+		// entire CI table and filtering in Go — required for acceptable
+		// performance as the dataset grows (see report issue 3.3).
+		cis, err := s.pg.ListCIByQuery(r.Context(), tenantID, typeID, q)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
 		}
 		if cis == nil {
 			cis = []*model.CIModel{}
@@ -372,26 +389,17 @@ func (s *Service) handleSearchCI(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	if q != "" {
-		filtered := make([]*model.CIModel, 0)
-		for _, ci := range cis {
-			if contains(ci.Name, q) || contains(ci.Description, q) || contains(ci.TypeID, q) {
-				filtered = append(filtered, ci)
-			}
-		}
-		cis = filtered
-	}
 	if cis == nil {
 		cis = []*model.CIModel{}
 	}
 	writeJSON(w, http.StatusOK, cis)
 }
 
-func (s *Service) validateAttributes(typeID string, attrs map[string]any) error {
-	mt, err := s.pg.GetCIModelType(context.Background(), typeID, "default")
+func (s *Service) validateAttributes(ctx context.Context, typeID string, attrs map[string]any) error {
+	mt, err := s.pg.GetCIModelType(ctx, typeID, "default")
 	if err != nil || mt == nil {
 		tenantID := "default"
-		mt, err = s.pg.GetCIModelType(context.Background(), typeID, tenantID)
+		mt, err = s.pg.GetCIModelType(ctx, typeID, tenantID)
 	}
 	if mt == nil || err != nil {
 		return nil
@@ -546,7 +554,7 @@ func (s *Service) handleGetModelType(w http.ResponseWriter, r *http.Request) {
 
 func (s *Service) handleListModelTypes(w http.ResponseWriter, r *http.Request) {
 	tenantID := tenantFromCtx(r.Context())
-	
+
 	// 获取分页参数
 	limit := 100
 	offset := 0
@@ -560,24 +568,24 @@ func (s *Service) handleListModelTypes(w http.ResponseWriter, r *http.Request) {
 			offset = parsed
 		}
 	}
-	
+
 	types, err := s.pg.ListCIModelTypes(r.Context(), tenantID, limit, offset)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	
+
 	// 获取总数
 	total, err := s.pg.CountCIModelTypes(r.Context(), tenantID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	
+
 	writeJSON(w, http.StatusOK, map[string]any{
-		"items": types,
-		"total": total,
-		"limit": limit,
+		"items":  types,
+		"total":  total,
+		"limit":  limit,
 		"offset": offset,
 	})
 }
@@ -585,7 +593,7 @@ func (s *Service) handleListModelTypes(w http.ResponseWriter, r *http.Request) {
 func (s *Service) handleUpdateModelType(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	tenantID := tenantFromCtx(r.Context())
-	
+
 	// 获取现有模型类型
 	existing, err := s.pg.GetCIModelType(r.Context(), id, tenantID)
 	if err != nil {
@@ -596,31 +604,31 @@ func (s *Service) handleUpdateModelType(w http.ResponseWriter, r *http.Request) 
 		writeError(w, http.StatusNotFound, "model type not found")
 		return
 	}
-	
+
 	var mt model.CIModelType
 	if err := json.NewDecoder(r.Body).Decode(&mt); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
-	
+
 	// 保留不可更新的字段
 	mt.ID = existing.ID
 	mt.TenantID = existing.TenantID
 	mt.CreatedAt = existing.CreatedAt
-	
+
 	if err := s.pg.UpdateCIModelType(r.Context(), &mt); err != nil {
 		slog.Error("update model type failed", "error", err)
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	
+
 	writeJSON(w, http.StatusOK, mt)
 }
 
 func (s *Service) handleDeleteModelType(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	tenantID := tenantFromCtx(r.Context())
-	
+
 	// 检查是否有CI实例使用此模型类型
 	count, err := s.pg.CountCIByTypeID(r.Context(), id, tenantID)
 	if err != nil {
@@ -631,13 +639,13 @@ func (s *Service) handleDeleteModelType(w http.ResponseWriter, r *http.Request) 
 		writeError(w, http.StatusBadRequest, fmt.Sprintf("cannot delete model type with %d CI instances", count))
 		return
 	}
-	
+
 	if err := s.pg.DeleteCIModelType(r.Context(), id, tenantID); err != nil {
 		slog.Error("delete model type failed", "error", err)
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	
+
 	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
 }
 
@@ -668,17 +676,6 @@ func resolveChannel(ch int) model.ChannelWeight {
 	}
 }
 
-func contains(s, substr string) bool {
-	return len(substr) == 0 || len(s) >= len(substr) && (s == substr || len(s) > len(substr) && containsAny(s, substr))
-}
-func containsAny(s, substr string) bool {
-	for i := 0; i <= len(s)-len(substr); i++ {
-		if s[i:i+len(substr)] == substr {
-			return true
-		}
-	}
-	return false
-}
 func validateAttrType(typ string, val any) bool {
 	switch typ {
 	case "string":
@@ -716,12 +713,14 @@ func (s *Service) handleListHistory(w http.ResponseWriter, r *http.Request) {
 	changeType := r.URL.Query().Get("change_type")
 	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
 	offset, _ := strconv.Atoi(r.URL.Query().Get("offset"))
-	if limit <= 0 { limit = 50 }
+	if limit <= 0 {
+		limit = 50
+	}
 
 	versions, total, err := s.pg.ListAllCIHistory(r.Context(), tenantID, changeType, limit, offset)
 	if err != nil {
 		slog.Error("list history failed", "err", err)
-		writeError(w, 500, "internal error")
+		writeError(w, http.StatusInternalServerError, "internal error")
 		return
 	}
 	writeJSON(w, 200, map[string]any{"items": versions, "total": total, "limit": limit, "offset": offset})
@@ -732,12 +731,14 @@ func (s *Service) handleListCIVersions(w http.ResponseWriter, r *http.Request) {
 	tenantID := tenantFromCtx(r.Context())
 	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
 	offset, _ := strconv.Atoi(r.URL.Query().Get("offset"))
-	if limit <= 0 { limit = 20 }
+	if limit <= 0 {
+		limit = 20
+	}
 
 	versions, total, err := s.pg.ListCIVersions(r.Context(), ciID, tenantID, limit, offset)
 	if err != nil {
 		slog.Error("list ci versions failed", "err", err)
-		writeError(w, 500, "internal error")
+		writeError(w, http.StatusInternalServerError, "internal error")
 		return
 	}
 	writeJSON(w, 200, map[string]any{"items": versions, "total": total, "limit": limit, "offset": offset})
@@ -748,7 +749,7 @@ func (s *Service) handleGetVersionDetail(w http.ResponseWriter, r *http.Request)
 	version, err := s.pg.GetCIVersion(r.Context(), id)
 	if err != nil {
 		slog.Error("get version detail failed", "err", err)
-		writeError(w, 500, "internal error")
+		writeError(w, http.StatusInternalServerError, "internal error")
 		return
 	}
 	if version == nil {
@@ -767,7 +768,7 @@ func (s *Service) handleListDiscoveryTasks(w http.ResponseWriter, r *http.Reques
 	tasks, err := s.pg.ListDiscoveryTasks(r.Context(), tenantID)
 	if err != nil {
 		slog.Error("list discovery tasks failed", "err", err)
-		writeError(w, 500, "internal error")
+		writeError(w, http.StatusInternalServerError, "internal error")
 		return
 	}
 	writeJSON(w, 200, tasks)
@@ -803,7 +804,7 @@ func (s *Service) handleCreateDiscoveryTask(w http.ResponseWriter, r *http.Reque
 
 	if err := s.pg.CreateDiscoveryTask(r.Context(), task); err != nil {
 		slog.Error("create discovery task failed", "err", err)
-		writeError(w, 500, "internal error")
+		writeError(w, http.StatusInternalServerError, "internal error")
 		return
 	}
 	writeJSON(w, 201, task)
@@ -816,7 +817,7 @@ func (s *Service) handleUpdateDiscoveryTask(w http.ResponseWriter, r *http.Reque
 	existing, err := s.pg.GetDiscoveryTask(r.Context(), id, tenantID)
 	if err != nil {
 		slog.Error("get discovery task failed", "err", err)
-		writeError(w, 500, "internal error")
+		writeError(w, http.StatusInternalServerError, "internal error")
 		return
 	}
 	if existing == nil {
@@ -835,14 +836,22 @@ func (s *Service) handleUpdateDiscoveryTask(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	if input.Name != "" { existing.Name = input.Name }
-	if input.Type != "" { existing.Type = input.Type }
-	if input.Target != "" { existing.Target = input.Target }
-	if input.Config != nil { existing.Config = input.Config }
+	if input.Name != "" {
+		existing.Name = input.Name
+	}
+	if input.Type != "" {
+		existing.Type = input.Type
+	}
+	if input.Target != "" {
+		existing.Target = input.Target
+	}
+	if input.Config != nil {
+		existing.Config = input.Config
+	}
 
 	if err := s.pg.UpdateDiscoveryTask(r.Context(), existing); err != nil {
 		slog.Error("update discovery task failed", "err", err)
-		writeError(w, 500, "internal error")
+		writeError(w, http.StatusInternalServerError, "internal error")
 		return
 	}
 	writeJSON(w, 200, existing)
@@ -853,7 +862,7 @@ func (s *Service) handleDeleteDiscoveryTask(w http.ResponseWriter, r *http.Reque
 	tenantID := tenantFromCtx(r.Context())
 	if err := s.pg.DeleteDiscoveryTask(r.Context(), id, tenantID); err != nil {
 		slog.Error("delete discovery task failed", "err", err)
-		writeError(w, 500, "internal error")
+		writeError(w, http.StatusInternalServerError, "internal error")
 		return
 	}
 	writeJSON(w, 200, map[string]string{"status": "deleted"})
@@ -911,7 +920,7 @@ func (s *Service) handleListDiscoveryResults(w http.ResponseWriter, r *http.Requ
 	results, err := s.pg.ListDiscoveryResults(r.Context(), taskID, tenantID)
 	if err != nil {
 		slog.Error("list discovery results failed", "err", err)
-		writeError(w, 500, "internal error")
+		writeError(w, http.StatusInternalServerError, "internal error")
 		return
 	}
 	writeJSON(w, 200, results)
@@ -924,7 +933,7 @@ func (s *Service) handleSyncDiscoveryResult(w http.ResponseWriter, r *http.Reque
 	// 获取发现结果
 	results, err := s.pg.ListDiscoveryResults(r.Context(), "", tenantID)
 	if err != nil {
-		writeError(w, 500, "internal error")
+		writeError(w, http.StatusInternalServerError, "internal error")
 		return
 	}
 
@@ -956,7 +965,7 @@ func (s *Service) handleSyncDiscoveryResult(w http.ResponseWriter, r *http.Reque
 
 	if err := s.pg.CreateCI(r.Context(), ci, "discovery"); err != nil {
 		slog.Error("sync discovery result failed", "err", err)
-		writeError(w, 500, "failed to create CI")
+		writeError(w, http.StatusInternalServerError, "failed to create CI")
 		return
 	}
 
@@ -972,7 +981,7 @@ func (s *Service) handleSyncAllDiscoveryResults(w http.ResponseWriter, r *http.R
 
 	affected, err := s.pg.SyncAllDiscoveryResults(r.Context(), taskID, tenantID)
 	if err != nil {
-		writeError(w, 500, "internal error")
+		writeError(w, http.StatusInternalServerError, "internal error")
 		return
 	}
 	writeJSON(w, 200, map[string]any{"synced_count": affected})

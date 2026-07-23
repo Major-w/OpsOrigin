@@ -30,7 +30,6 @@ func main() {
 
 	// 命令行参数
 	serverAddr := flag.String("server", "", "server address (host:port)")
-	wsServer := flag.String("ws-server", "", "websocket server URL (e.g. ws://host:5588/agent-ws)")
 	grpcServer := flag.String("grpc-server", "", "gRPC server address (host:port) for direct connection")
 	agentName := flag.String("name", "", "agent name (defaults to hostname)")
 	proxyAddr := flag.String("proxy", "", "proxy address (host:port) for indirect connection, e.g. 10.0.0.1:9090")
@@ -46,11 +45,6 @@ func main() {
 	}
 	if addr == "" {
 		addr = "localhost:8080"
-	}
-
-	wsAddr := *wsServer
-	if wsAddr == "" {
-		wsAddr = os.Getenv("OPSORIGIN_WS_SERVER")
 	}
 
 	grpcAddr := *grpcServer
@@ -75,9 +69,13 @@ func main() {
 		proxy = "" // 默认值视为未设置,走直连
 	}
 
+	// gRPC 接入是唯一支持的连接方式(直连或经 Proxy)。
+	if grpcAddr == "" && proxy == "" {
+		log.Fatalf("agent 仅支持 gRPC 接入: 请通过 --grpc-server 直连 Core,或通过 --proxy 经代理中转;HTTP 轮询与 WebSocket 模式已禁用")
+	}
+
 	agentCfg := AgentConfig{
 		ServerAddr: addr,
-		WSServer:   wsAddr,
 		GRPCServer: grpcAddr,
 		ProxyAddr:  proxy,
 		Interval:   30 * time.Second,

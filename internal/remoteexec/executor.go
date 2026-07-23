@@ -3,12 +3,16 @@ package remoteexec
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"fmt"
 	"net"
+	"os"
+	"path/filepath"
 	"sync"
 	"time"
 
 	"golang.org/x/crypto/ssh"
+	"golang.org/x/crypto/ssh/knownhosts"
 )
 
 // Credential holds SSH authentication info.
@@ -42,21 +46,32 @@ type StreamCallback func(host string, chunk []byte)
 
 // Pool manages SSH connections for reuse.
 type Pool struct {
-	mu          sync.RWMutex
-	connections map[string]*ssh.Client
-	maxIdle     time.Duration
+	mu              sync.RWMutex
+	connections     map[string]*ssh.Client
+	cur             int
+	maxConns        int
+	maxIdle         time.Duration
+	hostKeyCallback ssh.HostKeyCallback
 }
 
 // NewPool creates a new SSH connection pool.
+// maxConns caps the number of simultaneously open SSH connections so a
+// bulk job against many distinct hosts cannot exhaust file descriptors /
+// sockets on the Core node (see report issue 6.1).
 func NewPool() *Pool {
 	return &Pool{
-		connections: make(map[string]*ssh.Client),
-		maxIdle:     5 * time.Minute,
+		connections:     make(map[string]*ssh.Client),
+		maxIdle:         5 * time.Minute,
+		maxConns:        64,
+		hostKeyCallback: DefaultHostKeyCallback(),
 	}
 }
 
+// cacheKey 生成连接池缓存键。
+// 注意: 不能把明文密码放进 key (会泄露到内存/日志), 这里对密码做 SHA256 哈希。
 func (p *Pool) cacheKey(host string, port int, cred Credential) string {
-	return fmt.Sprintf("%s:%d:%s:%s", host, port, cred.User, cred.Password)
+	pwHash := sha256.Sum256([]byte(cred.Password))
+	return fmt.Sprintf("%s:%d:%s:%x", host, port, cred.User, pwHash)
 }
 
 func (p *Pool) get(host string, port int, cred Credential) (*ssh.Client, bool) {
@@ -78,7 +93,10 @@ func (p *Pool) remove(host string, port int, cred Credential) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	key := p.cacheKey(host, port, cred)
-	delete(p.connections, key)
+	if _, ok := p.connections[key]; ok {
+		delete(p.connections, key)
+		p.cur--
+	}
 }
 
 // GetClient returns an SSH client from pool or creates a new one.
@@ -92,10 +110,19 @@ func (p *Pool) GetClient(host string, port int, cred Credential, timeout time.Du
 		client.Close()
 	}
 
+	// Enforce the connection cap before opening a new SSH connection.
+	p.mu.Lock()
+	if p.cur >= p.maxConns {
+		p.mu.Unlock()
+		return nil, fmt.Errorf("ssh connection pool exhausted (max %d)", p.maxConns)
+	}
+	p.cur++
+	p.mu.Unlock()
+
 	config := &ssh.ClientConfig{
 		User:            cred.User,
 		Auth:            []ssh.AuthMethod{},
-		HostKeyCallback: ssh.InsecureIgnoreHostKey(),
+		HostKeyCallback: p.hostKeyCallback,
 		Timeout:         timeout,
 	}
 
@@ -105,6 +132,9 @@ func (p *Pool) GetClient(host string, port int, cred Credential, timeout time.Du
 			// try with password as passphrase
 			signer, err = ssh.ParsePrivateKeyWithPassphrase([]byte(cred.Key), []byte(cred.Password))
 			if err != nil {
+				p.mu.Lock()
+				p.cur--
+				p.mu.Unlock()
 				return nil, fmt.Errorf("parse private key: %w", err)
 			}
 		}
@@ -115,12 +145,18 @@ func (p *Pool) GetClient(host string, port int, cred Credential, timeout time.Du
 	}
 
 	if len(config.Auth) == 0 {
+		p.mu.Lock()
+		p.cur--
+		p.mu.Unlock()
 		return nil, fmt.Errorf("no authentication method provided")
 	}
 
 	addr := net.JoinHostPort(host, fmt.Sprintf("%d", port))
 	client, err := ssh.Dial("tcp", addr, config)
 	if err != nil {
+		p.mu.Lock()
+		p.cur--
+		p.mu.Unlock()
 		return nil, fmt.Errorf("ssh dial %s: %w", addr, err)
 	}
 
@@ -136,6 +172,54 @@ func (p *Pool) CloseAll() {
 		client.Close()
 		delete(p.connections, key)
 	}
+	p.cur = 0
+}
+
+// DefaultHostKeyCallback 返回安全的主机密钥校验回调 (TOFU 模式)。
+// 首次连接的主机会被记录到 ~/.ssh/known_hosts; 之后若指纹变化则拒绝 (MITM 防护)。
+// 这比 ssh.InsecureIgnoreHostKey() 安全得多。导出供 agentless (SSH) 通道复用。
+func DefaultHostKeyCallback() ssh.HostKeyCallback {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return func(string, net.Addr, ssh.PublicKey) error {
+			return fmt.Errorf("cannot determine home dir for known_hosts")
+		}
+	}
+	khPath := filepath.Join(home, ".ssh", "known_hosts")
+	return tofuHostKeyCallback(khPath)
+}
+
+func tofuHostKeyCallback(khPath string) ssh.HostKeyCallback {
+	return func(hostname string, remote net.Addr, key ssh.PublicKey) error {
+		if cb, err := knownhosts.New(khPath); err == nil {
+			if verr := cb(hostname, remote, key); verr == nil {
+				return nil // 已知且匹配
+			} else if _, ok := verr.(*knownhosts.KeyError); ok {
+				// 未知主机 (或首次): 记录指纹 (TOFU)
+				return appendKnownHost(khPath, hostname, remote, key)
+			} else {
+				return verr
+			}
+		}
+		// known_hosts 不存在: 首次运行, 记录
+		return appendKnownHost(khPath, hostname, remote, key)
+	}
+}
+
+func appendKnownHost(khPath, hostname string, remote net.Addr, key ssh.PublicKey) error {
+	if err := os.MkdirAll(filepath.Dir(khPath), 0o700); err != nil {
+		return fmt.Errorf("create ssh dir: %w", err)
+	}
+	f, err := os.OpenFile(khPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
+	if err != nil {
+		return fmt.Errorf("open known_hosts: %w", err)
+	}
+	defer f.Close()
+	line := knownhosts.Line([]string{hostname}, key)
+	if _, err := f.WriteString(line + "\n"); err != nil {
+		return fmt.Errorf("write known_hosts: %w", err)
+	}
+	return nil
 }
 
 // Executor handles remote command execution via SSH.

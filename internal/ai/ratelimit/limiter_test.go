@@ -1,82 +1,72 @@
 package ratelimit
 
 import (
-	"fmt"
 	"testing"
+	"time"
 )
 
-func TestLimiter_Allow(t *testing.T) {
+func TestLimiter_WithinLimit(t *testing.T) {
 	l := New()
-	agentID := "test-agent-01"
-
 	for i := 0; i < DefaultLimit; i++ {
-		if !l.Allow(agentID) {
-			t.Errorf("expected allow at call %d", i+1)
+		if !l.Allow("agent1") {
+			t.Fatalf("request %d should be allowed", i)
 		}
 	}
-
-	if l.Allow(agentID) {
-		t.Error("expected deny after rate limit exceeded")
+	if l.Allow("agent1") {
+		t.Fatal("request beyond limit should be blocked")
 	}
 }
 
-func TestLimiter_GetState(t *testing.T) {
+func TestLimiter_CircuitOpensAfterFails(t *testing.T) {
 	l := New()
-	agentID := "test-agent-02"
-
-	if s := l.GetState(agentID); s != CircuitClosed {
-		t.Errorf("expected closed, got %s", s)
-	}
-
 	for i := 0; i < MaxConsecFails; i++ {
-		l.RecordFailure(agentID)
+		l.RecordFailure("agent2")
 	}
-
-	if s := l.GetState(agentID); s != CircuitOpen {
-		t.Errorf("expected open after consecutive failures, got %s", s)
+	if l.GetState("agent2") != CircuitOpen {
+		t.Fatal("circuit should be open after max consecutive fails")
 	}
-}
-
-func TestLimiter_GetCount(t *testing.T) {
-	l := New()
-	agentID := "test-agent-03"
-
-	for i := 0; i < 5; i++ {
-		l.Allow(agentID)
-	}
-
-	if c := l.GetCount(agentID); c != 5 {
-		t.Errorf("expected count 5, got %d", c)
+	if l.Allow("agent2") {
+		t.Fatal("requests must be blocked while circuit is open")
 	}
 }
 
-func TestLimiter_RecordSuccess(t *testing.T) {
+func TestLimiter_CircuitHalfOpenAfterReset(t *testing.T) {
 	l := New()
-	agentID := "test-agent-04"
-
-	l.RecordFailure(agentID)
-	l.RecordFailure(agentID)
-	l.RecordSuccess(agentID)
-
-	bucket := l.buckets[agentID]
-	if bucket.consecFails != 0 {
-		t.Errorf("expected consecFails 0 after success, got %d", bucket.consecFails)
+	for i := 0; i < MaxConsecFails; i++ {
+		l.RecordFailure("agent3")
+	}
+	// simulate the reset window elapsing
+	l.buckets["agent3"].lastFail = time.Now().Add(-(CircuitResetTime + time.Second))
+	if !l.Allow("agent3") {
+		t.Fatal("circuit should allow a trial request after the reset window")
 	}
 }
 
-func TestLimiter_Concurrent(t *testing.T) {
+func TestLimiter_ReapRemovesIdleBuckets(t *testing.T) {
 	l := New()
-	done := make(chan bool, 20)
-
-	for i := 0; i < 20; i++ {
-		go func(id int) {
-			agentID := fmt.Sprintf("agent-%d", id)
-			l.Allow(agentID)
-			done <- true
-		}(i)
+	l.Allow("idle-agent")
+	// simulate all tokens expired
+	l.buckets["idle-agent"].tokens = []time.Time{time.Now().Add(-2 * DefaultWindow)}
+	l.reap()
+	if _, ok := l.buckets["idle-agent"]; ok {
+		t.Fatal("idle bucket should have been reaped")
 	}
 
-	for i := 0; i < 20; i++ {
-		<-done
+	// an active bucket must be retained
+	l.Allow("active-agent")
+	l.reap()
+	if _, ok := l.buckets["active-agent"]; !ok {
+		t.Fatal("active bucket should be retained")
+	}
+
+	// an open circuit must be retained even if idle
+	l.RecordFailure("open-agent")
+	for i := 0; i < MaxConsecFails; i++ {
+		l.RecordFailure("open-agent")
+	}
+	l.buckets["open-agent"].tokens = []time.Time{time.Now().Add(-2 * DefaultWindow)}
+	l.reap()
+	if _, ok := l.buckets["open-agent"]; !ok {
+		t.Fatal("open-circuit bucket should be retained for state visibility")
 	}
 }

@@ -14,6 +14,8 @@ import (
 
 type Server struct {
 	addr      string
+	authToken string
+	insecure  bool
 	listener  net.Listener
 	proxies   sync.Map
 	sessions  sync.Map
@@ -28,8 +30,8 @@ type ProxySession struct {
 	Capabilities []string
 }
 
-func NewServer(addr string) *Server {
-	return &Server{addr: addr}
+func NewServer(addr, authToken string, insecure bool) *Server {
+	return &Server{addr: addr, authToken: authToken, insecure: insecure}
 }
 
 func (s *Server) OnCommand(handler func(ctx context.Context, proxyID string, cmd *CommandRequest) *CommandResponse) {
@@ -81,6 +83,15 @@ func (s *Server) handleConnection(ctx context.Context, raw net.Conn) {
 	var reg RegisterRequest
 	if err := json.Unmarshal(msg.Payload, &reg); err != nil {
 		slog.Error("invalid register payload", "error", err)
+		return
+	}
+
+	if !s.verifyToken(reg.Token) {
+		slog.Warn("proxy registration rejected: invalid or missing auth token",
+			"proxy_id", reg.ProxyID, "remote", raw.RemoteAddr())
+		resp := RegisterResponse{Accepted: false, Error: "authentication required"}
+		respData, _ := MarshalMessage(MsgRegisterResp, resp, reg.ProxyID, msg.TraceID)
+		conn.SendRaw(respData)
 		return
 	}
 
@@ -181,4 +192,20 @@ func (c *Conn) SendRaw(data []byte) error {
 		return fmt.Errorf("write payload: %w", err)
 	}
 	return nil
+}
+
+// verifyToken 校验 Proxy 注册时携带的共享密钥。
+// 安全默认 (fail-closed): 未配置密钥时拒绝所有注册; 仅 Insecure 模式可跳过(本地测试)。
+func (s *Server) verifyToken(token string) bool {
+	if s.insecure {
+		if s.authToken != "" && token != s.authToken {
+			slog.Warn("tunnel auth: insecure mode enabled, token mismatch allowed")
+		}
+		return true
+	}
+	if s.authToken == "" {
+		slog.Error("tunnel auth: AUTH_SECRET not configured - refusing proxy registration")
+		return false
+	}
+	return token == s.authToken
 }
