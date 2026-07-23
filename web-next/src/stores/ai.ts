@@ -16,7 +16,7 @@ interface AIState {
   createAgent: (data: any) => Promise<boolean>
   executePlan: (data: any) => Promise<boolean>
   chat: (prompt: string, history?: { role: string; content: string }[]) => Promise<string | null>
-  streamChat: (prompt: string, onToken: (t: string) => void, onDone: () => void, history?: { role: string; content: string }[]) => Promise<void>
+  streamChat: (prompt: string, onToken: (t: string) => void, onDone: () => void, history?: { role: string; content: string }[], agentId?: string) => Promise<void>
   loadConversations: (agentId?: string) => Promise<any[]>
   saveConversation: (conv: any) => Promise<any | null>
 }
@@ -87,12 +87,14 @@ export const useAIStore = create<AIState>((set, get) => ({
       return null
     }
   },
-  streamChat: async (prompt, onToken, onDone, history = []) => {
+  streamChat: async (prompt, onToken, onDone, history = [], agentId) => {
     try {
+      const body: any = { prompt, history, stream: true }
+      if (agentId) body.agent_id = agentId
       const resp = await fetch(`${window.location.origin}/api/v1/ai/chat`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ prompt, history, stream: true }),
+        body: JSON.stringify(body),
       })
       if (!resp.ok) {
         toast.error(`AI 响应失败: ${resp.status}`)

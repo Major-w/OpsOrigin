@@ -47,16 +47,45 @@ const QUICK_ACTIONS = [
 ]
 
 export default function AIPage() {
-  const { agents, fetchAgents, streamChat } = useAIStore()
+  const { agents, fetchAgents, streamChat, loadConversations } = useAIStore()
   const { theme } = useThemeStore()
   const [messages, setMessages] = useState<Message[]>([
     { id: '0', role: 'assistant', content: '你好！我是 OpsOrigin AI 助手，可以帮你完成运维任务。你可以直接告诉我需要什么，或者选择下方的快捷操作。', timestamp: new Date() }
   ])
   const [input, setInput] = useState('')
   const [loading, setLoading] = useState(false)
+  const [selectedAgent, setSelectedAgent] = useState<any>(null)
+  const [showHistory, setShowHistory] = useState(false)
+  const [conversations, setConversations] = useState<any[]>([])
   const messagesEndRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => { fetchAgents() }, [fetchAgents])
+
+  const handleOpenHistory = async () => {
+    if (!showHistory) {
+      const convs = await loadConversations(selectedAgent?.id)
+      setConversations(convs)
+    }
+    setShowHistory(!showHistory)
+  }
+
+  const handleLoadConversation = async (id: string) => {
+    try {
+      const resp = await fetch(`${window.location.origin}/api/v1/ai/conversations/${id}`)
+      if (!resp.ok) return
+      const conv = await resp.json()
+      if (conv?.messages) {
+        const msgs: Message[] = conv.messages.map((m: any, i: number) => ({
+          id: `${id}-${i}`,
+          role: m.role,
+          content: m.content,
+          timestamp: new Date(),
+        }))
+        setMessages(msgs)
+      }
+      setShowHistory(false)
+    } catch {}
+  }
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
@@ -94,7 +123,7 @@ export default function AIPage() {
       setMessages(prev => prev.map(m => m.id === aiId ? { ...m, content: full } : m))
     }, () => {
       setLoading(false)
-    }, history)
+    }, history, selectedAgent?.id)
   }
 
   return (
@@ -108,7 +137,7 @@ export default function AIPage() {
           <p className="text-sm text-muted-foreground">智能运维助手，帮你高效完成运维任务</p>
         </div>
         <div className="flex gap-2">
-          <Button variant="outline" size="sm"><History className="h-4 w-4" />历史</Button>
+          <Button variant="outline" size="sm" onClick={handleOpenHistory}><History className="h-4 w-4" />{showHistory ? '返回' : '历史'}</Button>
           <Button variant="outline" size="sm"><Settings className="h-4 w-4" />设置</Button>
         </div>
       </div>
@@ -116,6 +145,26 @@ export default function AIPage() {
       <div className="flex-1 flex gap-4 min-h-0">
         <div className="flex-1 flex flex-col border rounded-lg overflow-hidden">
           <div className="flex-1 overflow-y-auto p-4 space-y-4">
+            {showHistory ? (
+              <div className="space-y-2">
+                <h3 className="font-medium text-sm mb-3">对话历史</h3>
+                {conversations.length === 0 ? (
+                  <p className="text-xs text-muted-foreground">暂无对话记录</p>
+                ) : (
+                  conversations.map(c => (
+                    <button
+                      key={c.id}
+                      onClick={() => handleLoadConversation(c.id)}
+                      className="w-full text-left p-3 rounded-lg bg-gray-50 dark:bg-gray-800 hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors"
+                    >
+                      <p className="text-sm font-medium truncate">{c.title || '新对话'}</p>
+                      <p className="text-xs text-muted-foreground mt-0.5">{new Date(c.updated_at || c.UpdatedAt).toLocaleString('zh-CN')}</p>
+                    </button>
+                  ))
+                )}
+              </div>
+            ) : (
+              <>
             {messages.map(msg => (
               <div key={msg.id} className={cn("flex gap-3", msg.role === 'user' ? "justify-end" : "justify-start")}>
                 {msg.role === 'assistant' && (
@@ -152,6 +201,8 @@ export default function AIPage() {
               </div>
             )}
             <div ref={messagesEndRef} />
+            </>
+          )}
           </div>
 
           <div className="border-t p-4">
@@ -201,12 +252,21 @@ export default function AIPage() {
               {agents.length === 0 ? (
                 <p className="text-xs text-muted-foreground">暂无可用 Agent</p>
               ) : (
-                <div className="space-y-2">
-                  {agents.slice(0, 3).map((a: any) => (
-                    <div key={a.id} className="flex items-center justify-between">
-                      <span className="text-xs truncate">{a.name}</span>
-                      <Badge variant={a.status === 'active' ? 'default' : 'secondary'} className="text-[10px]">{a.status}</Badge>
-                    </div>
+                <div className="space-y-1">
+                  {agents.map((a: any) => (
+                    <button
+                      key={a.id}
+                      onClick={() => setSelectedAgent(selectedAgent?.id === a.id ? null : a)}
+                      className={cn(
+                        "w-full flex items-center justify-between px-2 py-1.5 rounded text-xs text-left transition-colors",
+                        selectedAgent?.id === a.id
+                          ? "bg-emerald-100 dark:bg-emerald-500/20 text-emerald-700 dark:text-emerald-300"
+                          : "hover:bg-gray-100 dark:hover:bg-gray-800"
+                      )}
+                    >
+                      <span className="truncate flex-1">{a.name}</span>
+                      <Badge variant={a.status === 'active' ? 'default' : 'secondary'} className="text-[10px] ml-1 shrink-0">{a.status}</Badge>
+                    </button>
                   ))}
                 </div>
               )}
