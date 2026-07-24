@@ -225,6 +225,20 @@ func main() {
 	agentSvc.SetFileStoreDir(cfg.FileStore.Dir)
 	agentSvc.SetFileTokenSecret(cfg.FileStore.TokenSecret)
 	agentSvc.SetServerBaseURL(cfg.Core.PublicURL)
+
+	// T11: 创建并启动任务下发队列
+	if db != nil {
+		taskQueue := agentmgr.NewTaskQueue(db, nil, cfg.TaskQueue.QueueSize, cfg.TaskQueue.Workers)
+		agentSvc.SetTaskQueue(taskQueue)
+		go taskQueue.Start(ctx)
+	}
+
+	// T12: 创建滚动升级管理器
+	if db != nil {
+		upgradeMgr := agentmgr.NewUpgradeManager(db)
+		agentSvc.SetUpgradeManager(upgradeMgr)
+	}
+
 	server.RegisterService(agentSvc)
 
 	// 初始化沙箱环境:在 Server 端自动注册一个本地 Agent,用于脚本调试

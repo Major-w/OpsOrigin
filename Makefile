@@ -5,7 +5,7 @@ GOPROXY := https://goproxy.cn,direct
 
 BINDIR := bin
 
-.PHONY: all build clean test lint fmt tidy
+.PHONY: all build clean test lint fmt tidy generate
 
 all: build
 
@@ -32,6 +32,9 @@ fmt:
 tidy:
 	GOPROXY=$(GOPROXY) $(GO) mod tidy
 	GOPROXY=$(GOPROXY) $(GO) work sync
+
+generate:
+	$(GO) generate ./internal/ent
 
 clean:
 	rm -rf $(BINDIR) core proxy agent

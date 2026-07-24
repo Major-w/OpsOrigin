@@ -14,6 +14,7 @@ import (
 	"github.com/google/uuid"
 
 	pb "github.com/opsorigin/core/api/proto"
+	"github.com/opsorigin/core/internal/monitor/metrics"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials"
@@ -125,6 +126,9 @@ func (s *GRPCServer) Connect(stream grpc.BidiStreamingServer[pb.TunnelMessage, p
 	s.proxies.Store(reg.ProxyId, session)
 	s.sessions.Store(sessionID, session)
 
+	// T13: gRPC 连接指标打点
+	metrics.AgentmgrGrpcConnections.WithLabelValues(reg.ProxyId, "default").Inc()
+
 	slog.Info("proxy registered via gRPC",
 		"proxy_id", reg.ProxyId,
 		"cert_cn", cn,
@@ -163,6 +167,11 @@ func (s *GRPCServer) Connect(stream grpc.BidiStreamingServer[pb.TunnelMessage, p
 
 	s.proxies.Delete(reg.ProxyId)
 	s.sessions.Delete(sessionID)
+
+	// T13: gRPC 连接断开打点
+	metrics.AgentmgrGrpcConnections.WithLabelValues(reg.ProxyId, "default").Dec()
+
+	slog.Info("proxy disconnected via gRPC", "proxy_id", reg.ProxyId)
 	slog.Info("proxy disconnected via gRPC", "proxy_id", reg.ProxyId)
 	return nil
 }

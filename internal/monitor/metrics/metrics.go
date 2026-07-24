@@ -57,8 +57,3 @@ func init() {
 func NewMetricsHandler() http.Handler {
 	return promhttp.HandlerFor(Registry, promhttp.HandlerOpts{})
 }
-
-// InstrumentHandler 包装一个 http.Handler，自动记录 HTTP 请求持续时间。
-func InstrumentHandler(handlerName string, next http.Handler) http.Handler {
-	return promhttp.InstrumentHandlerDuration(HttpRequestDuration.MustCurryWith(prometheus.Labels{"handler": handlerName}), next)
-}

@@ -3,6 +3,7 @@ package agentmgr
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -585,4 +586,12 @@ func entRowToProxy(row *ent.AgentProxy) *ProxyInfo {
 		p.LastSeen = &row.LastSeen
 	}
 	return p
+}
+
+func toJSON(v any) []byte {
+	if v == nil {
+		return []byte("null")
+	}
+	b, _ := json.Marshal(v)
+	return b
 }

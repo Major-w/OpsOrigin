@@ -381,6 +381,12 @@ type Service struct {
 	sandboxExec     *sandbox.Executor  // 本地沙箱执行器(勾选"沙箱执行"时使用)
 	remoteExec      *remoteexec.Service // SSH 远程执行服务(agentless 主机命令执行)
 
+	// T11: 任务下发队列
+	taskQueue *TaskQueue
+
+	// T12: 滚动升级通道
+	upgradeMgr *UpgradeManager
+
 	// §6 命令白名单:非 nil 时所有经 Server 直接下发的命令(SSH 直连 / 经 Proxy / 沙箱)
 	// 执行前均须命中白名单,否则拒绝。由上层从 command_whitelist 表加载后通过 SetWhitelist 注入。
 	whitelist       *command.Whitelist
@@ -417,6 +423,16 @@ func NewService(db *sql.DB, rdb *redis.Client, entClient *ent.Client) *Service {
 // SetEntClient 注入 ent Client（用于外部注入方式）。
 func (s *Service) SetEntClient(entClient *ent.Client) {
 	s.entClient = entClient
+}
+
+// SetTaskQueue 注入 TaskQueue（T11）。
+func (s *Service) SetTaskQueue(tq *TaskQueue) {
+	s.taskQueue = tq
+}
+
+// SetUpgradeManager 注入 UpgradeManager（T12）。
+func (s *Service) SetUpgradeManager(um *UpgradeManager) {
+	s.upgradeMgr = um
 }
 
 // SetTLSEnable 设置是否启用 HTTPS(影响安装脚本的 scheme)。
@@ -1127,11 +1143,21 @@ func (s *Service) handleHeartbeat(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{
+
+	resp := map[string]any{
 		"status":            "ok",
 		"breaker_open":      false,
 		"restart_requested": false,
-	})
+	}
+
+	// T12: 心跳响应中注入升级指令
+	if s.upgradeMgr != nil {
+		if upgrade := s.upgradeMgr.CheckEligibility(id); upgrade != nil {
+			resp["upgrade"] = upgrade
+		}
+	}
+
+	writeJSON(w, http.StatusOK, resp)
 }
 
 func (s *Service) handleBatchInstall(w http.ResponseWriter, r *http.Request) {

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/redis/go-redis/v9"
+	"github.com/opsorigin/core/internal/monitor/metrics"
 )
 
 // HeartbeatTTL is how long a heartbeat key lives in Redis without refresh.
@@ -42,6 +43,9 @@ func NewHeartbeatWriter(rdb *redis.Client, store Store) *HeartbeatWriter {
 // Record writes agent heartbeat data to Redis with TTL.
 // Falls back to store.Heartbeat when Redis is unavailable.
 func (hw *HeartbeatWriter) Record(ctx context.Context, id, tenantID string, req *HeartbeatRequest) error {
+	// T13: 心跳指标打点
+	metrics.AgentmgrHeartbeatTotal.WithLabelValues(id, tenantID).Inc()
+
 	if hw.rdb == nil {
 		return hw.store.Heartbeat(ctx, id, tenantID, req)
 	}
