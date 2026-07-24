@@ -1,0 +1,21 @@
+services:
+  redis:
+    image: redis:7-alpine
+    ports: ["6379:6379"]
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: opsorigin
+      POSTGRES_PASSWORD: opsorigin
+      POSTGRES_DB: opsorigin
+    ports: ["5432:5432"]
+  core:
+    build: .
+    ports: ["8080:8080", "5588:5588"]
+    environment:
+      OPSNEXUS_REDIS_ADDR: redis:6379
+      OPSNEXUS_REDIS_POOL_SIZE: "20"
+      OPSNEXUS_POSTGRES_DSN: postgres://opsorigin:opsorigin@postgres:5432/opsorigin?sslmode=disable
+      OPSNEXUS_CORE_PORT: "8080"
+      OPSNEXUS_AGENT_WS_PORT: "5588"
+    depends_on: [redis, postgres]

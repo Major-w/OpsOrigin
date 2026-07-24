@@ -14,9 +14,14 @@ type Client struct {
 	client *redis.Client
 }
 
-func NewClient(addr string) (*Client, error) {
+func NewClient(addr string, poolSize ...int) (*Client, error) {
 	if addr == "" {
 		return nil, fmt.Errorf("redis addr is empty")
+	}
+
+	ps := 20
+	if len(poolSize) > 0 && poolSize[0] > 0 {
+		ps = poolSize[0]
 	}
 
 	opts := &redis.Options{
@@ -24,7 +29,7 @@ func NewClient(addr string) (*Client, error) {
 		DialTimeout:     2 * time.Second,
 		ReadTimeout:     2 * time.Second,
 		WriteTimeout:    2 * time.Second,
-		PoolSize:        5,
+		PoolSize:        ps,
 		MinIdleConns:    1,
 		MaxRetries:      1,
 		MinRetryBackoff: 100 * time.Millisecond,

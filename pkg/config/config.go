@@ -16,9 +16,10 @@ type Config struct {
 	Outbox    OutboxConfig  `json:"outbox"`
 	CMDB      CMDBConfig    `json:"cmdb"`
 	Auth      AuthConfig    `json:"auth"`
-	LLM       LLMConfig     `json:"llm"`
-	RedisAddr string        `json:"redis_addr"`
-	LDAP      LDAPConfig    `json:"ldap"`
+	LLM           LLMConfig     `json:"llm"`
+	RedisAddr     string        `json:"redis_addr"`
+	RedisPoolSize int           `json:"redis_pool_size"`
+	LDAP          LDAPConfig    `json:"ldap"`
 	SSO       SSOConfig     `json:"sso"`
 	Tunnel    TunnelConfig  `json:"tunnel"`
 	FileStore FileStoreConfig `json:"file_store"` // §5 文件分发中心存储配置
@@ -148,7 +149,8 @@ func Load() (*Config, error) {
 			BaseURL: envStr("OPSNEXUS_LLM_BASE_URL", "https://api.deepseek.com"),
 			Timeout: envInt("OPSNEXUS_LLM_TIMEOUT", 60),
 		},
-		RedisAddr: envStr("OPSNEXUS_REDIS_ADDR", "localhost:6379"),
+		RedisAddr:     envStr("OPSNEXUS_REDIS_ADDR", "localhost:6379"),
+		RedisPoolSize: envInt("OPSNEXUS_REDIS_POOL_SIZE", 20),
 		LDAP: LDAPConfig{
 			Enabled:    envBool("OPSNEXUS_LDAP_ENABLED", false),
 			Addr:       envStr("OPSNEXUS_LDAP_ADDR", "ldap://localhost:389"),

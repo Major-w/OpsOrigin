@@ -85,7 +85,7 @@ func main() {
 	}
 
 	var rdbClient *redisclient.Client
-	rdbClient, err = redisclient.NewClient(cfg.RedisAddr)
+	rdbClient, err = redisclient.NewClient(cfg.RedisAddr, cfg.RedisPoolSize)
 	if err != nil {
 		slog.Warn("redis not available, running without distributed rate limiting / stream subscription", "error", err)
 		rdbClient = nil
