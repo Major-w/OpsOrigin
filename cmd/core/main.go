@@ -172,7 +172,7 @@ func main() {
 		}
 	})
 
-	agentSvc := agentmgr.NewService(db)
+	agentSvc := agentmgr.NewService(db, rdb)
 	// 设置 TLS 状态(影响安装脚本中下载链接的 scheme)
 	if cfg.TLS.Enabled {
 		agentSvc.SetTLSEnable(true)

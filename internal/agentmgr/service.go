@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/redis/go-redis/v9"
 	"github.com/opsorigin/core/internal/command"
 	"github.com/opsorigin/core/internal/filelimit"
 	"github.com/opsorigin/core/internal/remoteexec"
@@ -350,6 +351,7 @@ func (s *MemoryStore) MarkOfflineAgents(ctx context.Context, tenantID string, th
 // Service 是 agent 管理服务。
 type Service struct {
 	store           Store
+	hbWriter        *HeartbeatWriter    // Redis heartbeat writer (nil if Redis unavailable)
 	circuitBreakers map[string]*CircuitBreakerConfig
 	cbMu            sync.Mutex
 	stopCh          chan struct{}
@@ -369,18 +371,23 @@ type Service struct {
 	serverBaseURL   string              // Server 对外基址(如 http://host:8080),用于拓扑感知下发直连下载地址
 }
 
-func NewService(db *sql.DB) *Service {
+func NewService(db *sql.DB, rdb *redis.Client) *Service {
 	var st Store = NewMemoryStore()
 	if db != nil {
 		st = newPGStore(db)
 	}
 	s := &Service{
 		store:           st,
+		hbWriter:        NewHeartbeatWriter(rdb, st),
 		circuitBreakers: make(map[string]*CircuitBreakerConfig),
 		stopCh:          make(chan struct{}),
 		remoteExec:      remoteexec.NewService(),
 		sandboxExec:     sandbox.NewExecutor(),
 		fileLimiter:     filelimit.New(0, 0), // 0 ⇒ 使用 filelimit 包默认值
+	}
+	// Start Redis→PG heartbeat sync worker
+	if rdb != nil {
+		go s.hbWriter.StartSync(context.Background())
 	}
 	go s.offlineDetector()
 	return s
@@ -489,6 +496,8 @@ func (s *Service) GetSandboxID() string {
 func (s *Service) Close() { close(s.stopCh) }
 
 // offlineDetector 周期性地将长时间未心跳的 agent 标记为离线。
+// Redis 模式下：心跳 key TTL 到期自动消失=离线，此处只做 PG 批量同步。
+// 无 Redis 时：回退到 store.MarkOfflineAgents 基于 last_seen 时间戳判断。
 func (s *Service) offlineDetector() {
 	ticker := time.NewTicker(30 * time.Second)
 	defer ticker.Stop()
@@ -498,6 +507,10 @@ func (s *Service) offlineDetector() {
 			return
 		case <-ticker.C:
 			ctx := context.Background()
+			if s.hbWriter != nil && s.hbWriter.rdb != nil {
+				// Redis 模式：自动过期即离线，不需要主动标记
+				continue
+			}
 			n, _ := s.store.MarkOfflineAgents(ctx, "default", OfflineThreshold)
 			if n > 0 {
 				slog.Info("agents marked offline", "count", n)
@@ -983,15 +996,30 @@ func (s *Service) handleList(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	// Redis 模式下批量查在线状态，避免逐条 EXISTS N+1
+	var onlineSet map[string]bool
+	if s.hbWriter != nil && s.hbWriter.rdb != nil {
+		ids := make([]string, 0, len(hosts))
+		for _, h := range hosts {
+			ids = append(ids, h.ID)
+		}
+		onlineSet = s.hbWriter.BulkOnlineStatus(r.Context(), ids)
+	}
 	now := time.Now()
 	result := make([]*AgentHost, 0, len(hosts))
 	for _, h := range hosts {
 		if agentType != "" && string(h.Type) != agentType {
 			continue
 		}
-		// 实时状态判定:超过阈值未心跳则视为离线(只改返回值,不修改 DB)
 		copyHost := *h
-		if copyHost.LastHeartbeat != nil && now.Sub(*copyHost.LastHeartbeat) > OfflineThreshold {
+		// 优先 Redis 判定在线状态; 回退到 last_seen 时间戳
+		if onlineSet != nil {
+			if !onlineSet[h.ID] {
+				copyHost.Status = AgentStatusOffline
+			} else {
+				copyHost.Status = AgentStatusOnline
+			}
+		} else if copyHost.LastHeartbeat != nil && now.Sub(*copyHost.LastHeartbeat) > OfflineThreshold {
 			copyHost.Status = AgentStatusOffline
 		}
 		result = append(result, &copyHost)
@@ -1068,7 +1096,7 @@ func (s *Service) handleHeartbeat(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
-	if err := s.store.Heartbeat(r.Context(), id, tenantID, &req); err != nil {
+	if err := s.hbWriter.Record(r.Context(), id, tenantID, &req); err != nil {
 		slog.Warn("heartbeat failed", "error", err)
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
