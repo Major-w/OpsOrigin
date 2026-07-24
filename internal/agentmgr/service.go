@@ -31,6 +31,7 @@ import (
 type Store interface {
 	// Agent CRUD
 	Register(ctx context.Context, host *AgentHost) error
+	GetByFingerprint(ctx context.Context, fp, tenantID string) (*AgentHost, error)
 	Get(ctx context.Context, id, tenantID string) (*AgentHost, error)
 	List(ctx context.Context, tenantID string) ([]*AgentHost, error)
 	Update(ctx context.Context, host *AgentHost) error
@@ -69,7 +70,15 @@ func NewMemoryStore() *MemoryStore {
 func (s *MemoryStore) Register(ctx context.Context, host *AgentHost) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	host.ID = uuid.New().String()
+
+	host.Fingerprint = GenerateFingerprint(host.TenantID, host.Address)
+	// 去重：按指纹查找已有主机，复用 ID
+	if existing := s.lookupByFingerprint(host.Fingerprint); existing != nil {
+		host.ID = existing.ID
+		host.FirstSeen = existing.FirstSeen
+		host.CreatedAt = existing.CreatedAt
+	}
+	if host.ID == "" { host.ID = uuid.New().String() }
 	now := time.Now()
 	host.FirstSeen = &now
 	host.CreatedAt = now
@@ -82,6 +91,20 @@ func (s *MemoryStore) Register(ctx context.Context, host *AgentHost) error {
 	}
 	host.Status = AgentStatusUnknown
 	s.hosts[host.ID] = host
+	return nil
+}
+
+func (s *MemoryStore) GetByFingerprint(ctx context.Context, fp, tenantID string) (*AgentHost, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if h := s.lookupByFingerprint(fp); h != nil && h.TenantID == tenantID { return h, nil }
+	return nil, nil
+}
+
+func (s *MemoryStore) lookupByFingerprint(fp string) *AgentHost {
+	for _, h := range s.hosts {
+		if h.Fingerprint == fp { return h }
+	}
 	return nil
 }
 

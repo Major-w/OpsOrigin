@@ -23,7 +23,8 @@ func newPGStore(db *sql.DB) *pgStore {
 func (s *pgStore) init(ctx context.Context) {
 	stmts := []string{
 		`CREATE TABLE IF NOT EXISTS agent_hosts (
-			id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, name TEXT, type TEXT,
+			id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, fingerprint TEXT,
+			name TEXT, type TEXT,
 			address TEXT, port INTEGER, os_type TEXT, os_version TEXT,
 			auth_type TEXT, ssh_user TEXT, status TEXT DEFAULT 'offline',
 			proxy_id TEXT, install_method TEXT, version TEXT, cpu TEXT, memory TEXT,
@@ -68,6 +69,13 @@ func nullTime(t *time.Time) sql.NullTime {
 // ——— Agent CRUD ———
 
 func (s *pgStore) Register(ctx context.Context, h *AgentHost) error {
+	h.Fingerprint = GenerateFingerprint(h.TenantID, h.Address)
+	// 去重：按指纹查找已有记录，复用 ID
+	if existing, _ := s.GetByFingerprint(ctx, h.Fingerprint, h.TenantID); existing != nil {
+		h.ID = existing.ID
+		if h.FirstSeen == nil { h.FirstSeen = existing.FirstSeen }
+		if h.CreatedAt.IsZero() { h.CreatedAt = existing.CreatedAt }
+	}
 	if h.ID == "" { h.ID = uuid.New().String() }
 	if h.TenantID == "" { h.TenantID = "default" }
 	now := time.Now()
@@ -75,11 +83,31 @@ func (s *pgStore) Register(ctx context.Context, h *AgentHost) error {
 	h.UpdatedAt = now
 	if h.Status == "" { h.Status = "offline" }
 	_, err := s.db.ExecContext(ctx,
-		`INSERT INTO agent_hosts(id,tenant_id,name,type,address,port,os_type,os_version,auth_type,ssh_user,status,proxy_id,install_method,version,cpu,memory,disk,hostname,labels,environment,capabilities,ips,last_seen,last_heartbeat,first_seen,created_at,updated_at)
-		VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27)
-		ON CONFLICT(id) DO UPDATE SET name=$3,type=$4,address=$5,port=$6,os_type=$7,os_version=$8,auth_type=$9,ssh_user=$10,status=$11,proxy_id=$12,install_method=$13,version=$14,cpu=$15,memory=$16,disk=$17,hostname=$18,labels=$19,environment=$20,capabilities=$21,ips=$22,last_seen=$23,last_heartbeat=$24,updated_at=$27`,
-		h.ID, h.TenantID, h.Name, string(h.Type), h.Address, h.Port, h.OSType, h.OSVersion, h.AuthType, h.SSHUser, string(h.Status), h.ProxyID, string(h.InstallMethod), h.Version, h.CPU, h.Memory, h.Disk, h.Hostname, toJSON(h.Labels), h.Environment, toJSON(h.Capabilities), toJSON([]string{}), nullTime(h.LastSeen), nullTime(h.LastHeartbeat), nullTime(h.FirstSeen), h.CreatedAt, h.UpdatedAt)
+		`INSERT INTO agent_hosts(id,tenant_id,fingerprint,name,type,address,port,os_type,os_version,auth_type,ssh_user,status,proxy_id,install_method,version,cpu,memory,disk,hostname,labels,environment,capabilities,ips,last_seen,last_heartbeat,first_seen,created_at,updated_at)
+		VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29)
+		ON CONFLICT(id) DO UPDATE SET fingerprint=$3,name=$4,type=$5,address=$6,port=$7,os_type=$8,os_version=$9,auth_type=$10,ssh_user=$11,status=$12,proxy_id=$13,install_method=$14,version=$15,cpu=$16,memory=$17,disk=$18,hostname=$19,labels=$20,environment=$21,capabilities=$22,ips=$23,last_seen=$24,last_heartbeat=$25,updated_at=$29`,
+		h.ID, h.TenantID, h.Fingerprint, h.Name, string(h.Type), h.Address, h.Port, h.OSType, h.OSVersion, h.AuthType, h.SSHUser, string(h.Status), h.ProxyID, string(h.InstallMethod), h.Version, h.CPU, h.Memory, h.Disk, h.Hostname, toJSON(h.Labels), h.Environment, toJSON(h.Capabilities), toJSON([]string{}), nullTime(h.LastSeen), nullTime(h.LastHeartbeat), nullTime(h.FirstSeen), h.CreatedAt, h.UpdatedAt)
 	return err
+}
+
+func (s *pgStore) GetByFingerprint(ctx context.Context, fp, tenantID string) (*AgentHost, error) {
+	h := &AgentHost{}
+	var caps, ips, labels []byte
+	var typ, st, im string
+	var lastSeen, lastHb, firstSeen sql.NullTime
+	err := s.db.QueryRowContext(ctx,
+		`SELECT id,tenant_id,fingerprint,name,type,address,port,os_type,os_version,auth_type,ssh_user,status,proxy_id,install_method,version,cpu,memory,disk,hostname,labels,environment,capabilities,ips,last_seen,last_heartbeat,first_seen,created_at,updated_at
+		FROM agent_hosts WHERE fingerprint=$1 AND tenant_id=$2`, fp, tenantID).
+		Scan(&h.ID, &h.TenantID, &h.Fingerprint, &h.Name, &typ, &h.Address, &h.Port, &h.OSType, &h.OSVersion, &h.AuthType, &h.SSHUser, &st, &h.ProxyID, &im, &h.Version, &h.CPU, &h.Memory, &h.Disk, &h.Hostname, &labels, &h.Environment, &caps, &ips, &lastSeen, &lastHb, &firstSeen, &h.CreatedAt, &h.UpdatedAt)
+	if err == sql.ErrNoRows { return nil, nil }
+	if err != nil { return nil, err }
+	h.Type, h.Status, h.InstallMethod = AgentType(typ), AgentStatus(st), InstallMethod(im)
+	_ = json.Unmarshal(caps, &h.Capabilities)
+	_ = json.Unmarshal(labels, &h.Labels)
+	if lastSeen.Valid { h.LastSeen = &lastSeen.Time }
+	if lastHb.Valid { h.LastHeartbeat = &lastHb.Time }
+	if firstSeen.Valid { h.FirstSeen = &firstSeen.Time }
+	return h, nil
 }
 
 func (s *pgStore) Get(ctx context.Context, id, tenantID string) (*AgentHost, error) {

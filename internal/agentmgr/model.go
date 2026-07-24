@@ -1,6 +1,10 @@
 package agentmgr
 
-import "time"
+import (
+	"crypto/sha256"
+	"encoding/hex"
+	"time"
+)
 
 type AgentType string
 
@@ -31,6 +35,7 @@ const OfflineThreshold = 90 * time.Second
 type AgentHost struct {
 	ID            string            `json:"id"`
 	TenantID      string            `json:"tenant_id"`
+	Fingerprint   string            `json:"fingerprint,omitempty"` // SHA256(tenant:address), 用于去重
 	Name          string            `json:"name"`
 	Type          AgentType         `json:"type"`
 	Address       string            `json:"address"`
@@ -197,4 +202,10 @@ type ProxyInfo struct {
 	Version    string     `json:"version,omitempty"`
 	LastSeen   *time.Time `json:"last_seen,omitempty"`
 	CreatedAt  time.Time  `json:"created_at"`
+}
+
+// GenerateFingerprint 基于租户+地址生成唯一标识，用于跨渠道去重(Agent/Agentless/Proxy)。
+func GenerateFingerprint(tenantID, address string) string {
+	h := sha256.Sum256([]byte(tenantID + ":" + address))
+	return hex.EncodeToString(h[:])[:16]
 }
