@@ -9,6 +9,7 @@ export interface Script {
   input_params?: { name: string; type: string; required: boolean; description?: string; default?: string }[]
   output_params?: { name: string; type: string; description?: string }[]
   timeout: number; run_as?: string; version: number
+  public?: boolean; approval_status?: string
   labels?: Record<string,string>; created_at: string; updated_at: string
 }
 

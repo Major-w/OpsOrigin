@@ -13,7 +13,7 @@ import { Dialog, DialogFooter } from '@/components/ui/dialog'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { ViewToggle, DataList, type ViewMode, type Column, type FilterOption, type BulkAction } from '@/components/ui/data-list'
 import { formatTime, apiBase } from '@/lib/utils'
-import { Plus, Trash2, Terminal, Monitor, RefreshCw, Download, CheckCircle, XCircle, Clock, Eye, Cpu, HardDrive, MemoryStick, Copy, Server, Wifi, WifiOff, Cloud, Container, Pencil, RotateCcw, Zap, ListChecks, AlertTriangle, Save, Play, ArrowUp } from 'lucide-react'
+import { Plus, Trash2, Terminal, Monitor, RefreshCw, Download, CheckCircle, XCircle, Clock, Eye, Cpu, HardDrive, MemoryStick, Copy, Server, Wifi, WifiOff, Cloud, Container, Pencil, RotateCcw, Zap, ListChecks, AlertTriangle, Save, Play, ArrowUp, BookOpen } from 'lucide-react'
 import { toast } from '@/stores/toast'
 
 function statusVariant(s: string): 'success' | 'destructive' | 'secondary' | 'outline' {
@@ -545,6 +545,9 @@ export default function ResourcesPage() {
           <h1 className="text-2xl font-bold">资源纳管</h1>
           <p className="text-sm text-muted-foreground">主机、云资源、容器统一纳管</p>
         </div>
+        <a href="/guide" className="inline-flex items-center justify-center rounded-md text-sm font-medium border border-input bg-background hover:bg-accent hover:text-accent-foreground h-9 px-4 py-2">
+          <BookOpen className="h-4 w-4 mr-1" />接入指引
+        </a>
       </div>
 
       <Tabs value={mainTab} onValueChange={setMainTab}>
