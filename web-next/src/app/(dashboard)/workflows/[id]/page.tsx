@@ -19,6 +19,8 @@ import {
 } from '@/stores/workflow'
 import { useAgentStore } from '@/stores/agent'
 import { useScriptStore } from '@/stores/script'
+import { useNotificationStore } from '@/stores/notification'
+import { useFileStore } from '@/stores/file'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
@@ -63,6 +65,13 @@ function newStep(type: StepType, idx: number): WorkflowStep {
     ...(type === 'loop' ? { loop_over: '$items', loop_max: 100 } : {}),
     ...(type === 'webhook' ? { webhook_method: 'POST' } : {}),
   }
+}
+
+function formatSize(bytes: number): string {
+  if (bytes < 1024) return bytes + ' B'
+  if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB'
+  if (bytes < 1024 * 1024 * 1024) return (bytes / (1024 * 1024)).toFixed(1) + ' MB'
+  return (bytes / (1024 * 1024 * 1024)).toFixed(1) + ' GB'
 }
 
 // ====== ReactFlow 自定义节点类型 ======
@@ -177,9 +186,8 @@ function WaitNode({ data }: NodeProps) {
 }
 
 function NotifyNode({ data }: NodeProps) {
-  const channels: Record<string, string> = { dingtalk: '钉钉', wecom: '企微', email: '邮件', sms: '短信' }
   return <BaseNode color={NODE_META.notify.color} icon={NODE_META.notify.icon} label={data.label}>
-    <p>📡 {channels[data.notifyChannel] || data.notifyChannel || '未选择'}</p>
+    <p>📡 {data.notifyChannelName || data.notifyChannel || '未选择渠道'}</p>
     {data.notifyTitle && <p className="truncate">📝 {data.notifyTitle}</p>}
   </BaseNode>
 }
@@ -218,6 +226,7 @@ function FiledistNode({ data }: NodeProps) {
   return <BaseNode color={NODE_META.filedist.color} icon={NODE_META.filedist.icon} label={data.label}>
     <p>📦 {data.filedistFileName || '未选择文件'}</p>
     <p>🎯 {data.filedistTargets?.length || 0} 台主机</p>
+    {data.filedistDownloadDir && <p>📁 {data.filedistDownloadDir}</p>}
   </BaseNode>
 }
 
@@ -230,10 +239,14 @@ const nodeTypes = {
 }
 
 // ====== 步骤属性面板 ======
-function StepPanel({ step, steps, scripts, onChange }: {
+function StepPanel({ step, steps, scripts, channels, workflows, files, agents, onChange }: {
   step: WorkflowStep
   steps: WorkflowStep[]
   scripts: any[]
+  channels: any[]
+  workflows: any[]
+  files: any[]
+  agents: any[]
   onChange: (p: Partial<WorkflowStep>) => void
 }) {
   const meta = NODE_META[step.type]
@@ -336,11 +349,11 @@ function StepPanel({ step, steps, scripts, onChange }: {
             <div>
               <label className="text-xs font-medium">通知渠道</label>
               <select className="flex h-8 w-full rounded-md border border-input bg-background px-2 text-xs mt-1"
-                value={step.notify_channel || 'dingtalk'} onChange={e => onChange({ notify_channel: e.target.value })}>
-                <option value="dingtalk">钉钉</option>
-                <option value="wecom">企业微信</option>
-                <option value="email">邮件</option>
-                <option value="sms">短信</option>
+                value={step.notify_channel || ''} onChange={e => onChange({ notify_channel: e.target.value })}>
+                <option value="">选择已有渠道</option>
+                {channels.filter((c: any) => c.enabled).map((c: any) => (
+                  <option key={c.id} value={c.id}>{c.name} ({c.type})</option>
+                ))}
               </select>
             </div>
             <div>
@@ -359,9 +372,18 @@ function StepPanel({ step, steps, scripts, onChange }: {
 
         {step.type === 'subflow' && (
           <div>
-            <label className="text-xs font-medium">子流程 ID</label>
-            <Input value={step.subflow_id || ''} onChange={e => onChange({ subflow_id: e.target.value, subflow_name: '' })}
-              placeholder="粘贴子流程 ID" className="h-8 mt-1" />
+            <label className="text-xs font-medium">选择子流程</label>
+            <select className="flex h-8 w-full rounded-md border border-input bg-background px-2 text-xs mt-1"
+              value={step.subflow_id || ''}
+              onChange={e => {
+                const wf = workflows.find((w: any) => w.id === e.target.value)
+                onChange({ subflow_id: e.target.value, subflow_name: wf?.name || '' })
+              }}>
+              <option value="">选择已有流程</option>
+              {workflows.map((w: any) => (
+                <option key={w.id} value={w.id}>{w.name} ({w.steps?.length || 0} 步骤)</option>
+              ))}
+            </select>
           </div>
         )}
 
@@ -422,12 +444,67 @@ function StepPanel({ step, steps, scripts, onChange }: {
         )}
 
         {step.type === 'filedist' && (
-          <div>
-            <label className="text-xs font-medium">文件 ID</label>
-            <Input value={step.filedist_file_id || ''}
-              onChange={e => onChange({ filedist_file_id: e.target.value, filedist_file_name: '' })}
-              placeholder="粘贴文件 ID" className="h-8 mt-1" />
-          </div>
+          <>
+            <div>
+              <label className="text-xs font-medium">选择文件（可多选）</label>
+              <div className="max-h-32 overflow-y-auto border rounded-md mt-1 p-1 space-y-0.5">
+                {files.length === 0 ? (
+                  <p className="text-[10px] text-muted-foreground p-2">请先在「文件分发」页面上传文件</p>
+                ) : (
+                  files.map((f: any) => {
+                    const ids: string[] = step.filedist_file_id ? step.filedist_file_id.split(',') : []
+                    const names: string[] = step.filedist_file_name ? step.filedist_file_name.split('|') : []
+                    const checked = ids.includes(f.id)
+                    const toggle = () => {
+                      if (checked) {
+                        const ni = ids.filter(i => i !== f.id)
+                        const nn = names.filter(i => i !== f.original_name)
+                        onChange({ filedist_file_id: ni.join(','), filedist_file_name: nn.join('|') })
+                      } else {
+                        onChange({
+                          filedist_file_id: [...ids, f.id].join(','),
+                          filedist_file_name: [...names, f.original_name || f.id.slice(0, 8)].join('|'),
+                        })
+                      }
+                    }
+                    return (
+                      <label key={f.id} className="flex items-center gap-1.5 text-[11px] cursor-pointer hover:bg-accent rounded px-1 py-0.5">
+                        <input type="checkbox" checked={checked} onChange={toggle} />
+                        <span className="truncate">{f.original_name || f.id.slice(0, 8)}</span>
+                        {f.size_bytes > 0 && <span className="text-[10px] text-muted-foreground shrink-0">{formatSize(f.size_bytes)}</span>}
+                      </label>
+                    )
+                  })
+                )}
+              </div>
+            </div>
+            <div>
+              <label className="text-xs font-medium">下载目录</label>
+              <Input value={step.filedist_download_dir || '/tmp'} onChange={e => onChange({ filedist_download_dir: e.target.value })}
+                placeholder="/tmp" className="h-8 mt-1" />
+            </div>
+            <div>
+              <label className="text-xs font-medium">目标主机</label>
+              <div className="max-h-32 overflow-y-auto border rounded-md mt-1 p-1 space-y-0.5">
+                {agents.filter((a: any) => a.type !== 'proxy' && a.status === 'online').length === 0 ? (
+                  <p className="text-[10px] text-muted-foreground p-2">无在线 Agent</p>
+                ) : (
+                  agents.filter((a: any) => a.type !== 'proxy' && a.status === 'online').map((a: any) => {
+                    const targets = step.filedist_targets || []
+                    const checked = targets.includes(a.id)
+                    return (
+                      <label key={a.id} className="flex items-center gap-1.5 text-[11px] cursor-pointer hover:bg-accent rounded px-1 py-0.5">
+                        <input type="checkbox" checked={checked}
+                          onChange={() => onChange({ filedist_targets: checked ? targets.filter((t: string) => t !== a.id) : [...targets, a.id] })} />
+                        <span className="truncate">{a.name || a.id.slice(0, 8)}</span>
+                        <span className="text-[10px] text-muted-foreground shrink-0">{a.address}</span>
+                      </label>
+                    )
+                  })
+                )}
+              </div>
+            </div>
+          </>
         )}
 
         <div className="pt-2 border-t space-y-2">
@@ -455,9 +532,13 @@ function StepPanel({ step, steps, scripts, onChange }: {
 }
 
 // ====== 画布编辑器（React Flow） ======
-function CanvasEditor({ workflow, scripts, onSave }: {
+function CanvasEditor({ workflow, scripts, channels, workflows, files, agents, onSave }: {
   workflow: Workflow
   scripts: any[]
+  channels: any[]
+  workflows: any[]
+  files: any[]
+  agents: any[]
   onSave: (steps: WorkflowStep[]) => Promise<void>
 }) {
   const [steps, setSteps] = useState<WorkflowStep[]>(workflow.steps || [])
@@ -501,7 +582,8 @@ function CanvasEditor({ workflow, scripts, onSave }: {
             endStatus: s.end_status || 'success',
           } : {}),
           ...(s.type === 'notify' ? {
-            notifyChannel: s.notify_channel || 'dingtalk',
+            notifyChannel: s.notify_channel || '',
+            notifyChannelName: channels.find((c: any) => c.id === s.notify_channel)?.name || s.notify_channel,
             notifyTitle: s.notify_title || '',
           } : {}),
           ...(s.type === 'subflow' ? {
@@ -522,6 +604,7 @@ function CanvasEditor({ workflow, scripts, onSave }: {
           ...(s.type === 'filedist' ? {
             filedistFileName: s.filedist_file_name || '',
             filedistTargets: s.filedist_targets || [],
+            filedistDownloadDir: s.filedist_download_dir || '/tmp',
           } : {}),
           // start 无需额外数据
         },
@@ -683,6 +766,10 @@ function CanvasEditor({ workflow, scripts, onSave }: {
               step={selectedStep}
               steps={steps}
               scripts={scripts}
+              channels={channels}
+              workflows={workflows}
+              files={files}
+              agents={agents}
               onChange={patch => updateStep(selectedStep.id, patch)}
             />
             <Button
@@ -738,6 +825,8 @@ export default function WorkflowDetailPage() {
   } = useWorkflowStore()
   const { agents } = useAgentStore()
   const { scripts, fetch: fetchScripts } = useScriptStore()
+  const { channels, fetchChannels } = useNotificationStore()
+  const { files, fetch: fetchFiles } = useFileStore()
 
   const [loading, setLoading] = useState(!isNew)
   const [viewWF, setViewWF] = useState<Workflow | null>(null)
@@ -754,7 +843,7 @@ export default function WorkflowDetailPage() {
       return
     }
     setLoading(true)
-    Promise.all([fetch(), fetchScripts(), fetchApprovals()]).then(() => setLoading(false))
+    Promise.all([fetch(), fetchScripts(), fetchApprovals(), fetchChannels(), fetchFiles()]).then(() => setLoading(false))
   }, [workflowId, isNew])
 
   useEffect(() => {
@@ -896,7 +985,7 @@ export default function WorkflowDetailPage() {
 
             <TabsContent value="canvas" className="mt-3">
               <ReactFlowProvider>
-                <CanvasEditor workflow={viewWF} scripts={scripts} onSave={handleCanvasSave} />
+                <CanvasEditor workflow={viewWF} scripts={scripts} channels={channels} workflows={workflows} files={files} agents={agents} onSave={handleCanvasSave} />
               </ReactFlowProvider>
             </TabsContent>
 

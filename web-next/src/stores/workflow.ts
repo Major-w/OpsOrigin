@@ -46,6 +46,7 @@ export interface WorkflowStep {
   filedist_file_id?: string
   filedist_file_name?: string
   filedist_targets?: string[]    // agent IDs
+  filedist_download_dir?: string // 下载目标目录
   position?: { x: number; y: number }
 }
 
