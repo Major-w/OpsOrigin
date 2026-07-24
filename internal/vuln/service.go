@@ -79,9 +79,10 @@ func (s *Service) handleCreateScan(w http.ResponseWriter, r *http.Request) {
 		Name     string          `json:"name"`
 		Type     string          `json:"type"`
 		DemoMode bool            `json:"demo_mode"`
-		Images   []string        `json:"images"`
-		AgentID  string          `json:"agent_id"`
-		Registry *RegistryConfig `json:"registry"`
+		Images       []string        `json:"images"`
+		AgentID      string          `json:"agent_id"`
+		Registry     *RegistryConfig `json:"registry"`
+		RegistryAuto bool            `json:"registry_auto"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
@@ -136,10 +137,6 @@ func (s *Service) handleCreateScan(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, "image scan requires agent runner (agentmgr not available)")
 			return
 		}
-		if len(req.Images) == 0 {
-			writeError(w, http.StatusBadRequest, "image scan requires images[] (full refs, e.g. registry.io/team/app:tag)")
-			return
-		}
 		if req.AgentID == "" {
 			writeError(w, http.StatusBadRequest, "image scan requires agent_id (host with registry egress)")
 			return
@@ -148,18 +145,30 @@ func (s *Service) handleCreateScan(w http.ResponseWriter, r *http.Request) {
 		if req.Registry != nil {
 			reg = *req.Registry
 		}
-		// 镜像清单由请求显式给出,不走 CMDB 主机清单。
+		// 镜像清单默认由请求显式给出;registry_auto=true 时改由 trivy registry 枚举。
 		inv = nil
-		for _, ref := range req.Images {
-			inv = append(inv, InventoryEntry{
-				ImageRef:     ref,
-				AgentID:      req.AgentID,
-				Registry:     reg.URL,
-				RegistryUser: reg.Username,
-				RegistryPass: reg.Password,
-			})
+		if req.RegistryAuto {
+			if reg.URL == "" {
+				writeError(w, http.StatusBadRequest, "registry_auto requires registry.url")
+				return
+			}
+			sc = NewImageScanner(s.agentRunner, reg, true, req.AgentID)
+		} else {
+			if len(req.Images) == 0 {
+				writeError(w, http.StatusBadRequest, "image scan requires images[] (full refs, e.g. registry.io/team/app:tag) or registry_auto:true")
+				return
+			}
+			for _, ref := range req.Images {
+				inv = append(inv, InventoryEntry{
+					ImageRef:     ref,
+					AgentID:      req.AgentID,
+					Registry:     reg.URL,
+					RegistryUser: reg.Username,
+					RegistryPass: reg.Password,
+				})
+			}
+			sc = NewImageScanner(s.agentRunner, reg, false, req.AgentID)
 		}
-		sc = NewImageScanner(s.agentRunner, reg)
 	}
 	findings, err := sc.Scan(r.Context(), tenantID, scan.ID, string(stype), req.DemoMode, inv)
 	if err != nil {

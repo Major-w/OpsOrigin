@@ -73,12 +73,13 @@ func (s *AgentScanner) Scan(ctx context.Context, tenantID, scanID, scanType stri
 			slog.Error("vuln: agent scan failed, skipped", "agent", t.agentID, "host", t.host, "error", err)
 			continue
 		}
-		vs, perr := parseTrivy(out)
+		m, perr := parseTrivy(out)
 		if perr != nil {
 			slog.Error("vuln: parse trivy output failed, skipped", "agent", t.agentID, "host", t.host, "error", perr)
 			continue
 		}
-		for _, v := range vs {
+		for _, vs := range m {
+			for _, v := range vs {
 			sev := mapSeverity(v.Severity)
 			if scanType == string(model.ScanTypeQuick) && sev.Rank() < 3 {
 				// quick 仅取 rank>=3 的 critical/high。
@@ -100,6 +101,7 @@ func (s *AgentScanner) Scan(ctx context.Context, tenantID, scanID, scanType stri
 				CreatedAt:   time.Now(),
 			})
 		}
+		}
 	}
 	return findings, nil
 }
@@ -116,23 +118,49 @@ type trivyVuln struct {
 }
 
 // trivyResult trivy JSON 顶层结构。
+// Target/ArtifactName 标记该结果所属镜像(或主机路径),供拼 Findings.Title。
 type trivyResult struct {
-	Results []struct {
+	Target       string `json:"Target"`
+	ArtifactName string `json:"ArtifactName"`
+	Results      []struct {
 		Vulnerabilities []trivyVuln `json:"Vulnerabilities"`
 	} `json:"Results"`
 }
 
-// parseTrivy 解析 trivy --format json 输出,展平所有 Results 的漏洞。
-func parseTrivy(out string) ([]trivyVuln, error) {
-	var r trivyResult
-	if err := json.Unmarshal([]byte(out), &r); err != nil {
-		return nil, err
+// parseTrivy 解析 trivy --format json 输出(单对象或数组,如 `trivy registry` 输出数组),
+// 返回 每个 Target 下的漏洞列表,供调用方拼 Title。空输出返回 nil(无漏洞)。
+func parseTrivy(out string) (map[string][]trivyVuln, error) {
+	trimmed := strings.TrimSpace(out)
+	if trimmed == "" {
+		return nil, nil
 	}
-	var vs []trivyVuln
-	for _, res := range r.Results {
-		vs = append(vs, res.Vulnerabilities...)
+	var results []trivyResult
+	if strings.HasPrefix(trimmed, "[") {
+		if err := json.Unmarshal([]byte(trimmed), &results); err != nil {
+			return nil, err
+		}
+	} else {
+		var single trivyResult
+		if err := json.Unmarshal([]byte(trimmed), &single); err != nil {
+			return nil, err
+		}
+		results = append(results, single)
 	}
-	return vs, nil
+	out2 := make(map[string][]trivyVuln)
+	for _, r := range results {
+		tgt := r.Target
+		if tgt == "" {
+			tgt = r.ArtifactName
+		}
+		var vs []trivyVuln
+		for _, res := range r.Results {
+			vs = append(vs, res.Vulnerabilities...)
+		}
+		if len(vs) > 0 {
+			out2[tgt] = append(out2[tgt], vs...)
+		}
+	}
+	return out2, nil
 }
 
 // mapSeverity 将 trivy/grype 严重级别映射为 model.Severity。
