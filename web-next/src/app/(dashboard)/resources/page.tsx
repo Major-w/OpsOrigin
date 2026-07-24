@@ -61,7 +61,7 @@ function stringToLabels(s: string): Record<string, string> {
 }
 
 export default function ResourcesPage() {
-  const { agents, proxies, fetch, register, update, remove, batchInstall, testSSH, getInstallScript, fetchProxies, registerProxy, updateProxy, deleteProxy, getCircuitBreaker, setCircuitBreaker, restartAgent, upgradeAgent, uninstallAgent, fetchTasks, createTask, fetchSandbox, fetchVersionPolicy, setVersionPolicy, batchUpgradeAgents } = useAgentStore()
+  const { agents, proxies, fetch, register, update, remove, batchInstall, testSSH, getInstallScript, fetchProxies, registerProxy, updateProxy, deleteProxy, getCircuitBreaker, setCircuitBreaker, restartAgent, upgradeAgent, uninstallAgent, fetchTasks, createTask } = useAgentStore()
   const { keys, fetch: fetchKeys, create: createKey } = useKeyStore()
   const { providers, resources, fetchProviders, listCredentials, saveCredential, listResources, syncToCMDB } = useCloudStore()
 
@@ -82,17 +82,11 @@ export default function ResourcesPage() {
   const [k8sDiscovering, setK8sDiscovering] = useState(false)
   const [k8sSyncing, setK8sSyncing] = useState(false)
 
-  // Agent 版本合规
-  const [versionData, setVersionData] = useState<{ target_version: string; agents_total: number; on_target: number; pending: number } | null>(null)
-  const [versionInput, setVersionInput] = useState('')
-  const [versionLoading, setVersionLoading] = useState(false)
-
   const serverBase = typeof window !== 'undefined' ? `${window.location.protocol}//${window.location.host}` : ''
   const [mainTab, setMainTab] = useState('host')
   const [hostTab, setHostTab] = useState<string>('list')
   const [agentViewMode, setAgentViewMode] = useState<ViewMode>('list')
   const [proxyViewMode, setProxyViewMode] = useState<ViewMode>('list')
-  const [sandbox, setSandbox] = useState<{ exists: boolean; agent?: AgentHost }>({ exists: false })
 
   const [regMethod, setRegMethod] = useState<'auto' | 'manual' | 'ssh'>('auto')
   const [autoForm, setAutoForm] = useState({ addresses: '', username: 'root', password: '', port: 22, credentialType: 'password', credentialId: '', keyName: '', keyContent: '', proxyId: '' })
@@ -160,10 +154,8 @@ export default function ResourcesPage() {
     fetch('')
     fetchKeys('ssh_private')
     fetchProxies()
-    fetchSandbox().then(setSandbox)
     fetchProviders()
     listCredentials()
-    fetchVersionPolicy().then(setVersionData)
   }, [])
 
   // 打开主机详情时加载编辑表单、熔断器、任务列表
@@ -196,7 +188,6 @@ export default function ResourcesPage() {
     fetch('')
     fetchKeys('ssh_private')
     fetchProxies()
-    fetchSandbox().then(setSandbox)
   }
 
   const openDetailHost = (a: AgentHost) => {
@@ -451,23 +442,6 @@ export default function ResourcesPage() {
     }
   }
 
-  const handleVersionPolicySet = async () => {
-    if (!versionInput.trim()) { toast.error('请输入目标版本号'); return }
-    setVersionLoading(true)
-    try {
-      const ok = await setVersionPolicy(versionInput.trim())
-      if (ok) await fetchVersionPolicy().then(setVersionData)
-    } finally { setVersionLoading(false) }
-  }
-
-  const handleBatchUpgrade = async () => {
-    setVersionLoading(true)
-    try {
-      const res = await batchUpgradeAgents()
-      if (res) await fetchVersionPolicy().then(setVersionData)
-    } finally { setVersionLoading(false) }
-  }
-
   const onlineCount = agents.filter(a => a.status === 'online').length
   const offlineCount = agents.filter(a => a.status === 'offline').length
   const agentCount = agents.filter(a => a.type === 'agent').length
@@ -588,72 +562,6 @@ export default function ResourcesPage() {
             <Card><CardHeader className="py-3"><CardTitle className="text-xs text-muted-foreground"><Terminal className="h-3 w-3 inline mr-1" />Agent</CardTitle></CardHeader><CardContent className="pt-0"><span className="text-2xl font-bold">{agentCount}</span></CardContent></Card>
             <Card><CardHeader className="py-3"><CardTitle className="text-xs text-muted-foreground"><Monitor className="h-3 w-3 inline mr-1" />Agentless</CardTitle></CardHeader><CardContent className="pt-0"><span className="text-2xl font-bold">{agentlessCount}</span></CardContent></Card>
           </div>
-
-          {sandbox.exists && sandbox.agent && (
-            <Card className="border-amber-200 bg-amber-50/50">
-              <CardHeader className="py-3">
-                <CardTitle className="text-sm flex items-center gap-2">
-                  <span className="h-2 w-2 rounded-full bg-amber-500 animate-pulse" />
-                  沙箱环境
-                  <Badge variant="outline" className="text-xs bg-amber-100 text-amber-700 border-amber-300">Sandbox</Badge>
-                </CardTitle>
-              </CardHeader>
-              <CardContent className="pt-0">
-                <div className="flex items-center gap-4 text-sm">
-                  <span className="text-muted-foreground">名称: {sandbox.agent.name}</span>
-                  <span className="text-muted-foreground">地址: {sandbox.agent.address}</span>
-                  <Badge variant={statusVariant(sandbox.agent.status)} className="text-xs">{statusLabel(sandbox.agent.status)}</Badge>
-                  <span className="text-xs text-muted-foreground">用于脚本调试和测试</span>
-                </div>
-              </CardContent>
-            </Card>
-          )}
-
-          {/* Agent 版本合规管理 */}
-          <Card className="border-muted">
-            <CardHeader className="py-3">
-              <CardTitle className="text-sm flex items-center gap-2">
-                <ArrowUp className="h-4 w-4" />Agent 版本一致性管理
-              </CardTitle>
-            </CardHeader>
-            <CardContent>
-              <div className="flex items-center gap-4 flex-wrap">
-                <div className="flex items-center gap-2">
-                  <span className="text-sm text-muted-foreground">目标版本:</span>
-                  <Input
-                    className="w-32 h-8 text-sm"
-                    placeholder="e.g. v1.2.0"
-                    value={versionInput}
-                    onChange={e => setVersionInput(e.target.value)}
-                    onKeyDown={e => e.key === 'Enter' && handleVersionPolicySet()}
-                  />
-                  <Button size="sm" variant="outline" onClick={handleVersionPolicySet} disabled={versionLoading || !versionInput.trim()}>
-                    <Save className="h-3 w-3 mr-1" />设置
-                  </Button>
-                </div>
-                {versionData ? (
-                  <>
-                    <span className="text-sm">
-                      合规: <span className="font-bold text-emerald-600">{versionData.on_target}</span>/{versionData.agents_total}
-                    </span>
-                    {versionData.target_version ? (
-                      <Button
-                        size="sm"
-                        onClick={handleBatchUpgrade}
-                        disabled={versionLoading || versionData.pending === 0}
-                        variant={versionData.pending > 0 ? 'default' : 'outline'}
-                      >
-                        <ArrowUp className="h-3 w-3 mr-1" />
-                        {versionLoading ? '下发中...' : `批量升级 (${versionData.pending})`}
-                      </Button>
-                    ) : (
-                      <span className="text-xs text-muted-foreground">请先设置目标版本</span>
-                    )}
-                  </>
-                ) : null}
-              </div>
-            </CardContent>
-          </Card>
 
           <Tabs value={hostTab} onValueChange={setHostTab}>
             <TabsList>
