@@ -112,7 +112,7 @@ export function CodeEditor({ value, onChange, language = 'shell', placeholder, r
   return (
     <div
       ref={containerRef}
-      className={cn("rounded-md border border-input overflow-hidden", className)}
+      className={cn("rounded-md border border-input overflow-auto", className)}
       style={{ height }}
     />
   )
