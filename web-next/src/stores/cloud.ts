@@ -23,6 +23,7 @@ interface CloudState {
     credential_id?: string
     // K8s：目标集群网关 Agent（经 Agent 通道发现，无需 AK/SK）
     agent_id?: string
+    proxy_id?: string // 经 Proxy 连接云 API（私有云/隔离网络场景）
     k8s?: { kubeconfig_b64?: string; kube_context?: string }
   }) => Promise<CloudResource[]>
   syncToCMDB: (data: {

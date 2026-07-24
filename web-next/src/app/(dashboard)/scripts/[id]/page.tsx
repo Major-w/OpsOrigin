@@ -948,8 +948,7 @@ export default function ScriptDetailPage() {
                             </div>
                           </div>
                         )}
-                        {diffViewMode === 'unified' && (<>
-                        {diffResult.map((d, i) => {
+                        {diffViewMode === 'unified' && diffResult.map((d, i) => {
                           if (d.field === 'content') {
                             const lineDiff = computeLineDiff(d.old_value || '', d.new_value || '')
                             return (
@@ -1019,7 +1018,6 @@ export default function ScriptDetailPage() {
                             </div>
                           )
                         })}
-                      )}
                       </div>
                     )}
 
