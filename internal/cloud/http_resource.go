@@ -21,10 +21,13 @@ type resourceListRequest struct {
 	Types        []string            `json:"types"`
 	Credential   *resourceCredential `json:"credential"`
 	CredentialID string              `json:"credential_id"`
+	AgentID      string              `json:"agent_id"`          // k8s：目标集群网关 Agent
+	K8s          K8sDiscoverOptions `json:"k8s,omitempty"` // k8s：发现选项（kubeconfig/context）
 }
 
 // handleListResources 按厂商/地域/类型发现云资源并返回。
 // 凭证可经请求体临时携带（credential），亦可引用已保存的凭证（credential_id）。
+// provider=="k8s" 时走 Agent 通道发现（见 handleListK8sResources）。
 func (s *Service) handleListResources(w http.ResponseWriter, r *http.Request) {
 	var req resourceListRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -33,6 +36,10 @@ func (s *Service) handleListResources(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.Provider == "" {
 		writeError(w, http.StatusBadRequest, "provider is required")
+		return
+	}
+	if req.Provider == K8sProviderName {
+		s.handleListK8sResources(w, r, req)
 		return
 	}
 	if !Exists(req.Provider) {
@@ -94,6 +101,32 @@ func (s *Service) resolveCredential(req resourceListRequest) (Credential, error)
 	return Credential{}, fmt.Errorf("credential or credential_id is required")
 }
 
+// handleListK8sResources 经 Agent 通道发现 K8s 资源并返回。
+// discoverer 未注入（agentmgr 未就绪）或 agent_id 缺失 → 400。
+func (s *Service) handleListK8sResources(w http.ResponseWriter, r *http.Request, req resourceListRequest) {
+	if req.AgentID == "" {
+		writeError(w, http.StatusBadRequest, "agent_id is required for k8s discovery")
+		return
+	}
+	if s.k8sDiscoverer == nil {
+		writeError(w, http.StatusBadRequest, "k8s discovery not configured")
+		return
+	}
+	kinds := parseKinds(req.Types)
+	if len(kinds) == 0 {
+		kinds = K8sResourceTypes()
+	}
+	resources, err := s.k8sDiscoverer.Discover(r.Context(), tenantFromCtx(r.Context()), req.AgentID, kinds, req.K8s)
+	if err != nil {
+		writeError(w, http.StatusBadGateway, "failed to discover k8s resources: "+err.Error())
+		return
+	}
+	if resources == nil {
+		resources = []Resource{}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"resources": resources})
+}
+
 // parseKinds 把字符串类型列表转换为 ResourceType 切片，过滤掉不支持的类型。
 // 返回空切片时由调用方回退到 MVP 默认三类。
 func parseKinds(types []string) []ResourceType {
@@ -101,6 +134,8 @@ func parseKinds(types []string) []ResourceType {
 	for _, t := range types {
 		switch ResourceType(t) {
 		case TypeVM, TypeDatabase, TypeLoadBalancer:
+			kinds = append(kinds, ResourceType(t))
+		case TypeK8sCluster, TypeK8sNamespace, TypeK8sWorkload, TypeK8sPod, TypeK8sContainer:
 			kinds = append(kinds, ResourceType(t))
 		}
 	}

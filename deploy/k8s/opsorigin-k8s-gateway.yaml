@@ -1,0 +1,162 @@
+# OpsOrigin K8s 容器资源纳管 — 网关 Agent（单副本 Deployment）
+# ---------------------------------------------------------------
+# 本 Deployment 以只读 ServiceAccount 运行在目标集群内，
+# 作为 K8s 资源发现的网关节点：Core 经 Agent 通道向此网关下发
+# `kubectl get ... -o json` 只读命令，回收 JSON 解析为五类
+# Resource（cluster / namespace / workload / pod / container），
+# 前端在「资源纳管 → 容器资源纳管」tab 选择本网关 Agent 即可
+# 触发发现与同步。
+#
+# 前置条件：
+#   1) 构建镜像（需同时包含 Agent 二进制 + kubectl）：
+#        docker build -f Dockerfile -t opsorigin/k8s-gateway:latest .
+#      或使用标准 agent 镜像 + initContainer 安装 kubectl（见下方 Deployment）。
+#   2) 创建 Agent 注册令牌 Secret（Core 侧分配的 Agent token）：
+#        kubectl -n opsorigin create secret generic opsorigin-agent-token \
+#          --from-literal=token=<CORE_ALLOCATED_AGENT_TOKEN>
+#      （Secret 本清单不写，避免 commit 密钥。）
+#   3) 配置 Core 地址（KUBERNETES_CORE_ADDR，指向 OpsOrigin Core 服务基址）。
+#   4) 部署后，在 Core 的「资源纳管 → 主机资源纳管」tab 确认 Agent 上线，
+#      然后在「资源纳管 → 容器资源纳管」tab 选择该 Agent 开始 K8s 资源发现。
+#
+# 安全设计：
+#   - 仅 get / list / watch，不写、不删、不 exec，不访问 Secret；
+#   - kubeconfig 不落盘，使用 in-cluster ServiceAccount Token（自动挂载）；
+#   - 脚本仅 kubectl 只读命令，不回显密钥，不拼 CLI 参数注入 env。
+# ---------------------------------------------------------------
+
+# 1) 命名空间（如已存在可删这一段）
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: opsorigin
+  labels:
+    app.kubernetes.io/part-of: opsorigin
+---
+# 2) ServiceAccount：只读网关
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: opsorigin-k8s-gateway
+  namespace: opsorigin
+  labels:
+    app.kubernetes.io/name: opsorigin-k8s-gateway
+    app.kubernetes.io/part-of: opsorigin
+---
+# 3) ClusterRole：只读 K8s 资源（与 Discoverer 五类对齐）
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: opsorigin-k8s-gateway-readonly
+  labels:
+    app.kubernetes.io/name: opsorigin-k8s-gateway
+    app.kubernetes.io/part-of: opsorigin
+rules:
+  # 集群名（current-context）
+  - apiGroups: [""]
+    resources: ["nodes"]                           # 用于 kubectl config current-context 回退
+    verbs:   ["get", "list"]
+  # 命名空间
+  - apiGroups: [""]
+    resources: ["namespaces"]
+    verbs:   ["get", "list", "watch"]
+  # 工作负载（Deployment / StatefulSet / DaemonSet）
+  - apiGroups: ["apps"]
+    resources: ["deployments", "statefulsets", "daemonsets"]
+    verbs:   ["get", "list", "watch"]
+  # Pod（含状态、容器信息）
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs:   ["get", "list", "watch"]
+---
+# 4) ClusterRoleBinding：绑定只读角色到 SA
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: opsorigin-k8s-gateway-readonly
+  labels:
+    app.kubernetes.io/name: opsorigin-k8s-gateway
+    app.kubernetes.io/part-of: opsorigin
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: opsorigin-k8s-gateway-readonly
+subjects:
+  - kind: ServiceAccount
+    name: opsorigin-k8s-gateway
+    namespace: opsorigin
+---
+# 5) Deployment：单副本网关 Agent
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: opsorigin-k8s-gateway
+  namespace: opsorigin
+  labels:
+    app.kubernetes.io/name: opsorigin-k8s-gateway
+    app.kubernetes.io/part-of: opsorigin
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: opsorigin-k8s-gateway
+  template:
+    metadata:
+      labels:
+        app: opsorigin-k8s-gateway
+        app.kubernetes.io/part-of: opsorigin
+    spec:
+      serviceAccountName: opsorigin-k8s-gateway
+      # --- 方案 A：标准 agent 镜像 + initContainer 安装 kubectl ---
+      initContainers:
+        - name: install-kubectl
+          image: bitnami/kubectl:latest
+          command: ["cp", "/opt/bitnami/kubectl/bin/kubectl", "/shared/kubectl"]
+          volumeMounts:
+            - name: kubectl-binary
+              mountPath: /shared
+      # --- 方案 B：若镜像自带 kubectl，可删 initContainers 段 ---
+      containers:
+        - name: opsorigin-agent
+          # 替换为实际 Agent 镜像（确保包含 OpsOrigin Agent 二进制 + kubectl）。
+          # MVP 建议：用标准 agent 镜像，经上方 initContainer 挂载 kubectl。
+          image: opsorigin/agent:latest
+          imagePullPolicy: IfNotPresent
+          env:
+            # Core 服务基址（示例；按实际部署修改），Agent 注册时走该地址。
+            - name: OPSORIGIN_CORE_ADDR
+              value: "http://opsorigin-core.opsorigin.svc.cluster.local:8080"
+            # Agent 令牌：从 Secret 注入，避免明文进 YAML。
+            - name: OPSORIGIN_AGENT_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: opsorigin-agent-token
+                  key: token
+                  optional: true   # 改为 false 时缺少令牌报启动错误而非静默失败
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              # 如通过 initContainer 挂载 kubectl，确保可执行并加入 PATH
+              if [ -x /opt/kubectl/kubectl ]; then
+                export PATH="/opt/kubectl:$PATH"
+              fi
+              # 启动 Agent（实际二进制路径按镜像调整）
+              exec /usr/local/bin/opsorigin-agent
+          ports:
+            - name: agent
+              containerPort: 9090       # Agent 监听端口（与 agentmgr 协议对齐）
+              protocol: TCP
+          resources:
+            requests:
+              cpu: "50m"
+              memory: "64Mi"
+            limits:
+              cpu: "200m"
+              memory: "256Mi"
+          volumeMounts:
+            - name: kubectl-binary
+              mountPath: /opt/kubectl
+      volumes:
+        - name: kubectl-binary
+          emptyDir: {}
+      restartPolicy: Always

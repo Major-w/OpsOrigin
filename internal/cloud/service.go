@@ -32,10 +32,34 @@ type SyncResult struct {
 	Errors  []string `json:"errors,omitempty"`
 }
 
+// K8sAgentRunner 经 Agent 通道在被管集群网关节点执行脚本（鸭子类型满足 *agentmgr.Service）。
+// 签名与 agentmgr.Service.RunScriptOnAgent 完全一致，cloud 包不 import agentmgr。
+type K8sAgentRunner interface {
+	RunScriptOnAgent(ctx context.Context, agentID, tenantID, content string,
+		params map[string]string, timeout int, runAs string) (string, int, error)
+}
+
+// K8sDiscoverer 是 K8s 资源发现器契约（由 internal/cloud/k8s 包实现）。
+// 它不是 cloud.Provider——cloud 包只持有此接口，不持有具体实现，避免 import 环。
+type K8sDiscoverer interface {
+	Discover(ctx context.Context, tenantID, agentID string,
+		kinds []ResourceType, opts K8sDiscoverOptions) ([]Resource, error)
+}
+
+// K8sDiscoverOptions 发现选项；kubeconfig/context 经 env 注入（非 CLI 参数）。
+type K8sDiscoverOptions struct {
+	KubeconfigB64 string `json:"kubeconfig_b64,omitempty"` // 可选：base64(kubeconfig)，MVP 默认空=用网关 Pod 的 SA
+	KubeContext    string `json:"kube_context,omitempty"`    // 可选：指定 context；MVP 默认空=current-context
+}
+
+// K8sProviderName 虚拟 provider 名（不进 registry，特判处理）。
+const K8sProviderName = "k8s"
+
 // Service 是云资源「接出」的 HTTP 服务：提供凭证管理与资源发现/同步能力。
 type Service struct {
-	store Store       // 凭证持久层（MVP 用内存实现，重启即失）
-	cmdb  CMDBWriter // CMDB 写入适配（同步发现的资源为 CI）
+	store         Store          // 凭证持久层（MVP 用内存实现，重启即失）
+	cmdb          CMDBWriter    // CMDB 写入适配（同步发现的资源为 CI）
+	k8sDiscoverer K8sDiscoverer // K8s 发现器（可选；nil 时 k8s 发现/同步返回 400）
 }
 
 // NewService 构造云资源 Service。
@@ -46,6 +70,9 @@ func NewService(store Store, cmdb CMDBWriter) *Service {
 	}
 	return &Service{store: store, cmdb: cmdb}
 }
+
+// SetK8sDiscoverer 注入 K8s 发现器（由 cmd/core 用 *k8s.Discoverer 注入）。
+func (s *Service) SetK8sDiscoverer(d K8sDiscoverer) { s.k8sDiscoverer = d }
 
 // RegisterRoutes 把云资源 REST 路由注册进 Core mux。
 // 路由前缀 /api/v1/cloud，经 Core 中间件链自动叠加 auth→audit→rbac。

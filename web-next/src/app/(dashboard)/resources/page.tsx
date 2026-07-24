@@ -4,7 +4,7 @@ import { useEffect, useState } from 'react'
 import { useAgentStore, type AgentHost, type ProxyInfo, type TaskInfo } from '@/stores/agent'
 import { useKeyStore } from '@/stores/keys'
 import { useCloudStore } from '@/stores/cloud'
-import { CLOUD_RESOURCE_TYPES, type CloudResource } from '@/lib/cloud'
+import { CLOUD_RESOURCE_TYPES, K8S_RESOURCE_TYPES, type CloudResource } from '@/lib/cloud'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
@@ -74,6 +74,14 @@ export default function ResourcesPage() {
   const [cloudTypes, setCloudTypes] = useState<string[]>(['vm', 'database', 'load_balancer'])
   const [cloudDiscovering, setCloudDiscovering] = useState(false)
   const [cloudSyncing, setCloudSyncing] = useState(false)
+
+  // K8s 容器资源纳管 tab 表单状态（经 Agent 通道发现，无需 AK/SK）
+  const [k8sAgent, setK8sAgent] = useState('')
+  const [k8sTypes, setK8sTypes] = useState<string[]>(K8S_RESOURCE_TYPES.map(t => t.value))
+  const [k8sResources, setK8sResources] = useState<CloudResource[]>([])
+  const [k8sDiscovering, setK8sDiscovering] = useState(false)
+  const [k8sSyncing, setK8sSyncing] = useState(false)
+
   const serverBase = typeof window !== 'undefined' ? `${window.location.protocol}//${window.location.host}` : ''
   const [mainTab, setMainTab] = useState('host')
   const [hostTab, setHostTab] = useState<string>('list')
@@ -391,6 +399,49 @@ export default function ResourcesPage() {
       }
     } finally {
       setCloudSyncing(false)
+    }
+  }
+
+  // 确保 Agent 列表已加载（容器 tab 需要选择目标集群网关 Agent）。
+  useEffect(() => {
+    if (agents.length === 0) fetch()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  const handleK8sDiscover = async () => {
+    if (!k8sAgent) { toast.error('请选择目标集群网关 Agent'); return }
+    setK8sDiscovering(true)
+    try {
+      const rs = await listResources({
+        provider: 'k8s',
+        agent_id: k8sAgent,
+        types: k8sTypes,
+      })
+      setK8sResources(rs)
+    } finally {
+      setK8sDiscovering(false)
+    }
+  }
+
+  const handleK8sSync = async () => {
+    if (k8sResources.length === 0) { toast.error('请先发现 K8s 资源'); return }
+    if (!k8sAgent) { toast.error('请选择目标集群网关 Agent'); return }
+    setK8sSyncing(true)
+    try {
+      const res = await syncToCMDB({
+        provider: 'k8s',
+        agent_id: k8sAgent,
+        types: k8sTypes,
+        resources: k8sResources,
+      })
+      if (res) {
+        const parts = [`新建 ${res.created}`, `更新 ${res.updated}`, `跳过 ${res.skipped}`]
+        if (res.failed > 0) parts.push(`失败 ${res.failed}`)
+        toast.success(`已同步到 CMDB：${parts.join('，')}`)
+        if (res.failed > 0 && res.errors?.length) console.warn('k8s sync errors', res.errors)
+      }
+    } finally {
+      setK8sSyncing(false)
     }
   }
 
@@ -921,19 +972,92 @@ export default function ResourcesPage() {
         </TabsContent>
 
         <TabsContent value="container" className="mt-4">
-          <Card><CardContent className="py-16 text-center">
-            <Container className="h-16 w-16 mx-auto mb-4 text-muted-foreground/30" />
-            <h3 className="text-lg font-medium text-gray-900 dark:text-white mb-2">容器资源纳管</h3>
-            <p className="text-sm text-muted-foreground max-w-md mx-auto">支持 Kubernetes、Docker、Docker Swarm 容器编排平台资源自动发现与统一管理。</p>
-            <div className="grid grid-cols-3 gap-4 mt-8 max-w-lg mx-auto">
-              {[{ name: 'Kubernetes', color: 'text-blue-500' }, { name: 'Docker', color: 'text-cyan-500' }, { name: 'Swarm', color: 'text-purple-500' }].map((item, i) => (
-                <div key={i} className="p-4 rounded-lg border border-dashed border-gray-300 dark:border-gray-700">
-                  <p className={`text-sm font-medium ${item.color}`}>{item.name}</p>
-                  <Badge variant="secondary" className="mt-2 text-[10px]">即将上线</Badge>
+          <Card>
+            <CardHeader className="py-3">
+              <CardTitle className="text-sm flex items-center gap-2">
+                <Container className="h-4 w-4" />Kubernetes 容器资源纳管（经网关 Agent 通道）
+              </CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              {agents.length === 0 ? (
+                <p className="text-xs text-muted-foreground">未检测到 Agent，请先在「主机资源纳管」中安装并上线一个 Agent（建议以单副本 Deployment 部署到目标集群，作为只读网关）。</p>
+              ) : (
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                  {/* 网关 Agent 选择 + 资源类型 */}
+                  <div className="space-y-3">
+                    <p className="text-xs text-muted-foreground">选择一个已上线的 Agent 作为集群网关，经其隧道下发 <code className="text-[11px]">kubectl</code> 只读命令发现资源（无需 AK/SK）。</p>
+                    <div>
+                      <label className="text-sm font-medium">目标集群网关 Agent *</label>
+                      <select className="h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm" value={k8sAgent} onChange={e => setK8sAgent(e.target.value)}>
+                        <option value="">选择 Agent</option>
+                        {agents.map(a => (
+                          <option key={a.id} value={a.id}>{a.name || a.id} · {a.address}{a.status === 'online' ? '（在线）' : '（离线）'}</option>
+                        ))}
+                      </select>
+                    </div>
+                    <div>
+                      <label className="text-sm font-medium">资源类型（多选）</label>
+                      <div className="flex gap-2 flex-wrap mt-1">
+                        {K8S_RESOURCE_TYPES.map(t => (
+                          <label key={t.value} className="flex items-center gap-1 text-sm border rounded-md px-2 py-1 cursor-pointer">
+                            <input type="checkbox" checked={k8sTypes.includes(t.value)} onChange={e => {
+                              if (e.target.checked) setK8sTypes(ts => Array.from(new Set([...ts, t.value])))
+                              else setK8sTypes(ts => ts.filter(v => v !== t.value))
+                            }} /> {t.label}
+                          </label>
+                        ))}
+                      </div>
+                    </div>
+                    <div className="flex gap-2">
+                      <Button size="sm" variant="outline" onClick={handleK8sDiscover} disabled={!k8sAgent || k8sDiscovering}>
+                        <Play className="h-3 w-3 mr-1" />{k8sDiscovering ? '发现中...' : '发现资源'}
+                      </Button>
+                    </div>
+                  </div>
+
+                  {/* 结果 */}
+                  <div className="space-y-3">
+                    <div className="flex items-center justify-between">
+                      <span className="text-sm text-muted-foreground">已发现 {k8sResources.length} 个资源</span>
+                      <Button size="sm" onClick={handleK8sSync} disabled={k8sResources.length === 0 || k8sSyncing}>
+                        <ArrowUp className="h-3 w-3 mr-1" />{k8sSyncing ? '纳管中...' : '纳管到 CMDB'}
+                      </Button>
+                    </div>
+                    {k8sResources.length === 0 ? (
+                      <p className="text-xs text-muted-foreground">选择网关 Agent 后点击「发现资源」即可列出集群内的命名空间 / 工作负载 / Pod / 容器。</p>
+                    ) : (
+                      <div className="border rounded-md max-h-80 overflow-auto">
+                        <table className="w-full text-xs">
+                          <thead className="bg-muted/40 sticky top-0">
+                            <tr>
+                              <th className="text-left p-2 font-medium">类型</th>
+                              <th className="text-left p-2 font-medium">名称</th>
+                              <th className="text-left p-2 font-medium">状态</th>
+                              <th className="text-left p-2 font-medium">集群</th>
+                              <th className="text-left p-2 font-medium">命名空间</th>
+                              <th className="text-left p-2 font-medium">镜像</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {k8sResources.map((r: CloudResource, i: number) => (
+                              <tr key={i} className="border-t">
+                                <td className="p-2"><Badge variant="outline" className="text-[10px]">{r.type}</Badge></td>
+                                <td className="p-2">{r.name}</td>
+                                <td className="p-2">{r.status || '-'}</td>
+                                <td className="p-2">{typeof r.extra?.cluster === 'string' ? r.extra.cluster : '-'}</td>
+                                <td className="p-2">{typeof r.extra?.namespace === 'string' ? r.extra.namespace : '-'}</td>
+                                <td className="p-2">{typeof r.extra?.image === 'string' ? r.extra.image : '-'}</td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    )}
+                  </div>
                 </div>
-              ))}
-            </div>
-          </CardContent></Card>
+              )}
+            </CardContent>
+          </Card>
         </TabsContent>
       </Tabs>
 

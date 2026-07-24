@@ -38,9 +38,24 @@ export interface SyncResult {
   errors?: string[]
 }
 
+// K8s 发现选项（经 Agent 通道，kubeconfig/context 经 env 注入而非 CLI 参数）。
+export interface K8sDiscoverOptions {
+  kubeconfig_b64?: string
+  kube_context?: string
+}
+
 // 前端资源类型选项（MVP 仅 VM / 数据库 / 负载均衡）。
 export const CLOUD_RESOURCE_TYPES = [
   { value: 'vm', label: '虚拟机' },
   { value: 'database', label: '数据库' },
   { value: 'load_balancer', label: '负载均衡' },
+] as const
+
+// K8s 容器资源纳管类型选项（经 Agent 通道发现）。
+export const K8S_RESOURCE_TYPES = [
+  { value: 'k8s_cluster', label: '集群' },
+  { value: 'k8s_namespace', label: '命名空间' },
+  { value: 'k8s_workload', label: '工作负载' },
+  { value: 'k8s_pod', label: 'Pod' },
+  { value: 'k8s_container', label: '容器' },
 ] as const

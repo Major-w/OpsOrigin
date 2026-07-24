@@ -14,6 +14,7 @@ import (
 
 	cloud "github.com/opsorigin/core/internal/cloud"
 	_ "github.com/opsorigin/core/internal/cloud/providers/all"
+	k8s "github.com/opsorigin/core/internal/cloud/k8s"
 	"github.com/opsorigin/core/internal/cmdb"
 	"github.com/opsorigin/core/internal/cmdb/dgraph"
 	"github.com/opsorigin/core/internal/cmdb/outbox"
@@ -252,6 +253,9 @@ func main() {
 
 	// 初始化沙箱环境:在 Server 端自动注册一个本地 Agent,用于脚本调试
 	agentSvc.InitSandbox()
+
+	// K8s 容器资源纳管：注入经 Agent 通道的发现器（鸭子类型 *agentmgr.Service 满足 cloud.K8sAgentRunner）。
+	cloudSvc.SetK8sDiscoverer(k8s.NewDiscoverer(agentSvc))
 
 	// 系统配置管理服务
 	sysconfigSvc := sysconfig.NewService(cfg)

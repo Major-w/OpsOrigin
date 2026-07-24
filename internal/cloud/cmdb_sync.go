@@ -9,6 +9,13 @@ const (
 	CITypeVM           = "cloud_vm"
 	CITypeDatabase     = "cloud_database"
 	CITypeLoadBalancer = "cloud_load_balancer"
+
+	// K8s 资源类 CI 类型（经 Agent 通道发现，自然落 CMDB，无需预注册 schema）。
+	CITypeK8sCluster   = "k8s_cluster"
+	CITypeK8sNamespace = "k8s_namespace"
+	CITypeK8sWorkload  = "k8s_workload"
+	CITypeK8sPod       = "k8s_pod"
+	CITypeK8sContainer = "k8s_container"
 )
 
 // CIMapping 是 Resource 到 CMDB CI 的中间映射（定义在 cloud 包内，避免直接依赖 cmdb）。
@@ -32,6 +39,16 @@ func CITypeOf(res Resource) string {
 		return CITypeDatabase
 	case TypeLoadBalancer:
 		return CITypeLoadBalancer
+	case TypeK8sCluster:
+		return CITypeK8sCluster
+	case TypeK8sNamespace:
+		return CITypeK8sNamespace
+	case TypeK8sWorkload:
+		return CITypeK8sWorkload
+	case TypeK8sPod:
+		return CITypeK8sPod
+	case TypeK8sContainer:
+		return CITypeK8sContainer
 	default:
 		return "cloud_" + string(res.Type)
 	}

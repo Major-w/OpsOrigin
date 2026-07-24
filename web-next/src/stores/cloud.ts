@@ -17,17 +17,23 @@ interface CloudState {
   deleteCredential: (id: string) => Promise<boolean>
   listResources: (data: {
     provider: string
-    region: string
+    region?: string
     types: string[]
     credential?: { access_key: string; secret_key: string; region?: string; extra?: Record<string, string> }
     credential_id?: string
+    // K8s：目标集群网关 Agent（经 Agent 通道发现，无需 AK/SK）
+    agent_id?: string
+    k8s?: { kubeconfig_b64?: string; kube_context?: string }
   }) => Promise<CloudResource[]>
   syncToCMDB: (data: {
     provider: string
-    region: string
+    region?: string
     types: string[]
     credential?: { access_key: string; secret_key: string; region?: string; extra?: Record<string, string> }
     credential_id?: string
+    // K8s：目标集群网关 Agent
+    agent_id?: string
+    k8s?: { kubeconfig_b64?: string; kube_context?: string }
     resources?: CloudResource[]
   }) => Promise<SyncResult | null>
 }
