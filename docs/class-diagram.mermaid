@@ -1,0 +1,101 @@
+classDiagram
+    direction LR
+
+    class Provider {
+        <<interface>>
+        +Name() string
+        +ListResources(ctx, cred Credential, region string, kinds []ResourceType) []Resource
+        +GetResource(ctx, cred, region, kind, id string) *Resource
+        +CollectMetrics(ctx, cred, region string, resources []Resource) []Metric
+    }
+    class AWSProvider {
+        +Name() string
+        +ListResources(...) []Resource
+    }
+    class Credential {
+        +Provider string
+        +Region string
+        +AccessKey string
+        +SecretKey string
+        +Extra map~string,string~
+    }
+    class Resource {
+        +Provider string
+        +Type ResourceType
+        +ID string
+        +Name string
+        +Region string
+        +Zone string
+        +Status string
+        +PublicIP string
+        +PrivateIP string
+        +Labels map~string,string~
+        +Extra map~string,any~
+        +DiscoveredAt time.Time
+    }
+    class Store {
+        <<interface>>
+        +Save(cred Credential) error
+        +Get(provider, id string) *Credential
+        +List(provider string) []Credential
+        +Delete(provider, id string) error
+    }
+    class MemStore {
+        -creds map~string,map~string,Credential~~
+        +Save(cred) error
+        +Get(provider, id) *Credential
+        +List(provider) []Credential
+        +Delete(provider, id) error
+    }
+    class CMDBWriter {
+        <<interface>>
+        +SyncResources(ctx context.Context, tenantID string, resources []Resource) SyncResult
+    }
+    class SyncResult {
+        +Created int
+        +Updated int
+        +Skipped int
+        +Failed int
+        +Errors []string
+    }
+    class Service {
+        -store Store
+        -cmdb CMDBWriter
+        +NewService(store Store, cmdb CMDBWriter) *Service
+        +RegisterRoutes(mux *http.ServeMux)
+        -handleListProviders(w, r)
+        -handleCredential(w, r)
+        -handleListResources(w, r)
+        -handleSyncResources(w, r)
+    }
+    class cloudCMDBAdapter {
+        -pg *pg.Repository
+        -cmdbSvc *cmdb.Service
+        +SyncResources(ctx, tenantID, resources) SyncResult
+    }
+    class CIModel {
+        +ID string
+        +TypeID string
+        +TenantID string
+        +Name string
+        +Status CIStatus
+        +Attributes map~string,any~
+        +Labels map~string,string~
+        +Channel ChannelWeight
+    }
+    class cmdbService {
+        +CreateCI(ctx, ci *CIModel, traceID string) error
+        +UpdateCI(ctx, ci *CIModel, ch ChannelWeight, traceID string) error
+    }
+
+    Provider <|.. AWSProvider
+    Store <|.. MemStore
+    CMDBWriter <|.. cloudCMDBAdapter
+    Service o-- Store : 凭证存储
+    Service o-- CMDBWriter : CMDB 推送
+    Service ..> Provider : cloud.Get(name)
+    Service ..> Resource : 列举返回
+    cloudCMDBAdapter ..> CIModel : Resource->CIModel
+    cloudCMDBAdapter ..> cmdbService : CreateCI/UpdateCI
+    cloudCMDBAdapter ..> "pg.Repository" : ListCI 去重
+    CIModel ..> Resource : 由 Resource 映射

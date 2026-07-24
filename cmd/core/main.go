@@ -12,6 +12,8 @@ import (
 	"syscall"
 	"time"
 
+	cloud "github.com/opsorigin/core/internal/cloud"
+	_ "github.com/opsorigin/core/internal/cloud/providers/all"
 	"github.com/opsorigin/core/internal/cmdb"
 	"github.com/opsorigin/core/internal/cmdb/dgraph"
 	"github.com/opsorigin/core/internal/cmdb/outbox"
@@ -166,6 +168,11 @@ func main() {
 
 	cmdbSvc := cmdb.NewService(cfg, pgRepo, dgClient)
 	server.RegisterService(cmdbSvc)
+
+	// 云资源接出：注册 4 云 Provider（空白导入触发 init）并把云 Service 接入 Core mux，
+	// 经 cloudCMDBAdapter 把发现的资源同步进 CMDB（复用完整 CI 生命周期）。
+	cloudSvc := cloud.NewService(cloud.NewMemStore(), cloudCMDBAdapter{pgRepo: pgRepo, cmdbSvc: cmdbSvc})
+	server.RegisterService(cloudSvc)
 
 	monitorSvc := monitor.NewService(cfg, rdb)
 	server.RegisterService(monitorSvc)

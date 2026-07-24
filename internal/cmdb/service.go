@@ -1100,3 +1100,39 @@ func simulateDiscovery(task *model.DiscoveryTask) []map[string]any {
 	}
 	return results
 }
+
+// CreateCI 创建一条 CI,复用与 HTTP handler 相同的落库与事件联动逻辑
+// (pg.CreateCI + outbox 事件 + onCICreated 回调 → monitorTopo.RecordTenant / dgraph)。
+// 供云资源同步等内部调用方使用,无需经过 HTTP 层。
+func (s *Service) CreateCI(ctx context.Context, ci *model.CIModel, traceID string) error {
+	if ci.Status == "" {
+		ci.Status = model.CIStatusActive
+	}
+	if s.pg != nil {
+		if err := s.validateAttributes(ctx, ci.TypeID, ci.Attributes); err != nil {
+			return err
+		}
+		if err := s.pg.CreateCI(ctx, ci, traceID); err != nil {
+			return err
+		}
+	} else {
+		s.mem.createCI(ci)
+	}
+	if s.onCICreated != nil {
+		s.onCICreated(ctx, ci.ID, ci.TenantID)
+	}
+	return nil
+}
+
+// UpdateCI 更新一条 CI,复用与 HTTP handler 相同的 anti-flapping 校验与事件联动逻辑。
+// ch 表示本次更新的来源权重(云资源同步统一使用 WeightDiscovery)。
+func (s *Service) UpdateCI(ctx context.Context, ci *model.CIModel, ch model.ChannelWeight, traceID string) error {
+	if s.pg != nil {
+		if err := s.pg.UpdateCI(ctx, ci, ch, traceID); err != nil {
+			return err
+		}
+	} else {
+		s.mem.updateCI(ci)
+	}
+	return nil
+}

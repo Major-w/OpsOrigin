@@ -3,6 +3,8 @@
 import { useEffect, useState } from 'react'
 import { useAgentStore, type AgentHost, type ProxyInfo, type TaskInfo } from '@/stores/agent'
 import { useKeyStore } from '@/stores/keys'
+import { useCloudStore } from '@/stores/cloud'
+import { CLOUD_RESOURCE_TYPES, type CloudResource } from '@/lib/cloud'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
@@ -61,6 +63,17 @@ function stringToLabels(s: string): Record<string, string> {
 export default function ResourcesPage() {
   const { agents, proxies, fetch, register, update, remove, batchInstall, testSSH, getInstallScript, fetchProxies, registerProxy, updateProxy, deleteProxy, getCircuitBreaker, setCircuitBreaker, restartAgent, upgradeAgent, uninstallAgent, fetchTasks, createTask, fetchSandbox } = useAgentStore()
   const { keys, fetch: fetchKeys, create: createKey } = useKeyStore()
+  const { providers, resources, fetchProviders, listCredentials, saveCredential, listResources, syncToCMDB } = useCloudStore()
+
+  // 云资源 tab 表单状态
+  const [cloudProvider, setCloudProvider] = useState('')
+  const [cloudRegion, setCloudRegion] = useState('')
+  const [cloudAccessKey, setCloudAccessKey] = useState('')
+  const [cloudSecretKey, setCloudSecretKey] = useState('')
+  const [cloudExtra, setCloudExtra] = useState('')
+  const [cloudTypes, setCloudTypes] = useState<string[]>(['vm', 'database', 'load_balancer'])
+  const [cloudDiscovering, setCloudDiscovering] = useState(false)
+  const [cloudSyncing, setCloudSyncing] = useState(false)
   const serverBase = typeof window !== 'undefined' ? `${window.location.protocol}//${window.location.host}` : ''
   const [mainTab, setMainTab] = useState('host')
   const [hostTab, setHostTab] = useState<string>('list')
@@ -135,6 +148,8 @@ export default function ResourcesPage() {
     fetchKeys('ssh_private')
     fetchProxies()
     fetchSandbox().then(setSandbox)
+    fetchProviders()
+    listCredentials()
   }, [])
 
   // 打开主机详情时加载编辑表单、熔断器、任务列表
@@ -309,6 +324,75 @@ export default function ResourcesPage() {
     } catch {}
   }
   const copyToClipboard = (text: string) => { navigator.clipboard.writeText(text) }
+
+  // 解析云商 Extra（JSON，可选）
+  const parseCloudExtra = (): Record<string, string> | undefined => {
+    if (!cloudExtra.trim()) return undefined
+    try {
+      return JSON.parse(cloudExtra)
+    } catch {
+      toast.error('Extra 不是合法 JSON')
+      return undefined
+    }
+  }
+
+  const handleCloudSaveCredential = async () => {
+    if (!cloudProvider.trim()) { toast.error('请选择云服务商'); return }
+    const extra = parseCloudExtra()
+    if (cloudExtra.trim() && !extra) return
+    const ok = await saveCredential({
+      provider: cloudProvider,
+      region: cloudRegion,
+      access_key: cloudAccessKey,
+      secret_key: cloudSecretKey,
+      extra,
+    })
+    if (ok) { setCloudSecretKey(''); setCloudExtra('') }
+  }
+
+  const handleCloudDiscover = async () => {
+    if (!cloudProvider.trim() || !cloudAccessKey.trim() || !cloudSecretKey.trim()) {
+      toast.error('请填写云商、AccessKey 与 SecretKey')
+      return
+    }
+    const extra = parseCloudExtra()
+    if (cloudExtra.trim() && !extra) return
+    setCloudDiscovering(true)
+    try {
+      await listResources({
+        provider: cloudProvider,
+        region: cloudRegion,
+        types: cloudTypes,
+        credential: { access_key: cloudAccessKey, secret_key: cloudSecretKey, region: cloudRegion, extra },
+      })
+    } finally {
+      setCloudDiscovering(false)
+    }
+  }
+
+  const handleCloudSync = async () => {
+    if (resources.length === 0) return
+    const extra = parseCloudExtra()
+    if (cloudExtra.trim() && !extra) return
+    setCloudSyncing(true)
+    try {
+      const res = await syncToCMDB({
+        provider: cloudProvider,
+        region: cloudRegion,
+        types: cloudTypes,
+        credential: { access_key: cloudAccessKey, secret_key: cloudSecretKey, region: cloudRegion, extra },
+        resources,
+      })
+      if (res) {
+        const parts = [`新建 ${res.created}`, `更新 ${res.updated}`, `跳过 ${res.skipped}`]
+        if (res.failed > 0) parts.push(`失败 ${res.failed}`)
+        toast.success(`已同步到 CMDB：${parts.join('，')}`)
+        if (res.failed > 0 && res.errors?.length) console.warn('cloud sync errors', res.errors)
+      }
+    } finally {
+      setCloudSyncing(false)
+    }
+  }
 
   const onlineCount = agents.filter(a => a.status === 'online').length
   const offlineCount = agents.filter(a => a.status === 'offline').length
@@ -735,19 +819,105 @@ export default function ResourcesPage() {
         </TabsContent>
 
         <TabsContent value="cloud" className="mt-4">
-          <Card><CardContent className="py-16 text-center">
-            <Cloud className="h-16 w-16 mx-auto mb-4 text-muted-foreground/30" />
-            <h3 className="text-lg font-medium text-gray-900 dark:text-white mb-2">云资源纳管</h3>
-            <p className="text-sm text-muted-foreground max-w-md mx-auto">支持阿里云、腾讯云、AWS、Azure、华为云等主流云平台资源自动发现与统一管理。</p>
-            <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mt-8 max-w-2xl mx-auto">
-              {[{ name: '阿里云', color: 'text-orange-500' }, { name: '腾讯云', color: 'text-blue-500' }, { name: 'AWS', color: 'text-amber-500' }, { name: 'Azure', color: 'text-blue-600' }].map((item, i) => (
-                <div key={i} className="p-4 rounded-lg border border-dashed border-gray-300 dark:border-gray-700">
-                  <p className={`text-sm font-medium ${item.color}`}>{item.name}</p>
-                  <Badge variant="secondary" className="mt-2 text-[10px]">即将上线</Badge>
+          <Card>
+            <CardHeader className="py-3">
+              <CardTitle className="text-sm flex items-center gap-2">
+                <Cloud className="h-4 w-4" />云资源发现与纳管
+              </CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                {/* 凭证区 */}
+                <div className="space-y-3">
+                  <p className="text-xs text-muted-foreground">填写云商访问凭证（临时使用，不强制持久化）。</p>
+                  <div>
+                    <label className="text-sm font-medium">云服务商 *</label>
+                    <select className="h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm" value={cloudProvider} onChange={e => setCloudProvider(e.target.value)}>
+                      <option value="">选择云商</option>
+                      {providers.map(p => <option key={p.name} value={p.name}>{p.name}</option>)}
+                    </select>
+                  </div>
+                  <div>
+                    <label className="text-sm font-medium">Region</label>
+                    <Input value={cloudRegion} onChange={e => setCloudRegion(e.target.value)} placeholder="如 cn-hangzhou / us-east-1" />
+                  </div>
+                  <div>
+                    <label className="text-sm font-medium">AccessKey</label>
+                    <Input value={cloudAccessKey} onChange={e => setCloudAccessKey(e.target.value)} placeholder="AKIA..." />
+                  </div>
+                  <div>
+                    <label className="text-sm font-medium">SecretKey</label>
+                    <Input type="password" value={cloudSecretKey} onChange={e => setCloudSecretKey(e.target.value)} placeholder="••••" />
+                  </div>
+                  <div>
+                    <label className="text-sm font-medium">Extra（JSON，可选，如华为云 project_id=xxx）</label>
+                    <textarea className="flex h-20 w-full rounded-md border border-input bg-background px-3 py-2 text-xs font-mono" value={cloudExtra} onChange={e => setCloudExtra(e.target.value)} placeholder='{"project_id":"xxx"}' />
+                  </div>
+                  <div className="flex gap-2">
+                    <Button size="sm" onClick={handleCloudSaveCredential}><Save className="h-3 w-3 mr-1" />保存凭证</Button>
+                    <Button size="sm" variant="outline" onClick={handleCloudDiscover} disabled={!cloudProvider || !cloudAccessKey || !cloudSecretKey || cloudDiscovering}>
+                      <Play className="h-3 w-3 mr-1" />{cloudDiscovering ? '发现中...' : '发现资源'}
+                    </Button>
+                  </div>
                 </div>
-              ))}
-            </div>
-          </CardContent></Card>
+
+                {/* 资源类型 + 结果 */}
+                <div className="space-y-3">
+                  <div>
+                    <label className="text-sm font-medium">资源类型（多选）</label>
+                    <div className="flex gap-2 flex-wrap mt-1">
+                      {CLOUD_RESOURCE_TYPES.map(t => (
+                        <label key={t.value} className="flex items-center gap-1 text-sm border rounded-md px-2 py-1 cursor-pointer">
+                          <input type="checkbox" checked={cloudTypes.includes(t.value)} onChange={e => {
+                            if (e.target.checked) setCloudTypes(ts => Array.from(new Set([...ts, t.value])))
+                            else setCloudTypes(ts => ts.filter(v => v !== t.value))
+                          }} /> {t.label}
+                        </label>
+                      ))}
+                    </div>
+                  </div>
+                  <div className="flex items-center justify-between">
+                    <span className="text-sm text-muted-foreground">已发现 {resources.length} 个资源</span>
+                    <Button size="sm" onClick={handleCloudSync} disabled={resources.length === 0 || cloudSyncing}>
+                      <ArrowUp className="h-3 w-3 mr-1" />{cloudSyncing ? '纳管中...' : '纳管到 CMDB'}
+                    </Button>
+                  </div>
+                  {resources.length === 0 ? (
+                    <p className="text-xs text-muted-foreground">填写凭证后点击「发现资源」即可列出云上资源。</p>
+                  ) : (
+                    <div className="border rounded-md max-h-80 overflow-auto">
+                      <table className="w-full text-xs">
+                        <thead className="bg-muted/40 sticky top-0">
+                          <tr>
+                            <th className="text-left p-2 font-medium">云商</th>
+                            <th className="text-left p-2 font-medium">类型</th>
+                            <th className="text-left p-2 font-medium">名称</th>
+                            <th className="text-left p-2 font-medium">状态</th>
+                            <th className="text-left p-2 font-medium">地域</th>
+                            <th className="text-left p-2 font-medium">公网IP</th>
+                            <th className="text-left p-2 font-medium">私网IP</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {resources.map((r: CloudResource, i: number) => (
+                            <tr key={i} className="border-t">
+                              <td className="p-2">{r.provider}</td>
+                              <td className="p-2"><Badge variant="outline" className="text-[10px]">{r.type}</Badge></td>
+                              <td className="p-2">{r.name}</td>
+                              <td className="p-2">{r.status || '-'}</td>
+                              <td className="p-2">{r.region}</td>
+                              <td className="p-2">{r.public_ip || '-'}</td>
+                              <td className="p-2">{r.private_ip || '-'}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+                </div>
+              </div>
+            </CardContent>
+          </Card>
         </TabsContent>
 
         <TabsContent value="container" className="mt-4">
