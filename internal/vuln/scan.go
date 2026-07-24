@@ -13,16 +13,19 @@ import (
 )
 
 // Scanner 扫描器接口。Scanner 预留 Trivy/Grype/Nuclei/OpenSCAP 热插拔位，
-// 当前内置 RuleScanner 作为演示垂直切片。
+// 当前内置 RuleScanner 作为演示垂直切片，AgentScanner 经 Agent 下发 trivy/grype。
+// inventory 为外部注入的资产清单(经 CMDB 拉取或 Agent 下发结果)，为空且非 demo 时返回空(不造假)。
 type Scanner interface {
-	Scan(ctx context.Context, tenantID, scanID, scanType string, demoMode bool) ([]*model.Finding, error)
+	Scan(ctx context.Context, tenantID, scanID, scanType string, demoMode bool, inventory []InventoryEntry) ([]*model.Finding, error)
 }
 
-// inventoryEntry 一条资产清单条目(主机 + 已装软件包版本)。
-type inventoryEntry struct {
+// InventoryEntry 一条资产清单条目(主机 + 已装软件包版本)。
+// AgentID 为经 Agent 下发扫描时的目标 agent(RuleScanner 忽略, AgentScanner 使用)。
+type InventoryEntry struct {
 	Host    string
 	Package string
 	Version string
+	AgentID string
 }
 
 // cveRule 内置 CVE 规则(演示用; 生产可由 trivy/grype 替换)。
@@ -43,16 +46,16 @@ type RuleScanner struct{}
 func NewRuleScanner() *RuleScanner { return &RuleScanner{} }
 
 // demoInventory 8 条样例主机软件清单(演示模式注入)。
-func demoInventory() []inventoryEntry {
-	return []inventoryEntry{
-		{"web-01", "openssl", "3.0.5"},
-		{"web-02", "xz", "5.6.1"},
-		{"app-01", "log4j", "2.14.1"},
-		{"lb-01", "nginx", "1.22.0"},
-		{"lb-02", "nginx", "1.20.0"},
-		{"cache-01", "curl", "7.68.0"},
-		{"cache-02", "curl", "7.70.0"},
-		{"shell-01", "bash", "5.0"},
+func demoInventory() []InventoryEntry {
+	return []InventoryEntry{
+		{"web-01", "openssl", "3.0.5", ""},
+		{"web-02", "xz", "5.6.1", ""},
+		{"app-01", "log4j", "2.14.1", ""},
+		{"lb-01", "nginx", "1.22.0", ""},
+		{"lb-02", "nginx", "1.20.0", ""},
+		{"cache-01", "curl", "7.68.0", ""},
+		{"cache-02", "curl", "7.70.0", ""},
+		{"shell-01", "bash", "5.0", ""},
 	}
 }
 
@@ -83,18 +86,21 @@ func rules() []cveRule {
 }
 
 // Scan 执行一次扫描。
-// 非 demo 模式且无真实 inventory 注入时返回 nil(不造假);
-// demo 模式注入样例清单, 按 scanType 过滤(critical/high 或全量)。
-func (s *RuleScanner) Scan(ctx context.Context, tenantID, scanID, scanType string, demoMode bool) ([]*model.Finding, error) {
-	if !demoMode {
-		// 真实 inventory 注入为后续工作; 当前无 inventory 时返回空(不造假)。
-		return nil, nil
+// inventory 为外部注入的资产清单(经 CMDB 拉取或 Agent 下发结果);为空时:
+//   demo 模式注入样例清单;非 demo 返回 nil(不造假)。
+// 按 scanType 过滤(critical/high 或全量)。
+func (s *RuleScanner) Scan(ctx context.Context, tenantID, scanID, scanType string, demoMode bool, inventory []InventoryEntry) ([]*model.Finding, error) {
+	if len(inventory) == 0 {
+		if !demoMode {
+			// 真实 inventory 注入为后续工作; 当前无 inventory 时返回空(不造假)。
+			return nil, nil
+		}
+		inventory = demoInventory()
 	}
-	inv := demoInventory()
 	rs := rules()
 
 	var findings []*model.Finding
-	for _, e := range inv {
+	for _, e := range inventory {
 		for _, r := range rs {
 			if r.Package != e.Package {
 				continue

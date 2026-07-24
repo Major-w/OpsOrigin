@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"log"
 	"log/slog"
 	"net/http"
@@ -338,8 +339,12 @@ func main() {
 	opsSvc := ops.NewService(cfg, db)
 	server.RegisterService(opsSvc)
 
-	// 漏洞扫描：规则匹配器垂直切片(Scanner 接口预留 Trivy/Grype 热插拔)
-	vulnSvc := vuln.NewService(cfg, db)
+	// 漏洞扫描：规则匹配器 + 真实 inventory 注入(经 CMDB 适配器)。
+	// 适配器把 cmdb.Service.ListCI 按约定 schema 映射为 vuln.InventoryEntry,
+	// 解耦 vuln↔cmdb,无反向依赖。
+	vulnSvc := vuln.NewService(cfg, db, cmdbInventoryAdapter{pgRepo: pgRepo})
+	// 注入 Agent 下发通道(供 AgentScanner 经 Tunnel 下发 trivy/grype)。
+	vulnSvc.SetAgentRunner(agentSvc)
 	server.RegisterService(vulnSvc)
 
 	go func() {
@@ -383,4 +388,56 @@ func (s *staticHandlerRegistrar) RegisterRoutes(mux *http.ServeMux) {
 	for pattern, handler := range s.routes {
 		mux.HandleFunc(pattern, handler.ServeHTTP)
 	}
+}
+
+// cmdbInventoryAdapter 将 PG 资产表(pg.Repository.ListCI)按约定 schema 映射为 vuln.InventoryEntry。
+// 约定:CI 的 attributes["software_packages"] 为 JSON 数组 [{"name":..,"version":..}];
+// attributes["agent_id"] 为经 Agent 下发扫描的目标 agent(可选,供 AgentScanner 使用)。
+// stub 模式(无 PG)pgRepo 为 nil,返回空(不造假)。
+type cmdbInventoryAdapter struct {
+	pgRepo *pg.Repository
+}
+
+func (a cmdbInventoryAdapter) ListHostInventory(ctx context.Context, tenantID string) ([]vuln.InventoryEntry, error) {
+	if a.pgRepo == nil {
+		return nil, nil
+	}
+	cis, err := a.pgRepo.ListCI(ctx, tenantID, "")
+	if err != nil {
+		return nil, err
+	}
+	var inv []vuln.InventoryEntry
+	for _, ci := range cis {
+		raw, ok := ci.Attributes["software_packages"]
+		if !ok {
+			continue
+		}
+		b, err := json.Marshal(raw)
+		if err != nil {
+			continue
+		}
+		var pkgs []struct {
+			Name    string `json:"name"`
+			Version string `json:"version"`
+		}
+		if json.Unmarshal(b, &pkgs) != nil {
+			continue
+		}
+		agentID := ""
+		if v, ok := ci.Attributes["agent_id"].(string); ok {
+			agentID = v
+		}
+		for _, p := range pkgs {
+			if p.Name == "" {
+				continue
+			}
+			inv = append(inv, vuln.InventoryEntry{
+				Host:    ci.Name,
+				Package: p.Name,
+				Version: p.Version,
+				AgentID: agentID,
+			})
+		}
+	}
+	return inv, nil
 }

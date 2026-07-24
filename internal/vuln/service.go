@@ -16,15 +16,24 @@ import (
 	"github.com/opsorigin/core/pkg/config"
 )
 
+// InventoryProvider 提供真实资产清单(从 CMDB 拉取并按约定 schema 映射)。
+// 由 cmd/core/main.go 的适配器注入(包装 cmdb.Service.ListCI),
+// 解耦 vuln↔cmdb,避免反向依赖。
+type InventoryProvider interface {
+	ListHostInventory(ctx context.Context, tenantID string) ([]InventoryEntry, error)
+}
+
 // Service 漏洞扫描服务；Scanner 预留 Trivy/Grype/Nuclei/OpenSCAP 热插拔位。
 type Service struct {
-	cfg     *config.Config
-	store   store.Store
-	scanner Scanner
+	cfg          *config.Config
+	store        store.Store
+	scanner      Scanner
+	invProvider  InventoryProvider
+	agentRunner  AgentRunner
 }
 
 // NewService 构造服务；优先 PG，Init 失败回退内存(租户隔离)。
-func NewService(cfg *config.Config, db *sql.DB) *Service {
+func NewService(cfg *config.Config, db *sql.DB, inv InventoryProvider) *Service {
 	var st store.Store
 	if db != nil {
 		pg := store.NewPGStore(db)
@@ -41,10 +50,17 @@ func NewService(cfg *config.Config, db *sql.DB) *Service {
 		slog.Info("vuln: using in-memory store")
 	}
 	return &Service{
-		cfg:     cfg,
-		store:   st,
-		scanner: NewRuleScanner(),
+		cfg:         cfg,
+		store:       st,
+		scanner:     NewRuleScanner(),
+		invProvider: inv,
 	}
+}
+
+// SetAgentRunner 注入 Agent 下发通道(供 AgentScanner 经 Tunnel 下发 trivy/grype),
+// 保持 vuln 对 agentmgr 零硬依赖(仅依赖 AgentRunner 接口)。
+func (s *Service) SetAgentRunner(ar AgentRunner) {
+	s.agentRunner = ar
 }
 
 // RegisterRoutes 注册漏洞扫描 REST 路由。
@@ -73,7 +89,7 @@ func (s *Service) handleCreateScan(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	stype := model.ScanType(req.Type)
-	if stype != model.ScanTypeFull && stype != model.ScanTypeQuick && stype != model.ScanTypeCVE {
+	if stype != model.ScanTypeFull && stype != model.ScanTypeQuick && stype != model.ScanTypeCVE && stype != model.ScanTypeAgent {
 		stype = model.ScanTypeFull
 	}
 	tenantID := tenantFromCtx(r.Context())
@@ -93,7 +109,24 @@ func (s *Service) handleCreateScan(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	findings, err := s.scanner.Scan(r.Context(), tenantID, scan.ID, string(stype), req.DemoMode)
+	// 非 demo(或 agent 类型)且注入了 InventoryProvider 时,从 CMDB 拉真实资产清单;
+	// 拉取失败或为空时 scanner 在非 demo 下返回空(不造假)。
+	// agent 类型强制拉取(无视 demo 开关),供 AgentScanner 经 Agent 下发 trivy。
+	var inv []InventoryEntry
+	if s.invProvider != nil && (!req.DemoMode || stype == model.ScanTypeAgent) {
+		inv, _ = s.invProvider.ListHostInventory(r.Context(), tenantID)
+	}
+	// 按扫描类型选扫描器:agent 类型用 AgentScanner(经 Agent 下发 trivy/grype),
+	// 其余用内置 RuleScanner(基于 CVE 规则库)。
+	var sc Scanner = s.scanner
+	if stype == model.ScanTypeAgent {
+		if s.agentRunner == nil {
+			writeError(w, http.StatusBadRequest, "agent scan requires agent runner (agentmgr not available)")
+			return
+		}
+		sc = NewAgentScanner(s.agentRunner)
+	}
+	findings, err := sc.Scan(r.Context(), tenantID, scan.ID, string(stype), req.DemoMode, inv)
 	if err != nil {
 		slog.Error("vuln: scan failed", "error", err)
 		scan.Status = model.ScanStatusFailed
