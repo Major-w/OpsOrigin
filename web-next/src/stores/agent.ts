@@ -55,6 +55,10 @@ interface AgentState {
   fetchTasks: (id: string) => Promise<TaskInfo[]>
   createTask: (id: string, data: { action: string; script?: string; params?: Record<string, any>; timeout?: number }) => Promise<boolean>
   fetchSandbox: () => Promise<{ exists: boolean; agent?: AgentHost }>
+  // Agent 全局版本一致性
+  fetchVersionPolicy: () => Promise<{ target_version: string; agents_total: number; on_target: number; pending: number } | null>
+  setVersionPolicy: (targetVersion: string) => Promise<boolean>
+  batchUpgradeAgents: () => Promise<{ upgrade_queued: number; skipped: number } | null>
 }
 
 export const useAgentStore = create<AgentState>((set, get) => ({
@@ -260,6 +264,35 @@ export const useAgentStore = create<AgentState>((set, get) => ({
       return await apiFetch<{ exists: boolean; agent?: AgentHost }>('/agents/sandbox')
     } catch (e: any) {
       return { exists: false }
+    }
+  },
+  fetchVersionPolicy: async () => {
+    try {
+      return await apiFetch<{ target_version: string; agents_total: number; on_target: number; pending: number }>('/agents/version-policy')
+    } catch (e: any) {
+      toast.error(`加载版本策略失败: ${e.message}`)
+      return null
+    }
+  },
+  setVersionPolicy: async (targetVersion) => {
+    try {
+      await apiFetch('/agents/version-policy', { method: 'PUT', body: JSON.stringify({ target_version: targetVersion }) })
+      toast.success('版本策略已更新')
+      return true
+    } catch (e: any) {
+      toast.error(`设置版本策略失败: ${e.message}`)
+      return false
+    }
+  },
+  batchUpgradeAgents: async () => {
+    try {
+      const res = await apiFetch<{ upgrade_queued: number; skipped: number }>('/agents/batch-upgrade', { method: 'POST' })
+      toast.success(`批量升级已下发: ${res.upgrade_queued} 个排队, ${res.skipped} 个跳过`)
+      await get().fetch()
+      return res
+    } catch (e: any) {
+      toast.error(`批量升级失败: ${e.message}`)
+      return null
     }
   },
 }))

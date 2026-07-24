@@ -387,6 +387,10 @@ type Service struct {
 	// T12: 滚动升级通道
 	upgradeMgr *UpgradeManager
 
+	// 全局目标版本策略（Agent 版本一致性管理）
+	versionPolicy   string
+	versionPolicyMu sync.Mutex
+
 	// §6 命令白名单:非 nil 时所有经 Server 直接下发的命令(SSH 直连 / 经 Proxy / 沙箱)
 	// 执行前均须命中白名单,否则拒绝。由上层从 command_whitelist 表加载后通过 SetWhitelist 注入。
 	whitelist       *command.Whitelist
@@ -589,6 +593,10 @@ func (s *Service) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("PUT /api/v1/agents/{id}/circuit-breaker", s.handleSetCB)
 	mux.HandleFunc("POST /api/v1/agents/{id}/restart", s.handleRestartAgent)
 	mux.HandleFunc("POST /api/v1/agents/{id}/upgrade", s.handleUpgradeAgent)
+	// Agent 全局版本一致性管理
+	mux.HandleFunc("GET /api/v1/agents/version-policy", s.handleGetVersionPolicy)
+	mux.HandleFunc("PUT /api/v1/agents/version-policy", s.handleSetVersionPolicy)
+	mux.HandleFunc("POST /api/v1/agents/batch-upgrade", s.handleBatchUpgrade)
 	mux.HandleFunc("POST /api/v1/agents/{id}/uninstall", s.handleUninstallAgent)
 	mux.HandleFunc("POST /api/v1/agents/{id}/cmdb", s.handleCMDBReport)
 	mux.HandleFunc("GET /api/v1/agents/{id}/download-tasks", s.handleDownloadTasks)
@@ -2757,4 +2765,129 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 
 func writeError(w http.ResponseWriter, status int, msg string) {
 	writeJSON(w, status, map[string]string{"error": msg})
+}
+
+// ------- Agent 全局版本一致性 -------
+
+// handleGetVersionPolicy 返回全局目标版本及 Agent 合规统计。
+func (s *Service) handleGetVersionPolicy(w http.ResponseWriter, r *http.Request) {
+	tenantID := r.Header.Get("X-Tenant-ID")
+	if tenantID == "" {
+		tenantID = "default"
+	}
+	agents, err := s.store.List(r.Context(), tenantID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	s.versionPolicyMu.Lock()
+	target := s.versionPolicy
+	s.versionPolicyMu.Unlock()
+
+	total := len(agents)
+	onTarget := 0
+	for _, a := range agents {
+		if a.Type != "agent" {
+			continue
+		}
+		if target != "" && a.Version == target {
+			onTarget++
+		}
+	}
+	pending := 0
+	if target != "" {
+		pending = total - onTarget
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"target_version": target,
+		"agents_total":   total,
+		"on_target":      onTarget,
+		"pending":        pending,
+	})
+}
+
+// handleSetVersionPolicy 设置全局目标版本。
+func (s *Service) handleSetVersionPolicy(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		TargetVersion string `json:"target_version"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	s.versionPolicyMu.Lock()
+	s.versionPolicy = req.TargetVersion
+	s.versionPolicyMu.Unlock()
+
+	slog.Info("agent version policy updated", "target_version", req.TargetVersion)
+	writeJSON(w, http.StatusOK, map[string]string{
+		"status":         "ok",
+		"target_version": req.TargetVersion,
+	})
+}
+
+// handleBatchUpgrade 批量升级所有在线 Agent 到目标版本。
+func (s *Service) handleBatchUpgrade(w http.ResponseWriter, r *http.Request) {
+	tenantID := r.Header.Get("X-Tenant-ID")
+	if tenantID == "" {
+		tenantID = "default"
+	}
+
+	s.versionPolicyMu.Lock()
+	target := s.versionPolicy
+	s.versionPolicyMu.Unlock()
+
+	if target == "" {
+		writeError(w, http.StatusBadRequest, "no target version set; use PUT /api/v1/agents/version-policy first")
+		return
+	}
+
+	agents, err := s.store.List(r.Context(), tenantID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	upgraded := 0
+	skipped := 0
+	for _, a := range agents {
+		if a.Type != "agent" || a.Status != "online" {
+			continue
+		}
+		if a.Version == target {
+			skipped++
+			continue
+		}
+		task := &TaskRequest{
+			Action:  "upgrade",
+			Params:  map[string]any{"target_version": target},
+			Timeout: 600,
+		}
+		if err := s.store.CreateTask(r.Context(), a.ID, task); err != nil {
+			slog.Warn("batch upgrade: failed to create task", "agent_id", a.ID, "error", err)
+			continue
+		}
+		// 尝试经 tunnel 立即下发
+		if s.tunnelServer != nil && a.ProxyID != "" {
+			payloadBytes, _ := json.Marshal(task)
+			cmd := &tunnel.CommandRequest{
+				CommandID:     uuid.NewString(),
+				TargetID:      a.ID,
+				Action:        "upgrade",
+				Payload:       payloadBytes,
+				TimeoutSecond: 600,
+			}
+			s.tunnelServer.SendCommand(a.ProxyID, cmd)
+		}
+		upgraded++
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"status":          "ok",
+		"target_version":  target,
+		"upgrade_queued": upgraded,
+		"skipped":         skipped,
+	})
 }

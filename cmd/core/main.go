@@ -279,6 +279,7 @@ func main() {
 		{Type: command.RulePrefix, Pattern: "sudo"},
 	})
 	scriptSvc.SetCommandWhitelist(wl)
+	scriptSvc.SetDangerousPolicy(command.NewDangerousPolicy())
 
 	server.RegisterService(workflowSvc)
 

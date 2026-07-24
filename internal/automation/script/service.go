@@ -189,25 +189,26 @@ func (s *MemoryStore) ListExecutions(ctx context.Context, scriptID, tenantID str
 // snapshot builds an immutable ScriptVersion from a Script.
 func snapshot(sc *Script, at time.Time, changeNote, createdBy string) *ScriptVersion {
 	return &ScriptVersion{
-		ID:          uuid.New().String(),
-		ScriptID:    sc.ID,
-		TenantID:    sc.TenantID,
-		Version:     sc.Version,
-		Name:        sc.Name,
-		Type:        sc.Type,
-		Content:     sc.Content,
-		InputParams: sc.InputParams,
+		ID:           uuid.New().String(),
+		ScriptID:     sc.ID,
+		TenantID:     sc.TenantID,
+		Version:      sc.Version,
+		Name:         sc.Name,
+		Type:         sc.Type,
+		Content:      sc.Content,
+		InputParams:  sc.InputParams,
 		OutputParams: sc.OutputParams,
-		Timeout:     sc.Timeout,
-		RunAs:       sc.RunAs,
-		ChangeNote:  changeNote,
-		CreatedBy:   createdBy,
-		CreatedAt:   at,
+		Timeout:      sc.Timeout,
+		RunAs:        sc.RunAs,
+		ChangeNote:   changeNote,
+		CreatedBy:    createdBy,
+		CreatedAt:    at,
+		Public:       sc.Public,
+		ApprovalStatus: sc.ApprovalStatus,
 	}
 }
 
 // AgentRunner 把脚本下发到被管主机上的 Agent 执行。
-// 由 agentmgr.Service 通过 Tunnel 实现，使脚本真正在主机运行（而非 Core 本机）。
 type AgentRunner interface {
 	RunScriptOnAgent(ctx context.Context, agentID, tenantID, content string, params map[string]string, timeout int, runAs string) (output string, exitCode int, err error)
 }
@@ -216,23 +217,22 @@ type AgentRunner interface {
 type Service struct {
 	store       Store
 	agentRunner AgentRunner
-	cmdWhitelist *command.Whitelist // 本地兜底执行路径的命令白名单(§6)
+	cmdWhitelist *command.Whitelist
+	dangerous    *command.DangerousPolicy
 }
 
-// SetAgentRunner 注入 Agent 派发器。未注入（或脚本未指定 AgentID）时，
-// 脚本回退到 Core 本机 os/exec 执行（调试/沙箱场景）。
+func (s *Service) SetDangerousPolicy(dp *command.DangerousPolicy) {
+	s.dangerous = dp
+}
+
 func (s *Service) SetAgentRunner(r AgentRunner) {
 	s.agentRunner = r
 }
 
-// SetCommandWhitelist 注入本地执行路径的命令白名单。
-// 当脚本在 Core 本机兜底运行(无 Agent)时,若白名单已设且含 sudo/runAs, 则校验基础命令。
-// nil 表示未启用(不拦截, dev 期可用)。
 func (s *Service) SetCommandWhitelist(wl *command.Whitelist) {
 	s.cmdWhitelist = wl
 }
 
-// NewService creates a Service backed by an in-memory store.
 func NewService(db *sql.DB) *Service {
 	var st Store = NewMemoryStore()
 	if db != nil {
@@ -241,7 +241,6 @@ func NewService(db *sql.DB) *Service {
 	return &Service{store: st}
 }
 
-// context keys for out-of-band request data.
 type ctxKey string
 
 const (
@@ -270,25 +269,21 @@ func userFromCtx(ctx context.Context) string {
 	return ""
 }
 
-// RegisterRoutes wires all script API routes onto the given mux.
 func (s *Service) RegisterRoutes(mux *http.ServeMux) {
-	// 原有 CRUD
 	mux.HandleFunc("POST /api/v1/scripts", s.handleCreate)
 	mux.HandleFunc("GET /api/v1/scripts", s.handleList)
 	mux.HandleFunc("GET /api/v1/scripts/{id}", s.handleGet)
 	mux.HandleFunc("PUT /api/v1/scripts/{id}", s.handleUpdate)
 	mux.HandleFunc("DELETE /api/v1/scripts/{id}", s.handleDelete)
-	// 新增:执行
 	mux.HandleFunc("POST /api/v1/scripts/{id}/execute", s.handleExecute)
-	// 新增:执行历史
 	mux.HandleFunc("GET /api/v1/scripts/{id}/executions", s.handleListExecutions)
-	// 新增:版本管理
 	mux.HandleFunc("GET /api/v1/scripts/{id}/versions", s.handleListVersions)
 	mux.HandleFunc("GET /api/v1/scripts/{id}/versions/{version}", s.handleGetVersion)
-	// 新增:版本比对(用 query 参数 from/to,末尾 diff 字面量与 {version} 通配符不冲突)
 	mux.HandleFunc("GET /api/v1/scripts/{id}/diff", s.handleDiff)
-	// 新增:语法检查（POST /api/v1/scripts/check）
 	mux.HandleFunc("POST /api/v1/scripts/check", s.handleCheck)
+	mux.HandleFunc("POST /api/v1/scripts/{id}/publish", s.handlePublish)
+	mux.HandleFunc("POST /api/v1/scripts/{id}/approve", s.handleApprove)
+	mux.HandleFunc("POST /api/v1/scripts/{id}/reject", s.handleReject)
 }
 
 func (s *Service) handleCreate(w http.ResponseWriter, r *http.Request) {
@@ -301,6 +296,7 @@ func (s *Service) handleCreate(w http.ResponseWriter, r *http.Request) {
 	if sc.Timeout == 0 {
 		sc.Timeout = 300
 	}
+	sc.ApprovalStatus = s.determineApproval(&sc)
 	if err := s.store.Create(r.Context(), &sc); err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -340,7 +336,6 @@ func (s *Service) handleUpdate(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "script not found")
 		return
 	}
-	// 解析脚本字段 + 可选的 change_note(单独解码)
 	var req struct {
 		Script
 		ChangeNote string `json:"change_note,omitempty"`
@@ -353,7 +348,11 @@ func (s *Service) handleUpdate(w http.ResponseWriter, r *http.Request) {
 	sc.ID = existing.ID
 	sc.TenantID = existing.TenantID
 	sc.CreatedAt = existing.CreatedAt
-	// Version 递增在 store.Update 内完成
+	if sc.Public != existing.Public || sc.Content != existing.Content {
+		sc.ApprovalStatus = s.determineApproval(&sc)
+	} else {
+		sc.ApprovalStatus = existing.ApprovalStatus
+	}
 	ctx := context.WithValue(r.Context(), changeNoteCtxKey, req.ChangeNote)
 	if err := s.store.Update(ctx, &sc); err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
@@ -386,8 +385,6 @@ func (s *Service) handleExecute(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	req.TenantID = tenantID
-
-	// 校验必填输入参数
 	if sc.InputParams != nil {
 		for _, p := range sc.InputParams {
 			if p.Required {
@@ -398,7 +395,6 @@ func (s *Service) handleExecute(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
-
 	result := s.executeScript(sc, &req)
 	if err := s.store.SaveExecution(r.Context(), result); err != nil {
 		slog.Error("failed to save execution", "script_id", sc.ID, "error", err)
@@ -477,9 +473,6 @@ func (s *Service) handleDiff(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, diffVersions(from, to))
 }
 
-// Execute 为 workflow 引擎提供的公开接口,执行指定脚本并返回结果。
-// agentID 非空时通过 AgentRunner 派发到主机执行；tenantID 用于多租户隔离
-// （修复原硬编码 "default" 导致非 default 租户脚本 not found 的 bug）。
 func (s *Service) Execute(scriptID string, params map[string]string, timeout int, runAs string, agentID string, tenantID string) (string, int, error) {
 	if tenantID == "" {
 		tenantID = "default"
@@ -497,7 +490,6 @@ func (s *Service) Execute(scriptID string, params map[string]string, timeout int
 	return result.Output, result.ExitCode, nil
 }
 
-// executeScript runs the script in a subprocess and returns the captured result.
 func (s *Service) executeScript(sc *Script, req *ExecuteRequest) *ExecutionResult {
 	started := time.Now()
 	result := &ExecutionResult{
@@ -509,25 +501,14 @@ func (s *Service) executeScript(sc *Script, req *ExecuteRequest) *ExecutionResul
 		RunAs:     req.RunAs,
 		StartedAt: started,
 	}
-
-	// 目标 Agent 派发：指定 AgentID 且已注入 AgentRunner 时，
-	// 把脚本下发到该 Agent 所在被管主机执行（复用 Agent 端白名单校验）。
 	if req.AgentID != "" && s.agentRunner != nil {
 		to := req.Timeout
-		if to <= 0 {
-			to = sc.Timeout
-		}
-		if to <= 0 {
-			to = 300
-		}
+		if to <= 0 { to = sc.Timeout }
+		if to <= 0 { to = 300 }
 		ra := req.RunAs
-		if ra == "" {
-			ra = sc.RunAs
-		}
+		if ra == "" { ra = sc.RunAs }
 		tid := req.TenantID
-		if tid == "" {
-			tid = tenantFromCtx(context.Background())
-		}
+		if tid == "" { tid = tenantFromCtx(context.Background()) }
 		output, exitCode, rerr := s.agentRunner.RunScriptOnAgent(context.Background(), req.AgentID, tid, sc.Content, req.Params, to, ra)
 		if rerr != nil {
 			result.finish("failed", exitCode, rerr.Error(), started)
@@ -538,23 +519,13 @@ func (s *Service) executeScript(sc *Script, req *ExecuteRequest) *ExecutionResul
 		result.parseOutput(sc.OutputParams)
 		return result
 	}
-
-	// 确定超时:请求优先,否则脚本,否则默认 300
 	timeout := req.Timeout
-	if timeout <= 0 {
-		timeout = sc.Timeout
-	}
-	if timeout <= 0 {
-		timeout = 300
-	}
-
-	// 写临时文件(带扩展名)
+	if timeout <= 0 { timeout = sc.Timeout }
+	if timeout <= 0 { timeout = 300 }
 	pattern := "opsorigin-script-*.sh"
 	switch sc.Type {
-	case ScriptTypePython:
-		pattern = "opsorigin-script-*.py"
-	case ScriptTypeBat:
-		pattern = "opsorigin-script-*.bat"
+	case ScriptTypePython: pattern = "opsorigin-script-*.py"
+	case ScriptTypeBat:    pattern = "opsorigin-script-*.bat"
 	}
 	tmpFile, err := os.CreateTemp("", pattern)
 	if err != nil {
@@ -563,30 +534,20 @@ func (s *Service) executeScript(sc *Script, req *ExecuteRequest) *ExecutionResul
 	}
 	tmpPath := tmpFile.Name()
 	if _, err := tmpFile.WriteString(sc.Content); err != nil {
-		tmpFile.Close()
-		os.Remove(tmpPath)
+		tmpFile.Close(); os.Remove(tmpPath)
 		result.finish("failed", -1, fmt.Sprintf("write temp file: %v", err), started)
 		return result
 	}
 	tmpFile.Close()
 	defer os.Remove(tmpPath)
-
-	// RunAs:请求优先,否则脚本
 	runAs := req.RunAs
-	if runAs == "" {
-		runAs = sc.RunAs
-	}
-
-	// 本地执行路径白名单校验(与 Agent 端校验对齐 §6)
+	if runAs == "" { runAs = sc.RunAs }
 	if s.cmdWhitelist != nil {
 		var checkCmd string
 		switch sc.Type {
-		case ScriptTypeShell:
-			checkCmd = "bash"
-		case ScriptTypePython:
-			checkCmd = "python3"
-		case ScriptTypeBat:
-			checkCmd = "cmd"
+		case ScriptTypeShell: checkCmd = "bash"
+		case ScriptTypePython: checkCmd = "python3"
+		case ScriptTypeBat: checkCmd = "cmd"
 		}
 		if checkCmd != "" {
 			if err := s.cmdWhitelist.Verify(checkCmd); err != nil {
@@ -601,209 +562,108 @@ func (s *Service) executeScript(sc *Script, req *ExecuteRequest) *ExecutionResul
 			}
 		}
 	}
-
 	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(timeout)*time.Second)
 	defer cancel()
-
 	var cmd *exec.Cmd
 	switch sc.Type {
 	case ScriptTypeShell:
-		if runAs != "" {
-			cmd = exec.CommandContext(ctx, "sudo", "-u", runAs, "bash", tmpPath)
-		} else {
-			cmd = exec.CommandContext(ctx, "bash", tmpPath)
-		}
+		if runAs != "" { cmd = exec.CommandContext(ctx, "sudo", "-u", runAs, "bash", tmpPath) } else { cmd = exec.CommandContext(ctx, "bash", tmpPath) }
 	case ScriptTypePython:
-		if runAs != "" {
-			cmd = exec.CommandContext(ctx, "sudo", "-u", runAs, "python3", tmpPath)
-		} else {
-			cmd = exec.CommandContext(ctx, "python3", tmpPath)
-		}
+		if runAs != "" { cmd = exec.CommandContext(ctx, "sudo", "-u", runAs, "python3", tmpPath) } else { cmd = exec.CommandContext(ctx, "python3", tmpPath) }
 	case ScriptTypeBat:
-		if runAs != "" {
-			cmd = exec.CommandContext(ctx, "sudo", "-u", runAs, "cmd", "/c", tmpPath)
-		} else {
-			cmd = exec.CommandContext(ctx, "cmd", "/c", tmpPath)
-		}
+		if runAs != "" { cmd = exec.CommandContext(ctx, "sudo", "-u", runAs, "cmd", "/c", tmpPath) } else { cmd = exec.CommandContext(ctx, "cmd", "/c", tmpPath) }
 	default:
 		result.finish("failed", -1, fmt.Sprintf("unsupported script type: %s", sc.Type), started)
 		return result
 	}
-
-	// 注入环境变量 PARAM_<NAME>=<value>
 	cmd.Env = append(os.Environ(), buildParamEnv(req.Params)...)
-	// 将脚本进程放入独立进程组,便于超时时清理子进程
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-
 	output, err := cmd.CombinedOutput()
 	result.Output = string(output)
 	result.Duration = time.Since(started).Milliseconds()
 	now := time.Now()
 	result.FinishedAt = &now
-
 	switch {
 	case ctx.Err() == context.DeadlineExceeded:
-		result.Status = "timeout"
-		result.ExitCode = -1
-		result.Error = "execution timed out"
+		result.Status = "timeout"; result.ExitCode = -1; result.Error = "execution timed out"
 	case err != nil:
 		result.Status = "failed"
-		if exitErr, ok := err.(*exec.ExitError); ok {
-			result.ExitCode = exitErr.ExitCode()
-		} else {
-			result.ExitCode = -1
-		}
+		if exitErr, ok := err.(*exec.ExitError); ok { result.ExitCode = exitErr.ExitCode() } else { result.ExitCode = -1 }
 		result.Error = err.Error()
 	default:
-		result.Status = "success"
-		result.ExitCode = 0
+		result.Status = "success"; result.ExitCode = 0
 	}
 	result.parseOutput(sc.OutputParams)
 	return result
 }
 
-// finish finalizes an ExecutionResult with the given terminal state.
 func (r *ExecutionResult) finish(status string, exitCode int, errMsg string, started time.Time) {
-	r.Status = status
-	r.ExitCode = exitCode
-	r.Error = errMsg
+	r.Status = status; r.ExitCode = exitCode; r.Error = errMsg
 	r.Duration = time.Since(started).Milliseconds()
-	now := time.Now()
-	r.FinishedAt = &now
+	now := time.Now(); r.FinishedAt = &now
 }
 
-// buildParamEnv converts params into PARAM_<NAME>=<value> environment entries.
 func buildParamEnv(params map[string]string) []string {
 	var env []string
-	for k, v := range params {
-		env = append(env, fmt.Sprintf("PARAM_%s=%s", strings.ToUpper(k), v))
-	}
+	for k, v := range params { env = append(env, fmt.Sprintf("PARAM_%s=%s", strings.ToUpper(k), v)) }
 	return env
 }
 
-// parseOutput 从 stdout 中提取出参：优先整段JSON → 末行JSON → KEY=VALUE行。
 func (r *ExecutionResult) parseOutput(outputParams []ParamDef) {
 	if len(outputParams) == 0 || r.Output == "" { return }
 	out := make(map[string]any)
-
-	// 策略1: 整段 stdout 就是 JSON
 	var full map[string]any
 	if json.Unmarshal([]byte(strings.TrimSpace(r.Output)), &full) == nil {
-		for _, p := range outputParams {
-			if v, ok := full[p.Name]; ok { out[p.Name] = v }
-		}
+		for _, p := range outputParams { if v, ok := full[p.Name]; ok { out[p.Name] = v } }
 		if len(out) > 0 { r.ParsedOutput = out; return }
 	}
-
-	// 策略2: 取最后一行 JSON
 	lines := strings.Split(strings.TrimSpace(r.Output), "\n")
 	lastLine := strings.TrimSpace(lines[len(lines)-1])
 	var last map[string]any
 	if json.Unmarshal([]byte(lastLine), &last) == nil {
-		for _, p := range outputParams {
-			if v, ok := last[p.Name]; ok { out[p.Name] = v }
-		}
+		for _, p := range outputParams { if v, ok := last[p.Name]; ok { out[p.Name] = v } }
 		if len(out) > 0 { r.ParsedOutput = out; return }
 	}
-
-	// 策略3: KV行 — 匹配 OutputParams 中定义的名字, 也支持 OUT_<NAME>=<VALUE> 前缀
 	for _, line := range lines {
 		line = strings.TrimSpace(line)
 		eq := strings.Index(line, "=")
 		if eq <= 0 { continue }
 		k, v := line[:eq], line[eq+1:]
-		// 去掉 OUT_ 前缀 (约定: 脚本中用 OUT_HOSTNAME=value 输出)
 		if strings.HasPrefix(k, "OUT_") { k = k[4:] }
-		for _, p := range outputParams {
-			if p.Name == k { out[k] = v }
-		}
+		for _, p := range outputParams { if p.Name == k { out[k] = v } }
 	}
 	if len(out) > 0 { r.ParsedOutput = out }
 }
 
-// diffVersions compares two script versions field by field.
 func diffVersions(from, to *ScriptVersion) *DiffResult {
 	result := &DiffResult{FromVersion: from.Version, ToVersion: to.Version}
-
-	if from.Name != to.Name {
-		result.Changes = append(result.Changes, DiffEntry{Field: "name", OldValue: from.Name, NewValue: to.Name})
-	}
-	if from.Timeout != to.Timeout {
-		result.Changes = append(result.Changes, DiffEntry{
-			Field:    "timeout",
-			OldValue: fmt.Sprintf("%d", from.Timeout),
-			NewValue: fmt.Sprintf("%d", to.Timeout),
-		})
-	}
-	if from.RunAs != to.RunAs {
-		result.Changes = append(result.Changes, DiffEntry{Field: "run_as", OldValue: from.RunAs, NewValue: to.RunAs})
-	}
-	if fromJSON, toJSON := toJSONString(from.InputParams), toJSONString(to.InputParams); fromJSON != toJSON {
-		result.Changes = append(result.Changes, DiffEntry{Field: "input_params", OldValue: fromJSON, NewValue: toJSON})
-	}
-	if fromJSON, toJSON := toJSONString(from.OutputParams), toJSONString(to.OutputParams); fromJSON != toJSON {
-		result.Changes = append(result.Changes, DiffEntry{Field: "output_params", OldValue: fromJSON, NewValue: toJSON})
-	}
-	if from.Content != to.Content {
-		// content 字段标记为 old_value/new_value 的行级 diff
-		result.Changes = append(result.Changes, diffContent(from.Content, to.Content)...)
-	}
+	if from.Name != to.Name { result.Changes = append(result.Changes, DiffEntry{Field: "name", OldValue: from.Name, NewValue: to.Name}) }
+	if from.Timeout != to.Timeout { result.Changes = append(result.Changes, DiffEntry{Field: "timeout", OldValue: fmt.Sprintf("%d", from.Timeout), NewValue: fmt.Sprintf("%d", to.Timeout)}) }
+	if from.RunAs != to.RunAs { result.Changes = append(result.Changes, DiffEntry{Field: "run_as", OldValue: from.RunAs, NewValue: to.RunAs}) }
+	if fromJ, toJ := toJSONString(from.InputParams), toJSONString(to.InputParams); fromJ != toJ { result.Changes = append(result.Changes, DiffEntry{Field: "input_params", OldValue: fromJ, NewValue: toJ}) }
+	if fromJ, toJ := toJSONString(from.OutputParams), toJSONString(to.OutputParams); fromJ != toJ { result.Changes = append(result.Changes, DiffEntry{Field: "output_params", OldValue: fromJ, NewValue: toJ}) }
+	if from.Content != to.Content { result.Changes = append(result.Changes, diffContent(from.Content, to.Content)...) }
 	return result
 }
 
-// diffContent performs a simple line-level diff (added/removed lines).
-// Removed lines are recorded with OldValue, added lines with NewValue, both
-// under the "content" field.
 func diffContent(old, new string) []DiffEntry {
 	oldLines := strings.Split(old, "\n")
 	newLines := strings.Split(new, "\n")
-
 	oldCounts := make(map[string]int)
-	for _, l := range oldLines {
-		oldCounts[l]++
-	}
+	for _, l := range oldLines { oldCounts[l]++ }
 	newCounts := make(map[string]int)
-	for _, l := range newLines {
-		newCounts[l]++
-	}
-
+	for _, l := range newLines { newCounts[l]++ }
 	var entries []DiffEntry
-	// removed lines (only in old)
 	remCounts := make(map[string]int)
-	for k, v := range oldCounts {
-		if v > newCounts[k] {
-			remCounts[k] = v - newCounts[k]
-		}
-	}
-	for _, l := range oldLines {
-		if remCounts[l] > 0 {
-			entries = append(entries, DiffEntry{Field: "content", OldValue: l})
-			remCounts[l]--
-		}
-	}
-	// added lines (only in new)
+	for k, v := range oldCounts { if v > newCounts[k] { remCounts[k] = v - newCounts[k] } }
+	for _, l := range oldLines { if remCounts[l] > 0 { entries = append(entries, DiffEntry{Field: "content", OldValue: l}); remCounts[l]-- } }
 	addCounts := make(map[string]int)
-	for k, v := range newCounts {
-		if v > oldCounts[k] {
-			addCounts[k] = v - oldCounts[k]
-		}
-	}
-	for _, l := range newLines {
-		if addCounts[l] > 0 {
-			entries = append(entries, DiffEntry{Field: "content", NewValue: l})
-			addCounts[l]--
-		}
-	}
+	for k, v := range newCounts { if v > oldCounts[k] { addCounts[k] = v - oldCounts[k] } }
+	for _, l := range newLines { if addCounts[l] > 0 { entries = append(entries, DiffEntry{Field: "content", NewValue: l}); addCounts[l]-- } }
 	return entries
 }
 
-func toJSONString(v any) string {
-	b, err := json.Marshal(v)
-	if err != nil {
-		return ""
-	}
-	return string(b)
-}
+func toJSONString(v any) string { b, _ := json.Marshal(v); return string(b) }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json")
@@ -815,137 +675,115 @@ func writeError(w http.ResponseWriter, status int, msg string) {
 	writeJSON(w, status, map[string]string{"error": msg})
 }
 
-// handleCheck 语法检查：POST /api/v1/scripts/check
-// 请求体 {type, content}，返回 {valid, errors[{line, column, message}]}。
 func (s *Service) handleCheck(w http.ResponseWriter, r *http.Request) {
 	var req CheckRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
-		return
-	}
-	if req.Type == "" || req.Content == "" {
-		writeError(w, http.StatusBadRequest, "type and content are required")
-		return
-	}
-	result := checkSyntax(string(req.Type), req.Content)
-	writeJSON(w, http.StatusOK, result)
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil { writeError(w, http.StatusBadRequest, "invalid request body"); return }
+	if req.Type == "" || req.Content == "" { writeError(w, http.StatusBadRequest, "type and content are required"); return }
+	writeJSON(w, http.StatusOK, checkSyntax(string(req.Type), req.Content))
 }
 
-// ---- 语法检查实现 ----
-
-// bashErrRE 匹配 bash -n 的错误输出格式：
-//
-//	sh: line 3: syntax error near unexpected token `fi'
-//
-// bash: line 5: fi: unexpected end of file
 var bashErrRE = regexp.MustCompile(`^.*:\s*line\s+(\d+):\s+(.+)`)
-
-// pythonErrRE 匹配 python3 -m py_compile 的错误输出格式：
-//
-//	File "<stdin>", line 3
-//	    x =
-//	    ^
-//
-// SyntaxError: invalid syntax
 var pythonErrRE = regexp.MustCompile(`line\s+(\d+)`)
 
 func checkSyntax(scriptType, content string) *CheckResult {
 	switch ScriptType(scriptType) {
-	case ScriptTypeShell:
-		return checkShell(content)
-	case ScriptTypePython:
-		return checkPython(content)
-	case ScriptTypeBat:
-		// Windows batch 文件无官方语法检查器，直接通过
-		return &CheckResult{Valid: true}
-	default:
-		return &CheckResult{Valid: false, Errors: []CheckError{{Message: fmt.Sprintf("unsupported script type: %s", scriptType)}}}
+	case ScriptTypeShell: return checkShell(content)
+	case ScriptTypePython: return checkPython(content)
+	case ScriptTypeBat: return &CheckResult{Valid: true}
+	default: return &CheckResult{Valid: false, Errors: []CheckError{{Message: fmt.Sprintf("unsupported script type: %s", scriptType)}}}
 	}
 }
 
 func checkShell(content string) *CheckResult {
-	// 写临时文件，bash -n 检查语法（不执行）
 	tmp, err := os.CreateTemp("", "opsorigin-script-check-*.sh")
-	if err != nil {
-		return &CheckResult{Valid: false, Errors: []CheckError{{Message: fmt.Sprintf("failed to create temp file: %v", err)}}}
-	}
+	if err != nil { return &CheckResult{Valid: false, Errors: []CheckError{{Message: fmt.Sprintf("failed to create temp file: %v", err)}}} }
 	defer os.Remove(tmp.Name())
-
-	if _, err := tmp.WriteString(content); err != nil {
-		return &CheckResult{Valid: false, Errors: []CheckError{{Message: fmt.Sprintf("failed to write temp file: %v", err)}}}
-	}
+	if _, err := tmp.WriteString(content); err != nil { return &CheckResult{Valid: false, Errors: []CheckError{{Message: fmt.Sprintf("failed to write temp file: %v", err)}}} }
 	tmp.Close()
-
 	cmd := exec.Command("bash", "-n", tmp.Name())
 	stderr, err := cmd.CombinedOutput()
-	if err == nil {
-		return &CheckResult{Valid: true}
-	}
-
-	// 解析错误行
+	if err == nil { return &CheckResult{Valid: true} }
 	lines := strings.Split(string(stderr), "\n")
 	var errors []CheckError
 	for _, line := range lines {
 		line = strings.TrimSpace(line)
-		if line == "" {
-			continue
-		}
+		if line == "" { continue }
 		m := bashErrRE.FindStringSubmatch(line)
-		if m != nil {
-			ln, _ := strconv.Atoi(m[1])
-			errors = append(errors, CheckError{Line: ln, Message: strings.TrimSpace(m[2])})
-		} else {
-			errors = append(errors, CheckError{Message: line})
-		}
+		if m != nil { ln, _ := strconv.Atoi(m[1]); errors = append(errors, CheckError{Line: ln, Message: strings.TrimSpace(m[2])}) } else { errors = append(errors, CheckError{Message: line}) }
 	}
-	if len(errors) == 0 {
-		errors = append(errors, CheckError{Message: string(stderr)})
-	}
+	if len(errors) == 0 { errors = append(errors, CheckError{Message: string(stderr)}) }
 	return &CheckResult{Valid: false, Errors: errors}
 }
 
 func checkPython(content string) *CheckResult {
-	// python3 -m py_compile 编译检查（不执行）
 	tmp, err := os.CreateTemp("", "opsorigin-script-check-*.py")
-	if err != nil {
-		return &CheckResult{Valid: false, Errors: []CheckError{{Message: fmt.Sprintf("failed to create temp file: %v", err)}}}
-	}
+	if err != nil { return &CheckResult{Valid: false, Errors: []CheckError{{Message: fmt.Sprintf("failed to create temp file: %v", err)}}} }
 	defer os.Remove(tmp.Name())
-
-	if _, err := tmp.WriteString(content); err != nil {
-		return &CheckResult{Valid: false, Errors: []CheckError{{Message: fmt.Sprintf("failed to write temp file: %v", err)}}}
-	}
+	if _, err := tmp.WriteString(content); err != nil { return &CheckResult{Valid: false, Errors: []CheckError{{Message: fmt.Sprintf("failed to write temp file: %v", err)}}} }
 	tmp.Close()
-
 	cmd := exec.Command("python3", "-m", "py_compile", tmp.Name())
 	stderr, err := cmd.CombinedOutput()
-	if err == nil {
-		return &CheckResult{Valid: true}
-	}
-
-	// 解析错误行号
+	if err == nil { return &CheckResult{Valid: true} }
 	lines := strings.Split(string(stderr), "\n")
 	var errors []CheckError
 	current := CheckError{}
 	for _, line := range lines {
 		line = strings.TrimSpace(line)
-		if line == "" {
-			continue
-		}
+		if line == "" { continue }
 		m := pythonErrRE.FindStringSubmatch(line)
-		if m != nil {
-			current.Line, _ = strconv.Atoi(m[1])
-		} else if strings.HasPrefix(line, "SyntaxError:") || strings.HasPrefix(line, "IndentationError:") || strings.HasPrefix(line, "TabError:") {
-			current.Message = line
-			errors = append(errors, current)
-			current = CheckError{}
-		} else if !strings.HasPrefix(line, "File ") && !strings.HasPrefix(line, "^") {
-			// 非结构化错误消息
-			errors = append(errors, CheckError{Message: line})
+		if m != nil { current.Line, _ = strconv.Atoi(m[1]) } else if strings.HasPrefix(line, "SyntaxError:") || strings.HasPrefix(line, "IndentationError:") || strings.HasPrefix(line, "TabError:") {
+			current.Message = line; errors = append(errors, current); current = CheckError{}
+		} else if !strings.HasPrefix(line, "File ") && !strings.HasPrefix(line, "^") { errors = append(errors, CheckError{Message: line}) }
+	}
+	if len(errors) == 0 { errors = append(errors, CheckError{Message: string(stderr)}) }
+	return &CheckResult{Valid: false, Errors: errors}
+}
+
+// ------- 公共脚本审批 -------
+
+func (s *Service) determineApproval(sc *Script) string {
+	if !sc.Public { return "draft" }
+	if s.dangerous != nil {
+		matches := s.dangerous.ScanScript(sc.Content)
+		if len(matches) > 0 {
+			slog.Warn("public script contains dangerous commands, requires approval", "script_name", sc.Name, "match_count", len(matches))
+			return "pending"
 		}
 	}
-	if len(errors) == 0 {
-		errors = append(errors, CheckError{Message: string(stderr)})
-	}
-	return &CheckResult{Valid: false, Errors: errors}
+	return "approved"
+}
+
+func (s *Service) handlePublish(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	tenantID := tenantFromCtx(r.Context())
+	sc, err := s.store.Get(r.Context(), id, tenantID)
+	if err != nil || sc == nil { writeError(w, http.StatusNotFound, "script not found"); return }
+	if !sc.Public { writeError(w, http.StatusBadRequest, "only public scripts can be published"); return }
+	sc.ApprovalStatus = s.determineApproval(sc)
+	if err := s.store.Update(r.Context(), sc); err != nil { writeError(w, http.StatusInternalServerError, err.Error()); return }
+	writeJSON(w, http.StatusOK, sc)
+}
+
+func (s *Service) handleApprove(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	tenantID := tenantFromCtx(r.Context())
+	sc, err := s.store.Get(r.Context(), id, tenantID)
+	if err != nil || sc == nil { writeError(w, http.StatusNotFound, "script not found"); return }
+	if sc.ApprovalStatus != "pending" { writeError(w, http.StatusBadRequest, "script is not in pending status"); return }
+	sc.ApprovalStatus = "approved"
+	ctx := context.WithValue(r.Context(), changeNoteCtxKey, "approved")
+	if err := s.store.Update(ctx, sc); err != nil { writeError(w, http.StatusInternalServerError, err.Error()); return }
+	writeJSON(w, http.StatusOK, sc)
+}
+
+func (s *Service) handleReject(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	tenantID := tenantFromCtx(r.Context())
+	sc, err := s.store.Get(r.Context(), id, tenantID)
+	if err != nil || sc == nil { writeError(w, http.StatusNotFound, "script not found"); return }
+	if sc.ApprovalStatus != "pending" { writeError(w, http.StatusBadRequest, "script is not in pending status"); return }
+	sc.ApprovalStatus = "rejected"
+	ctx := context.WithValue(r.Context(), changeNoteCtxKey, "rejected")
+	if err := s.store.Update(ctx, sc); err != nil { writeError(w, http.StatusInternalServerError, err.Error()); return }
+	writeJSON(w, http.StatusOK, sc)
 }

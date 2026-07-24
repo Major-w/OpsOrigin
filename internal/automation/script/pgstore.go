@@ -37,6 +37,8 @@ func (s *PGStore) init(ctx context.Context) {
 			run_as TEXT,
 			labels TEXT DEFAULT '{}',
 			version INTEGER DEFAULT 1,
+			public BOOLEAN DEFAULT false,
+			approval_status TEXT DEFAULT 'draft',
 			created_at TIMESTAMPTZ NOT NULL,
 			updated_at TIMESTAMPTZ NOT NULL
 		)`,
@@ -55,6 +57,8 @@ func (s *PGStore) init(ctx context.Context) {
 			run_as TEXT,
 			change_note TEXT,
 			created_by TEXT,
+			public BOOLEAN DEFAULT false,
+			approval_status TEXT DEFAULT 'draft',
 			created_at TIMESTAMPTZ NOT NULL
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_automation_script_versions_sid ON automation_script_versions(script_id, tenant_id)`,
@@ -114,11 +118,12 @@ func (s *PGStore) Create(ctx context.Context, sc *Script) error {
 	sc.UpdatedAt = now
 	_, err := s.db.ExecContext(ctx, `
 		INSERT INTO automation_scripts
-			(id, tenant_id, name, type, content, description, input_params, output_params, timeout, run_as, labels, version, created_at, updated_at)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
+			(id, tenant_id, name, type, content, description, input_params, output_params, timeout, run_as, labels, version, public, approval_status, created_at, updated_at)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)
 		ON CONFLICT (id) DO NOTHING`,
 		sc.ID, sc.TenantID, sc.Name, string(sc.Type), sc.Content, sc.Description,
-		toJSON(sc.InputParams), toJSON(sc.OutputParams), sc.Timeout, sc.RunAs, toJSON(sc.Labels), sc.Version, sc.CreatedAt, sc.UpdatedAt,
+		toJSON(sc.InputParams), toJSON(sc.OutputParams), sc.Timeout, sc.RunAs, toJSON(sc.Labels), sc.Version,
+		sc.Public, sc.ApprovalStatus, sc.CreatedAt, sc.UpdatedAt,
 	)
 	return err
 }
@@ -128,9 +133,9 @@ func (s *PGStore) Get(ctx context.Context, id, tenantID string) (*Script, error)
 	var inputParams, outputParams, labels []byte
 	var typ string
 	err := s.db.QueryRowContext(ctx, `
-		SELECT id, tenant_id, name, type, content, description, input_params, output_params, timeout, run_as, labels, version, created_at, updated_at
+		SELECT id, tenant_id, name, type, content, description, input_params, output_params, timeout, run_as, labels, version, public, approval_status, created_at, updated_at
 		FROM automation_scripts WHERE id=$1 AND tenant_id=$2`, id, tenantID).
-		Scan(&sc.ID, &sc.TenantID, &sc.Name, &typ, &sc.Content, &sc.Description, &inputParams, &outputParams, &sc.Timeout, &sc.RunAs, &labels, &sc.Version, &sc.CreatedAt, &sc.UpdatedAt)
+		Scan(&sc.ID, &sc.TenantID, &sc.Name, &typ, &sc.Content, &sc.Description, &inputParams, &outputParams, &sc.Timeout, &sc.RunAs, &labels, &sc.Version, &sc.Public, &sc.ApprovalStatus, &sc.CreatedAt, &sc.UpdatedAt)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -146,7 +151,7 @@ func (s *PGStore) Get(ctx context.Context, id, tenantID string) (*Script, error)
 
 func (s *PGStore) List(ctx context.Context, tenantID string) ([]*Script, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT id, tenant_id, name, type, content, description, input_params, output_params, timeout, run_as, labels, version, created_at, updated_at
+		SELECT id, tenant_id, name, type, content, description, input_params, output_params, timeout, run_as, labels, version, public, approval_status, created_at, updated_at
 		FROM automation_scripts WHERE tenant_id=$1 ORDER BY updated_at DESC`, tenantID)
 	if err != nil {
 		return nil, err
@@ -179,10 +184,11 @@ func (s *PGStore) Update(ctx context.Context, sc *Script) error {
 	sc.UpdatedAt = time.Now()
 	_, err = s.db.ExecContext(ctx, `
 		UPDATE automation_scripts
-		SET name=$2, type=$3, content=$4, description=$5, input_params=$6, output_params=$7, timeout=$8, run_as=$9, labels=$10, version=$11, updated_at=$12
-		WHERE id=$1 AND tenant_id=$13`,
+		SET name=$2, type=$3, content=$4, description=$5, input_params=$6, output_params=$7, timeout=$8, run_as=$9, labels=$10, version=$11, public=$12, approval_status=$13, updated_at=$14
+		WHERE id=$1 AND tenant_id=$15`,
 		sc.ID, sc.Name, string(sc.Type), sc.Content, sc.Description,
-		toJSON(sc.InputParams), toJSON(sc.OutputParams), sc.Timeout, sc.RunAs, toJSON(sc.Labels), sc.Version, sc.UpdatedAt, sc.TenantID)
+		toJSON(sc.InputParams), toJSON(sc.OutputParams), sc.Timeout, sc.RunAs, toJSON(sc.Labels), sc.Version,
+		sc.Public, sc.ApprovalStatus, sc.UpdatedAt, sc.TenantID)
 	if err != nil {
 		return err
 	}
@@ -199,6 +205,8 @@ func (s *PGStore) Update(ctx context.Context, sc *Script) error {
 		Timeout:     sc.Timeout,
 		RunAs:       sc.RunAs,
 		CreatedAt:   time.Now(),
+		Public:      sc.Public,
+		ApprovalStatus: sc.ApprovalStatus,
 	}
 	if n, ok := ctx.Value(changeNoteCtxKey).(string); ok {
 		sn.ChangeNote = n
@@ -227,11 +235,11 @@ func (s *PGStore) SaveVersion(ctx context.Context, v *ScriptVersion) error {
 	}
 	_, err := s.db.ExecContext(ctx, `
 		INSERT INTO automation_script_versions
-			(id, script_id, tenant_id, version, name, type, content, input_params, output_params, timeout, run_as, change_note, created_by, created_at)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
+			(id, script_id, tenant_id, version, name, type, content, input_params, output_params, timeout, run_as, change_note, created_by, public, approval_status, created_at)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)
 		ON CONFLICT (id) DO NOTHING`,
 		v.ID, v.ScriptID, v.TenantID, v.Version, v.Name, string(v.Type), v.Content,
-		toJSON(v.InputParams), toJSON(v.OutputParams), v.Timeout, v.RunAs, v.ChangeNote, v.CreatedBy, v.CreatedAt)
+		toJSON(v.InputParams), toJSON(v.OutputParams), v.Timeout, v.RunAs, v.ChangeNote, v.CreatedBy, v.Public, v.ApprovalStatus, v.CreatedAt)
 	return err
 }
 

@@ -32,8 +32,11 @@ type Script struct {
 	RunAs       string            `json:"run_as,omitempty"`
 	Labels      map[string]string `json:"labels,omitempty"`
 	Version     int               `json:"version"`
-	CreatedAt   time.Time         `json:"created_at"`
-	UpdatedAt   time.Time         `json:"updated_at"`
+	// 公共脚本 & 审批
+	Public         bool   `json:"public"`                     // 是否标记为公共脚本（需审批）
+	ApprovalStatus string `json:"approval_status,omitempty"`  // "draft"|"pending"|"approved"|"rejected"
+	CreatedAt      time.Time `json:"created_at"`
+	UpdatedAt      time.Time `json:"updated_at"`
 }
 
 // ScriptVersion 脚本历史版本快照
@@ -52,6 +55,9 @@ type ScriptVersion struct {
 	ChangeNote string    `json:"change_note,omitempty"`
 	CreatedBy  string    `json:"created_by,omitempty"`
 	CreatedAt  time.Time `json:"created_at"`
+	// 审批快照
+	Public         bool   `json:"public"`
+	ApprovalStatus string `json:"approval_status,omitempty"`
 }
 
 // ExecuteRequest 脚本执行请求

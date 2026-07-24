@@ -24,7 +24,7 @@
 | `cmd/core/cloud_adapter.go` | `cloudCMDBAdapter.SyncResources` 按 `CITypeOf` 分组 → `ListCI` 索引 → `CreateCI/UpdateCI(model.WeightDiscovery)`，经 outbox→dgraph/拓扑。**K8s 资源经同一条链路进 CMDB，无需新写**。 |
 | `internal/cmdb/model/ci.go` | `CIModel{TypeID,TenantID,Name,Status,Attributes,Labels,Channel,...}`；`WeightDiscovery=30`。K8s 同步用同权重。 |
 | 前端云 tab | `resources/page.tsx` 821–921 行是**真实实现**（凭证表单 + 类型多选 + 发现/纳管按钮 + 结果表格）——**容器 tab 镜像此 UI**。 |
-| 前端容器 tab | `resources/page.tsx` 923–937 行是纯占位（「即将上线」+ K8s/Docker/Swarm 三虚框）。 |
+| 前端容器 tab | `resources/page.tsx` 923–937 行是纯占位（「即将上线」+ K8s 虚框）。 |
 | 前端复用点 | `stores/cloud.ts`（zustand，镜像 `agent.ts`）、`lib/cloud.ts`（`CloudResource`/`SyncResult`/`CLOUD_RESOURCE_TYPES`）、`useAgentStore().agents`（选 agent=集群网关）。 |
 
 ---
@@ -309,7 +309,7 @@ syncK8s: (data: { agent_id: string; types: string[]; resources: CloudResource[] 
 2. 右栏：
    - 「已发现 N 个资源」+ 按类型分组的表格（列：**类型 / 名称 / 集群 / 命名空间 / 状态 / 详情**（镜像或节点，取自 `extra`））。
    - 空态提示：「选择集群与资源类型，点击『发现资源』」。
-3. Docker / Swarm 纳管**不在本任务**——保留「即将上线」虚框（或在 tab 内单独小卡片标注 Deferred），不与 K8s 混淆。
+3. K8s 容器纳管**是唯一目标**——在容器 tab 内仅展示 K8s 资源发现与纳管能力。
 
 ---
 
@@ -495,7 +495,7 @@ type k8sPodList struct { Items []k8sPod `json:"items"` }
 | 8 | **大集群性能 / 超时**：`kubectl get pods -A` 可能很大 | MVP 单次调用 + 默认 `timeout=120s`，不做分页；超大集群分页/增量（watch）列为后续优化。 |
 
 ### MVP 范围一句话
-> 单副本网关 Deployment + 只读 RBAC + Agent 通道，发现 **cluster/namespace/workload(Deploy/STS/DS)/pod/container(regular)** 五类并一次纳管进 CMDB；in-cluster SA，无 kubeconfig UI，不含 Job/CronJob、不含 initContainers（除非确认）、不含 Docker/Swarm（保留占位）。
+> 单副本网关 Deployment + 只读 RBAC + Agent 通道，发现 **cluster/namespace/workload(Deploy/STS/DS)/pod/container(regular)** 五类并一次纳管进 CMDB；in-cluster SA，无 kubeconfig UI，不含 Job/CronJob、不含 initContainers（除非确认）。
 
 ---
 
