@@ -4,7 +4,10 @@ import { create } from 'zustand'
 import { apiFetch } from '@/lib/utils'
 import { toast } from '@/stores/toast'
 
-export type StepType = 'script' | 'condition' | 'parallel' | 'wait' | 'approval'
+export type StepType =
+  | 'start' | 'end'
+  | 'script' | 'condition' | 'parallel' | 'wait' | 'approval'
+  | 'notify' | 'subflow' | 'loop' | 'webhook' | 'comment' | 'filedist'
 
 export interface WorkflowStep {
   id: string
@@ -20,6 +23,29 @@ export interface WorkflowStep {
   timeout?: number
   approvers?: string[]
   approval_msg?: string
+  // 开始/结束
+  end_status?: 'success' | 'failure' | 'timeout'
+  // 通知
+  notify_channel?: string        // dingtalk/wecom/email/sms
+  notify_title?: string
+  notify_body?: string
+  // 子流程
+  subflow_id?: string            // 引用的 Workflow ID
+  subflow_name?: string
+  // 循环
+  loop_over?: string             // 循环变量名
+  loop_max?: number              // 最大循环次数
+  // Webhook
+  webhook_url?: string
+  webhook_method?: string        // GET/POST/PUT
+  webhook_headers?: Record<string, string>
+  webhook_body?: string
+  // 注释
+  comment_text?: string
+  // 文件分发
+  filedist_file_id?: string
+  filedist_file_name?: string
+  filedist_targets?: string[]    // agent IDs
   position?: { x: number; y: number }
 }
 

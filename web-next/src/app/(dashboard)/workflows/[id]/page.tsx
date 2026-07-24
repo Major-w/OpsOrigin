@@ -5,7 +5,7 @@ import { useParams, useRouter } from 'next/navigation'
 import {
   ReactFlow, Controls, Background, BackgroundVariant, MiniMap,
   type Node, type Edge, type Connection, type NodeProps,
-  Handle, Position, useReactFlow, ReactFlowProvider,
+  Handle, Position, ReactFlowProvider,
   MarkerType,
 } from '@xyflow/react'
 import '@xyflow/react/dist/style.css'
@@ -28,16 +28,25 @@ import { formatTime } from '@/lib/utils'
 import {
   Plus, Trash2, Play, GitBranch, Workflow as WorkflowIcon,
   Code, CheckSquare, Split, Clock, Save, X, Flag, Check, Ban,
-  ChevronLeft, Loader2, Pencil,
+  ChevronLeft, Loader2, Pencil, Bell, FolderTree, Infinity,
+  Globe, MessageSquare, FileDown, PlayCircle, StopCircle,
 } from 'lucide-react'
 
 // ---------- helpers ----------
 const NODE_META: Record<StepType, { label: string; icon: any; color: string; bg: string }> = {
-  script:    { label: '脚本节点',  icon: Code,      color: '#3b82f6', bg: '#eff6ff' },
+  start:     { label: '开始',      icon: PlayCircle,  color: '#10b981', bg: '#ecfdf5' },
+  end:       { label: '结束',      icon: StopCircle,  color: '#ef4444', bg: '#fef2f2' },
+  script:    { label: '脚本节点',  icon: Code,        color: '#3b82f6', bg: '#eff6ff' },
   approval:  { label: '人工审批',  icon: CheckSquare, color: '#f59e0b', bg: '#fffbeb' },
-  condition: { label: '分支网关',  icon: GitBranch, color: '#8b5cf6', bg: '#faf5ff' },
-  parallel:  { label: '并行网关',  icon: Split,     color: '#06b6d4', bg: '#ecfeff' },
-  wait:      { label: '等待节点',  icon: Clock,     color: '#64748b', bg: '#f8fafc' },
+  condition: { label: '分支网关',  icon: GitBranch,   color: '#8b5cf6', bg: '#faf5ff' },
+  parallel:  { label: '并行网关',  icon: Split,       color: '#06b6d4', bg: '#ecfeff' },
+  wait:      { label: '等待节点',  icon: Clock,       color: '#64748b', bg: '#f8fafc' },
+  notify:    { label: '通知节点',  icon: Bell,        color: '#f97316', bg: '#fff7ed' },
+  subflow:   { label: '子流程',    icon: FolderTree,  color: '#8b5cf6', bg: '#faf5ff' },
+  loop:      { label: '循环节点',  icon: Infinity,    color: '#06b6d4', bg: '#ecfeff' },
+  webhook:   { label: 'Webhook',   icon: Globe,       color: '#6366f1', bg: '#eef2ff' },
+  comment:   { label: '注释',      icon: MessageSquare, color: '#94a3b8', bg: '#f1f5f9' },
+  filedist:  { label: '文件分发',  icon: FileDown,    color: '#14b8a6', bg: '#f0fdfa' },
 }
 
 function newStep(type: StepType, idx: number): WorkflowStep {
@@ -49,89 +58,106 @@ function newStep(type: StepType, idx: number): WorkflowStep {
     ...(type === 'script' ? { timeout: 300 } : {}),
     ...(type === 'wait' ? { wait_seconds: 10 } : {}),
     ...(type === 'approval' ? { approvers: [] } : {}),
+    ...(type === 'end' ? { end_status: 'success' as const } : {}),
+    ...(type === 'notify' ? { notify_channel: 'dingtalk' } : {}),
+    ...(type === 'loop' ? { loop_over: '$items', loop_max: 100 } : {}),
+    ...(type === 'webhook' ? { webhook_method: 'POST' } : {}),
   }
 }
 
 // ====== ReactFlow 自定义节点类型 ======
 
+const BASE_NODE = 'shadow-md rounded-xl border-2 bg-white dark:bg-gray-800 min-w-[180px]'
+const HEADER = 'flex items-center gap-2 px-3 py-2 rounded-t-xl text-white font-medium text-xs'
+
+function BaseNode({ color, icon: Icon, label, children, ports }: {
+  color: string; icon: any; label: string; children: React.ReactNode
+  ports?: { type: 'source' | 'target'; position: Position; id?: string; className?: string }[]
+}) {
+  return (
+    <div className={BASE_NODE} style={{ borderColor: color }}>
+      <Handle type="target" position={Position.Top} style={{ background: color, width: 10, height: 10 }} />
+      <div className={HEADER} style={{ backgroundColor: color }}><Icon className="h-3.5 w-3.5" />{label}</div>
+      <div className="px-3 py-2 text-[11px] text-muted-foreground">{children}</div>
+      {ports?.map((p, i) => (
+        <Handle key={i} type={p.type} position={p.position} id={p.id} className={p.className}
+          style={!p.className ? { background: color, width: 10, height: 10 } : undefined} />
+      ))}
+      {!ports && <Handle type="source" position={Position.Bottom} style={{ background: color, width: 10, height: 10 }} />}
+    </div>
+  )
+}
+
+function StartNode({ data }: NodeProps) {
+  return (
+    <div className="shadow-md rounded-full border-2 bg-white dark:bg-gray-800 min-w-[120px] w-[120px] h-[60px] flex items-center justify-center" style={{ borderColor: NODE_META.start.color }}>
+      <PlayCircle className="h-5 w-5 mr-1.5" style={{ color: NODE_META.start.color }} />
+      <span className="text-xs font-semibold">{data.label}</span>
+      <Handle type="source" position={Position.Bottom} style={{ background: NODE_META.start.color, width: 10, height: 10 }} />
+    </div>
+  )
+}
+
+function EndNode({ data }: NodeProps) {
+  const statusColor = data.endStatus === 'failure' ? '#ef4444' : data.endStatus === 'timeout' ? '#f59e0b' : '#10b981'
+  return (
+    <div className="shadow-md rounded-full border-2 bg-white dark:bg-gray-800 min-w-[120px] w-[120px] h-[60px] flex items-center justify-center" style={{ borderColor: statusColor }}>
+      <StopCircle className="h-5 w-5 mr-1.5" style={{ color: statusColor }} />
+      <span className="text-xs font-semibold">{data.label}</span>
+      <Handle type="target" position={Position.Top} style={{ background: statusColor, width: 10, height: 10 }} />
+    </div>
+  )
+}
+
 function ScriptNode({ data }: NodeProps) {
   const Icon = NODE_META.script.icon
+  const color = NODE_META.script.color
   return (
-    <div className="shadow-md rounded-xl border-2 bg-white dark:bg-gray-800 min-w-[180px]"
-      style={{ borderColor: NODE_META.script.color }}>
-      <Handle type="target" position={Position.Top} className="!w-3 !h-3 !bg-blue-500" />
-      <div className="flex items-center gap-2 px-3 py-2 rounded-t-xl text-white font-medium text-xs"
-        style={{ backgroundColor: NODE_META.script.color }}>
-        <Icon className="h-3.5 w-3.5" />{data.label}
-      </div>
+    <div className={BASE_NODE} style={{ borderColor: color }}>
+      <Handle type="target" position={Position.Top} style={{ background: color, width: 10, height: 10 }} />
+      <div className={HEADER} style={{ backgroundColor: color }}><Icon className="h-3.5 w-3.5" />{data.label}</div>
       <div className="px-3 py-2 text-[11px] text-muted-foreground space-y-0.5">
         {data.scriptName && <p className="truncate">📜 {data.scriptName}</p>}
         <p>⏱ {data.timeout || 300}s</p>
       </div>
-      {/* 输出参数 Handle — 动态暴露脚本产出的变量 */}
-      {data.outputParams && data.outputParams.length > 0 && (
+      {data.outputParams?.length > 0 && (
         <div className="px-2 pb-2">
           {data.outputParams.map((p: any) => (
             <div key={p.name} className="flex items-center gap-1.5 text-[10px]">
-              <Handle
-                type="source" position={Position.Bottom}
-                id={p.name} className="!relative !left-auto !right-auto !transform-none !w-2 !h-2 !bg-emerald-500 !border-0"
-              />
+              <Handle type="source" position={Position.Bottom} id={p.name}
+                className="!relative !left-auto !right-auto !transform-none !w-2 !h-2 !bg-emerald-500 !border-0" />
               <span className="text-muted-foreground">{p.name}</span>
             </div>
           ))}
         </div>
       )}
       {(!data.outputParams || data.outputParams.length === 0) && (
-        <Handle type="source" position={Position.Bottom} className="!w-3 !h-3 !bg-blue-500" />
+        <Handle type="source" position={Position.Bottom} style={{ background: color, width: 10, height: 10 }} />
       )}
     </div>
   )
 }
 
 function ApprovalNode({ data }: NodeProps) {
-  const Icon = NODE_META.approval.icon
-  return (
-    <div className="shadow-md rounded-xl border-2 bg-white dark:bg-gray-800 min-w-[180px]"
-      style={{ borderColor: NODE_META.approval.color }}>
-      <Handle type="target" position={Position.Top} className="!w-3 !h-3 !bg-amber-500" />
-      <div className="flex items-center gap-2 px-3 py-2 rounded-t-xl text-white font-medium text-xs"
-        style={{ backgroundColor: NODE_META.approval.color }}>
-        <Icon className="h-3.5 w-3.5" />{data.label}
-      </div>
-      <div className="px-3 py-2 text-[11px] text-muted-foreground">
-        <p>👥 {data.approvers?.length || 0} 人审批</p>
-        {data.approvalMsg && <p className="truncate">💬 {data.approvalMsg}</p>}
-      </div>
-      <Handle type="source" position={Position.Bottom} className="!w-3 !h-3 !bg-amber-500" />
-    </div>
-  )
+  return <BaseNode color={NODE_META.approval.color} icon={NODE_META.approval.icon} label={data.label}>
+    <p>👥 {data.approvers?.length || 0} 人审批</p>
+    {data.approvalMsg && <p className="truncate">💬 {data.approvalMsg}</p>}
+  </BaseNode>
 }
 
 function ConditionNode({ data }: NodeProps) {
-  const Icon = NODE_META.condition.icon
+  const Icon = NODE_META.condition.icon; const color = NODE_META.condition.color
   return (
-    <div className="shadow-md rounded-xl border-2 bg-white dark:bg-gray-800 min-w-[180px]"
-      style={{ borderColor: NODE_META.condition.color }}>
-      <Handle type="target" position={Position.Top} className="!w-3 !h-3 !bg-purple-500" />
-      <div className="flex items-center gap-2 px-3 py-2 rounded-t-xl text-white font-medium text-xs"
-        style={{ backgroundColor: NODE_META.condition.color }}>
-        <Icon className="h-3.5 w-3.5" />{data.label}
-      </div>
-      <div className="px-3 py-2 text-[11px] text-muted-foreground">
-        <p className="truncate font-mono">{data.condition || '未设置条件'}</p>
-      </div>
-      {/* 条件节点有两个输出端口 */}
-      <div className="flex border-t" style={{ borderColor: NODE_META.condition.color }}>
+    <div className={`${BASE_NODE} rotate-0`} style={{ borderColor: color }}>
+      <Handle type="target" position={Position.Top} style={{ background: color, width: 10, height: 10 }} />
+      <div className={HEADER} style={{ backgroundColor: color }}><Icon className="h-3.5 w-3.5" />{data.label}</div>
+      <div className="px-3 py-2 text-[11px] font-mono text-muted-foreground truncate">{data.condition || '未设置'}</div>
+      <div className="flex border-t" style={{ borderColor: color }}>
         <div className="flex-1 text-center py-1 text-[10px] text-emerald-600 relative">
-          ✅ 满足
-          <Handle type="source" position={Position.Bottom} id="on_success"
-            className="!w-2.5 !h-2.5 !bg-emerald-500 !bottom-0.5" />
+          ✅ 满足<Handle type="source" position={Position.Bottom} id="on_success" className="!w-2.5 !h-2.5 !bg-emerald-500 !bottom-0.5" />
         </div>
         <div className="flex-1 text-center py-1 text-[10px] text-red-500 relative">
-          ❌ 不满足
-          <Handle type="source" position={Position.Bottom} id="on_failure"
-            className="!w-2.5 !h-2.5 !bg-red-500 !bottom-0.5" />
+          ❌ 不满足<Handle type="source" position={Position.Bottom} id="on_failure" className="!w-2.5 !h-2.5 !bg-red-500 !bottom-0.5" />
         </div>
       </div>
     </div>
@@ -139,47 +165,68 @@ function ConditionNode({ data }: NodeProps) {
 }
 
 function ParallelNode({ data }: NodeProps) {
-  const Icon = NODE_META.parallel.icon
-  return (
-    <div className="shadow-md rounded-xl border-2 bg-white dark:bg-gray-800 min-w-[180px]"
-      style={{ borderColor: NODE_META.parallel.color }}>
-      <Handle type="target" position={Position.Top} className="!w-3 !h-3 !bg-cyan-500" />
-      <div className="flex items-center gap-2 px-3 py-2 rounded-t-xl text-white font-medium text-xs"
-        style={{ backgroundColor: NODE_META.parallel.color }}>
-        <Icon className="h-3.5 w-3.5" />{data.label}
-      </div>
-      <div className="px-3 py-2 text-[11px] text-muted-foreground">
-        <p>⚡ 并行 {data.parallelCount || 0} 步</p>
-      </div>
-      <Handle type="source" position={Position.Bottom} className="!w-3 !h-3 !bg-cyan-500" />
-    </div>
-  )
+  return <BaseNode color={NODE_META.parallel.color} icon={NODE_META.parallel.icon} label={data.label}>
+    <p>⚡ 并行 {data.parallelCount || 0} 步</p>
+  </BaseNode>
 }
 
 function WaitNode({ data }: NodeProps) {
-  const Icon = NODE_META.wait.icon
+  return <BaseNode color={NODE_META.wait.color} icon={NODE_META.wait.icon} label={data.label}>
+    <p>⏳ 等待 {data.waitSeconds || 0}s</p>
+  </BaseNode>
+}
+
+function NotifyNode({ data }: NodeProps) {
+  const channels: Record<string, string> = { dingtalk: '钉钉', wecom: '企微', email: '邮件', sms: '短信' }
+  return <BaseNode color={NODE_META.notify.color} icon={NODE_META.notify.icon} label={data.label}>
+    <p>📡 {channels[data.notifyChannel] || data.notifyChannel || '未选择'}</p>
+    {data.notifyTitle && <p className="truncate">📝 {data.notifyTitle}</p>}
+  </BaseNode>
+}
+
+function SubflowNode({ data }: NodeProps) {
+  return <BaseNode color={NODE_META.subflow.color} icon={NODE_META.subflow.icon} label={data.label}>
+    <p>🔗 {data.subflowName || data.subflowId?.slice(0, 12) || '未选择'}</p>
+  </BaseNode>
+}
+
+function LoopNode({ data }: NodeProps) {
+  return <BaseNode color={NODE_META.loop.color} icon={NODE_META.loop.icon} label={data.label}>
+    <p>🔁 遍历: {data.loopOver || '$items'}</p>
+    <p>🔢 最大 {data.loopMax || 100} 次</p>
+  </BaseNode>
+}
+
+function WebhookNode({ data }: NodeProps) {
+  return <BaseNode color={NODE_META.webhook.color} icon={NODE_META.webhook.icon} label={data.label}>
+    <p className="truncate">{data.webhookMethod || 'POST'} {data.webhookUrl ? '✔' : '未配置'}</p>
+  </BaseNode>
+}
+
+function CommentNode({ data }: NodeProps) {
   return (
-    <div className="shadow-md rounded-xl border-2 bg-white dark:bg-gray-800 min-w-[180px]"
-      style={{ borderColor: NODE_META.wait.color }}>
-      <Handle type="target" position={Position.Top} className="!w-3 !h-3 !bg-slate-500" />
-      <div className="flex items-center gap-2 px-3 py-2 rounded-t-xl text-white font-medium text-xs"
-        style={{ backgroundColor: NODE_META.wait.color }}>
-        <Icon className="h-3.5 w-3.5" />{data.label}
+    <div className="border-2 border-dashed rounded-lg bg-yellow-50/50 dark:bg-yellow-950/20 min-w-[180px]"
+      style={{ borderColor: NODE_META.comment.color }}>
+      <div className="px-3 py-2 text-[11px] text-muted-foreground italic whitespace-pre-wrap">
+        💬 {data.commentText || '(双击编辑)'}
       </div>
-      <div className="px-3 py-2 text-[11px] text-muted-foreground">
-        <p>⏳ 等待 {data.waitSeconds || 0}s</p>
-      </div>
-      <Handle type="source" position={Position.Bottom} className="!w-3 !h-3 !bg-slate-500" />
     </div>
   )
 }
 
+function FiledistNode({ data }: NodeProps) {
+  return <BaseNode color={NODE_META.filedist.color} icon={NODE_META.filedist.icon} label={data.label}>
+    <p>📦 {data.filedistFileName || '未选择文件'}</p>
+    <p>🎯 {data.filedistTargets?.length || 0} 台主机</p>
+  </BaseNode>
+}
+
 const nodeTypes = {
-  script: ScriptNode,
-  approval: ApprovalNode,
-  condition: ConditionNode,
-  parallel: ParallelNode,
-  wait: WaitNode,
+  start: StartNode, end: EndNode,
+  script: ScriptNode, approval: ApprovalNode,
+  condition: ConditionNode, parallel: ParallelNode, wait: WaitNode,
+  notify: NotifyNode, subflow: SubflowNode, loop: LoopNode,
+  webhook: WebhookNode, comment: CommentNode, filedist: FiledistNode,
 }
 
 // ====== 步骤属性面板 ======
@@ -268,6 +315,121 @@ function StepPanel({ step, steps, scripts, onChange }: {
           </div>
         )}
 
+        {step.type === 'start' && (
+          <div className="text-xs text-muted-foreground bg-muted/30 rounded p-2">流程入口，无需配置</div>
+        )}
+
+        {step.type === 'end' && (
+          <div>
+            <label className="text-xs font-medium">结束状态</label>
+            <select className="flex h-8 w-full rounded-md border border-input bg-background px-2 text-xs mt-1"
+              value={step.end_status || 'success'} onChange={e => onChange({ end_status: e.target.value as any })}>
+              <option value="success">✅ 成功</option>
+              <option value="failure">❌ 失败</option>
+              <option value="timeout">⏱ 超时</option>
+            </select>
+          </div>
+        )}
+
+        {step.type === 'notify' && (
+          <>
+            <div>
+              <label className="text-xs font-medium">通知渠道</label>
+              <select className="flex h-8 w-full rounded-md border border-input bg-background px-2 text-xs mt-1"
+                value={step.notify_channel || 'dingtalk'} onChange={e => onChange({ notify_channel: e.target.value })}>
+                <option value="dingtalk">钉钉</option>
+                <option value="wecom">企业微信</option>
+                <option value="email">邮件</option>
+                <option value="sms">短信</option>
+              </select>
+            </div>
+            <div>
+              <label className="text-xs font-medium">通知标题</label>
+              <Input value={step.notify_title || ''} onChange={e => onChange({ notify_title: e.target.value })}
+                placeholder="如: [告警] 磁盘使用率超阈值" className="h-8 mt-1" />
+            </div>
+            <div>
+              <label className="text-xs font-medium">通知内容（支持变量 {'${step.xxx}'}）</label>
+              <textarea className="flex h-16 w-full rounded-md border border-input bg-background px-2 py-1 text-xs mt-1"
+                value={step.notify_body || ''} onChange={e => onChange({ notify_body: e.target.value })}
+                placeholder="磁盘已使用 ${step1.usage}%..." />
+            </div>
+          </>
+        )}
+
+        {step.type === 'subflow' && (
+          <div>
+            <label className="text-xs font-medium">子流程 ID</label>
+            <Input value={step.subflow_id || ''} onChange={e => onChange({ subflow_id: e.target.value, subflow_name: '' })}
+              placeholder="粘贴子流程 ID" className="h-8 mt-1" />
+          </div>
+        )}
+
+        {step.type === 'loop' && (
+          <>
+            <div>
+              <label className="text-xs font-medium">循环变量名</label>
+              <Input value={step.loop_over || '$items'} onChange={e => onChange({ loop_over: e.target.value })}
+                placeholder="$items" className="h-8 mt-1" />
+            </div>
+            <div>
+              <label className="text-xs font-medium">最大循环次数</label>
+              <Input type="number" value={step.loop_max || 100}
+                onChange={e => onChange({ loop_max: parseInt(e.target.value) || 100 })} className="h-8 mt-1" />
+            </div>
+          </>
+        )}
+
+        {step.type === 'webhook' && (
+          <>
+            <div>
+              <label className="text-xs font-medium">请求方法</label>
+              <select className="flex h-8 w-full rounded-md border border-input bg-background px-2 text-xs mt-1"
+                value={step.webhook_method || 'POST'} onChange={e => onChange({ webhook_method: e.target.value })}>
+                <option value="GET">GET</option>
+                <option value="POST">POST</option>
+                <option value="PUT">PUT</option>
+              </select>
+            </div>
+            <div>
+              <label className="text-xs font-medium">URL</label>
+              <Input value={step.webhook_url || ''} onChange={e => onChange({ webhook_url: e.target.value })}
+                placeholder="https://hooks.example.com/callback" className="h-8 mt-1" />
+            </div>
+            <div>
+              <label className="text-xs font-medium">Headers (JSON, 可选)</label>
+              <textarea className="flex h-12 w-full rounded-md border border-input bg-background px-2 py-1 text-xs font-mono mt-1"
+                value={step.webhook_headers ? JSON.stringify(step.webhook_headers) : ''}
+                onChange={e => { try { onChange({ webhook_headers: JSON.parse(e.target.value) }) } catch { } }}
+                placeholder='{"Authorization":"Bearer xxx"}' />
+            </div>
+            <div>
+              <label className="text-xs font-medium">Body (JSON, 可选)</label>
+              <textarea className="flex h-16 w-full rounded-md border border-input bg-background px-2 py-1 text-xs mt-1"
+                value={step.webhook_body || ''} onChange={e => onChange({ webhook_body: e.target.value })}
+                placeholder='{"status":"ok","step":"${step1.name}"}' />
+            </div>
+          </>
+        )}
+
+        {step.type === 'comment' && (
+          <div>
+            <label className="text-xs font-medium">注释内容</label>
+            <textarea className="flex h-24 w-full rounded-md border border-input bg-background px-2 py-1 text-xs mt-1"
+              value={step.comment_text || ''} onChange={e => onChange({ comment_text: e.target.value })}
+              placeholder="说明此段流程的用途、注意事项等..." />
+          </div>
+        )}
+
+        {step.type === 'filedist' && (
+          <div>
+            <label className="text-xs font-medium">文件 ID</label>
+            <Input value={step.filedist_file_id || ''}
+              onChange={e => onChange({ filedist_file_id: e.target.value, filedist_file_name: '' })}
+              placeholder="粘贴文件 ID" className="h-8 mt-1" />
+          </div>
+        )}
+
         <div className="pt-2 border-t space-y-2">
           <p className="text-xs font-medium">跳转配置（也可在画布上拖拽连线）</p>
           <div>
@@ -298,7 +460,6 @@ function CanvasEditor({ workflow, scripts, onSave }: {
   scripts: any[]
   onSave: (steps: WorkflowStep[]) => Promise<void>
 }) {
-  const { fitView, getNodes } = useReactFlow()
   const [steps, setSteps] = useState<WorkflowStep[]>(workflow.steps || [])
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [dirty, setDirty] = useState(false)
@@ -310,7 +471,6 @@ function CanvasEditor({ workflow, scripts, onSave }: {
   // 根据 steps 构造 React Flow 的 nodes 和 edges
   const { nodes, edges } = useMemo(() => {
     const ns: Node[] = steps.map((s, i) => {
-      const meta = NODE_META[s.type]
       const script = s.script_id ? scripts.find(sc => sc.id === s.script_id) : null
       return {
         id: s.id,
@@ -337,6 +497,33 @@ function CanvasEditor({ workflow, scripts, onSave }: {
           ...(s.type === 'wait' ? {
             waitSeconds: s.wait_seconds || 0,
           } : {}),
+          ...(s.type === 'end' ? {
+            endStatus: s.end_status || 'success',
+          } : {}),
+          ...(s.type === 'notify' ? {
+            notifyChannel: s.notify_channel || 'dingtalk',
+            notifyTitle: s.notify_title || '',
+          } : {}),
+          ...(s.type === 'subflow' ? {
+            subflowId: s.subflow_id,
+            subflowName: s.subflow_name || s.subflow_id?.slice(0, 12),
+          } : {}),
+          ...(s.type === 'loop' ? {
+            loopOver: s.loop_over || '$items',
+            loopMax: s.loop_max || 100,
+          } : {}),
+          ...(s.type === 'webhook' ? {
+            webhookMethod: s.webhook_method || 'POST',
+            webhookUrl: s.webhook_url || '',
+          } : {}),
+          ...(s.type === 'comment' ? {
+            commentText: s.comment_text || '',
+          } : {}),
+          ...(s.type === 'filedist' ? {
+            filedistFileName: s.filedist_file_name || '',
+            filedistTargets: s.filedist_targets || [],
+          } : {}),
+          // start 无需额外数据
         },
       }
     })
