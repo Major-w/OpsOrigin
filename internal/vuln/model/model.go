@@ -45,6 +45,7 @@ const (
 	ScanTypeQuick ScanType = "quick"
 	ScanTypeCVE  ScanType = "cve"
 	ScanTypeAgent ScanType = "agent"
+	ScanTypeImage ScanType = "image"
 )
 
 // Scan 一次漏洞扫描记录。

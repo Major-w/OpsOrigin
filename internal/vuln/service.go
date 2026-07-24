@@ -76,9 +76,12 @@ func (s *Service) RegisterRoutes(mux *http.ServeMux) {
 
 func (s *Service) handleCreateScan(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		Name     string `json:"name"`
-		Type     string `json:"type"`
-		DemoMode bool   `json:"demo_mode"`
+		Name     string          `json:"name"`
+		Type     string          `json:"type"`
+		DemoMode bool            `json:"demo_mode"`
+		Images   []string        `json:"images"`
+		AgentID  string          `json:"agent_id"`
+		Registry *RegistryConfig `json:"registry"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
@@ -89,7 +92,7 @@ func (s *Service) handleCreateScan(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	stype := model.ScanType(req.Type)
-	if stype != model.ScanTypeFull && stype != model.ScanTypeQuick && stype != model.ScanTypeCVE && stype != model.ScanTypeAgent {
+	if stype != model.ScanTypeFull && stype != model.ScanTypeQuick && stype != model.ScanTypeCVE && stype != model.ScanTypeAgent && stype != model.ScanTypeImage {
 		stype = model.ScanTypeFull
 	}
 	tenantID := tenantFromCtx(r.Context())
@@ -113,18 +116,50 @@ func (s *Service) handleCreateScan(w http.ResponseWriter, r *http.Request) {
 	// 拉取失败或为空时 scanner 在非 demo 下返回空(不造假)。
 	// agent 类型强制拉取(无视 demo 开关),供 AgentScanner 经 Agent 下发 trivy。
 	var inv []InventoryEntry
-	if s.invProvider != nil && (!req.DemoMode || stype == model.ScanTypeAgent) {
+	if s.invProvider != nil && (!req.DemoMode || stype == model.ScanTypeAgent) && stype != model.ScanTypeImage {
 		inv, _ = s.invProvider.ListHostInventory(r.Context(), tenantID)
 	}
-	// 按扫描类型选扫描器:agent 类型用 AgentScanner(经 Agent 下发 trivy/grype),
-	// 其余用内置 RuleScanner(基于 CVE 规则库)。
+	// 按扫描类型选扫描器:
+	//  - agent 类型用 AgentScanner(经 Agent 下发 trivy fs 扫主机);
+	//  - image 类型用 ImageScanner(经 Agent 下发 trivy image 扫仓库镜像);
+	//  - 其余用内置 RuleScanner(基于 CVE 规则库)。
 	var sc Scanner = s.scanner
-	if stype == model.ScanTypeAgent {
+	switch stype {
+	case model.ScanTypeAgent:
 		if s.agentRunner == nil {
 			writeError(w, http.StatusBadRequest, "agent scan requires agent runner (agentmgr not available)")
 			return
 		}
 		sc = NewAgentScanner(s.agentRunner)
+	case model.ScanTypeImage:
+		if s.agentRunner == nil {
+			writeError(w, http.StatusBadRequest, "image scan requires agent runner (agentmgr not available)")
+			return
+		}
+		if len(req.Images) == 0 {
+			writeError(w, http.StatusBadRequest, "image scan requires images[] (full refs, e.g. registry.io/team/app:tag)")
+			return
+		}
+		if req.AgentID == "" {
+			writeError(w, http.StatusBadRequest, "image scan requires agent_id (host with registry egress)")
+			return
+		}
+		reg := RegistryConfig{}
+		if req.Registry != nil {
+			reg = *req.Registry
+		}
+		// 镜像清单由请求显式给出,不走 CMDB 主机清单。
+		inv = nil
+		for _, ref := range req.Images {
+			inv = append(inv, InventoryEntry{
+				ImageRef:     ref,
+				AgentID:      req.AgentID,
+				Registry:     reg.URL,
+				RegistryUser: reg.Username,
+				RegistryPass: reg.Password,
+			})
+		}
+		sc = NewImageScanner(s.agentRunner, reg)
 	}
 	findings, err := sc.Scan(r.Context(), tenantID, scan.ID, string(stype), req.DemoMode, inv)
 	if err != nil {
