@@ -15,10 +15,13 @@ import (
 	"github.com/opsorigin/core/internal/cmdb/dgraph"
 	"github.com/opsorigin/core/internal/cmdb/outbox"
 	"github.com/opsorigin/core/internal/cmdb/pg"
+	"github.com/opsorigin/core/internal/ent"
 	"github.com/opsorigin/core/internal/itsm"
 	"github.com/opsorigin/core/internal/ai"
 	"github.com/opsorigin/core/internal/audit"
 	"github.com/opsorigin/core/internal/monitor"
+	healthhandler "github.com/opsorigin/core/internal/monitor/health"
+	metricsregistry "github.com/opsorigin/core/internal/monitor/metrics"
 	"github.com/opsorigin/core/internal/ops"
 	"github.com/opsorigin/core/internal/tunnel"
 	"github.com/opsorigin/core/internal/user"
@@ -37,7 +40,9 @@ import (
 	"github.com/opsorigin/core/internal/sysconfig"
 	"github.com/opsorigin/core/pkg/auth"
 	"github.com/opsorigin/core/pkg/config"
+	entdbpkg "github.com/opsorigin/core/pkg/db"
 	"github.com/opsorigin/core/pkg/llm"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/redis/go-redis/v9"
 	redisclient "github.com/opsorigin/core/pkg/redis"
 )
@@ -106,6 +111,16 @@ func main() {
 	var db *sql.DB
 	if pgRepo != nil {
 		db = pgRepo.DB()
+		// T09: PG 连接池可配
+		db.SetMaxOpenConns(cfg.Postgres.MaxConns)
+		db.SetMaxIdleConns(cfg.Postgres.MaxIdleConns)
+		db.SetConnMaxLifetime(cfg.Postgres.ConnMaxLifetime)
+	}
+
+	// T06: ent Client 初始化
+	var entClient *ent.Client
+	if db != nil {
+		entClient = entdbpkg.NewEntClient(db)
 	}
 
 	auditSvc := audit.NewService(cfg, db)
@@ -115,16 +130,44 @@ func main() {
 	server.WithMiddleware(authProvider.Middleware)
 	server.WithMiddleware(auditSvc.Middleware)
 
+	// T03: 注册 bypass 前缀 — /metrics 和 /health 跳过认证/审计/RBAC 中间件
+	server.WithBypassPrefixes("/metrics", "/api/v1/health")
+
+	// T07: 给 Core http.Server 的 Handler 包一层 promhttp.InstrumentHandlerDuration
+	server.WithHandlerWrapper(func(next http.Handler) http.Handler {
+		return promhttp.InstrumentHandlerDuration(
+			metricsregistry.HttpRequestDuration,
+			next,
+		)
+	})
+
 	var rdb *redis.Client
 	if rdbClient != nil {
 		rdb = rdbClient.Conn()
 	}
+
+	// T07: 注册 /metrics Prometheus 端点
+	metricsHandler := metricsregistry.NewMetricsHandler()
+	server.RegisterService(&staticHandlerRegistrar{
+		routes: map[string]http.Handler{
+			"GET /metrics": metricsHandler,
+		},
+	})
+
+	// T08: 创建 health handler 并通过注册器注册到 mux
+	healthHandler := healthhandler.NewHealthHandler(db, rdb)
+	server.RegisterService(&staticHandlerRegistrar{
+		routes: map[string]http.Handler{
+			"GET /api/v1/health": healthHandler,
+		},
+	})
 
 	cmdbSvc := cmdb.NewService(cfg, pgRepo, dgClient)
 	server.RegisterService(cmdbSvc)
 
 	monitorSvc := monitor.NewService(cfg, rdb)
 	server.RegisterService(monitorSvc)
+
 	monitorSvc.Start(ctx)
 
 	monitorTopo := monitorSvc.Topology()
@@ -172,7 +215,7 @@ func main() {
 		}
 	})
 
-	agentSvc := agentmgr.NewService(db, rdb)
+	agentSvc := agentmgr.NewService(db, rdb, entClient)
 	// 设置 TLS 状态(影响安装脚本中下载链接的 scheme)
 	if cfg.TLS.Enabled {
 		agentSvc.SetTLSEnable(true)
@@ -309,5 +352,16 @@ func main() {
 		if err := rdbClient.Close(); err != nil {
 			slog.Error("redis close error", "error", err)
 		}
+	}
+}
+
+// staticHandlerRegistrar 实现 routeRegistrar 接口，用于注册静态 HTTP Handler 到 mux。
+type staticHandlerRegistrar struct {
+	routes map[string]http.Handler
+}
+
+func (s *staticHandlerRegistrar) RegisterRoutes(mux *http.ServeMux) {
+	for pattern, handler := range s.routes {
+		mux.HandleFunc(pattern, handler.ServeHTTP)
 	}
 }

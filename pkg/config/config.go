@@ -23,6 +23,9 @@ type Config struct {
 	SSO       SSOConfig     `json:"sso"`
 	Tunnel    TunnelConfig  `json:"tunnel"`
 	FileStore FileStoreConfig `json:"file_store"` // §5 文件分发中心存储配置
+	Postgres  PostgresConfig   `json:"postgres"`
+	TaskQueue TaskQueueConfig   `json:"task_queue"`
+	Upgrade   UpgradeConfig     `json:"upgrade"`
 }
 
 type LDAPConfig struct {
@@ -107,6 +110,22 @@ type LLMConfig struct {
 	Timeout int    `json:"timeout"`
 }
 
+type PostgresConfig struct {
+	MaxConns        int           `json:"max_conns"`         // OPSNEXUS_POSTGRES_MAX_CONNS, 默认 25
+	MaxIdleConns    int           `json:"max_idle_conns"`    // OPSNEXUS_POSTGRES_MAX_IDLE_CONNS, 默认 5
+	ConnMaxLifetime time.Duration `json:"conn_max_lifetime"` // OPSNEXUS_POSTGRES_CONN_MAX_LIFETIME, 默认 30m
+}
+
+type TaskQueueConfig struct {
+	QueueSize int `json:"queue_size"` // OPSNEXUS_TASK_QUEUE_SIZE, 默认 1000
+	Workers   int `json:"workers"`    // OPSNEXUS_TASK_QUEUE_WORKERS, 默认 4
+}
+
+type UpgradeConfig struct {
+	DefaultBatchSize     int           `json:"default_batch_size"`     // OPSNEXUS_UPGRADE_DEFAULT_BATCH_SIZE, 默认 10
+	DefaultBatchInterval time.Duration `json:"default_batch_interval"` // OPSNEXUS_UPGRADE_DEFAULT_BATCH_INTERVAL, 默认 60s
+}
+
 func Load() (*Config, error) {
 	loadDotEnv()
 
@@ -178,6 +197,25 @@ func Load() (*Config, error) {
 	}
 
 	cfg.Core.Addr = fmt.Sprintf(":%d", cfg.Core.Port)
+
+	// Postgres 连接池配置
+	cfg.Postgres = PostgresConfig{
+		MaxConns:        envInt("OPSNEXUS_POSTGRES_MAX_CONNS", 25),
+		MaxIdleConns:    envInt("OPSNEXUS_POSTGRES_MAX_IDLE_CONNS", 5),
+		ConnMaxLifetime: envDuration("OPSNEXUS_POSTGRES_CONN_MAX_LIFETIME", 30*time.Minute),
+	}
+
+	// TaskQueue 配置
+	cfg.TaskQueue = TaskQueueConfig{
+		QueueSize: envInt("OPSNEXUS_TASK_QUEUE_SIZE", 1000),
+		Workers:   envInt("OPSNEXUS_TASK_QUEUE_WORKERS", 4),
+	}
+
+	// Upgrade 配置
+	cfg.Upgrade = UpgradeConfig{
+		DefaultBatchSize:     envInt("OPSNEXUS_UPGRADE_DEFAULT_BATCH_SIZE", 10),
+		DefaultBatchInterval: envDuration("OPSNEXUS_UPGRADE_DEFAULT_BATCH_INTERVAL", 60*time.Second),
+	}
 
 	return cfg, nil
 }

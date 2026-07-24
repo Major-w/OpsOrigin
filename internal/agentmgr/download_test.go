@@ -19,7 +19,7 @@ const testFileSecret = "test-file-secret"
 func newTestService(t *testing.T) (*Service, string) {
 	t.Helper()
 	dir := t.TempDir()
-	s := NewService(nil, nil)
+	s := NewService(nil, nil, nil)
 	s.SetFileTokenSecret(testFileSecret)
 	s.SetFileStoreDir(dir)
 	s.SetServerBaseURL("http://srv:8080")

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -31,8 +32,10 @@ type Server struct {
 	middlewares []func(http.Handler) http.Handler
 	addr       string
 
-	mu         sync.Mutex
-	httpServer *http.Server
+	mu              sync.Mutex
+	httpServer      *http.Server
+	bypassPrefixes  []string
+	handlerWrapper  func(http.Handler) http.Handler
 }
 
 // NewServer 构造 Core 主 HTTP 网关，监听地址取自 cfg.Core.Addr。
@@ -53,6 +56,16 @@ func (s *Server) WithMiddleware(mw func(http.Handler) http.Handler) {
 	s.middlewares = append(s.middlewares, mw)
 }
 
+// WithBypassPrefixes 追加旁路前缀路径，命中这些前缀的请求将跳过所有中间件直接路由到 mux。
+func (s *Server) WithBypassPrefixes(prefixes ...string) {
+	s.bypassPrefixes = append(s.bypassPrefixes, prefixes...)
+}
+
+// WithHandlerWrapper 设置一个最外层的 HTTP Handler 包装函数（如 promhttp.InstrumentHandlerDuration）。
+func (s *Server) WithHandlerWrapper(wrap func(http.Handler) http.Handler) {
+	s.handlerWrapper = wrap
+}
+
 // Serve 启动网关，并在 ctx 取消或 GracefulStop 触发时优雅关闭。
 func (s *Server) Serve(ctx context.Context) error {
 	var h http.Handler = s.mux
@@ -61,9 +74,25 @@ func (s *Server) Serve(ctx context.Context) error {
 		h = s.middlewares[i](h)
 	}
 
+	// 最外层：旁路检查，命中的路径跳过所有中间件直接走 mux
+	var final http.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		for _, prefix := range s.bypassPrefixes {
+			if strings.HasPrefix(r.URL.Path, prefix) {
+				s.mux.ServeHTTP(w, r)
+				return
+			}
+		}
+		h.ServeHTTP(w, r)
+	})
+
+	// 应用可选的 Handler 包装（如 promhttp.InstrumentHandlerDuration）
+	if s.handlerWrapper != nil {
+		final = s.handlerWrapper(final)
+	}
+
 	srv := &http.Server{
 		Addr:    s.addr,
-		Handler: h,
+		Handler: final,
 		BaseContext: func(net.Listener) context.Context {
 			return ctx
 		},

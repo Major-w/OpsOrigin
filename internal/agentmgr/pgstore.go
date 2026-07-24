@@ -3,21 +3,25 @@ package agentmgr
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"fmt"
 	"log/slog"
 	"strings"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/opsorigin/core/internal/ent"
+	entAgentHost "github.com/opsorigin/core/internal/ent/agenthost"
+	entAgentProxy "github.com/opsorigin/core/internal/ent/agentproxy"
+	entAgentTask "github.com/opsorigin/core/internal/ent/agenttask"
 )
 
 type pgStore struct {
-	db *sql.DB
+	db        *sql.DB
+	entClient *ent.Client
 }
 
-func newPGStore(db *sql.DB) *pgStore {
-	s := &pgStore{db: db}
+func newPGStore(db *sql.DB, entClient *ent.Client) *pgStore {
+	s := &pgStore{db: db, entClient: entClient}
 	s.init(context.Background())
 	return s
 }
@@ -59,125 +63,210 @@ func (s *pgStore) init(ctx context.Context) {
 	}
 }
 
-func toJSON(v any) []byte {
-	if v == nil { return []byte("null") }
-	b, _ := json.Marshal(v)
-	return b
-}
-
-func nullTime(t *time.Time) sql.NullTime {
-	if t == nil { return sql.NullTime{} }
-	return sql.NullTime{Time: *t, Valid: true}
-}
-
-// ——— Agent CRUD ———
+// ——— Agent CRUD (ent 链式调用) ———
 
 func (s *pgStore) Register(ctx context.Context, h *AgentHost) error {
 	h.Fingerprint = GenerateFingerprint(h.TenantID, h.Address)
 	ch := channelFromType(h.Type)
-	if existing, _ := s.GetByFingerprint(ctx, h.Fingerprint, h.TenantID); existing != nil {
+	existing, _ := s.GetByFingerprint(ctx, h.Fingerprint, h.TenantID)
+	isUpdate := existing != nil
+
+	if isUpdate {
 		h.ID = existing.ID
-		if h.FirstSeen == nil { h.FirstSeen = existing.FirstSeen }
-		if h.CreatedAt.IsZero() { h.CreatedAt = existing.CreatedAt }
-		if ch != "" { h.Channels = mergeChannels(existing.Channels, ch) }
+		if h.FirstSeen == nil {
+			h.FirstSeen = existing.FirstSeen
+		}
+		if h.CreatedAt.IsZero() {
+			h.CreatedAt = existing.CreatedAt
+		}
+		if ch != "" {
+			h.Channels = mergeChannels(existing.Channels, ch)
+		}
 	}
-	if h.ID == "" { h.ID = uuid.New().String() }
-	if len(h.Channels) == 0 { h.Channels = []string{ch} }
-	if h.TenantID == "" { h.TenantID = "default" }
+	if h.ID == "" {
+		h.ID = uuid.New().String()
+	}
+	if len(h.Channels) == 0 {
+		h.Channels = []string{ch}
+	}
+	if h.TenantID == "" {
+		h.TenantID = "default"
+	}
 	now := time.Now()
-	if h.CreatedAt.IsZero() { h.CreatedAt = now }
+	if h.CreatedAt.IsZero() {
+		h.CreatedAt = now
+	}
 	h.UpdatedAt = now
-	if h.Status == "" { h.Status = "offline" }
-	_, err := s.db.ExecContext(ctx,
-		`INSERT INTO agent_hosts(id,tenant_id,fingerprint,name,type,address,port,os_type,os_version,auth_type,ssh_user,status,proxy_id,install_method,version,cpu,memory,disk,hostname,labels,environment,capabilities,ips,channels,last_seen,last_heartbeat,first_seen,created_at,updated_at)
-		VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30)
-		ON CONFLICT(id) DO UPDATE SET fingerprint=$3,name=$4,type=$5,address=$6,port=$7,os_type=$8,os_version=$9,auth_type=$10,ssh_user=$11,status=$12,proxy_id=$13,install_method=$14,version=$15,cpu=$16,memory=$17,disk=$18,hostname=$19,labels=$20,environment=$21,capabilities=$22,ips=$23,channels=$24,last_seen=$25,last_heartbeat=$26,updated_at=$30`,
-		h.ID, h.TenantID, h.Fingerprint, h.Name, string(h.Type), h.Address, h.Port, h.OSType, h.OSVersion, h.AuthType, h.SSHUser, string(h.Status), h.ProxyID, string(h.InstallMethod), h.Version, h.CPU, h.Memory, h.Disk, h.Hostname, toJSON(h.Labels), h.Environment, toJSON(h.Capabilities), toJSON([]string{}), toJSON(h.Channels), nullTime(h.LastSeen), nullTime(h.LastHeartbeat), nullTime(h.FirstSeen), h.CreatedAt, h.UpdatedAt)
+	if h.Status == "" {
+		h.Status = "offline"
+	}
+
+	if isUpdate {
+		_, err := s.entClient.AgentHost.UpdateOneID(h.ID).
+			SetTenantID(h.TenantID).
+			SetFingerprint(h.Fingerprint).
+			SetName(h.Name).
+			SetType(string(h.Type)).
+			SetAddress(h.Address).
+			SetPort(h.Port).
+			SetOsType(h.OSType).
+			SetOsVersion(h.OSVersion).
+			SetAuthType(h.AuthType).
+			SetSSHUser(h.SSHUser).
+			SetStatus(string(h.Status)).
+			SetProxyID(h.ProxyID).
+			SetInstallMethod(string(h.InstallMethod)).
+			SetVersion(h.Version).
+			SetCPU(h.CPU).
+			SetMemory(h.Memory).
+			SetDisk(h.Disk).
+			SetHostname(h.Hostname).
+			SetLabels(h.Labels).
+			SetEnvironment(h.Environment).
+			SetCapabilities(h.Capabilities).
+			SetIps([]string{}).
+			SetChannels(h.Channels).
+			SetNillableLastSeen(h.LastSeen).
+			SetNillableLastHeartbeat(h.LastHeartbeat).
+			SetNillableFirstSeen(h.FirstSeen).
+			SetUpdatedAt(h.UpdatedAt).
+			Save(ctx)
+		return err
+	}
+
+	err := s.entClient.AgentHost.Create().
+		SetID(h.ID).
+		SetTenantID(h.TenantID).
+		SetFingerprint(h.Fingerprint).
+		SetName(h.Name).
+		SetType(string(h.Type)).
+		SetAddress(h.Address).
+		SetPort(h.Port).
+		SetOsType(h.OSType).
+		SetOsVersion(h.OSVersion).
+		SetAuthType(h.AuthType).
+		SetSSHUser(h.SSHUser).
+		SetStatus(string(h.Status)).
+		SetProxyID(h.ProxyID).
+		SetInstallMethod(string(h.InstallMethod)).
+		SetVersion(h.Version).
+		SetCPU(h.CPU).
+		SetMemory(h.Memory).
+		SetDisk(h.Disk).
+		SetHostname(h.Hostname).
+		SetLabels(h.Labels).
+		SetEnvironment(h.Environment).
+		SetCapabilities(h.Capabilities).
+		SetIps([]string{}).
+		SetChannels(h.Channels).
+		SetNillableLastSeen(h.LastSeen).
+		SetNillableLastHeartbeat(h.LastHeartbeat).
+		SetNillableFirstSeen(h.FirstSeen).
+		SetCreatedAt(h.CreatedAt).
+		SetUpdatedAt(h.UpdatedAt).
+		Exec(ctx)
 	return err
 }
 
 func (s *pgStore) GetByFingerprint(ctx context.Context, fp, tenantID string) (*AgentHost, error) {
-	h := &AgentHost{}
-	var caps, ips, labels, channels []byte
-	var typ, st, im string
-	var lastSeen, lastHb, firstSeen sql.NullTime
-	err := s.db.QueryRowContext(ctx,
-		`SELECT id,tenant_id,fingerprint,name,type,address,port,os_type,os_version,auth_type,ssh_user,status,proxy_id,install_method,version,cpu,memory,disk,hostname,labels,environment,capabilities,ips,channels,last_seen,last_heartbeat,first_seen,created_at,updated_at
-		FROM agent_hosts WHERE fingerprint=$1 AND tenant_id=$2`, fp, tenantID).
-		Scan(&h.ID, &h.TenantID, &h.Fingerprint, &h.Name, &typ, &h.Address, &h.Port, &h.OSType, &h.OSVersion, &h.AuthType, &h.SSHUser, &st, &h.ProxyID, &im, &h.Version, &h.CPU, &h.Memory, &h.Disk, &h.Hostname, &labels, &h.Environment, &caps, &ips, &channels, &lastSeen, &lastHb, &firstSeen, &h.CreatedAt, &h.UpdatedAt)
-	if err == sql.ErrNoRows { return nil, nil }
-	if err != nil { return nil, err }
-	h.Type, h.Status, h.InstallMethod = AgentType(typ), AgentStatus(st), InstallMethod(im)
-	_ = json.Unmarshal(caps, &h.Capabilities)
-	_ = json.Unmarshal(labels, &h.Labels)
-	_ = json.Unmarshal(channels, &h.Channels)
-	if lastSeen.Valid { h.LastSeen = &lastSeen.Time }
-	if lastHb.Valid { h.LastHeartbeat = &lastHb.Time }
-	if firstSeen.Valid { h.FirstSeen = &firstSeen.Time }
-	return h, nil
+	row, err := s.entClient.AgentHost.Query().
+		Where(
+			entAgentHost.FingerprintEQ(fp),
+			entAgentHost.TenantIDEQ(tenantID),
+		).First(ctx)
+	if err != nil {
+		if ent.IsNotFound(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return entRowToAgentHost(row), nil
 }
 
 func (s *pgStore) Get(ctx context.Context, id, tenantID string) (*AgentHost, error) {
-	h := &AgentHost{}
-	var caps, ips, labels []byte
-	var typ, st, im string
-	var lastSeen, lastHb, firstSeen sql.NullTime
-	err := s.db.QueryRowContext(ctx,
-		`SELECT id,tenant_id,name,type,address,port,os_type,os_version,auth_type,ssh_user,status,proxy_id,install_method,version,cpu,memory,disk,hostname,labels,environment,capabilities,ips,last_seen,last_heartbeat,first_seen,created_at,updated_at
-		FROM agent_hosts WHERE id=$1 AND tenant_id=$2`, id, tenantID).
-		Scan(&h.ID, &h.TenantID, &h.Name, &typ, &h.Address, &h.Port, &h.OSType, &h.OSVersion, &h.AuthType, &h.SSHUser, &st, &h.ProxyID, &im, &h.Version, &h.CPU, &h.Memory, &h.Disk, &h.Hostname, &labels, &h.Environment, &caps, &ips, &lastSeen, &lastHb, &firstSeen, &h.CreatedAt, &h.UpdatedAt)
-	if err == sql.ErrNoRows { return nil, nil }
-	if err != nil { return nil, err }
-	h.Type, h.Status, h.InstallMethod = AgentType(typ), AgentStatus(st), InstallMethod(im)
-	_ = json.Unmarshal(caps, &h.Capabilities)
-	_ = json.Unmarshal(labels, &h.Labels)
-	if lastSeen.Valid { h.LastSeen = &lastSeen.Time }
-	if lastHb.Valid { h.LastHeartbeat = &lastHb.Time }
-	if firstSeen.Valid { h.FirstSeen = &firstSeen.Time }
-	return h, nil
+	row, err := s.entClient.AgentHost.Query().
+		Where(
+			entAgentHost.IDEQ(id),
+			entAgentHost.TenantIDEQ(tenantID),
+		).First(ctx)
+	if err != nil {
+		if ent.IsNotFound(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return entRowToAgentHost(row), nil
 }
 
 func (s *pgStore) List(ctx context.Context, tenantID string) ([]*AgentHost, error) {
-	rows, err := s.db.QueryContext(ctx,
-		`SELECT id,tenant_id,name,type,address,port,os_type,os_version,auth_type,ssh_user,status,proxy_id,install_method,version,cpu,memory,disk,hostname,labels,environment,capabilities,ips,last_seen,last_heartbeat,first_seen,created_at,updated_at
-		FROM agent_hosts WHERE tenant_id=$1 ORDER BY name`, tenantID)
-	if err != nil { return nil, err }
-	defer rows.Close()
-	var out []*AgentHost
-	for rows.Next() {
-		h := &AgentHost{}
-		var caps, ips, labels []byte
-		var typ, st, im string
-		var lastSeen, lastHb, firstSeen sql.NullTime
-		if err := rows.Scan(&h.ID, &h.TenantID, &h.Name, &typ, &h.Address, &h.Port, &h.OSType, &h.OSVersion, &h.AuthType, &h.SSHUser, &st, &h.ProxyID, &im, &h.Version, &h.CPU, &h.Memory, &h.Disk, &h.Hostname, &labels, &h.Environment, &caps, &ips, &lastSeen, &lastHb, &firstSeen, &h.CreatedAt, &h.UpdatedAt); err != nil { return nil, err }
-		h.Type, h.Status, h.InstallMethod = AgentType(typ), AgentStatus(st), InstallMethod(im)
-		_ = json.Unmarshal(caps, &h.Capabilities)
-		_ = json.Unmarshal(labels, &h.Labels)
-		if lastSeen.Valid { h.LastSeen = &lastSeen.Time }
-		if lastHb.Valid { h.LastHeartbeat = &lastHb.Time }
-		if firstSeen.Valid { h.FirstSeen = &firstSeen.Time }
-		out = append(out, h)
+	rows, err := s.entClient.AgentHost.Query().
+		Where(entAgentHost.TenantIDEQ(tenantID)).
+		Order(ent.Asc(entAgentHost.FieldName)).
+		All(ctx)
+	if err != nil {
+		return nil, err
 	}
-	return out, rows.Err()
+	out := make([]*AgentHost, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, entRowToAgentHost(row))
+	}
+	return out, nil
 }
 
 func (s *pgStore) Update(ctx context.Context, h *AgentHost) error {
 	h.UpdatedAt = time.Now()
-	_, err := s.db.ExecContext(ctx,
-		`UPDATE agent_hosts SET name=$2,type=$3,address=$4,port=$5,os_type=$6,os_version=$7,auth_type=$8,ssh_user=$9,status=$10,proxy_id=$11,install_method=$12,version=$13,cpu=$14,memory=$15,disk=$16,hostname=$17,labels=$18,environment=$19,capabilities=$20,last_seen=$21,last_heartbeat=$22,first_seen=$23,updated_at=$24 WHERE id=$1 AND tenant_id=$25`,
-		h.ID, h.Name, string(h.Type), h.Address, h.Port, h.OSType, h.OSVersion, h.AuthType, h.SSHUser, string(h.Status), h.ProxyID, string(h.InstallMethod), h.Version, h.CPU, h.Memory, h.Disk, h.Hostname, toJSON(h.Labels), h.Environment, toJSON(h.Capabilities), nullTime(h.LastSeen), nullTime(h.LastHeartbeat), nullTime(h.FirstSeen), h.UpdatedAt, h.TenantID)
+	_, err := s.entClient.AgentHost.Update().
+		Where(
+			entAgentHost.IDEQ(h.ID),
+			entAgentHost.TenantIDEQ(h.TenantID),
+		).
+		SetName(h.Name).
+		SetType(string(h.Type)).
+		SetAddress(h.Address).
+		SetPort(h.Port).
+		SetOsType(h.OSType).
+		SetOsVersion(h.OSVersion).
+		SetAuthType(h.AuthType).
+		SetSSHUser(h.SSHUser).
+		SetStatus(string(h.Status)).
+		SetProxyID(h.ProxyID).
+		SetInstallMethod(string(h.InstallMethod)).
+		SetVersion(h.Version).
+		SetCPU(h.CPU).
+		SetMemory(h.Memory).
+		SetDisk(h.Disk).
+		SetHostname(h.Hostname).
+		SetLabels(h.Labels).
+		SetEnvironment(h.Environment).
+		SetCapabilities(h.Capabilities).
+		SetNillableLastSeen(h.LastSeen).
+		SetNillableLastHeartbeat(h.LastHeartbeat).
+		SetNillableFirstSeen(h.FirstSeen).
+		SetUpdatedAt(h.UpdatedAt).
+		Save(ctx)
 	return err
 }
 
 func (s *pgStore) Delete(ctx context.Context, id, tenantID string) error {
-	tx, _ := s.db.BeginTx(ctx, nil)
-	if tx != nil {
-		defer tx.Rollback()
-		tx.ExecContext(ctx, `DELETE FROM agent_tasks WHERE agent_id=$1`, id)
-		tx.ExecContext(ctx, `DELETE FROM agent_hosts WHERE id=$1 AND tenant_id=$2`, id, tenantID)
+	tx, err := s.entClient.Tx(ctx)
+	if err == nil {
+		defer func() { _ = tx.Rollback() }()
+		_, _ = tx.AgentTask.Delete().Where(entAgentTask.AgentIDEQ(id)).Exec(ctx)
+		_, err2 := tx.AgentHost.Delete().Where(
+			entAgentHost.IDEQ(id),
+			entAgentHost.TenantIDEQ(tenantID),
+		).Exec(ctx)
+		if err2 != nil {
+			_ = tx.Rollback()
+			return err2
+		}
 		return tx.Commit()
 	}
-	return s.db.QueryRowContext(ctx, `DELETE FROM agent_hosts WHERE id=$1 AND tenant_id=$2`, id, tenantID).Err()
+	_, err = s.entClient.AgentHost.Delete().Where(
+		entAgentHost.IDEQ(id),
+		entAgentHost.TenantIDEQ(tenantID),
+	).Exec(ctx)
+	return err
 }
 
 // heartbeatBatch bundles heartbeat data for bulk upsert.
@@ -191,8 +280,6 @@ func (s *pgStore) BulkHeartbeat(ctx context.Context, batch []heartbeatBatch) err
 	if len(batch) == 0 {
 		return nil
 	}
-	// Build VALUES ($1,$2,…), ($N+1,$N+2,…), …
-	// Template: placeholder idx = row*12 + col (0-based)
 	vals := make([]string, 0, len(batch))
 	args := make([]any, 0, len(batch)*12)
 	for i, hb := range batch {
@@ -204,8 +291,8 @@ func (s *pgStore) BulkHeartbeat(ctx context.Context, batch []heartbeatBatch) err
 			hb.ID, hb.TenantID, hb.Version, hb.OS, hb.OSVersion,
 			hb.Hostname, hb.CPU, hb.Memory,
 			hb.LastSeen, hb.LastHeartbeat,
-			time.Now(), // last_seen (duplicate for ON CONFLICT UPDATE)
-			time.Now(), // updated_at
+			time.Now(),
+			time.Now(),
 		)
 	}
 	query := `INSERT INTO agent_hosts(id,tenant_id,version,os_type,os_version,hostname,cpu,memory,last_seen,last_heartbeat,updated_at)
@@ -221,9 +308,22 @@ ON CONFLICT(id) DO UPDATE SET
 
 func (s *pgStore) Heartbeat(ctx context.Context, id, tenantID string, req *HeartbeatRequest) error {
 	now := time.Now()
-	_, err := s.db.ExecContext(ctx,
-		`UPDATE agent_hosts SET status='online',version=$3,cpu=$4,memory=$5,os_type=$6,os_version=$7,capabilities=$8,ips=$9,last_seen=$10,updated_at=$11 WHERE id=$1 AND tenant_id=$2`,
-		id, tenantID, req.AgentVersion, req.CPU, req.Memory, req.OS, req.OSVersion, toJSON(req.Capabilities), toJSON(req.IPs), now, now)
+	_, err := s.entClient.AgentHost.Update().
+		Where(
+			entAgentHost.IDEQ(id),
+			entAgentHost.TenantIDEQ(tenantID),
+		).
+		SetStatus(string(AgentStatusOnline)).
+		SetVersion(req.AgentVersion).
+		SetCPU(req.CPU).
+		SetMemory(req.Memory).
+		SetOsType(req.OS).
+		SetOsVersion(req.OSVersion).
+		SetCapabilities(req.Capabilities).
+		SetIps(req.IPs).
+		SetNillableLastSeen(&now).
+		SetUpdatedAt(now).
+		Save(ctx)
 	return err
 }
 
@@ -232,117 +332,257 @@ func (s *pgStore) MarkOfflineAgents(ctx context.Context, tenantID string, thresh
 	res, err := s.db.ExecContext(ctx,
 		`UPDATE agent_hosts SET status='offline',updated_at=$3 WHERE tenant_id=$1 AND status='online' AND last_seen < $2`,
 		tenantID, cutoff, time.Now())
-	if err != nil { return 0, err }
+	if err != nil {
+		return 0, err
+	}
 	n, _ := res.RowsAffected()
 	return int(n), nil
 }
 
-// ——— Proxy CRUD ———
+// ——— Proxy CRUD (ent 链式调用) ———
 
 func (s *pgStore) RegisterProxy(ctx context.Context, p *ProxyInfo) error {
-	if p.ID == "" { p.ID = uuid.New().String() }
-	if p.TenantID == "" { p.TenantID = "default" }
-	if p.CreatedAt.IsZero() { p.CreatedAt = time.Now() }
-	if p.Status == "" { p.Status = "offline" }
-	_, err := s.db.ExecContext(ctx,
-		`INSERT INTO agent_proxies(id,tenant_id,name,address,port,status,agent_count,version,last_seen,created_at)
-		VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) ON CONFLICT(id) DO UPDATE SET name=$3,address=$4,port=$5,status=$6,agent_count=$7,version=$8,last_seen=$9`,
-		p.ID, p.TenantID, p.Name, p.Address, p.Port, p.Status, p.AgentCount, p.Version, nullTime(p.LastSeen), p.CreatedAt)
+	if p.ID == "" {
+		p.ID = uuid.New().String()
+	}
+	if p.TenantID == "" {
+		p.TenantID = "default"
+	}
+	if p.CreatedAt.IsZero() {
+		p.CreatedAt = time.Now()
+	}
+	if p.Status == "" {
+		p.Status = "offline"
+	}
+
+	existing, err := s.entClient.AgentProxy.Query().
+		Where(entAgentProxy.IDEQ(p.ID), entAgentProxy.TenantIDEQ(p.TenantID)).
+		First(ctx)
+	isUpdate := err == nil && existing != nil
+
+	if isUpdate {
+		_, err = s.entClient.AgentProxy.UpdateOneID(p.ID).
+			SetTenantID(p.TenantID).
+			SetName(p.Name).
+			SetAddress(p.Address).
+			SetPort(p.Port).
+			SetStatus(p.Status).
+			SetAgentCount(p.AgentCount).
+			SetVersion(p.Version).
+			SetNillableLastSeen(p.LastSeen).
+			Save(ctx)
+		return err
+	}
+
+	err = s.entClient.AgentProxy.Create().
+		SetID(p.ID).
+		SetTenantID(p.TenantID).
+		SetName(p.Name).
+		SetAddress(p.Address).
+		SetPort(p.Port).
+		SetStatus(p.Status).
+		SetAgentCount(p.AgentCount).
+		SetVersion(p.Version).
+		SetNillableLastSeen(p.LastSeen).
+		SetCreatedAt(p.CreatedAt).
+		Exec(ctx)
 	return err
 }
 
 func (s *pgStore) GetProxy(ctx context.Context, id, tenantID string) (*ProxyInfo, error) {
-	p := &ProxyInfo{}
-	var lastSeen sql.NullTime
-	err := s.db.QueryRowContext(ctx,
-		`SELECT id,tenant_id,name,address,port,status,agent_count,version,last_seen,created_at FROM agent_proxies WHERE id=$1 AND tenant_id=$2`, id, tenantID).
-		Scan(&p.ID, &p.TenantID, &p.Name, &p.Address, &p.Port, &p.Status, &p.AgentCount, &p.Version, &lastSeen, &p.CreatedAt)
-	if err == sql.ErrNoRows { return nil, nil }
-	if err != nil { return nil, err }
-	if lastSeen.Valid { p.LastSeen = &lastSeen.Time }
-	return p, nil
+	row, err := s.entClient.AgentProxy.Query().
+		Where(
+			entAgentProxy.IDEQ(id),
+			entAgentProxy.TenantIDEQ(tenantID),
+		).First(ctx)
+	if err != nil {
+		if ent.IsNotFound(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return entRowToProxy(row), nil
 }
 
 func (s *pgStore) ListProxies(ctx context.Context, tenantID string) ([]*ProxyInfo, error) {
-	rows, err := s.db.QueryContext(ctx,
-		`SELECT id,tenant_id,name,address,port,status,agent_count,version,last_seen,created_at FROM agent_proxies WHERE tenant_id=$1 ORDER BY name`, tenantID)
-	if err != nil { return nil, err }
-	defer rows.Close()
-	var out []*ProxyInfo
-	for rows.Next() {
-		p := &ProxyInfo{}
-		var lastSeen sql.NullTime
-		if err := rows.Scan(&p.ID, &p.TenantID, &p.Name, &p.Address, &p.Port, &p.Status, &p.AgentCount, &p.Version, &lastSeen, &p.CreatedAt); err != nil { return nil, err }
-		if lastSeen.Valid { p.LastSeen = &lastSeen.Time }
-		out = append(out, p)
+	rows, err := s.entClient.AgentProxy.Query().
+		Where(entAgentProxy.TenantIDEQ(tenantID)).
+		Order(ent.Asc(entAgentProxy.FieldName)).
+		All(ctx)
+	if err != nil {
+		return nil, err
 	}
-	return out, rows.Err()
+	out := make([]*ProxyInfo, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, entRowToProxy(row))
+	}
+	return out, nil
 }
 
 func (s *pgStore) UpdateProxy(ctx context.Context, p *ProxyInfo) error {
-	_, err := s.db.ExecContext(ctx,
-		`UPDATE agent_proxies SET name=$2,address=$3,port=$4,status=$5,agent_count=$6,version=$7,last_seen=$8 WHERE id=$1 AND tenant_id=$9`,
-		p.ID, p.Name, p.Address, p.Port, p.Status, p.AgentCount, p.Version, nullTime(p.LastSeen), p.TenantID)
+	_, err := s.entClient.AgentProxy.Update().
+		Where(
+			entAgentProxy.IDEQ(p.ID),
+			entAgentProxy.TenantIDEQ(p.TenantID),
+		).
+		SetName(p.Name).
+		SetAddress(p.Address).
+		SetPort(p.Port).
+		SetStatus(p.Status).
+		SetAgentCount(p.AgentCount).
+		SetVersion(p.Version).
+		SetNillableLastSeen(p.LastSeen).
+		Save(ctx)
 	return err
 }
 
 func (s *pgStore) DeleteProxy(ctx context.Context, id, tenantID string) error {
-	_, err := s.db.ExecContext(ctx, `DELETE FROM agent_proxies WHERE id=$1 AND tenant_id=$2`, id, tenantID)
+	_, err := s.entClient.AgentProxy.Delete().Where(
+		entAgentProxy.IDEQ(id),
+		entAgentProxy.TenantIDEQ(tenantID),
+	).Exec(ctx)
 	return err
 }
 
-// ——— Tasks ———
+// ——— Tasks (ent 链式调用) ———
 
 func (s *pgStore) CreateTask(ctx context.Context, agentID string, req *TaskRequest) error {
-	if req.TaskID == "" { req.TaskID = uuid.New().String() }
+	if req.TaskID == "" {
+		req.TaskID = uuid.New().String()
+	}
 	tenantID := "default"
 	now := time.Now()
-	_, err := s.db.ExecContext(ctx,
-		`INSERT INTO agent_tasks(id,tenant_id,agent_id,action,script,params,timeout,run_as,status,created_at,updated_at)
-		VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
-		req.TaskID, tenantID, agentID, req.Action, req.Script, toJSON(req.Params), req.Timeout, req.RunAs, string(TaskStatusPending), now, now)
+	err := s.entClient.AgentTask.Create().
+		SetID(req.TaskID).
+		SetTenantID(tenantID).
+		SetAgentID(agentID).
+		SetAction(req.Action).
+		SetScript(req.Script).
+		SetParams(req.Params).
+		SetTimeout(req.Timeout).
+		SetRunAs(req.RunAs).
+		SetStatus(string(TaskStatusPending)).
+		SetCreatedAt(now).
+		SetUpdatedAt(now).
+		Exec(ctx)
 	return err
 }
 
 func (s *pgStore) ListTasks(ctx context.Context, agentID string) ([]*TaskInfo, error) {
-	rows, err := s.db.QueryContext(ctx,
-		`SELECT id,action,script,params,timeout,run_as,status,output,exit_code,duration_ms,error,created_at,updated_at
-		FROM agent_tasks WHERE agent_id=$1 ORDER BY created_at DESC LIMIT 100`, agentID)
-	if err != nil { return nil, err }
-	defer rows.Close()
-	var out []*TaskInfo
-	for rows.Next() {
-		ti := &TaskInfo{}
-		var params []byte
-		var action, scr, st, rAs, outStr, errStr sql.NullString
-		var to, exitCode, dur sql.NullInt64
-		if err := rows.Scan(&ti.TaskID, &action, &scr, &params, &to, &rAs, &st, &outStr, &exitCode, &dur, &errStr, &ti.CreatedAt, &ti.UpdatedAt); err != nil {
-			return nil, err
+	rows, err := s.entClient.AgentTask.Query().
+		Where(entAgentTask.AgentIDEQ(agentID)).
+		Order(ent.Desc(entAgentTask.FieldCreatedAt)).
+		Limit(100).
+		All(ctx)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]*TaskInfo, 0, len(rows))
+	for _, row := range rows {
+		ti := &TaskInfo{
+			TaskRequest: TaskRequest{
+				TaskID:  row.ID,
+				Action:  row.Action,
+				Script:  row.Script,
+				Params:  row.Params,
+				Timeout: row.Timeout,
+				RunAs:   row.RunAs,
+			},
+			Status:    TaskStatus(row.Status),
+			CreatedAt: row.CreatedAt,
+			UpdatedAt: row.UpdatedAt,
 		}
-		if action.Valid { ti.Action = action.String }
-		if scr.Valid { ti.Script = scr.String }
-		if rAs.Valid { ti.RunAs = rAs.String }
-		if st.Valid { ti.Status = TaskStatus(st.String) }
-		if to.Valid { ti.Timeout = int(to.Int64) }
-		_ = json.Unmarshal(params, &ti.Params)
-		if outStr.Valid || exitCode.Valid || dur.Valid || errStr.Valid {
-			ti.Response = &TaskResponse{}
-			if outStr.Valid { ti.Response.Output = outStr.String }
-			if exitCode.Valid { ti.Response.ExitCode = int(exitCode.Int64) }
-			if dur.Valid { ti.Response.Duration = dur.Int64 }
-			if errStr.Valid { ti.Response.Error = errStr.String }
+		if row.Output != "" || row.ExitCode != 0 || row.DurationMs != 0 || row.Error != "" {
+			ti.Response = &TaskResponse{
+				TaskID:   row.ID,
+				Output:   row.Output,
+				ExitCode: row.ExitCode,
+				Duration: row.DurationMs,
+				Error:    row.Error,
+			}
 		}
 		out = append(out, ti)
 	}
-	return out, rows.Err()
+	return out, nil
 }
 
 func (s *pgStore) CompleteTask(ctx context.Context, agentID, taskID string, resp *TaskResponse) error {
 	st := string(TaskStatusCompleted)
-	if !resp.Success { st = string(TaskStatusFailed) }
+	if !resp.Success {
+		st = string(TaskStatusFailed)
+	}
 	now := time.Now()
-	_, err := s.db.ExecContext(ctx,
-		`UPDATE agent_tasks SET status=$3,output=$4,exit_code=$5,duration_ms=$6,error=$7,updated_at=$8 WHERE id=$1 AND agent_id=$2`,
-		taskID, agentID, st, resp.Output, resp.ExitCode, resp.Duration, resp.Error, now)
+	_, err := s.entClient.AgentTask.Update().
+		Where(
+			entAgentTask.IDEQ(taskID),
+			entAgentTask.AgentIDEQ(agentID),
+		).
+		SetStatus(st).
+		SetOutput(resp.Output).
+		SetExitCode(resp.ExitCode).
+		SetDurationMs(resp.Duration).
+		SetError(resp.Error).
+		SetUpdatedAt(now).
+		Save(ctx)
 	return err
+}
+
+// ——— Helper: ent row → domain model ———
+
+func entRowToAgentHost(row *ent.AgentHost) *AgentHost {
+	h := &AgentHost{
+		ID:            row.ID,
+		TenantID:      row.TenantID,
+		Fingerprint:   row.Fingerprint,
+		Channels:      row.Channels,
+		Name:          row.Name,
+		Type:          AgentType(row.Type),
+		Address:       row.Address,
+		Port:          row.Port,
+		OSType:        row.OsType,
+		OSVersion:     row.OsVersion,
+		AuthType:      row.AuthType,
+		SSHUser:       row.SSHUser,
+		Status:        AgentStatus(row.Status),
+		ProxyID:       row.ProxyID,
+		InstallMethod: InstallMethod(row.InstallMethod),
+		Version:       row.Version,
+		CPU:           row.CPU,
+		Memory:        row.Memory,
+		Disk:          row.Disk,
+		Hostname:      row.Hostname,
+		Labels:        row.Labels,
+		Environment:   row.Environment,
+		Capabilities:  row.Capabilities,
+		CreatedAt:     row.CreatedAt,
+		UpdatedAt:     row.UpdatedAt,
+	}
+	if !row.LastSeen.IsZero() {
+		h.LastSeen = &row.LastSeen
+	}
+	if !row.LastHeartbeat.IsZero() {
+		h.LastHeartbeat = &row.LastHeartbeat
+	}
+	if !row.FirstSeen.IsZero() {
+		h.FirstSeen = &row.FirstSeen
+	}
+	return h
+}
+
+func entRowToProxy(row *ent.AgentProxy) *ProxyInfo {
+	p := &ProxyInfo{
+		ID:         row.ID,
+		TenantID:   row.TenantID,
+		Name:       row.Name,
+		Address:    row.Address,
+		Port:       row.Port,
+		Status:     row.Status,
+		AgentCount: row.AgentCount,
+		Version:    row.Version,
+		CreatedAt:  row.CreatedAt,
+	}
+	if !row.LastSeen.IsZero() {
+		p.LastSeen = &row.LastSeen
+	}
+	return p
 }

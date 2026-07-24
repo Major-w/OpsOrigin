@@ -20,6 +20,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
 	"github.com/opsorigin/core/internal/command"
+	"github.com/opsorigin/core/internal/ent"
 	"github.com/opsorigin/core/internal/filelimit"
 	"github.com/opsorigin/core/internal/remoteexec"
 	"github.com/opsorigin/core/internal/sandbox"
@@ -369,6 +370,7 @@ func (s *MemoryStore) MarkOfflineAgents(ctx context.Context, tenantID string, th
 // Service 是 agent 管理服务。
 type Service struct {
 	store           Store
+	entClient       *ent.Client
 	hbWriter        *HeartbeatWriter    // Redis heartbeat writer (nil if Redis unavailable)
 	circuitBreakers map[string]*CircuitBreakerConfig
 	cbMu            sync.Mutex
@@ -389,13 +391,14 @@ type Service struct {
 	serverBaseURL   string              // Server 对外基址(如 http://host:8080),用于拓扑感知下发直连下载地址
 }
 
-func NewService(db *sql.DB, rdb *redis.Client) *Service {
+func NewService(db *sql.DB, rdb *redis.Client, entClient *ent.Client) *Service {
 	var st Store = NewMemoryStore()
 	if db != nil {
-		st = newPGStore(db)
+		st = newPGStore(db, entClient)
 	}
 	s := &Service{
 		store:           st,
+		entClient:       entClient,
 		hbWriter:        NewHeartbeatWriter(rdb, st),
 		circuitBreakers: make(map[string]*CircuitBreakerConfig),
 		stopCh:          make(chan struct{}),
@@ -409,6 +412,11 @@ func NewService(db *sql.DB, rdb *redis.Client) *Service {
 	}
 	go s.offlineDetector()
 	return s
+}
+
+// SetEntClient 注入 ent Client（用于外部注入方式）。
+func (s *Service) SetEntClient(entClient *ent.Client) {
+	s.entClient = entClient
 }
 
 // SetTLSEnable 设置是否启用 HTTPS(影响安装脚本的 scheme)。
