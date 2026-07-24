@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"strconv"
@@ -87,10 +88,18 @@ func (s *MemoryStore) Delete(ctx context.Context, id, tenantID string) error {
 	return nil
 }
 
+// Notifier 是任务失败告警接口（由 notification.Service 实现，避免 import 环）。
+type Notifier interface {
+	NotifyEvent(ctx context.Context, tenantID string, event string, title, content string) error
+}
+
 type Service struct {
 	store   Store
 	trigger func(ctx context.Context, tenantID, workflowID string) error
+	notify  Notifier
 }
+
+func (s *Service) SetNotifier(n Notifier) { s.notify = n }
 
 func NewService(db *sql.DB) *Service {
 	var st Store = NewMemoryStore()
@@ -160,11 +169,40 @@ func (s *Service) scan(ctx context.Context) {
 		if uerr := s.store.Update(ctx, t); uerr != nil {
 			slog.Warn("scheduler update last_run failed", "task", t.ID, "err", uerr)
 		}
-		go func(tenantID, workflowID string) {
-			if err := s.trigger(context.WithoutCancel(ctx), tenantID, workflowID); err != nil {
-				slog.Warn("scheduler trigger failed", "workflow", workflowID, "err", err)
+		go func(task *ScheduledTask) {
+			var lastErr error
+			maxAttempts := task.MaxRetries + 1 // 含首次执行
+			for attempt := 0; attempt < maxAttempts; attempt++ {
+				if attempt > 0 {
+					delay := task.RetryDelaySecs
+					if delay <= 0 { delay = 60 }
+					time.Sleep(time.Duration(delay) * time.Second)
+				}
+				err := s.trigger(context.WithoutCancel(ctx), task.TenantID, task.TargetID)
+				if err == nil {
+					if task.RetryCount > 0 {
+						// 重试成功，清零计数器
+						task.RetryCount = 0
+						task.LastError = ""
+						_ = s.store.Update(ctx, task)
+					}
+					return
+				}
+				lastErr = err
+				task.RetryCount = attempt + 1
+				slog.Warn("scheduler retry", "task", task.ID, "attempt", task.RetryCount, "err", err)
 			}
-		}(t.TenantID, t.TargetID)
+			// 所有尝试失败
+			task.LastError = lastErr.Error()
+			_ = s.store.Update(ctx, task)
+			// 告警通知
+			if task.AlertOnFailure && s.notify != nil {
+				_ = s.notify.NotifyEvent(ctx, task.TenantID,
+					"workflow.failed",
+					fmt.Sprintf("定时任务 %s 执行失败", task.Name),
+					fmt.Sprintf("任务「%s」在 %d 次尝试后仍然失败: %v", task.Name, maxAttempts, lastErr))
+			}
+		}(t)
 	}
 }
 

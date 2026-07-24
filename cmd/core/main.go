@@ -338,6 +338,7 @@ func main() {
 	// 通知管理:邮件/钉钉/企业微信/飞书/Webhook 五种渠道 + 事件订阅策略
 	notifySvc := notification.NewService(db)
 	server.RegisterService(notifySvc)
+	schedulerSvc.SetNotifier(notifySvc)
 
 	// 初始化RBAC中间件
 	rbacMiddleware := auth.NewRBACMiddleware(authProvider)

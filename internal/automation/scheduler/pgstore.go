@@ -35,6 +35,11 @@ func (s *PGStore) init(ctx context.Context) {
 			inputs TEXT DEFAULT '{}',
 			enabled BOOLEAN DEFAULT FALSE,
 			labels TEXT DEFAULT '{}',
+			max_retries INTEGER DEFAULT 0,
+			retry_delay_secs INTEGER DEFAULT 60,
+			retry_count INTEGER DEFAULT 0,
+			last_error TEXT DEFAULT '',
+			alert_on_failure BOOLEAN DEFAULT FALSE,
 			last_run_at TIMESTAMPTZ,
 			next_run_at TIMESTAMPTZ,
 			created_at TIMESTAMPTZ NOT NULL,
@@ -83,10 +88,12 @@ func (s *PGStore) Create(ctx context.Context, t *ScheduledTask) error {
 	t.UpdatedAt = now
 	_, err := s.db.ExecContext(ctx, `
 		INSERT INTO automation_scheduled_tasks
-			(id, tenant_id, name, cron_expr, task_type, target_id, agent_ids, inputs, enabled, labels, last_run_at, next_run_at, created_at, updated_at)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
+			(id, tenant_id, name, cron_expr, task_type, target_id, agent_ids, inputs, enabled, labels, max_retries, retry_delay_secs, retry_count, last_error, alert_on_failure, last_run_at, next_run_at, created_at, updated_at)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)
 		ON CONFLICT (id) DO NOTHING`,
-		t.ID, t.TenantID, t.Name, t.CronExpr, string(t.TaskType), t.TargetID, toJSON(t.AgentIDs), toJSON(t.Inputs), t.Enabled, toJSON(t.Labels), nullTime(t.LastRunAt), nullTime(t.NextRunAt), t.CreatedAt, t.UpdatedAt)
+		t.ID, t.TenantID, t.Name, t.CronExpr, string(t.TaskType), t.TargetID, toJSON(t.AgentIDs), toJSON(t.Inputs), t.Enabled, toJSON(t.Labels),
+		t.MaxRetries, t.RetryDelaySecs, t.RetryCount, t.LastError, t.AlertOnFailure,
+		nullTime(t.LastRunAt), nullTime(t.NextRunAt), t.CreatedAt, t.UpdatedAt)
 	return err
 }
 
@@ -96,9 +103,11 @@ func (s *PGStore) Get(ctx context.Context, id, tenantID string) (*ScheduledTask,
 	var taskType string
 	var lastRunAt, nextRunAt sql.NullTime
 	err := s.db.QueryRowContext(ctx, `
-		SELECT id, tenant_id, name, cron_expr, task_type, target_id, agent_ids, inputs, enabled, labels, last_run_at, next_run_at, created_at, updated_at
+		SELECT id, tenant_id, name, cron_expr, task_type, target_id, agent_ids, inputs, enabled, labels, max_retries, retry_delay_secs, retry_count, last_error, alert_on_failure, last_run_at, next_run_at, created_at, updated_at
 		FROM automation_scheduled_tasks WHERE id=$1 AND tenant_id=$2`, id, tenantID).
-		Scan(&t.ID, &t.TenantID, &t.Name, &t.CronExpr, &taskType, &t.TargetID, &agentIDs, &inputs, &t.Enabled, &labels, &lastRunAt, &nextRunAt, &t.CreatedAt, &t.UpdatedAt)
+		Scan(&t.ID, &t.TenantID, &t.Name, &t.CronExpr, &taskType, &t.TargetID, &agentIDs, &inputs, &t.Enabled, &labels,
+			&t.MaxRetries, &t.RetryDelaySecs, &t.RetryCount, &t.LastError, &t.AlertOnFailure,
+			&lastRunAt, &nextRunAt, &t.CreatedAt, &t.UpdatedAt)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -120,7 +129,7 @@ func (s *PGStore) Get(ctx context.Context, id, tenantID string) (*ScheduledTask,
 
 // List 当 tenantID=="" 时返回全部(供 scheduler.Start 跨租户扫描定时任务)。
 func (s *PGStore) List(ctx context.Context, tenantID string) ([]*ScheduledTask, error) {
-	query := `SELECT id, tenant_id, name, cron_expr, task_type, target_id, agent_ids, inputs, enabled, labels, last_run_at, next_run_at, created_at, updated_at
+	query := `SELECT id, tenant_id, name, cron_expr, task_type, target_id, agent_ids, inputs, enabled, labels, max_retries, retry_delay_secs, retry_count, last_error, alert_on_failure, last_run_at, next_run_at, created_at, updated_at
 		FROM automation_scheduled_tasks`
 	var args []any
 	if tenantID != "" {
@@ -139,7 +148,9 @@ func (s *PGStore) List(ctx context.Context, tenantID string) ([]*ScheduledTask, 
 		var agentIDs, inputs, labels []byte
 		var taskType string
 		var lastRunAt, nextRunAt sql.NullTime
-		if err := rows.Scan(&t.ID, &t.TenantID, &t.Name, &t.CronExpr, &taskType, &t.TargetID, &agentIDs, &inputs, &t.Enabled, &labels, &lastRunAt, &nextRunAt, &t.CreatedAt, &t.UpdatedAt); err != nil {
+		if err := rows.Scan(&t.ID, &t.TenantID, &t.Name, &t.CronExpr, &taskType, &t.TargetID, &agentIDs, &inputs, &t.Enabled, &labels,
+			&t.MaxRetries, &t.RetryDelaySecs, &t.RetryCount, &t.LastError, &t.AlertOnFailure,
+			&lastRunAt, &nextRunAt, &t.CreatedAt, &t.UpdatedAt); err != nil {
 			return nil, err
 		}
 		t.TaskType = TaskType(taskType)
@@ -161,9 +172,13 @@ func (s *PGStore) Update(ctx context.Context, t *ScheduledTask) error {
 	t.UpdatedAt = time.Now()
 	_, err := s.db.ExecContext(ctx, `
 		UPDATE automation_scheduled_tasks
-		SET name=$2, cron_expr=$3, task_type=$4, target_id=$5, agent_ids=$6, inputs=$7, enabled=$8, labels=$9, last_run_at=$10, next_run_at=$11, updated_at=$12
-		WHERE id=$1 AND tenant_id=$13`,
-		t.ID, t.Name, t.CronExpr, string(t.TaskType), t.TargetID, toJSON(t.AgentIDs), toJSON(t.Inputs), t.Enabled, toJSON(t.Labels), nullTime(t.LastRunAt), nullTime(t.NextRunAt), t.UpdatedAt, t.TenantID)
+		SET name=$2, cron_expr=$3, task_type=$4, target_id=$5, agent_ids=$6, inputs=$7, enabled=$8, labels=$9,
+		    max_retries=$10, retry_delay_secs=$11, retry_count=$12, last_error=$13, alert_on_failure=$14,
+		    last_run_at=$15, next_run_at=$16, updated_at=$17
+		WHERE id=$1 AND tenant_id=$18`,
+		t.ID, t.Name, t.CronExpr, string(t.TaskType), t.TargetID, toJSON(t.AgentIDs), toJSON(t.Inputs), t.Enabled, toJSON(t.Labels),
+		t.MaxRetries, t.RetryDelaySecs, t.RetryCount, t.LastError, t.AlertOnFailure,
+		nullTime(t.LastRunAt), nullTime(t.NextRunAt), t.UpdatedAt, t.TenantID)
 	return err
 }
 

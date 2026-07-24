@@ -4,7 +4,12 @@ import { create } from 'zustand'
 import { apiFetch } from '@/lib/utils'
 import { toast } from '@/stores/toast'
 
-export interface ScheduledTask { id: string; name: string; cron_expr: string; task_type: string; target_id: string; agent_ids?: string[]; enabled: boolean; created_at: string; last_run_at?: string }
+export interface ScheduledTask {
+  id: string; name: string; cron_expr: string; task_type: string; target_id: string
+  agent_ids?: string[]; enabled: boolean; created_at: string; last_run_at?: string
+  max_retries?: number; retry_delay_secs?: number; retry_count?: number
+  last_error?: string; alert_on_failure?: boolean
+}
 
 interface SchedulerState {
   tasks: ScheduledTask[]; loading: boolean

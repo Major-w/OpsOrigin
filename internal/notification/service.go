@@ -717,6 +717,15 @@ func maskConfig(t ChannelType, cfg map[string]string) map[string]string {
 	return masked
 }
 
+// NotifyEvent 公开的事件通知接口，供 scheduler 等模块调用。
+func (s *Service) NotifyEvent(ctx context.Context, tenantID string, event string, title, content string) error {
+	sent, failed := s.dispatchEvent(ctx, tenantID, EventType(event), title, content)
+	if sent > 0 {
+		slog.Info("notification sent", "event", event, "sent", sent, "failed", failed)
+	}
+	return nil
+}
+
 func maskString(s string) string {
 	if len(s) <= 4 {
 		return "****"
