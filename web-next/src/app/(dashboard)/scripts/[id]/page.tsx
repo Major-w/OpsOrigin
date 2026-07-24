@@ -135,6 +135,9 @@ export default function ScriptDetailPage() {
   const [executeParams, setExecuteParams] = useState<Record<string, string>>({})
   const [executeTimeout, setExecuteTimeout] = useState<number>(300)
   const [executeRunAs, setExecuteRunAs] = useState<string>('')
+  const [executeHost, setExecuteHost] = useState<any>(null)
+  const [executeChannel, setExecuteChannel] = useState<string>('')
+  const [hosts, setHosts] = useState<any[]>([])
   const [executing, setExecuting] = useState(false)
   const [executeResult, setExecuteResult] = useState<ExecutionResult | null>(null)
 
@@ -340,7 +343,14 @@ export default function ScriptDetailPage() {
     setExecuteParams(params)
     setExecuteTimeout(viewScript.timeout)
     setExecuteRunAs(viewScript.run_as || '')
+    setExecuteHost(null)
+    setExecuteChannel('')
     setExecuteDialogOpen(true)
+    // 加载主机列表
+    fetch('/api/v1/agents').then(r => r.json()).then(d => {
+      const arr = Array.isArray(d) ? d : d?.agents || []
+      setHosts(arr.filter((h: any) => h.type !== 'sandbox'))
+    }).catch(() => {})
   }
 
   const handleExecute = async () => {
@@ -350,6 +360,8 @@ export default function ScriptDetailPage() {
       params: executeParams,
       timeout: executeTimeout,
       run_as: executeRunAs || undefined,
+      agent_id: executeHost?.id || undefined,
+      channel: executeChannel || undefined,
     })
     setExecuting(false)
     if (result) {
@@ -1009,6 +1021,44 @@ export default function ScriptDetailPage() {
                   <span className="text-sm font-medium">{viewScript.name}</span>
                   <Badge variant="outline" className={cn("text-[10px]", TYPE_COLORS[viewScript.type])}>{typeLabel(viewScript.type)}</Badge>
                 </div>
+              </div>
+
+              {/* 目标主机选择 */}
+              <div>
+                <label className="text-sm font-medium mb-1 block">目标主机</label>
+                <select
+                  className="w-full h-9 rounded-md border border-input bg-background px-3 py-1 text-sm"
+                  value={executeHost?.id || ''}
+                  onChange={e => {
+                    const h = hosts.find(h => h.id === e.target.value)
+                    setExecuteHost(h || null)
+                    setExecuteChannel('')
+                  }}
+                >
+                  <option value="">本地执行（沙箱）</option>
+                  {hosts.map((h: any) => (
+                    <option key={h.id} value={h.id}>{h.name} ({h.address})</option>
+                  ))}
+                </select>
+                {executeHost && executeHost.channels?.length > 0 && (
+                  <div className="mt-2 flex items-center gap-1.5">
+                    <span className="text-[10px] text-muted-foreground shrink-0">通道:</span>
+                    {executeHost.channels.map((ch: string) => (
+                      <button
+                        key={ch}
+                        onClick={() => setExecuteChannel(executeChannel === ch ? '' : ch)}
+                        className={cn(
+                          "text-[10px] px-2 py-0.5 rounded border transition-colors",
+                          executeChannel === ch
+                            ? "bg-emerald-50 border-emerald-300 text-emerald-700 dark:bg-emerald-500/10 dark:border-emerald-500/30 dark:text-emerald-400"
+                            : "border-gray-200 text-muted-foreground hover:border-gray-300 dark:border-gray-700"
+                        )}
+                      >
+                        {ch === 'agent' ? '🤖 Agent' : ch === 'ssh' ? '🔑 SSH' : ch}
+                      </button>
+                    ))}
+                  </div>
+                )}
               </div>
 
               {viewScript.input_params && viewScript.input_params.length > 0 && (
