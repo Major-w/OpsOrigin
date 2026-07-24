@@ -40,6 +40,7 @@ type Workflow struct {
 	Steps       []WorkflowStep    `json:"steps"`
 	InputParams []ParamDef        `json:"input_params"`
 	Labels      map[string]string `json:"labels,omitempty"`
+	Timeout     int               `json:"timeout,omitempty"` // 工作流全局超时(秒),0=无限制
 	CreatedAt   time.Time         `json:"created_at"`
 	UpdatedAt   time.Time         `json:"updated_at"`
 }

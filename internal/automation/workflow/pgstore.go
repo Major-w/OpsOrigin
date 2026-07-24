@@ -359,3 +359,9 @@ func (s *PGStore) UpdateApproval(ctx context.Context, a *StepApproval) error {
 		a.ID, a.ExecutionID, a.StepID, a.StepName, toJSON(a.Approvers), a.Message, string(a.Status), a.DecidedBy, a.Comment, nullTime(a.DecidedAt), a.TenantID)
 	return err
 }
+
+func (s *PGStore) CancelExecution(ctx context.Context, id, tenantID string) error {
+	now := time.Now()
+	_, err := s.db.ExecContext(ctx, `UPDATE automation_workflow_executions SET status='cancelled', finished_at=$3 WHERE id=$1 AND tenant_id=$2`, id, tenantID, now)
+	return err
+}

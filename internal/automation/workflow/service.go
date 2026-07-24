@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net/http"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -31,6 +32,7 @@ type Store interface {
 	ListExecutions(ctx context.Context, workflowID, tenantID string) ([]*WorkflowExecution, error)
 	GetExecution(ctx context.Context, id, tenantID string) (*WorkflowExecution, error)
 	UpdateExecution(ctx context.Context, exec *WorkflowExecution) error
+	CancelExecution(ctx context.Context, id, tenantID string) error
 	CreateApproval(ctx context.Context, a *StepApproval) error
 	ListApprovals(ctx context.Context, tenantID string) ([]*StepApproval, error)
 	GetApproval(ctx context.Context, id, tenantID string) (*StepApproval, error)
@@ -198,6 +200,19 @@ func (s *MemoryStore) UpdateApproval(ctx context.Context, a *StepApproval) error
 	return nil
 }
 
+func (s *MemoryStore) CancelExecution(ctx context.Context, id, tenantID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	exec, ok := s.executions[id]
+	if !ok || exec.TenantID != tenantID {
+		return nil
+	}
+	exec.Status = ExecStatusCancelled
+	now := time.Now()
+	exec.FinishedAt = &now
+	return nil
+}
+
 type Service struct {
 	store      Store
 	scriptExec ScriptExecutor
@@ -236,6 +251,9 @@ func (s *Service) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/v1/workflows/approvals", s.handleListApprovals)
 	mux.HandleFunc("POST /api/v1/workflows/approvals/{id}/approve", s.handleApprove)
 	mux.HandleFunc("POST /api/v1/workflows/approvals/{id}/reject", s.handleReject)
+	mux.HandleFunc("POST /api/v1/workflows/executions/{exec_id}/cancel", s.handleCancelExecution)
+	// 模板
+	mux.HandleFunc("GET /api/v1/workflows/templates/list", s.handleListTemplates)
 }
 
 func (s *Service) handleCreate(w http.ResponseWriter, r *http.Request) {
@@ -351,6 +369,12 @@ func (s *Service) handleExecute(w http.ResponseWriter, r *http.Request) {
 // It pauses (returning nil) when an approval node is hit, persisting the pending state.
 func (s *Service) runFromStep(ctx context.Context, exec *WorkflowExecution, wf *Workflow, startStepID string) error {
 	const maxSteps = 1000
+	// 工作流全局超时
+	if wf.Timeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, time.Duration(wf.Timeout)*time.Second)
+		defer cancel()
+	}
 	visited := make(map[string]int)
 	currentStepID := startStepID
 	for currentStepID != "" {
@@ -744,20 +768,52 @@ func evalCondition(cond string, ctx map[string]any) bool {
 	if cond == "" {
 		return true
 	}
-	if strings.Contains(cond, "==") {
-		parts := strings.SplitN(cond, "==", 2)
-		lhs := resolveValue(strings.TrimSpace(parts[0]), ctx)
-		rhs := strings.Trim(strings.TrimSpace(parts[1]), `"'`)
-		return lhs == rhs
+	// 解析 && / || 组合条件 (优先级: && 高于 ||)
+	if strings.Contains(cond, "||") {
+		parts := strings.SplitN(cond, "||", 2)
+		if evalCondition(parts[0], ctx) {
+			return true
+		}
+		return evalCondition(parts[1], ctx)
 	}
-	if strings.Contains(cond, "!=") {
-		parts := strings.SplitN(cond, "!=", 2)
-		lhs := resolveValue(strings.TrimSpace(parts[0]), ctx)
-		rhs := strings.Trim(strings.TrimSpace(parts[1]), `"'`)
-		return lhs != rhs
+	if strings.Contains(cond, "&&") {
+		parts := strings.SplitN(cond, "&&", 2)
+		return evalCondition(parts[0], ctx) && evalCondition(parts[1], ctx)
+	}
+	// 单条件匹配
+	for _, op := range []string{">=", "<=", "!=", "=~", ">", "<", "=="} {
+		if strings.Contains(cond, op) {
+			parts := strings.SplitN(cond, op, 2)
+			lhs := resolveValue(strings.TrimSpace(parts[0]), ctx)
+			rhs := strings.Trim(strings.TrimSpace(parts[1]), `"'`)
+			switch op {
+			case "==": return lhs == rhs
+			case "!=": return lhs != rhs
+			case "=~":
+				matched, _ := regexp.MatchString(rhs, lhs)
+				return matched
+			case ">", ">=", "<", "<=":
+				return compareNumbers(lhs, rhs, op)
+			}
+		}
 	}
 	resolved := resolveValue(cond, ctx)
 	return resolved != "" && resolved != cond
+}
+
+func compareNumbers(a, b, op string) bool {
+	fa, errA := strconv.ParseFloat(a, 64)
+	fb, errB := strconv.ParseFloat(b, 64)
+	if errA != nil || errB != nil {
+		return false
+	}
+	switch op {
+	case ">": return fa > fb
+	case ">=": return fa >= fb
+	case "<": return fa < fb
+	case "<=": return fa <= fb
+	}
+	return false
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {
@@ -804,4 +860,66 @@ func (s *Service) Trigger(ctx context.Context, tenantID, workflowID string, agen
 	}
 	s.runFromStep(ctx, exec, wf, startStepID)
 	return exec, nil
+}
+
+func (s *Service) handleCancelExecution(w http.ResponseWriter, r *http.Request) {
+	execID := r.PathValue("exec_id")
+	tenantID := r.Header.Get("X-Tenant-ID")
+	if tenantID == "" { tenantID = "default" }
+	exec, err := s.store.GetExecution(r.Context(), execID, tenantID)
+	if err != nil || exec == nil {
+		writeError(w, http.StatusNotFound, "execution not found"); return
+	}
+	if exec.Status != "running" && exec.Status != "waiting" {
+		writeError(w, http.StatusBadRequest, "cannot cancel execution in status: "+string(exec.Status)); return
+	}
+	if err := s.store.CancelExecution(r.Context(), execID, tenantID); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error()); return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "cancelled"})
+}
+
+func (s *Service) handleListTemplates(w http.ResponseWriter, r *http.Request) {
+	templates := []struct {
+		ID          string `json:"id"`
+		Name        string `json:"name"`
+		Description string `json:"description"`
+		Steps       []WorkflowStep `json:"steps"`
+	}{
+		{ID: "tmpl-ci", Name: "CI 部署流水线", Description: "拉取代码→构建→测试→部署",
+			Steps: []WorkflowStep{
+				{ID: "git", Name: "拉取代码", Type: "script", ScriptID: "", Inputs: map[string]any{"branch": "main"}},
+				{ID: "build", Name: "构建镜像", Type: "script", ScriptID: "", OnSuccess: "test"},
+				{ID: "test", Name: "运行测试", Type: "script", ScriptID: "", OnSuccess: "deploy", OnFailure: "rollback"},
+				{ID: "deploy", Name: "部署上线", Type: "script", ScriptID: ""},
+				{ID: "rollback", Name: "回滚", Type: "script", ScriptID: ""},
+			},
+		},
+		{ID: "tmpl-approval", Name: "带审批的变更发布",
+			Description: "提交变更→审批→执行→验证",
+			Steps: []WorkflowStep{
+				{ID: "submit", Name: "提交变更", Type: "script", ScriptID: "", OnSuccess: "approve"},
+				{ID: "approve", Name: "人工审批", Type: "approval", Approvers: []string{}, ApprovalMsg: "请审批本次变更"},
+				{ID: "execute", Name: "执行变更", Type: "script", ScriptID: "", OnSuccess: "verify"},
+				{ID: "verify", Name: "验证结果", Type: "script", ScriptID: ""},
+			},
+		},
+		{ID: "tmpl-batch", Name: "批量主机巡检", Description: "并行检查多台主机→汇总报告",
+			Steps: []WorkflowStep{
+				{ID: "parallel", Name: "并行巡检", Type: "parallel", ParallelSteps: []WorkflowStep{
+					{ID: "check1", Name: "目标主机-1", Type: "script", ScriptID: ""},
+					{ID: "check2", Name: "目标主机-2", Type: "script", ScriptID: ""},
+				}},
+			},
+		},
+		{ID: "tmpl-notify", Name: "故障自愈流程", Description: "检测故障→自动修复→通知",
+			Steps: []WorkflowStep{
+				{ID: "detect", Name: "故障检测", Type: "script", ScriptID: "", OnSuccess: "fix", OnFailure: "notify"},
+				{ID: "fix", Name: "自动修复", Type: "script", ScriptID: "", OnSuccess: "verify", OnFailure: "notify"},
+				{ID: "verify", Name: "修复验证", Type: "wait", WaitSeconds: 30, OnSuccess: "notify"},
+				{ID: "notify", Name: "通知", Type: "script", ScriptID: ""},
+			},
+		},
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"templates": templates})
 }
