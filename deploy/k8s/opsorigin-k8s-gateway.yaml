@@ -124,6 +124,12 @@ spec:
             # Agent 名称（可选，缺省使用 hostname）
             - name: OPSORIGIN_AGENT_NAME
               value: "k8s-gateway"
+            # Agent 类型（标记为 k8s agent，区别于 host agent）
+            - name: OPSORIGIN_AGENT_TYPE
+              value: "k8s"
+            # Proxy 地址（可选，经 Proxy 连接 Core，解决网络隔离场景）
+            - name: OPSORIGIN_PROXY_ADDR
+              value: ""
             # Agent 注册令牌：从 Secret 注入，避免明文进 YAML
             - name: OPSORIGIN_AGENT_TOKEN
               valueFrom:

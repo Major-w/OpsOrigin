@@ -12,6 +12,7 @@ const (
 	AgentTypeAgent     AgentType = "agent"
 	AgentTypeAgentless AgentType = "agentless"
 	AgentTypeSandbox   AgentType = "sandbox"
+	AgentTypeK8s       AgentType = "k8s"
 )
 
 type InstallMethod string

@@ -16,16 +16,21 @@ import (
 type ResourceType string
 
 const (
-	TypeVM          ResourceType = "vm"           // 云主机 / 实例
-	TypeDatabase    ResourceType = "database"     // 云数据库实例
+	TypeVM           ResourceType = "vm"            // 云主机 / 实例
+	TypeDatabase     ResourceType = "database"      // 云数据库实例
 	TypeLoadBalancer ResourceType = "load_balancer" // 负载均衡
-	TypeVPC         ResourceType = "vpc"          // 私有网络
-	TypeBucket      ResourceType = "bucket"       // 对象存储桶
-	TypeK8sCluster  ResourceType = "k8s_cluster"   // 托管 K8s 集群（经 Agent 通道发现，非 Provider）
-	TypeK8sNamespace ResourceType = "k8s_namespace" // K8s 命名空间
-	TypeK8sWorkload  ResourceType = "k8s_workload"  // K8s 工作负载（Deployment/StatefulSet/DaemonSet）
-	TypeK8sPod       ResourceType = "k8s_pod"       // K8s Pod
-	TypeK8sContainer ResourceType = "k8s_container" // K8s 容器（含镜像）
+	TypeVPC          ResourceType = "vpc"           // 私有网络
+	TypeBucket       ResourceType = "bucket"        // 对象存储桶
+	TypeDisk         ResourceType = "disk"          // 云硬盘
+	TypeFirewall     ResourceType = "firewall"      // 安全组/防火墙
+	TypeNAT          ResourceType = "nat_gateway"   // NAT 网关
+	TypeCDN          ResourceType = "cdn"           // CDN 加速
+	TypeDNS          ResourceType = "dns"           // DNS 域名解析
+	TypeK8sCluster   ResourceType = "k8s_cluster"    // 托管 K8s 集群（经 Agent 通道发现，非 Provider）
+	TypeK8sNamespace ResourceType = "k8s_namespace"  // K8s 命名空间
+	TypeK8sWorkload  ResourceType = "k8s_workload"   // K8s 工作负载
+	TypeK8sPod       ResourceType = "k8s_pod"        // K8s Pod
+	TypeK8sContainer ResourceType = "k8s_container"  // K8s 容器
 )
 
 // K8sResourceTypes 返回经 Agent 通道纳管的五类 K8s 资源类型。
@@ -40,7 +45,7 @@ func K8sResourceTypes() []ResourceType {
 func AllResourceTypes() []ResourceType {
 	return []ResourceType{
 		TypeVM, TypeDatabase, TypeLoadBalancer,
-		TypeVPC, TypeBucket, TypeK8sCluster,
+		TypeVPC, TypeBucket, TypeDisk, TypeFirewall, TypeNAT, TypeCDN, TypeDNS,
 	}
 }
 

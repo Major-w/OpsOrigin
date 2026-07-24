@@ -956,18 +956,18 @@ export default function ResourcesPage() {
               </CardTitle>
             </CardHeader>
             <CardContent className="space-y-4">
-              {agents.length === 0 ? (
-                <p className="text-xs text-muted-foreground">未检测到 Agent，请先在「主机资源纳管」中安装并上线一个 Agent（建议以单副本 Deployment 部署到目标集群，作为只读网关）。</p>
+              {agents.filter(a => a.type === 'k8s').length === 0 ? (
+                <p className="text-xs text-muted-foreground">未检测到 K8s Agent。请在目标集群中部署 K8s 网关 Agent（DaemonSet），安装后将在下方列表出现。</p>
               ) : (
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                   {/* 网关 Agent 选择 + 资源类型 */}
                   <div className="space-y-3">
-                    <p className="text-xs text-muted-foreground">选择一个已上线的 Agent 作为集群网关，经其隧道下发 <code className="text-[11px]">kubectl</code> 只读命令发现资源（无需 AK/SK）。</p>
+                    <p className="text-xs text-muted-foreground">选择已部署的 K8s Agent 作为集群网关，经其隧道下发 <code className="text-[11px]">kubectl</code> 只读命令发现资源。</p>
                     <div>
-                      <label className="text-sm font-medium">目标集群网关 Agent *</label>
+                      <label className="text-sm font-medium">K8s 网关 Agent *</label>
                       <select className="h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm" value={k8sAgent} onChange={e => setK8sAgent(e.target.value)}>
-                        <option value="">选择 Agent</option>
-                        {agents.map(a => (
+                        <option value="">选择 K8s Agent</option>
+                        {agents.filter(a => a.type === 'k8s').map(a => (
                           <option key={a.id} value={a.id}>{a.name || a.id} · {a.address}{a.status === 'online' ? '（在线）' : '（离线）'}</option>
                         ))}
                       </select>

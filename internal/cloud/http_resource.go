@@ -133,7 +133,7 @@ func parseKinds(types []string) []ResourceType {
 	var kinds []ResourceType
 	for _, t := range types {
 		switch ResourceType(t) {
-		case TypeVM, TypeDatabase, TypeLoadBalancer:
+		case TypeVM, TypeDatabase, TypeLoadBalancer, TypeVPC, TypeBucket, TypeDisk, TypeFirewall, TypeNAT, TypeCDN, TypeDNS:
 			kinds = append(kinds, ResourceType(t))
 		case TypeK8sCluster, TypeK8sNamespace, TypeK8sWorkload, TypeK8sPod, TypeK8sContainer:
 			kinds = append(kinds, ResourceType(t))
