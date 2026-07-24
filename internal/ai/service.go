@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -76,6 +77,14 @@ func (s *Service) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/v1/ai/conversations", s.handleListConversations)
 	mux.HandleFunc("GET /api/v1/ai/conversations/{id}", s.handleGetConversation)
 	mux.HandleFunc("POST /api/v1/ai/conversations", s.handleSaveConversation)
+
+	// —— Feature 1: 多智能体团队 ——
+	mux.HandleFunc("POST /api/v1/ai/teams", s.handleCreateTeam)
+	mux.HandleFunc("GET /api/v1/ai/teams", s.handleListTeams)
+	mux.HandleFunc("GET /api/v1/ai/teams/{id}", s.handleGetTeam)
+	mux.HandleFunc("PUT /api/v1/ai/teams/{id}", s.handleUpdateTeam)
+	mux.HandleFunc("DELETE /api/v1/ai/teams/{id}", s.handleDeleteTeam)
+	mux.HandleFunc("POST /api/v1/ai/teams/{id}/chat", s.handleTeamChat)
 }
 
 func (s *Service) Start(ctx context.Context) error {
@@ -100,6 +109,11 @@ func (s *Service) handleChat(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "prompt is required")
 		return
 	}
+
+	// F4-D1: 会话计数移到入口, 与物理 LLM 槽位解耦 ——
+	// 逻辑并发(如 100 路 SSE)全周期计入, 峰值=逻辑会话数而非物理槽位数。
+	agentic.AIConcurrentSessions.Inc()
+	defer agentic.AIConcurrentSessions.Dec()
 
 	if req.Stream {
 		s.handleChatStream(w, r, &req)
@@ -379,6 +393,135 @@ func (s *Service) handleDeleteAgent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
+}
+
+// ——— Feature 1: 多智能体团队 ———
+
+func (s *Service) handleCreateTeam(w http.ResponseWriter, r *http.Request) {
+	var team model.AgentTeam
+	if err := json.NewDecoder(r.Body).Decode(&team); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	team.TenantID = tenantFromCtx(r.Context())
+	if err := s.engine.CreateTeam(r.Context(), &team); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusCreated, team)
+}
+
+func (s *Service) handleListTeams(w http.ResponseWriter, r *http.Request) {
+	tenantID := tenantFromCtx(r.Context())
+	teams := s.engine.ListTeams(tenantID)
+	if teams == nil {
+		teams = []*model.AgentTeam{}
+	}
+	writeJSON(w, http.StatusOK, teams)
+}
+
+func (s *Service) handleGetTeam(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	team, ok := s.engine.GetTeam(id)
+	if !ok {
+		writeError(w, http.StatusNotFound, "team not found")
+		return
+	}
+	if team.TenantID != tenantFromCtx(r.Context()) {
+		writeError(w, http.StatusNotFound, "team not found")
+		return
+	}
+	writeJSON(w, http.StatusOK, team)
+}
+
+func (s *Service) handleUpdateTeam(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	var team model.AgentTeam
+	if err := json.NewDecoder(r.Body).Decode(&team); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	team.ID = id
+	team.TenantID = tenantFromCtx(r.Context())
+	if err := s.engine.UpdateTeam(r.Context(), &team); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, team)
+}
+
+func (s *Service) handleDeleteTeam(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	tenant := tenantFromCtx(r.Context())
+	if err := s.engine.DeleteTeam(r.Context(), id, tenant); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
+}
+
+// handleTeamChat 团队对话(SSE 流式)：逐成员发射 agent_start/token/agent_end,
+// 最后发射 final。任成员失败发射 error 事件并继续, 全部失败才返回错误。
+func (s *Service) handleTeamChat(w http.ResponseWriter, r *http.Request) {
+	var req model.TeamChatRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if req.TeamID == "" {
+		req.TeamID = r.PathValue("id")
+	}
+	if req.Message == "" {
+		writeError(w, http.StatusBadRequest, "message is required")
+		return
+	}
+
+	team, ok := s.engine.GetTeam(req.TeamID)
+	if !ok {
+		writeError(w, http.StatusNotFound, "team not found")
+		return
+	}
+	if team.TenantID != tenantFromCtx(r.Context()) {
+		writeError(w, http.StatusNotFound, "team not found")
+		return
+	}
+
+	// F4-D1: 逻辑会话计数在入口, 与物理 LLM 槽位解耦
+	agentic.AIConcurrentSessions.Inc()
+	defer agentic.AIConcurrentSessions.Dec()
+
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		writeError(w, http.StatusInternalServerError, "streaming not supported")
+		return
+	}
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+
+	// emit 必须串行化: 并行团队模式下多个 worker goroutine 会并发调用 emit,
+	// 而 http.ResponseWriter 并非并发安全; 不加锁会导致并发 Fprintf+Flush 破坏
+	// 底层连接, 触发 server 取消请求 ctx, 使所有 worker 集体 ctx.Done()。
+	var emitMu sync.Mutex
+	emit := func(ev model.TeamStreamEvent) {
+		b, _ := json.Marshal(ev)
+		emitMu.Lock()
+		defer emitMu.Unlock()
+		fmt.Fprintf(w, "data: %s\n\n", b)
+		flusher.Flush()
+	}
+
+	final, _, err := s.engine.RunTeamChat(r.Context(), team, req.Message, nil, emit)
+	if err != nil {
+		emit(model.TeamStreamEvent{Type: "error", Content: chatFriendlyError(err.Error())})
+		fmt.Fprint(w, "data: [DONE]\n\n")
+		flusher.Flush()
+		return
+	}
+	// RunTeamChat 已发射 final 事件; 保险再发一次确保闭合
+	_ = final
+	fmt.Fprint(w, "data: [DONE]\n\n")
+	flusher.Flush()
 }
 
 // chatFriendlyError 将底层 LLM 错误转为用户友好的提示。

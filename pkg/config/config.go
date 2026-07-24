@@ -111,8 +111,8 @@ type LLMConfig struct {
 }
 
 type PostgresConfig struct {
-	MaxConns        int           `json:"max_conns"`         // OPSNEXUS_POSTGRES_MAX_CONNS, 默认 25
-	MaxIdleConns    int           `json:"max_idle_conns"`    // OPSNEXUS_POSTGRES_MAX_IDLE_CONNS, 默认 5
+	MaxConns        int           `json:"max_conns"`         // OPSNEXUS_POSTGRES_MAX_CONNS, 默认 100 (F4-A 规模化)
+	MaxIdleConns    int           `json:"max_idle_conns"`    // OPSNEXUS_POSTGRES_MAX_IDLE_CONNS, 默认 20 (F4-A 规模化)
 	ConnMaxLifetime time.Duration `json:"conn_max_lifetime"` // OPSNEXUS_POSTGRES_CONN_MAX_LIFETIME, 默认 30m
 }
 
@@ -169,7 +169,7 @@ func Load() (*Config, error) {
 			Timeout: envInt("OPSNEXUS_LLM_TIMEOUT", 60),
 		},
 		RedisAddr:     envStr("OPSNEXUS_REDIS_ADDR", "localhost:6379"),
-		RedisPoolSize: envInt("OPSNEXUS_REDIS_POOL_SIZE", 20),
+		RedisPoolSize: envInt("OPSNEXUS_REDIS_POOL_SIZE", 50),
 		LDAP: LDAPConfig{
 			Enabled:    envBool("OPSNEXUS_LDAP_ENABLED", false),
 			Addr:       envStr("OPSNEXUS_LDAP_ADDR", "ldap://localhost:389"),
@@ -200,8 +200,8 @@ func Load() (*Config, error) {
 
 	// Postgres 连接池配置
 	cfg.Postgres = PostgresConfig{
-		MaxConns:        envInt("OPSNEXUS_POSTGRES_MAX_CONNS", 25),
-		MaxIdleConns:    envInt("OPSNEXUS_POSTGRES_MAX_IDLE_CONNS", 5),
+		MaxConns:        envInt("OPSNEXUS_POSTGRES_MAX_CONNS", 100),
+		MaxIdleConns:    envInt("OPSNEXUS_POSTGRES_MAX_IDLE_CONNS", 20),
 		ConnMaxLifetime: envDuration("OPSNEXUS_POSTGRES_CONN_MAX_LIFETIME", 30*time.Minute),
 	}
 

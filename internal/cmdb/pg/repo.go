@@ -143,6 +143,56 @@ func (r *Repository) CreateCI(ctx context.Context, ci *model.CIModel, traceID st
 	return tx.Commit()
 }
 
+// BulkCreateCI 批量创建 CI, 在单一事务内完成(决策 B 异步导入的落库侧)。
+// 与 CreateCI 不同, 它一次性写入 N 条并各带 outbox 事件, 显著提升大批量导入吞吐。
+func (r *Repository) BulkCreateCI(ctx context.Context, cis []*model.CIModel, traceID string) error {
+	if len(cis) == 0 {
+		return nil
+	}
+	now := time.Now()
+	for _, ci := range cis {
+		if ci.ID == "" {
+			ci.ID = uuid.New().String()
+		}
+		ci.CreatedAt = now
+		ci.UpdatedAt = now
+	}
+
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin tx: %w", err)
+	}
+	defer tx.Rollback()
+
+	for _, ci := range cis {
+		attrsJSON, err := json.Marshal(ci.Attributes)
+		if err != nil {
+			return fmt.Errorf("marshal attributes: %w", err)
+		}
+		labelsJSON, err := json.Marshal(ci.Labels)
+		if err != nil {
+			return fmt.Errorf("marshal labels: %w", err)
+		}
+		_, err = tx.ExecContext(ctx, `
+		INSERT INTO cmdb_ci (id, type_id, tenant_id, name, description, status, attributes, labels, channel, created_at, updated_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
+			ci.ID, ci.TypeID, ci.TenantID, ci.Name, nullIfEmpty(ci.Description),
+			string(ci.Status), attrsJSON, labelsJSON, int(ci.Channel), ci.CreatedAt, ci.UpdatedAt)
+		if err != nil {
+			return fmt.Errorf("insert ci (bulk): %w", err)
+		}
+		payload, _ := json.Marshal(map[string]any{
+			"ci_id":   ci.ID,
+			"type_id": ci.TypeID,
+			"name":    ci.Name,
+		})
+		if err := r.insertOutbox(ctx, tx, ci.TenantID, model.EventCICreated, "ci", ci.ID, string(payload), traceID); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
 func (r *Repository) UpdateCI(ctx context.Context, ci *model.CIModel, channel model.ChannelWeight, traceID string) error {
 	existing, err := r.getCIByID(ctx, ci.ID)
 	if err != nil {

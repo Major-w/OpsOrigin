@@ -1,7 +1,6 @@
 package llm
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -77,9 +76,15 @@ type ChatResponse struct {
 }
 
 func NewClient(cfg Config) *Client {
+	// 独立 Transport: 放大每主机空闲连接数, 避免多智能体团队并行调用
+	// (同一 LLM 主机、同一 *http.Client) 时连接池争用导致部分请求挂起/被 cancel。
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.MaxIdleConnsPerHost = 100
+	transport.MaxConnsPerHost = 0 // 0 = 不限制
+
 	return &Client{
 		config: cfg,
-		client: &http.Client{Timeout: cfg.Timeout},
+		client: &http.Client{Timeout: cfg.Timeout, Transport: transport},
 	}
 }
 
@@ -155,18 +160,43 @@ func (c *Client) StreamChat(ctx context.Context, req ChatRequest) (<-chan Stream
 }
 
 // readSSE 在后台 goroutine 中解析 SSE 流, 推送到 ch, 最后 close(ch)。
+// 兼容性: 部分 OpenAI 兼容后端会忽略 stream 标志、直接返回普通 JSON。
+// 当响应体不含 SSE 的 "data: " 行时, 回退为整体解析 ChatResponse 并推送单个 chunk。
 func (c *Client) readSSE(ctx context.Context, r io.ReadCloser, ch chan<- StreamChunk) {
 	defer r.Close()
 	defer close(ch)
 
-	scanner := bufio.NewScanner(r)
-	for scanner.Scan() {
+	raw, err := io.ReadAll(r)
+	if err != nil {
+		return
+	}
+	body := strings.TrimSpace(string(raw))
+	if body == "" {
+		return
+	}
+
+	if !strings.Contains(body, "\ndata: ") && !strings.HasPrefix(body, "data: ") {
+		// ——— 非 SSE 回退 ———
+		var cr ChatResponse
+		if err := json.Unmarshal([]byte(body), &cr); err != nil {
+			slog.Warn("llm: parse non-sse response failed", "err", err)
+			return
+		}
+		if len(cr.Choices) == 0 {
+			return
+		}
+		ch <- StreamChunk{Content: cr.Choices[0].Message.Content, FinishReason: "stop"}
+		return
+	}
+
+	// ——— SSE 路径 ———
+	for _, line := range strings.Split(body, "\n") {
 		select {
 		case <-ctx.Done():
 			return
 		default:
 		}
-		line := scanner.Text()
+		line = strings.TrimSpace(line)
 		if !strings.HasPrefix(line, "data: ") {
 			continue
 		}
@@ -189,9 +219,6 @@ func (c *Client) readSSE(ctx context.Context, r io.ReadCloser, ch chan<- StreamC
 		}
 		for _, c := range chunk.Choices {
 			sc := StreamChunk{Content: c.Delta.Content, FinishReason: c.FinishReason}
-			if sc.Content == "" && sc.FinishReason != "" {
-				// 仅终止标记, 也推送(让上层知道流结束)
-			}
 			ch <- sc
 		}
 	}

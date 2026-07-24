@@ -14,6 +14,7 @@ import (
 	"github.com/opsorigin/core/internal/cmdb/dgraph"
 	"github.com/opsorigin/core/internal/cmdb/model"
 	"github.com/opsorigin/core/internal/cmdb/pg"
+	"github.com/opsorigin/core/internal/ingest"
 	"github.com/opsorigin/core/pkg/config"
 )
 
@@ -22,16 +23,48 @@ type Service struct {
 	pg          *pg.Repository
 	dg          *dgraph.Client
 	mem         *memStore // PG/Dgraph 不可用时的内存回退
+	ing         *ingest.Ingestor // 异步批量落库器(F4-B)
 	onCICreated func(ctx context.Context, ciID, tenantID string)
 }
 
 func NewService(cfg *config.Config, pgRepo *pg.Repository, dgClient *dgraph.Client) *Service {
-	return &Service{
+	s := &Service{
 		cfg: cfg,
 		pg:  pgRepo,
 		dg:  dgClient,
 		mem: newMemStore(),
 	}
+	// F4-B 决策 B: 批量导入异步化。提交方(如 handleBatchCreateCI)只 Submit,
+	// 后台每 500ms 或缓冲满时把一批 CI 交给 flushFn 落库, 不阻塞调用方。
+	flushFn := func(ctx context.Context, items []ingest.Item) {
+		cis := make([]*model.CIModel, 0, len(items))
+		for _, it := range items {
+			if ci, ok := it.(*model.CIModel); ok {
+				cis = append(cis, ci)
+			}
+		}
+		if len(cis) == 0 {
+			return
+		}
+		if s.pg != nil {
+			if err := s.pg.BulkCreateCI(ctx, cis, "ingest-batch"); err != nil {
+				slog.Error("bulk create ci failed", "error", err)
+				return
+			}
+		} else {
+			for _, ci := range cis {
+				s.mem.createCI(ci)
+			}
+		}
+		if s.onCICreated != nil {
+			for _, ci := range cis {
+				s.onCICreated(ctx, ci.ID, ci.TenantID)
+			}
+		}
+	}
+	s.ing = ingest.New(1000, 500*time.Millisecond, flushFn)
+	go s.ing.Start(context.Background())
+	return s
 }
 
 func (s *Service) OnCICreated(fn func(ctx context.Context, ciID, tenantID string)) {
@@ -41,6 +74,7 @@ func (s *Service) OnCICreated(fn func(ctx context.Context, ciID, tenantID string
 func (s *Service) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/v1/cmdb/ci", s.handleListCI)
 	mux.HandleFunc("POST /api/v1/cmdb/ci", s.handleCreateCI)
+	mux.HandleFunc("POST /api/v1/cmdb/ci/batch", s.handleBatchCreateCI) // F4-B 批量 + D2 修复
 	mux.HandleFunc("GET /api/v1/cmdb/ci/{id}", s.handleGetCI)
 	mux.HandleFunc("PUT /api/v1/cmdb/ci/{id}", s.handleUpdateCI)
 	mux.HandleFunc("DELETE /api/v1/cmdb/ci/{id}", s.handleDeleteCI)
@@ -126,6 +160,58 @@ func (s *Service) handleCreateCI(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusCreated, ci)
+}
+
+// handleBatchCreateCI 批量创建 CI(F4-B 决策 B: 异步化)。
+// 请求体为 CI 数组; 每条经最小校验后提交到 ingest 缓冲(202 立即返回),
+// 由后台 flush 批量落库, 绝不阻塞调用方。缓冲满时该条计入 ingest_dropped_total。
+func (s *Service) handleBatchCreateCI(w http.ResponseWriter, r *http.Request) {
+	tenantID := tenantFromCtx(r.Context())
+
+	var reqs []struct {
+		TypeID      string            `json:"type_id"`
+		Name        string            `json:"name"`
+		Description string            `json:"description,omitempty"`
+		Attributes  map[string]any    `json:"attributes"`
+		Labels      map[string]string `json:"labels,omitempty"`
+		Channel     int               `json:"channel"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&reqs); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if len(reqs) == 0 {
+		writeError(w, http.StatusBadRequest, "empty batch")
+		return
+	}
+
+	accepted := 0
+	for i := range reqs {
+		req := &reqs[i]
+		if req.Name == "" {
+			continue
+		}
+		ci := &model.CIModel{
+			TypeID:      req.TypeID,
+			TenantID:    tenantID,
+			Name:        req.Name,
+			Description: req.Description,
+			Status:      model.CIStatusActive,
+			Attributes:  req.Attributes,
+			Labels:      req.Labels,
+			Channel:     resolveChannel(req.Channel),
+		}
+		if !s.ing.Submit(ci) {
+			// 缓冲满: 丢弃(计入 dropped 指标), 不阻塞
+			continue
+		}
+		accepted++
+	}
+
+	writeJSON(w, http.StatusAccepted, map[string]any{
+		"accepted": accepted,
+		"total":    len(reqs),
+	})
 }
 
 func (s *Service) handleGetCI(w http.ResponseWriter, r *http.Request) {

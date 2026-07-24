@@ -43,7 +43,17 @@ var (
 			Help:    "HTTP request duration in seconds",
 			Buckets: prometheus.DefBuckets,
 		},
-		[]string{"handler", "method", "code"},
+		// 必须无标签: promhttp.InstrumentHandlerDuration 会自行加入 code/method 标签,
+		// 传入带标签的 ObserverVec 会在 server 启动时 panic(见 cmd/core/main.go:138)。
+		[]string{},
+	)
+
+	// MonitorProbeResults 当前内存中缓冲的探测结果条数(F4-R3)
+	MonitorProbeResults = prometheus.NewGauge(
+		prometheus.GaugeOpts{
+			Name: "monitor_probe_results",
+			Help: "Current number of probe results buffered in memory",
+		},
 	)
 )
 
@@ -51,6 +61,7 @@ func init() {
 	Registry.MustRegister(AgentmgrGrpcConnections)
 	Registry.MustRegister(AgentmgrHeartbeatTotal)
 	Registry.MustRegister(HttpRequestDuration)
+	Registry.MustRegister(MonitorProbeResults)
 }
 
 // NewMetricsHandler 返回 Prometheus /metrics 端点的 http.Handler。

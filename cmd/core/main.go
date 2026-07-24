@@ -17,6 +17,7 @@ import (
 	"github.com/opsorigin/core/internal/cmdb/pg"
 	"github.com/opsorigin/core/internal/ent"
 	"github.com/opsorigin/core/internal/itsm"
+	"github.com/opsorigin/core/internal/vuln"
 	"github.com/opsorigin/core/internal/ai"
 	"github.com/opsorigin/core/internal/audit"
 	"github.com/opsorigin/core/internal/monitor"
@@ -336,6 +337,10 @@ func main() {
 
 	opsSvc := ops.NewService(cfg, db)
 	server.RegisterService(opsSvc)
+
+	// 漏洞扫描：规则匹配器垂直切片(Scanner 接口预留 Trivy/Grype 热插拔)
+	vulnSvc := vuln.NewService(cfg, db)
+	server.RegisterService(vulnSvc)
 
 	go func() {
 		if err := tunnelServer.Start(ctx); err != nil {

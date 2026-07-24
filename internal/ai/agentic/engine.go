@@ -39,6 +39,13 @@ type Engine struct {
 	ready       bool
 	tokenRecs   []model.TokenRecord
 	tokenMu     sync.Mutex
+	semMu       sync.Mutex
+	llmSem      chan struct{}
+
+	// ——— 多智能体团队（Feature 1）———
+	teams          map[string]*model.AgentTeam
+	genMaxTokens   int     // 生成参数（可热更新）；0 表示使用默认值
+	genTemperature float64 // 0 表示使用默认值
 }
 
 // NewEngine 构造引擎并注册内建工具。
@@ -53,8 +60,12 @@ func NewEngine(reg *mcp.Registry, lim ratelimit.RateLimiter, llmClient *llm.Clie
 		reg:       reg,
 		lim:      lim,
 		llmClient: llmClient,
+		semMu:     sync.Mutex{},
+		llmSem:    make(chan struct{}, 32), // F4-C 决策 C: 物理 LLM 并发上限, 默认 32
+		teams:     make(map[string]*model.AgentTeam),
 	}
 	e.registerBuiltinTools()
+	SeedPresetTeams(e) // Feature 1: 预置平台交付团队（按 Name 幂等）
 	return e
 }
 
@@ -154,6 +165,7 @@ func (e *Engine) chatImpl(ctx context.Context, agentID, prompt string, history [
 		return "", fmt.Errorf("prompt is required")
 	}
 	if e.lim != nil && agentID != "" && !e.lim.Allow(agentID) {
+		AILLMRateLimitHits.Inc()
 		return "", fmt.Errorf("rate limit exceeded for agent %s", agentID)
 	}
 
@@ -169,10 +181,15 @@ func (e *Engine) chatImpl(ctx context.Context, agentID, prompt string, history [
 	}
 	msgs = append(msgs, llm.Message{Role: "user", Content: userPrompt})
 
+	if !e.acquireLLMSlot(ctx) {
+		return "", fmt.Errorf("llm concurrency limit reached")
+	}
+	defer e.releaseLLMSlot()
+
 	resp, err := e.llmClient.Chat(ctx, llm.ChatRequest{
 		Messages:    msgs,
-		MaxTokens:   1024,
-		Temperature: 0.7,
+		MaxTokens:   e.genMaxTokensVal(),
+		Temperature: e.genTemperatureVal(),
 	})
 	if err != nil {
 		return "", err
@@ -404,6 +421,10 @@ func (e *Engine) runStep(ctx context.Context, step *model.Step) (any, error) {
 	if prompt == "" {
 		return nil, fmt.Errorf("step has neither tool nor prompt")
 	}
+	if !e.acquireLLMSlot(ctx) {
+		return nil, fmt.Errorf("llm concurrency limit reached")
+	}
+	defer e.releaseLLMSlot()
 	resp, err := e.llmClient.Chat(ctx, llm.ChatRequest{
 		Messages: []llm.Message{{Role: "user", Content: prompt}},
 	})
@@ -473,6 +494,172 @@ func (e *Engine) UpdateClient(c *llm.Client) {
 	slog.Info("engine llm client updated")
 }
 
+// ——— LLM 并发信号量(决策 C) ———
+// 逻辑会话(如 100 路 SSE)与物理 LLM 调用解耦: 前者只受会话数约束,
+// 后者受 llmSem 容量约束(默认 32), 防止底层 LLM 后端被瞬时打爆。
+
+// SetLLMMaxInflight 设置物理 LLM 调用的最大并发槽位数。
+func (e *Engine) SetLLMMaxInflight(n int) {
+	if n < 1 {
+		n = 1
+	}
+	e.semMu.Lock()
+	e.llmSem = make(chan struct{}, n)
+	e.semMu.Unlock()
+	slog.Info("engine llm max-inflight updated", "max", n)
+}
+
+// acquireLLMSlot 抢占一个物理 LLM 调用槽位; ctx 取消时返回 false。
+func (e *Engine) acquireLLMSlot(ctx context.Context) bool {
+	e.semMu.Lock()
+	ch := e.llmSem
+	e.semMu.Unlock()
+	select {
+	case ch <- struct{}{}:
+		AILLMInFlight.Inc()
+		return true
+	case <-ctx.Done():
+		return false
+	}
+}
+
+// releaseLLMSlot 释放一个物理 LLM 调用槽位。
+func (e *Engine) releaseLLMSlot() {
+	e.semMu.Lock()
+	ch := e.llmSem
+	e.semMu.Unlock()
+	select {
+	case <-ch:
+		AILLMInFlight.Dec()
+	default:
+	}
+}
+
+// ——— 生成参数热更新（Feature 1）———
+// SetGenParams 设置默认生成参数（maxTokens / temperature），0 表示保持引擎内置默认。
+func (e *Engine) SetGenParams(maxTokens int, temperature float64) {
+	e.mu.Lock()
+	e.genMaxTokens = maxTokens
+	e.genTemperature = temperature
+	e.mu.Unlock()
+	slog.Info("engine gen params updated", "max_tokens", maxTokens, "temperature", temperature)
+}
+
+// genMaxTokensVal 返回生效的 max_tokens（0 时用引擎默认 1024）。
+func (e *Engine) genMaxTokensVal() int {
+	if e.genMaxTokens > 0 {
+		return e.genMaxTokens
+	}
+	return 1024
+}
+
+// genTemperatureVal 返回生效的 temperature（0 时用引擎默认 0.7）。
+func (e *Engine) genTemperatureVal() float64 {
+	if e.genTemperature > 0 {
+		return e.genTemperature
+	}
+	return 0.7
+}
+
+// ——— 多智能体团队 CRUD（Feature 1）———
+
+// CreateTeam 创建团队。ID/时间戳由引擎补全；名称必填；至少含一名成员。
+func (e *Engine) CreateTeam(ctx context.Context, t *model.AgentTeam) error {
+	if t == nil {
+		return fmt.Errorf("team is nil")
+	}
+	if t.Name == "" {
+		return fmt.Errorf("team name is required")
+	}
+	if len(t.Members) == 0 {
+		return fmt.Errorf("team must have at least one member")
+	}
+	if t.ID == "" {
+		t.ID = uuid.New().String()
+	}
+	if t.TenantID == "" {
+		t.TenantID = "default"
+	}
+	now := time.Now()
+	if t.CreatedAt.IsZero() {
+		t.CreatedAt = now
+	}
+	t.UpdatedAt = now
+	if t.Mode == "" {
+		t.Mode = model.TeamModeSupervisor
+	}
+	e.mu.Lock()
+	e.teams[t.ID] = t
+	e.mu.Unlock()
+	slog.Info("team created", "id", t.ID, "name", t.Name, "mode", t.Mode, "members", len(t.Members))
+	return nil
+}
+
+// UpdateTeam 更新团队（名称 / 描述 / 模式 / 成员 / 团队提示词）。
+func (e *Engine) UpdateTeam(ctx context.Context, t *model.AgentTeam) error {
+	if t.ID == "" {
+		return fmt.Errorf("team id is required")
+	}
+	if t.Name == "" {
+		return fmt.Errorf("team name is required")
+	}
+	if len(t.Members) == 0 {
+		return fmt.Errorf("team must have at least one member")
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	existing, ok := e.teams[t.ID]
+	if !ok {
+		return fmt.Errorf("team not found: %s", t.ID)
+	}
+	existing.Name = t.Name
+	existing.Description = t.Description
+	existing.Mode = t.Mode
+	existing.Members = t.Members
+	existing.SystemPrompt = t.SystemPrompt
+	existing.UpdatedAt = time.Now()
+	slog.Info("team updated", "id", t.ID, "name", existing.Name)
+	return nil
+}
+
+// DeleteTeam 删除团队。
+func (e *Engine) DeleteTeam(ctx context.Context, id, tenantID string) error {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	t, ok := e.teams[id]
+	if !ok {
+		return fmt.Errorf("team not found: %s", id)
+	}
+	if tenantID != "" && t.TenantID != tenantID {
+		return fmt.Errorf("team not found: %s", id)
+	}
+	delete(e.teams, id)
+	slog.Info("team deleted", "id", id)
+	return nil
+}
+
+// GetTeam 按 ID 查询团队。
+func (e *Engine) GetTeam(id string) (*model.AgentTeam, bool) {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	t, ok := e.teams[id]
+	return t, ok
+}
+
+// ListTeams 返回指定租户的团队（tenantID 为空返回全部）。
+func (e *Engine) ListTeams(tenantID string) []*model.AgentTeam {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	out := make([]*model.AgentTeam, 0, len(e.teams))
+	for _, t := range e.teams {
+		if tenantID != "" && t.TenantID != tenantID {
+			continue
+		}
+		out = append(out, t)
+	}
+	return out
+}
+
 // ——— 流式输出 ———
 
 // ChatStream 非流式 Chat 的流式版本:逐 token 推送到返回的 channel。
@@ -486,6 +673,7 @@ func (e *Engine) chatStreamImpl(ctx context.Context, agentID, prompt string, his
 		return nil, fmt.Errorf("prompt is required")
 	}
 	if e.lim != nil && agentID != "" && !e.lim.Allow(agentID) {
+		AILLMRateLimitHits.Inc()
 		return nil, fmt.Errorf("rate limit exceeded for agent %s", agentID)
 	}
 
@@ -501,17 +689,22 @@ func (e *Engine) chatStreamImpl(ctx context.Context, agentID, prompt string, his
 	}
 	msgs = append(msgs, llm.Message{Role: "user", Content: userPrompt})
 
+	if !e.acquireLLMSlot(ctx) {
+		return nil, fmt.Errorf("llm concurrency limit reached")
+	}
 	chunkCh, err := e.llmClient.StreamChat(ctx, llm.ChatRequest{
 		Messages:    msgs,
-		MaxTokens:   1024,
-		Temperature: 0.7,
+		MaxTokens:   e.genMaxTokensVal(),
+		Temperature: e.genTemperatureVal(),
 	})
 	if err != nil {
+		e.releaseLLMSlot()
 		return nil, err
 	}
 	out := make(chan string, 32)
 	go func() {
 		defer close(out)
+		defer e.releaseLLMSlot()
 		for c := range chunkCh {
 			if c.Content != "" {
 				out <- c.Content

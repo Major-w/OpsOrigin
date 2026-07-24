@@ -5,12 +5,14 @@ import (
 	"encoding/json"
 	"log/slog"
 	"net/http"
+	"sync"
 	"time"
 
 	"github.com/redis/go-redis/v9"
 	"github.com/opsorigin/core/internal/monitor/alert"
 	"github.com/opsorigin/core/internal/monitor/discovery"
 	"github.com/opsorigin/core/internal/monitor/ebpf"
+	"github.com/opsorigin/core/internal/monitor/metrics"
 	"github.com/opsorigin/core/internal/monitor/model"
 	"github.com/opsorigin/core/internal/monitor/synthetic"
 	"github.com/opsorigin/core/pkg/config"
@@ -24,6 +26,7 @@ type Service struct {
 	aggregator *alert.Aggregator
 	topology   *SimpleTopology
 	wsHub      interface{ BroadcastToTenant(interface{}, string) }
+	probeMu     sync.Mutex
 	probeResults []*model.ProbeResult
 }
 
@@ -67,10 +70,13 @@ func (s *Service) RegisterRoutes(mux *http.ServeMux) {
 
 func (s *Service) Start(ctx context.Context) error {
 	s.prober.OnResult(func(target *model.MonitorTarget, result *model.ProbeResult) {
+		s.probeMu.Lock()
 		s.probeResults = append(s.probeResults, result)
 		if len(s.probeResults) > 500 {
 			s.probeResults = s.probeResults[len(s.probeResults)-300:]
 		}
+		metrics.MonitorProbeResults.Set(float64(len(s.probeResults)))
+		s.probeMu.Unlock()
 
 		if !result.Success {
 			alert := &model.AlertEvent{
@@ -332,6 +338,7 @@ func (s *Service) handleGetMetrics(w http.ResponseWriter, r *http.Request) {
 		Success   *bool   `json:"success,omitempty"`
 	}
 	points := make([]metricPoint, 0)
+	s.probeMu.Lock()
 	for _, r := range s.probeResults {
 		success := r.Success
 		points = append(points, metricPoint{
@@ -342,6 +349,7 @@ func (s *Service) handleGetMetrics(w http.ResponseWriter, r *http.Request) {
 			Success:   &success,
 		})
 	}
+	s.probeMu.Unlock()
 	writeJSON(w, http.StatusOK, points)
 }
 
