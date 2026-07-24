@@ -100,6 +100,11 @@ var (
 		{Name: "exit_code", Type: field.TypeInt, Nullable: true},
 		{Name: "duration_ms", Type: field.TypeInt64, Default: 0},
 		{Name: "error", Type: field.TypeString, Nullable: true, Size: 2147483647},
+		{Name: "file_id", Type: field.TypeString, Nullable: true},
+		{Name: "file_url", Type: field.TypeString, Nullable: true, Size: 2147483647},
+		{Name: "file_path", Type: field.TypeString, Nullable: true, Size: 2147483647},
+		{Name: "expected_checksum", Type: field.TypeString, Nullable: true},
+		{Name: "checksum_algo", Type: field.TypeString, Nullable: true},
 		{Name: "created_at", Type: field.TypeTime},
 		{Name: "updated_at", Type: field.TypeTime},
 	}
@@ -112,7 +117,7 @@ var (
 			{
 				Name:    "agenttask_agent_id_created_at",
 				Unique:  false,
-				Columns: []*schema.Column{AgentTasksColumns[2], AgentTasksColumns[13]},
+				Columns: []*schema.Column{AgentTasksColumns[2], AgentTasksColumns[18]},
 			},
 			{
 				Name:    "agenttask_tenant_id",
@@ -263,6 +268,31 @@ var (
 				Name:    "cmdbasset_type_id",
 				Unique:  false,
 				Columns: []*schema.Column{CmdbCiColumns[1]},
+			},
+		},
+	}
+	// FilesColumns holds the columns for the "files" table.
+	FilesColumns = []*schema.Column{
+		{Name: "file_id", Type: field.TypeString},
+		{Name: "tenant_id", Type: field.TypeString, Default: "default"},
+		{Name: "original_name", Type: field.TypeString},
+		{Name: "stored_path", Type: field.TypeString},
+		{Name: "size_bytes", Type: field.TypeInt64, Default: 0},
+		{Name: "checksum", Type: field.TypeString, Nullable: true},
+		{Name: "checksum_algo", Type: field.TypeString, Default: "sha256"},
+		{Name: "created_at", Type: field.TypeTime},
+		{Name: "updated_at", Type: field.TypeTime},
+	}
+	// FilesTable holds the schema information for the "files" table.
+	FilesTable = &schema.Table{
+		Name:       "files",
+		Columns:    FilesColumns,
+		PrimaryKey: []*schema.Column{FilesColumns[0]},
+		Indexes: []*schema.Index{
+			{
+				Name:    "file_tenant_id",
+				Unique:  false,
+				Columns: []*schema.Column{FilesColumns[1]},
 			},
 		},
 	}
@@ -484,6 +514,7 @@ var (
 		AutomationScriptsTable,
 		AutomationWorkflowsTable,
 		CmdbCiTable,
+		FilesTable,
 		IamGroupsTable,
 		IamRolesTable,
 		IamUserRolesTable,
@@ -520,6 +551,9 @@ func init() {
 	}
 	CmdbCiTable.Annotation = &entsql.Annotation{
 		Table: "cmdb_ci",
+	}
+	FilesTable.Annotation = &entsql.Annotation{
+		Table: "files",
 	}
 	IamGroupsTable.Annotation = &entsql.Annotation{
 		Table: "iam_groups",

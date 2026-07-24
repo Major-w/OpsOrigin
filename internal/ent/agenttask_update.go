@@ -257,6 +257,106 @@ func (_u *AgentTaskUpdate) ClearError() *AgentTaskUpdate {
 	return _u
 }
 
+// SetFileID sets the "file_id" field.
+func (_u *AgentTaskUpdate) SetFileID(v string) *AgentTaskUpdate {
+	_u.mutation.SetFileID(v)
+	return _u
+}
+
+// SetNillableFileID sets the "file_id" field if the given value is not nil.
+func (_u *AgentTaskUpdate) SetNillableFileID(v *string) *AgentTaskUpdate {
+	if v != nil {
+		_u.SetFileID(*v)
+	}
+	return _u
+}
+
+// ClearFileID clears the value of the "file_id" field.
+func (_u *AgentTaskUpdate) ClearFileID() *AgentTaskUpdate {
+	_u.mutation.ClearFileID()
+	return _u
+}
+
+// SetFileURL sets the "file_url" field.
+func (_u *AgentTaskUpdate) SetFileURL(v string) *AgentTaskUpdate {
+	_u.mutation.SetFileURL(v)
+	return _u
+}
+
+// SetNillableFileURL sets the "file_url" field if the given value is not nil.
+func (_u *AgentTaskUpdate) SetNillableFileURL(v *string) *AgentTaskUpdate {
+	if v != nil {
+		_u.SetFileURL(*v)
+	}
+	return _u
+}
+
+// ClearFileURL clears the value of the "file_url" field.
+func (_u *AgentTaskUpdate) ClearFileURL() *AgentTaskUpdate {
+	_u.mutation.ClearFileURL()
+	return _u
+}
+
+// SetFilePath sets the "file_path" field.
+func (_u *AgentTaskUpdate) SetFilePath(v string) *AgentTaskUpdate {
+	_u.mutation.SetFilePath(v)
+	return _u
+}
+
+// SetNillableFilePath sets the "file_path" field if the given value is not nil.
+func (_u *AgentTaskUpdate) SetNillableFilePath(v *string) *AgentTaskUpdate {
+	if v != nil {
+		_u.SetFilePath(*v)
+	}
+	return _u
+}
+
+// ClearFilePath clears the value of the "file_path" field.
+func (_u *AgentTaskUpdate) ClearFilePath() *AgentTaskUpdate {
+	_u.mutation.ClearFilePath()
+	return _u
+}
+
+// SetExpectedChecksum sets the "expected_checksum" field.
+func (_u *AgentTaskUpdate) SetExpectedChecksum(v string) *AgentTaskUpdate {
+	_u.mutation.SetExpectedChecksum(v)
+	return _u
+}
+
+// SetNillableExpectedChecksum sets the "expected_checksum" field if the given value is not nil.
+func (_u *AgentTaskUpdate) SetNillableExpectedChecksum(v *string) *AgentTaskUpdate {
+	if v != nil {
+		_u.SetExpectedChecksum(*v)
+	}
+	return _u
+}
+
+// ClearExpectedChecksum clears the value of the "expected_checksum" field.
+func (_u *AgentTaskUpdate) ClearExpectedChecksum() *AgentTaskUpdate {
+	_u.mutation.ClearExpectedChecksum()
+	return _u
+}
+
+// SetChecksumAlgo sets the "checksum_algo" field.
+func (_u *AgentTaskUpdate) SetChecksumAlgo(v string) *AgentTaskUpdate {
+	_u.mutation.SetChecksumAlgo(v)
+	return _u
+}
+
+// SetNillableChecksumAlgo sets the "checksum_algo" field if the given value is not nil.
+func (_u *AgentTaskUpdate) SetNillableChecksumAlgo(v *string) *AgentTaskUpdate {
+	if v != nil {
+		_u.SetChecksumAlgo(*v)
+	}
+	return _u
+}
+
+// ClearChecksumAlgo clears the value of the "checksum_algo" field.
+func (_u *AgentTaskUpdate) ClearChecksumAlgo() *AgentTaskUpdate {
+	_u.mutation.ClearChecksumAlgo()
+	return _u
+}
+
 // SetCreatedAt sets the "created_at" field.
 func (_u *AgentTaskUpdate) SetCreatedAt(v time.Time) *AgentTaskUpdate {
 	_u.mutation.SetCreatedAt(v)
@@ -394,6 +494,36 @@ func (_u *AgentTaskUpdate) sqlSave(ctx context.Context) (_node int, err error) {
 	}
 	if _u.mutation.ErrorCleared() {
 		_spec.ClearField(agenttask.FieldError, field.TypeString)
+	}
+	if value, ok := _u.mutation.FileID(); ok {
+		_spec.SetField(agenttask.FieldFileID, field.TypeString, value)
+	}
+	if _u.mutation.FileIDCleared() {
+		_spec.ClearField(agenttask.FieldFileID, field.TypeString)
+	}
+	if value, ok := _u.mutation.FileURL(); ok {
+		_spec.SetField(agenttask.FieldFileURL, field.TypeString, value)
+	}
+	if _u.mutation.FileURLCleared() {
+		_spec.ClearField(agenttask.FieldFileURL, field.TypeString)
+	}
+	if value, ok := _u.mutation.FilePath(); ok {
+		_spec.SetField(agenttask.FieldFilePath, field.TypeString, value)
+	}
+	if _u.mutation.FilePathCleared() {
+		_spec.ClearField(agenttask.FieldFilePath, field.TypeString)
+	}
+	if value, ok := _u.mutation.ExpectedChecksum(); ok {
+		_spec.SetField(agenttask.FieldExpectedChecksum, field.TypeString, value)
+	}
+	if _u.mutation.ExpectedChecksumCleared() {
+		_spec.ClearField(agenttask.FieldExpectedChecksum, field.TypeString)
+	}
+	if value, ok := _u.mutation.ChecksumAlgo(); ok {
+		_spec.SetField(agenttask.FieldChecksumAlgo, field.TypeString, value)
+	}
+	if _u.mutation.ChecksumAlgoCleared() {
+		_spec.ClearField(agenttask.FieldChecksumAlgo, field.TypeString)
 	}
 	if value, ok := _u.mutation.CreatedAt(); ok {
 		_spec.SetField(agenttask.FieldCreatedAt, field.TypeTime, value)
@@ -650,6 +780,106 @@ func (_u *AgentTaskUpdateOne) ClearError() *AgentTaskUpdateOne {
 	return _u
 }
 
+// SetFileID sets the "file_id" field.
+func (_u *AgentTaskUpdateOne) SetFileID(v string) *AgentTaskUpdateOne {
+	_u.mutation.SetFileID(v)
+	return _u
+}
+
+// SetNillableFileID sets the "file_id" field if the given value is not nil.
+func (_u *AgentTaskUpdateOne) SetNillableFileID(v *string) *AgentTaskUpdateOne {
+	if v != nil {
+		_u.SetFileID(*v)
+	}
+	return _u
+}
+
+// ClearFileID clears the value of the "file_id" field.
+func (_u *AgentTaskUpdateOne) ClearFileID() *AgentTaskUpdateOne {
+	_u.mutation.ClearFileID()
+	return _u
+}
+
+// SetFileURL sets the "file_url" field.
+func (_u *AgentTaskUpdateOne) SetFileURL(v string) *AgentTaskUpdateOne {
+	_u.mutation.SetFileURL(v)
+	return _u
+}
+
+// SetNillableFileURL sets the "file_url" field if the given value is not nil.
+func (_u *AgentTaskUpdateOne) SetNillableFileURL(v *string) *AgentTaskUpdateOne {
+	if v != nil {
+		_u.SetFileURL(*v)
+	}
+	return _u
+}
+
+// ClearFileURL clears the value of the "file_url" field.
+func (_u *AgentTaskUpdateOne) ClearFileURL() *AgentTaskUpdateOne {
+	_u.mutation.ClearFileURL()
+	return _u
+}
+
+// SetFilePath sets the "file_path" field.
+func (_u *AgentTaskUpdateOne) SetFilePath(v string) *AgentTaskUpdateOne {
+	_u.mutation.SetFilePath(v)
+	return _u
+}
+
+// SetNillableFilePath sets the "file_path" field if the given value is not nil.
+func (_u *AgentTaskUpdateOne) SetNillableFilePath(v *string) *AgentTaskUpdateOne {
+	if v != nil {
+		_u.SetFilePath(*v)
+	}
+	return _u
+}
+
+// ClearFilePath clears the value of the "file_path" field.
+func (_u *AgentTaskUpdateOne) ClearFilePath() *AgentTaskUpdateOne {
+	_u.mutation.ClearFilePath()
+	return _u
+}
+
+// SetExpectedChecksum sets the "expected_checksum" field.
+func (_u *AgentTaskUpdateOne) SetExpectedChecksum(v string) *AgentTaskUpdateOne {
+	_u.mutation.SetExpectedChecksum(v)
+	return _u
+}
+
+// SetNillableExpectedChecksum sets the "expected_checksum" field if the given value is not nil.
+func (_u *AgentTaskUpdateOne) SetNillableExpectedChecksum(v *string) *AgentTaskUpdateOne {
+	if v != nil {
+		_u.SetExpectedChecksum(*v)
+	}
+	return _u
+}
+
+// ClearExpectedChecksum clears the value of the "expected_checksum" field.
+func (_u *AgentTaskUpdateOne) ClearExpectedChecksum() *AgentTaskUpdateOne {
+	_u.mutation.ClearExpectedChecksum()
+	return _u
+}
+
+// SetChecksumAlgo sets the "checksum_algo" field.
+func (_u *AgentTaskUpdateOne) SetChecksumAlgo(v string) *AgentTaskUpdateOne {
+	_u.mutation.SetChecksumAlgo(v)
+	return _u
+}
+
+// SetNillableChecksumAlgo sets the "checksum_algo" field if the given value is not nil.
+func (_u *AgentTaskUpdateOne) SetNillableChecksumAlgo(v *string) *AgentTaskUpdateOne {
+	if v != nil {
+		_u.SetChecksumAlgo(*v)
+	}
+	return _u
+}
+
+// ClearChecksumAlgo clears the value of the "checksum_algo" field.
+func (_u *AgentTaskUpdateOne) ClearChecksumAlgo() *AgentTaskUpdateOne {
+	_u.mutation.ClearChecksumAlgo()
+	return _u
+}
+
 // SetCreatedAt sets the "created_at" field.
 func (_u *AgentTaskUpdateOne) SetCreatedAt(v time.Time) *AgentTaskUpdateOne {
 	_u.mutation.SetCreatedAt(v)
@@ -817,6 +1047,36 @@ func (_u *AgentTaskUpdateOne) sqlSave(ctx context.Context) (_node *AgentTask, er
 	}
 	if _u.mutation.ErrorCleared() {
 		_spec.ClearField(agenttask.FieldError, field.TypeString)
+	}
+	if value, ok := _u.mutation.FileID(); ok {
+		_spec.SetField(agenttask.FieldFileID, field.TypeString, value)
+	}
+	if _u.mutation.FileIDCleared() {
+		_spec.ClearField(agenttask.FieldFileID, field.TypeString)
+	}
+	if value, ok := _u.mutation.FileURL(); ok {
+		_spec.SetField(agenttask.FieldFileURL, field.TypeString, value)
+	}
+	if _u.mutation.FileURLCleared() {
+		_spec.ClearField(agenttask.FieldFileURL, field.TypeString)
+	}
+	if value, ok := _u.mutation.FilePath(); ok {
+		_spec.SetField(agenttask.FieldFilePath, field.TypeString, value)
+	}
+	if _u.mutation.FilePathCleared() {
+		_spec.ClearField(agenttask.FieldFilePath, field.TypeString)
+	}
+	if value, ok := _u.mutation.ExpectedChecksum(); ok {
+		_spec.SetField(agenttask.FieldExpectedChecksum, field.TypeString, value)
+	}
+	if _u.mutation.ExpectedChecksumCleared() {
+		_spec.ClearField(agenttask.FieldExpectedChecksum, field.TypeString)
+	}
+	if value, ok := _u.mutation.ChecksumAlgo(); ok {
+		_spec.SetField(agenttask.FieldChecksumAlgo, field.TypeString, value)
+	}
+	if _u.mutation.ChecksumAlgoCleared() {
+		_spec.ClearField(agenttask.FieldChecksumAlgo, field.TypeString)
 	}
 	if value, ok := _u.mutation.CreatedAt(); ok {
 		_spec.SetField(agenttask.FieldCreatedAt, field.TypeTime, value)

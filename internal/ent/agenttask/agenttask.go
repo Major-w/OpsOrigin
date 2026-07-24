@@ -35,6 +35,16 @@ const (
 	FieldDurationMs = "duration_ms"
 	// FieldError holds the string denoting the error field in the database.
 	FieldError = "error"
+	// FieldFileID holds the string denoting the file_id field in the database.
+	FieldFileID = "file_id"
+	// FieldFileURL holds the string denoting the file_url field in the database.
+	FieldFileURL = "file_url"
+	// FieldFilePath holds the string denoting the file_path field in the database.
+	FieldFilePath = "file_path"
+	// FieldExpectedChecksum holds the string denoting the expected_checksum field in the database.
+	FieldExpectedChecksum = "expected_checksum"
+	// FieldChecksumAlgo holds the string denoting the checksum_algo field in the database.
+	FieldChecksumAlgo = "checksum_algo"
 	// FieldCreatedAt holds the string denoting the created_at field in the database.
 	FieldCreatedAt = "created_at"
 	// FieldUpdatedAt holds the string denoting the updated_at field in the database.
@@ -58,6 +68,11 @@ var Columns = []string{
 	FieldExitCode,
 	FieldDurationMs,
 	FieldError,
+	FieldFileID,
+	FieldFileURL,
+	FieldFilePath,
+	FieldExpectedChecksum,
+	FieldChecksumAlgo,
 	FieldCreatedAt,
 	FieldUpdatedAt,
 }
@@ -142,6 +157,31 @@ func ByDurationMs(opts ...sql.OrderTermOption) OrderOption {
 // ByError orders the results by the error field.
 func ByError(opts ...sql.OrderTermOption) OrderOption {
 	return sql.OrderByField(FieldError, opts...).ToFunc()
+}
+
+// ByFileID orders the results by the file_id field.
+func ByFileID(opts ...sql.OrderTermOption) OrderOption {
+	return sql.OrderByField(FieldFileID, opts...).ToFunc()
+}
+
+// ByFileURL orders the results by the file_url field.
+func ByFileURL(opts ...sql.OrderTermOption) OrderOption {
+	return sql.OrderByField(FieldFileURL, opts...).ToFunc()
+}
+
+// ByFilePath orders the results by the file_path field.
+func ByFilePath(opts ...sql.OrderTermOption) OrderOption {
+	return sql.OrderByField(FieldFilePath, opts...).ToFunc()
+}
+
+// ByExpectedChecksum orders the results by the expected_checksum field.
+func ByExpectedChecksum(opts ...sql.OrderTermOption) OrderOption {
+	return sql.OrderByField(FieldExpectedChecksum, opts...).ToFunc()
+}
+
+// ByChecksumAlgo orders the results by the checksum_algo field.
+func ByChecksumAlgo(opts ...sql.OrderTermOption) OrderOption {
+	return sql.OrderByField(FieldChecksumAlgo, opts...).ToFunc()
 }
 
 // ByCreatedAt orders the results by the created_at field.

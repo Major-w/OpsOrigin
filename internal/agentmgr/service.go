@@ -2,9 +2,11 @@ package agentmgr
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"net/http"
@@ -21,6 +23,7 @@ import (
 	"github.com/redis/go-redis/v9"
 	"github.com/opsorigin/core/internal/command"
 	"github.com/opsorigin/core/internal/ent"
+	entFile "github.com/opsorigin/core/internal/ent/file"
 	"github.com/opsorigin/core/internal/filelimit"
 	"github.com/opsorigin/core/internal/remoteexec"
 	"github.com/opsorigin/core/internal/sandbox"
@@ -602,6 +605,11 @@ func (s *Service) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/v1/agents/{id}/download-tasks", s.handleDownloadTasks)
 	// §5 文件分发:创建下载任务,签发短期令牌并生成拓扑感知下载地址(POST)。
 	mux.HandleFunc("POST /api/v1/agents/{id}/download-tasks", s.handleCreateDownloadTask)
+	// §5 文件上传与管理
+	mux.HandleFunc("POST /api/v1/files/upload", s.handleUploadFile)
+	mux.HandleFunc("GET /api/v1/files", s.handleListFiles)
+	mux.HandleFunc("DELETE /api/v1/files/{file_id}", s.handleDeleteFile)
+	mux.HandleFunc("GET /api/v1/files/{file_id}/meta", s.handleFileMeta)
 	// 命令白名单(Agent 启动拉取,§6)
 	mux.HandleFunc("GET /api/v1/agents/{id}/whitelist", s.handleGetWhitelist)
 	// Sandbox
@@ -2889,5 +2897,114 @@ func (s *Service) handleBatchUpgrade(w http.ResponseWriter, r *http.Request) {
 		"target_version":  target,
 		"upgrade_queued": upgraded,
 		"skipped":         skipped,
+	})
+}
+
+// ------- §5 文件上传与管理 -------
+
+type fileMeta struct {
+	ID           string `json:"id"`
+	OriginalName string `json:"original_name"`
+	StoredPath   string `json:"-"`
+	SizeBytes    int64  `json:"size_bytes"`
+	Checksum     string `json:"checksum"`
+	ChecksumAlgo string `json:"checksum_algo"`
+	TenantID     string `json:"tenant_id"`
+	CreatedAt    string `json:"created_at"`
+}
+
+func (s *Service) handleUploadFile(w http.ResponseWriter, r *http.Request) {
+	if s.fileStoreDir == "" {
+		writeError(w, http.StatusInternalServerError, "file store not configured (SetFileStoreDir)")
+		return
+	}
+	r.ParseMultipartForm(256 << 20) // 256MB max
+	file, header, err := r.FormFile("file")
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "missing file field: "+err.Error())
+		return
+	}
+	defer file.Close()
+	fid := uuid.New().String()
+	storedPath := filepath.Join(s.fileStoreDir, fid)
+	out, err := os.Create(storedPath)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to store file: "+err.Error())
+		return
+	}
+	defer out.Close()
+	h := sha256.New()
+	tr := io.TeeReader(file, h)
+	size, err := io.Copy(out, tr)
+	if err != nil {
+		os.Remove(storedPath)
+		writeError(w, http.StatusInternalServerError, "failed to write file: "+err.Error())
+		return
+	}
+	checksum := fmt.Sprintf("%x", h.Sum(nil))
+	tenantID := r.Header.Get("X-Tenant-ID")
+	if tenantID == "" { tenantID = "default" }
+	meta := fileMeta{
+		ID: fid, OriginalName: header.Filename, StoredPath: storedPath,
+		SizeBytes: size, Checksum: checksum, ChecksumAlgo: "sha256",
+		TenantID: tenantID, CreatedAt: time.Now().UTC().Format(time.RFC3339),
+	}
+	// Save metadata via ent if available
+	if s.entClient != nil {
+		_, err = s.entClient.File.Create().
+			SetID(fid).SetTenantID(tenantID).
+			SetOriginalName(header.Filename).SetStoredPath(storedPath).
+			SetSizeBytes(size).SetChecksum(checksum).SetChecksumAlgo("sha256").
+			SetCreatedAt(time.Now()).SetUpdatedAt(time.Now()).
+			Save(r.Context())
+		if err != nil { slog.Warn("file meta save failed", "error", err) }
+	}
+	writeJSON(w, http.StatusCreated, meta)
+}
+
+func (s *Service) handleListFiles(w http.ResponseWriter, r *http.Request) {
+	if s.entClient == nil {
+		writeJSON(w, http.StatusOK, []fileMeta{})
+		return
+	}
+	tenantID := r.Header.Get("X-Tenant-ID")
+	if tenantID == "" { tenantID = "default" }
+	files, err := s.entClient.File.Query().Where(entFile.TenantIDEQ(tenantID)).Order(ent.Desc(entFile.FieldCreatedAt)).All(r.Context())
+	if err != nil { writeError(w, http.StatusInternalServerError, err.Error()); return }
+	result := make([]fileMeta, 0, len(files))
+	for _, f := range files {
+		result = append(result, fileMeta{
+			ID: f.ID, OriginalName: f.OriginalName, SizeBytes: f.SizeBytes,
+			Checksum: f.Checksum, ChecksumAlgo: f.ChecksumAlgo,
+			TenantID: f.TenantID, CreatedAt: f.CreatedAt.Format(time.RFC3339),
+		})
+	}
+	if result == nil { result = []fileMeta{} }
+	writeJSON(w, http.StatusOK, result)
+}
+
+func (s *Service) handleDeleteFile(w http.ResponseWriter, r *http.Request) {
+	fid := r.PathValue("file_id")
+	if s.entClient != nil {
+		s.entClient.File.DeleteOneID(fid).Exec(r.Context())
+	}
+	if s.fileStoreDir != "" {
+		os.Remove(filepath.Join(s.fileStoreDir, fid))
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
+}
+
+func (s *Service) handleFileMeta(w http.ResponseWriter, r *http.Request) {
+	fid := r.PathValue("file_id")
+	if s.entClient == nil {
+		writeError(w, http.StatusNotFound, "file not found")
+		return
+	}
+	f, err := s.entClient.File.Get(r.Context(), fid)
+	if err != nil { writeError(w, http.StatusNotFound, "file not found"); return }
+	writeJSON(w, http.StatusOK, fileMeta{
+		ID: f.ID, OriginalName: f.OriginalName, SizeBytes: f.SizeBytes,
+		Checksum: f.Checksum, ChecksumAlgo: f.ChecksumAlgo,
+		TenantID: f.TenantID, CreatedAt: f.CreatedAt.Format(time.RFC3339),
 	})
 }

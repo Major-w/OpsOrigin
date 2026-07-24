@@ -44,7 +44,7 @@ const navGroups: (NavItem | NavGroup)[] = [
       { to: '/auto/inspection', label: '自动化巡检', icon: Scan },
       { to: '/auto/vuln-scan', label: '漏洞扫描', icon: Bug },
       { to: '/auto/patch', label: '补丁安装', icon: Download },
-      { to: '/auto/software', label: '软件安装', icon: PackagePlus },
+      { to: '/auto/software', label: '文件分发', icon: PackagePlus },
     ]
   },
   {

@@ -463,6 +463,11 @@ func (s *pgStore) CreateTask(ctx context.Context, agentID string, req *TaskReque
 		SetTimeout(req.Timeout).
 		SetRunAs(req.RunAs).
 		SetStatus(string(TaskStatusPending)).
+		SetFileID(req.FileID).
+		SetFileURL(req.FileURL).
+		SetFilePath(req.FilePath).
+		SetExpectedChecksum(req.ExpectedChecksum).
+		SetChecksumAlgo(req.ChecksumAlgo).
 		SetCreatedAt(now).
 		SetUpdatedAt(now).
 		Exec(ctx)

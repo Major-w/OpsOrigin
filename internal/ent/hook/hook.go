@@ -105,6 +105,18 @@ func (f CmdbAssetFunc) Mutate(ctx context.Context, m ent.Mutation) (ent.Value, e
 	return nil, fmt.Errorf("unexpected mutation type %T. expect *ent.CmdbAssetMutation", m)
 }
 
+// The FileFunc type is an adapter to allow the use of ordinary
+// function as File mutator.
+type FileFunc func(context.Context, *ent.FileMutation) (ent.Value, error)
+
+// Mutate calls f(ctx, m).
+func (f FileFunc) Mutate(ctx context.Context, m ent.Mutation) (ent.Value, error) {
+	if mv, ok := m.(*ent.FileMutation); ok {
+		return f(ctx, mv)
+	}
+	return nil, fmt.Errorf("unexpected mutation type %T. expect *ent.FileMutation", m)
+}
+
 // The IamGroupFunc type is an adapter to allow the use of ordinary
 // function as IamGroup mutator.
 type IamGroupFunc func(context.Context, *ent.IamGroupMutation) (ent.Value, error)

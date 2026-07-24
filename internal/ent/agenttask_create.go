@@ -172,6 +172,76 @@ func (_c *AgentTaskCreate) SetNillableError(v *string) *AgentTaskCreate {
 	return _c
 }
 
+// SetFileID sets the "file_id" field.
+func (_c *AgentTaskCreate) SetFileID(v string) *AgentTaskCreate {
+	_c.mutation.SetFileID(v)
+	return _c
+}
+
+// SetNillableFileID sets the "file_id" field if the given value is not nil.
+func (_c *AgentTaskCreate) SetNillableFileID(v *string) *AgentTaskCreate {
+	if v != nil {
+		_c.SetFileID(*v)
+	}
+	return _c
+}
+
+// SetFileURL sets the "file_url" field.
+func (_c *AgentTaskCreate) SetFileURL(v string) *AgentTaskCreate {
+	_c.mutation.SetFileURL(v)
+	return _c
+}
+
+// SetNillableFileURL sets the "file_url" field if the given value is not nil.
+func (_c *AgentTaskCreate) SetNillableFileURL(v *string) *AgentTaskCreate {
+	if v != nil {
+		_c.SetFileURL(*v)
+	}
+	return _c
+}
+
+// SetFilePath sets the "file_path" field.
+func (_c *AgentTaskCreate) SetFilePath(v string) *AgentTaskCreate {
+	_c.mutation.SetFilePath(v)
+	return _c
+}
+
+// SetNillableFilePath sets the "file_path" field if the given value is not nil.
+func (_c *AgentTaskCreate) SetNillableFilePath(v *string) *AgentTaskCreate {
+	if v != nil {
+		_c.SetFilePath(*v)
+	}
+	return _c
+}
+
+// SetExpectedChecksum sets the "expected_checksum" field.
+func (_c *AgentTaskCreate) SetExpectedChecksum(v string) *AgentTaskCreate {
+	_c.mutation.SetExpectedChecksum(v)
+	return _c
+}
+
+// SetNillableExpectedChecksum sets the "expected_checksum" field if the given value is not nil.
+func (_c *AgentTaskCreate) SetNillableExpectedChecksum(v *string) *AgentTaskCreate {
+	if v != nil {
+		_c.SetExpectedChecksum(*v)
+	}
+	return _c
+}
+
+// SetChecksumAlgo sets the "checksum_algo" field.
+func (_c *AgentTaskCreate) SetChecksumAlgo(v string) *AgentTaskCreate {
+	_c.mutation.SetChecksumAlgo(v)
+	return _c
+}
+
+// SetNillableChecksumAlgo sets the "checksum_algo" field if the given value is not nil.
+func (_c *AgentTaskCreate) SetNillableChecksumAlgo(v *string) *AgentTaskCreate {
+	if v != nil {
+		_c.SetChecksumAlgo(*v)
+	}
+	return _c
+}
+
 // SetCreatedAt sets the "created_at" field.
 func (_c *AgentTaskCreate) SetCreatedAt(v time.Time) *AgentTaskCreate {
 	_c.mutation.SetCreatedAt(v)
@@ -341,6 +411,26 @@ func (_c *AgentTaskCreate) createSpec() (*AgentTask, *sqlgraph.CreateSpec) {
 	if value, ok := _c.mutation.Error(); ok {
 		_spec.SetField(agenttask.FieldError, field.TypeString, value)
 		_node.Error = value
+	}
+	if value, ok := _c.mutation.FileID(); ok {
+		_spec.SetField(agenttask.FieldFileID, field.TypeString, value)
+		_node.FileID = value
+	}
+	if value, ok := _c.mutation.FileURL(); ok {
+		_spec.SetField(agenttask.FieldFileURL, field.TypeString, value)
+		_node.FileURL = value
+	}
+	if value, ok := _c.mutation.FilePath(); ok {
+		_spec.SetField(agenttask.FieldFilePath, field.TypeString, value)
+		_node.FilePath = value
+	}
+	if value, ok := _c.mutation.ExpectedChecksum(); ok {
+		_spec.SetField(agenttask.FieldExpectedChecksum, field.TypeString, value)
+		_node.ExpectedChecksum = value
+	}
+	if value, ok := _c.mutation.ChecksumAlgo(); ok {
+		_spec.SetField(agenttask.FieldChecksumAlgo, field.TypeString, value)
+		_node.ChecksumAlgo = value
 	}
 	if value, ok := _c.mutation.CreatedAt(); ok {
 		_spec.SetField(agenttask.FieldCreatedAt, field.TypeTime, value)

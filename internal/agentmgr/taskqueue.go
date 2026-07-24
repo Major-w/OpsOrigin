@@ -97,7 +97,9 @@ func (tq *TaskQueue) processTask(ctx context.Context, id int, taskID string) {
 
 	// 查询任务详情
 	rows, err := tq.db.QueryContext(ctx,
-		`SELECT id, agent_id, action, script, params, timeout, run_as FROM agent_tasks WHERE id=$1 AND status='pending'`,
+		`SELECT id, agent_id, action, script, params, timeout, run_as,
+		        file_id, file_url, file_path, expected_checksum, checksum_algo
+		 FROM agent_tasks WHERE id=$1 AND status='pending'`,
 		taskID)
 	if err != nil {
 		slog.Warn("task worker query failed", "task", taskID, "error", err)
@@ -110,12 +112,15 @@ func (tq *TaskQueue) processTask(ctx context.Context, id int, taskID string) {
 	}
 
 	var ti struct {
-		id, agentID, action, script string
-		params                      []byte
-		timeout                     sql.NullInt64
-		runAs                       sql.NullString
+		id, agentID, action, script        string
+		params                             []byte
+		timeout                            sql.NullInt64
+		runAs                              sql.NullString
+		fileID, fileURL, filePath          sql.NullString
+		expectedChecksum, checksumAlgo     sql.NullString
 	}
-	if err := rows.Scan(&ti.id, &ti.agentID, &ti.action, &ti.script, &ti.params, &ti.timeout, &ti.runAs); err != nil {
+	if err := rows.Scan(&ti.id, &ti.agentID, &ti.action, &ti.script, &ti.params, &ti.timeout, &ti.runAs,
+		&ti.fileID, &ti.fileURL, &ti.filePath, &ti.expectedChecksum, &ti.checksumAlgo); err != nil {
 		slog.Warn("task worker scan failed", "task", taskID, "error", err)
 		return
 	}
@@ -181,9 +186,12 @@ func (tq *TaskQueue) BulkCreate(ctx context.Context, tasks []TaskRequest) (int, 
 		}
 		tenantID := "default"
 		_, err := tx.ExecContext(ctx,
-			`INSERT INTO agent_tasks(id,tenant_id,agent_id,action,script,params,timeout,run_as,status,created_at,updated_at)
-			VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) ON CONFLICT(id) DO NOTHING`,
+			`INSERT INTO agent_tasks(id,tenant_id,agent_id,action,script,params,timeout,run_as,
+			                        file_id,file_url,file_path,expected_checksum,checksum_algo,
+			                        status,created_at,updated_at)
+			VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16) ON CONFLICT(id) DO NOTHING`,
 			req.TaskID, tenantID, "", req.Action, req.Script, toJSON(req.Params), req.Timeout, req.RunAs,
+			req.FileID, req.FileURL, req.FilePath, req.ExpectedChecksum, req.ChecksumAlgo,
 			string(TaskStatusPending), now, now)
 		if err != nil {
 			slog.Warn("task bulk create insert failed", "task", req.TaskID, "error", err)

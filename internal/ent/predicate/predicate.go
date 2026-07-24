@@ -30,6 +30,9 @@ type AutomationWorkflow func(*sql.Selector)
 // CmdbAsset is the predicate function for cmdbasset builders.
 type CmdbAsset func(*sql.Selector)
 
+// File is the predicate function for file builders.
+type File func(*sql.Selector)
+
 // IamGroup is the predicate function for iamgroup builders.
 type IamGroup func(*sql.Selector)
 

@@ -119,6 +119,31 @@ func Error(v string) predicate.AgentTask {
 	return predicate.AgentTask(sql.FieldEQ(FieldError, v))
 }
 
+// FileID applies equality check predicate on the "file_id" field. It's identical to FileIDEQ.
+func FileID(v string) predicate.AgentTask {
+	return predicate.AgentTask(sql.FieldEQ(FieldFileID, v))
+}
+
+// FileURL applies equality check predicate on the "file_url" field. It's identical to FileURLEQ.
+func FileURL(v string) predicate.AgentTask {
+	return predicate.AgentTask(sql.FieldEQ(FieldFileURL, v))
+}
+
+// FilePath applies equality check predicate on the "file_path" field. It's identical to FilePathEQ.
+func FilePath(v string) predicate.AgentTask {
+	return predicate.AgentTask(sql.FieldEQ(FieldFilePath, v))
+}
+
+// ExpectedChecksum applies equality check predicate on the "expected_checksum" field. It's identical to ExpectedChecksumEQ.
+func ExpectedChecksum(v string) predicate.AgentTask {
+	return predicate.AgentTask(sql.FieldEQ(FieldExpectedChecksum, v))
+}
+
+// ChecksumAlgo applies equality check predicate on the "checksum_algo" field. It's identical to ChecksumAlgoEQ.
+func ChecksumAlgo(v string) predicate.AgentTask {
+	return predicate.AgentTask(sql.FieldEQ(FieldChecksumAlgo, v))
+}
+
 // CreatedAt applies equality check predicate on the "created_at" field. It's identical to CreatedAtEQ.
 func CreatedAt(v time.Time) predicate.AgentTask {
 	return predicate.AgentTask(sql.FieldEQ(FieldCreatedAt, v))
@@ -847,6 +872,381 @@ func ErrorEqualFold(v string) predicate.AgentTask {
 // ErrorContainsFold applies the ContainsFold predicate on the "error" field.
 func ErrorContainsFold(v string) predicate.AgentTask {
 	return predicate.AgentTask(sql.FieldContainsFold(FieldError, v))
+}
+
+// FileIDEQ applies the EQ predicate on the "file_id" field.
+func FileIDEQ(v string) predicate.AgentTask {
+	return predicate.AgentTask(sql.FieldEQ(FieldFileID, v))
+}
+
+// FileIDNEQ applies the NEQ predicate on the "file_id" field.
+func FileIDNEQ(v string) predicate.AgentTask {
+	return predicate.AgentTask(sql.FieldNEQ(FieldFileID, v))
+}
+
+// FileIDIn applies the In predicate on the "file_id" field.
+func FileIDIn(vs ...string) predicate.AgentTask {
+	return predicate.AgentTask(sql.FieldIn(FieldFileID, vs...))
+}
+
+// FileIDNotIn applies the NotIn predicate on the "file_id" field.
+func FileIDNotIn(vs ...string) predicate.AgentTask {
+	return predicate.AgentTask(sql.FieldNotIn(FieldFileID, vs...))
+}
+
+// FileIDGT applies the GT predicate on the "file_id" field.
+func FileIDGT(v string) predicate.AgentTask {
+	return predicate.AgentTask(sql.FieldGT(FieldFileID, v))
+}
+
+// FileIDGTE applies the GTE predicate on the "file_id" field.
+func FileIDGTE(v string) predicate.AgentTask {
+	return predicate.AgentTask(sql.FieldGTE(FieldFileID, v))
+}
+
+// FileIDLT applies the LT predicate on the "file_id" field.
+func FileIDLT(v string) predicate.AgentTask {
+	return predicate.AgentTask(sql.FieldLT(FieldFileID, v))
+}
+
+// FileIDLTE applies the LTE predicate on the "file_id" field.
+func FileIDLTE(v string) predicate.AgentTask {
+	return predicate.AgentTask(sql.FieldLTE(FieldFileID, v))
+}
+
+// FileIDContains applies the Contains predicate on the "file_id" field.
+func FileIDContains(v string) predicate.AgentTask {
+	return predicate.AgentTask(sql.FieldContains(FieldFileID, v))
+}
+
+// FileIDHasPrefix applies the HasPrefix predicate on the "file_id" field.
+func FileIDHasPrefix(v string) predicate.AgentTask {
+	return predicate.AgentTask(sql.FieldHasPrefix(FieldFileID, v))
+}
+
+// FileIDHasSuffix applies the HasSuffix predicate on the "file_id" field.
+func FileIDHasSuffix(v string) predicate.AgentTask {
+	return predicate.AgentTask(sql.FieldHasSuffix(FieldFileID, v))
+}
+
+// FileIDIsNil applies the IsNil predicate on the "file_id" field.
+func FileIDIsNil() predicate.AgentTask {
+	return predicate.AgentTask(sql.FieldIsNull(FieldFileID))
+}
+
+// FileIDNotNil applies the NotNil predicate on the "file_id" field.
+func FileIDNotNil() predicate.AgentTask {
+	return predicate.AgentTask(sql.FieldNotNull(FieldFileID))
+}
+
+// FileIDEqualFold applies the EqualFold predicate on the "file_id" field.
+func FileIDEqualFold(v string) predicate.AgentTask {
+	return predicate.AgentTask(sql.FieldEqualFold(FieldFileID, v))
+}
+
+// FileIDContainsFold applies the ContainsFold predicate on the "file_id" field.
+func FileIDContainsFold(v string) predicate.AgentTask {
+	return predicate.AgentTask(sql.FieldContainsFold(FieldFileID, v))
+}
+
+// FileURLEQ applies the EQ predicate on the "file_url" field.
+func FileURLEQ(v string) predicate.AgentTask {
+	return predicate.AgentTask(sql.FieldEQ(FieldFileURL, v))
+}
+
+// FileURLNEQ applies the NEQ predicate on the "file_url" field.
+func FileURLNEQ(v string) predicate.AgentTask {
+	return predicate.AgentTask(sql.FieldNEQ(FieldFileURL, v))
+}
+
+// FileURLIn applies the In predicate on the "file_url" field.
+func FileURLIn(vs ...string) predicate.AgentTask {
+	return predicate.AgentTask(sql.FieldIn(FieldFileURL, vs...))
+}
+
+// FileURLNotIn applies the NotIn predicate on the "file_url" field.
+func FileURLNotIn(vs ...string) predicate.AgentTask {
+	return predicate.AgentTask(sql.FieldNotIn(FieldFileURL, vs...))
+}
+
+// FileURLGT applies the GT predicate on the "file_url" field.
+func FileURLGT(v string) predicate.AgentTask {
+	return predicate.AgentTask(sql.FieldGT(FieldFileURL, v))
+}
+
+// FileURLGTE applies the GTE predicate on the "file_url" field.
+func FileURLGTE(v string) predicate.AgentTask {
+	return predicate.AgentTask(sql.FieldGTE(FieldFileURL, v))
+}
+
+// FileURLLT applies the LT predicate on the "file_url" field.
+func FileURLLT(v string) predicate.AgentTask {
+	return predicate.AgentTask(sql.FieldLT(FieldFileURL, v))
+}
+
+// FileURLLTE applies the LTE predicate on the "file_url" field.
+func FileURLLTE(v string) predicate.AgentTask {
+	return predicate.AgentTask(sql.FieldLTE(FieldFileURL, v))
+}
+
+// FileURLContains applies the Contains predicate on the "file_url" field.
+func FileURLContains(v string) predicate.AgentTask {
+	return predicate.AgentTask(sql.FieldContains(FieldFileURL, v))
+}
+
+// FileURLHasPrefix applies the HasPrefix predicate on the "file_url" field.
+func FileURLHasPrefix(v string) predicate.AgentTask {
+	return predicate.AgentTask(sql.FieldHasPrefix(FieldFileURL, v))
+}
+
+// FileURLHasSuffix applies the HasSuffix predicate on the "file_url" field.
+func FileURLHasSuffix(v string) predicate.AgentTask {
+	return predicate.AgentTask(sql.FieldHasSuffix(FieldFileURL, v))
+}
+
+// FileURLIsNil applies the IsNil predicate on the "file_url" field.
+func FileURLIsNil() predicate.AgentTask {
+	return predicate.AgentTask(sql.FieldIsNull(FieldFileURL))
+}
+
+// FileURLNotNil applies the NotNil predicate on the "file_url" field.
+func FileURLNotNil() predicate.AgentTask {
+	return predicate.AgentTask(sql.FieldNotNull(FieldFileURL))
+}
+
+// FileURLEqualFold applies the EqualFold predicate on the "file_url" field.
+func FileURLEqualFold(v string) predicate.AgentTask {
+	return predicate.AgentTask(sql.FieldEqualFold(FieldFileURL, v))
+}
+
+// FileURLContainsFold applies the ContainsFold predicate on the "file_url" field.
+func FileURLContainsFold(v string) predicate.AgentTask {
+	return predicate.AgentTask(sql.FieldContainsFold(FieldFileURL, v))
+}
+
+// FilePathEQ applies the EQ predicate on the "file_path" field.
+func FilePathEQ(v string) predicate.AgentTask {
+	return predicate.AgentTask(sql.FieldEQ(FieldFilePath, v))
+}
+
+// FilePathNEQ applies the NEQ predicate on the "file_path" field.
+func FilePathNEQ(v string) predicate.AgentTask {
+	return predicate.AgentTask(sql.FieldNEQ(FieldFilePath, v))
+}
+
+// FilePathIn applies the In predicate on the "file_path" field.
+func FilePathIn(vs ...string) predicate.AgentTask {
+	return predicate.AgentTask(sql.FieldIn(FieldFilePath, vs...))
+}
+
+// FilePathNotIn applies the NotIn predicate on the "file_path" field.
+func FilePathNotIn(vs ...string) predicate.AgentTask {
+	return predicate.AgentTask(sql.FieldNotIn(FieldFilePath, vs...))
+}
+
+// FilePathGT applies the GT predicate on the "file_path" field.
+func FilePathGT(v string) predicate.AgentTask {
+	return predicate.AgentTask(sql.FieldGT(FieldFilePath, v))
+}
+
+// FilePathGTE applies the GTE predicate on the "file_path" field.
+func FilePathGTE(v string) predicate.AgentTask {
+	return predicate.AgentTask(sql.FieldGTE(FieldFilePath, v))
+}
+
+// FilePathLT applies the LT predicate on the "file_path" field.
+func FilePathLT(v string) predicate.AgentTask {
+	return predicate.AgentTask(sql.FieldLT(FieldFilePath, v))
+}
+
+// FilePathLTE applies the LTE predicate on the "file_path" field.
+func FilePathLTE(v string) predicate.AgentTask {
+	return predicate.AgentTask(sql.FieldLTE(FieldFilePath, v))
+}
+
+// FilePathContains applies the Contains predicate on the "file_path" field.
+func FilePathContains(v string) predicate.AgentTask {
+	return predicate.AgentTask(sql.FieldContains(FieldFilePath, v))
+}
+
+// FilePathHasPrefix applies the HasPrefix predicate on the "file_path" field.
+func FilePathHasPrefix(v string) predicate.AgentTask {
+	return predicate.AgentTask(sql.FieldHasPrefix(FieldFilePath, v))
+}
+
+// FilePathHasSuffix applies the HasSuffix predicate on the "file_path" field.
+func FilePathHasSuffix(v string) predicate.AgentTask {
+	return predicate.AgentTask(sql.FieldHasSuffix(FieldFilePath, v))
+}
+
+// FilePathIsNil applies the IsNil predicate on the "file_path" field.
+func FilePathIsNil() predicate.AgentTask {
+	return predicate.AgentTask(sql.FieldIsNull(FieldFilePath))
+}
+
+// FilePathNotNil applies the NotNil predicate on the "file_path" field.
+func FilePathNotNil() predicate.AgentTask {
+	return predicate.AgentTask(sql.FieldNotNull(FieldFilePath))
+}
+
+// FilePathEqualFold applies the EqualFold predicate on the "file_path" field.
+func FilePathEqualFold(v string) predicate.AgentTask {
+	return predicate.AgentTask(sql.FieldEqualFold(FieldFilePath, v))
+}
+
+// FilePathContainsFold applies the ContainsFold predicate on the "file_path" field.
+func FilePathContainsFold(v string) predicate.AgentTask {
+	return predicate.AgentTask(sql.FieldContainsFold(FieldFilePath, v))
+}
+
+// ExpectedChecksumEQ applies the EQ predicate on the "expected_checksum" field.
+func ExpectedChecksumEQ(v string) predicate.AgentTask {
+	return predicate.AgentTask(sql.FieldEQ(FieldExpectedChecksum, v))
+}
+
+// ExpectedChecksumNEQ applies the NEQ predicate on the "expected_checksum" field.
+func ExpectedChecksumNEQ(v string) predicate.AgentTask {
+	return predicate.AgentTask(sql.FieldNEQ(FieldExpectedChecksum, v))
+}
+
+// ExpectedChecksumIn applies the In predicate on the "expected_checksum" field.
+func ExpectedChecksumIn(vs ...string) predicate.AgentTask {
+	return predicate.AgentTask(sql.FieldIn(FieldExpectedChecksum, vs...))
+}
+
+// ExpectedChecksumNotIn applies the NotIn predicate on the "expected_checksum" field.
+func ExpectedChecksumNotIn(vs ...string) predicate.AgentTask {
+	return predicate.AgentTask(sql.FieldNotIn(FieldExpectedChecksum, vs...))
+}
+
+// ExpectedChecksumGT applies the GT predicate on the "expected_checksum" field.
+func ExpectedChecksumGT(v string) predicate.AgentTask {
+	return predicate.AgentTask(sql.FieldGT(FieldExpectedChecksum, v))
+}
+
+// ExpectedChecksumGTE applies the GTE predicate on the "expected_checksum" field.
+func ExpectedChecksumGTE(v string) predicate.AgentTask {
+	return predicate.AgentTask(sql.FieldGTE(FieldExpectedChecksum, v))
+}
+
+// ExpectedChecksumLT applies the LT predicate on the "expected_checksum" field.
+func ExpectedChecksumLT(v string) predicate.AgentTask {
+	return predicate.AgentTask(sql.FieldLT(FieldExpectedChecksum, v))
+}
+
+// ExpectedChecksumLTE applies the LTE predicate on the "expected_checksum" field.
+func ExpectedChecksumLTE(v string) predicate.AgentTask {
+	return predicate.AgentTask(sql.FieldLTE(FieldExpectedChecksum, v))
+}
+
+// ExpectedChecksumContains applies the Contains predicate on the "expected_checksum" field.
+func ExpectedChecksumContains(v string) predicate.AgentTask {
+	return predicate.AgentTask(sql.FieldContains(FieldExpectedChecksum, v))
+}
+
+// ExpectedChecksumHasPrefix applies the HasPrefix predicate on the "expected_checksum" field.
+func ExpectedChecksumHasPrefix(v string) predicate.AgentTask {
+	return predicate.AgentTask(sql.FieldHasPrefix(FieldExpectedChecksum, v))
+}
+
+// ExpectedChecksumHasSuffix applies the HasSuffix predicate on the "expected_checksum" field.
+func ExpectedChecksumHasSuffix(v string) predicate.AgentTask {
+	return predicate.AgentTask(sql.FieldHasSuffix(FieldExpectedChecksum, v))
+}
+
+// ExpectedChecksumIsNil applies the IsNil predicate on the "expected_checksum" field.
+func ExpectedChecksumIsNil() predicate.AgentTask {
+	return predicate.AgentTask(sql.FieldIsNull(FieldExpectedChecksum))
+}
+
+// ExpectedChecksumNotNil applies the NotNil predicate on the "expected_checksum" field.
+func ExpectedChecksumNotNil() predicate.AgentTask {
+	return predicate.AgentTask(sql.FieldNotNull(FieldExpectedChecksum))
+}
+
+// ExpectedChecksumEqualFold applies the EqualFold predicate on the "expected_checksum" field.
+func ExpectedChecksumEqualFold(v string) predicate.AgentTask {
+	return predicate.AgentTask(sql.FieldEqualFold(FieldExpectedChecksum, v))
+}
+
+// ExpectedChecksumContainsFold applies the ContainsFold predicate on the "expected_checksum" field.
+func ExpectedChecksumContainsFold(v string) predicate.AgentTask {
+	return predicate.AgentTask(sql.FieldContainsFold(FieldExpectedChecksum, v))
+}
+
+// ChecksumAlgoEQ applies the EQ predicate on the "checksum_algo" field.
+func ChecksumAlgoEQ(v string) predicate.AgentTask {
+	return predicate.AgentTask(sql.FieldEQ(FieldChecksumAlgo, v))
+}
+
+// ChecksumAlgoNEQ applies the NEQ predicate on the "checksum_algo" field.
+func ChecksumAlgoNEQ(v string) predicate.AgentTask {
+	return predicate.AgentTask(sql.FieldNEQ(FieldChecksumAlgo, v))
+}
+
+// ChecksumAlgoIn applies the In predicate on the "checksum_algo" field.
+func ChecksumAlgoIn(vs ...string) predicate.AgentTask {
+	return predicate.AgentTask(sql.FieldIn(FieldChecksumAlgo, vs...))
+}
+
+// ChecksumAlgoNotIn applies the NotIn predicate on the "checksum_algo" field.
+func ChecksumAlgoNotIn(vs ...string) predicate.AgentTask {
+	return predicate.AgentTask(sql.FieldNotIn(FieldChecksumAlgo, vs...))
+}
+
+// ChecksumAlgoGT applies the GT predicate on the "checksum_algo" field.
+func ChecksumAlgoGT(v string) predicate.AgentTask {
+	return predicate.AgentTask(sql.FieldGT(FieldChecksumAlgo, v))
+}
+
+// ChecksumAlgoGTE applies the GTE predicate on the "checksum_algo" field.
+func ChecksumAlgoGTE(v string) predicate.AgentTask {
+	return predicate.AgentTask(sql.FieldGTE(FieldChecksumAlgo, v))
+}
+
+// ChecksumAlgoLT applies the LT predicate on the "checksum_algo" field.
+func ChecksumAlgoLT(v string) predicate.AgentTask {
+	return predicate.AgentTask(sql.FieldLT(FieldChecksumAlgo, v))
+}
+
+// ChecksumAlgoLTE applies the LTE predicate on the "checksum_algo" field.
+func ChecksumAlgoLTE(v string) predicate.AgentTask {
+	return predicate.AgentTask(sql.FieldLTE(FieldChecksumAlgo, v))
+}
+
+// ChecksumAlgoContains applies the Contains predicate on the "checksum_algo" field.
+func ChecksumAlgoContains(v string) predicate.AgentTask {
+	return predicate.AgentTask(sql.FieldContains(FieldChecksumAlgo, v))
+}
+
+// ChecksumAlgoHasPrefix applies the HasPrefix predicate on the "checksum_algo" field.
+func ChecksumAlgoHasPrefix(v string) predicate.AgentTask {
+	return predicate.AgentTask(sql.FieldHasPrefix(FieldChecksumAlgo, v))
+}
+
+// ChecksumAlgoHasSuffix applies the HasSuffix predicate on the "checksum_algo" field.
+func ChecksumAlgoHasSuffix(v string) predicate.AgentTask {
+	return predicate.AgentTask(sql.FieldHasSuffix(FieldChecksumAlgo, v))
+}
+
+// ChecksumAlgoIsNil applies the IsNil predicate on the "checksum_algo" field.
+func ChecksumAlgoIsNil() predicate.AgentTask {
+	return predicate.AgentTask(sql.FieldIsNull(FieldChecksumAlgo))
+}
+
+// ChecksumAlgoNotNil applies the NotNil predicate on the "checksum_algo" field.
+func ChecksumAlgoNotNil() predicate.AgentTask {
+	return predicate.AgentTask(sql.FieldNotNull(FieldChecksumAlgo))
+}
+
+// ChecksumAlgoEqualFold applies the EqualFold predicate on the "checksum_algo" field.
+func ChecksumAlgoEqualFold(v string) predicate.AgentTask {
+	return predicate.AgentTask(sql.FieldEqualFold(FieldChecksumAlgo, v))
+}
+
+// ChecksumAlgoContainsFold applies the ContainsFold predicate on the "checksum_algo" field.
+func ChecksumAlgoContainsFold(v string) predicate.AgentTask {
+	return predicate.AgentTask(sql.FieldContainsFold(FieldChecksumAlgo, v))
 }
 
 // CreatedAtEQ applies the EQ predicate on the "created_at" field.

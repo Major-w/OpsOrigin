@@ -34,6 +34,12 @@ func (AgentTask) Fields() []ent.Field {
 		field.Int("exit_code").Optional(),
 		field.Int64("duration_ms").Default(0),
 		field.Text("error").Optional(),
+		// §5 文件分发字段
+		field.String("file_id").Optional(),
+		field.Text("file_url").Optional(),
+		field.Text("file_path").Optional(),
+		field.String("expected_checksum").Optional(),
+		field.String("checksum_algo").Optional(),
 		field.Time("created_at"),
 		field.Time("updated_at"),
 	}

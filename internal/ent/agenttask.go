@@ -42,6 +42,16 @@ type AgentTask struct {
 	DurationMs int64 `json:"duration_ms,omitempty"`
 	// Error holds the value of the "error" field.
 	Error string `json:"error,omitempty"`
+	// FileID holds the value of the "file_id" field.
+	FileID string `json:"file_id,omitempty"`
+	// FileURL holds the value of the "file_url" field.
+	FileURL string `json:"file_url,omitempty"`
+	// FilePath holds the value of the "file_path" field.
+	FilePath string `json:"file_path,omitempty"`
+	// ExpectedChecksum holds the value of the "expected_checksum" field.
+	ExpectedChecksum string `json:"expected_checksum,omitempty"`
+	// ChecksumAlgo holds the value of the "checksum_algo" field.
+	ChecksumAlgo string `json:"checksum_algo,omitempty"`
 	// CreatedAt holds the value of the "created_at" field.
 	CreatedAt time.Time `json:"created_at,omitempty"`
 	// UpdatedAt holds the value of the "updated_at" field.
@@ -58,7 +68,7 @@ func (*AgentTask) scanValues(columns []string) ([]any, error) {
 			values[i] = new([]byte)
 		case agenttask.FieldTimeout, agenttask.FieldExitCode, agenttask.FieldDurationMs:
 			values[i] = new(sql.NullInt64)
-		case agenttask.FieldID, agenttask.FieldTenantID, agenttask.FieldAgentID, agenttask.FieldAction, agenttask.FieldScript, agenttask.FieldRunAs, agenttask.FieldStatus, agenttask.FieldOutput, agenttask.FieldError:
+		case agenttask.FieldID, agenttask.FieldTenantID, agenttask.FieldAgentID, agenttask.FieldAction, agenttask.FieldScript, agenttask.FieldRunAs, agenttask.FieldStatus, agenttask.FieldOutput, agenttask.FieldError, agenttask.FieldFileID, agenttask.FieldFileURL, agenttask.FieldFilePath, agenttask.FieldExpectedChecksum, agenttask.FieldChecksumAlgo:
 			values[i] = new(sql.NullString)
 		case agenttask.FieldCreatedAt, agenttask.FieldUpdatedAt:
 			values[i] = new(sql.NullTime)
@@ -157,6 +167,36 @@ func (_m *AgentTask) assignValues(columns []string, values []any) error {
 			} else if value.Valid {
 				_m.Error = value.String
 			}
+		case agenttask.FieldFileID:
+			if value, ok := values[i].(*sql.NullString); !ok {
+				return fmt.Errorf("unexpected type %T for field file_id", values[i])
+			} else if value.Valid {
+				_m.FileID = value.String
+			}
+		case agenttask.FieldFileURL:
+			if value, ok := values[i].(*sql.NullString); !ok {
+				return fmt.Errorf("unexpected type %T for field file_url", values[i])
+			} else if value.Valid {
+				_m.FileURL = value.String
+			}
+		case agenttask.FieldFilePath:
+			if value, ok := values[i].(*sql.NullString); !ok {
+				return fmt.Errorf("unexpected type %T for field file_path", values[i])
+			} else if value.Valid {
+				_m.FilePath = value.String
+			}
+		case agenttask.FieldExpectedChecksum:
+			if value, ok := values[i].(*sql.NullString); !ok {
+				return fmt.Errorf("unexpected type %T for field expected_checksum", values[i])
+			} else if value.Valid {
+				_m.ExpectedChecksum = value.String
+			}
+		case agenttask.FieldChecksumAlgo:
+			if value, ok := values[i].(*sql.NullString); !ok {
+				return fmt.Errorf("unexpected type %T for field checksum_algo", values[i])
+			} else if value.Valid {
+				_m.ChecksumAlgo = value.String
+			}
 		case agenttask.FieldCreatedAt:
 			if value, ok := values[i].(*sql.NullTime); !ok {
 				return fmt.Errorf("unexpected type %T for field created_at", values[i])
@@ -240,6 +280,21 @@ func (_m *AgentTask) String() string {
 	builder.WriteString(", ")
 	builder.WriteString("error=")
 	builder.WriteString(_m.Error)
+	builder.WriteString(", ")
+	builder.WriteString("file_id=")
+	builder.WriteString(_m.FileID)
+	builder.WriteString(", ")
+	builder.WriteString("file_url=")
+	builder.WriteString(_m.FileURL)
+	builder.WriteString(", ")
+	builder.WriteString("file_path=")
+	builder.WriteString(_m.FilePath)
+	builder.WriteString(", ")
+	builder.WriteString("expected_checksum=")
+	builder.WriteString(_m.ExpectedChecksum)
+	builder.WriteString(", ")
+	builder.WriteString("checksum_algo=")
+	builder.WriteString(_m.ChecksumAlgo)
 	builder.WriteString(", ")
 	builder.WriteString("created_at=")
 	builder.WriteString(_m.CreatedAt.Format(time.ANSIC))

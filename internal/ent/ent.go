@@ -20,6 +20,7 @@ import (
 	"github.com/opsorigin/core/internal/ent/automationscript"
 	"github.com/opsorigin/core/internal/ent/automationworkflow"
 	"github.com/opsorigin/core/internal/ent/cmdbasset"
+	"github.com/opsorigin/core/internal/ent/file"
 	"github.com/opsorigin/core/internal/ent/iamgroup"
 	"github.com/opsorigin/core/internal/ent/iamrole"
 	"github.com/opsorigin/core/internal/ent/iamuserrole"
@@ -97,6 +98,7 @@ func checkColumn(t, c string) error {
 			automationscript.Table:    automationscript.ValidColumn,
 			automationworkflow.Table:  automationworkflow.ValidColumn,
 			cmdbasset.Table:           cmdbasset.ValidColumn,
+			file.Table:                file.ValidColumn,
 			iamgroup.Table:            iamgroup.ValidColumn,
 			iamrole.Table:             iamrole.ValidColumn,
 			iamuserrole.Table:         iamuserrole.ValidColumn,

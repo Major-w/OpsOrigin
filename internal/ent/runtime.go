@@ -11,6 +11,7 @@ import (
 	"github.com/opsorigin/core/internal/ent/automationscript"
 	"github.com/opsorigin/core/internal/ent/automationworkflow"
 	"github.com/opsorigin/core/internal/ent/cmdbasset"
+	"github.com/opsorigin/core/internal/ent/file"
 	"github.com/opsorigin/core/internal/ent/iamgroup"
 	"github.com/opsorigin/core/internal/ent/iamrole"
 	"github.com/opsorigin/core/internal/ent/itsmknowledge"
@@ -136,6 +137,20 @@ func init() {
 	cmdbassetDescLabels := cmdbassetFields[7].Descriptor()
 	// cmdbasset.DefaultLabels holds the default value on creation for the labels field.
 	cmdbasset.DefaultLabels = cmdbassetDescLabels.Default.(map[string]string)
+	fileFields := schema.File{}.Fields()
+	_ = fileFields
+	// fileDescTenantID is the schema descriptor for tenant_id field.
+	fileDescTenantID := fileFields[1].Descriptor()
+	// file.DefaultTenantID holds the default value on creation for the tenant_id field.
+	file.DefaultTenantID = fileDescTenantID.Default.(string)
+	// fileDescSizeBytes is the schema descriptor for size_bytes field.
+	fileDescSizeBytes := fileFields[4].Descriptor()
+	// file.DefaultSizeBytes holds the default value on creation for the size_bytes field.
+	file.DefaultSizeBytes = fileDescSizeBytes.Default.(int64)
+	// fileDescChecksumAlgo is the schema descriptor for checksum_algo field.
+	fileDescChecksumAlgo := fileFields[6].Descriptor()
+	// file.DefaultChecksumAlgo holds the default value on creation for the checksum_algo field.
+	file.DefaultChecksumAlgo = fileDescChecksumAlgo.Default.(string)
 	iamgroupFields := schema.IamGroup{}.Fields()
 	_ = iamgroupFields
 	// iamgroupDescUserIds is the schema descriptor for user_ids field.

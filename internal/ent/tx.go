@@ -28,6 +28,8 @@ type Tx struct {
 	AutomationWorkflow *AutomationWorkflowClient
 	// CmdbAsset is the client for interacting with the CmdbAsset builders.
 	CmdbAsset *CmdbAssetClient
+	// File is the client for interacting with the File builders.
+	File *FileClient
 	// IamGroup is the client for interacting with the IamGroup builders.
 	IamGroup *IamGroupClient
 	// IamRole is the client for interacting with the IamRole builders.
@@ -185,6 +187,7 @@ func (tx *Tx) init() {
 	tx.AutomationScript = NewAutomationScriptClient(tx.config)
 	tx.AutomationWorkflow = NewAutomationWorkflowClient(tx.config)
 	tx.CmdbAsset = NewCmdbAssetClient(tx.config)
+	tx.File = NewFileClient(tx.config)
 	tx.IamGroup = NewIamGroupClient(tx.config)
 	tx.IamRole = NewIamRoleClient(tx.config)
 	tx.IamUserRole = NewIamUserRoleClient(tx.config)

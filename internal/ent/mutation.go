@@ -19,6 +19,7 @@ import (
 	"github.com/opsorigin/core/internal/ent/automationscript"
 	"github.com/opsorigin/core/internal/ent/automationworkflow"
 	"github.com/opsorigin/core/internal/ent/cmdbasset"
+	"github.com/opsorigin/core/internal/ent/file"
 	"github.com/opsorigin/core/internal/ent/iamgroup"
 	"github.com/opsorigin/core/internal/ent/iamrole"
 	"github.com/opsorigin/core/internal/ent/iamuserrole"
@@ -48,6 +49,7 @@ const (
 	TypeAutomationScript    = "AutomationScript"
 	TypeAutomationWorkflow  = "AutomationWorkflow"
 	TypeCmdbAsset           = "CmdbAsset"
+	TypeFile                = "File"
 	TypeIamGroup            = "IamGroup"
 	TypeIamRole             = "IamRole"
 	TypeIamUserRole         = "IamUserRole"
@@ -3272,30 +3274,35 @@ func (m *AgentProxyMutation) ResetEdge(name string) error {
 // AgentTaskMutation represents an operation that mutates the AgentTask nodes in the graph.
 type AgentTaskMutation struct {
 	config
-	op             Op
-	typ            string
-	id             *string
-	tenant_id      *string
-	agent_id       *string
-	action         *string
-	script         *string
-	params         *map[string]interface{}
-	timeout        *int
-	addtimeout     *int
-	run_as         *string
-	status         *string
-	output         *string
-	exit_code      *int
-	addexit_code   *int
-	duration_ms    *int64
-	addduration_ms *int64
-	error          *string
-	created_at     *time.Time
-	updated_at     *time.Time
-	clearedFields  map[string]struct{}
-	done           bool
-	oldValue       func(context.Context) (*AgentTask, error)
-	predicates     []predicate.AgentTask
+	op                Op
+	typ               string
+	id                *string
+	tenant_id         *string
+	agent_id          *string
+	action            *string
+	script            *string
+	params            *map[string]interface{}
+	timeout           *int
+	addtimeout        *int
+	run_as            *string
+	status            *string
+	output            *string
+	exit_code         *int
+	addexit_code      *int
+	duration_ms       *int64
+	addduration_ms    *int64
+	error             *string
+	file_id           *string
+	file_url          *string
+	file_path         *string
+	expected_checksum *string
+	checksum_algo     *string
+	created_at        *time.Time
+	updated_at        *time.Time
+	clearedFields     map[string]struct{}
+	done              bool
+	oldValue          func(context.Context) (*AgentTask, error)
+	predicates        []predicate.AgentTask
 }
 
 var _ ent.Mutation = (*AgentTaskMutation)(nil)
@@ -4000,6 +4007,251 @@ func (m *AgentTaskMutation) ResetError() {
 	delete(m.clearedFields, agenttask.FieldError)
 }
 
+// SetFileID sets the "file_id" field.
+func (m *AgentTaskMutation) SetFileID(s string) {
+	m.file_id = &s
+}
+
+// FileID returns the value of the "file_id" field in the mutation.
+func (m *AgentTaskMutation) FileID() (r string, exists bool) {
+	v := m.file_id
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldFileID returns the old "file_id" field's value of the AgentTask entity.
+// If the AgentTask object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *AgentTaskMutation) OldFileID(ctx context.Context) (v string, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldFileID is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldFileID requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldFileID: %w", err)
+	}
+	return oldValue.FileID, nil
+}
+
+// ClearFileID clears the value of the "file_id" field.
+func (m *AgentTaskMutation) ClearFileID() {
+	m.file_id = nil
+	m.clearedFields[agenttask.FieldFileID] = struct{}{}
+}
+
+// FileIDCleared returns if the "file_id" field was cleared in this mutation.
+func (m *AgentTaskMutation) FileIDCleared() bool {
+	_, ok := m.clearedFields[agenttask.FieldFileID]
+	return ok
+}
+
+// ResetFileID resets all changes to the "file_id" field.
+func (m *AgentTaskMutation) ResetFileID() {
+	m.file_id = nil
+	delete(m.clearedFields, agenttask.FieldFileID)
+}
+
+// SetFileURL sets the "file_url" field.
+func (m *AgentTaskMutation) SetFileURL(s string) {
+	m.file_url = &s
+}
+
+// FileURL returns the value of the "file_url" field in the mutation.
+func (m *AgentTaskMutation) FileURL() (r string, exists bool) {
+	v := m.file_url
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldFileURL returns the old "file_url" field's value of the AgentTask entity.
+// If the AgentTask object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *AgentTaskMutation) OldFileURL(ctx context.Context) (v string, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldFileURL is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldFileURL requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldFileURL: %w", err)
+	}
+	return oldValue.FileURL, nil
+}
+
+// ClearFileURL clears the value of the "file_url" field.
+func (m *AgentTaskMutation) ClearFileURL() {
+	m.file_url = nil
+	m.clearedFields[agenttask.FieldFileURL] = struct{}{}
+}
+
+// FileURLCleared returns if the "file_url" field was cleared in this mutation.
+func (m *AgentTaskMutation) FileURLCleared() bool {
+	_, ok := m.clearedFields[agenttask.FieldFileURL]
+	return ok
+}
+
+// ResetFileURL resets all changes to the "file_url" field.
+func (m *AgentTaskMutation) ResetFileURL() {
+	m.file_url = nil
+	delete(m.clearedFields, agenttask.FieldFileURL)
+}
+
+// SetFilePath sets the "file_path" field.
+func (m *AgentTaskMutation) SetFilePath(s string) {
+	m.file_path = &s
+}
+
+// FilePath returns the value of the "file_path" field in the mutation.
+func (m *AgentTaskMutation) FilePath() (r string, exists bool) {
+	v := m.file_path
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldFilePath returns the old "file_path" field's value of the AgentTask entity.
+// If the AgentTask object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *AgentTaskMutation) OldFilePath(ctx context.Context) (v string, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldFilePath is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldFilePath requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldFilePath: %w", err)
+	}
+	return oldValue.FilePath, nil
+}
+
+// ClearFilePath clears the value of the "file_path" field.
+func (m *AgentTaskMutation) ClearFilePath() {
+	m.file_path = nil
+	m.clearedFields[agenttask.FieldFilePath] = struct{}{}
+}
+
+// FilePathCleared returns if the "file_path" field was cleared in this mutation.
+func (m *AgentTaskMutation) FilePathCleared() bool {
+	_, ok := m.clearedFields[agenttask.FieldFilePath]
+	return ok
+}
+
+// ResetFilePath resets all changes to the "file_path" field.
+func (m *AgentTaskMutation) ResetFilePath() {
+	m.file_path = nil
+	delete(m.clearedFields, agenttask.FieldFilePath)
+}
+
+// SetExpectedChecksum sets the "expected_checksum" field.
+func (m *AgentTaskMutation) SetExpectedChecksum(s string) {
+	m.expected_checksum = &s
+}
+
+// ExpectedChecksum returns the value of the "expected_checksum" field in the mutation.
+func (m *AgentTaskMutation) ExpectedChecksum() (r string, exists bool) {
+	v := m.expected_checksum
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldExpectedChecksum returns the old "expected_checksum" field's value of the AgentTask entity.
+// If the AgentTask object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *AgentTaskMutation) OldExpectedChecksum(ctx context.Context) (v string, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldExpectedChecksum is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldExpectedChecksum requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldExpectedChecksum: %w", err)
+	}
+	return oldValue.ExpectedChecksum, nil
+}
+
+// ClearExpectedChecksum clears the value of the "expected_checksum" field.
+func (m *AgentTaskMutation) ClearExpectedChecksum() {
+	m.expected_checksum = nil
+	m.clearedFields[agenttask.FieldExpectedChecksum] = struct{}{}
+}
+
+// ExpectedChecksumCleared returns if the "expected_checksum" field was cleared in this mutation.
+func (m *AgentTaskMutation) ExpectedChecksumCleared() bool {
+	_, ok := m.clearedFields[agenttask.FieldExpectedChecksum]
+	return ok
+}
+
+// ResetExpectedChecksum resets all changes to the "expected_checksum" field.
+func (m *AgentTaskMutation) ResetExpectedChecksum() {
+	m.expected_checksum = nil
+	delete(m.clearedFields, agenttask.FieldExpectedChecksum)
+}
+
+// SetChecksumAlgo sets the "checksum_algo" field.
+func (m *AgentTaskMutation) SetChecksumAlgo(s string) {
+	m.checksum_algo = &s
+}
+
+// ChecksumAlgo returns the value of the "checksum_algo" field in the mutation.
+func (m *AgentTaskMutation) ChecksumAlgo() (r string, exists bool) {
+	v := m.checksum_algo
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldChecksumAlgo returns the old "checksum_algo" field's value of the AgentTask entity.
+// If the AgentTask object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *AgentTaskMutation) OldChecksumAlgo(ctx context.Context) (v string, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldChecksumAlgo is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldChecksumAlgo requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldChecksumAlgo: %w", err)
+	}
+	return oldValue.ChecksumAlgo, nil
+}
+
+// ClearChecksumAlgo clears the value of the "checksum_algo" field.
+func (m *AgentTaskMutation) ClearChecksumAlgo() {
+	m.checksum_algo = nil
+	m.clearedFields[agenttask.FieldChecksumAlgo] = struct{}{}
+}
+
+// ChecksumAlgoCleared returns if the "checksum_algo" field was cleared in this mutation.
+func (m *AgentTaskMutation) ChecksumAlgoCleared() bool {
+	_, ok := m.clearedFields[agenttask.FieldChecksumAlgo]
+	return ok
+}
+
+// ResetChecksumAlgo resets all changes to the "checksum_algo" field.
+func (m *AgentTaskMutation) ResetChecksumAlgo() {
+	m.checksum_algo = nil
+	delete(m.clearedFields, agenttask.FieldChecksumAlgo)
+}
+
 // SetCreatedAt sets the "created_at" field.
 func (m *AgentTaskMutation) SetCreatedAt(t time.Time) {
 	m.created_at = &t
@@ -4106,7 +4358,7 @@ func (m *AgentTaskMutation) Type() string {
 // order to get all numeric fields that were incremented/decremented, call
 // AddedFields().
 func (m *AgentTaskMutation) Fields() []string {
-	fields := make([]string, 0, 14)
+	fields := make([]string, 0, 19)
 	if m.tenant_id != nil {
 		fields = append(fields, agenttask.FieldTenantID)
 	}
@@ -4142,6 +4394,21 @@ func (m *AgentTaskMutation) Fields() []string {
 	}
 	if m.error != nil {
 		fields = append(fields, agenttask.FieldError)
+	}
+	if m.file_id != nil {
+		fields = append(fields, agenttask.FieldFileID)
+	}
+	if m.file_url != nil {
+		fields = append(fields, agenttask.FieldFileURL)
+	}
+	if m.file_path != nil {
+		fields = append(fields, agenttask.FieldFilePath)
+	}
+	if m.expected_checksum != nil {
+		fields = append(fields, agenttask.FieldExpectedChecksum)
+	}
+	if m.checksum_algo != nil {
+		fields = append(fields, agenttask.FieldChecksumAlgo)
 	}
 	if m.created_at != nil {
 		fields = append(fields, agenttask.FieldCreatedAt)
@@ -4181,6 +4448,16 @@ func (m *AgentTaskMutation) Field(name string) (ent.Value, bool) {
 		return m.DurationMs()
 	case agenttask.FieldError:
 		return m.Error()
+	case agenttask.FieldFileID:
+		return m.FileID()
+	case agenttask.FieldFileURL:
+		return m.FileURL()
+	case agenttask.FieldFilePath:
+		return m.FilePath()
+	case agenttask.FieldExpectedChecksum:
+		return m.ExpectedChecksum()
+	case agenttask.FieldChecksumAlgo:
+		return m.ChecksumAlgo()
 	case agenttask.FieldCreatedAt:
 		return m.CreatedAt()
 	case agenttask.FieldUpdatedAt:
@@ -4218,6 +4495,16 @@ func (m *AgentTaskMutation) OldField(ctx context.Context, name string) (ent.Valu
 		return m.OldDurationMs(ctx)
 	case agenttask.FieldError:
 		return m.OldError(ctx)
+	case agenttask.FieldFileID:
+		return m.OldFileID(ctx)
+	case agenttask.FieldFileURL:
+		return m.OldFileURL(ctx)
+	case agenttask.FieldFilePath:
+		return m.OldFilePath(ctx)
+	case agenttask.FieldExpectedChecksum:
+		return m.OldExpectedChecksum(ctx)
+	case agenttask.FieldChecksumAlgo:
+		return m.OldChecksumAlgo(ctx)
 	case agenttask.FieldCreatedAt:
 		return m.OldCreatedAt(ctx)
 	case agenttask.FieldUpdatedAt:
@@ -4314,6 +4601,41 @@ func (m *AgentTaskMutation) SetField(name string, value ent.Value) error {
 			return fmt.Errorf("unexpected type %T for field %s", value, name)
 		}
 		m.SetError(v)
+		return nil
+	case agenttask.FieldFileID:
+		v, ok := value.(string)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetFileID(v)
+		return nil
+	case agenttask.FieldFileURL:
+		v, ok := value.(string)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetFileURL(v)
+		return nil
+	case agenttask.FieldFilePath:
+		v, ok := value.(string)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetFilePath(v)
+		return nil
+	case agenttask.FieldExpectedChecksum:
+		v, ok := value.(string)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetExpectedChecksum(v)
+		return nil
+	case agenttask.FieldChecksumAlgo:
+		v, ok := value.(string)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetChecksumAlgo(v)
 		return nil
 	case agenttask.FieldCreatedAt:
 		v, ok := value.(time.Time)
@@ -4422,6 +4744,21 @@ func (m *AgentTaskMutation) ClearedFields() []string {
 	if m.FieldCleared(agenttask.FieldError) {
 		fields = append(fields, agenttask.FieldError)
 	}
+	if m.FieldCleared(agenttask.FieldFileID) {
+		fields = append(fields, agenttask.FieldFileID)
+	}
+	if m.FieldCleared(agenttask.FieldFileURL) {
+		fields = append(fields, agenttask.FieldFileURL)
+	}
+	if m.FieldCleared(agenttask.FieldFilePath) {
+		fields = append(fields, agenttask.FieldFilePath)
+	}
+	if m.FieldCleared(agenttask.FieldExpectedChecksum) {
+		fields = append(fields, agenttask.FieldExpectedChecksum)
+	}
+	if m.FieldCleared(agenttask.FieldChecksumAlgo) {
+		fields = append(fields, agenttask.FieldChecksumAlgo)
+	}
 	return fields
 }
 
@@ -4459,6 +4796,21 @@ func (m *AgentTaskMutation) ClearField(name string) error {
 		return nil
 	case agenttask.FieldError:
 		m.ClearError()
+		return nil
+	case agenttask.FieldFileID:
+		m.ClearFileID()
+		return nil
+	case agenttask.FieldFileURL:
+		m.ClearFileURL()
+		return nil
+	case agenttask.FieldFilePath:
+		m.ClearFilePath()
+		return nil
+	case agenttask.FieldExpectedChecksum:
+		m.ClearExpectedChecksum()
+		return nil
+	case agenttask.FieldChecksumAlgo:
+		m.ClearChecksumAlgo()
 		return nil
 	}
 	return fmt.Errorf("unknown AgentTask nullable field %s", name)
@@ -4503,6 +4855,21 @@ func (m *AgentTaskMutation) ResetField(name string) error {
 		return nil
 	case agenttask.FieldError:
 		m.ResetError()
+		return nil
+	case agenttask.FieldFileID:
+		m.ResetFileID()
+		return nil
+	case agenttask.FieldFileURL:
+		m.ResetFileURL()
+		return nil
+	case agenttask.FieldFilePath:
+		m.ResetFilePath()
+		return nil
+	case agenttask.FieldExpectedChecksum:
+		m.ResetExpectedChecksum()
+		return nil
+	case agenttask.FieldChecksumAlgo:
+		m.ResetChecksumAlgo()
 		return nil
 	case agenttask.FieldCreatedAt:
 		m.ResetCreatedAt()
@@ -9039,6 +9406,774 @@ func (m *CmdbAssetMutation) ClearEdge(name string) error {
 // It returns an error if the edge is not defined in the schema.
 func (m *CmdbAssetMutation) ResetEdge(name string) error {
 	return fmt.Errorf("unknown CmdbAsset edge %s", name)
+}
+
+// FileMutation represents an operation that mutates the File nodes in the graph.
+type FileMutation struct {
+	config
+	op            Op
+	typ           string
+	id            *string
+	tenant_id     *string
+	original_name *string
+	stored_path   *string
+	size_bytes    *int64
+	addsize_bytes *int64
+	checksum      *string
+	checksum_algo *string
+	created_at    *time.Time
+	updated_at    *time.Time
+	clearedFields map[string]struct{}
+	done          bool
+	oldValue      func(context.Context) (*File, error)
+	predicates    []predicate.File
+}
+
+var _ ent.Mutation = (*FileMutation)(nil)
+
+// fileOption allows management of the mutation configuration using functional options.
+type fileOption func(*FileMutation)
+
+// newFileMutation creates new mutation for the File entity.
+func newFileMutation(c config, op Op, opts ...fileOption) *FileMutation {
+	m := &FileMutation{
+		config:        c,
+		op:            op,
+		typ:           TypeFile,
+		clearedFields: make(map[string]struct{}),
+	}
+	for _, opt := range opts {
+		opt(m)
+	}
+	return m
+}
+
+// withFileID sets the ID field of the mutation.
+func withFileID(id string) fileOption {
+	return func(m *FileMutation) {
+		var (
+			err   error
+			once  sync.Once
+			value *File
+		)
+		m.oldValue = func(ctx context.Context) (*File, error) {
+			once.Do(func() {
+				if m.done {
+					err = errors.New("querying old values post mutation is not allowed")
+				} else {
+					value, err = m.Client().File.Get(ctx, id)
+				}
+			})
+			return value, err
+		}
+		m.id = &id
+	}
+}
+
+// withFile sets the old File of the mutation.
+func withFile(node *File) fileOption {
+	return func(m *FileMutation) {
+		m.oldValue = func(context.Context) (*File, error) {
+			return node, nil
+		}
+		m.id = &node.ID
+	}
+}
+
+// Client returns a new `ent.Client` from the mutation. If the mutation was
+// executed in a transaction (ent.Tx), a transactional client is returned.
+func (m FileMutation) Client() *Client {
+	client := &Client{config: m.config}
+	client.init()
+	return client
+}
+
+// Tx returns an `ent.Tx` for mutations that were executed in transactions;
+// it returns an error otherwise.
+func (m FileMutation) Tx() (*Tx, error) {
+	if _, ok := m.driver.(*txDriver); !ok {
+		return nil, errors.New("ent: mutation is not running in a transaction")
+	}
+	tx := &Tx{config: m.config}
+	tx.init()
+	return tx, nil
+}
+
+// SetID sets the value of the id field. Note that this
+// operation is only accepted on creation of File entities.
+func (m *FileMutation) SetID(id string) {
+	m.id = &id
+}
+
+// ID returns the ID value in the mutation. Note that the ID is only available
+// if it was provided to the builder or after it was returned from the database.
+func (m *FileMutation) ID() (id string, exists bool) {
+	if m.id == nil {
+		return
+	}
+	return *m.id, true
+}
+
+// IDs queries the database and returns the entity ids that match the mutation's predicate.
+// That means, if the mutation is applied within a transaction with an isolation level such
+// as sql.LevelSerializable, the returned ids match the ids of the rows that will be updated
+// or updated by the mutation.
+func (m *FileMutation) IDs(ctx context.Context) ([]string, error) {
+	switch {
+	case m.op.Is(OpUpdateOne | OpDeleteOne):
+		id, exists := m.ID()
+		if exists {
+			return []string{id}, nil
+		}
+		fallthrough
+	case m.op.Is(OpUpdate | OpDelete):
+		return m.Client().File.Query().Where(m.predicates...).IDs(ctx)
+	default:
+		return nil, fmt.Errorf("IDs is not allowed on %s operations", m.op)
+	}
+}
+
+// SetTenantID sets the "tenant_id" field.
+func (m *FileMutation) SetTenantID(s string) {
+	m.tenant_id = &s
+}
+
+// TenantID returns the value of the "tenant_id" field in the mutation.
+func (m *FileMutation) TenantID() (r string, exists bool) {
+	v := m.tenant_id
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldTenantID returns the old "tenant_id" field's value of the File entity.
+// If the File object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *FileMutation) OldTenantID(ctx context.Context) (v string, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldTenantID is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldTenantID requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldTenantID: %w", err)
+	}
+	return oldValue.TenantID, nil
+}
+
+// ResetTenantID resets all changes to the "tenant_id" field.
+func (m *FileMutation) ResetTenantID() {
+	m.tenant_id = nil
+}
+
+// SetOriginalName sets the "original_name" field.
+func (m *FileMutation) SetOriginalName(s string) {
+	m.original_name = &s
+}
+
+// OriginalName returns the value of the "original_name" field in the mutation.
+func (m *FileMutation) OriginalName() (r string, exists bool) {
+	v := m.original_name
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldOriginalName returns the old "original_name" field's value of the File entity.
+// If the File object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *FileMutation) OldOriginalName(ctx context.Context) (v string, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldOriginalName is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldOriginalName requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldOriginalName: %w", err)
+	}
+	return oldValue.OriginalName, nil
+}
+
+// ResetOriginalName resets all changes to the "original_name" field.
+func (m *FileMutation) ResetOriginalName() {
+	m.original_name = nil
+}
+
+// SetStoredPath sets the "stored_path" field.
+func (m *FileMutation) SetStoredPath(s string) {
+	m.stored_path = &s
+}
+
+// StoredPath returns the value of the "stored_path" field in the mutation.
+func (m *FileMutation) StoredPath() (r string, exists bool) {
+	v := m.stored_path
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldStoredPath returns the old "stored_path" field's value of the File entity.
+// If the File object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *FileMutation) OldStoredPath(ctx context.Context) (v string, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldStoredPath is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldStoredPath requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldStoredPath: %w", err)
+	}
+	return oldValue.StoredPath, nil
+}
+
+// ResetStoredPath resets all changes to the "stored_path" field.
+func (m *FileMutation) ResetStoredPath() {
+	m.stored_path = nil
+}
+
+// SetSizeBytes sets the "size_bytes" field.
+func (m *FileMutation) SetSizeBytes(i int64) {
+	m.size_bytes = &i
+	m.addsize_bytes = nil
+}
+
+// SizeBytes returns the value of the "size_bytes" field in the mutation.
+func (m *FileMutation) SizeBytes() (r int64, exists bool) {
+	v := m.size_bytes
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldSizeBytes returns the old "size_bytes" field's value of the File entity.
+// If the File object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *FileMutation) OldSizeBytes(ctx context.Context) (v int64, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldSizeBytes is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldSizeBytes requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldSizeBytes: %w", err)
+	}
+	return oldValue.SizeBytes, nil
+}
+
+// AddSizeBytes adds i to the "size_bytes" field.
+func (m *FileMutation) AddSizeBytes(i int64) {
+	if m.addsize_bytes != nil {
+		*m.addsize_bytes += i
+	} else {
+		m.addsize_bytes = &i
+	}
+}
+
+// AddedSizeBytes returns the value that was added to the "size_bytes" field in this mutation.
+func (m *FileMutation) AddedSizeBytes() (r int64, exists bool) {
+	v := m.addsize_bytes
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// ResetSizeBytes resets all changes to the "size_bytes" field.
+func (m *FileMutation) ResetSizeBytes() {
+	m.size_bytes = nil
+	m.addsize_bytes = nil
+}
+
+// SetChecksum sets the "checksum" field.
+func (m *FileMutation) SetChecksum(s string) {
+	m.checksum = &s
+}
+
+// Checksum returns the value of the "checksum" field in the mutation.
+func (m *FileMutation) Checksum() (r string, exists bool) {
+	v := m.checksum
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldChecksum returns the old "checksum" field's value of the File entity.
+// If the File object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *FileMutation) OldChecksum(ctx context.Context) (v string, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldChecksum is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldChecksum requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldChecksum: %w", err)
+	}
+	return oldValue.Checksum, nil
+}
+
+// ClearChecksum clears the value of the "checksum" field.
+func (m *FileMutation) ClearChecksum() {
+	m.checksum = nil
+	m.clearedFields[file.FieldChecksum] = struct{}{}
+}
+
+// ChecksumCleared returns if the "checksum" field was cleared in this mutation.
+func (m *FileMutation) ChecksumCleared() bool {
+	_, ok := m.clearedFields[file.FieldChecksum]
+	return ok
+}
+
+// ResetChecksum resets all changes to the "checksum" field.
+func (m *FileMutation) ResetChecksum() {
+	m.checksum = nil
+	delete(m.clearedFields, file.FieldChecksum)
+}
+
+// SetChecksumAlgo sets the "checksum_algo" field.
+func (m *FileMutation) SetChecksumAlgo(s string) {
+	m.checksum_algo = &s
+}
+
+// ChecksumAlgo returns the value of the "checksum_algo" field in the mutation.
+func (m *FileMutation) ChecksumAlgo() (r string, exists bool) {
+	v := m.checksum_algo
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldChecksumAlgo returns the old "checksum_algo" field's value of the File entity.
+// If the File object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *FileMutation) OldChecksumAlgo(ctx context.Context) (v string, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldChecksumAlgo is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldChecksumAlgo requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldChecksumAlgo: %w", err)
+	}
+	return oldValue.ChecksumAlgo, nil
+}
+
+// ResetChecksumAlgo resets all changes to the "checksum_algo" field.
+func (m *FileMutation) ResetChecksumAlgo() {
+	m.checksum_algo = nil
+}
+
+// SetCreatedAt sets the "created_at" field.
+func (m *FileMutation) SetCreatedAt(t time.Time) {
+	m.created_at = &t
+}
+
+// CreatedAt returns the value of the "created_at" field in the mutation.
+func (m *FileMutation) CreatedAt() (r time.Time, exists bool) {
+	v := m.created_at
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldCreatedAt returns the old "created_at" field's value of the File entity.
+// If the File object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *FileMutation) OldCreatedAt(ctx context.Context) (v time.Time, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldCreatedAt is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldCreatedAt requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldCreatedAt: %w", err)
+	}
+	return oldValue.CreatedAt, nil
+}
+
+// ResetCreatedAt resets all changes to the "created_at" field.
+func (m *FileMutation) ResetCreatedAt() {
+	m.created_at = nil
+}
+
+// SetUpdatedAt sets the "updated_at" field.
+func (m *FileMutation) SetUpdatedAt(t time.Time) {
+	m.updated_at = &t
+}
+
+// UpdatedAt returns the value of the "updated_at" field in the mutation.
+func (m *FileMutation) UpdatedAt() (r time.Time, exists bool) {
+	v := m.updated_at
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldUpdatedAt returns the old "updated_at" field's value of the File entity.
+// If the File object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *FileMutation) OldUpdatedAt(ctx context.Context) (v time.Time, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldUpdatedAt is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldUpdatedAt requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldUpdatedAt: %w", err)
+	}
+	return oldValue.UpdatedAt, nil
+}
+
+// ResetUpdatedAt resets all changes to the "updated_at" field.
+func (m *FileMutation) ResetUpdatedAt() {
+	m.updated_at = nil
+}
+
+// Where appends a list predicates to the FileMutation builder.
+func (m *FileMutation) Where(ps ...predicate.File) {
+	m.predicates = append(m.predicates, ps...)
+}
+
+// WhereP appends storage-level predicates to the FileMutation builder. Using this method,
+// users can use type-assertion to append predicates that do not depend on any generated package.
+func (m *FileMutation) WhereP(ps ...func(*sql.Selector)) {
+	p := make([]predicate.File, len(ps))
+	for i := range ps {
+		p[i] = ps[i]
+	}
+	m.Where(p...)
+}
+
+// Op returns the operation name.
+func (m *FileMutation) Op() Op {
+	return m.op
+}
+
+// SetOp allows setting the mutation operation.
+func (m *FileMutation) SetOp(op Op) {
+	m.op = op
+}
+
+// Type returns the node type of this mutation (File).
+func (m *FileMutation) Type() string {
+	return m.typ
+}
+
+// Fields returns all fields that were changed during this mutation. Note that in
+// order to get all numeric fields that were incremented/decremented, call
+// AddedFields().
+func (m *FileMutation) Fields() []string {
+	fields := make([]string, 0, 8)
+	if m.tenant_id != nil {
+		fields = append(fields, file.FieldTenantID)
+	}
+	if m.original_name != nil {
+		fields = append(fields, file.FieldOriginalName)
+	}
+	if m.stored_path != nil {
+		fields = append(fields, file.FieldStoredPath)
+	}
+	if m.size_bytes != nil {
+		fields = append(fields, file.FieldSizeBytes)
+	}
+	if m.checksum != nil {
+		fields = append(fields, file.FieldChecksum)
+	}
+	if m.checksum_algo != nil {
+		fields = append(fields, file.FieldChecksumAlgo)
+	}
+	if m.created_at != nil {
+		fields = append(fields, file.FieldCreatedAt)
+	}
+	if m.updated_at != nil {
+		fields = append(fields, file.FieldUpdatedAt)
+	}
+	return fields
+}
+
+// Field returns the value of a field with the given name. The second boolean
+// return value indicates that this field was not set, or was not defined in the
+// schema.
+func (m *FileMutation) Field(name string) (ent.Value, bool) {
+	switch name {
+	case file.FieldTenantID:
+		return m.TenantID()
+	case file.FieldOriginalName:
+		return m.OriginalName()
+	case file.FieldStoredPath:
+		return m.StoredPath()
+	case file.FieldSizeBytes:
+		return m.SizeBytes()
+	case file.FieldChecksum:
+		return m.Checksum()
+	case file.FieldChecksumAlgo:
+		return m.ChecksumAlgo()
+	case file.FieldCreatedAt:
+		return m.CreatedAt()
+	case file.FieldUpdatedAt:
+		return m.UpdatedAt()
+	}
+	return nil, false
+}
+
+// OldField returns the old value of the field from the database. An error is
+// returned if the mutation operation is not UpdateOne, or the query to the
+// database failed.
+func (m *FileMutation) OldField(ctx context.Context, name string) (ent.Value, error) {
+	switch name {
+	case file.FieldTenantID:
+		return m.OldTenantID(ctx)
+	case file.FieldOriginalName:
+		return m.OldOriginalName(ctx)
+	case file.FieldStoredPath:
+		return m.OldStoredPath(ctx)
+	case file.FieldSizeBytes:
+		return m.OldSizeBytes(ctx)
+	case file.FieldChecksum:
+		return m.OldChecksum(ctx)
+	case file.FieldChecksumAlgo:
+		return m.OldChecksumAlgo(ctx)
+	case file.FieldCreatedAt:
+		return m.OldCreatedAt(ctx)
+	case file.FieldUpdatedAt:
+		return m.OldUpdatedAt(ctx)
+	}
+	return nil, fmt.Errorf("unknown File field %s", name)
+}
+
+// SetField sets the value of a field with the given name. It returns an error if
+// the field is not defined in the schema, or if the type mismatched the field
+// type.
+func (m *FileMutation) SetField(name string, value ent.Value) error {
+	switch name {
+	case file.FieldTenantID:
+		v, ok := value.(string)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetTenantID(v)
+		return nil
+	case file.FieldOriginalName:
+		v, ok := value.(string)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetOriginalName(v)
+		return nil
+	case file.FieldStoredPath:
+		v, ok := value.(string)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetStoredPath(v)
+		return nil
+	case file.FieldSizeBytes:
+		v, ok := value.(int64)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetSizeBytes(v)
+		return nil
+	case file.FieldChecksum:
+		v, ok := value.(string)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetChecksum(v)
+		return nil
+	case file.FieldChecksumAlgo:
+		v, ok := value.(string)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetChecksumAlgo(v)
+		return nil
+	case file.FieldCreatedAt:
+		v, ok := value.(time.Time)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetCreatedAt(v)
+		return nil
+	case file.FieldUpdatedAt:
+		v, ok := value.(time.Time)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetUpdatedAt(v)
+		return nil
+	}
+	return fmt.Errorf("unknown File field %s", name)
+}
+
+// AddedFields returns all numeric fields that were incremented/decremented during
+// this mutation.
+func (m *FileMutation) AddedFields() []string {
+	var fields []string
+	if m.addsize_bytes != nil {
+		fields = append(fields, file.FieldSizeBytes)
+	}
+	return fields
+}
+
+// AddedField returns the numeric value that was incremented/decremented on a field
+// with the given name. The second boolean return value indicates that this field
+// was not set, or was not defined in the schema.
+func (m *FileMutation) AddedField(name string) (ent.Value, bool) {
+	switch name {
+	case file.FieldSizeBytes:
+		return m.AddedSizeBytes()
+	}
+	return nil, false
+}
+
+// AddField adds the value to the field with the given name. It returns an error if
+// the field is not defined in the schema, or if the type mismatched the field
+// type.
+func (m *FileMutation) AddField(name string, value ent.Value) error {
+	switch name {
+	case file.FieldSizeBytes:
+		v, ok := value.(int64)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.AddSizeBytes(v)
+		return nil
+	}
+	return fmt.Errorf("unknown File numeric field %s", name)
+}
+
+// ClearedFields returns all nullable fields that were cleared during this
+// mutation.
+func (m *FileMutation) ClearedFields() []string {
+	var fields []string
+	if m.FieldCleared(file.FieldChecksum) {
+		fields = append(fields, file.FieldChecksum)
+	}
+	return fields
+}
+
+// FieldCleared returns a boolean indicating if a field with the given name was
+// cleared in this mutation.
+func (m *FileMutation) FieldCleared(name string) bool {
+	_, ok := m.clearedFields[name]
+	return ok
+}
+
+// ClearField clears the value of the field with the given name. It returns an
+// error if the field is not defined in the schema.
+func (m *FileMutation) ClearField(name string) error {
+	switch name {
+	case file.FieldChecksum:
+		m.ClearChecksum()
+		return nil
+	}
+	return fmt.Errorf("unknown File nullable field %s", name)
+}
+
+// ResetField resets all changes in the mutation for the field with the given name.
+// It returns an error if the field is not defined in the schema.
+func (m *FileMutation) ResetField(name string) error {
+	switch name {
+	case file.FieldTenantID:
+		m.ResetTenantID()
+		return nil
+	case file.FieldOriginalName:
+		m.ResetOriginalName()
+		return nil
+	case file.FieldStoredPath:
+		m.ResetStoredPath()
+		return nil
+	case file.FieldSizeBytes:
+		m.ResetSizeBytes()
+		return nil
+	case file.FieldChecksum:
+		m.ResetChecksum()
+		return nil
+	case file.FieldChecksumAlgo:
+		m.ResetChecksumAlgo()
+		return nil
+	case file.FieldCreatedAt:
+		m.ResetCreatedAt()
+		return nil
+	case file.FieldUpdatedAt:
+		m.ResetUpdatedAt()
+		return nil
+	}
+	return fmt.Errorf("unknown File field %s", name)
+}
+
+// AddedEdges returns all edge names that were set/added in this mutation.
+func (m *FileMutation) AddedEdges() []string {
+	edges := make([]string, 0, 0)
+	return edges
+}
+
+// AddedIDs returns all IDs (to other nodes) that were added for the given edge
+// name in this mutation.
+func (m *FileMutation) AddedIDs(name string) []ent.Value {
+	return nil
+}
+
+// RemovedEdges returns all edge names that were removed in this mutation.
+func (m *FileMutation) RemovedEdges() []string {
+	edges := make([]string, 0, 0)
+	return edges
+}
+
+// RemovedIDs returns all IDs (to other nodes) that were removed for the edge with
+// the given name in this mutation.
+func (m *FileMutation) RemovedIDs(name string) []ent.Value {
+	return nil
+}
+
+// ClearedEdges returns all edge names that were cleared in this mutation.
+func (m *FileMutation) ClearedEdges() []string {
+	edges := make([]string, 0, 0)
+	return edges
+}
+
+// EdgeCleared returns a boolean which indicates if the edge with the given name
+// was cleared in this mutation.
+func (m *FileMutation) EdgeCleared(name string) bool {
+	return false
+}
+
+// ClearEdge clears the value of the edge with the given name. It returns an error
+// if that edge is not defined in the schema.
+func (m *FileMutation) ClearEdge(name string) error {
+	return fmt.Errorf("unknown File unique edge %s", name)
+}
+
+// ResetEdge resets all changes to the edge with the given name in this mutation.
+// It returns an error if the edge is not defined in the schema.
+func (m *FileMutation) ResetEdge(name string) error {
+	return fmt.Errorf("unknown File edge %s", name)
 }
 
 // IamGroupMutation represents an operation that mutates the IamGroup nodes in the graph.
