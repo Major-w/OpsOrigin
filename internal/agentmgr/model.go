@@ -35,7 +35,8 @@ const OfflineThreshold = 90 * time.Second
 type AgentHost struct {
 	ID            string            `json:"id"`
 	TenantID      string            `json:"tenant_id"`
-	Fingerprint   string            `json:"fingerprint,omitempty"` // SHA256(tenant:address), 用于去重
+	Fingerprint   string            `json:"fingerprint,omitempty"`
+	Channels      []string          `json:"channels,omitempty"`       // 可用通道: ["agent","ssh"] 等 // SHA256(tenant:address), 用于去重
 	Name          string            `json:"name"`
 	Type          AgentType         `json:"type"`
 	Address       string            `json:"address"`

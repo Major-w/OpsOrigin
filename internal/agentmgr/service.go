@@ -72,13 +72,17 @@ func (s *MemoryStore) Register(ctx context.Context, host *AgentHost) error {
 	defer s.mu.Unlock()
 
 	host.Fingerprint = GenerateFingerprint(host.TenantID, host.Address)
-	// 去重：按指纹查找已有主机，复用 ID
+	// channel 映射: agent→"agent", agentless→"ssh", sandbox→"sandbox"
+	ch := channelFromType(host.Type)
+	// 去重：按指纹查找已有主机，复用 ID 并合并 channels
 	if existing := s.lookupByFingerprint(host.Fingerprint); existing != nil {
 		host.ID = existing.ID
 		host.FirstSeen = existing.FirstSeen
 		host.CreatedAt = existing.CreatedAt
+		if ch != "" { host.Channels = mergeChannels(existing.Channels, ch) }
 	}
 	if host.ID == "" { host.ID = uuid.New().String() }
+	if len(host.Channels) == 0 { host.Channels = []string{ch} }
 	now := time.Now()
 	host.FirstSeen = &now
 	host.CreatedAt = now
@@ -106,6 +110,22 @@ func (s *MemoryStore) lookupByFingerprint(fp string) *AgentHost {
 		if h.Fingerprint == fp { return h }
 	}
 	return nil
+}
+
+func channelFromType(t AgentType) string {
+	switch t {
+	case AgentTypeAgent: return "agent"
+	case AgentTypeAgentless: return "ssh"
+	case AgentTypeSandbox: return "sandbox"
+	default: return string(t)
+	}
+}
+
+func mergeChannels(existing []string, new string) []string {
+	for _, c := range existing {
+		if c == new { return existing }
+	}
+	return append(existing, new)
 }
 
 func (s *MemoryStore) Get(ctx context.Context, id, tenantID string) (*AgentHost, error) {
