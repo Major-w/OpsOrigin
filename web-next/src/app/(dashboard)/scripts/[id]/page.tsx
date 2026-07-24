@@ -164,6 +164,9 @@ export default function ScriptDetailPage() {
   const [diffTo, setDiffTo] = useState<number | ''>('')
   const [diffResult, setDiffResult] = useState<DiffEntry[]>([])
   const [diffLoading, setDiffLoading] = useState(false)
+  const [diffViewMode, setDiffViewMode] = useState<'unified' | 'side'>('unified')
+  const [diffFromContent, setDiffFromContent] = useState('')
+  const [diffToContent, setDiffToContent] = useState('')
 
   // 收藏
   const [starred, setStarred] = useState(false)
@@ -401,6 +404,11 @@ export default function ScriptDetailPage() {
     setDiffLoading(true)
     const result = await diff(viewScript.id, Number(diffFrom), Number(diffTo))
     setDiffResult(result)
+    const allVersions = await fetchVersions(viewScript.id)
+    const fromV = allVersions.find(v => v.version === Number(diffFrom))
+    const toV = allVersions.find(v => v.version === Number(diffTo))
+    setDiffFromContent(fromV?.content || '')
+    setDiffToContent(toV?.content || '')
     setDiffLoading(false)
   }
 
@@ -921,7 +929,26 @@ export default function ScriptDetailPage() {
 
                     {diffResult.length > 0 && (
                       <div className="space-y-2">
-                        <div className="text-xs font-medium">差异结果 ({diffResult.length} 项变更)</div>
+                        <div className="flex items-center justify-between">
+                          <div className="text-xs font-medium">差异结果 ({diffResult.length} 项变更)</div>
+                          <div className="flex gap-1 border rounded-md p-0.5">
+                            <button className={cn("px-2 py-0.5 text-xs rounded-sm", diffViewMode === 'unified' ? 'bg-primary text-primary-foreground' : 'hover:bg-muted')} onClick={() => setDiffViewMode('unified')}>逐行差异</button>
+                            <button className={cn("px-2 py-0.5 text-xs rounded-sm", diffViewMode === 'side' ? 'bg-primary text-primary-foreground' : 'hover:bg-muted')} onClick={() => setDiffViewMode('side')}>左右对比</button>
+                          </div>
+                        </div>
+                        {diffViewMode === 'side' && (
+                          <div className="flex border rounded-md divide-x overflow-hidden" style={{ maxHeight: '500px' }}>
+                            <div className="flex-1 min-w-0 overflow-auto">
+                              <div className="px-3 py-1.5 bg-red-50 dark:bg-red-950/30 text-xs font-medium border-b">v{diffFrom} (旧)</div>
+                              <pre className="text-[11px] font-mono p-2 leading-relaxed whitespace-pre-wrap">{diffFromContent || '(空)'}</pre>
+                            </div>
+                            <div className="flex-1 min-w-0 overflow-auto">
+                              <div className="px-3 py-1.5 bg-emerald-50 dark:bg-emerald-950/30 text-xs font-medium border-b">v{diffTo} (新)</div>
+                              <pre className="text-[11px] font-mono p-2 leading-relaxed whitespace-pre-wrap">{diffToContent || '(空)'}</pre>
+                            </div>
+                          </div>
+                        )}
+                        {diffViewMode === 'unified' && (<>
                         {diffResult.map((d, i) => {
                           if (d.field === 'content') {
                             const lineDiff = computeLineDiff(d.old_value || '', d.new_value || '')
@@ -992,6 +1019,7 @@ export default function ScriptDetailPage() {
                             </div>
                           )
                         })}
+                      )}
                       </div>
                     )}
 
