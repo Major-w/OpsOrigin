@@ -10,7 +10,7 @@ import { Input } from '@/components/ui/input'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { CodeEditor } from '@/components/ui/code-editor'
 import { Plus, Trash2, Code2, FileText, Copy, Clock, Play, History, Pencil, Terminal, Hash, ChevronRight, GitBranch, GitCompare, CheckCircle, XCircle, Eye, Loader2, Star, ChevronLeft, Save, X, AlertCircle } from 'lucide-react'
-import { cn, formatTime } from '@/lib/utils'
+import { cn, formatTime, apiFetch } from '@/lib/utils'
 import { toast } from '@/stores/toast'
 
 const SCRIPT_TYPES = [
@@ -369,9 +369,8 @@ export default function ScriptDetailPage() {
     setExecuteLocal(false)
     setExecuteDialogOpen(true)
     // 加载主机列表
-    fetch('/api/v1/agents').then(r => r.json()).then(d => {
-      const arr = Array.isArray(d) ? d : d?.agents || []
-      setHosts(arr.filter((h: any) => h.type !== 'sandbox'))
+    apiFetch<any[]>('/agents').then(arr => {
+      setHosts((arr || []).filter((h: any) => h.type !== 'sandbox'))
     }).catch(() => {})
   }
 
@@ -630,7 +629,7 @@ export default function ScriptDetailPage() {
                       <span className="absolute left-0 bottom-full mb-1 w-64 p-2 rounded-md bg-gray-900 dark:bg-gray-800 text-white dark:text-gray-200 text-[10px] leading-relaxed opacity-0 group-hover:opacity-100 pointer-events-none transition-opacity z-50 shadow-lg">
                         用 <code className="bg-emerald-500/20 px-1 rounded">OUT_参数名=动态值</code> 输出<br/>
                         Shell:   <code className="bg-emerald-500/20 px-1 rounded">OUT_hostname=$(hostname)</code><br/>
-                        Python: <code className="bg-emerald-500/20 px-1 rounded">print(f'OUT_hostname={v}')</code><br/>
+                        Python: <code className="bg-emerald-500/20 px-1 rounded">print(f'OUT_hostname={'{hostname}'}')</code><br/>
                         Batch:  <code className="bg-emerald-500/20 px-1 rounded">echo OUT_hostname=%COMPUTERNAME%</code><br/>
                         或末行 JSON: <code className="bg-emerald-500/20 px-1 rounded">{'{"status":"ok"}'}</code>
                       </span>
@@ -1264,7 +1263,7 @@ export default function ScriptDetailPage() {
                         <span className="font-mono font-medium w-24 shrink-0">{k}</span>
                         <Badge variant="outline" className="text-[9px] h-4">额外</Badge>
                         <span className="text-[10px] text-muted-foreground flex-1">未在出参中定义</span>
-                        <code className="font-mono text-xs text-amber-600 dark:text-amber-400 shrink-0 max-w-[200px] truncate">{JSON.stringify(executeResult.parsed_output[k])}</code>
+                        <code className="font-mono text-xs text-amber-600 dark:text-amber-400 shrink-0 max-w-[200px] truncate">{JSON.stringify(executeResult.parsed_output?.[k])}</code>
                       </div>
                     ))}
                   </div>
