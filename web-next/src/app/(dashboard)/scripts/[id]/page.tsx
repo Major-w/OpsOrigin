@@ -137,6 +137,7 @@ export default function ScriptDetailPage() {
   const [executeRunAs, setExecuteRunAs] = useState<string>('')
   const [executeHost, setExecuteHost] = useState<any>(null)
   const [executeChannel, setExecuteChannel] = useState<string>('')
+  const [executeLocal, setExecuteLocal] = useState(false) // 默认不勾选=需要选择主机
   const [hosts, setHosts] = useState<any[]>([])
   const [executing, setExecuting] = useState(false)
   const [executeResult, setExecuteResult] = useState<ExecutionResult | null>(null)
@@ -345,6 +346,7 @@ export default function ScriptDetailPage() {
     setExecuteRunAs(viewScript.run_as || '')
     setExecuteHost(null)
     setExecuteChannel('')
+    setExecuteLocal(false)
     setExecuteDialogOpen(true)
     // 加载主机列表
     fetch('/api/v1/agents').then(r => r.json()).then(d => {
@@ -360,8 +362,8 @@ export default function ScriptDetailPage() {
       params: executeParams,
       timeout: executeTimeout,
       run_as: executeRunAs || undefined,
-      agent_id: executeHost?.id || undefined,
-      channel: executeChannel || undefined,
+      agent_id: executeLocal ? undefined : (executeHost?.id || undefined),
+      channel: executeLocal ? undefined : (executeChannel || undefined),
     })
     setExecuting(false)
     if (result) {
@@ -1023,43 +1025,67 @@ export default function ScriptDetailPage() {
                 </div>
               </div>
 
-              {/* 目标主机选择 */}
-              <div>
-                <label className="text-sm font-medium mb-1 block">目标主机</label>
-                <select
-                  className="w-full h-9 rounded-md border border-input bg-background px-3 py-1 text-sm"
-                  value={executeHost?.id || ''}
-                  onChange={e => {
-                    const h = hosts.find(h => h.id === e.target.value)
-                    setExecuteHost(h || null)
-                    setExecuteChannel('')
-                  }}
-                >
-                  <option value="">本地执行（沙箱）</option>
-                  {hosts.map((h: any) => (
-                    <option key={h.id} value={h.id}>{h.name} ({h.address})</option>
-                  ))}
-                </select>
-                {executeHost && executeHost.channels?.length > 0 && (
-                  <div className="mt-2 flex items-center gap-1.5">
-                    <span className="text-[10px] text-muted-foreground shrink-0">通道:</span>
-                    {executeHost.channels.map((ch: string) => (
-                      <button
-                        key={ch}
-                        onClick={() => setExecuteChannel(executeChannel === ch ? '' : ch)}
-                        className={cn(
-                          "text-[10px] px-2 py-0.5 rounded border transition-colors",
-                          executeChannel === ch
-                            ? "bg-emerald-50 border-emerald-300 text-emerald-700 dark:bg-emerald-500/10 dark:border-emerald-500/30 dark:text-emerald-400"
-                            : "border-gray-200 text-muted-foreground hover:border-gray-300 dark:border-gray-700"
-                        )}
-                      >
-                        {ch === 'agent' ? '🤖 Agent' : ch === 'ssh' ? '🔑 SSH' : ch}
-                      </button>
-                    ))}
-                  </div>
-                )}
+              {/* 本地沙箱复选框 */}
+              <div className="flex items-center gap-3 p-3 rounded-md bg-muted/30">
+                <label className="flex items-center gap-2 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={executeLocal}
+                    onChange={e => {
+                      setExecuteLocal(e.target.checked)
+                      if (e.target.checked) { setExecuteHost(null); setExecuteChannel('') }
+                    }}
+                    className="h-4 w-4 rounded border-gray-300 text-emerald-600 focus:ring-emerald-500"
+                  />
+                  <span className="text-sm font-medium">本地沙箱执行</span>
+                </label>
+                <span className="text-[10px] text-muted-foreground">不指定目标主机，在 Core 所在机器运行</span>
               </div>
+
+              {/* 目标主机选择 — 未勾选沙箱时必需 */}
+              {!executeLocal && (
+                <div>
+                  <label className="text-sm font-medium mb-1 block">
+                    目标主机 <span className="text-red-500">*</span>
+                  </label>
+                  <select
+                    className="w-full h-9 rounded-md border border-input bg-background px-3 py-1 text-sm"
+                    value={executeHost?.id || ''}
+                    onChange={e => {
+                      const h = hosts.find(h => h.id === e.target.value)
+                      setExecuteHost(h || null)
+                      setExecuteChannel('')
+                    }}
+                  >
+                    <option value="">请选择目标主机</option>
+                    {hosts.map((h: any) => (
+                      <option key={h.id} value={h.id}>{h.name} ({h.address}{h.channels?.length ? ' — ' + h.channels.map((c:string) => c==='agent'?'Agent':c==='ssh'?'SSH':c).join('/') : ''})</option>
+                    ))}
+                  </select>
+                  {hosts.length === 0 && (
+                    <p className="text-[10px] text-muted-foreground mt-1">暂无已注册主机，请先在资源纳管中注册或勾选"本地沙箱执行"</p>
+                  )}
+                  {executeHost && executeHost.channels?.length > 0 && (
+                    <div className="mt-2 flex items-center gap-1.5">
+                      <span className="text-[10px] text-muted-foreground shrink-0">通道:</span>
+                      {executeHost.channels.map((ch: string) => (
+                        <button
+                          key={ch}
+                          onClick={() => setExecuteChannel(executeChannel === ch ? '' : ch)}
+                          className={cn(
+                            "text-[10px] px-2 py-0.5 rounded border transition-colors",
+                            executeChannel === ch
+                              ? "bg-emerald-50 border-emerald-300 text-emerald-700 dark:bg-emerald-500/10 dark:border-emerald-500/30 dark:text-emerald-400"
+                              : "border-gray-200 text-muted-foreground hover:border-gray-300 dark:border-gray-700"
+                          )}
+                        >
+                          {ch === 'agent' ? '🤖 Agent' : ch === 'ssh' ? '🔑 SSH' : ch}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
 
               {viewScript.input_params && viewScript.input_params.length > 0 && (
                 <div className="space-y-2">
@@ -1115,7 +1141,7 @@ export default function ScriptDetailPage() {
             </div>
             <div className="flex justify-end gap-2 mt-6">
               <Button variant="outline" onClick={() => setExecuteDialogOpen(false)} disabled={executing}>取消</Button>
-              <Button onClick={handleExecute} disabled={executing}>
+              <Button onClick={handleExecute} disabled={executing || (!executeLocal && !executeHost?.id)}>
                 {executing ? <><Loader2 className="h-3.5 w-3.5 mr-1 animate-spin" />执行中</> : <><Play className="h-3.5 w-3.5 mr-1" />执行</>}
               </Button>
             </div>
