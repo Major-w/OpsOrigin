@@ -170,14 +170,44 @@ func (s *PGStore) List(ctx context.Context, tenantID string) ([]*Script, error) 
 }
 
 func (s *PGStore) Update(ctx context.Context, sc *Script) error {
+	// 获取当前版本号用于自增
+	existing, err := s.Get(ctx, sc.ID, sc.TenantID)
+	if err != nil || existing == nil {
+		return err
+	}
+	sc.Version = existing.Version + 1
 	sc.UpdatedAt = time.Now()
-	_, err := s.db.ExecContext(ctx, `
+	_, err = s.db.ExecContext(ctx, `
 		UPDATE automation_scripts
 		SET name=$2, type=$3, content=$4, description=$5, input_params=$6, output_params=$7, timeout=$8, run_as=$9, labels=$10, version=$11, updated_at=$12
 		WHERE id=$1 AND tenant_id=$13`,
 		sc.ID, sc.Name, string(sc.Type), sc.Content, sc.Description,
 		toJSON(sc.InputParams), toJSON(sc.OutputParams), sc.Timeout, sc.RunAs, toJSON(sc.Labels), sc.Version, sc.UpdatedAt, sc.TenantID)
-	return err
+	if err != nil {
+		return err
+	}
+	// 保存版本快照（与 MemoryStore 行为一致）
+	sn := ScriptVersion{
+		ScriptID:    sc.ID,
+		TenantID:    sc.TenantID,
+		Version:     sc.Version,
+		Name:        sc.Name,
+		Type:        sc.Type,
+		Content:     sc.Content,
+		InputParams:  sc.InputParams,
+		OutputParams: sc.OutputParams,
+		Timeout:     sc.Timeout,
+		RunAs:       sc.RunAs,
+		CreatedAt:   time.Now(),
+	}
+	if n, ok := ctx.Value(changeNoteCtxKey).(string); ok {
+		sn.ChangeNote = n
+	}
+	if u, ok := ctx.Value(userCtxKey).(string); ok {
+		sn.CreatedBy = u
+	}
+	_ = s.SaveVersion(ctx, &sn)
+	return nil
 }
 
 func (s *PGStore) Delete(ctx context.Context, id, tenantID string) error {

@@ -30,6 +30,9 @@ export interface DiffEntry {
   field: string; old_value: string; new_value: string
 }
 
+export interface CheckError { line?: number; column?: number; message: string }
+export interface CheckResult { valid: boolean; errors: CheckError[] }
+
 interface ScriptState {
   scripts: Script[]; loading: boolean
   fetch: () => Promise<void>
@@ -41,6 +44,7 @@ interface ScriptState {
   fetchExecutions: (id: string) => Promise<ExecutionResult[]>
   fetchVersions: (id: string) => Promise<ScriptVersion[]>
   diff: (id: string, from: number, to: number) => Promise<DiffEntry[]>
+  check: (data: { type: string; content: string }) => Promise<CheckResult | null>
 }
 
 export const useScriptStore = create<ScriptState>((set, get) => ({
@@ -135,6 +139,14 @@ export const useScriptStore = create<ScriptState>((set, get) => ({
     } catch (e: any) {
       toast.error(`版本比对失败: ${e.message}`)
       return []
+    }
+  },
+  check: async (data) => {
+    try {
+      return await apiFetch<CheckResult>('/scripts/check', { method: 'POST', body: JSON.stringify(data) })
+    } catch (e: any) {
+      toast.error(`语法检查失败: ${e.message}`)
+      return null
     }
   },
 }))

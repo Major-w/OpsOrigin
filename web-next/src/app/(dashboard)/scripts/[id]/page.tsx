@@ -2,14 +2,14 @@
 
 import { useEffect, useState, useMemo } from 'react'
 import { useParams, useRouter } from 'next/navigation'
-import { useScriptStore, type Script, type ExecutionResult, type ScriptVersion, type DiffEntry } from '@/stores/script'
+import { useScriptStore, type Script, type ExecutionResult, type ScriptVersion, type DiffEntry, type CheckResult } from '@/stores/script'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { Input } from '@/components/ui/input'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { CodeEditor } from '@/components/ui/code-editor'
-import { Plus, Trash2, Code2, FileText, Copy, Clock, Play, History, Pencil, Terminal, Hash, ChevronRight, GitBranch, GitCompare, CheckCircle, XCircle, Eye, Loader2, Star, ChevronLeft, Save, X } from 'lucide-react'
+import { Plus, Trash2, Code2, FileText, Copy, Clock, Play, History, Pencil, Terminal, Hash, ChevronRight, GitBranch, GitCompare, CheckCircle, XCircle, Eye, Loader2, Star, ChevronLeft, Save, X, AlertCircle } from 'lucide-react'
 import { cn, formatTime } from '@/lib/utils'
 import { toast } from '@/stores/toast'
 
@@ -114,7 +114,7 @@ export default function ScriptDetailPage() {
   const scriptId = String(params.id || '')
   const isNew = scriptId === 'new' || !scriptId
 
-  const { scripts, fetch, create, update, execute, fetchExecutions, fetchVersions, diff } = useScriptStore()
+  const { scripts, fetch, create, update, execute, fetchExecutions, fetchVersions, diff, check } = useScriptStore()
 
   // 编辑/查看模式
   const [editing, setEditing] = useState(isNew)
@@ -141,6 +141,10 @@ export default function ScriptDetailPage() {
   const [hosts, setHosts] = useState<any[]>([])
   const [executing, setExecuting] = useState(false)
   const [executeResult, setExecuteResult] = useState<ExecutionResult | null>(null)
+
+  // 语法检查
+  const [checking, setChecking] = useState(false)
+  const [checkResult, setCheckResult] = useState<CheckResult | null>(null)
 
   // 执行历史
   const [executions, setExecutions] = useState<ExecutionResult[]>([])
@@ -279,6 +283,22 @@ export default function ScriptDetailPage() {
       localStorage.setItem('opsnexus_starred_scripts', JSON.stringify(next))
       setStarred(!starred)
     } catch {}
+  }
+
+  const handleCheck = async () => {
+    if (!form.content.trim()) { toast.error('脚本内容不能为空'); return }
+    setChecking(true); setCheckResult(null)
+    try {
+      const res = await check({ type: form.type, content: form.content })
+      setCheckResult(res)
+      if (res?.valid) {
+        toast.success('语法检查通过')
+      } else if (res?.errors?.length) {
+        toast.warning(`发现 ${res.errors.length} 个语法错误`)
+      }
+    } finally {
+      setChecking(false)
+    }
   }
 
   const handleSave = async () => {
@@ -436,6 +456,10 @@ export default function ScriptDetailPage() {
               <Button variant="outline" size="sm" onClick={handleCancel}>
                 <X className="h-3.5 w-3.5 mr-1" />取消
               </Button>
+              <Button variant="outline" size="sm" onClick={handleCheck} disabled={!form.content.trim() || checking}>
+                {checking ? <Loader2 className="h-3.5 w-3.5 mr-1 animate-spin" /> : <AlertCircle className="h-3.5 w-3.5 mr-1" />}
+                语法检查
+              </Button>
               <Button size="sm" onClick={handleSave} disabled={!form.name.trim() || !form.content.trim()}>
                 <Save className="h-3.5 w-3.5 mr-1" />{isNew ? '创建' : '保存'}
               </Button>
@@ -533,6 +557,29 @@ export default function ScriptDetailPage() {
                   height="320px"
                   placeholder="#!/bin/bash\necho hello world"
                 />
+                {checkResult && !checkResult.valid && (
+                  <div className="mt-2 p-3 rounded-md border border-destructive/30 bg-destructive/5">
+                    <div className="flex items-center gap-1.5 mb-2">
+                      <AlertCircle className="h-4 w-4 text-destructive" />
+                      <span className="text-sm font-medium text-destructive">语法检查发现 {checkResult.errors.length} 个错误</span>
+                    </div>
+                    <ul className="space-y-1 pl-6 list-disc">
+                      {checkResult.errors.map((e, i) => (
+                        <li key={i} className="text-xs text-destructive/80">
+                          {e.line ? <span className="font-mono mr-2">[行 {e.line}]</span> : null}
+                          {e.column ? <span className="font-mono mr-2 text-[10px]">列 {e.column}</span> : null}
+                          {e.message}
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+                {checkResult?.valid && (
+                  <div className="mt-2 p-2 rounded-md border border-emerald-500/30 bg-emerald-50 dark:bg-emerald-950/20 flex items-center gap-1.5">
+                    <CheckCircle className="h-3.5 w-3.5 text-emerald-600" />
+                    <span className="text-xs font-medium text-emerald-700 dark:text-emerald-400">语法检查通过</span>
+                  </div>
+                )}
               </div>
 
               {/* 入参定义 */}

@@ -92,3 +92,22 @@ type DiffEntry struct {
 	OldValue string `json:"old_value"`
 	NewValue string `json:"new_value"`
 }
+
+// CheckRequest 语法检查请求
+type CheckRequest struct {
+	Type    ScriptType `json:"type"`
+	Content string     `json:"content"`
+}
+
+// CheckResult 语法检查结果
+type CheckResult struct {
+	Valid  bool         `json:"valid"`
+	Errors []CheckError `json:"errors"`
+}
+
+// CheckError 单条语法错误
+type CheckError struct {
+	Line    int    `json:"line,omitempty"`
+	Column  int    `json:"column,omitempty"`
+	Message string `json:"message"`
+}

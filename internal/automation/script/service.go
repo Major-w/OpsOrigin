@@ -11,6 +11,8 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -285,6 +287,8 @@ func (s *Service) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/v1/scripts/{id}/versions/{version}", s.handleGetVersion)
 	// 新增:版本比对(用 query 参数 from/to,末尾 diff 字面量与 {version} 通配符不冲突)
 	mux.HandleFunc("GET /api/v1/scripts/{id}/diff", s.handleDiff)
+	// 新增:语法检查（POST /api/v1/scripts/check）
+	mux.HandleFunc("POST /api/v1/scripts/check", s.handleCheck)
 }
 
 func (s *Service) handleCreate(w http.ResponseWriter, r *http.Request) {
@@ -809,4 +813,139 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 
 func writeError(w http.ResponseWriter, status int, msg string) {
 	writeJSON(w, status, map[string]string{"error": msg})
+}
+
+// handleCheck 语法检查：POST /api/v1/scripts/check
+// 请求体 {type, content}，返回 {valid, errors[{line, column, message}]}。
+func (s *Service) handleCheck(w http.ResponseWriter, r *http.Request) {
+	var req CheckRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if req.Type == "" || req.Content == "" {
+		writeError(w, http.StatusBadRequest, "type and content are required")
+		return
+	}
+	result := checkSyntax(string(req.Type), req.Content)
+	writeJSON(w, http.StatusOK, result)
+}
+
+// ---- 语法检查实现 ----
+
+// bashErrRE 匹配 bash -n 的错误输出格式：
+//
+//	sh: line 3: syntax error near unexpected token `fi'
+//
+// bash: line 5: fi: unexpected end of file
+var bashErrRE = regexp.MustCompile(`^.*:\s*line\s+(\d+):\s+(.+)`)
+
+// pythonErrRE 匹配 python3 -m py_compile 的错误输出格式：
+//
+//	File "<stdin>", line 3
+//	    x =
+//	    ^
+//
+// SyntaxError: invalid syntax
+var pythonErrRE = regexp.MustCompile(`line\s+(\d+)`)
+
+func checkSyntax(scriptType, content string) *CheckResult {
+	switch ScriptType(scriptType) {
+	case ScriptTypeShell:
+		return checkShell(content)
+	case ScriptTypePython:
+		return checkPython(content)
+	case ScriptTypeBat:
+		// Windows batch 文件无官方语法检查器，直接通过
+		return &CheckResult{Valid: true}
+	default:
+		return &CheckResult{Valid: false, Errors: []CheckError{{Message: fmt.Sprintf("unsupported script type: %s", scriptType)}}}
+	}
+}
+
+func checkShell(content string) *CheckResult {
+	// 写临时文件，bash -n 检查语法（不执行）
+	tmp, err := os.CreateTemp("", "opsorigin-script-check-*.sh")
+	if err != nil {
+		return &CheckResult{Valid: false, Errors: []CheckError{{Message: fmt.Sprintf("failed to create temp file: %v", err)}}}
+	}
+	defer os.Remove(tmp.Name())
+
+	if _, err := tmp.WriteString(content); err != nil {
+		return &CheckResult{Valid: false, Errors: []CheckError{{Message: fmt.Sprintf("failed to write temp file: %v", err)}}}
+	}
+	tmp.Close()
+
+	cmd := exec.Command("bash", "-n", tmp.Name())
+	stderr, err := cmd.CombinedOutput()
+	if err == nil {
+		return &CheckResult{Valid: true}
+	}
+
+	// 解析错误行
+	lines := strings.Split(string(stderr), "\n")
+	var errors []CheckError
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		m := bashErrRE.FindStringSubmatch(line)
+		if m != nil {
+			ln, _ := strconv.Atoi(m[1])
+			errors = append(errors, CheckError{Line: ln, Message: strings.TrimSpace(m[2])})
+		} else {
+			errors = append(errors, CheckError{Message: line})
+		}
+	}
+	if len(errors) == 0 {
+		errors = append(errors, CheckError{Message: string(stderr)})
+	}
+	return &CheckResult{Valid: false, Errors: errors}
+}
+
+func checkPython(content string) *CheckResult {
+	// python3 -m py_compile 编译检查（不执行）
+	tmp, err := os.CreateTemp("", "opsorigin-script-check-*.py")
+	if err != nil {
+		return &CheckResult{Valid: false, Errors: []CheckError{{Message: fmt.Sprintf("failed to create temp file: %v", err)}}}
+	}
+	defer os.Remove(tmp.Name())
+
+	if _, err := tmp.WriteString(content); err != nil {
+		return &CheckResult{Valid: false, Errors: []CheckError{{Message: fmt.Sprintf("failed to write temp file: %v", err)}}}
+	}
+	tmp.Close()
+
+	cmd := exec.Command("python3", "-m", "py_compile", tmp.Name())
+	stderr, err := cmd.CombinedOutput()
+	if err == nil {
+		return &CheckResult{Valid: true}
+	}
+
+	// 解析错误行号
+	lines := strings.Split(string(stderr), "\n")
+	var errors []CheckError
+	current := CheckError{}
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		m := pythonErrRE.FindStringSubmatch(line)
+		if m != nil {
+			current.Line, _ = strconv.Atoi(m[1])
+		} else if strings.HasPrefix(line, "SyntaxError:") || strings.HasPrefix(line, "IndentationError:") || strings.HasPrefix(line, "TabError:") {
+			current.Message = line
+			errors = append(errors, current)
+			current = CheckError{}
+		} else if !strings.HasPrefix(line, "File ") && !strings.HasPrefix(line, "^") {
+			// 非结构化错误消息
+			errors = append(errors, CheckError{Message: line})
+		}
+	}
+	if len(errors) == 0 {
+		errors = append(errors, CheckError{Message: string(stderr)})
+	}
+	return &CheckResult{Valid: false, Errors: errors}
 }
