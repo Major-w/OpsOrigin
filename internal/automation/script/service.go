@@ -535,11 +535,6 @@ func (s *Service) executeScript(sc *Script, req *ExecuteRequest) *ExecutionResul
 		return result
 	}
 
-	if sc.Type == ScriptTypeAnsible {
-		result.finish("failed", -1, "ansible not supported in this environment", started)
-		return result
-	}
-
 	// 确定超时:请求优先,否则脚本,否则默认 300
 	timeout := req.Timeout
 	if timeout <= 0 {

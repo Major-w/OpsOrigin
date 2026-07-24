@@ -16,14 +16,12 @@ import { toast } from '@/stores/toast'
 const SCRIPT_TYPES = [
   { value: 'shell', label: 'Shell', color: 'text-emerald-500' },
   { value: 'python', label: 'Python', color: 'text-blue-500' },
-  { value: 'ansible', label: 'Ansible', color: 'text-red-500' },
   { value: 'bat', label: 'Batch', color: 'text-yellow-500' },
 ]
 
 const TYPE_COLORS: Record<string, string> = {
   shell: 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border-emerald-500/20',
   python: 'bg-blue-500/10 text-blue-600 dark:text-blue-400 border-blue-500/20',
-  ansible: 'bg-red-500/10 text-red-600 dark:text-red-400 border-red-500/20',
   bat: 'bg-yellow-500/10 text-yellow-600 dark:text-yellow-400 border-yellow-500/20',
 }
 

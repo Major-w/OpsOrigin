@@ -5,10 +5,9 @@ import "time"
 type ScriptType string
 
 const (
-	ScriptTypeShell   ScriptType = "shell"
-	ScriptTypePython  ScriptType = "python"
-	ScriptTypeAnsible ScriptType = "ansible"
-	ScriptTypeBat     ScriptType = "bat"
+	ScriptTypeShell  ScriptType = "shell"
+	ScriptTypePython ScriptType = "python"
+	ScriptTypeBat    ScriptType = "bat"
 )
 
 type ParamDef struct {

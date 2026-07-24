@@ -20,11 +20,6 @@ const LANG_EXTENSIONS: Record<string, any> = {
   javascript: javascript(),
   sql: sql(),
   bat: javascript(),
-  ansible: yaml(),
-}
-
-function yaml() {
-  return javascript()
 }
 
 interface CodeEditorProps {
