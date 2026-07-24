@@ -216,30 +216,35 @@ func (hw *HeartbeatWriter) syncToStore(ctx context.Context) {
 		return
 	}
 
-	// Sync each to PG via store
-	synced := 0
+	// Sync to PG via bulk upsert
+	hkBatch := make([]heartbeatBatch, 0, len(batch))
 	for _, hb := range batch {
-		req := &HeartbeatRequest{
-			AgentVersion: hb.Version,
-			OS:           hb.OS,
-			OSVersion:    hb.OSVer,
-			Hostname:     hb.Hostname,
-			CPU:          hb.CPU,
-			Memory:       hb.Memory,
-		}
-		if err := hw.store.Heartbeat(ctx, hb.ID, hb.TenantID, req); err != nil {
-			slog.Warn("heartbeat sync pg write failed", "agent", hb.ID, "error", err)
-			continue
-		}
+		hkBatch = append(hkBatch, heartbeatBatch{
+			ID:            hb.ID,
+			TenantID:      hb.TenantID,
+			Version:       hb.Version,
+			OS:            hb.OS,
+			OSVersion:     hb.OSVer,
+			Hostname:      hb.Hostname,
+			CPU:           hb.CPU,
+			Memory:        hb.Memory,
+			LastSeen:      hb.LastSeen,
+			LastHeartbeat: hb.LastSeen,
+		})
+	}
+
+	if err := hw.store.BulkHeartbeat(ctx, hkBatch); err != nil {
+		slog.Warn("heartbeat sync bulk upsert failed", "error", err, "count", len(hkBatch))
+		return
+	}
+
+	for _, hb := range batch {
 		hw.mu.Lock()
 		hw.lastSync[hb.ID] = now
 		hw.mu.Unlock()
-		synced++
 	}
 
-	if synced > 0 {
-		slog.Debug("heartbeat sync batch done", "keys", len(keys), "synced", synced)
-	}
+	slog.Debug("heartbeat sync batch done", "keys", len(keys), "synced", len(hkBatch))
 }
 
 // BulkOnlineStatus returns a map of agentID→online for batch status checks.

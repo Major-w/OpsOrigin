@@ -4,7 +4,9 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -176,6 +178,45 @@ func (s *pgStore) Delete(ctx context.Context, id, tenantID string) error {
 		return tx.Commit()
 	}
 	return s.db.QueryRowContext(ctx, `DELETE FROM agent_hosts WHERE id=$1 AND tenant_id=$2`, id, tenantID).Err()
+}
+
+// heartbeatBatch bundles heartbeat data for bulk upsert.
+type heartbeatBatch struct {
+	ID, TenantID, Version, OS, OSVersion, Hostname, CPU, Memory string
+	LastSeen, LastHeartbeat                                     time.Time
+}
+
+// BulkHeartbeat bulk-upserts agent heartbeat records in a single INSERT … ON CONFLICT statement.
+func (s *pgStore) BulkHeartbeat(ctx context.Context, batch []heartbeatBatch) error {
+	if len(batch) == 0 {
+		return nil
+	}
+	// Build VALUES ($1,$2,…), ($N+1,$N+2,…), …
+	// Template: placeholder idx = row*12 + col (0-based)
+	vals := make([]string, 0, len(batch))
+	args := make([]any, 0, len(batch)*12)
+	for i, hb := range batch {
+		base := i * 12
+		vals = append(vals, fmt.Sprintf("($%d,$%d,$%d,$%d,$%d,$%d,$%d,$%d,$%d,$%d,$%d,$%d)",
+			base+1, base+2, base+3, base+4, base+5, base+6,
+			base+7, base+8, base+9, base+10, base+11, base+12))
+		args = append(args,
+			hb.ID, hb.TenantID, hb.Version, hb.OS, hb.OSVersion,
+			hb.Hostname, hb.CPU, hb.Memory,
+			hb.LastSeen, hb.LastHeartbeat,
+			time.Now(), // last_seen (duplicate for ON CONFLICT UPDATE)
+			time.Now(), // updated_at
+		)
+	}
+	query := `INSERT INTO agent_hosts(id,tenant_id,version,os_type,os_version,hostname,cpu,memory,last_seen,last_heartbeat,updated_at)
+VALUES ` + strings.Join(vals, ",") + `
+ON CONFLICT(id) DO UPDATE SET
+  last_seen=EXCLUDED.last_seen,
+  last_heartbeat=EXCLUDED.last_heartbeat,
+  status='online',
+  updated_at=NOW()`
+	_, err := s.db.ExecContext(ctx, query, args...)
+	return err
 }
 
 func (s *pgStore) Heartbeat(ctx context.Context, id, tenantID string, req *HeartbeatRequest) error {

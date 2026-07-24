@@ -38,6 +38,7 @@ type Store interface {
 	Update(ctx context.Context, host *AgentHost) error
 	Delete(ctx context.Context, id, tenantID string) error
 	Heartbeat(ctx context.Context, id, tenantID string, req *HeartbeatRequest) error
+	BulkHeartbeat(ctx context.Context, batch []heartbeatBatch) error
 	// Proxy CRUD
 	RegisterProxy(ctx context.Context, proxy *ProxyInfo) error
 	GetProxy(ctx context.Context, id, tenantID string) (*ProxyInfo, error)
@@ -210,6 +211,23 @@ func (s *MemoryStore) Heartbeat(ctx context.Context, id, tenantID string, req *H
 	}
 	if len(req.Capabilities) > 0 {
 		h.Capabilities = req.Capabilities
+	}
+	return nil
+}
+
+func (s *MemoryStore) BulkHeartbeat(ctx context.Context, batch []heartbeatBatch) error {
+	for _, hb := range batch {
+		req := &HeartbeatRequest{
+			AgentVersion: hb.Version,
+			OS:           hb.OS,
+			OSVersion:    hb.OSVersion,
+			Hostname:     hb.Hostname,
+			CPU:          hb.CPU,
+			Memory:       hb.Memory,
+		}
+		if err := s.Heartbeat(ctx, hb.ID, hb.TenantID, req); err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -1487,7 +1505,8 @@ After=network.target
 Type=simple
 ExecStart=$INSTALL_DIR/agent --server $SERVER%s
 Restart=always
-RestartSec=10
+RestartSec=10s
+ExecStartPre=/bin/bash -c 'sleep $((RANDOM %% 30))'
 [Install]
 WantedBy=multi-user.target
 EOF
@@ -1560,7 +1579,8 @@ After=network.target
 Type=simple
 ExecStart=$INSTALL_DIR/opsproxy -config $INSTALL_DIR/config.yaml
 Restart=always
-RestartSec=10
+RestartSec=10s
+ExecStartPre=/bin/bash -c 'sleep $((RANDOM %% 30))'
 [Install]
 WantedBy=multi-user.target
 EOF
@@ -1848,7 +1868,8 @@ After=network.target
 Type=simple
 ExecStart=$INSTALL_DIR/$BINARY_NAME -config $INSTALL_DIR/config.yaml
 Restart=always
-RestartSec=10
+RestartSec=10s
+ExecStartPre=/bin/bash -c 'sleep $((RANDOM %% 30))'
 
 [Install]
 WantedBy=multi-user.target
@@ -2066,7 +2087,8 @@ After=network.target
 Type=simple
 ExecStart=$INSTALL_DIR/$BINARY_NAME -config $INSTALL_DIR/config.yaml
 Restart=always
-RestartSec=10
+RestartSec=10s
+ExecStartPre=/bin/bash -c 'sleep $((RANDOM %% 30))'
 
 [Install]
 WantedBy=multi-user.target
