@@ -90,7 +90,7 @@ func main() {
 		}
 	}()
 
-	slog.Info("edge agent started", "server_addr", addr, "ws_server", wsAddr, "grpc_server", grpcAddr, "proxy", proxy)
+	slog.Info("edge agent started", "server_addr", addr, "grpc_server", grpcAddr, "proxy", proxy)
 	<-sigCh
 	slog.Info("shutting down agent...")
 	agent.Stop()

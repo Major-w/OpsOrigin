@@ -1,0 +1,32 @@
+# 构建 OpsOrigin K8s 网关 Agent 镜像（Agent 二进制 + kubectl）。
+# 用法：
+#   docker build -f deploy/Dockerfile.k8s-gateway -t opsorigin/k8s-gateway:latest .
+#   docker push opsorigin/k8s-gateway:latest
+# 然后在 deploy/k8s/opsorigin-k8s-gateway.yaml 里把 image 改成上面推送的地址。
+#
+# 设计：该镜像以 OpsOrigin Agent 身份运行在目标集群内（单副本 Deployment），
+# 经 Agent 隧道接收 Core 下发的 kubectl 只读脚本，回传 JSON 供 K8s 资源
+# 发现与纳管。kubectl 通过 in-cluster ServiceAccount 认证（自动挂载 token），
+# 无需额外配置 kubeconfig。
+FROM golang:1.25-alpine AS builder
+
+WORKDIR /app
+# go.work 聚合根模块 + cmd/{agent,core,proxy} 三个子模块
+COPY go.mod go.sum go.work go.work.sum ./
+COPY cmd/ ./cmd/
+COPY internal/ ./internal/
+COPY pkg/ ./pkg/
+
+RUN CGO_ENABLED=0 go build -o /opsorigin-agent ./cmd/agent
+
+# 运行阶段：最小化 alpine + kubectl
+FROM alpine:3.21
+RUN apk add --no-cache ca-certificates curl bash
+
+# 安装 kubectl（稳定版）
+RUN curl -sSL "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl" \
+    -o /usr/local/bin/kubectl && chmod +x /usr/local/bin/kubectl
+
+COPY --from=builder /opsorigin-agent /usr/local/bin/opsorigin-agent
+EXPOSE 9090
+ENTRYPOINT ["opsorigin-agent"]

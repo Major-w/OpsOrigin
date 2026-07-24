@@ -8,20 +8,23 @@
 # 触发发现与同步。
 #
 # 前置条件：
-#   1) 构建镜像（需同时包含 Agent 二进制 + kubectl）：
-#        docker build -f Dockerfile -t opsorigin/k8s-gateway:latest .
-#      或使用标准 agent 镜像 + initContainer 安装 kubectl（见下方 Deployment）。
-#   2) 创建 Agent 注册令牌 Secret（Core 侧分配的 Agent token）：
+#   1) 构建镜像：
+#        docker build -f deploy/Dockerfile.k8s-gateway -t opsorigin/k8s-gateway:latest .
+#   2) 推送镜像到目标集群可拉取的 registry：
+#        docker tag opsorigin/k8s-gateway:latest <your-registry>/opsorigin/k8s-gateway:latest
+#        docker push <your-registry>/opsorigin/k8s-gateway:latest
+#      然后把下方 Deployment 的 image 改成该地址。
+#   3) 创建 Agent 令牌 Secret（Core 侧分配的 Agent token，用于 gRPC 注册）：
 #        kubectl -n opsorigin create secret generic opsorigin-agent-token \
 #          --from-literal=token=<CORE_ALLOCATED_AGENT_TOKEN>
-#      （Secret 本清单不写，避免 commit 密钥。）
-#   3) 配置 Core 地址（KUBERNETES_CORE_ADDR，指向 OpsOrigin Core 服务基址）。
-#   4) 部署后，在 Core 的「资源纳管 → 主机资源纳管」tab 确认 Agent 上线，
+#      （Secret 不写进本清单，避免 commit 密钥。）
+#   4) 设置 Core gRPC 地址（OPSORIGIN_GRPC_SERVER env，指向 Core 服务地址）。
+#   5) 部署后，在 Core 的「资源纳管 → 主机资源纳管」tab 确认 Agent 上线，
 #      然后在「资源纳管 → 容器资源纳管」tab 选择该 Agent 开始 K8s 资源发现。
 #
 # 安全设计：
 #   - 仅 get / list / watch，不写、不删、不 exec，不访问 Secret；
-#   - kubeconfig 不落盘，使用 in-cluster ServiceAccount Token（自动挂载）；
+#   - kubectl 使用 in-cluster ServiceAccount Token 自动认证（默认挂载 /var/run/secrets/...）；
 #   - 脚本仅 kubectl 只读命令，不回显密钥，不拼 CLI 参数注入 env。
 # ---------------------------------------------------------------
 
@@ -54,7 +57,7 @@ metadata:
 rules:
   # 集群名（current-context）
   - apiGroups: [""]
-    resources: ["nodes"]                           # 用于 kubectl config current-context 回退
+    resources: ["nodes"]
     verbs:   ["get", "list"]
   # 命名空间
   - apiGroups: [""]
@@ -107,44 +110,30 @@ spec:
         app.kubernetes.io/part-of: opsorigin
     spec:
       serviceAccountName: opsorigin-k8s-gateway
-      # --- 方案 A：标准 agent 镜像 + initContainer 安装 kubectl ---
-      initContainers:
-        - name: install-kubectl
-          image: bitnami/kubectl:latest
-          command: ["cp", "/opt/bitnami/kubectl/bin/kubectl", "/shared/kubectl"]
-          volumeMounts:
-            - name: kubectl-binary
-              mountPath: /shared
-      # --- 方案 B：若镜像自带 kubectl，可删 initContainers 段 ---
       containers:
-        - name: opsorigin-agent
-          # 替换为实际 Agent 镜像（确保包含 OpsOrigin Agent 二进制 + kubectl）。
-          # MVP 建议：用标准 agent 镜像，经上方 initContainer 挂载 kubectl。
-          image: opsorigin/agent:latest
+        - name: opsorigin-k8s-gateway
+          image: opsorigin/k8s-gateway:latest        # 构建自 deploy/Dockerfile.k8s-gateway
           imagePullPolicy: IfNotPresent
           env:
-            # Core 服务基址（示例；按实际部署修改），Agent 注册时走该地址。
-            - name: OPSORIGIN_CORE_ADDR
+            # Core gRPC 服务地址（Agent 注册使用 gRPC，非 HTTP Core API）
+            - name: OPSORIGIN_GRPC_SERVER
+              value: "opsorigin-core.opsorigin.svc.cluster.local:9091"
+            # Core HTTP 地址（Agent 心跳/脚本通道）
+            - name: OPSORIGIN_SERVER
               value: "http://opsorigin-core.opsorigin.svc.cluster.local:8080"
-            # Agent 令牌：从 Secret 注入，避免明文进 YAML。
+            # Agent 名称（可选，缺省使用 hostname）
+            - name: OPSORIGIN_AGENT_NAME
+              value: "k8s-gateway"
+            # Agent 注册令牌：从 Secret 注入，避免明文进 YAML
             - name: OPSORIGIN_AGENT_TOKEN
               valueFrom:
                 secretKeyRef:
                   name: opsorigin-agent-token
                   key: token
-                  optional: true   # 改为 false 时缺少令牌报启动错误而非静默失败
-          command: ["/bin/sh", "-c"]
-          args:
-            - |
-              # 如通过 initContainer 挂载 kubectl，确保可执行并加入 PATH
-              if [ -x /opt/kubectl/kubectl ]; then
-                export PATH="/opt/kubectl:$PATH"
-              fi
-              # 启动 Agent（实际二进制路径按镜像调整）
-              exec /usr/local/bin/opsorigin-agent
+                  optional: true
           ports:
-            - name: agent
-              containerPort: 9090       # Agent 监听端口（与 agentmgr 协议对齐）
+            - name: grpc
+              containerPort: 9090
               protocol: TCP
           resources:
             requests:
@@ -153,10 +142,4 @@ spec:
             limits:
               cpu: "200m"
               memory: "256Mi"
-          volumeMounts:
-            - name: kubectl-binary
-              mountPath: /opt/kubectl
-      volumes:
-        - name: kubectl-binary
-          emptyDir: {}
       restartPolicy: Always
