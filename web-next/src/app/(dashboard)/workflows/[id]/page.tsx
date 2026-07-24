@@ -336,7 +336,7 @@ function ExecDialog({ workflow, agents, execAgents, setExecAgents, execInputs, s
   )
 }
 
-// ---------- 画布编辑器 ----------
+// ---------- 画布编辑器（重写：拖拽连线 + 条件构建器）----------
 function CanvasEditor({ workflow, scripts, onSave }: {
   workflow: Workflow
   scripts: any[]
@@ -345,407 +345,78 @@ function CanvasEditor({ workflow, scripts, onSave }: {
   const [steps, setSteps] = useState<WorkflowStep[]>(workflow.steps || [])
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [dirty, setDirty] = useState(false)
-  const [connectFrom, setConnectFrom] = useState<string | null>(null)
   const [saving, setSaving] = useState(false)
+  const [connecting, setConnecting] = useState<{ fromId: string; kind: string; mx: number; my: number } | null>(null)
   const canvasRef = useRef<HTMLDivElement>(null)
-  const dragInfo = useRef<{ id: string; offsetX: number; offsetY: number } | null>(null)
+  const dragRef = useRef<{ id: string; ox: number; oy: number } | null>(null)
 
-  useEffect(() => {
-    setSteps(workflow.steps || [])
-    setDirty(false)
-    setSelectedId(null)
-    setConnectFrom(null)
-  }, [workflow.id, workflow.steps])
+  useEffect(() => { setSteps(workflow.steps || []); setDirty(false); setSelectedId(null); setConnecting(null) }, [workflow.id, workflow.steps])
 
-  const updateStep = (id: string, patch: Partial<WorkflowStep>) => {
-    setSteps(prev => prev.map(s => s.id === id ? { ...s, ...patch } : s))
-    setDirty(true)
-  }
+  const updateStep = (id: string, patch: Partial<WorkflowStep>) => { setSteps(prev => prev.map(s => s.id === id ? { ...s, ...patch } : s)); setDirty(true) }
+  const addStep = (type: StepType) => { const s = newStep(type, steps.length); setSteps([...steps, s]); setSelectedId(s.id); setDirty(true) }
+  const deleteStep = (id: string) => { setSteps(prev => prev.filter(s => s.id !== id).map(s => ({ ...s, on_success: s.on_success === id ? '' : s.on_success, on_failure: s.on_failure === id ? '' : s.on_failure }))); if (selectedId === id) setSelectedId(null); setDirty(true) }
 
-  const addStep = (type: StepType) => {
-    const s = newStep(type, steps.length)
-    setSteps([...steps, s])
-    setSelectedId(s.id)
-    setDirty(true)
-  }
+  const startConnect = (e: React.MouseEvent, fromId: string, kind: string) => { e.stopPropagation(); e.preventDefault(); const canvas = canvasRef.current; if (!canvas) return; const rect = canvas.getBoundingClientRect(); setConnecting({ fromId, kind, mx: e.clientX - rect.left, my: e.clientY - rect.top }) }
+  const handleCanvasMouseMove = (e: React.MouseEvent) => { if (!connecting || !canvasRef.current) return; const rect = canvasRef.current.getBoundingClientRect(); setConnecting({ ...connecting, mx: e.clientX - rect.left, my: e.clientY - rect.top }) }
+  const dropOnNode = (toId: string) => { if (!connecting || connecting.fromId === toId) { setConnecting(null); return }; updateStep(connecting.fromId, { [connecting.kind]: toId }); setConnecting(null) }
+  const handleCanvasMouseUp = () => { if (connecting) setConnecting(null) }
 
-  const deleteStep = (id: string) => {
-    setSteps(prev => prev
-      .filter(s => s.id !== id)
-      .map(s => ({
-        ...s,
-        on_success: s.on_success === id ? '' : s.on_success,
-        on_failure: s.on_failure === id ? '' : s.on_failure,
-      })))
-    if (selectedId === id) setSelectedId(null)
-    if (connectFrom === id) setConnectFrom(null)
-    setDirty(true)
-  }
+  const onNodeMouseDown = (e: React.MouseEvent, step: WorkflowStep) => { if (connecting) return; const canvas = canvasRef.current; if (!canvas) return; const rect = canvas.getBoundingClientRect(); dragRef.current = { id: step.id, ox: e.clientX - rect.left - (step.position?.x ?? 0), oy: e.clientY - rect.top - (step.position?.y ?? 0) }; setSelectedId(step.id); e.preventDefault() }
+  useEffect(() => { const onMove = (e: MouseEvent) => { if (!dragRef.current || !canvasRef.current) return; const rect = canvasRef.current.getBoundingClientRect(); setSteps(prev => prev.map(s => s.id === dragRef.current!.id ? { ...s, position: { x: Math.max(0, e.clientX - rect.left - dragRef.current.ox), y: Math.max(0, e.clientY - rect.top - dragRef.current.oy) } } : s)) }; const onUp = () => { dragRef.current = null }; window.addEventListener('mousemove', onMove); window.addEventListener('mouseup', onUp); return () => { window.removeEventListener('mousemove', onMove); window.removeEventListener('mouseup', onUp) } }, [])
 
-  const finishConnect = (toId: string, kind: 'on_success' | 'on_failure') => {
-    if (!connectFrom || connectFrom === toId) { setConnectFrom(null); return }
-    updateStep(connectFrom, { [kind]: toId })
-    setConnectFrom(null)
-  }
-
-  const onMouseDown = (e: React.MouseEvent, step: WorkflowStep) => {
-    if (connectFrom) return
-    const canvas = canvasRef.current
-    if (!canvas) return
-    const rect = canvas.getBoundingClientRect()
-    dragInfo.current = {
-      id: step.id,
-      offsetX: e.clientX - rect.left - (step.position?.x ?? 0),
-      offsetY: e.clientY - rect.top - (step.position?.y ?? 0),
-    }
-    setSelectedId(step.id)
-    e.preventDefault()
-  }
-
-  useEffect(() => {
-    const onMove = (e: MouseEvent) => {
-      if (!dragInfo.current || !canvasRef.current) return
-      const rect = canvasRef.current.getBoundingClientRect()
-      const x = Math.max(0, e.clientX - rect.left - dragInfo.current.offsetX)
-      const y = Math.max(0, e.clientY - rect.top - dragInfo.current.offsetY)
-      setSteps(prev => prev.map(s => s.id === dragInfo.current!.id ? { ...s, position: { x, y } } : s))
-    }
-    const onUp = () => { dragInfo.current = null }
-    window.addEventListener('mousemove', onMove)
-    window.addEventListener('mouseup', onUp)
-    return () => {
-      window.removeEventListener('mousemove', onMove)
-      window.removeEventListener('mouseup', onUp)
-    }
-  }, [])
-
-  const handleSave = async () => {
-    setSaving(true)
-    await onSave(steps)
-    setSaving(false)
-    setDirty(false)
-  }
+  const handleSave = async () => { setSaving(true); await onSave(steps); setSaving(false); setDirty(false) }
 
   const selectedStep = steps.find(s => s.id === selectedId) || null
 
   return (
     <div className="flex gap-3">
-      {/* 节点面板 */}
       <div className="w-32 shrink-0 space-y-1">
-        <p className="text-xs text-muted-foreground mb-2">节点类型</p>
-        {(Object.keys(NODE_META) as StepType[]).map(type => {
-          const meta = NODE_META[type]
-          const Icon = meta.icon
-          return (
-            <button key={type} onClick={() => addStep(type)}
-              className="w-full flex items-center gap-2 px-2 py-2 text-xs rounded-md border border-dashed hover:border-solid hover:bg-accent transition-colors">
-              <Icon className="h-3 w-3 shrink-0" />
-              <span className="truncate">{meta.label}</span>
-            </button>
-          )
-        })}
-        <div className="pt-2 mt-2 border-t text-[10px] text-muted-foreground space-y-1">
-          <p>· 拖拽节点移动位置</p>
-          <p>· 点击「→」开始连线</p>
-          <p>· 选中目标节点后选成功/失败</p>
-        </div>
+        <p className="text-xs text-muted-foreground mb-2">点击添加</p>
+        {(Object.keys(NODE_META) as StepType[]).map(type => { const meta = NODE_META[type]; const Icon = meta.icon; return <button key={type} onClick={() => addStep(type)} className="w-full flex items-center gap-2 px-2 py-2 text-xs rounded-md border border-dashed hover:border-solid hover:bg-accent"><Icon className="h-3 w-3 shrink-0" />{meta.label}</button> })}
+        <div className="pt-2 mt-2 border-t text-[10px] text-muted-foreground space-y-1"><p>· 拖拽节点移动</p><p>· <span className="text-emerald-500">●</span>拖到目标=成功</p><p>· <span className="text-red-500">●</span>拖到目标=失败</p></div>
       </div>
-
-      {/* 画布 */}
-      <div ref={canvasRef} className="relative flex-1 h-[520px] border rounded-md bg-muted/20 overflow-hidden"
-        onClick={() => { if (!connectFrom) setSelectedId(null) }}>
-        {/* 连线 SVG */}
+      <div ref={canvasRef} className="relative flex-1 h-[520px] border rounded-md bg-muted/20 overflow-hidden" onClick={() => { setSelectedId(null); if (connecting) setConnecting(null) }} onMouseMove={handleCanvasMouseMove} onMouseUp={handleCanvasMouseUp}>
         <svg className="absolute inset-0 pointer-events-none" style={{ width: '100%', height: '100%' }}>
           <defs>
-            <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto" markerUnits="strokeWidth">
-              <path d="M0,0 L0,6 L8,3 z" fill="currentColor" />
-            </marker>
+            <marker id="arrowGreen" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L0,6 L7,3 z" fill="#10b981" /></marker>
+            <marker id="arrowRed" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L0,6 L7,3 z" fill="#ef4444" /></marker>
           </defs>
-          {steps.map(s => [
-            s.on_success && (
-              <ConnectionLine key={`${s.id}-s`} from={s} toId={s.on_success} steps={steps} color="#10b981" label="成功" />
-            ),
-            s.on_failure && (
-              <ConnectionLine key={`${s.id}-f`} from={s} toId={s.on_failure} steps={steps} color="#ef4444" label="失败" />
-            ),
-          ])}
+          {steps.map(s => [s.on_success && <Line key={s.id+'-s'} from={s} to={steps.find(t=>t.id===s.on_success)} color="#10b981" />, s.on_failure && <Line key={s.id+'-f'} from={s} to={steps.find(t=>t.id===s.on_failure)} color="#ef4444" />])}
+          {connecting && (() => { const from = steps.find(s => s.id === connecting.fromId); if (!from) return null; const fx = (from.position?.x ?? 0) + 88; const fy = (from.position?.y ?? 0) + 50; return <path d={"M "+fx+" "+fy+" Q "+((fx+connecting.mx)/2)+" "+fy+" "+connecting.mx+" "+connecting.my} stroke={connecting.kind==="on_success"?"#10b981":"#ef4444"} strokeWidth={2} fill="none" strokeDasharray="5,3" /> })()}
         </svg>
-
-        {/* 节点 */}
-        {steps.map(step => {
-          const meta = NODE_META[step.type]
-          const Icon = meta.icon
-          const isSelected = step.id === selectedId
-          const isConnecting = connectFrom === step.id
-          return (
-            <div key={step.id}
-              className={`absolute w-44 rounded-md border-2 ${meta.color} ${isSelected ? 'ring-2 ring-emerald-500' : ''} ${isConnecting ? 'animate-pulse' : ''} cursor-move bg-background shadow-sm`}
-              style={{ left: step.position?.x ?? 0, top: step.position?.y ?? 0 }}
-              onMouseDown={e => onMouseDown(e, step)}
-              onClick={e => { e.stopPropagation(); setSelectedId(step.id) }}>
-              <div className="flex items-center gap-2 px-2 py-1.5 border-b border-current/10">
-                <Icon className="h-3 w-3 shrink-0" />
-                <span className="text-xs font-medium truncate flex-1">{step.name}</span>
-              </div>
-              <div className="px-2 py-1 text-[10px] text-muted-foreground space-y-0.5">
-                {step.type === 'script' && step.script_id && (
-                  <p>脚本: {scripts.find(s => s.id === step.script_id)?.name?.slice(0, 14) || step.script_id.slice(0, 8)}</p>
-                )}
-                {step.type === 'wait' && <p>等待 {step.wait_seconds || 0}s</p>}
-                {step.type === 'approval' && <p>审批人: {step.approvers?.length || 0}</p>}
-                {step.type === 'condition' && <p className="truncate">{step.condition || '未设置条件'}</p>}
-              </div>
-              {/* 连线按钮 */}
-              <div className="flex border-t border-current/10">
-                <button onClick={e => { e.stopPropagation(); setConnectFrom(connectFrom === step.id ? null : step.id) }}
-                  className="flex-1 text-[10px] py-1 hover:bg-emerald-500/10 border-r">
-                  {connectFrom === step.id ? '取消连线' : '→ 连线'}
-                </button>
-                <button onClick={e => { e.stopPropagation(); deleteStep(step.id) }}
-                  className="px-2 text-[10px] py-1 hover:bg-red-500/10 text-red-600">
-                  <Trash2 className="h-2.5 w-2.5" />
-                </button>
-              </div>
-            </div>
-          )
-        })}
-
-        {/* 连线目标提示 */}
-        {connectFrom && (
-          <div className="absolute top-2 left-1/2 -translate-x-1/2 bg-emerald-500 text-white text-xs px-3 py-1 rounded-full shadow">
-            点击目标节点完成连线 →
-          </div>
-        )}
-
-        {steps.length === 0 && (
-          <div className="absolute inset-0 flex items-center justify-center text-muted-foreground text-sm">
-            <div className="text-center">
-              <WorkflowIcon className="h-8 w-8 mx-auto mb-2 opacity-30" />
-              <p>从左侧节点面板添加节点开始编排</p>
-            </div>
-          </div>
-        )}
+        {steps.length === 0 ? <div className="absolute inset-0 flex items-center justify-center text-muted-foreground text-sm"><div className="text-center"><WorkflowIcon className="h-8 w-8 mx-auto mb-2 opacity-30" /><p>从左侧添加节点开始编排</p></div></div> : steps.map(step => { const meta = NODE_META[step.type]; const Icon = meta.icon; const isSelected = step.id === selectedId; return (<div key={step.id} className={"absolute w-44 rounded-md border-2 "+meta.color+(isSelected?" ring-2 ring-primary":"")+" cursor-move bg-background shadow-sm"} style={{ left: step.position?.x ?? 0, top: step.position?.y ?? 0 }} onMouseDown={e => onNodeMouseDown(e, step)} onClick={e => { e.stopPropagation(); setSelectedId(step.id) }} onMouseUp={e => { e.stopPropagation(); if (connecting) dropOnNode(step.id) }}><div className="flex items-center gap-2 px-2 py-1.5 border-b border-current/10"><Icon className="h-3 w-3 shrink-0" /><span className="text-xs font-medium truncate flex-1">{step.name}</span><button onClick={e => { e.stopPropagation(); deleteStep(step.id) }} className="text-red-500 hover:bg-red-100 rounded p-0.5"><Trash2 className="h-2.5 w-2.5" /></button></div><div className="px-2 py-1 text-[10px] text-muted-foreground">{step.type==='script'&&step.script_id&&<p>{scripts.find(s=>s.id===step.script_id)?.name?.slice(0,14)||step.script_id.slice(0,8)}</p>}{step.type==='wait'&&<p>等{step.wait_seconds}s</p>}{step.type==='approval'&&<p>审批人:{step.approvers?.length||0}</p>}{step.type==='condition'&&<p className="truncate">{step.condition||'未设置'}</p>}{step.type==='parallel'&&<p>并行{step.parallel_steps?.length||0}步</p>}</div><div className="flex border-t border-current/10"><div className="flex-1 flex items-center justify-center py-1 gap-3"><div className="w-3 h-3 rounded-full bg-emerald-500 cursor-crosshair hover:scale-125" onMouseDown={e => startConnect(e, step.id, 'on_success')} title="成功跳转" /><div className="w-3 h-3 rounded-full bg-red-500 cursor-crosshair hover:scale-125" onMouseDown={e => startConnect(e, step.id, 'on_failure')} title="失败跳转" /></div></div></div>) })}
+        {connecting && <div className="absolute top-2 left-1/2 -translate-x-1/2 bg-primary text-primary-foreground text-xs px-3 py-1 rounded-full shadow">拖拽到目标节点释放以完成连线</div>}
       </div>
-
-      {/* 属性面板 */}
-      <div className="w-64 shrink-0">
-        {selectedStep ? (
-          <StepPropertyPanel
-            step={selectedStep}
-            steps={steps}
-            scripts={scripts}
-            onChange={patch => updateStep(selectedStep.id, patch)}
-            onConnect={finishConnect}
-            connecting={!!connectFrom}
-          />
-        ) : (
-          <Card className="h-full min-h-[200px] flex items-center justify-center">
-            <CardContent className="text-center text-muted-foreground text-xs">
-              <p>选中节点查看属性</p>
-            </CardContent>
-          </Card>
-        )}
-      </div>
-
-      {/* 保存条 */}
-      {dirty && (
-        <div className="fixed bottom-6 right-6 z-50 flex gap-2 bg-background border rounded-full shadow-lg px-4 py-2">
-          <span className="text-sm text-amber-600 self-center">有未保存的修改</span>
-          <Button size="sm" onClick={handleSave} disabled={saving}>
-            {saving ? <Loader2 className="h-3 w-3 mr-1 animate-spin" /> : <Save className="h-3 w-3 mr-1" />}
-            保存
-          </Button>
-          <Button size="sm" variant="outline" onClick={() => { setSteps(workflow.steps || []); setDirty(false) }}>
-            <X className="h-3 w-3 mr-1" />放弃
-          </Button>
-        </div>
-      )}
+      <div className="w-64 shrink-0">{selectedStep ? <StepPanel step={selectedStep} steps={steps} scripts={scripts} onChange={patch => updateStep(selectedStep.id, patch)} /> : <Card className="h-full min-h-[200px] flex items-center justify-center"><CardContent className="text-center text-muted-foreground text-xs"><p>选中节点查看属性</p></CardContent></Card>}</div>
+      {dirty && <div className="fixed bottom-6 right-6 z-50 flex gap-2 bg-background border rounded-full shadow-lg px-4 py-2"><span className="text-sm text-amber-600 self-center">有未保存的修改</span><Button size="sm" onClick={handleSave} disabled={saving}>{saving ? <Loader2 className="h-3 w-3 mr-1 animate-spin" /> : <Save className="h-3 w-3 mr-1" />}保存</Button><Button size="sm" variant="outline" onClick={() => { setSteps(workflow.steps || []); setDirty(false) }}><X className="h-3 w-3 mr-1" />放弃</Button></div>}
     </div>
   )
 }
 
-// ---------- 连线 SVG ----------
-function ConnectionLine({ from, toId, steps, color, label }: {
-  from: WorkflowStep
-  toId: string
-  steps: WorkflowStep[]
-  color: string
-  label: string
-}) {
-  const to = steps.find(s => s.id === toId)
+function Line({ from, to, color }: { from: WorkflowStep; to?: WorkflowStep; color: string }) {
   if (!to) return null
-  const fx = (from.position?.x ?? 0) + 88
-  const fy = (from.position?.y ?? 0) + 30
-  const tx = (to.position?.x ?? 0) + 88
-  const ty = (to.position?.y ?? 0)
+  const fx = (from.position?.x ?? 0) + 88; const fy = (from.position?.y ?? 0) + 50
+  const tx = (to.position?.x ?? 0) + 88; const ty = (to.position?.y ?? 0)
   const midY = (fy + ty) / 2
-  const d = `M ${fx} ${fy} C ${fx} ${midY}, ${tx} ${midY}, ${tx} ${ty}`
-  return (
-    <g>
-      <path d={d} stroke={color} strokeWidth={2} fill="none" markerEnd="url(#arrow)" />
-      <text x={(fx + tx) / 2} y={midY - 4} fill={color} fontSize="10" textAnchor="middle">{label}</text>
-    </g>
-  )
+  return <path d={"M "+fx+" "+fy+" C "+fx+" "+midY+", "+tx+" "+midY+", "+tx+" "+ty} stroke={color} strokeWidth={2} fill="none" markerEnd={color==='#10b981'?'url(#arrowGreen)':'url(#arrowRed)'} />
 }
 
-// ---------- 节点属性面板 ----------
-function StepPropertyPanel({ step, steps, scripts, onChange, onConnect, connecting }: {
-  step: WorkflowStep
-  steps: WorkflowStep[]
-  scripts: any[]
-  onChange: (patch: Partial<WorkflowStep>) => void
-  onConnect: (toId: string, kind: 'on_success' | 'on_failure') => void
-  connecting: boolean
-}) {
-  const otherSteps = steps.filter(s => s.id !== step.id)
-  const meta = NODE_META[step.type]
-  const Icon = meta.icon
-
+function StepPanel({ step, steps, scripts, onChange }: { step: WorkflowStep; steps: WorkflowStep[]; scripts: any[]; onChange: (p: Partial<WorkflowStep>) => void }) {
+  const meta = NODE_META[step.type]; const Icon = meta.icon; const otherSteps = steps.filter(s => s.id !== step.id)
+  const ctxVars = steps.filter(s => s.id !== step.id).map(s => ({ id: s.id, name: s.name }))
   return (
-    <Card>
-      <CardHeader className="py-3">
-        <div className="flex items-center gap-2">
-          <Icon className="h-4 w-4" />
-          <CardTitle className="text-sm">{meta.label}属性</CardTitle>
-        </div>
-      </CardHeader>
+    <Card><CardHeader className="py-3"><div className="flex items-center gap-2"><Icon className="h-4 w-4" /><CardTitle className="text-sm">{meta.label}</CardTitle></div></CardHeader>
       <CardContent className="space-y-3 text-sm">
-        <div>
-          <label className="text-xs font-medium">节点名称</label>
-          <Input value={step.name} onChange={e => onChange({ name: e.target.value })} className="h-8 mt-1" />
-        </div>
-
-        <div className="text-[10px] text-muted-foreground">ID: {step.id}</div>
-
-        {/* 脚本节点配置 */}
-        {step.type === 'script' && (
-          <>
-            <div>
-              <label className="text-xs font-medium">关联脚本 *</label>
-              <Select
-                value={step.script_id || ''}
-                onChange={e => onChange({ script_id: e.target.value })}
-                options={[
-                  { value: '', label: '-- 选择脚本 --' },
-                  ...scripts.map(s => ({ value: s.id, label: `${s.name} (v${s.version || 1})` })),
-                ]}
-                className="h-8 mt-1"
-              />
-            </div>
-            <div>
-              <label className="text-xs font-medium">超时(秒)</label>
-              <Input type="number" value={step.timeout || 300}
-                onChange={e => onChange({ timeout: parseInt(e.target.value) || 300 })}
-                className="h-8 mt-1" />
-            </div>
-            <div>
-              <label className="text-xs font-medium">输入参数 (JSON)</label>
-              <p className="text-[10px] text-muted-foreground mb-1">支持变量引用 ${'${step_id.field}'}</p>
-              <textarea
-                className="flex h-20 w-full rounded-md border border-input bg-background px-2 py-1 text-xs font-mono"
-                value={JSON.stringify(step.inputs || {}, null, 2)}
-                onChange={e => { try { onChange({ inputs: JSON.parse(e.target.value) }) } catch {} }}
-                placeholder='{"host":"${step1.host}"}'
-              />
-            </div>
-          </>
-        )}
-
-        {/* 审批节点配置 */}
-        {step.type === 'approval' && (
-          <>
-            <div>
-              <label className="text-xs font-medium">审批人 (逗号分隔)</label>
-              <Input value={(step.approvers || []).join(',')}
-                onChange={e => onChange({ approvers: e.target.value.split(',').map(s => s.trim()).filter(Boolean) })}
-                className="h-8 mt-1" placeholder="user1,user2" />
-            </div>
-            <div>
-              <label className="text-xs font-medium">审批消息</label>
-              <textarea className="flex h-16 w-full rounded-md border border-input bg-background px-2 py-1 text-xs"
-                value={step.approval_msg || ''}
-                onChange={e => onChange({ approval_msg: e.target.value })}
-                placeholder="请描述本次审批内容..." />
-            </div>
-          </>
-        )}
-
-        {/* 分支网关配置 */}
-        {step.type === 'condition' && (
-          <div>
-            <label className="text-xs font-medium">条件表达式 *</label>
-            <p className="text-[10px] text-muted-foreground mb-1">
-              支持 {'${step.field} == "value"'} 语法
-            </p>
-            <textarea
-              className="flex h-16 w-full rounded-md border border-input bg-background px-2 py-1 text-xs font-mono"
-              value={step.condition || ''}
-              onChange={e => onChange({ condition: e.target.value })}
-              placeholder={'${step1.exit_code} == 0'}
-            />
-          </div>
-        )}
-
-        {/* 并行网关 */}
-        {step.type === 'parallel' && (
-          <div className="text-xs text-muted-foreground bg-muted/30 rounded p-2">
-            并行网关将同时执行其 OnSuccess 分支上的所有节点链。当前版本通过 OnSuccess 配置并行入口。
-          </div>
-        )}
-
-        {/* 等待节点 */}
-        {step.type === 'wait' && (
-          <div>
-            <label className="text-xs font-medium">等待秒数</label>
-            <Input type="number" value={step.wait_seconds || 0}
-              onChange={e => onChange({ wait_seconds: parseInt(e.target.value) || 0 })}
-              className="h-8 mt-1" />
-          </div>
-        )}
-
-        {/* 跳转关系 */}
-        <div className="pt-2 border-t space-y-2">
-          <p className="text-xs font-medium">跳转关系</p>
-          {connecting ? (
-            <div className="bg-emerald-50 dark:bg-emerald-950/30 border border-emerald-500 rounded p-2 text-xs space-y-2">
-              <p className="text-emerald-700 dark:text-emerald-300 font-medium">连线模式:选择目标</p>
-              <div className="flex gap-1">
-                <Button size="sm" variant="outline" className="h-6 text-[10px] flex-1"
-                  disabled={otherSteps.length === 0}
-                  onClick={() => otherSteps.length > 0 && onConnect(otherSteps[0].id, 'on_success')}>
-                  选首个为成功
-                </Button>
-              </div>
-              <p className="text-[10px] text-muted-foreground">或直接点击画布上的目标节点</p>
-            </div>
-          ) : (
-            <>
-              <div>
-                <label className="text-[10px] text-muted-foreground">成功 →</label>
-                <Select
-                  value={step.on_success || ''}
-                  onChange={e => onChange({ on_success: e.target.value })}
-                  options={[
-                    { value: '', label: '无' },
-                    ...otherSteps.map(s => ({ value: s.id, label: s.name })),
-                  ]}
-                  className="h-7 text-xs mt-1"
-                />
-              </div>
-              <div>
-                <label className="text-[10px] text-muted-foreground">失败 →</label>
-                <Select
-                  value={step.on_failure || ''}
-                  onChange={e => onChange({ on_failure: e.target.value })}
-                  options={[
-                    { value: '', label: '无' },
-                    ...otherSteps.map(s => ({ value: s.id, label: s.name })),
-                  ]}
-                  className="h-7 text-xs mt-1"
-                />
-              </div>
-            </>
-          )}
+        <div><label className="text-xs font-medium">名称</label><Input value={step.name} onChange={e => onChange({ name: e.target.value })} className="h-8 mt-1" /></div>
+        <div><label className="text-xs font-medium">超时(秒)</label><Input type="number" value={step.timeout || 0} onChange={e => onChange({ timeout: parseInt(e.target.value) || 0 })} className="h-8 mt-1" /></div>
+        {step.type === 'script' && <div><label className="text-xs font-medium">关联脚本</label><select className="flex h-8 w-full rounded-md border border-input bg-background px-2 text-xs mt-1" value={step.script_id || ''} onChange={e => onChange({ script_id: e.target.value })}><option value="">选择脚本</option>{scripts.map((s:any) => <option key={s.id} value={s.id}>{s.name}</option>)}</select></div>}
+        {step.type === 'condition' && <div className="space-y-2"><label className="text-xs font-medium">条件表达式</label><p className="text-[10px] text-muted-foreground">支持 == != >= <= > < =~ && ||</p><details className="text-[10px]"><summary className="cursor-pointer text-muted-foreground">插入变量</summary><div className="mt-1 space-y-0.5">{ctxVars.map(v => <button key={v.id} onClick={() => onChange({ condition: (step.condition||'')+' '+v.name })} className="block text-blue-500 hover:underline text-left">{v.name}</button>)}</div></details><textarea className="flex h-16 w-full rounded-md border border-input bg-background px-2 py-1 text-xs font-mono" value={step.condition || ''} onChange={e => onChange({ condition: e.target.value })} placeholder={'exit_code == 0'} /></div>}
+        {step.type === 'wait' && <div><label className="text-xs font-medium">等待秒数</label><Input type="number" value={step.wait_seconds || 0} onChange={e => onChange({ wait_seconds: parseInt(e.target.value) || 0 })} className="h-8 mt-1" /></div>}
+        {step.type === 'approval' && <div><label className="text-xs font-medium">审批消息</label><Input value={step.approval_msg || ''} onChange={e => onChange({ approval_msg: e.target.value })} placeholder="请审批本次操作" className="h-8 mt-1" /></div>}
+        {step.type === 'parallel' && <div className="text-xs text-muted-foreground bg-muted/30 rounded p-2">并行节点下所有 on_success 指向的节点将同时执行</div>}
+        <div className="pt-2 border-t space-y-2"><p className="text-xs font-medium">跳转配置</p>
+          <div><label className="text-[10px] text-muted-foreground">成功 →</label><select className="flex h-8 w-full rounded-md border border-input bg-background px-2 text-xs mt-1" value={step.on_success || ''} onChange={e => onChange({ on_success: e.target.value })}><option value="">无</option>{otherSteps.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}</select></div>
+          <div><label className="text-[10px] text-muted-foreground">失败 →</label><select className="flex h-8 w-full rounded-md border border-input bg-background px-2 text-xs mt-1" value={step.on_failure || ''} onChange={e => onChange({ on_failure: e.target.value })}><option value="">无</option>{otherSteps.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}</select></div>
         </div>
       </CardContent>
     </Card>
