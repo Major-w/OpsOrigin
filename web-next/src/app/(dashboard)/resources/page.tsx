@@ -71,6 +71,7 @@ export default function ResourcesPage() {
   const [cloudAccessKey, setCloudAccessKey] = useState('')
   const [cloudSecretKey, setCloudSecretKey] = useState('')
   const [cloudExtra, setCloudExtra] = useState('')
+  const [cloudProxyId, setCloudProxyId] = useState('')
   const [cloudTypes, setCloudTypes] = useState<string[]>(['vm', 'database', 'load_balancer'])
   const [cloudDiscovering, setCloudDiscovering] = useState(false)
   const [cloudSyncing, setCloudSyncing] = useState(false)
@@ -369,6 +370,7 @@ export default function ResourcesPage() {
         region: cloudRegion,
         types: cloudTypes,
         credential: { access_key: cloudAccessKey, secret_key: cloudSecretKey, region: cloudRegion, extra },
+        proxy_id: cloudProxyId || undefined,
       })
     } finally {
       setCloudDiscovering(false)
@@ -485,7 +487,6 @@ export default function ResourcesPage() {
       <div className="flex items-center gap-2 min-w-0 flex-1">
         {a.type === 'agent' ? <Terminal className="h-4 w-4 text-emerald-400 shrink-0" /> : <Monitor className="h-4 w-4 text-blue-400 shrink-0" />}
         <span className="text-sm font-medium truncate min-w-0">{a.name}</span>
-        {a.environment === 'sandbox' && <Badge variant="outline" className="text-xs bg-amber-100 text-amber-700 border-amber-300">沙箱</Badge>}
       </div>
       <div className="w-16 shrink-0"><Badge variant={statusVariant(a.status)} className="text-xs">{statusLabel(a.status)}</Badge></div>
       <div className="w-20 shrink-0"><Badge variant="outline" className="text-xs">{a.type === 'agent' ? 'Agent' : 'Agentless'}</Badge></div>
@@ -496,7 +497,7 @@ export default function ResourcesPage() {
       <div className="w-24 shrink-0 text-xs text-muted-foreground/50 hidden md:block"><Clock className="h-3 w-3 inline mr-0.5" />{a.last_heartbeat ? formatTime(a.last_heartbeat) : '无心跳'}</div>
       <div className="w-24 shrink-0 flex justify-end gap-1">
         <Button variant="ghost" size="icon" className="h-6 w-6" onClick={() => openDetailHost(a)}><Eye className="h-3 w-3" /></Button>
-        {a.environment !== 'sandbox' && <Button variant="ghost" size="icon" className="h-6 w-6" onClick={() => setConfirmDeleteHost(a)}><Trash2 className="h-3 w-3" /></Button>}
+        <Button variant="ghost" size="icon" className="h-6 w-6" onClick={() => setConfirmDeleteHost(a)}><Trash2 className="h-3 w-3" /></Button>
       </div>
     </>
   )
@@ -508,11 +509,10 @@ export default function ResourcesPage() {
           <div className="flex items-center gap-2 min-w-0">
             {a.type === 'agent' ? <Terminal className="h-4 w-4 text-emerald-400 shrink-0" /> : <Monitor className="h-4 w-4 text-blue-400 shrink-0" />}
             <span className="text-sm font-medium truncate">{a.name}</span>
-            {a.environment === 'sandbox' && <Badge variant="outline" className="text-xs bg-amber-100 text-amber-700 border-amber-300">沙箱</Badge>}
           </div>
           <div className="flex gap-1 shrink-0">
             <Button variant="ghost" size="icon" className="h-6 w-6" onClick={() => openDetailHost(a)}><Eye className="h-3 w-3" /></Button>
-            {a.environment !== 'sandbox' && <Button variant="ghost" size="icon" className="h-6 w-6" onClick={() => setConfirmDeleteHost(a)}><Trash2 className="h-3 w-3" /></Button>}
+            <Button variant="ghost" size="icon" className="h-6 w-6" onClick={() => setConfirmDeleteHost(a)}><Trash2 className="h-3 w-3" /></Button>
           </div>
         </div>
       </CardHeader>
@@ -884,6 +884,13 @@ export default function ResourcesPage() {
                     <label className="text-sm font-medium">Extra（JSON，可选，如华为云 project_id=xxx）</label>
                     <textarea className="flex h-20 w-full rounded-md border border-input bg-background px-3 py-2 text-xs font-mono" value={cloudExtra} onChange={e => setCloudExtra(e.target.value)} placeholder='{"project_id":"xxx"}' />
                   </div>
+                  <div>
+                    <label className="text-sm font-medium">代理（Proxy，可选，用于私有云/隔离网络场景）</label>
+                    <select className="h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm" value={cloudProxyId} onChange={e => setCloudProxyId(e.target.value)}>
+                      <option value="">直连（不使用 Proxy）</option>
+                      {proxies.map(p => <option key={p.id} value={p.id}>{p.name} · {p.address}</option>)}
+                    </select>
+                  </div>
                   <div className="flex gap-2">
                     <Button size="sm" onClick={handleCloudSaveCredential}><Save className="h-3 w-3 mr-1" />保存凭证</Button>
                     <Button size="sm" variant="outline" onClick={handleCloudDiscover} disabled={!cloudProvider || !cloudAccessKey || !cloudSecretKey || cloudDiscovering}>
@@ -959,8 +966,31 @@ export default function ResourcesPage() {
               </CardTitle>
             </CardHeader>
             <CardContent className="space-y-4">
+              {/* K8s Agent 安装指引 */}
+              <details className="border rounded-md">
+                <summary className="px-4 py-2 text-sm font-medium cursor-pointer hover:bg-muted/30 flex items-center gap-2">
+                  <Download className="h-4 w-4" />K8s Agent 一键安装指引
+                </summary>
+                <div className="px-4 pb-4 space-y-3 border-t pt-3">
+                  <p className="text-xs text-muted-foreground">在目标 K8s 集群中执行以下命令部署网关 Agent（DaemonSet），部署完成后 Agent 将自动注册到 Core。</p>
+                  <div>
+                    <p className="text-xs font-medium mb-1">▸ 直连 Core（Agent→Core 网络可达）</p>
+                    <div className="bg-black rounded-md p-3 text-green-400 text-xs font-mono whitespace-pre-wrap break-all">kubectl apply -f https://raw.githubusercontent.com/Major-w/OpsOrigin/dev/deploy/k8s/opsorigin-k8s-gateway.yaml</div>
+                  </div>
+                  <div>
+                    <p className="text-xs font-medium mb-1">▸ 经 Proxy 连接（Agent 在隔离网络，通过 Proxy 中转）</p>
+                    <div className="bg-black rounded-md p-3 text-green-400 text-xs font-mono whitespace-pre-wrap break-all"># 1. 先部署 Proxy（参照主机纳管 → Proxy 管理）
+# 2. 部署 K8s Agent 并指定 Proxy 地址：
+kubectl apply -f https://raw.githubusercontent.com/Major-w/OpsOrigin/dev/deploy/k8s/opsorigin-k8s-gateway.yaml
+# 3. 编辑 Deployment 设置 Proxy 环境变量：
+kubectl -n opsorigin set env deployment/opsorigin-k8s-gateway OPSORIGIN_PROXY_ADDR=&lt;proxy_ip:port&gt;</div>
+                  </div>
+                  <p className="text-xs text-muted-foreground">部署后 Agent 类型自动标记为 <code className="text-[11px]">k8s</code>，与主机 Agent 独立管理。版管理在 Agent 详情对话框中查看。</p>
+                </div>
+              </details>
+
               {agents.filter(a => a.type === 'k8s').length === 0 ? (
-                <p className="text-xs text-muted-foreground">未检测到 K8s Agent。请在目标集群中部署 K8s 网关 Agent（DaemonSet），安装后将在下方列表出现。</p>
+                <p className="text-xs text-muted-foreground">未检测到 K8s Agent。请先按上方指引部署 K8s 网关 Agent。</p>
               ) : (
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                   {/* 网关 Agent 选择 + 资源类型 */}

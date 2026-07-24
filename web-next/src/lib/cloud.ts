@@ -44,11 +44,18 @@ export interface K8sDiscoverOptions {
   kube_context?: string
 }
 
-// 前端资源类型选项（MVP 仅 VM / 数据库 / 负载均衡）。
+// 前端资源类型选项（对齐后端 AllResourceTypes）。
 export const CLOUD_RESOURCE_TYPES = [
   { value: 'vm', label: '虚拟机' },
   { value: 'database', label: '数据库' },
   { value: 'load_balancer', label: '负载均衡' },
+  { value: 'vpc', label: '私有网络 VPC' },
+  { value: 'bucket', label: '对象存储' },
+  { value: 'disk', label: '云硬盘' },
+  { value: 'firewall', label: '安全组/防火墙' },
+  { value: 'nat_gateway', label: 'NAT 网关' },
+  { value: 'cdn', label: 'CDN 加速' },
+  { value: 'dns', label: 'DNS 解析' },
 ] as const
 
 // K8s 容器资源纳管类型选项（经 Agent 通道发现）。
