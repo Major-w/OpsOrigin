@@ -38,6 +38,7 @@ export interface Workflow {
   steps: WorkflowStep[]
   input_params?: ParamDef[]
   labels?: Record<string, string>
+  timeout?: number
   created_at: string
   updated_at: string
 }
@@ -92,6 +93,8 @@ interface WorkflowState {
   fetchApprovals: () => Promise<void>
   approve: (id: string, comment?: string) => Promise<boolean>
   reject: (id: string, comment?: string) => Promise<boolean>
+  cancelExecution: (execId: string) => Promise<boolean>
+  fetchTemplates: () => Promise<Workflow[]>
 }
 
 export const useWorkflowStore = create<WorkflowState>((set, get) => ({
@@ -215,5 +218,18 @@ export const useWorkflowStore = create<WorkflowState>((set, get) => ({
       toast.error(`驳回操作失败: ${e.message}`)
       return false
     }
+  },
+  cancelExecution: async (execId) => {
+    try {
+      await apiFetch(`/workflows/executions/${execId}/cancel`, { method: 'POST' })
+      toast.success('执行已取消')
+      return true
+    } catch (e: any) { toast.error('取消失败: ' + e.message); return false }
+  },
+  fetchTemplates: async () => {
+    try {
+      const res = await apiFetch<{ templates: Workflow[] }>('/workflows/templates/list')
+      return res.templates || []
+    } catch { return [] }
   },
 }))
