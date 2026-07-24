@@ -1,6 +1,6 @@
 'use client'
 
-import { useRef, useEffect } from 'react'
+import { useRef, useEffect, useState } from 'react'
 import { EditorView, keymap, lineNumbers, highlightActiveLine, highlightActiveLineGutter } from '@codemirror/view'
 import { EditorState } from '@codemirror/state'
 import { defaultKeymap, indentWithTab, history, historyKeymap } from '@codemirror/commands'
@@ -35,6 +35,14 @@ interface CodeEditorProps {
 export function CodeEditor({ value, onChange, language = 'shell', placeholder, readOnly = false, className, height = '300px' }: CodeEditorProps) {
   const containerRef = useRef<HTMLDivElement>(null)
   const viewRef = useRef<EditorView | null>(null)
+  const [isDark, setIsDark] = useState(false)
+
+  useEffect(() => {
+    setIsDark(document.documentElement.classList.contains('dark'))
+    const observer = new MutationObserver(() => setIsDark(document.documentElement.classList.contains('dark')))
+    observer.observe(document.documentElement, { attributes: true, attributeFilter: ['class'] })
+    return () => observer.disconnect()
+  }, [])
 
   useEffect(() => {
     if (!containerRef.current) return
@@ -47,6 +55,7 @@ export function CodeEditor({ value, onChange, language = 'shell', placeholder, r
       }
     })
 
+    const themeExt = isDark ? oneDark : []
     const state = EditorState.create({
       doc: value,
       extensions: [
@@ -71,7 +80,7 @@ export function CodeEditor({ value, onChange, language = 'shell', placeholder, r
           indentWithTab,
         ]),
         langExt,
-        oneDark,
+        themeExt,
         updateListener,
         EditorView.lineWrapping,
         readOnly ? EditorState.readOnly.of(true) : [],
@@ -90,7 +99,7 @@ export function CodeEditor({ value, onChange, language = 'shell', placeholder, r
       view.destroy()
       viewRef.current = null
     }
-  }, [language])
+  }, [language, isDark])
 
   useEffect(() => {
     if (viewRef.current && value !== viewRef.current.state.doc.toString()) {
