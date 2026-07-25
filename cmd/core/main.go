@@ -28,6 +28,7 @@ import (
 	"github.com/opsorigin/core/internal/ai"
 	"github.com/opsorigin/core/internal/ai/agentic"
 	"github.com/opsorigin/core/internal/deploy"
+	"github.com/opsorigin/core/internal/itsm/knowledge"
 	"github.com/opsorigin/core/internal/audit"
 	"github.com/opsorigin/core/internal/monitor"
 	healthhandler "github.com/opsorigin/core/internal/monitor/health"
@@ -43,7 +44,6 @@ import (
 	"github.com/opsorigin/core/internal/command"
 	"github.com/opsorigin/core/internal/iam"
 	"github.com/opsorigin/core/internal/notification"
-	"github.com/opsorigin/core/internal/itsm/knowledge"
 	"github.com/opsorigin/core/internal/itsm/oncall"
 	"github.com/opsorigin/core/internal/keystore"
 	"github.com/opsorigin/core/internal/lowcode/service"
@@ -375,7 +375,7 @@ func main() {
 
 	deploySvc := deploy.NewService(db)
 	server.RegisterService(deploySvc)
-	server.RegisterService(opsSvc)
+	server.RegisterService(knowledge.NewSocialStore(db))
 
 	// 漏洞扫描：规则匹配器 + 真实 inventory 注入(经 CMDB 适配器)。
 	// 适配器把 cmdb.Service.ListCI 按约定 schema 映射为 vuln.InventoryEntry,

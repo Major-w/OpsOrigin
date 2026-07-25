@@ -56,6 +56,7 @@ export default function ITSMPage() {
   const { tickets, stats, loading, fetch, create, approve, reject, execute, complete, rollback, getTicket, getEvents, fetchStats, processes, fetchProcesses } = useITSMStore()
   const [dialogOpen, setDialogOpen] = useState(false)
   const [form, setForm] = useState({ title: '', description: '', risk_level: 'low', change_plan: '', rollback_plan: '', created_by: 'admin', process_id: '' })
+  const [knowledgeRecs, setKnowledgeRecs] = useState<any[]>([])
   const [selectedTicket, setSelectedTicket] = useState<Ticket | null>(null)
   const [ticketEvents, setTicketEvents] = useState<TicketEvent[]>([])
   const [detailTab, setDetailTab] = useState('detail')
@@ -103,6 +104,18 @@ export default function ITSMPage() {
   }, [])
 
   useEffect(() => { fetch(); fetchStats(); fetchProcesses() }, [])
+
+  // 知识推荐：监听标题变化, 匹配知识库文章
+  useEffect(() => {
+    if (!form.title || form.title.length < 2) { setKnowledgeRecs([]); return }
+    const t = setTimeout(async () => {
+      try {
+        const data = await apiFetch<any[]>('/knowledge?search=' + encodeURIComponent(form.title))
+        setKnowledgeRecs((data || []).slice(0, 3))
+      } catch { setKnowledgeRecs([]) }
+    }, 300)
+    return () => clearTimeout(t)
+  }, [form.title])
 
   const handleCreate = async () => {
     await create({ ...form, ci_ids: ciIds })
@@ -567,6 +580,10 @@ export default function ITSMPage() {
               <Button variant="outline" size="sm" onClick={addCiId}>添加</Button>
             </div>
           </div>
+          {knowledgeRecs.length > 0 && <div className="mt-2 p-2 bg-amber-50 dark:bg-amber-950/20 rounded-md">
+            <p className="text-xs font-medium text-amber-700 dark:text-amber-400 mb-1">相关文章推荐</p>
+            {knowledgeRecs.map(a => <div key={a.id} className="text-[11px] text-muted-foreground hover:text-foreground cursor-pointer truncate" onClick={e => { e.stopPropagation(); window.open('/knowledge/' + a.id, '_blank') }}>· {a.title}</div>)}
+          </div>}
         </div>
         <DialogFooter><Button variant="outline" onClick={() => setDialogOpen(false)}>取消</Button><Button onClick={handleCreate} disabled={!form.title}>提交</Button></DialogFooter>
       </Dialog>
