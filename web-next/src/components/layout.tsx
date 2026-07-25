@@ -4,7 +4,7 @@ import { useState } from 'react'
 import Link from 'next/link'
 import { usePathname, useRouter } from 'next/navigation'
 import { cn } from '@/lib/utils'
-import { Server, TicketCheck, Activity, Bot, Shield, LayoutDashboard, Hexagon, LogOut, User, Terminal, Workflow, Clock, Search, BookOpen, Calendar, GitBranch, Package, Bell, Key, Blocks, Users, Settings, Sun, Moon, Scan, Bug, Download, PackagePlus, Network, AlertTriangle, History, FileText, Rocket, AppWindow, FileCheck2, Cloud, Play, type LucideIcon } from 'lucide-react'
+import { Server, TicketCheck, Activity, Bot, Shield, LayoutDashboard, Hexagon, LogOut, User, Terminal, Workflow, Clock, Search, BookOpen, Calendar, GitBranch, Package, Bell, Key, Blocks, Users, Settings, Sun, Moon, Scan, Bug, Download, PackagePlus, Network, AlertTriangle, History, FileText, Rocket, AppWindow, FileCheck2, Cloud, Play, Sparkles, type LucideIcon } from 'lucide-react'
 import { useAuthStore } from '@/stores/auth'
 import { useThemeStore } from '@/stores/theme'
 import { ScrollToTop } from '@/components/ui/scroll-to-top'
@@ -79,12 +79,17 @@ const navGroups: (NavItem | NavGroup)[] = [
           { to: '/itsm/sla', label: 'SLA 管理', icon: Clock },
         ]
       },
-      { to: '/itsm/knowledge', label: '知识库', icon: BookOpen },
       { to: '/itsm/oncall', label: '值班管理', icon: Calendar },
     ]
   },
   { to: '/monitor', label: '监控中心', icon: Activity },
   { to: '/ai', label: 'AI 助手', icon: Bot },
+  {
+    label: '知识库', icon: BookOpen, items: [
+      { to: '/knowledge', label: '文章列表', icon: BookOpen },
+      { to: '/knowledge/new', label: 'AI 写作', icon: Sparkles },
+    ]
+  },
   {
     label: '系统管理', icon: Users, items: [
       { to: '/system/users', label: '用户管理', icon: Users },

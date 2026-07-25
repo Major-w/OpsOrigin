@@ -22,10 +22,11 @@ import (
 )
 
 type Service struct {
-	cfg      *config.Config
-	Engine   *agentic.Engine
-	Registry *mcp.Registry
-	limiter  ratelimit.RateLimiter
+	cfg       *config.Config
+	Engine    *agentic.Engine
+	Registry  *mcp.Registry
+	limiter   ratelimit.RateLimiter
+	ragFn     func(ctx context.Context, query string) string // RAG上下文注入
 }
 
 func NewService(cfg *config.Config, llmClient *llm.Client, redisClient *redisclient.Client, db *sql.DB) *Service {
@@ -60,6 +61,8 @@ func NewService(cfg *config.Config, llmClient *llm.Client, redisClient *rediscli
 
 // LLMConfigHook 在 sysconfig 修改 LLM 设置后被调用(热生效)。nil 表示未设置。
 var LLMConfigHook func(cfg llm.Config)
+
+func (s *Service) SetRAGFunc(fn func(ctx context.Context, query string) string) { s.ragFn = fn }
 
 func (s *Service) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/v1/ai/agents", s.handleCreateAgent)
@@ -110,9 +113,15 @@ func (s *Service) handleChat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// F4-D1: 会话计数移到入口, 与物理 LLM 槽位解耦 ——
-	// 逻辑并发(如 100 路 SSE)全周期计入, 峰值=逻辑会话数而非物理槽位数。
-	agentic.AIConcurrentSessions.Inc()
+	// RAG: 从知识库检索相关内容注入到 system prompt
+	if s.ragFn != nil {
+		ragCtx := s.ragFn(r.Context(), req.Prompt)
+		if ragCtx != "" {
+			req.History = append([]llm.Message{{Role: "system", Content: "你是运维AI助手。参考知识库文档回答问题：\n" + ragCtx}}, req.History...)
+		}
+	}
+
+	// F4-D1: 会话计数入口
 	defer agentic.AIConcurrentSessions.Dec()
 
 	if req.Stream {

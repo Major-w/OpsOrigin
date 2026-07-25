@@ -9,7 +9,7 @@ import { Badge } from '@/components/ui/badge'
 import { Input } from '@/components/ui/input'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { CodeEditor } from '@/components/ui/code-editor'
-import { Plus, Trash2, Code2, FileText, Copy, Clock, Play, History, Pencil, Terminal, Hash, ChevronRight, GitBranch, GitCompare, CheckCircle, XCircle, Eye, Loader2, Star, ChevronLeft, Save, X, AlertCircle } from 'lucide-react'
+import { Plus, Trash2, Code2, FileText, Copy, Clock, Play, History, Pencil, Terminal, Hash, ChevronRight, GitBranch, GitCompare, CheckCircle, XCircle, Eye, Loader2, Star, ChevronLeft, Save, X, AlertCircle, Sparkles } from 'lucide-react'
 import { cn, formatTime, apiFetch } from '@/lib/utils'
 import { toast } from '@/stores/toast'
 
@@ -145,6 +145,7 @@ export default function ScriptDetailPage() {
   // 语法检查
   const [checking, setChecking] = useState(false)
   const [checkResult, setCheckResult] = useState<CheckResult | null>(null)
+  const [aiGenerating, setAiGenerating] = useState(false)
 
   // 执行历史
   const [executions, setExecutions] = useState<ExecutionResult[]>([])
@@ -302,6 +303,24 @@ export default function ScriptDetailPage() {
     } finally {
       setChecking(false)
     }
+  }
+
+  const handleAIGenerate = async () => {
+    if (!form.name.trim()) { toast.error('请先输入脚本名称'); return }
+    setAiGenerating(true)
+    try {
+      const lang = form.type === 'shell' ? 'bash' : form.type === 'python' ? 'python' : 'batch'
+      const res = await apiFetch<{ content: string }>('/v1/ai/chat', {
+        method: 'POST',
+        body: JSON.stringify({ prompt: `写一个${lang}脚本,功能是"${form.name}${form.description?':'+form.description:''}"。只输出完整可执行代码,不要加解释。`, stream: false }),
+      })
+      if (res.content) {
+        let code = res.content.replace(/```[\s\S]*?\n/g, '').replace(/```/g, '').trim()
+        setForm(f => ({ ...f, content: code }))
+        toast.success('AI 已生成脚本代码')
+      }
+    } catch (e: any) { toast.error('AI 生成失败: ' + e.message) }
+    setAiGenerating(false)
   }
 
   const handleSave = async () => {
@@ -466,6 +485,10 @@ export default function ScriptDetailPage() {
               <Button variant="outline" size="sm" onClick={handleCheck} disabled={!form.content.trim() || checking}>
                 {checking ? <Loader2 className="h-3.5 w-3.5 mr-1 animate-spin" /> : <AlertCircle className="h-3.5 w-3.5 mr-1" />}
                 语法检查
+              </Button>
+              <Button variant="outline" size="sm" onClick={handleAIGenerate} disabled={!form.name.trim() || aiGenerating}>
+                {aiGenerating ? <Loader2 className="h-3.5 w-3.5 mr-1 animate-spin" /> : <Sparkles className="h-3.5 w-3.5 mr-1" />}
+                AI 生成
               </Button>
               <Button size="sm" onClick={handleSave} disabled={!form.name.trim() || !form.content.trim()}>
                 <Save className="h-3.5 w-3.5 mr-1" />{isNew ? '创建' : '保存'}

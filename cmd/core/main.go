@@ -362,10 +362,10 @@ func main() {
 	server.WithMiddleware(rbacMiddleware.AutoPermissionMiddleware)
 
 	aiSvc := ai.NewService(cfg, llmClient, rdbClient, db)
-	// 注入 PG 持久化（Agent/Team 数据进程重启不丢失）
 	aiSvc.Engine.SetStore(agentic.NewPGStore(db))
-	// 注册运维 MCP 工具：CMDB查询 / 工单创建 / 脚本执行 / 知识库 RAG
-	agentic.NewMCPToolSet(db).Register(aiSvc.Registry)
+	toolSet := agentic.NewMCPToolSet(db)
+	toolSet.Register(aiSvc.Registry)
+	aiSvc.SetRAGFunc(toolSet.RAGContext)
 	ai.LLMConfigHook = func(cfg2 llm.Config) { aiSvc.UpdateLLMConfig(cfg2) }
 	server.RegisterService(aiSvc)
 	aiSvc.Start(ctx)
