@@ -64,6 +64,7 @@ type Ticket struct {
 	CIIDs                []string          `json:"ci_ids,omitempty"`
 	WebhookURL           string            `json:"webhook_url,omitempty"`
 	Labels               map[string]string `json:"labels,omitempty"`
+	ProcessID            string            `json:"process_id,omitempty"`  // 绑定的流程模板 ID
 	TraceID              string            `json:"trace_id"`
 	ScheduledAt          *time.Time        `json:"scheduled_at,omitempty"`
 	DeadlineAt           *time.Time        `json:"deadline_at,omitempty"`

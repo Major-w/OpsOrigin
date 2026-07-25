@@ -53,9 +53,9 @@ function formatFileSize(bytes: number): string {
 }
 
 export default function ITSMPage() {
-  const { tickets, stats, loading, fetch, create, approve, reject, execute, complete, rollback, getTicket, getEvents, fetchStats } = useITSMStore()
+  const { tickets, stats, loading, fetch, create, approve, reject, execute, complete, rollback, getTicket, getEvents, fetchStats, processes, fetchProcesses } = useITSMStore()
   const [dialogOpen, setDialogOpen] = useState(false)
-  const [form, setForm] = useState({ title: '', description: '', risk_level: 'low', change_plan: '', rollback_plan: '', created_by: 'admin' })
+  const [form, setForm] = useState({ title: '', description: '', risk_level: 'low', change_plan: '', rollback_plan: '', created_by: 'admin', process_id: '' })
   const [selectedTicket, setSelectedTicket] = useState<Ticket | null>(null)
   const [ticketEvents, setTicketEvents] = useState<TicketEvent[]>([])
   const [detailTab, setDetailTab] = useState('detail')
@@ -102,12 +102,12 @@ export default function ITSMPage() {
     } catch { setAttachments([]) }
   }, [])
 
-  useEffect(() => { fetch(); fetchStats() }, [])
+  useEffect(() => { fetch(); fetchStats(); fetchProcesses() }, [])
 
   const handleCreate = async () => {
     await create({ ...form, ci_ids: ciIds })
     setDialogOpen(false); setCiIds([])
-    setForm({ title: '', description: '', risk_level: 'low', change_plan: '', rollback_plan: '', created_by: 'admin' })
+    setForm({ title: '', description: '', risk_level: 'low', change_plan: '', rollback_plan: '', created_by: 'admin', process_id: '' })
     fetchStats()
   }
 
@@ -352,6 +352,7 @@ export default function ITSMPage() {
                 <div className="grid grid-cols-3 gap-2 text-sm mb-3">
                   <div><span className="text-muted-foreground">风险:</span> <Badge variant={riskBadge[selectedTicket.risk_level]} className="text-xs">{riskLabels[selectedTicket.risk_level]}</Badge></div>
                   <div><span className="text-muted-foreground">状态:</span> <Badge variant={statusVariant(selectedTicket.status)} className="text-xs">{statusLabels[selectedTicket.status]}</Badge></div>
+                  <div><span className="text-muted-foreground">流程:</span> {selectedTicket.process_id ? <Badge variant="outline" className="text-xs">{processes.find(p => p.id === selectedTicket.process_id)?.name || selectedTicket.process_id.slice(0, 8)}</Badge> : '无'}</div>
                   <div><span className="text-muted-foreground">SLA:</span> <span className={isOverdue(selectedTicket) ? 'text-destructive font-medium' : ''}>{SLA_BY_RISK[selectedTicket.risk_level] || '72小时'}{isOverdue(selectedTicket) && ' 已逾期'}</span></div>
                   {selectedTicket.deadline_at && <div className="col-span-3"><span className="text-muted-foreground">截止:</span> <Clock className="h-3 w-3 inline mr-1" />{formatTime(selectedTicket.deadline_at)}</div>}
                   {selectedTicket.scheduled_at && <div className="col-span-3"><span className="text-muted-foreground">计划执行:</span> {formatTime(selectedTicket.scheduled_at)}</div>}
@@ -547,7 +548,12 @@ export default function ITSMPage() {
                 <option value="low">Low - 数据只读</option><option value="medium">Medium - 单机无状态</option><option value="high">High - 核心配置修改</option><option value="critical">Critical - 数据库变更</option>
               </select>
             </div>
-            <div><label className="text-sm font-medium">创建人</label><Input value={form.created_by} onChange={e => setForm(f => ({ ...f, created_by: e.target.value }))} /></div>
+            <div><label className="text-sm font-medium">流程模板</label>
+              <select className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm" value={form.process_id} onChange={e => setForm(f => ({ ...f, process_id: e.target.value }))}>
+                <option value="">无流程模板</option>
+                {processes.filter(p => p.enabled).map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+              </select>
+            </div>
           </div>
           <div><label className="text-sm font-medium">变更计划</label><textarea className="flex h-16 w-full rounded-md border border-input bg-background px-3 py-2 text-sm" value={form.change_plan} onChange={e => setForm(f => ({ ...f, change_plan: e.target.value }))} /></div>
           <div><label className="text-sm font-medium">回滚计划</label><textarea className="flex h-16 w-full rounded-md border border-input bg-background px-3 py-2 text-sm" value={form.rollback_plan} onChange={e => setForm(f => ({ ...f, rollback_plan: e.target.value }))} /></div>

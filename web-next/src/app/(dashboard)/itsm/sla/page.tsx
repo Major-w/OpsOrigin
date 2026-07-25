@@ -1,68 +1,60 @@
 'use client'
 
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { Input } from '@/components/ui/input'
-import { Dialog, DialogFooter } from '@/components/ui/dialog'
-import { Plus, Trash2, Clock } from 'lucide-react'
+import { Clock, Save } from 'lucide-react'
+import { apiFetch } from '@/lib/utils'
+import { toast } from '@/stores/toast'
 
-const DEFAULT_SLAS = [
-  { id: '1', name: 'Critical 变更', riskLevel: 'critical', deadlineHours: 4, escalationHours: 1, description: '数据库变更/安全事件' },
-  { id: '2', name: 'High 变更', riskLevel: 'high', deadlineHours: 24, escalationHours: 4, description: '核心配置修改/应用发布' },
-  { id: '3', name: 'Medium 变更', riskLevel: 'medium', deadlineHours: 48, escalationHours: 12, description: '单机重启/日志清理' },
-  { id: '4', name: 'Low 变更', riskLevel: 'low', deadlineHours: 72, escalationHours: 24, description: '只读查询/文档更新' },
-]
+interface SLAPolicy {
+  id: string; name: string; risk_level: string
+  response_hours: number; resolution_hours: number; escalation_hours: number
+  escalation_to: string; enabled: boolean
+}
 
-const riskLabels: Record<string, string> = { critical: '致命', high: '高危', medium: '中危', low: '低危' }
+const riskLabels: Record<string, string> = { critical: '紧急', high: '高', medium: '中', low: '低' }
+const riskColors: Record<string, any> = { critical: 'destructive', high: 'default', medium: 'warning', low: 'success' }
 
 export default function ITSMSLAPage() {
-  const [slas, setSlas] = useState(DEFAULT_SLAS)
-  const [dialogOpen, setDialogOpen] = useState(false)
-  const [form, setForm] = useState({ name: '', riskLevel: 'low', deadlineHours: 72, escalationHours: 24, description: '' })
+  const [policies, setPolicies] = useState<SLAPolicy[]>([])
+  const [editing, setEditing] = useState<string | null>(null)
+  const [form, setForm] = useState<Partial<SLAPolicy>>({})
 
-  const handleCreate = () => {
-    setSlas([...slas, { id: Date.now().toString(), ...form }])
-    setDialogOpen(false); setForm({ name: '', riskLevel: 'low', deadlineHours: 72, escalationHours: 24, description: '' })
+  useEffect(() => {
+    apiFetch<SLAPolicy[]>('/itsm/sla/policies').then(setPolicies).catch(() => toast.error('加载SLA失败'))
+  }, [])
+
+  const startEdit = (p: SLAPolicy) => { setEditing(p.id); setForm({ ...p }) }
+  const saveEdit = async () => {
+    if (!editing) return
+    try {
+      await apiFetch(`/itsm/sla/policies/${editing}`, { method: 'PUT', body: JSON.stringify(form) })
+      setPolicies(prev => prev.map(p => p.id === editing ? { ...p, ...form } as SLAPolicy : p))
+      setEditing(null); toast.success('SLA 已更新')
+    } catch (e: any) { toast.error('保存失败: ' + e.message) }
   }
 
-  const riskBadge: Record<string, 'destructive' | 'warning' | 'secondary' | 'success'> = { critical: 'destructive', high: 'warning', medium: 'secondary', low: 'success' }
-
-  return (
-    <div className="p-6 space-y-4">
-      <div className="flex items-center justify-between">
-        <div><h1 className="text-2xl font-bold">SLA 管理</h1><p className="text-sm text-muted-foreground">服务等级协议与超时策略</p></div>
-        <Button onClick={() => setDialogOpen(true)}><Plus className="h-4 w-4" />新建策略</Button>
-      </div>
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-        {slas.map(sla => (
-          <Card key={sla.id}>
-            <CardHeader className="py-3"><CardTitle className="text-sm flex items-center gap-2"><Clock className="h-4 w-4 text-emerald-400" />{sla.name}</CardTitle><p className="text-xs text-muted-foreground">{sla.description}</p></CardHeader>
-            <CardContent>
-              <div className="grid grid-cols-3 gap-2 text-xs">
-                <div><span className="text-muted-foreground">风险:</span> <Badge variant={riskBadge[sla.riskLevel] || 'secondary'}>{riskLabels[sla.riskLevel] || sla.riskLevel}</Badge></div>
-                <div><span className="text-muted-foreground">截止:</span> <span className="font-medium">{sla.deadlineHours}h</span></div>
-                <div><span className="text-muted-foreground">升级:</span> <span className="font-medium">{sla.escalationHours}h</span></div>
-              </div>
-            </CardContent>
-          </Card>
-        ))}
-      </div>
-      <Dialog open={dialogOpen} onClose={() => setDialogOpen(false)} title="新建 SLA 策略">
-        <div className="space-y-3">
-          <div><label className="text-sm font-medium">名称</label><Input value={form.name} onChange={e => setForm(f => ({ ...f, name: e.target.value }))} placeholder="低风险变更" /></div>
-          <div><label className="text-sm font-medium">风险等级</label><select className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm" value={form.riskLevel} onChange={e => setForm(f => ({ ...f, riskLevel: e.target.value }))}>
-            <option value="low">Low</option><option value="medium">Medium</option><option value="high">High</option><option value="critical">Critical</option>
-          </select></div>
-          <div className="grid grid-cols-2 gap-3">
-            <div><label className="text-sm font-medium">截止时间(小时)</label><Input type="number" value={form.deadlineHours} onChange={e => setForm(f => ({ ...f, deadlineHours: parseInt(e.target.value) || 72 }))} /></div>
-            <div><label className="text-sm font-medium">升级时间(小时)</label><Input type="number" value={form.escalationHours} onChange={e => setForm(f => ({ ...f, escalationHours: parseInt(e.target.value) || 24 }))} /></div>
+  return <div className="p-6 space-y-4">
+    <div><h1 className="text-xl font-bold">SLA 管理</h1><p className="text-xs text-muted-foreground">按风险等级定义响应/解决/升级时限</p></div>
+    <div className="grid gap-3">
+      {policies.map(p => {
+        const isEdit = editing === p.id
+        return <Card key={p.id}><CardContent className="p-4 flex items-center gap-4">
+          <div className="shrink-0 w-12 text-center"><Badge variant={riskColors[p.risk_level]} className="text-xs">{riskLabels[p.risk_level]}</Badge></div>
+          <div className="flex-1 min-w-0">{isEdit ? <Input value={form.name||''} onChange={e=>setForm({...form,name:e.target.value})} className="h-7 text-sm"/> : <p className="font-medium text-sm">{p.name}</p>}</div>
+          <div className="flex gap-4 text-xs text-muted-foreground shrink-0">
+            <span>响应 {isEdit ? <Input type="number" value={form.response_hours||0} onChange={e=>setForm({...form,response_hours:+e.target.value})} className="w-16 h-6 inline text-xs"/> : `${p.response_hours}h`}</span>
+            <span>解决 {isEdit ? <Input type="number" value={form.resolution_hours||0} onChange={e=>setForm({...form,resolution_hours:+e.target.value})} className="w-16 h-6 inline text-xs"/> : `${p.resolution_hours}h`}</span>
+            <span>升级 {isEdit ? <Input type="number" value={form.escalation_hours||0} onChange={e=>setForm({...form,escalation_hours:+e.target.value})} className="w-16 h-6 inline text-xs"/> : `${p.escalation_hours}h`}</span>
           </div>
-          <div><label className="text-sm font-medium">描述</label><Input value={form.description} onChange={e => setForm(f => ({ ...f, description: e.target.value }))} /></div>
-        </div>
-        <DialogFooter><Button variant="outline" onClick={() => setDialogOpen(false)}>取消</Button><Button onClick={handleCreate} disabled={!form.name}>创建</Button></DialogFooter>
-      </Dialog>
+          <div className="shrink-0 flex gap-1">
+            {isEdit ? <Button size="sm" variant="outline" onClick={saveEdit}><Save className="h-3 w-3"/></Button> : <Button size="sm" variant="ghost" onClick={()=>startEdit(p)}><Clock className="h-3 w-3"/></Button>}
+          </div>
+        </CardContent></Card>
+      })}
     </div>
-  )
+  </div>
 }

@@ -16,20 +16,27 @@ import (
 	"time"
 
 	"github.com/opsorigin/core/internal/itsm/model"
+	"github.com/opsorigin/core/internal/itsm/process"
 	"github.com/opsorigin/core/internal/itsm/risk"
 	"github.com/opsorigin/core/internal/itsm/store"
 	"github.com/opsorigin/core/internal/itsm/webhook"
 	"github.com/opsorigin/core/pkg/config"
 )
 
+// ProcessLoader — itsm 只需要加载流程,不需要完整的 process.Store
+type ProcessLoader interface {
+	Get(ctx context.Context, id, tenantID string) (*process.Process, error)
+}
+
 type Service struct {
-	cfg      *config.Config
-	store    store.Store
-	risk     *risk.Classifier
-	webhook  *webhook.Callback
-	wsHub    interface{ BroadcastToTenant(interface{}, string) }
-	stopCh   chan struct{}
-	stopOnce sync.Once
+	cfg          *config.Config
+	store        store.Store
+	risk         *risk.Classifier
+	webhook      *webhook.Callback
+	processStore ProcessLoader
+	wsHub        interface{ BroadcastToTenant(interface{}, string) }
+	stopCh       chan struct{}
+	stopOnce     sync.Once
 }
 
 func NewService(cfg *config.Config, db *sql.DB) *Service {
@@ -60,6 +67,10 @@ func NewService(cfg *config.Config, db *sql.DB) *Service {
 
 func (s *Service) SetWebSocketHub(hub interface{ BroadcastToTenant(interface{}, string) }) {
 	s.wsHub = hub
+}
+
+func (s *Service) SetProcessStore(ps ProcessLoader) {
+	s.processStore = ps
 }
 
 func (s *Service) RegisterRoutes(mux *http.ServeMux) {

@@ -14,6 +14,15 @@ func NewService(db *sql.DB) *Service {
 
 type Service struct {
 	store Store
+	Name  string
+}
+
+func (s *Service) Get(ctx context.Context, id, tenantID string) (*Process, error) {
+	return s.store.Get(ctx, id, tenantID)
+}
+
+func (s *Service) List(ctx context.Context, tenantID string) ([]*Process, error) {
+	return s.store.List(ctx, tenantID)
 }
 
 func (s *Service) RegisterRoutes(mux *http.ServeMux) {
