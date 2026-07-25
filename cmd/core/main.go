@@ -294,9 +294,14 @@ func main() {
 	server.RegisterService(workflowSvc)
 
 	schedulerSvc := scheduler.NewService(db)
-	// 让定时任务真正触发 workflow 执行（而非只存定义）。
 	schedulerSvc.SetWorkflowTrigger(func(ctx context.Context, tenantID, workflowID string) error {
 		_, err := workflowSvc.Trigger(ctx, tenantID, workflowID, nil, nil)
+		return err
+	})
+	schedulerSvc.SetScriptTrigger(func(ctx context.Context, tenantID, scriptID string, agentIDs []string) error {
+		agentID := ""
+		if len(agentIDs) > 0 { agentID = agentIDs[0] }
+		_, _, err := scriptSvc.Execute(scriptID, nil, 3600, "", agentID, tenantID)
 		return err
 	})
 	server.RegisterService(schedulerSvc)

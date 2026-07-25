@@ -1,75 +1,99 @@
 'use client'
 
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
-import { Scan, Play, Clock, CheckCircle, XCircle, RefreshCw, Plus } from 'lucide-react'
+import { Input } from '@/components/ui/input'
+import { useScriptStore } from '@/stores/script'
+import { useAgentStore } from '@/stores/agent'
+import { useSchedulerStore } from '@/stores/scheduler'
+import { apiFetch } from '@/lib/utils'
+import { toast } from '@/stores/toast'
+import { Scan, Play, Clock, CheckCircle, XCircle, Loader2 } from 'lucide-react'
 
-export default function AutoInspectionPage() {
-  const [tasks] = useState([
-    { id: 'INS-001', name: '每日系统巡检', targets: 45, lastRun: '2026-07-15 08:00', status: 'success', duration: '12m' },
-    { id: 'INS-002', name: '安全合规巡检', targets: 32, lastRun: '2026-07-14 22:00', status: 'success', duration: '18m' },
-    { id: 'INS-003', name: '性能基线巡检', targets: 28, lastRun: '2026-07-14 06:00', status: 'partial', duration: '15m' },
-    { id: 'INS-004', name: '网络连通性巡检', targets: 50, lastRun: '2026-07-15 07:30', status: 'success', duration: '5m' },
-  ])
+export default function InspectionPage() {
+  const { scripts, fetch: fetchScripts } = useScriptStore()
+  const { agents, fetch: fetchAgents } = useAgentStore()
+  const { tasks, fetch: fetchSchedules, create, update: updateSched } = useSchedulerStore()
 
-  return (
-    <div className="p-6 space-y-4">
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-2xl font-bold">自动化巡检</h1>
-          <p className="text-sm text-muted-foreground">定时自动巡检主机健康状态</p>
-        </div>
-        <div className="flex gap-2">
-          <Button variant="outline" size="sm"><RefreshCw className="h-3 w-3 mr-1" />刷新</Button>
-          <Button size="sm"><Plus className="h-4 w-4 mr-1" />新建巡检</Button>
-        </div>
-      </div>
+  const [scriptId, setScriptId] = useState('')
+  const [agentIds, setAgentIds] = useState<string[]>([])
+  const [cron, setCron] = useState('0 8 * * *')
+  const [schedName, setSchedName] = useState('')
+  const [running, setRunning] = useState(false)
+  const [result, setResult] = useState<any>(null)
 
-      <div className="grid gap-4 grid-cols-2 lg:grid-cols-4">
-        {[
-          { label: '巡检任务', value: tasks.length, color: 'text-blue-500' },
-          { label: '覆盖主机', value: 155, color: 'text-emerald-500' },
-          { label: '今日完成', value: 8, color: 'text-violet-500' },
-          { label: '异常发现', value: 3, color: 'text-amber-500' },
-        ].map((item, i) => (
-          <Card key={i}>
-            <CardContent className="p-4">
-              <p className="text-xs text-muted-foreground">{item.label}</p>
-              <p className={`metric-value text-2xl ${item.color} mt-1`}>{item.value}</p>
-            </CardContent>
-          </Card>
-        ))}
-      </div>
+  useEffect(() => { fetchScripts(); fetchAgents(); fetchSchedules() }, [])
 
-      <Card>
-        <CardHeader className="py-3">
-          <CardTitle className="text-sm">巡检任务列表</CardTitle>
-        </CardHeader>
-        <CardContent className="space-y-2">
-          {tasks.map((t) => (
-            <div key={t.id} className="flex items-center justify-between p-3 rounded-lg bg-gray-50 dark:bg-[rgba(255,255,255,0.02)] border border-gray-100 dark:border-[rgba(255,255,255,0.04)]">
-              <div className="flex items-center gap-3">
-                <Scan className="h-4 w-4 text-blue-500" />
-                <div>
-                  <span className="text-xs font-mono text-blue-500">{t.id}</span>
-                  <span className="text-xs text-gray-900 dark:text-white ml-2">{t.name}</span>
-                </div>
-              </div>
-              <div className="flex items-center gap-4 text-xs text-muted-foreground">
-                <span>{t.targets} 台主机</span>
-                <span>{t.duration}</span>
-                <Badge variant={t.status === 'success' ? 'success' : t.status === 'partial' ? 'warning' : 'destructive'}>
-                  {t.status === 'success' ? '成功' : t.status === 'partial' ? '部分通过' : '失败'}
-                </Badge>
-                <span className="font-mono text-[10px]">{t.lastRun}</span>
-                <Button variant="ghost" size="icon" className="h-7 w-7"><Play className="h-3 w-3" /></Button>
-              </div>
+  const runNow = async () => {
+    if (!scriptId || agentIds.length === 0) { toast.error('请选择巡检脚本和目标主机'); return }
+    setRunning(true); setResult(null)
+    try {
+      const r = await apiFetch<any>(`/scripts/${scriptId}/execute`, {
+        method: 'POST',
+        body: JSON.stringify({ agent_id: agentIds[0], timeout: 600, params: {} }),
+      })
+      setResult(r)
+      toast.success(r.exit_code === 0 ? '巡检通过' : `巡检完成, exitCode=${r.exit_code}`)
+    } catch (e: any) { toast.error('执行失败: ' + e.message) }
+    setRunning(false)
+  }
+
+  const schedule = async () => {
+    if (!scriptId || !schedName.trim() || !cron.trim()) { toast.error('请填写完整'); return }
+    await create({ name: schedName, cron_expr: cron, task_type: 'script', target_id: scriptId, agent_ids: agentIds, enabled: true })
+    setSchedName('')
+    toast.success('巡检计划已创建')
+    fetchSchedules()
+  }
+
+  const onlineAgents = agents.filter(a => a.status === 'online')
+  const inspectionScripts = scripts.filter(s => s.type === 'shell' || s.type === 'python')
+
+  return <div className="p-6 space-y-4">
+    <div><h1 className="text-xl font-bold">自动化巡检</h1><p className="text-xs text-muted-foreground">选择脚本在指定主机上执行巡检, 可设置为定时任务</p></div>
+
+    <div className="grid md:grid-cols-2 gap-4">
+      <Card><CardHeader className="py-3"><CardTitle className="text-sm">立即巡检</CardTitle></CardHeader>
+        <CardContent className="space-y-3">
+          <div><label className="text-xs font-medium">巡检脚本</label>
+            <select className="flex h-8 w-full rounded-md border border-input bg-background px-2 text-xs mt-1" value={scriptId} onChange={e=>setScriptId(e.target.value)}>
+              <option value="">选择脚本</option>{inspectionScripts.map(s=><option key={s.id} value={s.id}>{s.name}</option>)}
+            </select>
+          </div>
+          <div><label className="text-xs font-medium">目标主机</label>
+            <div className="max-h-32 overflow-y-auto border rounded-md mt-1 p-1">
+              {onlineAgents.length===0?<p className="text-[10px] text-muted-foreground p-2">无在线Agent</p>:
+              onlineAgents.map(a=><label key={a.id} className="flex items-center gap-1.5 text-[11px] cursor-pointer hover:bg-accent rounded px-1 py-0.5">
+                <input type="checkbox" checked={agentIds.includes(a.id)} onChange={()=>setAgentIds(prev=>prev.includes(a.id)?prev.filter(i=>i!==a.id):[...prev,a.id])}/>
+                {a.name||a.id.slice(0,8)} ({a.address})
+              </label>)}
             </div>
-          ))}
+          </div>
+          <Button onClick={runNow} disabled={running||!scriptId||agentIds.length===0}><Play className="h-4 w-4 mr-1"/>{running?'执行中...':'立即巡检'}</Button>
+          {result && <div className={`text-xs p-2 rounded ${result.exit_code===0?'bg-emerald-50 text-emerald-700':'bg-red-50 text-red-700'}`}>
+            {result.exit_code===0?<CheckCircle className="h-4 w-4 inline mr-1"/>:<XCircle className="h-4 w-4 inline mr-1"/>}
+            exitCode={result.exit_code}, {result.duration_ms}ms
+            {result.stdout && <pre className="mt-1 text-[10px] overflow-auto max-h-24">{result.stdout}</pre>}
+          </div>}
+        </CardContent>
+      </Card>
+
+      <Card><CardHeader className="py-3"><CardTitle className="text-sm">定时巡检</CardTitle></CardHeader>
+        <CardContent className="space-y-3">
+          <div><label className="text-xs font-medium">计划名称</label><Input value={schedName} onChange={e=>setSchedName(e.target.value)} placeholder="每日主机巡检" className="h-8 mt-1"/></div>
+          <div><label className="text-xs font-medium">Cron 表达式</label><Input value={cron} onChange={e=>setCron(e.target.value)} placeholder="0 8 * * *" className="h-8 mt-1"/></div>
+          <Button onClick={schedule} disabled={!schedName.trim()||!scriptId}><Clock className="h-4 w-4 mr-1"/>创建定时计划</Button>
         </CardContent>
       </Card>
     </div>
-  )
+
+    <Card><CardHeader className="py-3"><CardTitle className="text-sm">已有巡检计划</CardTitle></CardHeader>
+      <CardContent>
+        {tasks.filter(t=>t.task_type==='script').length===0?<p className="text-xs text-muted-foreground">暂无</p>:
+        tasks.filter(t=>t.task_type==='script').map(t=><div key={t.id} className="flex items-center justify-between text-sm py-1"><span className="font-medium">{t.name}</span><span className="text-xs text-muted-foreground">{t.cron_expr}</span><Badge variant={t.enabled?'success':'outline'} className="text-[10px]">{t.enabled?'启用':'禁用'}</Badge></div>)}
+      </CardContent>
+    </Card>
+  </div>
 }

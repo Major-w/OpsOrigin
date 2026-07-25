@@ -4,7 +4,6 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
-	"fmt"
 	"log/slog"
 	"net/http"
 	"strconv"
@@ -94,9 +93,10 @@ type Notifier interface {
 }
 
 type Service struct {
-	store   Store
-	trigger func(ctx context.Context, tenantID, workflowID string) error
-	notify  Notifier
+	store         Store
+	trigger       func(ctx context.Context, tenantID, workflowID string) error
+	scriptTrigger func(ctx context.Context, tenantID, scriptID string, agentIDs []string) error
+	notify        Notifier
 }
 
 func (s *Service) SetNotifier(n Notifier) { s.notify = n }
@@ -112,6 +112,10 @@ func NewService(db *sql.DB) *Service {
 // SetWorkflowTrigger 注入工作流执行入口，使定时任务能真正触发 workflow 执行。
 func (s *Service) SetWorkflowTrigger(f func(ctx context.Context, tenantID, workflowID string) error) {
 	s.trigger = f
+}
+
+func (s *Service) SetScriptTrigger(f func(ctx context.Context, tenantID, scriptID string, agentIDs []string) error) {
+	s.scriptTrigger = f
 }
 
 func tenantFromCtx(ctx context.Context) string {
@@ -144,63 +148,59 @@ func (s *Service) Start(ctx context.Context) {
 	}
 }
 
-// scan 遍历所有启用的 workflow 类任务，命中 cron 表达式即触发（同分钟内去重）。
+// scan 遍历所有启用的任务，命中 cron 表达式即触发。
 func (s *Service) scan(ctx context.Context) {
-	if s.trigger == nil {
-		return
-	}
 	tasks, err := s.store.List(ctx, "")
-	if err != nil {
-		slog.Warn("scheduler scan list failed", "err", err)
-		return
-	}
+	if err != nil { slog.Warn("scheduler scan list failed", "err", err); return }
 	now := time.Now()
 	for _, t := range tasks {
-		if !t.Enabled || t.TaskType != TaskTypeWorkflow || t.CronExpr == "" {
+		if !t.Enabled || t.CronExpr == "" { continue }
+		if !matchCron(t.CronExpr, now) { continue }
+		if t.LastRunAt != nil && now.Sub(*t.LastRunAt) < time.Minute { continue }
+
+		switch t.TaskType {
+		case TaskTypeWorkflow:
+			if s.trigger == nil { continue }
+		case TaskTypeScript:
+			if s.scriptTrigger == nil { continue }
+		default:
 			continue
 		}
-		if !matchCron(t.CronExpr, now) {
-			continue
-		}
-		if t.LastRunAt != nil && now.Sub(*t.LastRunAt) < time.Minute {
-			continue // 同分钟内不重复触发
-		}
+
 		t.LastRunAt = &now
 		if uerr := s.store.Update(ctx, t); uerr != nil {
 			slog.Warn("scheduler update last_run failed", "task", t.ID, "err", uerr)
 		}
+
 		go func(task *ScheduledTask) {
 			var lastErr error
-			maxAttempts := task.MaxRetries + 1 // 含首次执行
+			maxAttempts := task.MaxRetries + 1
 			for attempt := 0; attempt < maxAttempts; attempt++ {
 				if attempt > 0 {
 					delay := task.RetryDelaySecs
 					if delay <= 0 { delay = 60 }
 					time.Sleep(time.Duration(delay) * time.Second)
 				}
-				err := s.trigger(context.WithoutCancel(ctx), task.TenantID, task.TargetID)
+				var err error
+				switch task.TaskType {
+				case TaskTypeWorkflow:
+					err = s.trigger(context.WithoutCancel(ctx), task.TenantID, task.TargetID)
+				case TaskTypeScript:
+					err = s.scriptTrigger(context.WithoutCancel(ctx), task.TenantID, task.TargetID, task.AgentIDs)
+				}
 				if err == nil {
-					if task.RetryCount > 0 {
-						// 重试成功，清零计数器
-						task.RetryCount = 0
-						task.LastError = ""
-						_ = s.store.Update(ctx, task)
-					}
+					if task.RetryCount > 0 { task.RetryCount = 0; task.LastError = ""; _ = s.store.Update(ctx, task) }
 					return
 				}
 				lastErr = err
 				task.RetryCount = attempt + 1
-				slog.Warn("scheduler retry", "task", task.ID, "attempt", task.RetryCount, "err", err)
+				task.LastError = err.Error()
+				_ = s.store.Update(ctx, task)
 			}
-			// 所有尝试失败
-			task.LastError = lastErr.Error()
-			_ = s.store.Update(ctx, task)
-			// 告警通知
+			// 全部重试失败 → 告警
 			if task.AlertOnFailure && s.notify != nil {
-				_ = s.notify.NotifyEvent(ctx, task.TenantID,
-					"workflow.failed",
-					fmt.Sprintf("定时任务 %s 执行失败", task.Name),
-					fmt.Sprintf("任务「%s」在 %d 次尝试后仍然失败: %v", task.Name, maxAttempts, lastErr))
+				_ = s.notify.NotifyEvent(context.Background(), task.TenantID, "workflow.failed",
+					"定时任务全部重试失败: "+task.Name, lastErr.Error())
 			}
 		}(t)
 	}
