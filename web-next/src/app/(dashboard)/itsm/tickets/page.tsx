@@ -1,6 +1,7 @@
 'use client'
 
 import { useEffect, useState, useRef, useCallback } from 'react'
+import { useRouter } from 'next/navigation'
 import { useITSMStore, type Ticket, type TicketEvent, type ITSMStats } from '@/stores/itsm'
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
@@ -9,7 +10,7 @@ import { Input } from '@/components/ui/input'
 import { Dialog, DialogFooter } from '@/components/ui/dialog'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { formatTime, apiFetch } from '@/lib/utils'
-import { Plus, Check, X, Play, RotateCcw, Clock, FileText, Activity, ChevronRight, Paperclip, MessageSquare, Upload, Download, Trash2, FileUp, FileDown } from 'lucide-react'
+import { Plus, Check, X, Play, RotateCcw, Clock, FileText, Activity, ChevronRight, Paperclip, MessageSquare, Upload, Download, Trash2, FileUp, FileDown, BookOpen } from 'lucide-react'
 
 const riskBadge: Record<string, 'destructive' | 'warning' | 'secondary' | 'success'> = { critical: 'destructive', high: 'warning', medium: 'secondary', low: 'success' }
 const riskLabels: Record<string, string> = { critical: '致命', high: '高危', medium: '中危', low: '低危' }
@@ -53,6 +54,7 @@ function formatFileSize(bytes: number): string {
 }
 
 export default function ITSMPage() {
+  const router = useRouter()
   const { tickets, stats, loading, fetch, create, approve, reject, execute, complete, rollback, getTicket, getEvents, fetchStats, processes, fetchProcesses } = useITSMStore()
   const [dialogOpen, setDialogOpen] = useState(false)
   const [form, setForm] = useState({ title: '', description: '', risk_level: 'low', change_plan: '', rollback_plan: '', created_by: 'admin', process_id: '' })
@@ -172,6 +174,22 @@ export default function ITSMPage() {
     setRollbackDialog(false); setRollbackReason('')
     await handleSelectTicket(await getTicket(selectedTicket.id))
     fetchStats()
+  }
+
+  const handleConvertToKnowledge = async (ticket: Ticket) => {
+    const content = [
+      '## 问题描述', ticket.description || '',
+      ticket.change_plan ? '## 变更方案\n' + ticket.change_plan : '',
+      ticket.rollback_plan ? '## 回滚方案\n' + ticket.rollback_plan : '',
+      '## 处理结果',
+      '- 风险等级: ' + ticket.risk_level,
+      '- 处理人: ' + (ticket.completed_by || ticket.created_by),
+      ticket.completed_at ? '- 完成时间: ' + formatTime(ticket.completed_at) : '',
+    ].filter(Boolean).join('\n\n')
+    try {
+      await apiFetch('/knowledge', { method: 'POST', body: JSON.stringify({ title: ticket.title + ' - 处理总结', content, category: '故障处理', tags: [ticket.risk_level, '工单转换'], author: 'admin' }) })
+      router.push('/knowledge')
+    } catch (e: any) { alert('转换失败: ' + e.message) }
   }
 
   const handleAddComment = async () => {
@@ -357,6 +375,9 @@ export default function ITSMPage() {
                     )}
                     {(selectedTicket.status === 'failed' || selectedTicket.status === 'succeeded') && (
                       <Button variant="outline" size="sm" onClick={() => { setRollbackDialog(true); setRollbackReason('') }}><RotateCcw className="h-3 w-3" />回滚</Button>
+                    )}
+                    {selectedTicket.status === 'succeeded' && (
+                      <Button variant="outline" size="sm" onClick={() => handleConvertToKnowledge(selectedTicket)}><BookOpen className="h-3 w-3 mr-1"/>转知识</Button>
                     )}
                   </div>
                 </div>
