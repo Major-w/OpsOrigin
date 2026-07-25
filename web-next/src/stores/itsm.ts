@@ -51,9 +51,32 @@ export interface ITSMStats {
   avg_execution_ms: number
 }
 
+export interface ProcessStep {
+  id: string; name: string; type: StepType
+  description?: string
+  approvers?: string[]; approval_msg?: string
+  script_id?: string; inputs?: Record<string,any>
+  condition?: string
+  duration?: string; deadline?: string
+  notify_channel?: string; notify_title?: string; notify_body?: string
+  subflow_id?: string
+  depends_on?: { nodeId: string; condition: string }[]
+  position_x?: number; position_y?: number
+}
+
+type StepType = 'start' | 'end' | 'user' | 'service' | 'gateway' | 'timer' | 'notify' | 'parallel' | 'subflow'
+
+export interface Process {
+  id: string; name: string; description?: string; category?: string
+  steps: ProcessStep[]; labels?: Record<string,string>
+  enabled: boolean; version: number
+  created_at: string; updated_at: string
+}
+
 interface ITSMState {
   tickets: Ticket[]
   stats: ITSMStats | null
+  processes: Process[]
   loading: boolean
   error: string | null
   fetch: () => Promise<void>
@@ -66,11 +89,18 @@ interface ITSMState {
   complete: (id: string, comment?: string) => Promise<boolean>
   rollback: (id: string, reason?: string) => Promise<boolean>
   fetchStats: () => Promise<void>
+  // process
+  fetchProcesses: () => Promise<void>
+  getProcess: (id: string) => Promise<Process | null>
+  createProcess: (data: Partial<Process>) => Promise<string | null>
+  updateProcess: (id: string, data: Partial<Process>) => Promise<boolean>
+  deleteProcess: (id: string) => Promise<boolean>
 }
 
 export const useITSMStore = create<ITSMState>((set, get) => ({
   tickets: [],
   stats: null,
+  processes: [],
   loading: false,
   error: null,
   fetch: async () => {
@@ -172,5 +202,42 @@ export const useITSMStore = create<ITSMState>((set, get) => ({
     } catch (e: any) {
       toast.error(`加载工单统计失败: ${e.message}`)
     }
+  },
+  fetchProcesses: async () => {
+    try {
+      const processes = await apiFetch<Process[]>('/itsm/processes')
+      set({ processes })
+    } catch (e: any) {
+      toast.error(`加载流程列表失败: ${e.message}`)
+    }
+  },
+  getProcess: async (id) => {
+    try {
+      return await apiFetch<Process>(`/itsm/processes/${id}`)
+    } catch { return null }
+  },
+  createProcess: async (data) => {
+    try {
+      const p = await apiFetch<Process>('/itsm/processes', { method: 'POST', body: JSON.stringify(data) })
+      toast.success('创建流程成功')
+      await get().fetchProcesses()
+      return p.id
+    } catch (e: any) { toast.error(`创建失败: ${e.message}`); return null }
+  },
+  updateProcess: async (id, data) => {
+    try {
+      await apiFetch(`/itsm/processes/${id}`, { method: 'PUT', body: JSON.stringify(data) })
+      toast.success('保存流程成功')
+      await get().fetchProcesses()
+      return true
+    } catch (e: any) { toast.error(`保存失败: ${e.message}`); return false }
+  },
+  deleteProcess: async (id) => {
+    try {
+      await apiFetch(`/itsm/processes/${id}`, { method: 'DELETE' })
+      set(s => ({ processes: s.processes.filter(p => p.id !== id) }))
+      toast.success('删除流程成功')
+      return true
+    } catch (e: any) { toast.error(`删除失败: ${e.message}`); return false }
   },
 }))

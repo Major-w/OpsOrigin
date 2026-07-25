@@ -21,6 +21,7 @@ import (
 	"github.com/opsorigin/core/internal/cmdb/pg"
 	"github.com/opsorigin/core/internal/ent"
 	"github.com/opsorigin/core/internal/itsm"
+	"github.com/opsorigin/core/internal/itsm/process"
 	"github.com/opsorigin/core/internal/vuln"
 	"github.com/opsorigin/core/internal/ai"
 	"github.com/opsorigin/core/internal/audit"
@@ -202,6 +203,9 @@ func main() {
 	server.RegisterService(itsmSvc)
 	itsmSvc.SetWebSocketHub(wsHub)
 	itsmSvc.StartSLAChecker(ctx)
+
+	processSvc := process.NewService(db)
+	server.RegisterService(processSvc)
 
 	// 创建 tunnel server,监听 Proxy 连接(用于通过 Proxy 下发命令给 Agent)
 	tunnelServer := tunnel.NewServer(cfg.Proxy.Listen, cfg.Tunnel.AuthSecret, cfg.Tunnel.Insecure)
