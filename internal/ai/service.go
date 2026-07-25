@@ -23,8 +23,8 @@ import (
 
 type Service struct {
 	cfg      *config.Config
-	engine   *agentic.Engine
-	registry *mcp.Registry
+	Engine   *agentic.Engine
+	Registry *mcp.Registry
 	limiter  ratelimit.RateLimiter
 }
 
@@ -52,8 +52,8 @@ func NewService(cfg *config.Config, llmClient *llm.Client, redisClient *rediscli
 
 	return &Service{
 		cfg:      cfg,
-		engine:   eng,
-		registry: reg,
+		Engine:   eng,
+		Registry: reg,
 		limiter:  lim,
 	}
 }
@@ -88,7 +88,7 @@ func (s *Service) RegisterRoutes(mux *http.ServeMux) {
 }
 
 func (s *Service) Start(ctx context.Context) error {
-	return s.engine.Start()
+	return s.Engine.Start()
 }
 
 // handleChat 处理 AI 助手聊天请求。
@@ -121,7 +121,7 @@ func (s *Service) handleChat(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if req.Reasoning && !req.Stream {
-		thinking, answer, err := s.engine.ChatReasoning(r.Context(), req.AgentID, req.Prompt, req.History)
+		thinking, answer, err := s.Engine.ChatReasoning(r.Context(), req.AgentID, req.Prompt, req.History)
 		if err != nil {
 			writeError(w, http.StatusBadGateway, chatFriendlyError(err.Error()))
 			return
@@ -131,7 +131,7 @@ func (s *Service) handleChat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	out, err := s.engine.Chat(r.Context(), req.AgentID, req.Prompt, req.History)
+	out, err := s.Engine.Chat(r.Context(), req.AgentID, req.Prompt, req.History)
 	if err != nil {
 		writeError(w, http.StatusBadGateway, chatFriendlyError(err.Error()))
 		return
@@ -158,7 +158,7 @@ func (s *Service) handleChatStream(w http.ResponseWriter, r *http.Request, req *
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
 
-	ch, err := s.engine.ChatStream(r.Context(), req.AgentID, req.Prompt, req.History)
+	ch, err := s.Engine.ChatStream(r.Context(), req.AgentID, req.Prompt, req.History)
 	if err != nil {
 		fmt.Fprintf(w, "event: error\ndata: %s\n\n", err.Error())
 		flusher.Flush()
@@ -177,7 +177,7 @@ func (s *Service) handleChatStream(w http.ResponseWriter, r *http.Request, req *
 
 // UpdateLLMConfig 热更新 LLM 配置(sysconfig 修改 LLM 设置后调用)。
 func (s *Service) UpdateLLMConfig(cfg llm.Config) {
-	s.engine.UpdateClient(llm.NewClient(cfg))
+	s.Engine.UpdateClient(llm.NewClient(cfg))
 }
 
 // ——— 对话持久 ———
@@ -189,7 +189,7 @@ func (s *Service) handleSaveConversation(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	conv.TenantID = tenantFromCtx(r.Context())
-	if err := s.engine.SaveConversation(r.Context(), &conv); err != nil {
+	if err := s.Engine.SaveConversation(r.Context(), &conv); err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
@@ -199,13 +199,13 @@ func (s *Service) handleSaveConversation(w http.ResponseWriter, r *http.Request)
 func (s *Service) handleListConversations(w http.ResponseWriter, r *http.Request) {
 	tenantID := tenantFromCtx(r.Context())
 	agentID := r.URL.Query().Get("agent_id")
-	convs := s.engine.LoadConversations(tenantID, agentID, 50)
+	convs := s.Engine.LoadConversations(tenantID, agentID, 50)
 	writeJSON(w, http.StatusOK, convs)
 }
 
 func (s *Service) handleGetConversation(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	conv, err := s.engine.GetConversation(id)
+	conv, err := s.Engine.GetConversation(id)
 	if err != nil {
 		writeError(w, http.StatusNotFound, err.Error())
 		return
@@ -231,7 +231,7 @@ func (s *Service) handleCreateAgent(w http.ResponseWriter, r *http.Request) {
 		TenantID:     tenantFromCtx(r.Context()),
 	}
 
-	if err := s.engine.CreateAgent(r.Context(), agent); err != nil {
+	if err := s.Engine.CreateAgent(r.Context(), agent); err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
@@ -241,7 +241,7 @@ func (s *Service) handleCreateAgent(w http.ResponseWriter, r *http.Request) {
 
 func (s *Service) handleListAgents(w http.ResponseWriter, r *http.Request) {
 	tenantID := tenantFromCtx(r.Context())
-	all := s.engine.ListAgents()
+	all := s.Engine.ListAgents()
 	filtered := make([]*model.AgentInstance, 0)
 	for _, a := range all {
 		if a.TenantID == tenantID {
@@ -256,7 +256,7 @@ func (s *Service) handleListAgents(w http.ResponseWriter, r *http.Request) {
 
 func (s *Service) handleGetAgent(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	agent, ok := s.engine.GetAgent(id)
+	agent, ok := s.Engine.GetAgent(id)
 	if !ok || agent.TenantID != tenantFromCtx(r.Context()) {
 		writeError(w, http.StatusNotFound, "agent not found")
 		return
@@ -265,7 +265,7 @@ func (s *Service) handleGetAgent(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Service) handleListTools(w http.ResponseWriter, r *http.Request) {
-	tools := s.registry.List()
+	tools := s.Registry.List()
 	if tools == nil {
 		tools = []mcp.ToolDefinition{}
 	}
@@ -281,7 +281,7 @@ func (s *Service) handleExecuteTool(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	result, err := s.registry.Execute(r.Context(), name, input)
+	result, err := s.Registry.Execute(r.Context(), name, input)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -311,7 +311,7 @@ func (s *Service) handleExecutePlan(w http.ResponseWriter, r *http.Request) {
 		CreatedAt: time.Now(),
 	}
 
-	if err := s.engine.ExecutePlan(r.Context(), plan); err != nil {
+	if err := s.Engine.ExecutePlan(r.Context(), plan); err != nil {
 		writeError(w, http.StatusConflict, err.Error())
 		return
 	}
@@ -321,7 +321,7 @@ func (s *Service) handleExecutePlan(w http.ResponseWriter, r *http.Request) {
 
 func (s *Service) handleListPlans(w http.ResponseWriter, r *http.Request) {
 	tenantID := tenantFromCtx(r.Context())
-	all := s.engine.ListPlans()
+	all := s.Engine.ListPlans()
 	filtered := make([]*model.ExecutionPlan, 0)
 	for _, p := range all {
 		if p.TenantID == tenantID {
@@ -365,7 +365,7 @@ func writeError(w http.ResponseWriter, status int, msg string) {
 func (s *Service) handleTokenStats(w http.ResponseWriter, r *http.Request) {
 	period := r.URL.Query().Get("period")
 	if period == "" { period = "24h" }
-	stats := s.engine.GetTokenStats(period)
+	stats := s.Engine.GetTokenStats(period)
 	writeJSON(w, http.StatusOK, stats)
 }
 
@@ -378,7 +378,7 @@ func (s *Service) handleUpdateAgent(w http.ResponseWriter, r *http.Request) {
 	}
 	ag.ID = id
 	ag.TenantID = tenantFromCtx(r.Context())
-	if err := s.engine.UpdateAgent(r.Context(), &ag); err != nil {
+	if err := s.Engine.UpdateAgent(r.Context(), &ag); err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
@@ -388,7 +388,7 @@ func (s *Service) handleUpdateAgent(w http.ResponseWriter, r *http.Request) {
 func (s *Service) handleDeleteAgent(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	tenant := tenantFromCtx(r.Context())
-	if err := s.engine.DeleteAgent(r.Context(), id, tenant); err != nil {
+	if err := s.Engine.DeleteAgent(r.Context(), id, tenant); err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
@@ -404,7 +404,7 @@ func (s *Service) handleCreateTeam(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	team.TenantID = tenantFromCtx(r.Context())
-	if err := s.engine.CreateTeam(r.Context(), &team); err != nil {
+	if err := s.Engine.CreateTeam(r.Context(), &team); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
@@ -413,7 +413,7 @@ func (s *Service) handleCreateTeam(w http.ResponseWriter, r *http.Request) {
 
 func (s *Service) handleListTeams(w http.ResponseWriter, r *http.Request) {
 	tenantID := tenantFromCtx(r.Context())
-	teams := s.engine.ListTeams(tenantID)
+	teams := s.Engine.ListTeams(tenantID)
 	if teams == nil {
 		teams = []*model.AgentTeam{}
 	}
@@ -422,7 +422,7 @@ func (s *Service) handleListTeams(w http.ResponseWriter, r *http.Request) {
 
 func (s *Service) handleGetTeam(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	team, ok := s.engine.GetTeam(id)
+	team, ok := s.Engine.GetTeam(id)
 	if !ok {
 		writeError(w, http.StatusNotFound, "team not found")
 		return
@@ -443,7 +443,7 @@ func (s *Service) handleUpdateTeam(w http.ResponseWriter, r *http.Request) {
 	}
 	team.ID = id
 	team.TenantID = tenantFromCtx(r.Context())
-	if err := s.engine.UpdateTeam(r.Context(), &team); err != nil {
+	if err := s.Engine.UpdateTeam(r.Context(), &team); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
@@ -453,7 +453,7 @@ func (s *Service) handleUpdateTeam(w http.ResponseWriter, r *http.Request) {
 func (s *Service) handleDeleteTeam(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	tenant := tenantFromCtx(r.Context())
-	if err := s.engine.DeleteTeam(r.Context(), id, tenant); err != nil {
+	if err := s.Engine.DeleteTeam(r.Context(), id, tenant); err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
@@ -476,7 +476,7 @@ func (s *Service) handleTeamChat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	team, ok := s.engine.GetTeam(req.TeamID)
+	team, ok := s.Engine.GetTeam(req.TeamID)
 	if !ok {
 		writeError(w, http.StatusNotFound, "team not found")
 		return
@@ -511,7 +511,7 @@ func (s *Service) handleTeamChat(w http.ResponseWriter, r *http.Request) {
 		flusher.Flush()
 	}
 
-	final, _, err := s.engine.RunTeamChat(r.Context(), team, req.Message, nil, emit)
+	final, _, err := s.Engine.RunTeamChat(r.Context(), team, req.Message, nil, emit)
 	if err != nil {
 		emit(model.TeamStreamEvent{Type: "error", Content: chatFriendlyError(err.Error())})
 		fmt.Fprint(w, "data: [DONE]\n\n")

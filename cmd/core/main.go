@@ -26,6 +26,7 @@ import (
 	"github.com/opsorigin/core/internal/itsm/sla"
 	"github.com/opsorigin/core/internal/vuln"
 	"github.com/opsorigin/core/internal/ai"
+	"github.com/opsorigin/core/internal/ai/agentic"
 	"github.com/opsorigin/core/internal/audit"
 	"github.com/opsorigin/core/internal/monitor"
 	healthhandler "github.com/opsorigin/core/internal/monitor/health"
@@ -360,6 +361,10 @@ func main() {
 	server.WithMiddleware(rbacMiddleware.AutoPermissionMiddleware)
 
 	aiSvc := ai.NewService(cfg, llmClient, rdbClient, db)
+	// 注入 PG 持久化（Agent/Team 数据进程重启不丢失）
+	aiSvc.Engine.SetStore(agentic.NewPGStore(db))
+	// 注册运维 MCP 工具：CMDB查询 / 工单创建 / 脚本执行 / 知识库 RAG
+	agentic.NewMCPToolSet(db).Register(aiSvc.Registry)
 	ai.LLMConfigHook = func(cfg2 llm.Config) { aiSvc.UpdateLLMConfig(cfg2) }
 	server.RegisterService(aiSvc)
 	aiSvc.Start(ctx)

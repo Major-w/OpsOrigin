@@ -44,8 +44,9 @@ type Engine struct {
 
 	// ——— 多智能体团队（Feature 1）———
 	teams          map[string]*model.AgentTeam
-	genMaxTokens   int     // 生成参数（可热更新）；0 表示使用默认值
-	genTemperature float64 // 0 表示使用默认值
+	genMaxTokens   int
+	genTemperature float64
+	store          Store // PG 持久化（可选,nil=仅内存）
 }
 
 // NewEngine 构造引擎并注册内建工具。
@@ -57,12 +58,12 @@ func NewEngine(reg *mcp.Registry, lim ratelimit.RateLimiter, llmClient *llm.Clie
 		plans:     make(map[string]*model.ExecutionPlan),
 		convStore: store,
 		convs:     make(map[string]*Conversation),
+		teams:     make(map[string]*model.AgentTeam),
 		reg:       reg,
 		lim:      lim,
 		llmClient: llmClient,
 		semMu:     sync.Mutex{},
-		llmSem:    make(chan struct{}, 32), // F4-C 决策 C: 物理 LLM 并发上限, 默认 32
-		teams:     make(map[string]*model.AgentTeam),
+		llmSem:    make(chan struct{}, 32),
 	}
 	e.registerBuiltinTools()
 	SeedPresetTeams(e) // Feature 1: 预置平台交付团队（按 Name 幂等）
@@ -136,10 +137,37 @@ func (e *Engine) registerBuiltinTools() {
 func (e *Engine) Start() error {
 	e.mu.Lock()
 	e.ready = true
+	if e.store != nil {
+		if err := e.loadFromStore(); err != nil {
+			slog.Warn("failed to load agents from store", "err", err)
+		}
+	}
 	e.mu.Unlock()
 	slog.Info("agentic engine started",
 		"agents", e.agentCount(),
 		"tools", len(e.reg.List()))
+	return nil
+}
+
+func (e *Engine) SetStore(s Store) { e.store = s }
+
+func (e *Engine) loadFromStore() error {
+	ctx := context.Background()
+	agents, err := e.store.ListAgents(ctx, "default")
+	if err != nil { return err }
+	for _, a := range agents {
+		e.agents[a.ID] = &model.AgentInstance{
+			ID: a.ID, TenantID: a.TenantID, Name: a.Name,
+			ModelName: a.ModelName, SystemPrompt: a.SystemPrompt,
+			Status: a.Status, CreatedAt: a.CreatedAt, UpdatedAt: a.UpdatedAt,
+		}
+	}
+	teams, err := e.store.ListTeams(ctx, "default")
+	if err != nil { return err }
+	for _, t := range teams {
+		e.teams[t.ID] = &model.AgentTeam{ID: t.ID, Name: t.Name, Mode: t.Mode, SystemPrompt: t.Prompt}
+		if t.Members != nil { json.Unmarshal(t.Members, &e.teams[t.ID].Members) }
+	}
 	return nil
 }
 
@@ -295,6 +323,9 @@ func (e *Engine) CreateAgent(ctx context.Context, a *model.AgentInstance) error 
 	e.mu.Lock()
 	e.agents[a.ID] = a
 	e.mu.Unlock()
+	if e.store != nil {
+		_ = e.store.CreateAgent(ctx, &AgentRecord{ID: a.ID, TenantID: a.TenantID, Name: a.Name, ModelName: a.ModelName, SystemPrompt: a.SystemPrompt, Status: a.Status, CreatedAt: a.CreatedAt, UpdatedAt: a.UpdatedAt})
+	}
 	slog.Info("agent created", "id", a.ID, "name", a.Name, "model", a.ModelName)
 	return nil
 }
@@ -310,6 +341,9 @@ func (e *Engine) UpdateAgent(ctx context.Context, a *model.AgentInstance) error 
 	if a.ModelName != "" { existing.ModelName = a.ModelName }
 	existing.SystemPrompt = a.SystemPrompt
 	existing.UpdatedAt = time.Now()
+	if e.store != nil {
+		_ = e.store.UpdateAgent(ctx, &AgentRecord{ID: existing.ID, TenantID: existing.TenantID, Name: existing.Name, ModelName: existing.ModelName, SystemPrompt: existing.SystemPrompt, Status: existing.Status, UpdatedAt: existing.UpdatedAt})
+	}
 	slog.Info("agent updated", "id", a.ID, "name", existing.Name)
 	return nil
 }
@@ -321,6 +355,9 @@ func (e *Engine) DeleteAgent(ctx context.Context, id, tenantID string) error {
 	_, ok := e.agents[id]
 	if !ok { return fmt.Errorf("agent not found: %s", id) }
 	delete(e.agents, id)
+	if e.store != nil {
+		_ = e.store.DeleteAgent(ctx, id, tenantID)
+	}
 	slog.Info("agent deleted", "id", id)
 	return nil
 }
@@ -591,6 +628,10 @@ func (e *Engine) CreateTeam(ctx context.Context, t *model.AgentTeam) error {
 	e.mu.Lock()
 	e.teams[t.ID] = t
 	e.mu.Unlock()
+	if e.store != nil {
+		membersJSON, _ := json.Marshal(t.Members)
+		_ = e.store.CreateTeam(ctx, &TeamRecord{ID: t.ID, TenantID: t.TenantID, Name: t.Name, Members: membersJSON, Mode: t.Mode, Prompt: t.SystemPrompt, CreatedAt: t.CreatedAt, UpdatedAt: t.UpdatedAt})
+	}
 	slog.Info("team created", "id", t.ID, "name", t.Name, "mode", t.Mode, "members", len(t.Members))
 	return nil
 }
@@ -618,6 +659,10 @@ func (e *Engine) UpdateTeam(ctx context.Context, t *model.AgentTeam) error {
 	existing.Members = t.Members
 	existing.SystemPrompt = t.SystemPrompt
 	existing.UpdatedAt = time.Now()
+	if e.store != nil {
+		membersJSON, _ := json.Marshal(existing.Members)
+		_ = e.store.UpdateTeam(ctx, &TeamRecord{ID: existing.ID, TenantID: existing.TenantID, Name: existing.Name, Members: membersJSON, Mode: existing.Mode, Prompt: existing.SystemPrompt, UpdatedAt: existing.UpdatedAt})
+	}
 	slog.Info("team updated", "id", t.ID, "name", existing.Name)
 	return nil
 }
@@ -634,6 +679,9 @@ func (e *Engine) DeleteTeam(ctx context.Context, id, tenantID string) error {
 		return fmt.Errorf("team not found: %s", id)
 	}
 	delete(e.teams, id)
+	if e.store != nil {
+		_ = e.store.DeleteTeam(ctx, id, tenantID)
+	}
 	slog.Info("team deleted", "id", id)
 	return nil
 }
