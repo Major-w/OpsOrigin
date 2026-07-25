@@ -27,6 +27,7 @@ import (
 	"github.com/opsorigin/core/internal/vuln"
 	"github.com/opsorigin/core/internal/ai"
 	"github.com/opsorigin/core/internal/ai/agentic"
+	"github.com/opsorigin/core/internal/deploy"
 	"github.com/opsorigin/core/internal/audit"
 	"github.com/opsorigin/core/internal/monitor"
 	healthhandler "github.com/opsorigin/core/internal/monitor/health"
@@ -370,6 +371,10 @@ func main() {
 	aiSvc.Start(ctx)
 
 	opsSvc := ops.NewService(cfg, db)
+	server.RegisterService(opsSvc)
+
+	deploySvc := deploy.NewService(db)
+	server.RegisterService(deploySvc)
 	server.RegisterService(opsSvc)
 
 	// 漏洞扫描：规则匹配器 + 真实 inventory 注入(经 CMDB 适配器)。
