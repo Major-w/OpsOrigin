@@ -60,8 +60,8 @@ func (s *Store) seed() {
 		it.Enabled = true
 		it.CreatedAt = time.Now()
 		it.UpdatedAt = it.CreatedAt
-		s.db.Exec(`INSERT INTO itsm_catalog(id,tenant_id,name,description,category,enabled,created_at,updated_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8)`,
-			it.ID, it.TenantID, it.Name, it.Description, it.Category, it.Enabled, it.CreatedAt, it.UpdatedAt)
+		s.db.Exec(`INSERT INTO itsm_catalog(id,tenant_id,name,description,category,process_id,enabled,created_at,updated_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
+			it.ID, it.TenantID, it.Name, it.Description, it.Category, it.ProcessID, it.Enabled, it.CreatedAt, it.UpdatedAt)
 	}
 }
 
