@@ -6,8 +6,13 @@ import { toast } from '@/stores/toast'
 
 export type StepType =
   | 'start' | 'end'
-  | 'script' | 'condition' | 'parallel' | 'wait' | 'approval'
+  | 'script' | 'condition' | 'wait' | 'approval'
   | 'notify' | 'subflow' | 'loop' | 'webhook' | 'comment' | 'filedist'
+
+export interface DAGDependency {
+  nodeId: string
+  condition: 'success' | 'failure' | 'always'
+}
 
 export interface WorkflowStep {
   id: string
@@ -16,9 +21,8 @@ export interface WorkflowStep {
   script_id?: string
   inputs?: Record<string, any>
   condition?: string
-  on_success?: string
-  on_failure?: string
-  parallel_steps?: WorkflowStep[]
+  // DAG: depends_on 替代旧的 on_success/on_failure/parallel_steps
+  depends_on?: DAGDependency[]
   wait_seconds?: number
   timeout?: number
   approvers?: string[]
