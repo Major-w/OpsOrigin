@@ -94,8 +94,12 @@ type AgentHost struct {
 	LastHeartbeat *time.Time        `json:"last_heartbeat,omitempty"`
 	FirstSeen     *time.Time        `json:"first_seen,omitempty"`
 	Capabilities  []string          `json:"capabilities,omitempty"`
-	CreatedAt     time.Time         `json:"created_at"`
-	UpdatedAt     time.Time         `json:"updated_at"`
+	IPs           []string          `json:"ips,omitempty"` // 上报的 IP 列表,用于指纹去重/疑似重复判定
+	// DuplicateOf 非持久化字段:列表/详情时由后端动态计算,指向"疑似重复"的规范记录 ID。
+	// 当前记录与另一条同主机名/IP 的记录撞车且 ID 不同时,前端据此提示用户合并。
+	DuplicateOf string `json:"duplicate_of,omitempty"`
+	CreatedAt   time.Time `json:"created_at"`
+	UpdatedAt   time.Time `json:"updated_at"`
 }
 
 type RegisterAgentRequest struct {

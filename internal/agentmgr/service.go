@@ -457,6 +457,8 @@ func (s *Service) SetGRPCTunnel(gs *tunnel.GRPCServer) {
 	if gs == nil {
 		return
 	}
+	// 注入指纹去重解析器:gRPC 直连 Agent 注册时据此复用同机既有记录,避免重复建行。
+	gs.SetAgentIDResolver(s.resolveGRPCAgentID)
 	// 隧道心跳回写:gRPC 直连 Agent 只发隧道内心跳(不走 HTTP heartbeat 端点),
 	// 若不在此回写 Redis/DB,agents 列表会永远显示 offline。注册时一并带上
 	// OS/IP/CPU/Memory,使 agent_hosts 不再是无资源信息的空壳。
@@ -490,6 +492,76 @@ func (s *Service) SetGRPCTunnel(gs *tunnel.GRPCServer) {
 			}
 		}
 	})
+}
+
+// resolveGRPCAgentID 在 gRPC 直连 Agent 注册时,依据指纹(hostname/IP)解析出应复用的
+// 规范记录 ID,实现"同机重启/跨通道去重 + 疑似重复提示合并"闭环:
+//  1. 若 incomingID 已对应一条现有记录 => 直接复用(稳定指纹 ID 重启即此路径,ON CONFLICT upsert 续行)。
+//  2. 否则,若现有记录中存在 hostname 相同或 IP 有交集、且 ID 不同的 => 复用该"规范记录"
+//     (优先在线者,其次最近心跳),避免为同一台机器再开一条新记录。
+//  3. 都没有 => 保留 incomingID(全新主机)。
+//
+// 关键:此处只做"复用 ID",从不删除任何记录;重复记录的清理由用户在前端点"合并"触发(merge 接口)。
+func (s *Service) resolveGRPCAgentID(ctx context.Context, tenantID, incomingID, hostname string, ips []string) string {
+	if incomingID == "" {
+		return incomingID
+	}
+	// 1) 已存在该 ID 的直接复用(稳定指纹 ID 重启场景)
+	if h, err := s.store.Get(ctx, incomingID, tenantID); err == nil && h != nil {
+		return incomingID
+	}
+	// 2) 按 hostname / IP 找疑似同机记录,复用规范 ID(优先在线、其次最近心跳)
+	hosts, err := s.store.List(ctx, tenantID)
+	if err != nil {
+		return incomingID
+	}
+	bestID := ""
+	bestScore := -1
+	var bestHB time.Time
+	for _, h := range hosts {
+		if h.ID == incomingID {
+			continue
+		}
+		matched := false
+		if hostname != "" && h.Hostname == hostname {
+			matched = true
+		} else {
+			for _, ip := range ips {
+				for _, hip := range h.IPs {
+					if ip != "" && ip == hip {
+						matched = true
+						break
+					}
+				}
+				if matched {
+					break
+				}
+			}
+		}
+		if !matched {
+			continue
+		}
+		score := 0
+		if h.Status == AgentStatusOnline {
+			score += 2
+		}
+		var hb time.Time
+		if h.LastHeartbeat != nil {
+			hb = *h.LastHeartbeat
+			score += 1
+		}
+		if score > bestScore || (score == bestScore && hb.After(bestHB)) {
+			bestID = h.ID
+			bestScore = score
+			bestHB = hb
+		}
+	}
+	if bestID != "" {
+		slog.Info("gRPC agent reuses existing record by fingerprint",
+			"incoming_id", incomingID, "reused_id", bestID, "hostname", hostname)
+		return bestID
+	}
+	return incomingID
 }
 
 // SetWhitelist 注入本租户的命令白名单(§6)。传 nil 表示未启用(放行一切)。
@@ -697,6 +769,8 @@ func (s *Service) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/v1/agents/sandbox", s.handleListSandboxAgents)
 	mux.HandleFunc("PUT /api/v1/agents/{id}/sandbox", s.handleSetSandboxLabel)
 	mux.HandleFunc("POST /api/v1/sandbox/exec", s.handleExecSandbox)
+	// 疑似重复记录合并:将 {id}(旧/重复记录)合并进 target_id(规范记录)
+	mux.HandleFunc("POST /api/v1/agents/{id}/merge", s.handleMerge)
 	// Remote Execution (SSH)
 	mux.HandleFunc("POST /api/v1/agents/batch-execute", s.handleBatchExecute)
 	mux.HandleFunc("GET /api/v1/agent-tasks/{task_id}", s.handleGetExecTask)
@@ -1308,6 +1382,8 @@ func (s *Service) handleList(w http.ResponseWriter, r *http.Request) {
 		}
 		result = append(result, &copyHost)
 	}
+	// 动态标注疑似重复记录,供前端提示用户合并
+	s.decorateDuplicates(result)
 	writeJSON(w, http.StatusOK, result)
 }
 
@@ -1320,6 +1396,151 @@ func (s *Service) handleGet(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, host)
+}
+
+// decorateDuplicates 动态标注"疑似重复"关系:同一结果集内,若两条记录主机名相同
+// 或 IP 有交集且 ID 不同,则将非规范记录标记为 duplicate_of 规范记录 ID,供前端提示合并。
+// 规范记录优先取在线者,其次取最近心跳者。该字段仅运行时计算,不落库。
+func (s *Service) decorateDuplicates(hosts []*AgentHost) {
+	n := len(hosts)
+	if n < 2 {
+		return
+	}
+	parent := make([]int, n)
+	for i := range parent {
+		parent[i] = i
+	}
+	var find func(int) int
+	find = func(x int) int {
+		for parent[x] != x {
+			parent[x] = parent[parent[x]]
+			x = parent[x]
+		}
+		return x
+	}
+	linked := func(a, b *AgentHost) bool {
+		if a.Hostname != "" && a.Hostname == b.Hostname {
+			return true
+		}
+		for _, ip := range a.IPs {
+			for _, ip2 := range b.IPs {
+				if ip != "" && ip == ip2 {
+					return true
+				}
+			}
+		}
+		return false
+	}
+	for i := 0; i < n; i++ {
+		for j := i + 1; j < n; j++ {
+			if hosts[i].ID != hosts[j].ID && linked(hosts[i], hosts[j]) {
+				ra, rb := find(i), find(j)
+				if ra != rb {
+					parent[ra] = rb
+				}
+			}
+		}
+	}
+	groups := map[int][]*AgentHost{}
+	for i := 0; i < n; i++ {
+		groups[find(i)] = append(groups[find(i)], hosts[i])
+	}
+	for _, g := range groups {
+		if len(g) < 2 {
+			continue
+		}
+		canonical := g[0]
+		for _, h := range g[1:] {
+			if h.Status == AgentStatusOnline && canonical.Status != AgentStatusOnline {
+				canonical = h
+				continue
+			}
+			if h.Status == canonical.Status && h.LastHeartbeat != nil &&
+				(canonical.LastHeartbeat == nil || h.LastHeartbeat.After(*canonical.LastHeartbeat)) {
+				canonical = h
+			}
+		}
+		for _, m := range g {
+			if m.ID != canonical.ID {
+				m.DuplicateOf = canonical.ID
+			}
+		}
+	}
+}
+
+// MergeHosts 将 sourceID 合并进 targetID:target 作为规范记录保留,source 的标签(含沙箱)、
+// 环境等字段合并进 target(仅补 target 缺失项),随后删除 source。在线记录不可作为 source 删除,
+// 以免误删正在运行的 Agent 主机。
+func (s *Service) MergeHosts(ctx context.Context, sourceID, targetID, tenantID string) error {
+	if sourceID == targetID {
+		return fmt.Errorf("不能将记录合并到自身")
+	}
+	src, err := s.store.Get(ctx, sourceID, tenantID)
+	if err != nil {
+		return err
+	}
+	tgt, err := s.store.Get(ctx, targetID, tenantID)
+	if err != nil {
+		return err
+	}
+	if src == nil || tgt == nil {
+		return fmt.Errorf("记录不存在")
+	}
+	// 以真实在线状态(Redis 心跳)判断,而非可能陈旧的 DB status 列:
+	// Redis 模式下离线检测器不回写 DB,旧记录的 status 列可能仍停留在 online。
+	if s.isHostOnline(ctx, src) {
+		return fmt.Errorf("源记录当前在线,无法合并删除;请改为将另一条记录合并到本条")
+	}
+	if src.Labels != nil {
+		if tgt.Labels == nil {
+			tgt.Labels = map[string]string{}
+		}
+		for k, v := range src.Labels {
+			if _, ok := tgt.Labels[k]; !ok {
+				tgt.Labels[k] = v
+			}
+		}
+	}
+	if tgt.Environment == "" && src.Environment != "" {
+		tgt.Environment = src.Environment
+	}
+	tgt.UpdatedAt = time.Now()
+	if err := s.store.Update(ctx, tgt); err != nil {
+		return err
+	}
+	return s.store.Delete(ctx, sourceID, tenantID)
+}
+
+// isHostOnline 返回主机真实在线状态:优先 Redis 心跳(权威),回退到 DB status 列或
+// last_heartbeat 时间戳。避免依赖可能陈旧的 agent_hosts.status 列(离线检测器在 Redis
+// 模式下不回写该列)。
+func (s *Service) isHostOnline(ctx context.Context, h *AgentHost) bool {
+	if s.hbWriter != nil && s.hbWriter.rdb != nil {
+		return s.hbWriter.BulkOnlineStatus(ctx, []string{h.ID})[h.ID]
+	}
+	if h.LastHeartbeat != nil && time.Since(*h.LastHeartbeat) <= OfflineThreshold {
+		return true
+	}
+	return h.Status == AgentStatusOnline
+}
+
+// handleMerge 合并接口:POST /api/v1/agents/{id}/merge  body {"target_id": "..."}
+// 将 {id}(疑似重复/旧记录)合并进 target_id(规范记录)。
+func (s *Service) handleMerge(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	tenantID := tenantFromCtx(r.Context())
+	var body struct {
+		TargetID string `json:"target_id"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.TargetID == "" {
+		writeError(w, http.StatusBadRequest, "invalid request: target_id required")
+		return
+	}
+	if err := s.MergeHosts(r.Context(), id, body.TargetID, tenantID); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "merged", "source": id, "target": body.TargetID})
 }
 
 func (s *Service) handleUpdate(w http.ResponseWriter, r *http.Request) {

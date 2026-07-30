@@ -45,6 +45,12 @@ type GRPCServer struct {
 
 	// onDisconnect 在会话断开时触发,供 agentmgr 立即标记离线。
 	onDisconnect func(agentID string)
+
+	// resolveAgentID 在 gRPC 直连 Agent 注册时,将入站 ID 解析为应复用的规范记录 ID。
+	// 用于"同机重启/跨通道去重":同一台机器(主机名/IP 相同)复用一个 agent_hosts 行,
+	// 避免每次重连新建记录。绝不删除记录——疑似重复的清理交由用户在前端点"合并"。
+	// 为 nil 时(未注入)直接采用入站 ID。
+	resolveAgentID func(ctx context.Context, tenantID, incomingID, hostname string, ips []string) string
 }
 
 // AgentHeartbeatInfo 携带 Agent 注册/心跳时的身份与系统信息,
@@ -102,6 +108,12 @@ func (s *GRPCServer) OnDisconnect(handler func(agentID string)) {
 	s.onDisconnect = handler
 }
 
+// SetAgentIDResolver 注入指纹去重解析器(由 agentmgr 在 SetGRPCTunnel 时调用)。
+// 入站 gRPC Agent 注册时,据此将入站 ID 解析为应复用的规范记录 ID,实现跨重启/跨通道去重。
+func (s *GRPCServer) SetAgentIDResolver(fn func(ctx context.Context, tenantID, incomingID, hostname string, ips []string) string) {
+	s.resolveAgentID = fn
+}
+
 func (s *GRPCServer) Start(ctx context.Context) error {
 	lis, err := net.Listen("tcp", s.addr)
 	if err != nil {
@@ -150,13 +162,21 @@ func (s *GRPCServer) Connect(stream grpc.BidiStreamingServer[pb.TunnelMessage, p
 		return status.Errorf(codes.InvalidArgument, "register missing proxy_id")
 	}
 
+	// 指纹去重:将入站 ID 解析为应复用的规范记录 ID。
+	// 同机重启(稳定指纹 ID)或跨通道重连时复用既有 agent_hosts 行(ON CONFLICT upsert),
+	// 避免每次重连新建记录;绝不删除记录,疑似重复的清理交由用户在前端点"合并"。
+	agentID := reg.ProxyId
+	if s.resolveAgentID != nil {
+		agentID = s.resolveAgentID(stream.Context(), "default", reg.ProxyId, reg.Hostname, reg.Ips)
+	}
+
 	// §3.1 从客户端证书 CN 解析身份(若启用 mTLS)。
 	cn := clientCertCN(stream.Context())
 
 	sessionID := fmt.Sprintf("grpc-%s", uuid.New().String())
 	session := &GRPCProxySession{
 		ID:           sessionID,
-		ProxyID:      reg.ProxyId,
+		ProxyID:      agentID,
 		CertCN:       cn,
 		Stream:       stream,
 		Hostname:     reg.Hostname,
@@ -164,14 +184,15 @@ func (s *GRPCServer) Connect(stream grpc.BidiStreamingServer[pb.TunnelMessage, p
 		ConnectedAt:  time.Now(),
 	}
 
-	s.proxies.Store(reg.ProxyId, session)
+	s.proxies.Store(agentID, session)
 	s.sessions.Store(sessionID, session)
 
 	// T13: gRPC 连接指标打点
-	metrics.AgentmgrGrpcConnections.WithLabelValues(reg.ProxyId, "default").Inc()
+	metrics.AgentmgrGrpcConnections.WithLabelValues(agentID, "default").Inc()
 
 	slog.Info("proxy registered via gRPC",
 		"proxy_id", reg.ProxyId,
+		"agent_id", agentID,
 		"cert_cn", cn,
 		"hostname", reg.Hostname,
 		"session_id", sessionID)
@@ -194,7 +215,7 @@ func (s *GRPCServer) Connect(stream grpc.BidiStreamingServer[pb.TunnelMessage, p
 	// 注册即视为一次心跳:立刻回写在线状态与系统信息,避免等 30s 首个隧道心跳。
 	if s.onHeartbeat != nil {
 		s.onHeartbeat(AgentHeartbeatInfo{
-			AgentID:      reg.ProxyId,
+			AgentID:      agentID,
 			Hostname:     reg.Hostname,
 			OS:           reg.Os,
 			OSVersion:    reg.OsVersion,
@@ -210,29 +231,29 @@ func (s *GRPCServer) Connect(stream grpc.BidiStreamingServer[pb.TunnelMessage, p
 	for {
 		msg, err := stream.Recv()
 		if err == io.EOF {
-			slog.Info("proxy stream closed", "proxy_id", reg.ProxyId)
+			slog.Info("proxy stream closed", "agent_id", agentID)
 			break
 		}
 		if err != nil {
-			slog.Warn("proxy stream error", "proxy_id", reg.ProxyId, "error", err)
+			slog.Warn("proxy stream error", "agent_id", agentID, "error", err)
 			break
 		}
 
 		s.handleMessage(session, msg)
 	}
 
-	s.proxies.Delete(reg.ProxyId)
+	s.proxies.Delete(agentID)
 	s.sessions.Delete(sessionID)
 
 	// T13: gRPC 连接断开打点
-	metrics.AgentmgrGrpcConnections.WithLabelValues(reg.ProxyId, "default").Dec()
+	metrics.AgentmgrGrpcConnections.WithLabelValues(agentID, "default").Dec()
 
 	// 会话断开:通知上层立即标记离线。
 	if s.onDisconnect != nil {
-		s.onDisconnect(reg.ProxyId)
+		s.onDisconnect(agentID)
 	}
 
-	slog.Info("proxy disconnected via gRPC", "proxy_id", reg.ProxyId)
+	slog.Info("proxy disconnected via gRPC", "agent_id", agentID)
 	return nil
 }
 

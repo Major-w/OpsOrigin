@@ -12,6 +12,7 @@ export interface AgentHost {
   status: string; capabilities?: string[]; environment?: string
   last_seen?: string; last_heartbeat?: string; first_seen?: string
   labels?: Record<string,string>; created_at: string; updated_at: string
+  ips?: string[]; duplicate_of?: string // 后端动态标注:疑似重复记录指向的规范记录 ID
   cmdb_data?: {
     hostname?: string; os?: string; os_version?: string
     cpu?: string; memory?: string; disk?: string

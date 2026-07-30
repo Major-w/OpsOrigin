@@ -575,6 +575,7 @@ func entRowToAgentHost(row *ent.AgentHost) *AgentHost {
 		Hostname:      row.Hostname,
 		Labels:        row.Labels,
 		Environment:   row.Environment,
+		IPs:           row.Ips,
 		Capabilities:  row.Capabilities,
 		CreatedAt:     row.CreatedAt,
 		UpdatedAt:     row.UpdatedAt,

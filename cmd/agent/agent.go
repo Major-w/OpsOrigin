@@ -139,18 +139,18 @@ func NewAgent(cfg AgentConfig) *Agent {
 		stopCh:  make(chan struct{}),
 	}
 
+	// 稳定指纹 ID:基于主机名+主IP+OS 派生,并落盘持久化。
+	// 重启(甚至 IP 变更)都复用同一身份,避免 Core 端每次重连都新建一条 agent_hosts 记录。
+	a.agentID = resolveAgentID()
+
 	// 配置了 Proxy 地址时,创建 tunnel 客户端,通过 Proxy 中转所有通信
 	if cfg.ProxyAddr != "" {
-		a.agentID = uuid.NewString()
 		a.tunnelClient = tunnel.NewAgentClient(cfg.ProxyAddr, a.agentID)
 		a.tunnelClient.OnAction(a.handleTunnelAction)
 	}
 
 	// 配置了 gRPC 服务器地址时,创建 gRPC 客户端,直连 Core
 	if cfg.GRPCServer != "" {
-		if a.agentID == "" {
-			a.agentID = uuid.NewString()
-		}
 		a.grpcClient = NewGRPCAgentClient(cfg.GRPCServer, a.agentID)
 		a.grpcClient.OnAction(a.handleTunnelAction)
 		// 采集一次系统信息,注册时随 gRPC RegisterRequest 上报(OS/IP/CPU/Memory),
@@ -159,6 +159,46 @@ func NewAgent(cfg AgentConfig) *Agent {
 	}
 
 	return a
+}
+
+// agentStableIDPath 返回持久化 agent 身份文件的路径(跨重启保持同一身份)。
+func agentStableIDPath() string {
+	dir, err := os.UserCacheDir()
+	if err != nil || dir == "" {
+		dir = os.TempDir()
+	}
+	return filepath.Join(dir, "opsorigin", "agent-id")
+}
+
+// computeFingerprint 基于主机名 + 主IP + OS 生成稳定指纹。
+// 同一台机器(主机名/IP/OS 不变)始终得到相同值,从而 Core 端可按指纹复用记录。
+func computeFingerprint() string {
+	host, err := os.Hostname()
+	if err != nil || host == "" {
+		host = "unknown"
+	}
+	ip := getPrimaryIP()
+	raw := fmt.Sprintf("%s|%s|%s", host, ip, runtime.GOOS)
+	sum := sha256.Sum256([]byte(raw))
+	return "ag-" + hex.EncodeToString(sum[:])[:16]
+}
+
+// resolveAgentID 返回稳定的 agent 身份 ID:优先使用本地持久化的 ID(保证重启后不变),
+// 首次运行则按指纹生成并落盘。持久化失败或无法取指纹时回退随机 UUID。
+func resolveAgentID() string {
+	fp := computeFingerprint()
+	if fp == "" {
+		return uuid.NewString()
+	}
+	path := agentStableIDPath()
+	if data, err := os.ReadFile(path); err == nil {
+		if id := strings.TrimSpace(string(data)); id != "" {
+			return id
+		}
+	}
+	_ = os.MkdirAll(filepath.Dir(path), 0o700)
+	_ = os.WriteFile(path, []byte(fp), 0o600)
+	return fp
 }
 
 // --- Registration ---

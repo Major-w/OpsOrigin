@@ -14,7 +14,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { ViewToggle, DataList, type ViewMode, type Column, type FilterOption, type BulkAction } from '@/components/ui/data-list'
 import { formatTime, apiBase, apiFetch } from '@/lib/utils'
 import { validateHostName, sanitizeHostName, HOST_NAME_RULE_TEXT } from '@/lib/validate'
-import { Plus, Trash2, Terminal, Monitor, RefreshCw, Download, CheckCircle, XCircle, Clock, Eye, Cpu, HardDrive, MemoryStick, Copy, Server, Wifi, WifiOff, Cloud, Container, Pencil, RotateCcw, Zap, ListChecks, AlertTriangle, Save, Play, ArrowUp, BookOpen } from 'lucide-react'
+import { Plus, Trash2, Terminal, Monitor, RefreshCw, Download, CheckCircle, XCircle, Clock, Eye, Cpu, HardDrive, MemoryStick, Copy, Server, Wifi, WifiOff, Cloud, Container, Pencil, RotateCcw, Zap, ListChecks, AlertTriangle, Save, Play, ArrowUp, BookOpen, GitMerge } from 'lucide-react'
 import { toast } from '@/stores/toast'
 
 function statusVariant(s: string): 'success' | 'destructive' | 'secondary' | 'outline' {
@@ -123,6 +123,7 @@ export default function ResourcesPage() {
 
   // 二次确认状态
   const [confirmDeleteHost, setConfirmDeleteHost] = useState<AgentHost | null>(null)
+  const [mergingId, setMergingId] = useState<string | null>(null)
   const [confirmDeleteProxy, setConfirmDeleteProxy] = useState<ProxyInfo | null>(null)
   const [confirmRestart, setConfirmRestart] = useState<AgentHost | null>(null)
   const [confirmUninstall, setConfirmUninstall] = useState<AgentHost | null>(null)
@@ -310,6 +311,22 @@ export default function ResourcesPage() {
     if (!confirmDeleteHost) return
     const ok = await remove(confirmDeleteHost.id)
     if (ok) { setConfirmDeleteHost(null); refresh() }
+  }
+
+  // 合并疑似重复记录:将 a(重复/旧记录)合并进其 duplicate_of 指向的规范记录。
+  const handleMergeAgent = async (a: AgentHost) => {
+    if (!a.duplicate_of) return
+    if (!confirm(`确认将主机「${a.name}」合并到规范记录「${a.duplicate_of}」？\n合并后本条记录(含沙箱等标签)将并入规范记录并删除。`)) return
+    setMergingId(a.id)
+    try {
+      await apiFetch(`/agents/${a.id}/merge`, { method: 'POST', body: JSON.stringify({ target_id: a.duplicate_of }) })
+      toast.success('已合并重复记录')
+      refresh()
+    } catch (e: any) {
+      toast.error('合并失败: ' + (e?.message || e))
+    } finally {
+      setMergingId(null)
+    }
   }
 
   const handleRegisterProxy = async () => {
@@ -520,6 +537,9 @@ export default function ResourcesPage() {
       <div className="w-24 shrink-0 text-xs text-muted-foreground/50 hidden md:block"><Clock className="h-3 w-3 inline mr-0.5" />{a.last_heartbeat ? formatTime(a.last_heartbeat) : '无心跳'}</div>
       <div className="w-24 shrink-0 flex justify-end gap-1">
         <Button variant="ghost" size="icon" className="h-6 w-6" onClick={() => openDetailHost(a)}><Eye className="h-3 w-3" /></Button>
+        {a.duplicate_of && (
+          <Button variant="ghost" size="icon" className="h-6 w-6 text-amber-500" title="合并重复记录" disabled={mergingId === a.id} onClick={() => handleMergeAgent(a)}><GitMerge className="h-3 w-3" /></Button>
+        )}
         <Button variant="ghost" size="icon" className="h-6 w-6" onClick={() => setConfirmDeleteHost(a)}><Trash2 className="h-3 w-3" /></Button>
       </div>
     </>
@@ -540,6 +560,14 @@ export default function ResourcesPage() {
         </div>
       </CardHeader>
       <CardContent className="space-y-2 pt-0">
+        {a.duplicate_of && (
+          <div className="flex items-center justify-between gap-2 rounded-md border border-amber-500/30 bg-amber-500/10 px-2 py-1.5">
+            <span className="text-xs text-amber-600 dark:text-amber-400">疑似重复记录（同主机名/IP），建议合并</span>
+            <Button size="sm" variant="outline" className="h-6 shrink-0 text-xs" disabled={mergingId === a.id} onClick={() => handleMergeAgent(a)}>
+              {mergingId === a.id ? '合并中…' : '合并'}
+            </Button>
+          </div>
+        )}
         <div className="flex items-center gap-2">
           <Badge variant={statusVariant(a.status)} className="text-xs">{statusLabel(a.status)}</Badge>
           <Badge variant="outline" className="text-xs">{a.type === 'agent' ? 'Agent' : 'Agentless'}</Badge>
