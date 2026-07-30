@@ -33,6 +33,9 @@ type GRPCServer struct {
 	sessions   sync.Map
 	onCommand  func(ctx context.Context, proxyID string, cmd *CommandRequest) *CommandResponse
 
+	// pending 关联 Core→Agent 命令的回包:CommandID -> chan。
+	pending sync.Map
+
 	// tlsConfig 非 nil 时启用 mTLS 双向认证(§3.1 / §6)。
 	tlsConfig *tls.Config
 }
@@ -188,20 +191,49 @@ func (s *GRPCServer) handleMessage(session *GRPCProxySession, msg *pb.TunnelMess
 			"command_id", p.CommandResp.CommandId,
 			"success", p.CommandResp.Success)
 
+		if ch, ok := s.pending.Load(p.CommandResp.CommandId); ok {
+			if c, ok := ch.(chan *CommandResponse); ok {
+				c <- &CommandResponse{
+					CommandID: p.CommandResp.CommandId,
+					Success:   p.CommandResp.Success,
+					Output:    p.CommandResp.Output,
+					Error:     p.CommandResp.Error,
+				}
+			}
+		}
+
 	case *pb.TunnelMessage_ForwardResp:
 		slog.Info("gRPC agent response",
 			"command_id", p.ForwardResp.CommandId,
 			"agent_id", p.ForwardResp.AgentId,
 			"success", p.ForwardResp.Success)
+
+		if ch, ok := s.pending.Load(p.ForwardResp.CommandId); ok {
+			if c, ok := ch.(chan *CommandResponse); ok {
+				c <- &CommandResponse{
+					CommandID: p.ForwardResp.CommandId,
+					Success:   p.ForwardResp.Success,
+					Output:    p.ForwardResp.Output,
+					Error:     p.ForwardResp.Error,
+				}
+			}
+		}
 	}
 }
 
+// SendCommand 经 gRPC 流下发命令到目标 Agent/Proxy,并**阻塞等待其回包**(与 TCP Server 一致)。
+// 之前此处发完即返回 Success:true,导致 deploy/script/vuln/k8s 等经 gRPC 直连 Agent 的执行
+// 永远拿不到真实输出。现通过 pending 关联 CommandID,在 handleMessage 收到回包时回填。
 func (s *GRPCServer) SendCommand(ctx context.Context, proxyID string, cmd *CommandRequest) (*CommandResponse, error) {
 	val, ok := s.proxies.Load(proxyID)
 	if !ok {
 		return nil, fmt.Errorf("proxy %s not connected", proxyID)
 	}
 	session := val.(*GRPCProxySession)
+
+	ch := make(chan *CommandResponse, 1)
+	s.pending.Store(cmd.CommandID, ch)
+	defer s.pending.Delete(cmd.CommandID)
 
 	msg := &pb.TunnelMessage{
 		MessageId: cmd.CommandID,
@@ -223,10 +255,24 @@ func (s *GRPCServer) SendCommand(ctx context.Context, proxyID string, cmd *Comma
 		return nil, fmt.Errorf("send command: %w", err)
 	}
 
-	return &CommandResponse{
-		CommandID: cmd.CommandID,
-		Success:   true,
-	}, nil
+	wait := time.Duration(cmd.TimeoutSecond) * time.Second
+	if wait <= 0 {
+		wait = 5 * time.Second
+	}
+	select {
+	case resp := <-ch:
+		return resp, nil
+	case <-time.After(wait):
+		return nil, fmt.Errorf("command %s timed out waiting for agent response", cmd.CommandID)
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+}
+
+// HasProxy 返回指定 proxy/agent 会话是否在 gRPC 隧道上已注册(供 agentmgr 选路)。
+func (s *GRPCServer) HasProxy(id string) bool {
+	_, ok := s.proxies.Load(id)
+	return ok
 }
 
 func extractPayload(msg *pb.TunnelMessage, out interface{}) error {

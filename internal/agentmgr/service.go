@@ -379,7 +379,8 @@ type Service struct {
 	cbMu            sync.Mutex
 	stopCh          chan struct{}
 	tlsEnabled      bool                // 是否全局启用 HTTPS(影响安装脚本中的 scheme)
-	tunnelServer    *tunnel.Server      // Proxy 隧道服务(可选,启用后支持通过 Proxy 下发命令)
+	tunnelServer    *tunnel.Server      // Proxy 隧道服务(TCP,可选)
+	grpcTunnel     *tunnel.GRPCServer  // gRPC 直连隧道服务(可选,启用后支持直连 Agent 下发命令)
 	sandboxID       string              // 沙箱 Agent ID(自动注册)
 	sandboxExec     *sandbox.Executor  // 本地沙箱执行器(勾选"沙箱执行"时使用)
 	remoteExec      *remoteexec.Service // SSH 远程执行服务(agentless 主机命令执行)
@@ -447,9 +448,16 @@ func (s *Service) SetTLSEnable(enabled bool) {
 	s.tlsEnabled = enabled
 }
 
-// SetTunnelServer 注入 tunnel server,启用后支持通过 Proxy 下发命令。
+// SetTunnelServer 注入 tunnel server,启用后支持通过 TCP Proxy 下发命令。
 func (s *Service) SetTunnelServer(ts *tunnel.Server) {
 	s.tunnelServer = ts
+}
+
+// SetGRPCTunnel 注入 gRPC 隧道服务,启用后支持直连 Agent(gRPC)下发命令。
+// 直连 Agent 注册时 ProxyId=自身 agentID,会话落在 grpcTunnel.proxies[agentID];
+// 经 Proxy 中转时会话落在 tunnelServer(或 gRPC Proxy)的 proxiles[ProxyID]。
+func (s *Service) SetGRPCTunnel(gs *tunnel.GRPCServer) {
+	s.grpcTunnel = gs
 }
 
 // SetWhitelist 注入本租户的命令白名单(§6)。传 nil 表示未启用(放行一切)。
@@ -856,16 +864,31 @@ func (s *Service) execViaProxy(proxyID, action string, payload any, timeoutSec i
 // 并同步等待结果返回。content 为脚本正文，params 透传给 Agent 端执行环境。
 // 这是 automation/script 引擎的 AgentRunner 实现，使脚本真正在主机上运行
 // （而非 Core 本机 os/exec），并复用 Agent 端命令白名单校验(§6)。
+// dispatchCommand 选择一个已注册该 key 会话的 tunnel server 下发命令：
+// 优先 gRPC(直连 Agent 或 gRPC 代理)，回退 TCP(TCP 代理)。
+// key 语义：直连 Agent 的会话 key 即其 agentID(gRPC 直连时注册 ProxyId=agentID)；
+// 经代理则 key 为 host.ProxyID(代理 ID)。
+func (s *Service) dispatchCommand(ctx context.Context, key string, cmd *tunnel.CommandRequest) (*tunnel.CommandResponse, error) {
+	if s.grpcTunnel != nil {
+		if s.grpcTunnel.HasProxy(key) {
+			return s.grpcTunnel.SendCommand(ctx, key, cmd)
+		}
+	}
+	if s.tunnelServer != nil {
+		if s.tunnelServer.HasProxy(key) {
+			return s.tunnelServer.SendCommand(key, cmd)
+		}
+	}
+	return nil, fmt.Errorf("agent/proxy %s not connected on any tunnel", key)
+}
+
 func (s *Service) RunScriptOnAgent(ctx context.Context, agentID, tenantID, content string, params map[string]string, timeout int, runAs string) (string, int, error) {
-	if s.tunnelServer == nil {
-		return "", -1, fmt.Errorf("tunnel server not configured: cannot dispatch script to agent %s", agentID)
+	if s.tunnelServer == nil && s.grpcTunnel == nil {
+		return "", -1, fmt.Errorf("no tunnel server configured: cannot dispatch script to agent %s", agentID)
 	}
 	host, err := s.store.Get(ctx, agentID, tenantID)
 	if err != nil || host == nil {
 		return "", -1, fmt.Errorf("agent %s not found (tenant=%s)", agentID, tenantID)
-	}
-	if host.ProxyID == "" {
-		return "", -1, fmt.Errorf("agent %s has no proxy binding: cannot dispatch", agentID)
 	}
 	if timeout <= 0 {
 		timeout = 300
@@ -892,7 +915,14 @@ func (s *Service) RunScriptOnAgent(ctx context.Context, agentID, tenantID, conte
 		Payload:       body,
 		TimeoutSecond: int32(timeout),
 	}
-	resp, e := s.tunnelServer.SendCommand(host.ProxyID, cmd)
+	// 直连 Agent(ProxyID 为空)会话 key 即 agentID；经代理则 key 为 host.ProxyID。
+	// 按"会话落在哪个 tunnel"智能选路——修复原实现永远只走空 TCP server、
+	// 且对直连 Agent 误判为"无代理绑定"而拒绝的问题。
+	key := host.ProxyID
+	if key == "" {
+		key = agentID
+	}
+	resp, e := s.dispatchCommand(ctx, key, cmd)
 	if e != nil {
 		return "", -1, e
 	}

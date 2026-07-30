@@ -152,6 +152,12 @@ func (s *Server) handleConnection(ctx context.Context, raw net.Conn) {
 	slog.Info("proxy disconnected", "proxy_id", reg.ProxyID)
 }
 
+// HasProxy 返回指定 proxy/agent 会话是否在 TCP 隧道上已注册(供 agentmgr 选路)。
+func (s *Server) HasProxy(id string) bool {
+	_, ok := s.proxies.Load(id)
+	return ok
+}
+
 func (s *Server) SendCommand(proxyID string, cmd *CommandRequest) (*CommandResponse, error) {
 	val, ok := s.proxies.Load(proxyID)
 	if !ok {

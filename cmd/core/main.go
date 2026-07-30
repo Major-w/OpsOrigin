@@ -212,7 +212,9 @@ func main() {
 	server.RegisterService(processSvc)
 
 	itsmSvc.SetProcessStore(processSvc)
-	server.RegisterService(sla.NewStore(db))
+	slaStore := sla.NewStore(db)
+	server.RegisterService(slaStore)
+	itsmSvc.SetSLAStore(slaStore)
 	server.RegisterService(catalog.NewStore(db))
 
 	// 创建 tunnel server,监听 Proxy 连接(用于通过 Proxy 下发命令给 Agent)
@@ -243,6 +245,7 @@ func main() {
 		agentSvc.SetTLSEnable(true)
 	}
 	agentSvc.SetTunnelServer(tunnelServer)
+	agentSvc.SetGRPCTunnel(grpcTunnelServer) // 直连 Agent(gRPC)经此下发命令
 	// §5 文件分发:注入中心存储目录、短期令牌密钥、Server 对外基址(直连 Agent 下载地址)。
 	agentSvc.SetFileStoreDir(cfg.FileStore.Dir)
 	agentSvc.SetFileTokenSecret(cfg.FileStore.TokenSecret)
@@ -364,6 +367,7 @@ func main() {
 	aiSvc := ai.NewService(cfg, llmClient, rdbClient, db)
 	aiSvc.Engine.SetStore(agentic.NewPGStore(db))
 	toolSet := agentic.NewMCPToolSet(db)
+	toolSet.SetScriptExecutor(scriptSvc) // AI 的 script_run 工具经 script 服务→Agent 通道真实执行
 	toolSet.Register(aiSvc.Registry)
 	aiSvc.SetRAGFunc(toolSet.RAGContext)
 	ai.LLMConfigHook = func(cfg2 llm.Config) { aiSvc.UpdateLLMConfig(cfg2) }
@@ -374,6 +378,7 @@ func main() {
 	server.RegisterService(opsSvc)
 
 	deploySvc := deploy.NewService(db)
+	deploySvc.SetAgentRunner(agentSvc) // 注入 Agent 下发通道，使部署真实在目标主机执行
 	server.RegisterService(deploySvc)
 	server.RegisterService(knowledge.NewSocialStore(db))
 
