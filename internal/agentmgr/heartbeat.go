@@ -2,6 +2,7 @@ package agentmgr
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"sync"
@@ -75,6 +76,16 @@ func (hw *HeartbeatWriter) Record(ctx context.Context, id, tenantID string, req 
 	}
 	if req.Memory != "" {
 		fields["memory"] = req.Memory
+	}
+	if len(req.IPs) > 0 {
+		if b, err := json.Marshal(req.IPs); err == nil {
+			fields["ips"] = string(b)
+		}
+	}
+	if len(req.Capabilities) > 0 {
+		if b, err := json.Marshal(req.Capabilities); err == nil {
+			fields["capabilities"] = string(b)
+		}
 	}
 
 	pipe := hw.rdb.Pipeline()
@@ -175,15 +186,17 @@ func (hw *HeartbeatWriter) syncToStore(ctx context.Context) {
 
 	// Batch GET all heartbeat data via pipeline
 	type hbData struct {
-		ID       string
-		TenantID string
-		Version  string
-		OS       string
-		OSVer    string
-		Hostname string
-		CPU      string
-		Memory   string
-		LastSeen time.Time
+		ID           string
+		TenantID     string
+		Version      string
+		OS           string
+		OSVer        string
+		Hostname     string
+		CPU          string
+		Memory       string
+		IPs          string
+		Capabilities string
+		LastSeen     time.Time
 	}
 
 	var batch []hbData
@@ -219,15 +232,17 @@ func (hw *HeartbeatWriter) syncToStore(ctx context.Context) {
 
 		ls, _ := time.Parse(time.RFC3339, m["last_seen"])
 		batch = append(batch, hbData{
-			ID:       id,
-			TenantID: m["tenant_id"],
-			Version:  m["version"],
-			OS:       m["os"],
-			OSVer:    m["os_version"],
-			Hostname: m["hostname"],
-			CPU:      m["cpu"],
-			Memory:   m["memory"],
-			LastSeen: ls,
+			ID:           id,
+			TenantID:     m["tenant_id"],
+			Version:      m["version"],
+			OS:           m["os"],
+			OSVer:        m["os_version"],
+			Hostname:     m["hostname"],
+			CPU:          m["cpu"],
+			Memory:       m["memory"],
+			IPs:          m["ips"],
+			Capabilities: m["capabilities"],
+			LastSeen:     ls,
 		})
 	}
 
@@ -247,6 +262,8 @@ func (hw *HeartbeatWriter) syncToStore(ctx context.Context) {
 			Hostname:      hb.Hostname,
 			CPU:           hb.CPU,
 			Memory:        hb.Memory,
+			IPs:           hb.IPs,
+			Capabilities:  hb.Capabilities,
 			LastSeen:      hb.LastSeen,
 			LastHeartbeat: hb.LastSeen,
 		})

@@ -272,8 +272,8 @@ func (s *pgStore) Delete(ctx context.Context, id, tenantID string) error {
 
 // heartbeatBatch bundles heartbeat data for bulk upsert.
 type heartbeatBatch struct {
-	ID, TenantID, Version, OS, OSVersion, Hostname, CPU, Memory string
-	LastSeen, LastHeartbeat                                     time.Time
+	ID, TenantID, Version, OS, OSVersion, Hostname, CPU, Memory, IPs, Capabilities string
+	LastSeen, LastHeartbeat                                                     time.Time
 }
 
 // BulkHeartbeat bulk-upserts agent heartbeat records in a single INSERT … ON CONFLICT statement.
@@ -282,30 +282,41 @@ func (s *pgStore) BulkHeartbeat(ctx context.Context, batch []heartbeatBatch) err
 		return nil
 	}
 	vals := make([]string, 0, len(batch))
-	args := make([]any, 0, len(batch)*14)
+	args := make([]any, 0, len(batch)*17)
 	now := time.Now()
 	for i, hb := range batch {
-		base := i * 14
-		vals = append(vals, fmt.Sprintf("($%d,$%d,$%d,$%d,$%d,$%d,$%d,$%d,$%d,$%d,$%d,$%d,$%d,$%d)",
+		base := i * 17
+		vals = append(vals, fmt.Sprintf("($%d,$%d,$%d,$%d,$%d,$%d,$%d,$%d,$%d,$%d,$%d,$%d,$%d,$%d,$%d,$%d,$%d)",
 			base+1, base+2, base+3, base+4, base+5, base+6, base+7,
-			base+8, base+9, base+10, base+11, base+12, base+13, base+14))
+			base+8, base+9, base+10, base+11, base+12, base+13, base+14, base+15, base+16, base+17))
 		args = append(args,
 			hb.ID, hb.TenantID,
 			hb.Hostname, // name 兜底用 hostname,纯隧道注册的 Agent 首次落库也有可读名称
+			string(AgentTypeAgent), // 经 gRPC/隧道注册的统一标记为 agent 类型,避免 UI 兜底显示 "Agentless"
 			hb.Version, hb.OS, hb.OSVersion,
 			hb.Hostname, hb.CPU, hb.Memory,
+			hb.IPs, hb.Capabilities, // JSON 文本,与 ent 序列化格式一致
 			string(AgentStatusOnline),
 			hb.LastSeen, hb.LastHeartbeat,
 			now, now,
 		)
 	}
-	query := `INSERT INTO agent_hosts(id,tenant_id,name,version,os_type,os_version,hostname,cpu,memory,status,last_seen,last_heartbeat,created_at,updated_at)
+	query := `INSERT INTO agent_hosts(id,tenant_id,name,type,version,os_type,os_version,hostname,cpu,memory,ips,capabilities,status,last_seen,last_heartbeat,created_at,updated_at)
 VALUES ` + strings.Join(vals, ",") + `
 ON CONFLICT(id) DO UPDATE SET
   last_seen=EXCLUDED.last_seen,
   last_heartbeat=EXCLUDED.last_heartbeat,
-  hostname=COALESCE(NULLIF(EXCLUDED.hostname,''), agent_hosts.hostname),
   status='online',
+  type=COALESCE(NULLIF(agent_hosts.type,''),'agent'),
+  hostname=COALESCE(NULLIF(EXCLUDED.hostname,''), agent_hosts.hostname),
+  name=COALESCE(NULLIF(EXCLUDED.name,''), agent_hosts.name),
+  version=COALESCE(NULLIF(EXCLUDED.version,''), agent_hosts.version),
+  os_type=COALESCE(NULLIF(EXCLUDED.os_type,''), agent_hosts.os_type),
+  os_version=COALESCE(NULLIF(EXCLUDED.os_version,''), agent_hosts.os_version),
+  cpu=COALESCE(NULLIF(EXCLUDED.cpu,''), agent_hosts.cpu),
+  memory=COALESCE(NULLIF(EXCLUDED.memory,''), agent_hosts.memory),
+  ips=COALESCE(NULLIF(EXCLUDED.ips,''), agent_hosts.ips),
+  capabilities=COALESCE(NULLIF(EXCLUDED.capabilities,''), agent_hosts.capabilities),
   updated_at=NOW()`
 	_, err := s.db.ExecContext(ctx, query, args...)
 	return err
@@ -319,6 +330,7 @@ func (s *pgStore) Heartbeat(ctx context.Context, id, tenantID string, req *Heart
 			entAgentHost.TenantIDEQ(tenantID),
 		).
 		SetStatus(string(AgentStatusOnline)).
+		SetType(string(AgentTypeAgent)).
 		SetVersion(req.AgentVersion).
 		SetCPU(req.CPU).
 		SetMemory(req.Memory).

@@ -462,13 +462,23 @@ func (s *Service) SetGRPCTunnel(gs *tunnel.GRPCServer) {
 		return
 	}
 	// 隧道心跳回写:gRPC 直连 Agent 只发隧道内心跳(不走 HTTP heartbeat 端点),
-	// 若不在此回写 Redis/DB,agents 列表会永远显示 offline。
-	gs.OnHeartbeat(func(agentID, hostname string) {
+	// 若不在此回写 Redis/DB,agents 列表会永远显示 offline。注册时一并带上
+	// OS/IP/CPU/Memory,使 agent_hosts 不再是无资源信息的空壳。
+	gs.OnHeartbeat(func(info tunnel.AgentHeartbeatInfo) {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		req := &HeartbeatRequest{Hostname: hostname}
-		if err := s.hbWriter.Record(ctx, agentID, "default", req); err != nil {
-			slog.Warn("tunnel heartbeat write-back failed", "agent_id", agentID, "error", err)
+		req := &HeartbeatRequest{
+			Hostname:     info.Hostname,
+			OS:           info.OS,
+			OSVersion:    info.OSVersion,
+			AgentVersion: info.Version,
+			CPU:          info.CPU,
+			Memory:       info.Memory,
+			IPs:          info.IPs,
+			Capabilities: info.Capabilities,
+		}
+		if err := s.hbWriter.Record(ctx, info.AgentID, "default", req); err != nil {
+			slog.Warn("tunnel heartbeat write-back failed", "agent_id", info.AgentID, "error", err)
 		}
 	})
 	// 断连即离线:删除 Redis 心跳 key 并回写 DB 状态,UI 立即翻转为 offline。

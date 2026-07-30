@@ -40,11 +40,25 @@ type GRPCServer struct {
 	tlsConfig *tls.Config
 
 	// onHeartbeat 在会话注册成功及每次收到隧道心跳时触发,
-	// 供 agentmgr 回写在线状态(Redis/DB)。直连 Agent 场景 proxyID 即 agentID。
-	onHeartbeat func(agentID, hostname string)
+	// 供 agentmgr 回写在线状态与系统信息(Redis/DB)。直连 Agent 场景 proxyID 即 agentID。
+	onHeartbeat func(info AgentHeartbeatInfo)
 
 	// onDisconnect 在会话断开时触发,供 agentmgr 立即标记离线。
 	onDisconnect func(agentID string)
+}
+
+// AgentHeartbeatInfo 携带 Agent 注册/心跳时的身份与系统信息,
+// 由 gRPC 隧道上报,供 agentmgr 回写 agent_hosts(在线状态 + OS/IP/CPU/Memory)。
+type AgentHeartbeatInfo struct {
+	AgentID      string
+	Hostname     string
+	OS           string
+	OSVersion    string
+	Version      string
+	CPU          string
+	Memory       string
+	IPs          []string
+	Capabilities []string
 }
 
 type GRPCProxySession struct {
@@ -79,7 +93,7 @@ func (s *GRPCServer) OnCommand(handler func(ctx context.Context, proxyID string,
 }
 
 // OnHeartbeat 注册心跳回调:会话注册成功时和每次收到隧道心跳时触发。
-func (s *GRPCServer) OnHeartbeat(handler func(agentID, hostname string)) {
+func (s *GRPCServer) OnHeartbeat(handler func(info AgentHeartbeatInfo)) {
 	s.onHeartbeat = handler
 }
 
@@ -177,9 +191,19 @@ func (s *GRPCServer) Connect(stream grpc.BidiStreamingServer[pb.TunnelMessage, p
 		return fmt.Errorf("send register response: %w", err)
 	}
 
-	// 注册即视为一次心跳:立刻回写在线状态,避免等 30s 首个隧道心跳。
+	// 注册即视为一次心跳:立刻回写在线状态与系统信息,避免等 30s 首个隧道心跳。
 	if s.onHeartbeat != nil {
-		s.onHeartbeat(reg.ProxyId, reg.Hostname)
+		s.onHeartbeat(AgentHeartbeatInfo{
+			AgentID:      reg.ProxyId,
+			Hostname:     reg.Hostname,
+			OS:           reg.Os,
+			OSVersion:    reg.OsVersion,
+			Version:      reg.Version,
+			CPU:          reg.Cpu,
+			Memory:       reg.Memory,
+			IPs:          reg.Ips,
+			Capabilities: reg.Capabilities,
+		})
 	}
 
 	// read loop
@@ -219,8 +243,9 @@ func (s *GRPCServer) handleMessage(session *GRPCProxySession, msg *pb.TunnelMess
 			"proxy_id", session.ProxyID,
 			"active_agents", p.Heartbeat.ActiveAgents)
 		// 回写在线状态(Redis TTL 续期),否则 UI 列表永远显示 offline。
+		// 仅带身份字段;OS/IP 等系统信息已在注册时上报,此处不覆盖。
 		if s.onHeartbeat != nil {
-			s.onHeartbeat(session.ProxyID, session.Hostname)
+			s.onHeartbeat(AgentHeartbeatInfo{AgentID: session.ProxyID, Hostname: session.Hostname})
 		}
 
 	case *pb.TunnelMessage_CommandResp:

@@ -29,6 +29,13 @@ message RegisterRequest {
   string version = 2;
   string hostname = 3;
   repeated string capabilities = 4;
+  // 系统信息:Agent 注册时随隧道一并上报,供 Core 回写 agent_hosts
+  // (OS/IP/CPU/Memory),避免 gRPC 直连 Agent 在 UI 中显示为无资源信息的空壳。
+  string os = 5;
+  string os_version = 6;
+  string cpu = 7;
+  string memory = 8;
+  repeated string ips = 9;
 }
 
 message RegisterResponse {

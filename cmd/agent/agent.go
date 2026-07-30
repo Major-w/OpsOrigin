@@ -146,6 +146,9 @@ func NewAgent(cfg AgentConfig) *Agent {
 		}
 		a.grpcClient = NewGRPCAgentClient(cfg.GRPCServer, a.agentID)
 		a.grpcClient.OnAction(a.handleTunnelAction)
+		// 采集一次系统信息,注册时随 gRPC RegisterRequest 上报(OS/IP/CPU/Memory),
+		// 让 Core 端 agent_hosts 不再是无资源信息的空壳。
+		a.grpcClient.sysInfo = a.collectSystemInfo()
 	}
 
 	return a

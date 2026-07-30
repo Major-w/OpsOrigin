@@ -30,6 +30,10 @@ type GRPCAgentClient struct {
 
 	// tlsConfig 非 nil 时,以 mTLS 双向认证连接 Core(§3.1 / §6)。
 	tlsConfig *tls.Config
+
+	// sysInfo 在 Agent 启动时采集一次,注册时随 gRPC RegisterRequest 上报,
+	// 供 Core 回写 agent_hosts 的 OS/IP/CPU/Memory 等字段。
+	sysInfo HeartbeatPayload
 }
 
 func NewGRPCAgentClient(coreAddr, agentID string) *GRPCAgentClient {
@@ -122,14 +126,18 @@ func (c *GRPCAgentClient) connectAndRun(ctx context.Context) error {
 	}()
 
 	// send register
-	hostname, _ := os.Hostname()
 	reg := &pb.TunnelMessage{
 		Payload: &pb.TunnelMessage_Register{
 			Register: &pb.RegisterRequest{
 				ProxyId:      c.agentID,
-				Version:      "1.0.0",
-				Hostname:     hostname,
-				Capabilities: []string{"shell", "script", "monitor"},
+				Version:      c.sysInfo.AgentVersion,
+				Hostname:     c.sysInfo.Hostname,
+				Capabilities: c.sysInfo.Capabilities,
+				Os:           c.sysInfo.OS,
+				OsVersion:    c.sysInfo.OSVersion,
+				Cpu:          c.sysInfo.CPU,
+				Memory:       c.sysInfo.Memory,
+				Ips:          c.sysInfo.IPs,
 			},
 		},
 	}
