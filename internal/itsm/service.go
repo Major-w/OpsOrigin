@@ -18,14 +18,19 @@ import (
 	"github.com/opsorigin/core/internal/itsm/model"
 	"github.com/opsorigin/core/internal/itsm/process"
 	"github.com/opsorigin/core/internal/itsm/risk"
+	"github.com/opsorigin/core/internal/itsm/sla"
 	"github.com/opsorigin/core/internal/itsm/store"
 	"github.com/opsorigin/core/internal/itsm/webhook"
 	"github.com/opsorigin/core/pkg/config"
 )
 
-// ProcessLoader — itsm 只需要加载流程,不需要完整的 process.Store
-type ProcessLoader interface {
+// ProcessEngine — itsm 消费的流程引擎能力：加载流程定义 + 驱动流程实例。
+// 由 process.Service 实现（鸭子类型），使工单绑定流程后真正跑起流程实例。
+type ProcessEngine interface {
 	Get(ctx context.Context, id, tenantID string) (*process.Process, error)
+	StartInstance(ctx context.Context, tenantID, processID, ticketID string) (*process.ProcessInstance, *process.Step, error)
+	Advance(ctx context.Context, tenantID, ticketID, condition string, output any) (*process.ProcessInstance, *process.Step, error)
+	GetInstance(ctx context.Context, ticketID, tenantID string) (*process.ProcessInstance, error)
 }
 
 type Service struct {
@@ -33,7 +38,8 @@ type Service struct {
 	store        store.Store
 	risk         *risk.Classifier
 	webhook      *webhook.Callback
-	processStore ProcessLoader
+	processStore ProcessEngine
+	slaStore     *sla.Store
 	wsHub        interface{ BroadcastToTenant(interface{}, string) }
 	stopCh       chan struct{}
 	stopOnce     sync.Once
@@ -69,14 +75,21 @@ func (s *Service) SetWebSocketHub(hub interface{ BroadcastToTenant(interface{}, 
 	s.wsHub = hub
 }
 
-func (s *Service) SetProcessStore(ps ProcessLoader) {
+func (s *Service) SetProcessStore(ps ProcessEngine) {
 	s.processStore = ps
+}
+
+// SetSLAStore 注入 SLA 策略存储,使工单截止时间按可配置策略计算
+// (而非硬编码 slaForRisk)。
+func (s *Service) SetSLAStore(st *sla.Store) {
+	s.slaStore = st
 }
 
 func (s *Service) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/v1/itsm/tickets", s.handleCreate)
 	mux.HandleFunc("GET /api/v1/itsm/tickets/{id}", s.handleGet)
 	mux.HandleFunc("GET /api/v1/itsm/tickets", s.handleList)
+	mux.HandleFunc("GET /api/v1/itsm/tickets/{id}/process", s.handleGetProcessInstance)
 	mux.HandleFunc("POST /api/v1/itsm/tickets/{id}/approve", s.handleApprove)
 	mux.HandleFunc("POST /api/v1/itsm/tickets/{id}/reject", s.handleReject)
 	mux.HandleFunc("POST /api/v1/itsm/tickets/{id}/execute", s.handleExecute)
@@ -146,9 +159,16 @@ func (s *Service) handleCreate(w http.ResponseWriter, r *http.Request) {
 		DeadlineAt:    req.DeadlineAt,
 	}
 	if ticket.DeadlineAt == nil {
-		slaDuration := s.slaForRisk(req.RiskLevel)
-		if slaDuration > 0 {
-			deadline := now.Add(slaDuration)
+		if s.slaStore != nil {
+			if pol, perr := s.slaStore.GetByRisk(r.Context(), tenantID, string(req.RiskLevel)); perr == nil && pol != nil && pol.ResolutionHours > 0 {
+				deadline := now.Add(time.Duration(pol.ResolutionHours) * time.Hour)
+				ticket.DeadlineAt = &deadline
+			} else if d := s.slaForRisk(req.RiskLevel); d > 0 {
+				deadline := now.Add(d)
+				ticket.DeadlineAt = &deadline
+			}
+		} else if d := s.slaForRisk(req.RiskLevel); d > 0 {
+			deadline := now.Add(d)
 			ticket.DeadlineAt = &deadline
 		}
 	}
@@ -161,7 +181,32 @@ func (s *Service) handleCreate(w http.ResponseWriter, r *http.Request) {
 
 	s.fireWebhook(r.Context(), "ticket.created", ticket, req.CreatedBy)
 
-	if req.RiskLevel.RequiresApproval() {
+	// 流程引擎接入：绑定了流程模板则创建流程实例并推进到首个真实步骤，
+	// 由落点步骤类型映射工单初始状态（流程优先于基于风险的自动流转）。
+	processGoverned := false
+	if req.ProcessID != "" && s.processStore != nil {
+		_, landing, perr := s.processStore.StartInstance(r.Context(), tenantID, req.ProcessID, ticket.ID)
+		if perr != nil {
+			slog.Warn("start process instance failed", "process_id", req.ProcessID, "ticket_id", ticket.ID, "error", perr)
+		} else {
+			processGoverned = true
+			ticket.ProcessID = req.ProcessID
+			prev := ticket.Status
+			if landing != nil {
+				if mapped := process.StepTypeToTicketStatus(landing); mapped != "" {
+					ticket.Status = model.TicketStatus(mapped)
+				}
+			}
+			if err := s.store.Update(r.Context(), ticket); err != nil {
+				slog.Error("persist ticket process binding failed", "error", err)
+			}
+			if prev != ticket.Status {
+				s.recordEvent(r.Context(), ticket, prev, ticket.Status, req.CreatedBy, "process instance started")
+			}
+		}
+	}
+
+	if !processGoverned && req.RiskLevel.RequiresApproval() {
 		if err := s.transition(r.Context(), ticket, model.StatusPendingReview, req.CreatedBy); err != nil {
 			slog.Error("auto-transition to pending_review failed", "error", err)
 		}
@@ -240,6 +285,7 @@ func (s *Service) handleApprove(w http.ResponseWriter, r *http.Request) {
 
 	s.recordEvent(r.Context(), ticket, model.StatusPendingReview, model.StatusApproved, req.ApprovedBy, req.Comment)
 	s.fireWebhook(r.Context(), "ticket.approved", ticket, req.ApprovedBy)
+	s.advanceProcess(r.Context(), ticket, "success")
 	s.broadcastTicketUpdate(ticket)
 	writeJSON(w, http.StatusOK, ticket)
 }
@@ -280,6 +326,7 @@ func (s *Service) handleReject(w http.ResponseWriter, r *http.Request) {
 
 	s.recordEvent(r.Context(), ticket, previousStatus, model.StatusRejected, req.RejectedBy, req.Reason)
 	s.fireWebhook(r.Context(), "ticket.rejected", ticket, req.RejectedBy)
+	s.advanceProcess(r.Context(), ticket, "failure")
 	s.broadcastTicketUpdate(ticket)
 	writeJSON(w, http.StatusOK, ticket)
 }
@@ -368,6 +415,7 @@ func (s *Service) handleComplete(w http.ResponseWriter, r *http.Request) {
 
 	s.recordEvent(r.Context(), ticket, previousStatus, model.StatusSucceeded, req.CompletedBy, req.Comment)
 	s.fireWebhook(r.Context(), "ticket.completed", ticket, req.CompletedBy)
+	s.advanceProcess(r.Context(), ticket, "success")
 	s.broadcastTicketUpdate(ticket)
 	writeJSON(w, http.StatusOK, ticket)
 }
@@ -411,6 +459,7 @@ func (s *Service) handleRollback(w http.ResponseWriter, r *http.Request) {
 
 	s.recordEvent(r.Context(), ticket, previousStatus, model.StatusRolledBack, req.RolledBackBy, req.Comment)
 	s.fireWebhook(r.Context(), "ticket.rolled_back", ticket, req.RolledBackBy)
+	s.advanceProcess(r.Context(), ticket, "failure")
 	s.broadcastTicketUpdate(ticket)
 	writeJSON(w, http.StatusOK, ticket)
 }
@@ -421,6 +470,37 @@ func (s *Service) transition(ctx context.Context, ticket *model.Ticket, to model
 	}
 	ticket.Status = to
 	return s.store.Update(ctx, ticket)
+}
+
+// advanceProcess 若工单绑定了流程实例，则按 condition(success/failure) 推进流程引擎——
+// 记录当前步骤结果并落到下一步。无实例(未绑定流程)时静默跳过，不影响普通工单。
+func (s *Service) advanceProcess(ctx context.Context, ticket *model.Ticket, condition string) {
+	if s.processStore == nil || ticket == nil || ticket.ProcessID == "" {
+		return
+	}
+	if _, _, err := s.processStore.Advance(ctx, ticket.TenantID, ticket.ID, condition, string(ticket.Status)); err != nil {
+		slog.Warn("advance process instance failed", "ticket_id", ticket.ID, "condition", condition, "error", err)
+	}
+}
+
+// handleGetProcessInstance 返回工单当前流程实例进度（当前步骤/状态/各步骤结果）。
+func (s *Service) handleGetProcessInstance(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	tenantID := tenantFromCtx(r.Context())
+	if s.processStore == nil {
+		writeError(w, http.StatusNotImplemented, "process engine not configured")
+		return
+	}
+	inst, err := s.processStore.GetInstance(r.Context(), id, tenantID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if inst == nil {
+		writeError(w, http.StatusNotFound, "no process instance for ticket")
+		return
+	}
+	writeJSON(w, http.StatusOK, inst)
 }
 
 func (s *Service) handleGetEvents(w http.ResponseWriter, r *http.Request) {

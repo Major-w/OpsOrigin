@@ -16,6 +16,10 @@ type Store interface {
 	List(ctx context.Context, tenantID string) ([]*Process, error)
 	Update(ctx context.Context, p *Process) error
 	Delete(ctx context.Context, id, tenantID string) error
+	// 流程实例持久化（工单绑定流程后自动创建实例，驱动流转）
+	CreateInstance(ctx context.Context, inst *ProcessInstance) error
+	GetInstanceByTicket(ctx context.Context, ticketID, tenantID string) (*ProcessInstance, error)
+	UpdateInstance(ctx context.Context, inst *ProcessInstance) error
 }
 
 type PGStore struct{ db *sql.DB }
@@ -23,6 +27,7 @@ type PGStore struct{ db *sql.DB }
 func NewPGStore(db *sql.DB) *PGStore {
 	s := &PGStore{db: db}
 	s.migrate()
+	s.migrateInstances()
 	return s
 }
 

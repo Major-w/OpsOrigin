@@ -91,6 +91,7 @@ type CreateTicketRequest struct {
 	WebhookURL    string            `json:"webhook_url,omitempty"`
 	Labels        map[string]string `json:"labels,omitempty"`
 	CIIDs         []string          `json:"ci_ids,omitempty"`
+	ProcessID     string            `json:"process_id,omitempty"` // 绑定的流程模板 ID（触发流程引擎驱动）
 	ScheduledAt   *time.Time        `json:"scheduled_at,omitempty"`
 	DeadlineAt    *time.Time        `json:"deadline_at,omitempty"`
 	TraceID       string            `json:"trace_id,omitempty"`

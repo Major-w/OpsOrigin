@@ -150,6 +150,7 @@ func (s *PGStore) migrate(ctx context.Context) {
 		`ALTER TABLE itsm_tickets ADD COLUMN IF NOT EXISTS sla_breached BOOLEAN DEFAULT FALSE`,
 		`ALTER TABLE itsm_tickets ADD COLUMN IF NOT EXISTS sla_breached_at TIMESTAMPTZ`,
 		`ALTER TABLE itsm_tickets ADD COLUMN IF NOT EXISTS sla_escalation_level INTEGER DEFAULT 0`,
+		`ALTER TABLE itsm_tickets ADD COLUMN IF NOT EXISTS process_id TEXT`,
 	}
 	for _, m := range migrations {
 		s.db.ExecContext(ctx, m)
@@ -171,8 +172,8 @@ func (s *PGStore) Create(ctx context.Context, ticket *model.Ticket) error {
 			 rollback_plan, created_by, created_by_type, approved_by, reject_reason,
 			 completed_by, rolled_back_by, rollback_reason, ci_ids, webhook_url,
 			 labels, trace_id, scheduled_at, deadline_at, created_at, updated_at,
-			 approved_at, executed_at, completed_at, rolled_back_at)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26)`,
+			 approved_at, executed_at, completed_at, rolled_back_at, process_id)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27)`,
 		ticket.ID, ticket.TenantID, ticket.Title, nullable(ticket.Description),
 		string(ticket.RiskLevel), string(ticket.Status), nullable(ticket.ChangePlan),
 		nullable(ticket.RollbackPlan), ticket.CreatedBy, ticket.CreatedByType,
@@ -183,7 +184,8 @@ func (s *PGStore) Create(ctx context.Context, ticket *model.Ticket) error {
 		nullableTime(ticket.ScheduledAt), nullableTime(ticket.DeadlineAt),
 		ticket.CreatedAt, ticket.UpdatedAt,
 		nullableTime(ticket.ApprovedAt), nullableTime(ticket.ExecutedAt),
-		nullableTime(ticket.CompletedAt), nullableTime(ticket.RolledBackAt))
+		nullableTime(ticket.CompletedAt), nullableTime(ticket.RolledBackAt),
+		nullable(ticket.ProcessID))
 	if err != nil {
 		return fmt.Errorf("insert ticket: %w", err)
 	}
@@ -195,6 +197,7 @@ func (s *PGStore) Get(ctx context.Context, id, tenantID string) (*model.Ticket, 
 	var desc, changePlan, rollbackPlan, approvedBy, rejectReason, webhookURL sql.NullString
 	var completedBy, rolledBackBy, rollbackReason sql.NullString
 	var labelsJSON, ciIDsJSON sql.NullString
+	var processID sql.NullString
 	var approvedAt, executedAt, completedAt, rolledBackAt sql.NullTime
 	var scheduledAt, deadlineAt sql.NullTime
 
@@ -203,14 +206,14 @@ func (s *PGStore) Get(ctx context.Context, id, tenantID string) (*model.Ticket, 
 		       rollback_plan, created_by, created_by_type, approved_by, reject_reason,
 		       completed_by, rolled_back_by, rollback_reason, ci_ids, webhook_url,
 		       labels, trace_id, scheduled_at, deadline_at, created_at, updated_at,
-		       approved_at, executed_at, completed_at, rolled_back_at
+		       approved_at, executed_at, completed_at, rolled_back_at, process_id
 		FROM itsm_tickets WHERE id = $1 AND tenant_id = $2`, id, tenantID).Scan(
 		&t.ID, &t.TenantID, &t.Title, &desc, &t.RiskLevel, &t.Status,
 		&changePlan, &rollbackPlan, &t.CreatedBy, &t.CreatedByType,
 		&approvedBy, &rejectReason, &completedBy, &rolledBackBy, &rollbackReason,
 		&ciIDsJSON, &webhookURL, &labelsJSON, &t.TraceID,
 		&scheduledAt, &deadlineAt, &t.CreatedAt, &t.UpdatedAt,
-		&approvedAt, &executedAt, &completedAt, &rolledBackAt)
+		&approvedAt, &executedAt, &completedAt, &rolledBackAt, &processID)
 	if err != nil {
 		if err == sql.ErrNoRows {
 			return nil, ErrNotFound
@@ -218,6 +221,7 @@ func (s *PGStore) Get(ctx context.Context, id, tenantID string) (*model.Ticket, 
 		return nil, fmt.Errorf("query ticket: %w", err)
 	}
 
+	t.ProcessID = nullableStr(processID)
 	t.Description = nullableStr(desc)
 	t.ChangePlan = nullableStr(changePlan)
 	t.RollbackPlan = nullableStr(rollbackPlan)
@@ -261,8 +265,9 @@ func (s *PGStore) Update(ctx context.Context, ticket *model.Ticket) error {
 			reject_reason=$10, completed_by=$11, rolled_back_by=$12,
 			rollback_reason=$13, ci_ids=$14, webhook_url=$15, labels=$16,
 			trace_id=$17, updated_at=$18, approved_at=$19, executed_at=$20,
-			completed_at=$21, rolled_back_at=$22, scheduled_at=$23, deadline_at=$24
-		WHERE id=$25 AND tenant_id=$26`,
+			completed_at=$21, rolled_back_at=$22, scheduled_at=$23, deadline_at=$24,
+			process_id=$25
+		WHERE id=$26 AND tenant_id=$27`,
 		ticket.Title, nullable(ticket.Description), string(ticket.RiskLevel),
 		string(ticket.Status), nullable(ticket.ChangePlan),
 		nullable(ticket.RollbackPlan), ticket.CreatedBy, ticket.CreatedByType,
@@ -273,6 +278,7 @@ func (s *PGStore) Update(ctx context.Context, ticket *model.Ticket) error {
 		ticket.UpdatedAt, nullableTime(ticket.ApprovedAt), nullableTime(ticket.ExecutedAt),
 		nullableTime(ticket.CompletedAt), nullableTime(ticket.RolledBackAt),
 		nullableTime(ticket.ScheduledAt), nullableTime(ticket.DeadlineAt),
+		nullable(ticket.ProcessID),
 		ticket.ID, ticket.TenantID)
 	if err != nil {
 		return fmt.Errorf("update ticket: %w", err)
@@ -289,7 +295,7 @@ func (s *PGStore) List(ctx context.Context, tenantID string, status model.Ticket
 	                  rollback_plan, created_by, created_by_type, approved_by, reject_reason,
 	                  completed_by, rolled_back_by, rollback_reason, ci_ids, webhook_url,
 	                  labels, trace_id, scheduled_at, deadline_at, created_at, updated_at,
-	                  approved_at, executed_at, completed_at, rolled_back_at
+	                  approved_at, executed_at, completed_at, rolled_back_at, process_id
 	           FROM itsm_tickets WHERE tenant_id = $1`
 	args := []any{tenantID}
 
@@ -311,6 +317,7 @@ func (s *PGStore) List(ctx context.Context, tenantID string, status model.Ticket
 		var desc, changePlan, rollbackPlan, approvedBy, rejectReason, webhookURL sql.NullString
 		var completedBy, rolledBackBy, rollbackReason sql.NullString
 		var labelsJSON, ciIDsJSON sql.NullString
+		var processID sql.NullString
 		var approvedAt, executedAt, completedAt, rolledBackAt sql.NullTime
 		var scheduledAt, deadlineAt sql.NullTime
 
@@ -320,10 +327,11 @@ func (s *PGStore) List(ctx context.Context, tenantID string, status model.Ticket
 			&approvedBy, &rejectReason, &completedBy, &rolledBackBy, &rollbackReason,
 			&ciIDsJSON, &webhookURL, &labelsJSON, &t.TraceID,
 			&scheduledAt, &deadlineAt, &t.CreatedAt, &t.UpdatedAt,
-			&approvedAt, &executedAt, &completedAt, &rolledBackAt); err != nil {
+			&approvedAt, &executedAt, &completedAt, &rolledBackAt, &processID); err != nil {
 			return nil, fmt.Errorf("scan ticket: %w", err)
 		}
 
+		t.ProcessID = nullableStr(processID)
 		t.Description = nullableStr(desc)
 		t.ChangePlan = nullableStr(changePlan)
 		t.RollbackPlan = nullableStr(rollbackPlan)
