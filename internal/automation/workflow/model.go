@@ -10,7 +10,23 @@ const (
 	StepTypeParallel  StepType = "parallel"
 	StepTypeWait      StepType = "wait"
 	StepTypeApproval  StepType = "approval"
+	// 与前端画布对齐的扩展节点类型（DAG 模型）。执行器对未特化处理的类型走
+	// 直通语义（沿成功边推进），确保 UI 建的工作流不再在首节点静默终止。
+	StepTypeStart    StepType = "start"
+	StepTypeEnd      StepType = "end"
+	StepTypeNotify   StepType = "notify"
+	StepTypeSubflow  StepType = "subflow"
+	StepTypeLoop     StepType = "loop"
+	StepTypeWebhook  StepType = "webhook"
+	StepTypeComment  StepType = "comment"
+	StepTypeFiledist StepType = "filedist"
 )
+
+// DAGDependency — 上游依赖边（前端画布模型）。表示"当 NodeID 以 Condition 结束时进入本节点"。
+type DAGDependency struct {
+	NodeID    string `json:"nodeId"`
+	Condition string `json:"condition"` // success / failure / always
+}
 
 type WorkflowStep struct {
 	ID            string         `json:"id"`
@@ -21,12 +37,39 @@ type WorkflowStep struct {
 	Condition     string         `json:"condition,omitempty"`
 	OnSuccess     string         `json:"on_success,omitempty"`
 	OnFailure     string         `json:"on_failure,omitempty"`
-	ParallelSteps []WorkflowStep `json:"parallel_steps,omitempty"`
-	WaitSeconds   int            `json:"wait_seconds,omitempty"`
-	Timeout       int            `json:"timeout,omitempty"`
-	Approvers     []string       `json:"approvers,omitempty"`
-	ApprovalMsg   string         `json:"approval_msg,omitempty"`
-	Position      struct {
+	// DAG 依赖边（前端画布用 depends_on 表达连线，替代 on_success/on_failure）。
+	// 保存时保留原样，执行前经 compileDAG 编译为 on_success/on_failure 供执行器消费。
+	DependsOn     []DAGDependency `json:"depends_on,omitempty"`
+	ParallelSteps []WorkflowStep  `json:"parallel_steps,omitempty"`
+	WaitSeconds   int             `json:"wait_seconds,omitempty"`
+	Timeout       int             `json:"timeout,omitempty"`
+	Approvers     []string        `json:"approvers,omitempty"`
+	ApprovalMsg   string          `json:"approval_msg,omitempty"`
+	// 开始/结束
+	EndStatus string `json:"end_status,omitempty"` // success/failure/timeout
+	// 通知
+	NotifyChannel string `json:"notify_channel,omitempty"`
+	NotifyTitle   string `json:"notify_title,omitempty"`
+	NotifyBody    string `json:"notify_body,omitempty"`
+	// 子流程
+	SubflowID   string `json:"subflow_id,omitempty"`
+	SubflowName string `json:"subflow_name,omitempty"`
+	// 循环
+	LoopOver string `json:"loop_over,omitempty"`
+	LoopMax  int    `json:"loop_max,omitempty"`
+	// Webhook
+	WebhookURL     string            `json:"webhook_url,omitempty"`
+	WebhookMethod  string            `json:"webhook_method,omitempty"`
+	WebhookHeaders map[string]string `json:"webhook_headers,omitempty"`
+	WebhookBody    string            `json:"webhook_body,omitempty"`
+	// 注释
+	CommentText string `json:"comment_text,omitempty"`
+	// 文件分发
+	FiledistFileID      string   `json:"filedist_file_id,omitempty"`
+	FiledistFileName    string   `json:"filedist_file_name,omitempty"`
+	FiledistTargets     []string `json:"filedist_targets,omitempty"`
+	FiledistDownloadDir string   `json:"filedist_download_dir,omitempty"`
+	Position            struct {
 		X float64 `json:"x"`
 		Y float64 `json:"y"`
 	} `json:"position,omitempty"`

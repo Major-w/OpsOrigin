@@ -354,8 +354,9 @@ func (s *Service) handleExecute(w http.ResponseWriter, r *http.Request) {
 	}
 	exec.Status = ExecStatusRunning
 
-	startStepID := ""
-	if len(wf.Steps) > 0 {
+	// 编译 DAG(depends_on)→on_success/on_failure，返回起点；非 DAG 回退 Steps[0]。
+	startStepID := compileDAG(wf)
+	if startStepID == "" && len(wf.Steps) > 0 {
 		startStepID = wf.Steps[0].ID
 	}
 	// 异步驱动执行：HTTP 立即返回 202，执行在后台 goroutine 进行，
@@ -507,7 +508,16 @@ func (s *Service) executeStep(ctx context.Context, exec *WorkflowExecution, wf *
 		// surface the approval to the caller via context so it appears in the response
 		exec.Context[step.ID] = map[string]any{"approval_id": a.ID, "status": string(a.Status)}
 		return "", true, nil
+
+	case StepTypeEnd:
+		// 结束节点：失败/超时状态显式标记执行失败，否则正常终止(nextStepID 为空)。
+		if step.EndStatus == "failure" || step.EndStatus == "timeout" {
+			return "", false, fmt.Errorf("workflow ended at %s with status %s", step.ID, step.EndStatus)
+		}
+		return "", false, nil
 	}
+	// start/comment/notify/subflow/loop/webhook/filedist 等未特化类型：直通(沿成功边推进)，
+	// 保证 DAG 流程不在这些节点静默中断。具体动作待后续按类型补全。
 	return step.OnSuccess, false, nil
 }
 
@@ -634,6 +644,8 @@ func (s *Service) decideApproval(w http.ResponseWriter, r *http.Request, status 
 		writeJSON(w, http.StatusOK, approval)
 		return
 	}
+	// 审批续跑同样需要 DAG→on_success/on_failure 编译，否则审批节点后继为空而中断。
+	compileDAG(wf)
 
 	if status == ApprovalApproved {
 		exec.StepResults[approval.StepID] = StepResult{
@@ -854,8 +866,9 @@ func (s *Service) Trigger(ctx context.Context, tenantID, workflowID string, agen
 		return nil, err
 	}
 	exec.Status = ExecStatusRunning
-	startStepID := ""
-	if len(wf.Steps) > 0 {
+	// 编译 DAG(depends_on)→on_success/on_failure，返回起点；非 DAG 回退 Steps[0]。
+	startStepID := compileDAG(wf)
+	if startStepID == "" && len(wf.Steps) > 0 {
 		startStepID = wf.Steps[0].ID
 	}
 	s.runFromStep(ctx, exec, wf, startStepID)
