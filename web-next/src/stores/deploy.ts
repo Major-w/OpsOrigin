@@ -9,6 +9,7 @@ import { toast } from '@/stores/toast'
 export type AppType = 'java' | 'go' | 'python' | 'nodejs' | 'static' | 'container'
 export type AppStatus = 'enabled' | 'disabled'
 export type DeployEnv = 'dev' | 'test' | 'staging' | 'prod'
+export type DeployMode = 'host' | 'container'
 export type ReleaseStatus = 'draft' | 'pending_approval' | 'approved' | 'deploying' | 'succeeded' | 'failed' | 'rolled_back' | 'rejected'
 export type ReleaseStrategy = 'blue_green' | 'canary' | 'rolling' | 'full'
 
@@ -16,6 +17,9 @@ export interface DeployApp {
   id: string; name: string; code: string; type: AppType; status: AppStatus
   repo_url: string; branch: string; build_cmd: string; artifact_path: string
   deploy_script: string; health_check_url: string; target_port: number
+  // 容器模式专用字段（mode=container 的环境会使用）
+  image_url: string; namespace: string; workload: string
+  container_name: string; replicas: number; manifest: string
   envs: DeployEnv[]; current_versions: Record<DeployEnv, string>
   description: string; owner: string; labels: Record<string, string>
   created_at: string; updated_at: string
@@ -33,7 +37,8 @@ export interface ReleaseTicket {
 }
 
 export interface DeployEnvironment {
-  id: string; name: string; type: DeployEnv; hosts: string[]
+  id: string; name: string; type: DeployEnv; mode: DeployMode
+  hosts: string[]; agent_ids: string[]
   config: Record<string, string>; agent_count: number; status: string
   description: string; created_at: string; updated_at: string
 }

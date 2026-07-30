@@ -26,9 +26,13 @@ type credentialView struct {
 // 若 k8s 发现器已注入，额外追加虚拟 "k8s" 条目（非 Provider，经 Agent 通道）。
 func (s *Service) handleListProviders(w http.ResponseWriter, r *http.Request) {
 	names := Names()
-	types := []string{string(TypeVM), string(TypeDatabase), string(TypeLoadBalancer)}
 	providers := make([]providerInfo, 0, len(names)+1)
 	for _, n := range names {
+		kt := ProviderKinds(n)
+		types := make([]string, len(kt))
+		for i, t := range kt {
+			types[i] = string(t)
+		}
 		providers = append(providers, providerInfo{Name: n, Types: types})
 	}
 	if s.k8sDiscoverer != nil {

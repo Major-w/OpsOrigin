@@ -6,7 +6,7 @@ import { useDeployStore, type DeployApp, type AppType, type ReleaseTicket } from
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
-import { ArrowLeft, GitBranch, Server, Globe, Terminal, Heart, Save, Power, Rocket, RotateCcw, Check, Ban, Play, Clock, CheckCircle, XCircle, Loader2 } from 'lucide-react'
+import { ArrowLeft, GitBranch, Server, Globe, Terminal, Heart, Save, Power, Rocket, RotateCcw, Check, Ban, Play, Clock, CheckCircle, XCircle, Loader2, Boxes } from 'lucide-react'
 import { cn, formatTime } from '@/lib/utils'
 import { toast } from '@/stores/toast'
 
@@ -37,7 +37,7 @@ export default function AppDetailPage() {
   const params = useParams()
   const router = useRouter()
   const appId = String(params.id || '')
-  const { apps, releases, fetchApps, fetchReleases, updateApp, approveRelease, rejectRelease, executeRelease, rollbackRelease } = useDeployStore()
+  const { apps, releases, fetchApps, fetchReleases, updateApp, approveRelease, rejectRelease, deployRelease, rollbackRelease } = useDeployStore()
 
   const [editing, setEditing] = useState(false)
   const [activeTab, setActiveTab] = useState<'info' | 'config' | 'releases'>('info')
@@ -188,6 +188,22 @@ export default function AppDetailPage() {
               <Field label="部署脚本" value={app.deploy_script} editing={editing} formKey="deploy_script" form={form} setForm={setForm} mono icon={<Server className="h-3 w-3" />} />
               <Field label="目标端口" value={String(app.target_port)} editing={editing} formKey="target_port" form={form} setForm={setForm} mono icon={<Globe className="h-3 w-3" />} />
               <Field label="健康检查" value={app.health_check_url} editing={editing} formKey="health_check_url" form={form} setForm={setForm} mono icon={<Heart className="h-3 w-3" />} />
+              <div className="col-span-2 mt-2 pt-2 border-t">
+                <p className="text-[10px] font-medium text-violet-600 mb-1.5">容器模式配置（目标环境 mode=container 时使用）</p>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <Field label="镜像地址（不含 tag）" value={app.image_url} editing={editing} formKey="image_url" form={form} setForm={setForm} mono icon={<Boxes className="h-3 w-3" />} />
+                  <Field label="命名空间" value={app.namespace} editing={editing} formKey="namespace" form={form} setForm={setForm} mono />
+                  <Field label="工作负载（如 deployment/myapp）" value={app.workload} editing={editing} formKey="workload" form={form} setForm={setForm} mono />
+                  <Field label="容器名（set image 用）" value={app.container_name} editing={editing} formKey="container_name" form={form} setForm={setForm} mono />
+                  <Field label="副本数" value={String(app.replicas)} editing={editing} formKey="replicas" form={form} setForm={setForm} mono />
+                </div>
+                <div className="mt-3">
+                  <label className="text-xs text-muted-foreground">原始 YAML（可选，优先于 set image 直接 apply）</label>
+                  {editing ? (
+                    <textarea className="mt-1 flex w-full rounded-md border border-input bg-background px-3 py-1 text-sm font-mono" rows={4} value={form.manifest || ''} onChange={e => setForm(f => ({ ...f, manifest: e.target.value }))} placeholder="apiVersion: apps/v1&#10;kind: Deployment&#10;..." />
+                  ) : <pre className="text-xs mt-1 bg-muted/30 rounded p-2 whitespace-pre-wrap">{app.manifest || '-'}</pre>}
+                </div>
+              </div>
               <div>
                 <label className="text-xs text-muted-foreground">发布环境</label>
                 <div className="flex gap-1.5 mt-1">
@@ -219,7 +235,7 @@ export default function AppDetailPage() {
                           <span>·</span>
                           <span>{rel.commit_id}</span>
                           <span>·</span>
-                          <span>{rel.created_by}</span>
+                          <span>{rel.operator}</span>
                           <span>·</span>
                           <span>{formatTime(rel.created_at)}</span>
                         </div>
@@ -232,22 +248,22 @@ export default function AppDetailPage() {
                           <Button variant="ghost" size="icon" className="h-6 w-6 text-destructive" onClick={() => rejectRelease(rel.id, '驳回')} title="驳回"><Ban className="h-3 w-3" /></Button>
                         </>
                       )}
-                      {rel.status === 'approved' && <Button variant="ghost" size="icon" className="h-6 w-6 text-cyan-500" onClick={() => executeRelease(rel.id)} title="执行"><Play className="h-3 w-3" /></Button>}
-                      {rel.status === 'succeeded' && rel.rollback_enabled && <Button variant="ghost" size="icon" className="h-6 w-6 text-orange-500" onClick={() => rollbackRelease(rel.id)} title="回滚"><RotateCcw className="h-3 w-3" /></Button>}
+                      {rel.status === 'approved' && <Button variant="ghost" size="icon" className="h-6 w-6 text-cyan-500" onClick={() => deployRelease(rel.id)} title="执行"><Play className="h-3 w-3" /></Button>}
+                      {(rel.status === 'succeeded' || rel.status === 'rolled_back') && <Button variant="ghost" size="icon" className="h-6 w-6 text-orange-500" onClick={() => rollbackRelease(rel.id)} title="回滚"><RotateCcw className="h-3 w-3" /></Button>}
                     </div>
                   </div>
                   {rel.commit_msg && <p className="text-xs text-muted-foreground mt-1.5 font-mono truncate">{rel.commit_msg}</p>}
                   {/* 步骤进度 */}
-                  {rel.deploy_steps.length > 0 && (
+                  {(rel.steps || []).length > 0 && (
                     <div className="flex items-center gap-1 mt-2 pt-2 border-t">
-                      {rel.deploy_steps.map((step, i) => {
-                        const color = step.status === 'success' ? 'bg-emerald-500' : step.status === 'failed' ? 'bg-red-500' : step.status === 'running' ? 'bg-cyan-500 animate-pulse' : step.status === 'skipped' ? 'bg-muted' : 'bg-muted/30'
+                      {(rel.steps || []).map((step, i) => {
+                        const color = step.status === 'succeeded' ? 'bg-emerald-500' : step.status === 'failed' ? 'bg-red-500' : step.status === 'running' ? 'bg-cyan-500 animate-pulse' : step.status === 'skipped' ? 'bg-muted' : 'bg-muted/30'
                         return <div key={step.id} className="flex items-center gap-1">
                           <div className={cn("w-1.5 h-1.5 rounded-full", color)} title={`${step.name}: ${step.status}`} />
-                          {i < rel.deploy_steps.length - 1 && <div className="w-4 h-px bg-muted" />}
+                          {i < (rel.steps || []).length - 1 && <div className="w-4 h-px bg-muted" />}
                         </div>
                       })}
-                      <span className="text-[10px] text-muted-foreground ml-2">{rel.deploy_steps.filter(s => s.status === 'success').length}/{rel.deploy_steps.length} 步完成</span>
+                      <span className="text-[10px] text-muted-foreground ml-2">{(rel.steps || []).filter(s => s.status === 'succeeded').length}/{(rel.steps || []).length} 步完成</span>
                     </div>
                   )}
                 </CardContent>

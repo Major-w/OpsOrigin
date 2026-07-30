@@ -101,6 +101,23 @@ type Provider interface {
 	CollectMetrics(ctx context.Context, cred Credential, region string, resources []Resource) ([]Metric, error)
 }
 
+// supportedKinds 记录各 Provider 对外声明的可纳管资源类型，用于 UI 类型选择。
+// 各 Provider 包在 init() 中调用 RegisterKinds 填充；未注册的厂商回退到默认三类。
+var supportedKinds = map[string][]ResourceType{}
+
+// RegisterKinds 由 Provider 在 init() 中调用，声明其支持的资源类型。
+func RegisterKinds(name string, kinds ...ResourceType) {
+	supportedKinds[name] = kinds
+}
+
+// ProviderKinds 返回指定厂商对外声明的资源类型；未注册时回退到默认三类。
+func ProviderKinds(name string) []ResourceType {
+	if k, ok := supportedKinds[name]; ok && len(k) > 0 {
+		return k
+	}
+	return []ResourceType{TypeVM, TypeDatabase, TypeLoadBalancer}
+}
+
 // ProviderNotFound 在查询未注册厂商时返回。
 type ProviderNotFound struct{ Name string }
 
