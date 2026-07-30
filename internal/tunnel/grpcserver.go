@@ -38,6 +38,13 @@ type GRPCServer struct {
 
 	// tlsConfig 非 nil 时启用 mTLS 双向认证(§3.1 / §6)。
 	tlsConfig *tls.Config
+
+	// onHeartbeat 在会话注册成功及每次收到隧道心跳时触发,
+	// 供 agentmgr 回写在线状态(Redis/DB)。直连 Agent 场景 proxyID 即 agentID。
+	onHeartbeat func(agentID, hostname string)
+
+	// onDisconnect 在会话断开时触发,供 agentmgr 立即标记离线。
+	onDisconnect func(agentID string)
 }
 
 type GRPCProxySession struct {
@@ -69,6 +76,16 @@ func (s *GRPCServer) EnableMTLS(cfg *tls.Config) {
 
 func (s *GRPCServer) OnCommand(handler func(ctx context.Context, proxyID string, cmd *CommandRequest) *CommandResponse) {
 	s.onCommand = handler
+}
+
+// OnHeartbeat 注册心跳回调:会话注册成功时和每次收到隧道心跳时触发。
+func (s *GRPCServer) OnHeartbeat(handler func(agentID, hostname string)) {
+	s.onHeartbeat = handler
+}
+
+// OnDisconnect 注册断连回调:会话结束(流关闭/出错)时触发。
+func (s *GRPCServer) OnDisconnect(handler func(agentID string)) {
+	s.onDisconnect = handler
 }
 
 func (s *GRPCServer) Start(ctx context.Context) error {
@@ -107,9 +124,16 @@ func (s *GRPCServer) Connect(stream grpc.BidiStreamingServer[pb.TunnelMessage, p
 		return fmt.Errorf("receive register: %w", err)
 	}
 
-	reg := &pb.RegisterRequest{}
-	if err := extractPayload(msg, reg); err != nil {
-		return status.Errorf(codes.InvalidArgument, "invalid register: %v", err)
+	// 直接从 oneof 断言取注册包。此前用 extractPayload(json 序列化 oneof wrapper)
+	// 会得到 {"Register":{...}} 外层结构,反序列化到 RegisterRequest 全为零值,
+	// 导致会话以空 proxy_id 注册、HasProxy(agentID) 永远 false。
+	regPayload, ok := msg.Payload.(*pb.TunnelMessage_Register)
+	if !ok || regPayload.Register == nil {
+		return status.Errorf(codes.InvalidArgument, "first message must be register")
+	}
+	reg := regPayload.Register
+	if reg.ProxyId == "" {
+		return status.Errorf(codes.InvalidArgument, "register missing proxy_id")
 	}
 
 	// §3.1 从客户端证书 CN 解析身份(若启用 mTLS)。
@@ -153,6 +177,11 @@ func (s *GRPCServer) Connect(stream grpc.BidiStreamingServer[pb.TunnelMessage, p
 		return fmt.Errorf("send register response: %w", err)
 	}
 
+	// 注册即视为一次心跳:立刻回写在线状态,避免等 30s 首个隧道心跳。
+	if s.onHeartbeat != nil {
+		s.onHeartbeat(reg.ProxyId, reg.Hostname)
+	}
+
 	// read loop
 	for {
 		msg, err := stream.Recv()
@@ -174,7 +203,11 @@ func (s *GRPCServer) Connect(stream grpc.BidiStreamingServer[pb.TunnelMessage, p
 	// T13: gRPC 连接断开打点
 	metrics.AgentmgrGrpcConnections.WithLabelValues(reg.ProxyId, "default").Dec()
 
-	slog.Info("proxy disconnected via gRPC", "proxy_id", reg.ProxyId)
+	// 会话断开:通知上层立即标记离线。
+	if s.onDisconnect != nil {
+		s.onDisconnect(reg.ProxyId)
+	}
+
 	slog.Info("proxy disconnected via gRPC", "proxy_id", reg.ProxyId)
 	return nil
 }
@@ -185,6 +218,10 @@ func (s *GRPCServer) handleMessage(session *GRPCProxySession, msg *pb.TunnelMess
 		slog.Debug("gRPC heartbeat from proxy",
 			"proxy_id", session.ProxyID,
 			"active_agents", p.Heartbeat.ActiveAgents)
+		// 回写在线状态(Redis TTL 续期),否则 UI 列表永远显示 offline。
+		if s.onHeartbeat != nil {
+			s.onHeartbeat(session.ProxyID, session.Hostname)
+		}
 
 	case *pb.TunnelMessage_CommandResp:
 		slog.Info("gRPC command response",

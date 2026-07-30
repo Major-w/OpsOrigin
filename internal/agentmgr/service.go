@@ -458,6 +458,32 @@ func (s *Service) SetTunnelServer(ts *tunnel.Server) {
 // 经 Proxy 中转时会话落在 tunnelServer(或 gRPC Proxy)的 proxiles[ProxyID]。
 func (s *Service) SetGRPCTunnel(gs *tunnel.GRPCServer) {
 	s.grpcTunnel = gs
+	if gs == nil {
+		return
+	}
+	// 隧道心跳回写:gRPC 直连 Agent 只发隧道内心跳(不走 HTTP heartbeat 端点),
+	// 若不在此回写 Redis/DB,agents 列表会永远显示 offline。
+	gs.OnHeartbeat(func(agentID, hostname string) {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		req := &HeartbeatRequest{Hostname: hostname}
+		if err := s.hbWriter.Record(ctx, agentID, "default", req); err != nil {
+			slog.Warn("tunnel heartbeat write-back failed", "agent_id", agentID, "error", err)
+		}
+	})
+	// 断连即离线:删除 Redis 心跳 key 并回写 DB 状态,UI 立即翻转为 offline。
+	gs.OnDisconnect(func(agentID string) {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		s.hbWriter.Delete(ctx, agentID)
+		if host, err := s.store.Get(ctx, agentID, "default"); err == nil && host != nil {
+			host.Status = AgentStatusOffline
+			host.UpdatedAt = time.Now()
+			if err := s.store.Update(ctx, host); err != nil {
+				slog.Warn("mark agent offline failed", "agent_id", agentID, "error", err)
+			}
+		}
+	})
 }
 
 // SetWhitelist 注入本租户的命令白名单(§6)。传 nil 表示未启用(放行一切)。
@@ -1100,6 +1126,12 @@ func (s *Service) handleList(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		copyHost := *h
+		// 沙箱 Agent 与 Core 同进程,不发心跳,只要 Core 活着就在线
+		if h.ID == s.sandboxID && s.sandboxID != "" {
+			copyHost.Status = AgentStatusOnline
+			result = append(result, &copyHost)
+			continue
+		}
 		// 优先 Redis 判定在线状态; 回退到 last_seen 时间戳
 		if onlineSet != nil {
 			if !onlineSet[h.ID] {

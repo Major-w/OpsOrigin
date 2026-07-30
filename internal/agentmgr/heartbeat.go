@@ -89,6 +89,21 @@ func (hw *HeartbeatWriter) Record(ctx context.Context, id, tenantID string, req 
 	return nil
 }
 
+// Delete removes an agent's heartbeat key from Redis (used when the tunnel
+// session disconnects, so the UI flips to offline immediately instead of
+// waiting for the 90s TTL to expire).
+func (hw *HeartbeatWriter) Delete(ctx context.Context, id string) {
+	if hw.rdb == nil {
+		return
+	}
+	if err := hw.rdb.Del(ctx, hbKey(id)).Err(); err != nil {
+		slog.Warn("heartbeat redis delete failed", "agent_id", id, "error", err)
+	}
+	hw.mu.Lock()
+	delete(hw.lastSync, id)
+	hw.mu.Unlock()
+}
+
 // IsOnline checks if an agent is online via Redis. Returns (online, error).
 // If Redis is unavailable, falls back to checking the store.
 func (hw *HeartbeatWriter) IsOnline(ctx context.Context, id string) (bool, error) {
