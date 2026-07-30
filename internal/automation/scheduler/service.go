@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/opsorigin/core/pkg/validate"
 )
 
 type Store interface {
@@ -266,6 +267,10 @@ func (s *Service) handleCreate(w http.ResponseWriter, r *http.Request) {
 	var task ScheduledTask
 	if err := json.NewDecoder(r.Body).Decode(&task); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if err := validate.Name("任务名称", task.Name); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 	task.TenantID = tenantFromCtx(r.Context())

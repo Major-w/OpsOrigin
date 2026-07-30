@@ -9,12 +9,14 @@ import { Input } from '@/components/ui/input'
 import { Dialog, DialogFooter } from '@/components/ui/dialog'
 import { Shield, Plus, Trash2, Edit, Lock } from 'lucide-react'
 import { formatTime } from '@/lib/utils'
+import { validateName, sanitizeName, NAME_RULE_TEXT } from '@/lib/validate'
 
 export default function SystemRolesPage() {
   const { roles, permissions, fetchRoles, fetchPermissions, createRole, updateRole, deleteRole } = useIAMStore()
   const [dialogOpen, setDialogOpen] = useState(false)
   const [editId, setEditId] = useState<string | null>(null)
   const [form, setForm] = useState({ name: '', display_name: '', description: '' })
+  const [nameError, setNameError] = useState<string | null>(null)
   const [selectedPerms, setSelectedPerms] = useState<string[]>([])
 
   useEffect(() => {
@@ -47,6 +49,10 @@ export default function SystemRolesPage() {
   }
 
   const handleSave = async () => {
+    if (!editId) {
+      const err = validateName(form.name, '角色标识')
+      if (err) { alert(err); return }
+    }
     if (editId) {
       await updateRole(editId, {
         display_name: form.display_name,
@@ -173,11 +179,11 @@ export default function SystemRolesPage() {
               <label className="text-sm font-medium">角色标识 *</label>
               <Input
                 value={form.name}
-                onChange={e => setForm(f => ({ ...f, name: e.target.value }))}
+                onChange={e => { const v = sanitizeName(e.target.value); setForm(f => ({ ...f, name: v })); setNameError(validateName(v, '角色标识')) }}
                 placeholder="如 dba / sre"
                 disabled={!!editId}
               />
-              {editId && <p className="text-[10px] text-muted-foreground mt-0.5">角色标识创建后不可修改</p>}
+              {editId ? <p className="text-[10px] text-muted-foreground mt-0.5">角色标识创建后不可修改</p> : nameError ? <p className="text-[11px] text-destructive mt-0.5">{nameError}</p> : <p className="text-[11px] text-muted-foreground mt-0.5">{NAME_RULE_TEXT}</p>}
             </div>
             <div>
               <label className="text-sm font-medium">展示名称</label>

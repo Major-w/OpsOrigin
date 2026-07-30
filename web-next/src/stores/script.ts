@@ -41,7 +41,7 @@ interface ScriptState {
   update: (id: string, data: any, changeNote?: string) => Promise<boolean>
   remove: (id: string) => Promise<boolean>
   duplicate: (id: string) => Promise<boolean>
-  execute: (id: string, data: { params?: Record<string,string>; timeout?: number; run_as?: string; agent_id?: string; channel?: string }) => Promise<ExecutionResult | null>
+  execute: (id: string, data: { params?: Record<string,string>; timeout?: number; run_as?: string; agent_id?: string; channel?: string; sandbox?: boolean; requirements?: string[] }) => Promise<ExecutionResult | null>
   fetchExecutions: (id: string) => Promise<ExecutionResult[]>
   fetchVersions: (id: string) => Promise<ScriptVersion[]>
   diff: (id: string, from: number, to: number) => Promise<DiffEntry[]>

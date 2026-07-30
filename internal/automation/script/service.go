@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 
 	"github.com/opsorigin/core/internal/command"
+	"github.com/opsorigin/core/pkg/validate"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -213,6 +214,15 @@ type AgentRunner interface {
 	RunScriptOnAgent(ctx context.Context, agentID, tenantID, content string, params map[string]string, timeout int, runAs string) (output string, exitCode int, err error)
 }
 
+// SandboxRunner 是 AgentRunner 的可选扩展:把脚本以"沙箱模式"下发到带沙箱标签
+// 的真实 Agent,由其在目标主机上创建真实隔离环境(临时工作目录/净化环境变量/
+// Python venv)执行。agentmgr.Service 实现了该接口。
+type SandboxRunner interface {
+	RunScriptOnAgentSandboxed(ctx context.Context, agentID, tenantID, content string, params map[string]string, timeout int, scriptType string, requirements []string) (output string, exitCode int, err error)
+	// PickSandboxAgentID 在未显式指定 Agent 时,挑选一台在线的沙箱 Agent。
+	PickSandboxAgentID(ctx context.Context, tenantID, preferID string) (string, error)
+}
+
 // Service exposes the script management HTTP API.
 type Service struct {
 	store       Store
@@ -292,6 +302,10 @@ func (s *Service) handleCreate(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
+	if err := validate.Name("脚本名称", sc.Name); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
 	sc.TenantID = tenantFromCtx(r.Context())
 	if sc.Timeout == 0 {
 		sc.Timeout = 300
@@ -345,6 +359,10 @@ func (s *Service) handleUpdate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	sc := req.Script
+	if err := validate.Name("脚本名称", sc.Name); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
 	sc.ID = existing.ID
 	sc.TenantID = existing.TenantID
 	sc.CreatedAt = existing.CreatedAt
@@ -500,6 +518,35 @@ func (s *Service) executeScript(sc *Script, req *ExecuteRequest) *ExecutionResul
 		Params:    req.Params,
 		RunAs:     req.RunAs,
 		StartedAt: started,
+	}
+	// 沙箱执行:下发到带沙箱标签的真实 Agent,在目标主机的隔离环境中运行。
+	if req.Sandbox {
+		sr, ok := s.agentRunner.(SandboxRunner)
+		if !ok || s.agentRunner == nil {
+			result.finish("failed", -1, "当前部署未启用沙箱执行能力(Agent 通道不可用)", started)
+			return result
+		}
+		to := req.Timeout
+		if to <= 0 { to = sc.Timeout }
+		if to <= 0 { to = 300 }
+		tid := req.TenantID
+		if tid == "" { tid = tenantFromCtx(context.Background()) }
+		agentID, perr := sr.PickSandboxAgentID(context.Background(), tid, req.AgentID)
+		if perr != nil {
+			result.finish("failed", -1, perr.Error(), started)
+			return result
+		}
+		output, exitCode, rerr := sr.RunScriptOnAgentSandboxed(context.Background(), agentID, tid,
+			sc.Content, req.Params, to, string(sc.Type), req.Requirements)
+		if rerr != nil {
+			result.Output = output
+			result.finish("failed", exitCode, rerr.Error(), started)
+			return result
+		}
+		result.Output = output
+		result.finish("success", exitCode, "", started)
+		result.parseOutput(sc.OutputParams)
+		return result
 	}
 	if req.AgentID != "" && s.agentRunner != nil {
 		to := req.Timeout

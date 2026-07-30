@@ -266,8 +266,9 @@ func main() {
 
 	server.RegisterService(agentSvc)
 
-	// 初始化沙箱环境:在 Server 端自动注册一个本地 Agent,用于脚本调试
-	agentSvc.InitSandbox()
+	// 沙箱环境不再是 Core 进程内的伪 Agent 记录,而是打在真实 Agent 上的标签
+	// (见 agentmgr.SandboxLabelKey)。此处清理历史遗留的伪记录。
+	agentSvc.CleanupLegacySandboxHosts()
 
 	// K8s 容器资源纳管：注入经 Agent 通道的发现器（鸭子类型 *agentmgr.Service 满足 cloud.K8sAgentRunner）。
 	cloudSvc.SetK8sDiscoverer(k8s.NewDiscoverer(agentSvc))

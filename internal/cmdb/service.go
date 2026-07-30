@@ -16,6 +16,7 @@ import (
 	"github.com/opsorigin/core/internal/cmdb/pg"
 	"github.com/opsorigin/core/internal/ingest"
 	"github.com/opsorigin/core/pkg/config"
+	"github.com/opsorigin/core/pkg/validate"
 )
 
 type Service struct {
@@ -609,6 +610,10 @@ func (s *Service) handleCreateModelType(w http.ResponseWriter, r *http.Request) 
 	var mt model.CIModelType
 	if err := json.NewDecoder(r.Body).Decode(&mt); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if err := validate.Name("模型名称", mt.Name); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 	mt.TenantID = tenantFromCtx(r.Context())

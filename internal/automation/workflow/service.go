@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/opsorigin/core/pkg/validate"
 )
 
 // ScriptExecutor executes a script by ID and returns its output, exit code and error.
@@ -260,6 +261,10 @@ func (s *Service) handleCreate(w http.ResponseWriter, r *http.Request) {
 	var wf Workflow
 	if err := json.NewDecoder(r.Body).Decode(&wf); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if err := validate.Name("工作流名称", wf.Name); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 	wf.TenantID = tenantFromCtx(r.Context())

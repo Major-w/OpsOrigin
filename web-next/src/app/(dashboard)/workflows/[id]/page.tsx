@@ -28,6 +28,8 @@ import { Badge } from '@/components/ui/badge'
 import { Input } from '@/components/ui/input'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { formatTime } from '@/lib/utils'
+import { validateName, sanitizeName, NAME_RULE_TEXT } from '@/lib/validate'
+import { toast } from '@/stores/toast'
 import {
   Plus, Trash2, Play, GitBranch, Workflow as WorkflowIcon,
   Code, CheckSquare, Clock, Save, X, Check, Ban,
@@ -545,11 +547,12 @@ export default function WorkflowDetailPage() {
   const [execInputs, setExecInputs] = useState<Record<string, string>>({})
   const [createForm, setCreateForm] = useState({ name: '', description: '' })
   const [creating, setCreating] = useState(false)
+  const [nameError, setNameError] = useState<string | null>(null)
 
   useEffect(() => { if (isNew) { setLoading(false); return }; setLoading(true); Promise.all([fetch(),fetchScripts(),fetchApprovals(),fetchChannels(),fetchFiles()]).then(()=>setLoading(false)) }, [workflowId,isNew])
   useEffect(() => { if(isNew||loading)return; const wf=workflows.find(w=>w.id===workflowId); if(wf){setViewWF(wf);fetchExecutions(wf.id)} }, [workflows,workflowId,isNew,loading])
 
-  const handleCreate = async () => { if(!createForm.name.trim())return; setCreating(true); const id=await create({name:createForm.name,description:createForm.description,steps:[],input_params:[]}); setCreating(false); if(id) router.push(`/workflows/${id}`) }
+  const handleCreate = async () => { const err=validateName(createForm.name,'流程名称'); if(err){toast.error(err);return}; setCreating(true); const id=await create({name:createForm.name,description:createForm.description,steps:[],input_params:[]}); setCreating(false); if(id) router.push(`/workflows/${id}`) }
   const handleExecute = async () => { if(!viewWF)return; await execute(viewWF.id,execAgents,execInputs); setExecDialog(false); await fetchExecutions(viewWF.id); await fetchApprovals() }
   const handleCanvasSave = async (steps: WorkflowStep[]) => { if(!viewWF)return; const ok=await update(viewWF.id,{...viewWF,steps}); if(ok) setViewWF({...viewWF,steps}) }
   const pendingApprovals = approvals.filter(a=>a.status==='pending')
@@ -559,7 +562,7 @@ export default function WorkflowDetailPage() {
   if(isNew) return (
     <div className="p-6 space-y-4">
       <div className="flex items-center gap-3"><Button variant="ghost" size="icon" onClick={()=>router.push('/workflows')}><ChevronLeft className="h-4 w-4"/></Button><WorkflowIcon className="h-5 w-5 text-emerald-400"/><div><h1 className="text-xl font-bold">新建作业流程</h1><p className="text-xs text-muted-foreground">创建后将进入编排画布</p></div></div>
-      <Card><CardContent className="p-6"><div className="space-y-4 max-w-xl"><div><label className="text-sm font-medium">流程名称 *</label><Input value={createForm.name} onChange={e=>setCreateForm(f=>({...f,name:e.target.value}))} placeholder="例: 发布上线流程" className="mt-1"/></div><div><label className="text-sm font-medium">流程描述</label><textarea className="flex h-24 w-full rounded-md border border-input bg-background px-3 py-2 text-sm mt-1" value={createForm.description} onChange={e=>setCreateForm(f=>({...f,description:e.target.value}))} placeholder="流程说明..."/></div><Button onClick={handleCreate} disabled={creating||!createForm.name.trim()}>{creating?<Loader2 className="h-4 w-4 mr-1 animate-spin"/>:<Plus className="h-4 w-4 mr-1"/>}创建并进入画布</Button></div></CardContent></Card>
+      <Card><CardContent className="p-6"><div className="space-y-4 max-w-xl"><div><label className="text-sm font-medium">流程名称 *</label><Input value={createForm.name} onChange={e=>{const v=sanitizeName(e.target.value);setCreateForm(f=>({...f,name:v}));setNameError(validateName(v,'流程名称'))}} placeholder="release_deploy 或 release-deploy" className="mt-1"/>{nameError?<p className="text-[11px] text-destructive mt-1">{nameError}</p>:<p className="text-[11px] text-muted-foreground mt-1">{NAME_RULE_TEXT}</p>}</div><div><label className="text-sm font-medium">流程描述</label><textarea className="flex h-24 w-full rounded-md border border-input bg-background px-3 py-2 text-sm mt-1" value={createForm.description} onChange={e=>setCreateForm(f=>({...f,description:e.target.value}))} placeholder="流程说明..."/></div><Button onClick={handleCreate} disabled={creating||!createForm.name.trim()}>{creating?<Loader2 className="h-4 w-4 mr-1 animate-spin"/>:<Plus className="h-4 w-4 mr-1"/>}创建并进入画布</Button></div></CardContent></Card>
     </div>
   )
 

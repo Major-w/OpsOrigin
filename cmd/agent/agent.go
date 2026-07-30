@@ -55,6 +55,13 @@ type TaskRequest struct {
 	Script   string         `json:"script"`
 	Params   map[string]any `json:"params,omitempty"`
 	Timeout  int            `json:"timeout,omitempty"`
+
+	// 沙箱执行:为 true 时不直接裸跑脚本,而是在本机创建真实隔离环境
+	// (独立临时工作目录 + 净化环境变量 + 独立进程组;python 另建 venv)。
+	// 见 sandbox.go。
+	Sandbox      bool     `json:"sandbox,omitempty"`
+	ScriptType   string   `json:"script_type,omitempty"`  // shell(默认) | python | bat
+	Requirements []string `json:"requirements,omitempty"` // python 沙箱内 pip 安装的依赖
 }
 
 // TaskResponse sent back to the server after execution.
@@ -442,6 +449,11 @@ func (a *Agent) executeTask(ctx context.Context, task TaskRequest) {
 // executeScript 执行脚本任务并返回结果,不进行 HTTP 结果上报。
 // 供 tunnel 模式(handleTunnelAction)复用。
 func (a *Agent) executeScript(task *TaskRequest) TaskResponse {
+	// 沙箱任务走真实隔离执行路径(见 sandbox.go)。
+	if task.Sandbox {
+		return a.executeScriptSandboxed(task)
+	}
+
 	// §6 命令白名单:执行前强制校验。
 	if err := a.verifyCommand(task.Script); err != nil {
 		fmt.Printf("[agent] script task %s denied by whitelist: %v\n", task.TaskID, err)

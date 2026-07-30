@@ -33,6 +33,38 @@ const (
 // 离线判定阈值:超过该时长未收到心跳则标记为 offline
 const OfflineThreshold = 90 * time.Second
 
+// SandboxLabelKey 是"沙箱环境"标签的 label key。
+//
+// 设计（2026-07-30 重构）：沙箱不再是 Core 进程内注册的伪 Agent 记录，
+// 而是给部署 Server 的那些主机上**真实运行的 Agent** 打一个标签。
+// 带该标签的 Agent 在执行脚本时，会在其所在目标主机上创建真实隔离环境
+// （Python venv / 独立临时工作目录 / 净化环境变量）运行，而非直接裸跑。
+const SandboxLabelKey = "sandbox"
+
+// IsSandbox 判断该 Agent 是否被标记为沙箱环境。
+func (h *AgentHost) IsSandbox() bool {
+	if h == nil || h.Labels == nil {
+		return false
+	}
+	v := h.Labels[SandboxLabelKey]
+	return v == "true" || v == "1" || v == "yes"
+}
+
+// SetSandbox 打上/摘掉沙箱标签。
+func (h *AgentHost) SetSandbox(enabled bool) {
+	if h == nil {
+		return
+	}
+	if h.Labels == nil {
+		h.Labels = map[string]string{}
+	}
+	if enabled {
+		h.Labels[SandboxLabelKey] = "true"
+	} else {
+		delete(h.Labels, SandboxLabelKey)
+	}
+}
+
 type AgentHost struct {
 	ID            string            `json:"id"`
 	TenantID      string            `json:"tenant_id"`
@@ -137,6 +169,13 @@ type TaskRequest struct {
 	Params  map[string]any `json:"params,omitempty"`
 	Timeout int            `json:"timeout,omitempty"`
 	RunAs  string          `json:"run_as,omitempty"` // 以指定系统用户身份执行(Agent 端可 honor)
+
+	// 沙箱执行(2026-07-30)。Sandbox=true 时 Agent 端不直接裸跑脚本,而是在目标
+	// 主机上创建真实隔离环境执行:独立临时工作目录 + 净化环境变量 + 独立进程组;
+	// ScriptType=python 时额外创建 Python 虚拟环境(venv)并按 Requirements 装依赖。
+	Sandbox      bool     `json:"sandbox,omitempty"`
+	ScriptType   string   `json:"script_type,omitempty"`  // shell(默认) | python | bat
+	Requirements []string `json:"requirements,omitempty"` // python 沙箱内 pip 安装的依赖
 
 	// 文件分发(§5)相关字段。Agent 拉取 download-tasks 时,这些字段直接映射
 	// 到 Agent 端 FileDownloadRequest(file_url/file_path/expected_checksum/checksum_algo),

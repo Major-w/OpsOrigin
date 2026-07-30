@@ -8,6 +8,7 @@ import { Input } from '@/components/ui/input'
 import { Select } from '@/components/ui/select'
 import { Dialog, DialogFooter } from '@/components/ui/dialog'
 import { apiFetch } from '@/lib/utils'
+import { validateName, sanitizeName, NAME_RULE_TEXT } from '@/lib/validate'
 import {
   Plus, Trash2, Database, ChevronDown, ChevronRight,
   Pencil, Search, X, Hash, CheckSquare, Calendar, Mail,
@@ -49,6 +50,7 @@ export default function LowcodeModelsPage() {
   const [modelDialog, setModelDialog] = useState<'create' | 'edit' | null>(null)
   const [editModel, setEditModel] = useState<Model | null>(null)
   const [modelForm, setModelForm] = useState({ name: '', description: '', table_name: '' })
+  const [nameError, setNameError] = useState<string | null>(null)
   const [fieldDialog, setFieldDialog] = useState<'create' | 'edit' | null>(null)
   const [fieldModelId, setFieldModelId] = useState<string>('')
   const [editFieldIdx, setEditFieldIdx] = useState<number>(-1)
@@ -75,7 +77,8 @@ export default function LowcodeModelsPage() {
   const openEditModel = (m: Model) => { setEditModel(m); setModelForm({ name: m.name, description: m.description, table_name: m.table_name }); setModelDialog('edit') }
 
   const handleSaveModel = async () => {
-    if (!modelForm.name) return
+    const err = validateName(modelForm.name, '模型名称')
+    if (err) { alert(err); return }
     try {
       if (modelDialog === 'create') {
         await apiFetch('/lowcode/models', { method: 'POST', body: JSON.stringify(modelForm) })
@@ -205,7 +208,8 @@ export default function LowcodeModelsPage() {
         <div className="space-y-3">
           <div>
             <label className="text-sm font-medium">名称 *</label>
-            <Input className="mt-1" value={modelForm.name} onChange={e => setModelForm(f => ({ ...f, name: e.target.value }))} placeholder="user" />
+            <Input className="mt-1" value={modelForm.name} onChange={e => { const v = sanitizeName(e.target.value); setModelForm(f => ({ ...f, name: v })); setNameError(validateName(v, '模型名称')) }} placeholder="user 或 user_model" />
+            {nameError ? <p className="text-[11px] text-destructive mt-1">{nameError}</p> : <p className="text-[11px] text-muted-foreground mt-1">{NAME_RULE_TEXT}</p>}
           </div>
           <div>
             <label className="text-sm font-medium">表名</label>
@@ -227,7 +231,7 @@ export default function LowcodeModelsPage() {
           <div className="grid grid-cols-2 gap-3">
             <div>
               <label className="text-sm font-medium">字段名 *</label>
-              <Input className="mt-1" value={fieldForm.name} onChange={e => setFieldForm(f => ({ ...f, name: e.target.value }))} placeholder="username" />
+              <Input className="mt-1" value={fieldForm.name} onChange={e => setFieldForm(f => ({ ...f, name: sanitizeName(e.target.value) }))} placeholder="username" />
             </div>
             <div>
               <label className="text-sm font-medium">显示名</label>

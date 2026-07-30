@@ -67,6 +67,12 @@ type ExecuteRequest struct {
 	Params   map[string]string `json:"params,omitempty"`
 	Timeout  int               `json:"timeout,omitempty"`
 	RunAs    string            `json:"run_as,omitempty"`
+
+	// Sandbox 勾选"沙箱环境执行":脚本会被下发到一台带沙箱标签的真实 Agent,
+	// 在其所在目标主机的隔离环境中运行(Python 脚本使用独立 venv)。
+	// AgentID 留空时自动挑选一台在线的沙箱 Agent。
+	Sandbox      bool     `json:"sandbox,omitempty"`
+	Requirements []string `json:"requirements,omitempty"` // python 沙箱内需安装的依赖
 }
 
 // ExecutionResult 脚本执行结果

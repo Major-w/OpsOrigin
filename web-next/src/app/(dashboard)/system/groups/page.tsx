@@ -10,6 +10,7 @@ import { Input } from '@/components/ui/input'
 import { Dialog, DialogFooter } from '@/components/ui/dialog'
 import { Users, Plus, Trash2, Edit, Search, UserPlus, X } from 'lucide-react'
 import { formatTime } from '@/lib/utils'
+import { validateName, sanitizeName, NAME_RULE_TEXT } from '@/lib/validate'
 
 export default function SystemGroupsPage() {
   const { groups, fetchGroups, createGroup, updateGroup, deleteGroup } = useIAMStore()
@@ -19,6 +20,7 @@ export default function SystemGroupsPage() {
   const [dialogOpen, setDialogOpen] = useState(false)
   const [editId, setEditId] = useState<string | null>(null)
   const [form, setForm] = useState({ name: '', description: '', user_ids: [] as string[] })
+  const [nameError, setNameError] = useState<string | null>(null)
   const [memberSearch, setMemberSearch] = useState('')
 
   useEffect(() => {
@@ -46,6 +48,8 @@ export default function SystemGroupsPage() {
   }
 
   const handleSave = async () => {
+    const err = validateName(form.name, '用户组名称')
+    if (err) { alert(err); return }
     if (editId) {
       await updateGroup(editId, { name: form.name, description: form.description, user_ids: form.user_ids })
     } else {
@@ -154,7 +158,8 @@ export default function SystemGroupsPage() {
         <div className="space-y-4 max-h-[70vh] overflow-y-auto">
           <div>
             <label className="text-sm font-medium">组名称 *</label>
-            <Input value={form.name} onChange={e => setForm(f => ({ ...f, name: e.target.value }))} placeholder="输入用户组名称" />
+            <Input value={form.name} onChange={e => { const v = sanitizeName(e.target.value); setForm(f => ({ ...f, name: v })); setNameError(validateName(v, '用户组名称')) }} placeholder="ops_team 或 ops-team" />
+            {nameError ? <p className="text-[11px] text-destructive mt-1">{nameError}</p> : <p className="text-[11px] text-muted-foreground mt-1">{NAME_RULE_TEXT}</p>}
           </div>
           <div>
             <label className="text-sm font-medium">描述</label>

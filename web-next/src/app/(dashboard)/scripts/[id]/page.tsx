@@ -12,6 +12,7 @@ import { CodeEditor } from '@/components/ui/code-editor'
 import { Plus, Trash2, Code2, FileText, Copy, Clock, Play, History, Pencil, Terminal, Hash, ChevronRight, GitBranch, GitCompare, CheckCircle, XCircle, Eye, Loader2, Star, ChevronLeft, Save, X, AlertCircle, Sparkles } from 'lucide-react'
 import { cn, formatTime, apiFetch } from '@/lib/utils'
 import { toast } from '@/stores/toast'
+import { validateName, sanitizeName, NAME_RULE_TEXT } from '@/lib/validate'
 
 const SCRIPT_TYPES = [
   { value: 'shell', label: 'Shell', color: 'text-emerald-500' },
@@ -126,6 +127,7 @@ export default function ScriptDetailPage() {
   const [paramForm, setParamForm] = useState<ParamForm[]>([])
   const [outputParamForm, setOutputParamForm] = useState<OutputParamForm[]>([])
   const [changeNote, setChangeNote] = useState('')
+  const [nameError, setNameError] = useState<string | null>(null)
 
   // 当前脚本对象（只读视图）
   const [viewScript, setViewScript] = useState<Script | null>(null)
@@ -138,6 +140,10 @@ export default function ScriptDetailPage() {
   const [executeHost, setExecuteHost] = useState<any>(null)
   const [executeChannel, setExecuteChannel] = useState<string>('')
   const [executeLocal, setExecuteLocal] = useState(false) // 默认不勾选=需要选择主机
+  const [executeSandbox, setExecuteSandbox] = useState(false) // 沙箱环境执行(带沙箱标签的 Agent 上隔离运行)
+  const [sandboxAgents, setSandboxAgents] = useState<any[]>([])
+  const [executeSandboxAgentID, setExecuteSandboxAgentID] = useState('')
+  const [executeRequirements, setExecuteRequirements] = useState('') // python 沙箱依赖,逗号分隔
   const [hosts, setHosts] = useState<any[]>([])
   const [executing, setExecuting] = useState(false)
   const [executeResult, setExecuteResult] = useState<ExecutionResult | null>(null)
@@ -306,7 +312,8 @@ export default function ScriptDetailPage() {
   }
 
   const handleAIGenerate = async () => {
-    if (!form.name.trim()) { toast.error('请先输入脚本名称'); return }
+    const nameErr = validateName(form.name, '脚本名称')
+    if (nameErr) { toast.error(nameErr); return }
     setAiGenerating(true)
     try {
       const lang = form.type === 'shell' ? 'bash' : form.type === 'python' ? 'python' : 'batch'
@@ -324,8 +331,13 @@ export default function ScriptDetailPage() {
   }
 
   const handleSave = async () => {
-    if (!form.name.trim() || !form.content.trim()) {
-      toast.error('脚本名称和内容不能为空')
+    const nameErr = validateName(form.name, '脚本名称')
+    if (nameErr) {
+      toast.error(nameErr)
+      return
+    }
+    if (!form.content.trim()) {
+      toast.error('脚本内容不能为空')
       return
     }
     const data = {
@@ -394,18 +406,29 @@ export default function ScriptDetailPage() {
     apiFetch<any[]>('/agents').then(arr => {
       setHosts((arr || []).filter((h: any) => h.type !== 'sandbox'))
     }).catch(() => {})
+    // 加载沙箱 Agent 列表(带沙箱标签的真实 Agent)
+    apiFetch<any>('/agents/sandbox').then(res => {
+      setSandboxAgents((res?.agents as any[]) || [])
+    }).catch(() => { setSandboxAgents([]) })
   }
 
   const handleExecute = async () => {
     if (!viewScript) return
     setExecuting(true)
-    const result = await execute(viewScript.id, {
+    const data: any = {
       params: executeParams,
       timeout: executeTimeout,
       run_as: executeRunAs || undefined,
-      agent_id: executeLocal ? undefined : (executeHost?.id || undefined),
-      channel: executeLocal ? undefined : (executeChannel || undefined),
-    })
+    }
+    if (executeSandbox) {
+      data.sandbox = true
+      data.requirements = executeRequirements.split(',').map((s: string) => s.trim()).filter(Boolean)
+      data.agent_id = executeSandboxAgentID || undefined
+    } else if (!executeLocal) {
+      data.agent_id = executeHost?.id || undefined
+      data.channel = executeChannel || undefined
+    }
+    const result = await execute(viewScript.id, data)
     setExecuting(false)
     if (result) {
       setExecuteResult(result)
@@ -508,10 +531,19 @@ export default function ScriptDetailPage() {
                   <label className="text-sm font-medium">脚本名称 *</label>
                   <Input
                     value={form.name}
-                    onChange={e => setForm(f => ({ ...f, name: e.target.value }))}
-                    placeholder="例:重启 Nginx"
+                    onChange={e => {
+                      const v = sanitizeName(e.target.value)
+                      setForm(f => ({ ...f, name: v }))
+                      setNameError(validateName(v, '脚本名称'))
+                    }}
+                    placeholder="例:restart_nginx 或 restart-nginx"
                     className="mt-1"
                   />
+                  {nameError ? (
+                    <p className="text-[11px] text-destructive mt-1">{nameError}</p>
+                  ) : (
+                    <p className="text-[11px] text-muted-foreground mt-1">{NAME_RULE_TEXT}</p>
+                  )}
                 </div>
                 <div>
                   <label className="text-sm font-medium">类型</label>
@@ -1120,25 +1152,70 @@ export default function ScriptDetailPage() {
                 </div>
               </div>
 
-              {/* 本地沙箱复选框 */}
-              <div className="flex items-center gap-3 p-3 rounded-md bg-muted/30">
-                <label className="flex items-center gap-2 cursor-pointer">
+              {/* 执行模式选择 */}
+              <div className="space-y-2">
+                <label className="flex items-center gap-2 cursor-pointer p-3 rounded-md bg-muted/30">
                   <input
                     type="checkbox"
                     checked={executeLocal}
                     onChange={e => {
                       setExecuteLocal(e.target.checked)
-                      if (e.target.checked) { setExecuteHost(null); setExecuteChannel('') }
+                      if (e.target.checked) { setExecuteHost(null); setExecuteChannel(''); setExecuteSandbox(false) }
                     }}
                     className="h-4 w-4 rounded border-gray-300 text-emerald-600 focus:ring-emerald-500"
                   />
-                  <span className="text-sm font-medium">本地沙箱执行</span>
+                  <span className="text-sm font-medium">在 Core 本机执行（无 Agent）</span>
+                  <span className="text-[10px] text-muted-foreground">不指定目标主机，直接在 Core 进程所在机器运行</span>
                 </label>
-                <span className="text-[10px] text-muted-foreground">不指定目标主机，在 Core 所在机器运行</span>
+                <label className="flex items-center gap-2 cursor-pointer p-3 rounded-md bg-muted/30">
+                  <input
+                    type="checkbox"
+                    checked={executeSandbox}
+                    onChange={e => {
+                      setExecuteSandbox(e.target.checked)
+                      if (e.target.checked) { setExecuteLocal(false); setExecuteHost(null); setExecuteChannel('') }
+                    }}
+                    className="h-4 w-4 rounded border-gray-300 text-emerald-600 focus:ring-emerald-500"
+                  />
+                  <span className="text-sm font-medium">沙箱环境执行（隔离环境）</span>
+                  <span className="text-[10px] text-muted-foreground">下发到带"沙箱"标签的 Agent，在目标主机隔离环境中运行（如 Python venv）</span>
+                </label>
               </div>
 
-              {/* 目标主机选择 — 未勾选沙箱时必需 */}
-              {!executeLocal && (
+              {/* 沙箱环境:选择沙箱 Agent + 依赖 */}
+              {executeSandbox && (
+                <div className="space-y-2">
+                  <label className="text-sm font-medium">沙箱环境</label>
+                  {sandboxAgents.length === 0 ? (
+                    <p className="text-[11px] text-muted-foreground">暂无可用的沙箱 Agent，请先在「资源纳管」给主机 Agent 打上"沙箱环境"标签。</p>
+                  ) : (
+                    <select
+                      className="w-full h-9 rounded-md border border-input bg-background px-3 py-1 text-sm"
+                      value={executeSandboxAgentID}
+                      onChange={e => setExecuteSandboxAgentID(e.target.value)}
+                    >
+                      <option value="">自动挑选在线沙箱 Agent</option>
+                      {sandboxAgents.map((a: any) => (
+                        <option key={a.id} value={a.id}>{a.name}（{a.address}）· {a.status === 'online' ? '在线' : '离线'}</option>
+                      ))}
+                    </select>
+                  )}
+                  {viewScript.type === 'python' && (
+                    <div>
+                      <label className="text-xs font-medium">Python 依赖（可选，逗号分隔）</label>
+                      <Input
+                        value={executeRequirements}
+                        onChange={e => setExecuteRequirements(e.target.value)}
+                        placeholder="如 requests,flask"
+                        className="mt-1 h-8 text-xs"
+                      />
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* 目标主机选择 — 未勾选本机/沙箱时必需 */}
+              {!executeLocal && !executeSandbox && (
                 <div>
                   <label className="text-sm font-medium mb-1 block">
                     目标主机 <span className="text-red-500">*</span>
@@ -1158,7 +1235,7 @@ export default function ScriptDetailPage() {
                     ))}
                   </select>
                   {hosts.length === 0 && (
-                    <p className="text-[10px] text-muted-foreground mt-1">暂无已注册主机，请先在资源纳管中注册或勾选"本地沙箱执行"</p>
+                    <p className="text-[10px] text-muted-foreground mt-1">暂无已注册主机，请先在资源纳管中注册，或勾选"在 Core 本机执行"/"沙箱环境执行"</p>
                   )}
                   {executeHost && executeHost.channels?.length > 0 && (
                     <div className="mt-2 flex items-center gap-1.5">
@@ -1236,7 +1313,7 @@ export default function ScriptDetailPage() {
             </div>
             <div className="flex justify-end gap-2 mt-6">
               <Button variant="outline" onClick={() => setExecuteDialogOpen(false)} disabled={executing}>取消</Button>
-              <Button onClick={handleExecute} disabled={executing || (!executeLocal && !executeHost?.id)}>
+              <Button onClick={handleExecute} disabled={executing || (!executeLocal && !executeSandbox && !executeHost?.id)}>
                 {executing ? <><Loader2 className="h-3.5 w-3.5 mr-1 animate-spin" />执行中</> : <><Play className="h-3.5 w-3.5 mr-1" />执行</>}
               </Button>
             </div>

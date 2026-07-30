@@ -11,6 +11,7 @@ import { Badge } from '@/components/ui/badge'
 import { Input } from '@/components/ui/input'
 import { Dialog, DialogFooter } from '@/components/ui/dialog'
 import { formatTime } from '@/lib/utils'
+import { validateName, sanitizeName, NAME_RULE_TEXT } from '@/lib/validate'
 import { Plus, Trash2, Clock, Timer } from 'lucide-react'
 
 export default function SchedulesPage() {
@@ -20,10 +21,13 @@ export default function SchedulesPage() {
   const { agents } = useAgentStore()
   const [dialogOpen, setDialogOpen] = useState(false)
   const [form, setForm] = useState({ name: '', cron_expr: '0 * * * *', task_type: 'script', target_id: '', agent_ids: [] as string[], inputs: {} as any, max_retries: 0, retry_delay_secs: 60, alert_on_failure: false })
+  const [nameError, setNameError] = useState<string | null>(null)
 
   useEffect(() => { fetch() }, [])
 
   const handleSave = async () => {
+    const err = validateName(form.name, '任务名称')
+    if (err) { alert(err); return }
     await create(form)
     setDialogOpen(false); setForm({ name: '', cron_expr: '0 * * * *', task_type: 'script', target_id: '', agent_ids: [], inputs: {}, max_retries: 0, retry_delay_secs: 60, alert_on_failure: false })
   }
@@ -64,7 +68,11 @@ export default function SchedulesPage() {
 
       <Dialog open={dialogOpen} onClose={() => setDialogOpen(false)} title="新建定时任务">
         <div className="space-y-3">
-          <div><label className="text-sm font-medium">名称 *</label><Input value={form.name} onChange={e => setForm(f => ({ ...f, name: e.target.value }))} placeholder="每日巡检" /></div>
+          <div>
+            <label className="text-sm font-medium">名称 *</label>
+            <Input value={form.name} onChange={e => { const v = sanitizeName(e.target.value); setForm(f => ({ ...f, name: v })); setNameError(validateName(v, '任务名称')) }} placeholder="daily_check 或 daily-check" />
+            {nameError ? <p className="text-[11px] text-destructive mt-1">{nameError}</p> : <p className="text-[11px] text-muted-foreground mt-1">{NAME_RULE_TEXT}</p>}
+          </div>
           <div><label className="text-sm font-medium">Cron 表达式 *</label><Input value={form.cron_expr} onChange={e => setForm(f => ({ ...f, cron_expr: e.target.value }))} placeholder="0 * * * *" /></div>
           <div className="grid grid-cols-2 gap-3">
             <div><label className="text-sm font-medium">任务类型</label>

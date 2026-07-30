@@ -12,7 +12,8 @@ import { Input } from '@/components/ui/input'
 import { Dialog, DialogFooter } from '@/components/ui/dialog'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { ViewToggle, DataList, type ViewMode, type Column, type FilterOption, type BulkAction } from '@/components/ui/data-list'
-import { formatTime, apiBase } from '@/lib/utils'
+import { formatTime, apiBase, apiFetch } from '@/lib/utils'
+import { validateHostName, sanitizeHostName, HOST_NAME_RULE_TEXT } from '@/lib/validate'
 import { Plus, Trash2, Terminal, Monitor, RefreshCw, Download, CheckCircle, XCircle, Clock, Eye, Cpu, HardDrive, MemoryStick, Copy, Server, Wifi, WifiOff, Cloud, Container, Pencil, RotateCcw, Zap, ListChecks, AlertTriangle, Save, Play, ArrowUp, BookOpen } from 'lucide-react'
 import { toast } from '@/stores/toast'
 
@@ -99,6 +100,8 @@ export default function ResourcesPage() {
   const [scriptDialog, setScriptDialog] = useState(false)
   const [detailDialog, setDetailDialog] = useState(false)
   const [detailHost, setDetailHost] = useState<AgentHost | null>(null)
+  const [sandboxChecked, setSandboxChecked] = useState(false)
+  const isHostSandbox = (h: AgentHost | null) => !!h && (h.labels?.sandbox === 'true' || h.labels?.sandbox === '1' || h.labels?.sandbox === 'yes')
   const [autoResult, setAutoResult] = useState<any>(null)
   const [autoDialog, setAutoDialog] = useState(false)
 
@@ -193,7 +196,21 @@ export default function ResourcesPage() {
 
   const openDetailHost = (a: AgentHost) => {
     setDetailHost(a)
+    setSandboxChecked(isHostSandbox(a))
     setDetailDialog(true)
+  }
+
+  const toggleSandbox = async (enabled: boolean) => {
+    if (!detailHost) return
+    try {
+      await apiFetch(`/agents/${detailHost.id}/sandbox`, { method: 'PUT', body: JSON.stringify({ enabled }) })
+      setSandboxChecked(enabled)
+      const labels = { ...(detailHost.labels || {}) }
+      if (enabled) labels.sandbox = 'true'; else delete labels.sandbox
+      setDetailHost({ ...detailHost, labels })
+      toast.success(enabled ? '已标记为沙箱环境' : '已取消沙箱环境标记')
+      refresh()
+    } catch (e: any) { toast.error('操作失败: ' + e.message) }
   }
 
   const handleAutoInstall = async () => {
@@ -243,6 +260,8 @@ export default function ResourcesPage() {
 
   const handleSaveEdit = async () => {
     if (!detailHost) return
+    const nameErr = validateHostName(editForm.name, '主机名称')
+    if (nameErr) { toast.error(nameErr); return }
     const ok = await update(detailHost.id, {
       name: editForm.name,
       address: editForm.address,
@@ -294,6 +313,8 @@ export default function ResourcesPage() {
   }
 
   const handleRegisterProxy = async () => {
+    const nameErr = validateHostName(proxyForm.name, 'Proxy 名称')
+    if (nameErr) { toast.error(nameErr); return }
     const ok = await registerProxy({ name: proxyForm.name, address: proxyForm.address, port: proxyForm.port })
     if (ok) {
       setProxyForm({ name: '', address: '', port: 8080 })
@@ -309,6 +330,8 @@ export default function ResourcesPage() {
 
   const handleSaveEditProxy = async () => {
     if (!editProxyTarget) return
+    const nameErr = validateHostName(editProxyForm.name, 'Proxy 名称')
+    if (nameErr) { toast.error(nameErr); return }
     const ok = await updateProxy(editProxyTarget.id, {
       name: editProxyForm.name,
       address: editProxyForm.address,
@@ -703,7 +726,7 @@ export default function ResourcesPage() {
                     <TabsContent value="ssh" className="mt-4 space-y-4">
                       <div className="bg-muted/30 rounded-md p-4 text-sm"><p className="font-medium mb-2">SSH Agentless 接入</p><p className="text-muted-foreground">通过 SSH 协议无代理接入主机。支持批量 IP（逗号分隔）或 IP 范围（192.168.1.1-10）。必须先通过连接测试，才能保存到主机列表。</p></div>
                       <div className="space-y-4">
-                        <div><label className="text-sm font-medium">主机名</label><Input value={sshForm.name} onChange={e => setSSHForm(f => ({ ...f, name: e.target.value }))} placeholder="可选（批量注册时以 IP 命名）" /></div>
+                        <div><label className="text-sm font-medium">主机名</label><Input value={sshForm.name} onChange={e => setSSHForm(f => ({ ...f, name: sanitizeHostName(e.target.value) }))} placeholder="可选（批量注册时以 IP 命名）" /></div>
                         <div><label className="text-sm font-medium">IP 地址 *（支持批量：192.168.1.10,192.168.1.11 或 192.168.1.1-10）</label><Input value={sshForm.address} onChange={e => { setSSHForm(f => ({ ...f, address: e.target.value })); setSSHResult(null); setSSHTestedAddress('') }} placeholder="192.168.1.100,192.168.1.101 或 192.168.1.1-10" className={!validateIPs(sshForm.address) && sshForm.address ? 'border-red-500' : ''} /></div>
                         <div><label className="text-sm font-medium">SSH 端口</label><Input type="number" value={sshForm.port} onChange={e => setSSHForm(f => ({ ...f, port: parseInt(e.target.value) || 22 }))} /></div>
                         <div><label className="text-sm font-medium">用户名 *</label><Input value={sshForm.username} onChange={e => setSSHForm(f => ({ ...f, username: e.target.value }))} placeholder="root" /></div>
@@ -1136,12 +1159,24 @@ kubectl -n opsorigin set env deployment/opsorigin-k8s-gateway OPSORIGIN_PROXY_AD
                       <div className="flex gap-1 mt-1 flex-wrap">{detailHost.capabilities.map(c => <Badge key={c} variant="secondary" className="text-xs">{c}</Badge>)}</div>
                     </div>
                   )}
+                  {detailHost.type !== 'agentless' && (
+                    <div className="col-span-2 flex items-center justify-between p-3 rounded-md bg-muted/30">
+                      <div>
+                        <div className="text-sm font-medium">沙箱环境</div>
+                        <div className="text-[11px] text-muted-foreground">标记为沙箱后，脚本可在此主机的隔离环境中执行（如 Python venv）</div>
+                      </div>
+                      <label className="flex items-center gap-2 cursor-pointer">
+                        <input type="checkbox" checked={sandboxChecked} onChange={e => toggleSandbox(e.target.checked)} className="h-4 w-4 rounded border-gray-300 text-emerald-600 focus:ring-emerald-500" />
+                        <span className="text-sm font-medium">{sandboxChecked ? '已启用' : '未启用'}</span>
+                      </label>
+                    </div>
+                  )}
                 </div>
               </TabsContent>
 
               {/* 编辑 Tab */}
               <TabsContent value="edit" className="mt-4 space-y-3 max-h-[55vh] overflow-auto">
-                <div><label className="text-sm font-medium">名称</label><Input value={editForm.name} onChange={e => setEditForm(f => ({ ...f, name: e.target.value }))} /></div>
+                <div><label className="text-sm font-medium">名称</label><Input value={editForm.name} onChange={e => setEditForm(f => ({ ...f, name: sanitizeHostName(e.target.value) }))} placeholder="host-web-01 (字母/数字/点/横杠/下划线)" /></div>
                 <div><label className="text-sm font-medium">地址</label><Input value={editForm.address} onChange={e => setEditForm(f => ({ ...f, address: e.target.value }))} /></div>
                 <div><label className="text-sm font-medium">端口</label><Input type="number" value={editForm.port} onChange={e => setEditForm(f => ({ ...f, port: parseInt(e.target.value) || 0 }))} /></div>
                 <div><label className="text-sm font-medium">SSH 用户</label><Input value={editForm.ssh_user} onChange={e => setEditForm(f => ({ ...f, ssh_user: e.target.value }))} /></div>
@@ -1210,7 +1245,7 @@ kubectl -n opsorigin set env deployment/opsorigin-k8s-gateway OPSORIGIN_PROXY_AD
       {/* 注册 Proxy Dialog */}
       <Dialog open={proxyDialog} onClose={() => setProxyDialog(false)} title="注册 Proxy">
         <div className="space-y-3">
-          <div><label className="text-sm font-medium">名称</label><Input value={proxyForm.name} onChange={e => setProxyForm(f => ({ ...f, name: e.target.value }))} placeholder="proxy-beijing" /></div>
+          <div><label className="text-sm font-medium">名称</label><Input value={proxyForm.name} onChange={e => setProxyForm(f => ({ ...f, name: sanitizeHostName(e.target.value) }))} placeholder="proxy-beijing" /></div>
           <div><label className="text-sm font-medium">地址 *</label><Input value={proxyForm.address} onChange={e => setProxyForm(f => ({ ...f, address: e.target.value }))} placeholder="10.0.0.5" /></div>
           <div><label className="text-sm font-medium">端口 *</label><Input type="number" value={proxyForm.port} onChange={e => setProxyForm(f => ({ ...f, port: parseInt(e.target.value) || 8080 }))} /></div>
         </div>
@@ -1223,7 +1258,7 @@ kubectl -n opsorigin set env deployment/opsorigin-k8s-gateway OPSORIGIN_PROXY_AD
       {/* 编辑 Proxy Dialog */}
       <Dialog open={editProxyDialog} onClose={() => { setEditProxyDialog(false); setEditProxyTarget(null) }} title="编辑 Proxy">
         <div className="space-y-3">
-          <div><label className="text-sm font-medium">名称</label><Input value={editProxyForm.name} onChange={e => setEditProxyForm(f => ({ ...f, name: e.target.value }))} /></div>
+          <div><label className="text-sm font-medium">名称</label><Input value={editProxyForm.name} onChange={e => setEditProxyForm(f => ({ ...f, name: sanitizeHostName(e.target.value) }))} /></div>
           <div><label className="text-sm font-medium">地址</label><Input value={editProxyForm.address} onChange={e => setEditProxyForm(f => ({ ...f, address: e.target.value }))} /></div>
           <div><label className="text-sm font-medium">端口</label><Input type="number" value={editProxyForm.port} onChange={e => setEditProxyForm(f => ({ ...f, port: parseInt(e.target.value) || 8080 }))} /></div>
         </div>

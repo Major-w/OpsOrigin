@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/opsorigin/core/pkg/validate"
 )
 
 // Store 定义 IAM 的持久化接口。当前由 MemoryStore 实现，
@@ -349,8 +350,8 @@ func (s *Service) handleCreateRole(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
-	if req.Name == "" {
-		writeError(w, http.StatusBadRequest, "name is required")
+	if err := validate.Name("角色名称", req.Name); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 	// 角色名唯一性校验
@@ -457,8 +458,8 @@ func (s *Service) handleCreateGroup(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
-	if req.Name == "" {
-		writeError(w, http.StatusBadRequest, "name is required")
+	if err := validate.Name("用户组名称", req.Name); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 	group := &Group{

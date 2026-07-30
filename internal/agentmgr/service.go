@@ -13,7 +13,6 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
-	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -26,9 +25,9 @@ import (
 	entFile "github.com/opsorigin/core/internal/ent/file"
 	"github.com/opsorigin/core/internal/filelimit"
 	"github.com/opsorigin/core/internal/remoteexec"
-	"github.com/opsorigin/core/internal/sandbox"
 	"github.com/opsorigin/core/internal/token"
 	"github.com/opsorigin/core/internal/tunnel"
+	"github.com/opsorigin/core/pkg/validate"
 	"golang.org/x/crypto/ssh"
 )
 
@@ -381,8 +380,6 @@ type Service struct {
 	tlsEnabled      bool                // 是否全局启用 HTTPS(影响安装脚本中的 scheme)
 	tunnelServer    *tunnel.Server      // Proxy 隧道服务(TCP,可选)
 	grpcTunnel     *tunnel.GRPCServer  // gRPC 直连隧道服务(可选,启用后支持直连 Agent 下发命令)
-	sandboxID       string              // 沙箱 Agent ID(自动注册)
-	sandboxExec     *sandbox.Executor  // 本地沙箱执行器(勾选"沙箱执行"时使用)
 	remoteExec      *remoteexec.Service // SSH 远程执行服务(agentless 主机命令执行)
 
 	// T11: 任务下发队列
@@ -417,7 +414,6 @@ func NewService(db *sql.DB, rdb *redis.Client, entClient *ent.Client) *Service {
 		circuitBreakers: make(map[string]*CircuitBreakerConfig),
 		stopCh:          make(chan struct{}),
 		remoteExec:      remoteexec.NewService(),
-		sandboxExec:     sandbox.NewExecutor(),
 		fileLimiter:     filelimit.New(0, 0), // 0 ⇒ 使用 filelimit 包默认值
 	}
 	// Start Redis→PG heartbeat sync worker
@@ -530,59 +526,100 @@ func (s *Service) verifyCommand(command string) error {
 	return wl.Verify(command)
 }
 
-// InitSandbox 初始化沙箱环境,在 Server 端自动注册一个本地 Agent 用于脚本调试。
-func (s *Service) InitSandbox() {
-	hostname, _ := os.Hostname()
-	if hostname == "" {
-		hostname = "sandbox-server"
-	}
+// CleanupLegacySandboxHosts 清理历史遗留的"伪沙箱 Agent"记录。
+//
+// 旧实现(已废弃)会在 Core 启动时向 agent_hosts 注册一条 type=sandbox 的伪记录
+// (名称形如 "xxx (Sandbox)"),它与 Core 同进程、不发心跳,却被列表接口特判为恒
+// 在线,在 UI 上表现为一条无心跳的"幽灵主机"。
+//
+// 新设计:沙箱是打在**真实 Agent**上的一个标签(SandboxLabelKey),脚本在该 Agent
+// 所在的目标主机上于真实隔离环境中执行。因此这里在启动时把历史伪记录删除,
+// 避免继续污染主机列表。
+func (s *Service) CleanupLegacySandboxHosts() {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
 
-	// 获取本机 IP
-	localIP := "127.0.0.1"
-	ifaces, _ := net.Interfaces()
-	for _, iface := range ifaces {
-		if iface.Flags&net.FlagUp == 0 || iface.Flags&net.FlagLoopback != 0 {
-			continue
-		}
-		addrs, _ := iface.Addrs()
-		for _, addr := range addrs {
-			if ipnet, ok := addr.(*net.IPNet); ok && ipnet.IP.To4() != nil {
-				localIP = ipnet.IP.String()
-				break
-			}
-		}
-	}
-
-	sandbox := &AgentHost{
-		TenantID:      "default",
-		Name:          hostname + " (Sandbox)",
-		Type:          AgentTypeSandbox,
-		Address:       localIP,
-		Port:          0,
-		OSType:        runtime.GOOS,
-		AuthType:      "local",
-		Status:        AgentStatusOnline,
-		InstallMethod: InstallManual,
-		Environment:   "sandbox",
-		Labels: map[string]string{
-			"environment": "sandbox",
-			"managed-by":  "server",
-		},
-		Capabilities: []string{"shell", "script", "file_transfer", "monitor"},
-	}
-
-	if err := s.store.Register(context.Background(), sandbox); err != nil {
-		slog.Error("failed to register sandbox agent", "error", err)
+	hosts, err := s.store.List(ctx, "default")
+	if err != nil {
+		slog.Warn("cleanup legacy sandbox hosts: list failed", "error", err)
 		return
 	}
-
-	s.sandboxID = sandbox.ID
-	slog.Info("sandbox agent registered", "id", sandbox.ID, "name", sandbox.Name, "address", localIP)
+	removed := 0
+	for _, h := range hosts {
+		if h.Type != AgentTypeSandbox {
+			continue
+		}
+		if err := s.store.Delete(ctx, h.ID, h.TenantID); err != nil {
+			slog.Warn("cleanup legacy sandbox host failed", "id", h.ID, "error", err)
+			continue
+		}
+		removed++
+		slog.Info("removed legacy pseudo sandbox agent", "id", h.ID, "name", h.Name)
+	}
+	if removed > 0 {
+		slog.Info("legacy sandbox hosts cleaned up", "count", removed)
+	}
 }
 
-// GetSandboxID 返回沙箱 Agent 的 ID。
-func (s *Service) GetSandboxID() string {
-	return s.sandboxID
+// listSandboxAgents 返回本租户内所有被打上沙箱标签且在线的真实 Agent。
+func (s *Service) listSandboxAgents(ctx context.Context, tenantID string) ([]*AgentHost, error) {
+	hosts, err := s.store.List(ctx, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	var onlineSet map[string]bool
+	if s.hbWriter != nil && s.hbWriter.rdb != nil {
+		ids := make([]string, 0, len(hosts))
+		for _, h := range hosts {
+			ids = append(ids, h.ID)
+		}
+		onlineSet = s.hbWriter.BulkOnlineStatus(ctx, ids)
+	}
+	now := time.Now()
+	out := make([]*AgentHost, 0, 4)
+	for _, h := range hosts {
+		if !h.IsSandbox() {
+			continue
+		}
+		copyHost := *h
+		if onlineSet != nil {
+			if onlineSet[h.ID] {
+				copyHost.Status = AgentStatusOnline
+			} else {
+				copyHost.Status = AgentStatusOffline
+			}
+		} else if copyHost.LastHeartbeat != nil && now.Sub(*copyHost.LastHeartbeat) > OfflineThreshold {
+			copyHost.Status = AgentStatusOffline
+		}
+		out = append(out, &copyHost)
+	}
+	return out, nil
+}
+
+// pickSandboxAgent 选择一个可用的沙箱 Agent。
+// preferID 非空时校验其确实带沙箱标签且在线;否则取第一个在线的沙箱 Agent。
+func (s *Service) pickSandboxAgent(ctx context.Context, tenantID, preferID string) (*AgentHost, error) {
+	agents, err := s.listSandboxAgents(ctx, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	if preferID != "" {
+		for _, a := range agents {
+			if a.ID == preferID {
+				if a.Status != AgentStatusOnline {
+					return nil, fmt.Errorf("指定的沙箱 Agent %s 当前离线", preferID)
+				}
+				return a, nil
+			}
+		}
+		return nil, fmt.Errorf("Agent %s 未被标记为沙箱环境,请先在主机列表中为其开启沙箱标签", preferID)
+	}
+	for _, a := range agents {
+		if a.Status == AgentStatusOnline {
+			return a, nil
+		}
+	}
+	return nil, fmt.Errorf("没有可用的沙箱 Agent:请先在主机列表中为部署 Server 的主机 Agent 开启沙箱标签,并确保其在线")
 }
 
 // Close 停止后台离线检测 goroutine。
@@ -656,8 +693,9 @@ func (s *Service) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/v1/files/{file_id}/meta", s.handleFileMeta)
 	// 命令白名单(Agent 启动拉取,§6)
 	mux.HandleFunc("GET /api/v1/agents/{id}/whitelist", s.handleGetWhitelist)
-	// Sandbox
-	mux.HandleFunc("GET /api/v1/agents/sandbox", s.handleGetSandbox)
+	// Sandbox:沙箱=打在真实 Agent 上的标签,执行时在目标主机上创建真实隔离环境
+	mux.HandleFunc("GET /api/v1/agents/sandbox", s.handleListSandboxAgents)
+	mux.HandleFunc("PUT /api/v1/agents/{id}/sandbox", s.handleSetSandboxLabel)
 	mux.HandleFunc("POST /api/v1/sandbox/exec", s.handleExecSandbox)
 	// Remote Execution (SSH)
 	mux.HandleFunc("POST /api/v1/agents/batch-execute", s.handleBatchExecute)
@@ -671,33 +709,59 @@ func (s *Service) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("DELETE /api/v1/proxies/{id}", s.handleDeleteProxy)
 }
 
-func (s *Service) handleGetSandbox(w http.ResponseWriter, r *http.Request) {
-	if s.sandboxID == "" {
-		writeJSON(w, http.StatusOK, map[string]any{
-			"exists":  false,
-			"message": "sandbox agent not initialized",
-		})
-		return
-	}
-
+// handleListSandboxAgents 返回所有被打上沙箱标签的真实 Agent。
+// 前端"沙箱环境执行"下拉框据此渲染可选环境。
+func (s *Service) handleListSandboxAgents(w http.ResponseWriter, r *http.Request) {
 	tenantID := tenantFromCtx(r.Context())
-	host, err := s.store.Get(r.Context(), s.sandboxID, tenantID)
+	agents, err := s.listSandboxAgents(r.Context(), tenantID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	if host == nil {
-		writeJSON(w, http.StatusOK, map[string]any{
-			"exists":  false,
-			"message": "sandbox agent not found",
-		})
+	online := 0
+	for _, a := range agents {
+		if a.Status == AgentStatusOnline {
+			online++
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"exists": online > 0,
+		"count":  len(agents),
+		"online": online,
+		"agents": agents,
+	})
+}
+
+// handleSetSandboxLabel 给指定的真实 Agent 打上/摘掉"沙箱环境"标签。
+// 这取代了旧的"Core 进程内注册伪沙箱 Agent"做法:沙箱不是一台新主机,
+// 而是既有 Agent 上的一个能力标记。
+func (s *Service) handleSetSandboxLabel(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	tenantID := tenantFromCtx(r.Context())
+	var req struct {
+		Enabled bool `json:"enabled"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
-
-	writeJSON(w, http.StatusOK, map[string]any{
-		"exists": true,
-		"agent":  host,
-	})
+	host, err := s.store.Get(r.Context(), id, tenantID)
+	if err != nil || host == nil {
+		writeError(w, http.StatusNotFound, "agent not found")
+		return
+	}
+	if host.Type == AgentTypeAgentless {
+		writeError(w, http.StatusBadRequest, "Agentless 主机无本地 Agent,无法承载隔离沙箱环境")
+		return
+	}
+	host.SetSandbox(req.Enabled)
+	host.UpdatedAt = time.Now()
+	if err := s.store.Update(r.Context(), host); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	slog.Info("sandbox label updated", "agent_id", id, "enabled", req.Enabled)
+	writeJSON(w, http.StatusOK, host)
 }
 
 // handleBatchExecute 在多台主机上并发执行命令(SSH 远程执行)。
@@ -754,6 +818,8 @@ func (s *Service) handleSSHExecute(w http.ResponseWriter, r *http.Request) {
 		Timeout  int    `json:"timeout,omitempty"`
 		ProxyID  string `json:"proxy_id,omitempty"` // 指定则走 Proxy 代为执行
 		Sandbox  bool   `json:"sandbox,omitempty"`  // 勾选沙箱环境执行
+		// SandboxAgentID 可选:指定用哪台带沙箱标签的 Agent 执行,留空自动挑选在线的。
+		SandboxAgentID string `json:"sandbox_agent_id,omitempty"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
@@ -777,21 +843,33 @@ func (s *Service) handleSSHExecute(w http.ResponseWriter, r *http.Request) {
 		timeout = 30 * time.Second
 	}
 
-	// 沙箱执行：不选择目标主机，直接在 Server 本机隔离运行
+	// 沙箱执行：不选择普通目标主机，改为下发到一台带沙箱标签的真实 Agent，
+	// 由其在所在主机上创建真实隔离环境执行。
 	if req.Sandbox {
-		res, err := s.sandboxExec.Execute(r.Context(), req.Command, timeout)
+		tenantID := tenantFromCtx(r.Context())
+		agent, err := s.pickSandboxAgent(r.Context(), tenantID, req.SandboxAgentID)
 		if err != nil {
-			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+			writeError(w, http.StatusBadRequest, err.Error())
 			return
 		}
-		writeJSON(w, http.StatusOK, map[string]any{
-			"host":      "sandbox(local)",
-			"output":    res.Output,
-			"exit_code": res.ExitCode,
-			"error":     res.Error,
-			"duration":  res.Duration.Milliseconds(),
-			"via":       "sandbox",
-		})
+		start := time.Now()
+		output, exitCode, execErr := s.RunScriptOnAgentWithOptions(r.Context(), agent.ID, tenantID,
+			req.Command, nil, ScriptRunOptions{
+				Timeout: int(timeout.Seconds()),
+				Sandbox: true,
+			})
+		resp := map[string]any{
+			"host":      agent.Name,
+			"agent_id":  agent.ID,
+			"output":    output,
+			"exit_code": exitCode,
+			"duration":  time.Since(start).Milliseconds(),
+			"via":       "sandbox-agent",
+		}
+		if execErr != nil {
+			resp["error"] = execErr.Error()
+		}
+		writeJSON(w, http.StatusOK, resp)
 		return
 	}
 
@@ -918,7 +996,46 @@ func (s *Service) dispatchCommand(ctx context.Context, key string, cmd *tunnel.C
 	return nil, fmt.Errorf("agent/proxy %s not connected on any tunnel", key)
 }
 
+// ScriptRunOptions 是脚本下发的可选参数集合。
+// 独立成结构体,以便在不破坏 RunScriptOnAgent 既有签名(被 cloud.K8sAgentRunner
+// 等鸭子类型依赖)的前提下扩展沙箱等能力。
+type ScriptRunOptions struct {
+	Timeout int    // 秒,<=0 时取 300
+	RunAs   string // 以指定系统用户身份执行
+	// Sandbox 为 true 时,Agent 端在目标主机上创建真实隔离环境执行
+	// (独立临时工作目录 + 净化环境变量 + 独立进程组;python 另建 venv)。
+	Sandbox      bool
+	ScriptType   string   // shell(默认) | python | bat
+	Requirements []string // python 沙箱内 pip 安装的依赖
+}
+
 func (s *Service) RunScriptOnAgent(ctx context.Context, agentID, tenantID, content string, params map[string]string, timeout int, runAs string) (string, int, error) {
+	return s.RunScriptOnAgentWithOptions(ctx, agentID, tenantID, content, params,
+		ScriptRunOptions{Timeout: timeout, RunAs: runAs})
+}
+
+// RunScriptOnAgentSandboxed 以沙箱模式把脚本下发到带沙箱标签的真实 Agent,
+// 由其在目标主机上创建真实隔离环境执行。实现 script.SandboxRunner。
+func (s *Service) RunScriptOnAgentSandboxed(ctx context.Context, agentID, tenantID, content string, params map[string]string, timeout int, scriptType string, requirements []string) (string, int, error) {
+	return s.RunScriptOnAgentWithOptions(ctx, agentID, tenantID, content, params, ScriptRunOptions{
+		Timeout:      timeout,
+		Sandbox:      true,
+		ScriptType:   scriptType,
+		Requirements: requirements,
+	})
+}
+
+// PickSandboxAgentID 挑选一台可用的沙箱 Agent 并返回其 ID。实现 script.SandboxRunner。
+func (s *Service) PickSandboxAgentID(ctx context.Context, tenantID, preferID string) (string, error) {
+	agent, err := s.pickSandboxAgent(ctx, tenantID, preferID)
+	if err != nil {
+		return "", err
+	}
+	return agent.ID, nil
+}
+
+// RunScriptOnAgentWithOptions 是 RunScriptOnAgent 的可扩展版本,支持沙箱隔离执行。
+func (s *Service) RunScriptOnAgentWithOptions(ctx context.Context, agentID, tenantID, content string, params map[string]string, opts ScriptRunOptions) (string, int, error) {
 	if s.tunnelServer == nil && s.grpcTunnel == nil {
 		return "", -1, fmt.Errorf("no tunnel server configured: cannot dispatch script to agent %s", agentID)
 	}
@@ -926,19 +1043,28 @@ func (s *Service) RunScriptOnAgent(ctx context.Context, agentID, tenantID, conte
 	if err != nil || host == nil {
 		return "", -1, fmt.Errorf("agent %s not found (tenant=%s)", agentID, tenantID)
 	}
+	timeout := opts.Timeout
 	if timeout <= 0 {
 		timeout = 300
+	}
+	// 请求沙箱执行时,目标 Agent 必须确实带沙箱标签,避免脚本在未隔离的生产
+	// 主机上裸跑。
+	if opts.Sandbox && !host.IsSandbox() {
+		return "", -1, fmt.Errorf("Agent %s 未被标记为沙箱环境,拒绝以沙箱方式执行", agentID)
 	}
 	p := make(map[string]any, len(params))
 	for k, v := range params {
 		p[k] = v
 	}
 	task := &TaskRequest{
-		Action:  "script",
-		Script:  content,
-		Params:  p,
-		Timeout: timeout,
-		RunAs:  runAs,
+		Action:       "script",
+		Script:       content,
+		Params:       p,
+		Timeout:      timeout,
+		RunAs:        opts.RunAs,
+		Sandbox:      opts.Sandbox,
+		ScriptType:   opts.ScriptType,
+		Requirements: opts.Requirements,
 	}
 	body, mErr := json.Marshal(task)
 	if mErr != nil {
@@ -1008,14 +1134,21 @@ func (s *Service) handleGetWhitelist(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// handleExecSandbox 在 Server 本机沙箱环境执行脚本。
-// 对应 UI 中"勾选沙箱环境执行"：无需选择目标主机，直接在
-// Server 部署所在机器上挑选一个沙箱环境做调试/冒烟测试。
+// handleExecSandbox 在"沙箱 Agent"所在的目标主机上,于真实隔离环境中执行脚本。
+//
+// 对应 UI 的"勾选沙箱环境执行":用户无需挑选普通目标主机,系统会选取一台被打上
+// 沙箱标签的真实 Agent(通常就是部署 Server 的那几台机器),把脚本经隧道下发过去。
+// Agent 端会为本次执行创建独立临时工作目录、净化环境变量、独立进程组;
+// Python 脚本额外创建虚拟环境(venv)并按 requirements 安装依赖,执行后整体销毁。
 func (s *Service) handleExecSandbox(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		Script    string `json:"script"`
-		Timeout   int    `json:"timeout,omitempty"`
-		SandboxID string `json:"sandbox_id,omitempty"` // 可选：指定某个沙箱环境
+		Script       string            `json:"script"`
+		Timeout      int               `json:"timeout,omitempty"`
+		SandboxID    string            `json:"sandbox_id,omitempty"` // 可选:指定某个沙箱 Agent
+		AgentID      string            `json:"agent_id,omitempty"`   // 同义别名
+		ScriptType   string            `json:"script_type,omitempty"`
+		Requirements []string          `json:"requirements,omitempty"`
+		Params       map[string]string `json:"params,omitempty"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
@@ -1031,37 +1164,53 @@ func (s *Service) handleExecSandbox(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusForbidden, "script denied by whitelist: "+err.Error())
 		return
 	}
-	timeout := time.Duration(req.Timeout) * time.Second
-	if timeout == 0 {
-		timeout = 60 * time.Second
+	timeout := req.Timeout
+	if timeout <= 0 {
+		timeout = 60
 	}
 
-	env := []string{}
-	if req.SandboxID != "" {
-		// 记录了用户挑选的沙箱环境标识，便于审计与多环境区分
-		env = append(env, "OPSORIGIN_SANDBOX_ID="+req.SandboxID)
+	tenantID := tenantFromCtx(r.Context())
+	prefer := req.SandboxID
+	if prefer == "" {
+		prefer = req.AgentID
 	}
-	s.sandboxExec.Env = env
-
-	res, err := s.sandboxExec.Execute(r.Context(), req.Script, timeout)
+	agent, err := s.pickSandboxAgent(r.Context(), tenantID, prefer)
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{
-		"host":      "sandbox(local)",
-		"output":    res.Output,
-		"exit_code": res.ExitCode,
-		"error":     res.Error,
-		"duration":  res.Duration.Milliseconds(),
-		"via":       "sandbox",
-	})
+
+	start := time.Now()
+	output, exitCode, execErr := s.RunScriptOnAgentWithOptions(r.Context(), agent.ID, tenantID,
+		req.Script, req.Params, ScriptRunOptions{
+			Timeout:      timeout,
+			Sandbox:      true,
+			ScriptType:   req.ScriptType,
+			Requirements: req.Requirements,
+		})
+	resp := map[string]any{
+		"host":       agent.Name,
+		"agent_id":   agent.ID,
+		"agent_name": agent.Name,
+		"output":     output,
+		"exit_code":  exitCode,
+		"duration":   time.Since(start).Milliseconds(),
+		"via":        "sandbox-agent",
+	}
+	if execErr != nil {
+		resp["error"] = execErr.Error()
+	}
+	writeJSON(w, http.StatusOK, resp)
 }
 
 func (s *Service) handleRegister(w http.ResponseWriter, r *http.Request) {
 	var req RegisterAgentRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if err := validate.HostName("主机名称", req.Name); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 	// 勾选了 as_proxy 时,注册为 Proxy 节点
@@ -1136,12 +1285,6 @@ func (s *Service) handleList(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		copyHost := *h
-		// 沙箱 Agent 与 Core 同进程,不发心跳,只要 Core 活着就在线
-		if h.ID == s.sandboxID && s.sandboxID != "" {
-			copyHost.Status = AgentStatusOnline
-			result = append(result, &copyHost)
-			continue
-		}
 		// 优先 Redis 判定在线状态; 回退到 last_seen 时间戳
 		if onlineSet != nil {
 			if !onlineSet[h.ID] {
@@ -1179,6 +1322,10 @@ func (s *Service) handleUpdate(w http.ResponseWriter, r *http.Request) {
 	var req UpdateAgentRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if err := validate.HostNameOptional("主机名称", req.Name); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 	if req.Name != "" {
@@ -2372,6 +2519,10 @@ func (s *Service) handleRegisterProxy(w http.ResponseWriter, r *http.Request) {
 	var req RegisterProxyRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if err := validate.HostName("Proxy 名称", req.Name); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 	proxy := &ProxyInfo{
