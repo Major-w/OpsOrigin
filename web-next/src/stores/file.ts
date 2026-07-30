@@ -29,7 +29,7 @@ export const useFileStore = create<FileState>((set, get) => ({
   upload: async (file) => {
     const form = new FormData(); form.append('file', file)
     try {
-      const token = typeof window !== 'undefined' ? localStorage.getItem('token') || '' : ''
+      const token = typeof window !== 'undefined' ? localStorage.getItem('opsnexus_token') || '' : ''
       const res = await fetch(`${apiBase}/files/upload`, {
         method: 'POST', body: form,
         headers: { 'Authorization': `Bearer ${token}` },
