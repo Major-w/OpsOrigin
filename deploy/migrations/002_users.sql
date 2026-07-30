@@ -114,5 +114,5 @@ ON CONFLICT DO NOTHING;
 -- 初始化默认管理员用户（密码: admin123，使用bcrypt hash）
 -- ============================================================
 INSERT INTO users (id, tenant_id, username, password, email, role, status)
-VALUES ('user-admin-001', 'default', 'admin', '$2a$10$N9qo8uLOickgx2ZMRZoMyeIjZAgcfl7p92ldGxad68LJZdL17lhWy', 'admin@example.com', 'admin', 'active')
+VALUES ('user-admin-001', 'default', 'admin', '$2a$10$z1zhCyKMAPr4k6.7Cjk77eVyoZEKxPCLMcXuJx5q9iiBxj22Fa1Li', 'admin@example.com', 'admin', 'active')
 ON CONFLICT (tenant_id, username) DO NOTHING;
