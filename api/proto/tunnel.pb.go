@@ -218,11 +218,17 @@ type RegisterRequest struct {
 	Capabilities []string               `protobuf:"bytes,4,rep,name=capabilities,proto3" json:"capabilities,omitempty"`
 	// 系统信息:Agent 注册时随隧道一并上报,供 Core 回写 agent_hosts
 	// (OS/IP/CPU/Memory),避免 gRPC 直连 Agent 在 UI 中显示为无资源信息的空壳。
-	Os            string   `protobuf:"bytes,5,opt,name=os,proto3" json:"os,omitempty"`
-	OsVersion     string   `protobuf:"bytes,6,opt,name=os_version,json=osVersion,proto3" json:"os_version,omitempty"`
-	Cpu           string   `protobuf:"bytes,7,opt,name=cpu,proto3" json:"cpu,omitempty"`
-	Memory        string   `protobuf:"bytes,8,opt,name=memory,proto3" json:"memory,omitempty"`
-	Ips           []string `protobuf:"bytes,9,rep,name=ips,proto3" json:"ips,omitempty"`
+	Os        string   `protobuf:"bytes,5,opt,name=os,proto3" json:"os,omitempty"`
+	OsVersion string   `protobuf:"bytes,6,opt,name=os_version,json=osVersion,proto3" json:"os_version,omitempty"`
+	Cpu       string   `protobuf:"bytes,7,opt,name=cpu,proto3" json:"cpu,omitempty"`
+	Memory    string   `protobuf:"bytes,8,opt,name=memory,proto3" json:"memory,omitempty"`
+	Ips       []string `protobuf:"bytes,9,rep,name=ips,proto3" json:"ips,omitempty"`
+	// 本次操作系统启动的唯一标识(Linux boot_id / macOS-Windows 退化临时文件)。
+	// 用于 Server 端克隆冲突检测:同一 host_id 收到不同 boot_id 的心跳即判定为镜像克隆。
+	BootId string `protobuf:"bytes,10,opt,name=boot_id,json=bootId,proto3" json:"boot_id,omitempty"`
+	// Agent 在收到服务端 RESET_REGISTRATION 后,以追加随机盐的全新指纹重新注册时置 true,
+	// 告知 Server 这是一台"主动声明为新主机"的机器,跳过按主机名/IP 的复用逻辑,直接接纳为新记录。
+	ForceNew      bool `protobuf:"varint,11,opt,name=force_new,json=forceNew,proto3" json:"force_new,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -320,11 +326,29 @@ func (x *RegisterRequest) GetIps() []string {
 	return nil
 }
 
+func (x *RegisterRequest) GetBootId() string {
+	if x != nil {
+		return x.BootId
+	}
+	return ""
+}
+
+func (x *RegisterRequest) GetForceNew() bool {
+	if x != nil {
+		return x.ForceNew
+	}
+	return false
+}
+
 type RegisterResponse struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Accepted      bool                   `protobuf:"varint,1,opt,name=accepted,proto3" json:"accepted,omitempty"`
-	SessionId     string                 `protobuf:"bytes,2,opt,name=session_id,json=sessionId,proto3" json:"session_id,omitempty"`
-	Error         string                 `protobuf:"bytes,3,opt,name=error,proto3" json:"error,omitempty"`
+	state     protoimpl.MessageState `protogen:"open.v1"`
+	Accepted  bool                   `protobuf:"varint,1,opt,name=accepted,proto3" json:"accepted,omitempty"`
+	SessionId string                 `protobuf:"bytes,2,opt,name=session_id,json=sessionId,proto3" json:"session_id,omitempty"`
+	Error     string                 `protobuf:"bytes,3,opt,name=error,proto3" json:"error,omitempty"`
+	// 克隆冲突:Server 检测到同一 host_id 来自不同 boot_id,要求 Agent 清空本地身份
+	// (追加随机盐)后以全新 host_id 重新注册,使克隆出的两台机器各自获得独立 CMDB 记录。
+	Reset_        bool   `protobuf:"varint,4,opt,name=reset,proto3" json:"reset,omitempty"`
+	ResetReason   string `protobuf:"bytes,5,opt,name=reset_reason,json=resetReason,proto3" json:"reset_reason,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -376,6 +400,20 @@ func (x *RegisterResponse) GetSessionId() string {
 func (x *RegisterResponse) GetError() string {
 	if x != nil {
 		return x.Error
+	}
+	return ""
+}
+
+func (x *RegisterResponse) GetReset_() bool {
+	if x != nil {
+		return x.Reset_
+	}
+	return false
+}
+
+func (x *RegisterResponse) GetResetReason() string {
+	if x != nil {
+		return x.ResetReason
 	}
 	return ""
 }
@@ -738,7 +776,7 @@ const file_tunnel_proto_rawDesc = "" +
 	"\fcommand_resp\x18\x1f \x01(\v2\x17.tunnel.CommandResponseH\x00R\vcommandResp\x120\n" +
 	"\aforward\x18( \x01(\v2\x14.tunnel.AgentCommandH\x00R\aforward\x12:\n" +
 	"\fforward_resp\x18) \x01(\v2\x15.tunnel.AgentResponseH\x00R\vforwardRespB\t\n" +
-	"\apayload\"\xf1\x01\n" +
+	"\apayload\"\xa7\x02\n" +
 	"\x0fRegisterRequest\x12\x19\n" +
 	"\bproxy_id\x18\x01 \x01(\tR\aproxyId\x12\x18\n" +
 	"\aversion\x18\x02 \x01(\tR\aversion\x12\x1a\n" +
@@ -749,12 +787,17 @@ const file_tunnel_proto_rawDesc = "" +
 	"os_version\x18\x06 \x01(\tR\tosVersion\x12\x10\n" +
 	"\x03cpu\x18\a \x01(\tR\x03cpu\x12\x16\n" +
 	"\x06memory\x18\b \x01(\tR\x06memory\x12\x10\n" +
-	"\x03ips\x18\t \x03(\tR\x03ips\"c\n" +
+	"\x03ips\x18\t \x03(\tR\x03ips\x12\x17\n" +
+	"\aboot_id\x18\n" +
+	" \x01(\tR\x06bootId\x12\x1b\n" +
+	"\tforce_new\x18\v \x01(\bR\bforceNew\"\x9c\x01\n" +
 	"\x10RegisterResponse\x12\x1a\n" +
 	"\baccepted\x18\x01 \x01(\bR\baccepted\x12\x1d\n" +
 	"\n" +
 	"session_id\x18\x02 \x01(\tR\tsessionId\x12\x14\n" +
-	"\x05error\x18\x03 \x01(\tR\x05error\"N\n" +
+	"\x05error\x18\x03 \x01(\tR\x05error\x12\x14\n" +
+	"\x05reset\x18\x04 \x01(\bR\x05reset\x12!\n" +
+	"\freset_reason\x18\x05 \x01(\tR\vresetReason\"N\n" +
 	"\tHeartbeat\x12\x1c\n" +
 	"\ttimestamp\x18\x01 \x01(\x03R\ttimestamp\x12#\n" +
 	"\ractive_agents\x18\x02 \x01(\x05R\factiveAgents\"\xa2\x01\n" +

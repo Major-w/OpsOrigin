@@ -370,12 +370,22 @@ func (s *MemoryStore) MarkOfflineAgents(ctx context.Context, tenantID string, th
 }
 
 // Service 是 agent 管理服务。
+// bootSeen 记录主机最近一次上报的 boot_id 时刻,用于克隆冲突检测。
+type bootSeen struct {
+	id   string
+	seen time.Time
+}
+
 type Service struct {
 	store           Store
 	entClient       *ent.Client
 	hbWriter        *HeartbeatWriter    // Redis heartbeat writer (nil if Redis unavailable)
 	circuitBreakers map[string]*CircuitBreakerConfig
 	cbMu            sync.Mutex
+	// boot_id 追踪:按 host_id 记录最近一次上报的 boot_id 与时间,
+	// 用于检测镜像克隆冲突(同一 host_id 在短时间窗口内来自两个不同的 boot_id)。
+	hostBootID map[string]bootSeen
+	bootIDMu   sync.Mutex
 	stopCh          chan struct{}
 	tlsEnabled      bool                // 是否全局启用 HTTPS(影响安装脚本中的 scheme)
 	tunnelServer    *tunnel.Server      // Proxy 隧道服务(TCP,可选)
@@ -494,74 +504,108 @@ func (s *Service) SetGRPCTunnel(gs *tunnel.GRPCServer) {
 	})
 }
 
-// resolveGRPCAgentID 在 gRPC 直连 Agent 注册时,依据指纹(hostname/IP)解析出应复用的
-// 规范记录 ID,实现"同机重启/跨通道去重 + 疑似重复提示合并"闭环:
-//  1. 若 incomingID 已对应一条现有记录 => 直接复用(稳定指纹 ID 重启即此路径,ON CONFLICT upsert 续行)。
-//  2. 否则,若现有记录中存在 hostname 相同或 IP 有交集、且 ID 不同的 => 复用该"规范记录"
-//     (优先在线者,其次最近心跳),避免为同一台机器再开一条新记录。
-//  3. 都没有 => 保留 incomingID(全新主机)。
-//
-// 关键:此处只做"复用 ID",从不删除任何记录;重复记录的清理由用户在前端点"合并"触发(merge 接口)。
-func (s *Service) resolveGRPCAgentID(ctx context.Context, tenantID, incomingID, hostname string, ips []string) string {
+// resolveGRPCAgentID 在 gRPC 直连 Agent (或 TCP 隧道 Agent) 注册/心跳时执行主机身份解析与
+// 克隆冲突检测,返回(应使用的规范 host_id, 是否需要重置为独立主机)。
+// 决策逻辑:
+//  1. forceNew → 跳过复用,直接采用入站 ID 为新主机(Agent 在收到 RESET_REGISTRATION 后重注册时置此标志)。
+//  2. 已存在该 ID → 直接复用(稳定指纹 ID 重启场景)。
+//  3. 不存在 → 按 hostname/IP 找疑似同机记录,复用规范 ID(优先在线、其次最近心跳)。
+//  4. 对最终 host_id 查 boot_id 碰撞:同一 id 的两次注册心跳的 boot_id 不同且窗口 5min 内
+//     → 判定为 VM 镜像克隆冲突,要求新到者执行 RESET_REGISTRATION(追加随机盐重注册为新主机)。
+func (s *Service) resolveGRPCAgentID(ctx context.Context, tenantID, incomingID, hostname string, ips []string, bootID string, forceNew bool) (string, bool) {
 	if incomingID == "" {
-		return incomingID
+		return incomingID, false
 	}
-	// 1) 已存在该 ID 的直接复用(稳定指纹 ID 重启场景)
-	if h, err := s.store.Get(ctx, incomingID, tenantID); err == nil && h != nil {
-		return incomingID
+	// 1) forceNew:Agent 在收到 RESET_REGISTRATION 后以全新指纹(含随机盐)重新注册,
+	// 跳过按 hostname/IP 的复用逻辑,直接接纳为独立新主机以避免无限重置循环。
+	if forceNew {
+		return incomingID, s.recordBootID(incomingID, bootID)
 	}
-	// 2) 按 hostname / IP 找疑似同机记录,复用规范 ID(优先在线、其次最近心跳)
-	hosts, err := s.store.List(ctx, tenantID)
-	if err != nil {
-		return incomingID
-	}
-	bestID := ""
-	bestScore := -1
-	var bestHB time.Time
-	for _, h := range hosts {
-		if h.ID == incomingID {
-			continue
+	// 2) 已存在该 ID 的直接复用(稳定指纹 ID 重启场景)
+	agentID := incomingID
+	if h, err := s.store.Get(ctx, incomingID, tenantID); err != nil || h == nil {
+		// 3) 按 hostname / IP 找疑似同机记录,复用规范 ID(优先在线、其次最近心跳)
+		hosts, err := s.store.List(ctx, tenantID)
+		if err != nil {
+			return incomingID, false
 		}
-		matched := false
-		if hostname != "" && h.Hostname == hostname {
-			matched = true
-		} else {
-			for _, ip := range ips {
-				for _, hip := range h.IPs {
-					if ip != "" && ip == hip {
-						matched = true
+		bestID := ""
+		bestScore := -1
+		var bestHB time.Time
+		for _, h := range hosts {
+			if h.ID == incomingID {
+				continue
+			}
+			matched := false
+			if hostname != "" && h.Hostname == hostname {
+				matched = true
+			} else {
+				for _, ip := range ips {
+					for _, hip := range h.IPs {
+						if ip != "" && ip == hip {
+							matched = true
+							break
+						}
+					}
+					if matched {
 						break
 					}
 				}
-				if matched {
-					break
-				}
+			}
+			if !matched {
+				continue
+			}
+			score := 0
+			if h.Status == AgentStatusOnline {
+				score += 2
+			}
+			var hb time.Time
+			if h.LastHeartbeat != nil {
+				hb = *h.LastHeartbeat
+				score += 1
+			}
+			if score > bestScore || (score == bestScore && hb.After(bestHB)) {
+				bestID = h.ID
+				bestScore = score
+				bestHB = hb
 			}
 		}
-		if !matched {
-			continue
-		}
-		score := 0
-		if h.Status == AgentStatusOnline {
-			score += 2
-		}
-		var hb time.Time
-		if h.LastHeartbeat != nil {
-			hb = *h.LastHeartbeat
-			score += 1
-		}
-		if score > bestScore || (score == bestScore && hb.After(bestHB)) {
-			bestID = h.ID
-			bestScore = score
-			bestHB = hb
+		if bestID != "" {
+			slog.Info("gRPC agent reuses existing record by fingerprint",
+				"incoming_id", incomingID, "reused_id", bestID, "hostname", hostname)
+			agentID = bestID
 		}
 	}
-	if bestID != "" {
-		slog.Info("gRPC agent reuses existing record by fingerprint",
-			"incoming_id", incomingID, "reused_id", bestID, "hostname", hostname)
-		return bestID
+	// 4) boot_id 碰撞检测:同一 host_id 的不同 boot_id 在短窗口内同时在线 → 克隆冲突
+	collision := s.recordBootID(agentID, bootID)
+	if collision {
+		slog.Warn("clone collision detected: same host_id from different boot_id",
+			"host_id", agentID, "boot_id", bootID, "hostname", hostname)
 	}
-	return incomingID
+	return agentID, collision
+}
+
+// recordBootID 记录主机最近一次上报的 boot_id 与时刻,并返回是否为克隆冲突:
+// 若该 hostID 已有记录、boot_id 不同且上次记录在 5 分钟内 → true(需触发 RESET_REGISTRATION)。
+// 非冲突或无记录时更新记录并返回 false。
+func (s *Service) recordBootID(hostID, bootID string) bool {
+	if bootID == "" {
+		return false
+	}
+	s.bootIDMu.Lock()
+	defer s.bootIDMu.Unlock()
+	if s.hostBootID == nil {
+		s.hostBootID = make(map[string]bootSeen)
+	}
+	prev, ok := s.hostBootID[hostID]
+	now := time.Now()
+	if ok {
+		if prev.id != bootID && now.Sub(prev.seen) < 5*time.Minute {
+			return true // 冲突:不覆盖,保留��记录
+		}
+	}
+	s.hostBootID[hostID] = bootSeen{id: bootID, seen: now}
+	return false
 }
 
 // SetWhitelist 注入本租户的命令白名单(§6)。传 nil 表示未启用(放行一切)。

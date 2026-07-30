@@ -46,6 +46,7 @@ type HeartbeatPayload struct {
 	Disk         string   `json:"disk"`
 	IPs          []string `json:"ips"`
 	Capabilities []string `json:"capabilities"`
+	BootID       string   `json:"boot_id,omitempty"`
 }
 
 // TaskRequest received from the server for script execution.
@@ -161,44 +162,245 @@ func NewAgent(cfg AgentConfig) *Agent {
 	return a
 }
 
-// agentStableIDPath 返回持久化 agent 身份文件的路径(跨重启保持同一身份)。
-func agentStableIDPath() string {
+// ---------------------------------------------------------------------------
+// 主机身份(三层 ID 模型 - Phase1/2):硬件指纹 + 本地持久化身份 + boot_id 克隆冲突自愈
+// ---------------------------------------------------------------------------
+
+// opsOriginFingerprintNamespace 是 OpsOrigin 专用的 UUIDv5 命名空间(scheme 固定常量),
+// 所有 Agent 硬件指纹都基于此命名空间做 SHA-1 命名哈希,保证跨主机/跨版本一致且不可预测。
+const opsOriginFingerprintNamespace = "9f2b4e1a-7c3d-5e8b-9a1f-2c4d6e8a0b1c"
+
+// agentIdentity 持久化在 Agent 本地的身份文件,跨重启保持主机身份稳定。
+//   - Fingerprint: 由硬件因子派生的 UUIDv5,作为主机身份(CMDB 主键种子)。
+//   - Salt: 收到服务端 RESET_REGISTRATION 时追加的随机盐,用于打破克隆冲突、生成全新身份。
+//   - BootID: 最近一次上报的 boot_id(用于克隆冲突检测,见 grpcserver 决策)。
+type agentIdentity struct {
+	Fingerprint string `json:"fingerprint"`
+	Salt        string `json:"salt"`
+	BootID      string `json:"boot_id"`
+}
+
+// agentIdentityPath 返回本地身份文件路径。
+func agentIdentityPath() string {
 	dir, err := os.UserCacheDir()
 	if err != nil || dir == "" {
 		dir = os.TempDir()
 	}
-	return filepath.Join(dir, "opsorigin", "agent-id")
+	return filepath.Join(dir, "opsorigin", "agent.identity")
 }
 
-// computeFingerprint 基于主机名 + 主IP + OS 生成稳定指纹。
-// 同一台机器(主机名/IP/OS 不变)始终得到相同值,从而 Core 端可按指纹复用记录。
-func computeFingerprint() string {
-	host, err := os.Hostname()
-	if err != nil || host == "" {
-		host = "unknown"
+// loadAgentIdentity 读取本地身份文件。兼容旧版纯文本 ag-xxxx 文件(直接丢弃触发重算)。
+func loadAgentIdentity() (*agentIdentity, error) {
+	data, err := os.ReadFile(agentIdentityPath())
+	if err != nil {
+		return nil, err
 	}
-	ip := getPrimaryIP()
-	raw := fmt.Sprintf("%s|%s|%s", host, ip, runtime.GOOS)
-	sum := sha256.Sum256([]byte(raw))
-	return "ag-" + hex.EncodeToString(sum[:])[:16]
+	if s := strings.TrimSpace(string(data)); !strings.HasPrefix(s, "{") {
+		return nil, fmt.Errorf("legacy identity format")
+	}
+	var id agentIdentity
+	if err := json.Unmarshal(data, &id); err != nil {
+		return nil, err
+	}
+	return &id, nil
 }
 
-// resolveAgentID 返回稳定的 agent 身份 ID:优先使用本地持久化的 ID(保证重启后不变),
-// 首次运行则按指纹生成并落盘。持久化失败或无法取指纹时回退随机 UUID。
-func resolveAgentID() string {
-	fp := computeFingerprint()
-	if fp == "" {
-		return uuid.NewString()
+func saveAgentIdentity(id *agentIdentity) error {
+	data, err := json.MarshalIndent(id, "", "  ")
+	if err != nil {
+		return err
 	}
-	path := agentStableIDPath()
+	path := agentIdentityPath()
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return err
+	}
+	return os.WriteFile(path, data, 0o600)
+}
+
+// collectHardwareFactors 跨平台采集硬件稳定标识,返回以 "|" 连接的原始串。
+// 因子按文档权重:DMI product_uuid > machine-id > 板载序列号 > 首块物理 MAC。
+// 关键:指纹中不含 IP 与主机名(DHCP/NAT 会改变它们);machine-id 也不单独作为唯一依据
+// (VM 克隆会原样复制 machine-id)。仅当所有硬件因子均不可得(受限容器)时才以主机名兜底。
+func collectHardwareFactors() string {
+	parts := []string{
+		readDMISystemUUID(),
+		readMachineID(),
+		readBoardSerial(),
+		readPrimaryMAC(),
+	}
+	nonEmpty := make([]string, 0, len(parts))
+	for _, p := range parts {
+		if p != "" {
+			nonEmpty = append(nonEmpty, p)
+		}
+	}
+	if len(nonEmpty) == 0 {
+		if h, err := os.Hostname(); err == nil && h != "" {
+			nonEmpty = append(nonEmpty, "host:"+h)
+		}
+	}
+	return strings.Join(nonEmpty, "|")
+}
+
+// computeFingerprint 基于多因子硬件指纹生成稳定 UUIDv5(salt 仅 RESET 时非空)。
+func computeFingerprint(salt string) string {
+	ns := uuid.MustParse(opsOriginFingerprintNamespace)
+	raw := collectHardwareFactors()
+	if salt != "" {
+		raw += "|salt:" + salt
+	}
+	return uuid.NewSHA1(ns, []byte(raw)).String()
+}
+
+// readDMISystemUUID 读取系统 UUID(Linux DMI / macOS IOPlatformUUID / Windows WMI)。
+func readDMISystemUUID() string {
+	switch runtime.GOOS {
+	case "linux":
+		return readFileTrim("/sys/class/dmi/id/product_uuid")
+	case "darwin":
+		if out, err := exec.Command("ioreg", "-rd1", "-c", "IOPlatformExpertDevice").Output(); err == nil {
+			return extractIOPlatformField(string(out), "IOPlatformUUID")
+		}
+	case "windows":
+		if out, err := exec.Command("powershell", "-NoProfile", "-Command", "(Get-CimInstance Win32_ComputerSystemProduct).UUID").Output(); err == nil {
+			return strings.TrimSpace(string(out))
+		}
+	}
+	return ""
+}
+
+// readMachineID 读取 OS machine-id(Linux /etc/machine-id / Windows MachineGuid)。
+func readMachineID() string {
+	switch runtime.GOOS {
+	case "linux":
+		return readFileTrim("/etc/machine-id")
+	case "windows":
+		if out, err := exec.Command("powershell", "-NoProfile", "-Command", "Get-ItemPropertyValue -Path 'HKLM:\\SOFTWARE\\Microsoft\\Cryptography' -Name MachineGuid").Output(); err == nil {
+			return strings.TrimSpace(string(out))
+		}
+	}
+	return ""
+}
+
+// readBoardSerial 读取主板序列号(Linux DMI board_serial / macOS IOPlatformSerialNumber / Windows WMI)。
+func readBoardSerial() string {
+	switch runtime.GOOS {
+	case "linux":
+		return readFileTrim("/sys/class/dmi/id/board_serial")
+	case "darwin":
+		if out, err := exec.Command("ioreg", "-rd1", "-c", "IOPlatformExpertDevice").Output(); err == nil {
+			return extractIOPlatformField(string(out), "IOPlatformSerialNumber")
+		}
+	case "windows":
+		if out, err := exec.Command("powershell", "-NoProfile", "-Command", "(Get-CimInstance Win32_BaseBoard).SerialNumber").Output(); err == nil {
+			return strings.TrimSpace(string(out))
+		}
+	}
+	return ""
+}
+
+// readPrimaryMAC 返回首个非虚拟、已启用、拥有真实硬件地址的网卡 MAC。
+func readPrimaryMAC() string {
+	ifaces, err := net.Interfaces()
+	if err != nil {
+		return ""
+	}
+	for _, iface := range ifaces {
+		if iface.Flags&net.FlagUp == 0 || iface.Flags&net.FlagLoopback != 0 {
+			continue
+		}
+		name := strings.ToLower(iface.Name)
+		if strings.HasPrefix(name, "veth") || strings.HasPrefix(name, "docker") ||
+			strings.HasPrefix(name, "br-") || strings.HasPrefix(name, "virbr") {
+			continue
+		}
+		if len(iface.HardwareAddr) == 0 {
+			continue
+		}
+		zero := true
+		for _, b := range iface.HardwareAddr {
+			if b != 0 {
+				zero = false
+				break
+			}
+		}
+		if zero {
+			continue
+		}
+		return iface.HardwareAddr.String()
+	}
+	return ""
+}
+
+// extractIOPlatformField 从 ioreg 输出中解析指定字段的双引号值(macOS)。
+func extractIOPlatformField(out, field string) string {
+	for _, line := range strings.Split(out, "\n") {
+		if strings.Contains(line, field) {
+			if idx := strings.Index(line, "\""); idx >= 0 {
+				rest := line[idx+1:]
+				if end := strings.Index(rest, "\""); end >= 0 {
+					return strings.TrimSpace(rest[:end])
+				}
+			}
+		}
+	}
+	return ""
+}
+
+func readFileTrim(path string) string {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(data))
+}
+
+// collectBootID 采集本次操作系统启动的唯一标识(Linux /proc/sys/kernel/random/boot_id;
+// macOS/Windows 无等效内核文件,退化为首次启动写入的临时文件,重启即变)。
+func collectBootID() string {
+	if runtime.GOOS == "linux" {
+		if id := readFileTrim("/proc/sys/kernel/random/boot_id"); id != "" {
+			return id
+		}
+	}
+	dir, err := os.UserCacheDir()
+	if err != nil || dir == "" {
+		dir = os.TempDir()
+	}
+	path := filepath.Join(dir, "opsorigin", "boot-id")
 	if data, err := os.ReadFile(path); err == nil {
 		if id := strings.TrimSpace(string(data)); id != "" {
 			return id
 		}
 	}
+	id := uuid.NewString()
 	_ = os.MkdirAll(filepath.Dir(path), 0o700)
-	_ = os.WriteFile(path, []byte(fp), 0o600)
+	_ = os.WriteFile(path, []byte(id), 0o600)
+	return id
+}
+
+// resolveAgentID 返回稳定的主机身份 ID:优先复用本地持久化身份(重启后不变),
+// 首次运行则按硬件指纹生成并落盘。持久化失败或无法取指纹时回退随机 UUID。
+func resolveAgentID() string {
+	if id, err := loadAgentIdentity(); err == nil && id.Fingerprint != "" {
+		return id.Fingerprint
+	}
+	fp := computeFingerprint("")
+	id := &agentIdentity{Fingerprint: fp, BootID: collectBootID()}
+	_ = saveAgentIdentity(id)
 	return fp
+}
+
+// rotateAgentIdentity 在收到服务端 RESET_REGISTRATION 时调用:追加随机盐、生成全新主机指纹
+// (新 host_id)并持久化。克隆冲突的两台机器由此分道扬镳,各自获得独立 CMDB 记录。
+func rotateAgentIdentity() (string, error) {
+	salt := uuid.NewString()
+	fp := computeFingerprint(salt)
+	id := &agentIdentity{Fingerprint: fp, Salt: salt, BootID: collectBootID()}
+	if err := saveAgentIdentity(id); err != nil {
+		return "", err
+	}
+	return fp, nil
 }
 
 // --- Registration ---
@@ -874,6 +1076,7 @@ func (a *Agent) collectSystemInfo() HeartbeatPayload {
 	payload.Disk = collectDiskInfo()
 	payload.IPs = collectIPs()
 	payload.OSVersion = collectOSVersion()
+	payload.BootID = collectBootID()
 	return payload
 }
 

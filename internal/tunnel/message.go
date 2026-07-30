@@ -28,12 +28,18 @@ type RegisterRequest struct {
 	Hostname     string   `json:"hostname"`
 	Capabilities []string `json:"capabilities,omitempty"`
 	Token        string   `json:"token,omitempty"`
+	// boot_id 用于服务端克隆冲突检测,force_new 在 RESET 后重注册时置 true。
+	BootID   string `json:"boot_id,omitempty"`
+	ForceNew bool   `json:"force_new,omitempty"`
 }
 
 type RegisterResponse struct {
-	Accepted  bool   `json:"accepted"`
-	SessionID string `json:"session_id"`
-	Error     string `json:"error,omitempty"`
+	Accepted    bool   `json:"accepted"`
+	SessionID   string `json:"session_id"`
+	Error       string `json:"error,omitempty"`
+	// 克隆冲突:Server 要求 Agent 清空本地身份(追加随机盐)后以新 host_id 重注册。
+	Reset       bool   `json:"reset,omitempty"`
+	ResetReason string `json:"reset_reason,omitempty"`
 }
 
 type Heartbeat struct {

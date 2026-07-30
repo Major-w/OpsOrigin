@@ -34,6 +34,10 @@ type GRPCAgentClient struct {
 	// sysInfo 在 Agent 启动时采集一次,注册时随 gRPC RegisterRequest 上报,
 	// 供 Core 回写 agent_hosts 的 OS/IP/CPU/Memory 等字段。
 	sysInfo HeartbeatPayload
+
+	// forceNew 在收到服务端 RESET_REGISTRATION(克隆冲突)后置 true,
+	// 以便下一次重注册时告知 Server 跳过 hostname/IP 复用,直接接纳为独立新主机。
+	forceNew bool
 }
 
 func NewGRPCAgentClient(coreAddr, agentID string) *GRPCAgentClient {
@@ -125,7 +129,10 @@ func (c *GRPCAgentClient) connectAndRun(ctx context.Context) error {
 		c.mu.Unlock()
 	}()
 
-	// send register
+	// send register (含 boot_id 用于服务端克隆冲突检测, forceNew 用于 RESET 后的重注册)
+	c.mu.Lock()
+	forceNew := c.forceNew
+	c.mu.Unlock()
 	reg := &pb.TunnelMessage{
 		Payload: &pb.TunnelMessage_Register{
 			Register: &pb.RegisterRequest{
@@ -138,12 +145,15 @@ func (c *GRPCAgentClient) connectAndRun(ctx context.Context) error {
 				Cpu:          c.sysInfo.CPU,
 				Memory:       c.sysInfo.Memory,
 				Ips:          c.sysInfo.IPs,
+				BootId:       c.sysInfo.BootID,
+				ForceNew:     forceNew,
 			},
 		},
 	}
 	if err := stream.Send(reg); err != nil {
 		return fmt.Errorf("send register: %w", err)
 	}
+	c.forceNew = false // reset per-register flag
 
 	// receive register response
 	resp, err := stream.Recv()
@@ -152,6 +162,22 @@ func (c *GRPCAgentClient) connectAndRun(ctx context.Context) error {
 	}
 
 	if regResp, ok := resp.Payload.(*pb.TunnelMessage_RegisterResp); ok {
+		if regResp.RegisterResp.Reset_ {
+			// 克隆冲突:服务端要求重置身份,通过追加随机盐生成全新的硬件指纹 host_id。
+			slog.Warn("server requested identity reset (clone collision detected)",
+				"agent_id", c.agentID, "reason", regResp.RegisterResp.ResetReason)
+			newID, err := rotateAgentIdentity()
+			if err != nil {
+				return fmt.Errorf("rotate identity: %w", err)
+			}
+			c.mu.Lock()
+			c.agentID = newID
+			c.forceNew = true
+			c.mu.Unlock()
+			slog.Info("agent identity rotated, will re-register with new host_id",
+				"new_id", newID)
+			return fmt.Errorf("identity reset, reconnecting with new host_id")
+		}
 		if !regResp.RegisterResp.Accepted {
 			return fmt.Errorf("registration rejected: %s", regResp.RegisterResp.Error)
 		}

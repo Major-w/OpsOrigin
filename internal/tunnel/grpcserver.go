@@ -46,11 +46,10 @@ type GRPCServer struct {
 	// onDisconnect 在会话断开时触发,供 agentmgr 立即标记离线。
 	onDisconnect func(agentID string)
 
-	// resolveAgentID 在 gRPC 直连 Agent 注册时,将入站 ID 解析为应复用的规范记录 ID。
-	// 用于"同机重启/跨通道去重":同一台机器(主机名/IP 相同)复用一个 agent_hosts 行,
-	// 避免每次重连新建记录。绝不删除记录——疑似重复的清理交由用户在前端点"合并"。
-	// 为 nil 时(未注入)直接采用入站 ID。
-	resolveAgentID func(ctx context.Context, tenantID, incomingID, hostname string, ips []string) string
+	// resolveAgentID 在 gRPC 直连 Agent 注册时,将入站 ID 解析为应复用的规范记录 ID,
+	// 同时执行 boot_id 碰撞检测(同一 host_id 在不同 boot_id 上报时判定为克隆冲突)。
+	// 返回(规范 host_id, 是否需要 RESET_REGISTRATION)。为 nil 时(未注入)直接采用入站 ID。
+	resolveAgentID func(ctx context.Context, tenantID, incomingID, hostname string, ips []string, bootID string, forceNew bool) (string, bool)
 }
 
 // AgentHeartbeatInfo 携带 Agent 注册/心跳时的身份与系统信息,
@@ -110,7 +109,7 @@ func (s *GRPCServer) OnDisconnect(handler func(agentID string)) {
 
 // SetAgentIDResolver 注入指纹去重解析器(由 agentmgr 在 SetGRPCTunnel 时调用)。
 // 入站 gRPC Agent 注册时,据此将入站 ID 解析为应复用的规范记录 ID,实现跨重启/跨通道去重。
-func (s *GRPCServer) SetAgentIDResolver(fn func(ctx context.Context, tenantID, incomingID, hostname string, ips []string) string) {
+func (s *GRPCServer) SetAgentIDResolver(fn func(ctx context.Context, tenantID, incomingID, hostname string, ips []string, bootID string, forceNew bool) (string, bool)) {
 	s.resolveAgentID = fn
 }
 
@@ -162,18 +161,46 @@ func (s *GRPCServer) Connect(stream grpc.BidiStreamingServer[pb.TunnelMessage, p
 		return status.Errorf(codes.InvalidArgument, "register missing proxy_id")
 	}
 
-	// 指纹去重:将入站 ID 解析为应复用的规范记录 ID。
-	// 同机重启(稳定指纹 ID)或跨通道重连时复用既有 agent_hosts 行(ON CONFLICT upsert),
-	// 避免每次重连新建记录;绝不删除记录,疑似重复的清理交由用户在前端点"合并"。
+	// 指纹去重 + boot_id 克隆冲突检测(Phase 2):
+	// 将入站 ID 解析为应复用的规范记录 ID;若同一 host_id 在短时间内来自不同 boot_id
+	// → 克隆冲突,要求 Agent 执行 RESET_REGISTRATION(追加随机盐后以新身份重注册)。
 	agentID := reg.ProxyId
+	var resetFlag bool
 	if s.resolveAgentID != nil {
-		agentID = s.resolveAgentID(stream.Context(), "default", reg.ProxyId, reg.Hostname, reg.Ips)
+		agentID, resetFlag = s.resolveAgentID(stream.Context(), "default",
+			reg.ProxyId, reg.Hostname, reg.Ips, reg.BootId, reg.ForceNew)
 	}
 
 	// §3.1 从客户端证书 CN 解析身份(若启用 mTLS)。
 	cn := clientCertCN(stream.Context())
 
 	sessionID := fmt.Sprintf("grpc-%s", uuid.New().String())
+
+	// 先发送 RegisterResp,再决定是否建立会话:克隆冲突时在应答中置 Reset=true、
+	// 通知 Agent 旋转身份,随后直接关闭流(不存储 session、不记录心跳),Agent 收到后
+	// 追加随机盐重新计算指纹,以全新 host_id 重注册。
+	regResp := &pb.RegisterResponse{
+		Accepted:    !resetFlag,
+		SessionId:   sessionID,
+		Reset_:      resetFlag,
+		ResetReason: "clone_collision",
+	}
+	if resetFlag {
+		regResp.Error = "boot_id mismatch: clone detected, please re-register with a new identity"
+	}
+	if err := stream.Send(&pb.TunnelMessage{
+		MessageId: msg.MessageId,
+		TraceId:   msg.TraceId,
+		Payload:   &pb.TunnelMessage_RegisterResp{RegisterResp: regResp},
+	}); err != nil {
+		return fmt.Errorf("send register response: %w", err)
+	}
+	if resetFlag {
+		slog.Warn("grpc registration reset due to clone collision",
+			"proxy_id", reg.ProxyId, "agent_id", agentID, "hostname", reg.Hostname)
+		return nil // Agent 将旋转身份后重连,不在此建立会话
+	}
+
 	session := &GRPCProxySession{
 		ID:           sessionID,
 		ProxyID:      agentID,
@@ -196,21 +223,6 @@ func (s *GRPCServer) Connect(stream grpc.BidiStreamingServer[pb.TunnelMessage, p
 		"cert_cn", cn,
 		"hostname", reg.Hostname,
 		"session_id", sessionID)
-
-	// send register response
-	resp := &pb.TunnelMessage{
-		MessageId: msg.MessageId,
-		TraceId:   msg.TraceId,
-		Payload: &pb.TunnelMessage_RegisterResp{
-			RegisterResp: &pb.RegisterResponse{
-				Accepted:  true,
-				SessionId: sessionID,
-			},
-		},
-	}
-	if err := stream.Send(resp); err != nil {
-		return fmt.Errorf("send register response: %w", err)
-	}
 
 	// 注册即视为一次心跳:立刻回写在线状态与系统信息,避免等 30s 首个隧道心跳。
 	if s.onHeartbeat != nil {

@@ -36,12 +36,22 @@ message RegisterRequest {
   string cpu = 7;
   string memory = 8;
   repeated string ips = 9;
+  // 本次操作系统启动的唯一标识(Linux boot_id / macOS-Windows 退化临时文件)。
+  // 用于 Server 端克隆冲突检测:同一 host_id 收到不同 boot_id 的心跳即判定为镜像克隆。
+  string boot_id = 10;
+  // Agent 在收到服务端 RESET_REGISTRATION 后,以追加随机盐的全新指纹重新注册时置 true,
+  // 告知 Server 这是一台"主动声明为新主机"的机器,跳过按主机名/IP 的复用逻辑,直接接纳为新记录。
+  bool force_new = 11;
 }
 
 message RegisterResponse {
   bool accepted = 1;
   string session_id = 2;
   string error = 3;
+  // 克隆冲突:Server 检测到同一 host_id 来自不同 boot_id,要求 Agent 清空本地身份
+  // (追加随机盐)后以全新 host_id 重新注册,使克隆出的两台机器各自获得独立 CMDB 记录。
+  bool reset = 4;
+  string reset_reason = 5;
 }
 
 message Heartbeat {

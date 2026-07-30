@@ -23,6 +23,10 @@ type Client struct {
 	connected    bool
 	onCommand    func(cmd *AgentCommand) *AgentResponse
 	pending      sync.Map
+
+	// boot_id 上报与克隆冲突重置(Phase 2):由 Agent 侧注入并在注册时随隧道上报。
+	bootID   string
+	forceNew bool
 }
 
 func NewClient(coreAddr, proxyID, hostname string, capabilities []string, authToken string) *Client {
@@ -37,6 +41,11 @@ func NewClient(coreAddr, proxyID, hostname string, capabilities []string, authTo
 
 func (c *Client) OnAgentCommand(handler func(cmd *AgentCommand) *AgentResponse) {
 	c.onCommand = handler
+}
+
+// SetBootID 注入 boot_id(由 Agent 侧采集),供注册时随隧道上报给 Server 做克隆冲突检测。
+func (c *Client) SetBootID(bootID string) {
+	c.bootID = bootID
 }
 
 func (c *Client) Start(ctx context.Context) error {
@@ -77,6 +86,8 @@ func (c *Client) connect(ctx context.Context) error {
 		Hostname:     c.hostname,
 		Capabilities: c.capabilities,
 		Token:        c.authToken,
+		BootID:       c.bootID,
+		ForceNew:     c.forceNew,
 	}
 	msgData, err := MarshalMessage(MsgRegister, reg, c.proxyID, "")
 	if err != nil {
@@ -96,6 +107,10 @@ func (c *Client) connect(ctx context.Context) error {
 		return fmt.Errorf("unmarshal register response: %w", err)
 	}
 
+	if regResp.Reset {
+		// 克隆冲突:服务端要求重置身份。上层 Agent 应调用 rotateAgentIdentity() 后重连。
+		return fmt.Errorf("registration reset required: %s", regResp.ResetReason)
+	}
 	if !regResp.Accepted {
 		return fmt.Errorf("registration rejected: %s", regResp.Error)
 	}
