@@ -1052,6 +1052,17 @@ func (s *Service) RunScriptOnAgentWithOptions(ctx context.Context, agentID, tena
 	if opts.Sandbox && !host.IsSandbox() {
 		return "", -1, fmt.Errorf("Agent %s 未被标记为沙箱环境,拒绝以沙箱方式执行", agentID)
 	}
+	// 沙箱高危命令硬拦截(Core 侧防御):即便 Agent 端未强制,下发前先扫描。
+	// 命中即拒绝,避免高危脚本进入隔离环境执行。
+	if opts.Sandbox {
+		if blocked := command.BlockedInSandbox(content); len(blocked) > 0 {
+			ids := make([]string, 0, len(blocked))
+			for _, m := range blocked {
+				ids = append(ids, fmt.Sprintf("%s(%s)", m.RuleID, m.Desc))
+			}
+			return "", -1, fmt.Errorf("沙箱执行被拒绝:脚本包含高危命令 %s", strings.Join(ids, ", "))
+		}
+	}
 	p := make(map[string]any, len(params))
 	for k, v := range params {
 		p[k] = v

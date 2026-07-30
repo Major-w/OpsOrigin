@@ -26,6 +26,8 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"github.com/opsorigin/core/internal/command"
 )
 
 // sandboxEnvWhitelist 是允许从 Agent 进程继承到沙箱子进程的环境变量名。
@@ -36,6 +38,18 @@ var sandboxEnvWhitelist = []string{
 
 // executeScriptSandboxed 在目标主机的真实隔离环境中执行脚本。
 func (a *Agent) executeScriptSandboxed(task *TaskRequest) TaskResponse {
+	// 沙箱高危命令硬拦截:复用 command 包的高危检测逻辑,针对沙箱环境内置一组
+	// 禁止执行的规则(关机 / 删除系统目录 / 格式化磁盘 / 远程管道执行 等)。
+	// 命中的脚本直接拒绝——不进入隔离环境、不降级放行。
+	if blocked := command.BlockedInSandbox(task.Script); len(blocked) > 0 {
+		var b strings.Builder
+		b.WriteString("sandbox: 脚本包含沙箱禁止的高危命令,已拒绝执行:\n")
+		for _, m := range blocked {
+			b.WriteString(fmt.Sprintf("  - 第 %d 行 [%s] %s: %s\n", m.Line, m.Level, m.RuleID, m.Desc))
+		}
+		return TaskResponse{TaskID: task.TaskID, Success: false, ExitCode: -1, Error: b.String()}
+	}
+
 	// §6 命令白名单:沙箱执行同样受控。
 	if err := a.verifyCommand(task.Script); err != nil {
 		return TaskResponse{TaskID: task.TaskID, Success: false, ExitCode: -1,

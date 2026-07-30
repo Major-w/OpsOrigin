@@ -47,7 +47,7 @@ func BuiltinDangerousRules() []DangerousRule {
 		{ID: "wget_pipe_shell", Pattern: `wget\s+.*\|\s*(sudo\s+)?(bash|sh|zsh)`, Level: "high", Desc: "wget 管道执行（绕过审查）"},
 		{ID: "fork_bomb", Pattern: `:\(\)\s*\{.*\|.*&\s*\}`, Level: "critical", Desc: "Fork Bomb 模式"},
 		{ID: "iptables_flush", Pattern: `iptables\s+-F`, Level: "high", Desc: "清空 iptables 规则"},
-		{ID: "shutdown", Pattern: `(shutdown|halt|poweroff|reboot)\s`, Level: "high", Desc: "系统关机/重启"},
+		{ID: "shutdown", Pattern: `(shutdown|halt|poweroff|reboot)(\s|$)`, Level: "high", Desc: "系统关机/重启"},
 		{ID: "truncate_file", Pattern: `>+\s*/etc/|>+\s*/dev/`, Level: "critical", Desc: "覆盖系统关键文件"},
 		{ID: "eval_danger", Pattern: `eval\s+\$`, Level: "medium", Desc: "eval 变量注入风险"},
 		{ID: "passwd_edit", Pattern: `(passwd|usermod|useradd)\s.*root`, Level: "critical", Desc: "修改 root 用户或密码"},
@@ -97,4 +97,56 @@ func NewDangerousPolicy(extra ...DangerousRule) *DangerousPolicy {
 	rules := BuiltinDangerousRules()
 	rules = append(rules, extra...)
 	return &DangerousPolicy{Rules: rules}
+}
+
+// SandboxForbiddenRules 是沙箱环境**绝对禁止**执行的高危命令规则 ID 集合。
+//
+// 设计取舍:沙箱本身已是隔离环境(独立临时目录、执行完整体销毁),因此只拦截
+// 会"逃逸隔离 / 破坏宿主机"的命令,而非所有高危命令:
+//   - 关机 / 重启(shutdown)
+//   - 删除系统目录(rm -rf /)
+//   - 覆盖 / 格式化磁盘(dd、mkfs)
+//   - 覆盖系统关键文件(> /etc、/dev)
+//   - 改动 root 凭证(passwd/usermod root)
+//   - 重新挂载 / 强制卸载文件系统(mount -o remount、umount -f)
+//   - 清空防火墙 / 降低内核安全(sysctl)
+//   - Fork Bomb(DoS)
+//   - 远程脚本管道执行(curl|wget | bash,逃逸并绕过审查)
+// 像 `rm -rf ./build`、`chmod 777 tmpfile` 这类仅作用于沙箱目录内、不会损伤宿主
+// 机的操作不在此列——它们落在隔离目录中,随沙箱销毁而消失。
+var SandboxForbiddenRules = map[string]bool{
+	"rm_rf_root":      true,
+	"dd_disk":         true,
+	"mkfs":            true,
+	"truncate_file":   true,
+	"passwd_edit":     true,
+	"mount_fs":        true,
+	"umount_force":    true,
+	"iptables_flush":  true,
+	"sysctl_insecure": true,
+	"shutdown":        true,
+	"fork_bomb":       true,
+	"curl_pipe_bash":  true,
+	"wget_pipe_shell": true,
+}
+
+// ScanSandboxBlock 扫描脚本内容,返回其中在沙箱环境禁止执行的命中点。
+// 返回空切片代表脚本可在沙箱安全执行。复用 BuiltinDangerousRules 的检测能力。
+func (dp *DangerousPolicy) ScanSandboxBlock(content string) []DangerousMatch {
+	all := dp.ScanScript(content)
+	if len(all) == 0 {
+		return nil
+	}
+	blocked := make([]DangerousMatch, 0, len(all))
+	for _, m := range all {
+		if SandboxForbiddenRules[m.RuleID] {
+			blocked = append(blocked, m)
+		}
+	}
+	return blocked
+}
+
+// BlockedInSandbox 便捷函数:用内置高危规则扫描脚本,返回沙箱禁止执行的命中点。
+func BlockedInSandbox(content string) []DangerousMatch {
+	return NewDangerousPolicy().ScanSandboxBlock(content)
 }
