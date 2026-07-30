@@ -162,7 +162,7 @@ func (s *PGStore) List(ctx context.Context, tenantID string) ([]*Script, error) 
 		sc := &Script{}
 		var inputParams, outputParams, labels []byte
 		var typ string
-		if err := rows.Scan(&sc.ID, &sc.TenantID, &sc.Name, &typ, &sc.Content, &sc.Description, &inputParams, &outputParams, &sc.Timeout, &sc.RunAs, &labels, &sc.Version, &sc.CreatedAt, &sc.UpdatedAt); err != nil {
+		if err := rows.Scan(&sc.ID, &sc.TenantID, &sc.Name, &typ, &sc.Content, &sc.Description, &inputParams, &outputParams, &sc.Timeout, &sc.RunAs, &labels, &sc.Version, &sc.Public, &sc.ApprovalStatus, &sc.CreatedAt, &sc.UpdatedAt); err != nil {
 			return nil, err
 		}
 		sc.Type = ScriptType(typ)
