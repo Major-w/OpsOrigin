@@ -4,18 +4,41 @@ import { create } from 'zustand'
 import { apiFetch } from '@/lib/utils'
 import { toast } from '@/stores/toast'
 
-export interface Article { id: string; title: string; content: string; category: string; tags?: string[]; author: string; views: number; created_at: string }
+export interface Article {
+  id: string; title: string; content: string; category: string; tags?: string[]
+  author: string; views: number; status: string; version: number; created_at: string; updated_at: string
+}
+
+export interface Category {
+  id: string; name: string; description?: string; sort_order: number; color?: string; created_at?: string
+}
+
+export interface ArticleVersion {
+  id: string; article_id: string; version: number; title: string; content: string; category: string
+  tags?: string[]; created_at: string
+}
+
+const FALLBACK_CATEGORIES = ['常见问题', '变更操作', '故障处理', '最佳实践', '参考文档']
 
 interface KnowledgeState {
   articles: Article[]; loading: boolean
+  categories: string[]
   fetch: (category?: string) => Promise<void>
   create: (data: any) => Promise<boolean>
   update: (id: string, data: any) => Promise<boolean>
   remove: (id: string) => Promise<boolean>
+  // P1 内容管理
+  fetchCategories: () => Promise<void>
+  saveCategory: (data: { name: string; description?: string; sort_order?: number; color?: string }) => Promise<boolean>
+  deleteCategory: (id: string) => Promise<boolean>
+  fetchVersions: (id: string) => Promise<ArticleVersion[]>
+  rollbackVersion: (id: string, version: number) => Promise<boolean>
+  importArticles: (items: { title: string; content: string; category?: string; tags?: string[]; status?: string }[]) => Promise<{ imported: number; errors: string[] }>
 }
 
 export const useKnowledgeStore = create<KnowledgeState>((set, get) => ({
-  articles: [], loading: false,
+  articles: [], loading: false, categories: FALLBACK_CATEGORIES,
+
   fetch: async (category) => {
     set({ loading: true })
     try {
@@ -58,6 +81,69 @@ export const useKnowledgeStore = create<KnowledgeState>((set, get) => ({
     } catch (e: any) {
       toast.error(`删除文章失败: ${e.message}`)
       return false
+    }
+  },
+
+  // —— P1 内容管理 ——
+  fetchCategories: async () => {
+    try {
+      const cats = await apiFetch<Category[]>('/knowledge/categories')
+      const names = cats.map(c => c.name).filter(Boolean)
+      set({ categories: names.length > 0 ? names : FALLBACK_CATEGORIES })
+    } catch {
+      /* 后端不可用时保持兜底分类 */
+    }
+  },
+  saveCategory: async (data) => {
+    try {
+      await apiFetch('/knowledge/categories', { method: 'POST', body: JSON.stringify(data) })
+      toast.success('分类已保存')
+      await get().fetchCategories()
+      return true
+    } catch (e: any) {
+      toast.error(`保存分类失败: ${e.message}`)
+      return false
+    }
+  },
+  deleteCategory: async (id) => {
+    try {
+      await apiFetch(`/knowledge/categories/${id}`, { method: 'DELETE' })
+      toast.success('分类已删除')
+      await get().fetchCategories()
+      return true
+    } catch (e: any) {
+      toast.error(`删除分类失败: ${e.message}`)
+      return false
+    }
+  },
+  fetchVersions: async (id) => {
+    try {
+      return await apiFetch<ArticleVersion[]>(`/knowledge/${id}/versions`)
+    } catch {
+      return []
+    }
+  },
+  rollbackVersion: async (id, version) => {
+    try {
+      await apiFetch(`/knowledge/${id}/versions/${version}/rollback`, { method: 'POST' })
+      toast.success(`已回滚到 v${version}`)
+      await get().fetch()
+      return true
+    } catch (e: any) {
+      toast.error(`回滚失败: ${e.message}`)
+      return false
+    }
+  },
+  importArticles: async (items) => {
+    try {
+      const res = await apiFetch<{ imported: number; errors: string[] }>('/knowledge/import', {
+        method: 'POST', body: JSON.stringify({ items }),
+      })
+      await get().fetch()
+      return res
+    } catch (e: any) {
+      toast.error(`导入失败: ${e.message}`)
+      return { imported: 0, errors: [e.message] }
     }
   },
 }))

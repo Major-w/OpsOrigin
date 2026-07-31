@@ -67,10 +67,68 @@ func (s *pgStore) init(ctx context.Context) {
 		s.vectorEnabled = false
 		return
 	}
+	// P1 内容管理: 文档状态(draft/published) + 版本号 + 浏览数(兼容老库补列)
+	s.db.ExecContext(ctx, `ALTER TABLE knowledge_articles ADD COLUMN IF NOT EXISTS views INT DEFAULT 0`)
+	s.db.ExecContext(ctx, `ALTER TABLE knowledge_articles ADD COLUMN IF NOT EXISTS status TEXT DEFAULT 'draft'`)
+	s.db.ExecContext(ctx, `ALTER TABLE knowledge_articles ADD COLUMN IF NOT EXISTS version INT DEFAULT 1`)
+	// —— RAG 分块表: 块级向量检索(2026-07-31 P0 增强) ——
+	// 文章按 Markdown 标题层级切成块, 每块独立 embedding, 检索命中"段落级"而非整篇。
+	if _, err := s.db.ExecContext(ctx, `
+		CREATE TABLE IF NOT EXISTS knowledge_chunks (
+			id TEXT PRIMARY KEY,
+			article_id TEXT NOT NULL,
+			tenant_id TEXT NOT NULL,
+			chunk_index INT NOT NULL,
+			heading TEXT DEFAULT '',
+			content TEXT NOT NULL,
+			embedding vector,
+			created_at TIMESTAMPTZ NOT NULL
+		)`); err != nil {
+		slog.Warn("knowledge: create chunks table failed, falling back to ILIKE", "err", err)
+		s.vectorEnabled = false
+		return
+	}
+	s.db.ExecContext(ctx, `CREATE INDEX IF NOT EXISTS idx_knowledge_chunks_article ON knowledge_chunks(article_id)`)
+	s.db.ExecContext(ctx, `CREATE INDEX IF NOT EXISTS idx_knowledge_chunks_tenant ON knowledge_chunks(tenant_id)`)
 	// HNSW 索引加速余弦检索;创建失败(老版本 pgvector)不致命,仍走全表余弦。
+	s.db.ExecContext(ctx, `CREATE INDEX IF NOT EXISTS idx_knowledge_chunks_embedding ON knowledge_chunks USING hnsw (embedding vector_cosine_ops)`)
+	// 兼容旧索引(历史文章级向量), 保留不删。
 	s.db.ExecContext(ctx, `CREATE INDEX IF NOT EXISTS idx_knowledge_embedding ON knowledge_articles USING hnsw (embedding vector_cosine_ops)`)
+
+	// —— P1 内容管理: 分类元数据 + 文章版本快照 ——
+	if _, err := s.db.ExecContext(ctx, `
+		CREATE TABLE IF NOT EXISTS knowledge_categories (
+			id TEXT PRIMARY KEY,
+			tenant_id TEXT NOT NULL,
+			name TEXT NOT NULL,
+			description TEXT DEFAULT '',
+			sort_order INT DEFAULT 0,
+			color TEXT DEFAULT '',
+			created_at TIMESTAMPTZ NOT NULL,
+			UNIQUE(tenant_id, name)
+		)`); err != nil {
+		slog.Warn("knowledge: create categories table failed", "err", err)
+	}
+	s.db.ExecContext(ctx, `CREATE INDEX IF NOT EXISTS idx_knowledge_categories_tenant ON knowledge_categories(tenant_id)`)
+	if _, err := s.db.ExecContext(ctx, `
+		CREATE TABLE IF NOT EXISTS knowledge_article_versions (
+			id TEXT PRIMARY KEY,
+			article_id TEXT NOT NULL,
+			tenant_id TEXT NOT NULL,
+			version INT NOT NULL,
+			title TEXT NOT NULL,
+			content TEXT NOT NULL,
+			category TEXT DEFAULT '',
+			tags TEXT DEFAULT '[]',
+			created_at TIMESTAMPTZ NOT NULL,
+			UNIQUE(article_id, version)
+		)`); err != nil {
+		slog.Warn("knowledge: create versions table failed", "err", err)
+	}
+	s.db.ExecContext(ctx, `CREATE INDEX IF NOT EXISTS idx_knowledge_versions_article ON knowledge_article_versions(article_id, version)`)
+
 	s.vectorEnabled = true
-	slog.Info("knowledge: pgvector semantic search enabled")
+	slog.Info("knowledge: pgvector semantic search enabled (chunk-level)")
 }
 
 // SetEmbedder 注入向量生成器;仅在 pgvector 可用时才会写入 embedding。
@@ -79,26 +137,43 @@ func (s *pgStore) SetEmbedder(e Embedder) { s.embedder = e }
 // VectorEnabled 报告语义检索是否可用(用于运维/调试)。
 func (s *pgStore) VectorEnabled() bool { return s.vectorEnabled }
 
-// embedRaw 实际调用 embedder 计算向量;向量不可用或 embedder 为空时返回 (nil, nil)。
-func (s *pgStore) embedRaw(ctx context.Context, a *Article) ([]float32, error) {
+// embedRaw 实际调用 embedder 计算文本向量;向量不可用或 embedder 为空时返回 (nil, nil)。
+// 供块级 embedding 使用(每块独立向量)。
+func (s *pgStore) embedRaw(ctx context.Context, text string) ([]float32, error) {
 	if s.embedder == nil || !s.vectorEnabled {
 		return nil, nil
 	}
-	return s.embedder.Embed(ctx, a.Title+"\n"+a.Content)
+	return s.embedder.Embed(ctx, text)
 }
 
-// embed 供 Create/Update 同步调用:
-//   - 成功返回向量;
-//   - 向量不可用(无 embedder / pgvector 未启用)返回 nil,上层按 NULL 落库并回退 ILIKE 关键词检索;
-//   - embedder 调用出错时把文章加入异步重试队列并返回 nil —— 不再"静默写 NULL 后永久脱离语义检索"(P3-1 修复)。
-func (s *pgStore) embed(ctx context.Context, a *Article) []float32 {
-	v, err := s.embedRaw(ctx, a)
-	if err != nil {
-		slog.Warn("knowledge: embed failed, queued for async reindex", "id", a.ID, "err", err)
-		s.enqueueRetry(a.ID, a.TenantID)
-		return nil
+// syncChunks 为文章同步分块: 删旧块 → Markdown 标题感知切块 → 逐块 embedding 落库。
+// 返回 (missingEmbedding, err): missingEmbedding=true 表示存在块向量缺失(embed 失败或不可用),
+// 调用方可据此决定是否把文章加入异步重试队列(后台补算)。
+// 无向量能力时仍落块(支撑关键词检索), embedding 留 NULL。
+func (s *pgStore) syncChunks(ctx context.Context, a *Article) (missing bool, err error) {
+	if _, err := s.db.ExecContext(ctx, `DELETE FROM knowledge_chunks WHERE article_id=$1 AND tenant_id=$2`, a.ID, a.TenantID); err != nil {
+		return false, err
 	}
-	return v
+	chunks := chunkMarkdown(a.Content)
+	for _, c := range chunks {
+		vc := any(nil)
+		if s.vectorEnabled && s.embedder != nil {
+			v, err := s.embedRaw(ctx, chunkEmbedText(&c))
+			if err != nil {
+				slog.Warn("knowledge: chunk embed failed", "article", a.ID, "chunk", c.Index, "err", err)
+				missing = true
+			} else {
+				vc = vecLiteral(v)
+			}
+		}
+		if _, err := s.db.ExecContext(ctx,
+			`INSERT INTO knowledge_chunks(id,article_id,tenant_id,chunk_index,heading,content,embedding,created_at)
+			 VALUES($1,$2,$3,$4,$5,$6,$7,$8) ON CONFLICT(id) DO NOTHING`,
+			uuid.New().String(), a.ID, a.TenantID, c.Index, c.Heading, c.Content, vc, time.Now()); err != nil {
+			slog.Warn("knowledge: insert chunk failed", "article", a.ID, "chunk", c.Index, "err", err)
+		}
+	}
+	return missing, nil
 }
 
 func vecLiteral(v []float32) any {
@@ -124,20 +199,32 @@ func (s *pgStore) Create(ctx context.Context, a *Article) error {
 		a.CreatedAt = now
 	}
 	a.UpdatedAt = now
+	if a.Status == "" {
+		a.Status = "draft"
+	}
+	if a.Version <= 0 {
+		a.Version = 1
+	}
 	b, _ := json.Marshal(a.Tags)
-	emb := s.embed(ctx, a)
-	_, err := s.db.ExecContext(ctx,
-		`INSERT INTO knowledge_articles(id,tenant_id,title,content,category,tags,embedding,created_at,updated_at)
-		 VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9) ON CONFLICT(id) DO NOTHING`,
-		a.ID, a.TenantID, a.Title, a.Content, a.Category, b, vecLiteral(emb), a.CreatedAt, a.UpdatedAt)
-	return err
+	// 文章落库(块级向量在 syncChunks 中处理, 不再写 articles.embedding)
+	if _, err := s.db.ExecContext(ctx,
+		`INSERT INTO knowledge_articles(id,tenant_id,title,content,category,tags,status,version,created_at,updated_at)
+		 VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) ON CONFLICT(id) DO NOTHING`,
+		a.ID, a.TenantID, a.Title, a.Content, a.Category, b, a.Status, a.Version, a.CreatedAt, a.UpdatedAt); err != nil {
+		return err
+	}
+	// 同步分块; 块向量缺失(embed 失败)时入异步重试队列补算
+	if missing, _ := s.syncChunks(ctx, a); missing {
+		s.enqueueRetry(a.ID, a.TenantID)
+	}
+	return nil
 }
 
 func (s *pgStore) Get(ctx context.Context, id, tenantID string) (*Article, error) {
 	a := &Article{}
 	var tags []byte
-	err := s.db.QueryRowContext(ctx, `SELECT id,tenant_id,title,content,category,tags,created_at,updated_at FROM knowledge_articles WHERE id=$1 AND tenant_id=$2`, id, tenantID).
-		Scan(&a.ID, &a.TenantID, &a.Title, &a.Content, &a.Category, &tags, &a.CreatedAt, &a.UpdatedAt)
+	err := s.db.QueryRowContext(ctx, `SELECT id,tenant_id,title,content,category,tags,views,status,version,created_at,updated_at FROM knowledge_articles WHERE id=$1 AND tenant_id=$2`, id, tenantID).
+		Scan(&a.ID, &a.TenantID, &a.Title, &a.Content, &a.Category, &tags, &a.Views, &a.Status, &a.Version, &a.CreatedAt, &a.UpdatedAt)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -149,7 +236,7 @@ func (s *pgStore) Get(ctx context.Context, id, tenantID string) (*Article, error
 }
 
 func (s *pgStore) List(ctx context.Context, tenantID, category string) ([]*Article, error) {
-	q := `SELECT id,tenant_id,title,content,category,tags,created_at,updated_at FROM knowledge_articles WHERE tenant_id=$1`
+	q := `SELECT id,tenant_id,title,content,category,tags,views,status,version,created_at,updated_at FROM knowledge_articles WHERE tenant_id=$1`
 	args := []any{tenantID}
 	if category != "" {
 		q += ` AND category=$2`
@@ -165,7 +252,7 @@ func (s *pgStore) List(ctx context.Context, tenantID, category string) ([]*Artic
 	for rows.Next() {
 		a := &Article{}
 		var tags []byte
-		if err := rows.Scan(&a.ID, &a.TenantID, &a.Title, &a.Content, &a.Category, &tags, &a.CreatedAt, &a.UpdatedAt); err != nil {
+		if err := rows.Scan(&a.ID, &a.TenantID, &a.Title, &a.Content, &a.Category, &tags, &a.Views, &a.Status, &a.Version, &a.CreatedAt, &a.UpdatedAt); err != nil {
 			return nil, err
 		}
 		_ = json.Unmarshal(tags, &a.Tags)
@@ -175,12 +262,50 @@ func (s *pgStore) List(ctx context.Context, tenantID, category string) ([]*Artic
 }
 
 func (s *pgStore) Update(ctx context.Context, a *Article) error {
+	// 取当前版本与内容(用于快照与版本递增)
+	var curVersion int
+	var curTitle, curContent, curCategory string
+	var curTags []byte
+	s.db.QueryRowContext(ctx,
+		`SELECT version,title,content,category,tags FROM knowledge_articles WHERE id=$1 AND tenant_id=$2`,
+		a.ID, a.TenantID).Scan(&curVersion, &curTitle, &curContent, &curCategory, &curTags)
+	if curVersion <= 0 {
+		curVersion = 1
+	}
+	// 保存旧内容为历史版本快照(编辑历史可回滚)
+	if err := s.saveVersionSnapshot(ctx, a.ID, a.TenantID, curVersion, curTitle, curContent, curCategory, curTags); err != nil {
+		slog.Warn("knowledge: save version snapshot failed", "article", a.ID, "err", err)
+	}
+	a.Version = curVersion + 1
 	a.UpdatedAt = time.Now()
+	if a.Status == "" {
+		a.Status = "draft"
+	}
 	b, _ := json.Marshal(a.Tags)
-	emb := s.embed(ctx, a)
+	if _, err := s.db.ExecContext(ctx,
+		`UPDATE knowledge_articles SET title=$2,content=$3,category=$4,tags=$5,status=$6,version=$7,updated_at=$8 WHERE id=$1 AND tenant_id=$9`,
+		a.ID, a.Title, a.Content, a.Category, b, a.Status, a.Version, a.UpdatedAt, a.TenantID); err != nil {
+		return err
+	}
+	// 同步分块; 块向量缺失时入异步重试队列补算
+	if missing, _ := s.syncChunks(ctx, a); missing {
+		s.enqueueRetry(a.ID, a.TenantID)
+	}
+	return nil
+}
+
+// saveVersionSnapshot 把一版内容写入历史版本表。
+func (s *pgStore) saveVersionSnapshot(ctx context.Context, articleID, tenantID string, version int, title, content, category string, tags []byte) error {
+	if version <= 0 || content == "" {
+		return nil
+	}
+	if len(tags) == 0 {
+		tags = []byte("[]")
+	}
 	_, err := s.db.ExecContext(ctx,
-		`UPDATE knowledge_articles SET title=$2,content=$3,category=$4,tags=$5,embedding=$6,updated_at=$7 WHERE id=$1 AND tenant_id=$8`,
-		a.ID, a.Title, a.Content, a.Category, b, vecLiteral(emb), a.UpdatedAt, a.TenantID)
+		`INSERT INTO knowledge_article_versions(id,article_id,tenant_id,version,title,content,category,tags,created_at)
+		 VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9) ON CONFLICT(article_id, version) DO NOTHING`,
+		uuid.New().String(), articleID, tenantID, version, title, content, category, string(tags), time.Now())
 	return err
 }
 
@@ -191,17 +316,24 @@ func (s *pgStore) IncrementViews(ctx context.Context, id, tenantID string) error
 }
 
 func (s *pgStore) Delete(ctx context.Context, id, tenantID string) error {
-	_, err := s.db.ExecContext(ctx, `DELETE FROM knowledge_articles WHERE id=$1 AND tenant_id=$2`, id, tenantID)
+	if _, err := s.db.ExecContext(ctx, `DELETE FROM knowledge_articles WHERE id=$1 AND tenant_id=$2`, id, tenantID); err != nil {
+		return err
+	}
+	_, err := s.db.ExecContext(ctx, `DELETE FROM knowledge_chunks WHERE article_id=$1 AND tenant_id=$2`, id, tenantID)
 	return err
 }
 
-// ReindexAll 为存量文章补算 embedding(知识库开启语义检索后的一次性回填)。
-// 仅 vectorEnabled 且有 embedder 时有效;逐条计算便于失败隔离。
+// ReindexAll 为存量文章补建分块索引(知识库升级到块级 RAG 后的一次性回填)。
+// 仅 vectorEnabled 时有意义;逐条处理便于失败隔离。返回处理的文章数。
 func (s *pgStore) ReindexAll(ctx context.Context) (int, error) {
-	if !s.vectorEnabled || s.embedder == nil {
+	if !s.vectorEnabled {
 		return 0, fmt.Errorf("vector search not available")
 	}
-	rows, err := s.db.QueryContext(ctx, `SELECT id,tenant_id,title,content,category,tags,created_at,updated_at FROM knowledge_articles WHERE embedding IS NULL`)
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT a.id, a.tenant_id, a.title, a.content, a.category, a.tags, a.created_at, a.updated_at
+		FROM knowledge_articles a
+		LEFT JOIN knowledge_chunks c ON c.article_id = a.id AND c.tenant_id = a.tenant_id
+		WHERE c.id IS NULL`)
 	if err != nil {
 		return 0, err
 	}
@@ -214,12 +346,8 @@ func (s *pgStore) ReindexAll(ctx context.Context) (int, error) {
 			return n, err
 		}
 		_ = json.Unmarshal(tags, &a.Tags)
-		emb := s.embed(ctx, a)
-		if len(emb) == 0 {
-			continue
-		}
-		if _, err := s.db.ExecContext(ctx, `UPDATE knowledge_articles SET embedding=$2 WHERE id=$1 AND tenant_id=$3`, a.ID, vecLiteral(emb), a.TenantID); err != nil {
-			slog.Warn("knowledge: reindex row failed", "id", a.ID, "err", err)
+		if _, err := s.syncChunks(ctx, a); err != nil {
+			slog.Warn("knowledge: reindex chunks failed", "id", a.ID, "err", err)
 			continue
 		}
 		n++
@@ -248,10 +376,13 @@ func (s *pgStore) PendingReindexCount() int {
 	return len(s.pending)
 }
 
-// enqueueUnindexed 扫描全表 embedding IS NULL 的行,补充进重试队列(幂等:已入队的不重复添加)。
-// 作为"安全网"覆盖循环启动前/队列空窗期已存在的未索引文章。
+// enqueueUnindexed 扫描无分块的文章,补充进重试队列(幂等:已入队的不重复添加)。
+// 作为"安全网"覆盖循环启动前/队列空窗期已存在的未分块文章。
 func (s *pgStore) enqueueUnindexed(ctx context.Context) {
-	rows, err := s.db.QueryContext(ctx, `SELECT id, tenant_id FROM knowledge_articles WHERE embedding IS NULL LIMIT 500`)
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT a.id, a.tenant_id FROM knowledge_articles a
+		LEFT JOIN knowledge_chunks c ON c.article_id = a.id AND c.tenant_id = a.tenant_id
+		WHERE c.id IS NULL LIMIT 500`)
 	if err != nil {
 		slog.Warn("knowledge: scan unindexed failed", "err", err)
 		return
@@ -276,7 +407,7 @@ func (s *pgStore) enqueueUnindexed(ctx context.Context) {
 	}
 }
 
-// drainPending 处理重试队列中"已到下次尝试时间"的任务:拉取文章→重新 embed→写回;
+// drainPending 处理重试队列中"已到下次尝试时间"的任务:拉取文章→重新分块并 embedding;
 // 失败(embed 错误或写回失败)按指数退避(2^attempts*30s,上限 30min)重新入队,避免对 embedding 服务持续施压。
 func (s *pgStore) drainPending(ctx context.Context) {
 	s.mu.Lock()
@@ -297,24 +428,14 @@ func (s *pgStore) drainPending(ctx context.Context) {
 		if err != nil || a == nil {
 			continue // 文章已删除或暂不可读,丢弃该任务
 		}
-		v, eerr := s.embedRaw(ctx, a)
-		if eerr != nil || len(v) == 0 {
+		missing, err := s.syncChunks(ctx, a)
+		if err != nil || missing {
 			t.attempts++
-			t.nextAttempt = time.Now().Add(backoffForAttempt(t.attempts))
+			t.nextAttempt = now.Add(backoffForAttempt(t.attempts))
 			s.mu.Lock()
 			s.pending = append(s.pending, t)
 			s.mu.Unlock()
-			slog.Warn("knowledge: async reindex failed, will retry", "id", t.id, "attempts", t.attempts, "next", t.nextAttempt)
-			continue
-		}
-		if _, err := s.db.ExecContext(ctx,
-			`UPDATE knowledge_articles SET embedding=$2 WHERE id=$1 AND tenant_id=$3`, t.id, vecLiteral(v), t.tenantID); err != nil {
-			slog.Warn("knowledge: async reindex update failed", "id", t.id, "err", err)
-			t.attempts++
-			t.nextAttempt = time.Now().Add(30 * time.Second)
-			s.mu.Lock()
-			s.pending = append(s.pending, t)
-			s.mu.Unlock()
+			slog.Warn("knowledge: async reindex failed, will retry", "id", t.id, "attempts", t.attempts, "err", err)
 			continue
 		}
 		slog.Info("knowledge: async reindex ok", "id", t.id)
@@ -330,10 +451,13 @@ func backoffForAttempt(attempts int) time.Duration {
 	return b
 }
 
-// refreshUnindexedMetric 刷新 knowledge_unindexed_articles 指标(当前 embedding IS NULL 的文章数)。
+// refreshUnindexedMetric 刷新 knowledge_unindexed_articles 指标(当前无分块的文章数)。
 func (s *pgStore) refreshUnindexedMetric(ctx context.Context) {
 	var n int
-	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM knowledge_articles WHERE embedding IS NULL`).Scan(&n); err != nil {
+	if err := s.db.QueryRowContext(ctx, `
+		SELECT COUNT(*) FROM knowledge_articles a
+		LEFT JOIN knowledge_chunks c ON c.article_id = a.id AND c.tenant_id = a.tenant_id
+		WHERE c.id IS NULL`).Scan(&n); err != nil {
 		slog.Warn("knowledge: count unindexed failed", "err", err)
 		return
 	}
@@ -393,4 +517,125 @@ func (s *pgStore) StopReindexLoop() {
 		close(s.stopCh)
 		s.stopCh = nil
 	}
+}
+
+// ——— P1 内容管理: 分类元数据 ———
+
+func (s *pgStore) ListCategories(ctx context.Context, tenantID string) ([]*Category, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT id,tenant_id,name,description,sort_order,color,created_at FROM knowledge_categories
+		 WHERE tenant_id=$1 ORDER BY sort_order, name`, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []*Category
+	for rows.Next() {
+		c := &Category{}
+		if err := rows.Scan(&c.ID, &c.TenantID, &c.Name, &c.Description, &c.SortOrder, &c.Color, &c.CreatedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, c)
+	}
+	if out == nil {
+		out = []*Category{}
+	}
+	return out, rows.Err()
+}
+
+func (s *pgStore) CreateCategory(ctx context.Context, c *Category) error {
+	if c.ID == "" {
+		c.ID = uuid.New().String()
+	}
+	if c.TenantID == "" {
+		c.TenantID = "default"
+	}
+	c.CreatedAt = time.Now()
+	_, err := s.db.ExecContext(ctx,
+		`INSERT INTO knowledge_categories(id,tenant_id,name,description,sort_order,color,created_at)
+		 VALUES($1,$2,$3,$4,$5,$6,$7) ON CONFLICT(tenant_id,name) DO UPDATE SET description=EXCLUDED.description,sort_order=EXCLUDED.sort_order,color=EXCLUDED.color`,
+		c.ID, c.TenantID, c.Name, c.Description, c.SortOrder, c.Color, c.CreatedAt)
+	return err
+}
+
+func (s *pgStore) UpdateCategory(ctx context.Context, c *Category) error {
+	_, err := s.db.ExecContext(ctx,
+		`UPDATE knowledge_categories SET name=$2,description=$3,sort_order=$4,color=$5 WHERE id=$1 AND tenant_id=$6`,
+		c.ID, c.Name, c.Description, c.SortOrder, c.Color, c.TenantID)
+	return err
+}
+
+func (s *pgStore) DeleteCategory(ctx context.Context, id, tenantID string) error {
+	_, err := s.db.ExecContext(ctx, `DELETE FROM knowledge_categories WHERE id=$1 AND tenant_id=$2`, id, tenantID)
+	return err
+}
+
+// ——— P1 内容管理: 文章版本 ———
+
+func (s *pgStore) ListVersions(ctx context.Context, articleID, tenantID string) ([]*ArticleVersion, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT id,article_id,tenant_id,version,title,content,category,tags,created_at
+		 FROM knowledge_article_versions WHERE article_id=$1 AND tenant_id=$2 ORDER BY version DESC`,
+		articleID, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []*ArticleVersion
+	for rows.Next() {
+		v := &ArticleVersion{}
+		var tags string
+		if err := rows.Scan(&v.ID, &v.ArticleID, &v.TenantID, &v.Version, &v.Title, &v.Content, &v.Category, &tags, &v.CreatedAt); err != nil {
+			return nil, err
+		}
+		_ = json.Unmarshal([]byte(tags), &v.Tags)
+		out = append(out, v)
+	}
+	if out == nil {
+		out = []*ArticleVersion{}
+	}
+	return out, rows.Err()
+}
+
+// RollbackToVersion 回滚文章到指定历史版本: 当前内容先存为新快照, 再以目标版本内容覆盖文章, 版本号+1。
+func (s *pgStore) RollbackToVersion(ctx context.Context, articleID, tenantID string, version int) error {
+	cur, err := s.Get(ctx, articleID, tenantID)
+	if err != nil || cur == nil {
+		return fmt.Errorf("article not found")
+	}
+	// 目标版本内容
+	var v ArticleVersion
+	var tags string
+	err = s.db.QueryRowContext(ctx,
+		`SELECT id,article_id,tenant_id,version,title,content,category,tags FROM knowledge_article_versions
+		 WHERE article_id=$1 AND tenant_id=$2 AND version=$3`,
+		articleID, tenantID, version).
+		Scan(&v.ID, &v.ArticleID, &v.TenantID, &v.Version, &v.Title, &v.Content, &v.Category, &tags)
+	if err != nil {
+		return fmt.Errorf("version %d not found", version)
+	}
+	_ = json.Unmarshal([]byte(tags), &v.Tags)
+	// 当前内容入历史
+	cb, _ := json.Marshal(cur.Tags)
+	_ = s.saveVersionSnapshot(ctx, articleID, tenantID, cur.Version, cur.Title, cur.Content, cur.Category, cb)
+	// 覆盖文章
+	cur.Title = v.Title
+	cur.Content = v.Content
+	cur.Category = v.Category
+	cur.Tags = v.Tags
+	cur.Version++
+	cur.UpdatedAt = time.Now()
+	if _, err := s.db.ExecContext(ctx,
+		`UPDATE knowledge_articles SET title=$2,content=$3,category=$4,tags=$5,version=$6,updated_at=$7 WHERE id=$1 AND tenant_id=$8`,
+		articleID, cur.Title, cur.Content, cur.Category, string(cb), cur.Version, cur.UpdatedAt, tenantID); err != nil {
+		return err
+	}
+	// 回滚后重建分块索引
+	return s.reindexArticle(ctx, cur)
+}
+
+// reindexArticle 重建单篇文章的分块(供回滚后调用, 不改变版本号)。
+func (s *pgStore) reindexArticle(ctx context.Context, a *Article) error {
+	_, err := s.syncChunks(ctx, a)
+	return err
 }

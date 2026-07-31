@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from 'react'
 import { useParams, useRouter } from 'next/navigation'
-import { useKnowledgeStore } from '@/stores/knowledge'
+import { useKnowledgeStore, type ArticleVersion } from '@/stores/knowledge'
 import { Card, CardContent } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -10,19 +10,22 @@ import { Badge } from '@/components/ui/badge'
 import { formatTime } from '@/lib/utils'
 import { apiFetch } from '@/lib/utils'
 import { toast } from '@/stores/toast'
-import { ChevronLeft, Save, Sparkles, Loader2, Trash2, Heart, Bookmark, Star, MessageSquare, Share2 } from 'lucide-react'
-
-const CATEGORIES = ['常见问题', '变更操作', '故障处理', '最佳实践', '参考文档']
+import { ChevronLeft, Save, Sparkles, Loader2, Trash2, Heart, Bookmark, Star, MessageSquare, Share2, History, RotateCcw, CheckCircle2 } from 'lucide-react'
+import { cn } from '@/lib/utils'
 
 export default function KnowledgeEditorPage() {
   const params = useParams(); const router = useRouter()
   const isNew = params.id === 'new'
-  const { articles, fetch, create, update, remove } = useKnowledgeStore()
-  const [form, setForm] = useState({ title: '', content: '', category: '常见问题', tags: '', author: 'admin' })
+  const { articles, fetch, create, update, remove, categories, fetchCategories, fetchVersions, rollbackVersion } = useKnowledgeStore()
+  const [form, setForm] = useState({ title: '', content: '', category: '', tags: '', author: 'admin', status: 'draft' })
   const [saving, setSaving] = useState(false)
   const [aiGenerating, setAiGenerating] = useState(false)
   const [aiPrompt, setAiPrompt] = useState('')
   const [loaded, setLoaded] = useState(false)
+  // P1 内容管理: 版本历史
+  const [versions, setVersions] = useState<ArticleVersion[]>([])
+  const [showVersions, setShowVersions] = useState(false)
+  const [rollingBack, setRollingBack] = useState(false)
   // Social
   const [liked, setLiked] = useState(false); const [bookmarked, setBookmarked] = useState(false)
   const [likeCount, setLikeCount] = useState(0); const [commentCount, setCommentCount] = useState(0)
@@ -32,9 +35,10 @@ export default function KnowledgeEditorPage() {
 
   useEffect(() => {
     fetch()
+    fetchCategories()
     if (!isNew && !loaded) {
       const a = articles.find(a => a.id === params.id)
-      if (a) { setForm({ title: a.title, content: a.content, category: a.category, tags: (a.tags||[]).join(','), author: a.author }); setLoaded(true) }
+      if (a) { setForm({ title: a.title, content: a.content, category: a.category, tags: (a.tags||[]).join(','), author: a.author, status: a.status || 'draft' }); setLoaded(true) }
     }
   }, [articles, params.id])
 
@@ -66,6 +70,27 @@ export default function KnowledgeEditorPage() {
     if (!confirm('确认删除？')) return
     await remove(String(params.id))
     router.push('/knowledge')
+  }
+
+  const loadVersions = async () => {
+    setShowVersions(v => {
+      const next = !v
+      if (next) fetchVersions(String(params.id)).then(setVersions)
+      return next
+    })
+  }
+
+  const handleRollback = async (version: number) => {
+    if (!confirm(`确认回滚到 v${version}？当前内容将保存为新版本`)) return
+    setRollingBack(true)
+    const ok = await rollbackVersion(String(params.id), version)
+    setRollingBack(false)
+    if (ok) {
+      setShowVersions(false)
+      fetch()
+      const a = useKnowledgeStore.getState().articles.find(x => x.id === params.id)
+      if (a) setForm({ title: a.title, content: a.content, category: a.category, tags: (a.tags||[]).join(','), author: a.author, status: a.status || 'draft' })
+    }
   }
 
   const toggleLike = async () => {
@@ -119,7 +144,13 @@ export default function KnowledgeEditorPage() {
       <div className="md:col-span-2 space-y-3">
         <Input placeholder="文章标题" value={form.title} onChange={e => setForm({...form, title: e.target.value})} className="text-lg font-bold"/>
         <div className="flex gap-2">
-          <select className="flex h-8 rounded-md border border-input bg-background px-2 text-xs" value={form.category} onChange={e => setForm({...form, category: e.target.value})}>{CATEGORIES.map(c => <option key={c}>{c}</option>)}</select>
+          <select className="flex h-8 rounded-md border border-input bg-background px-2 text-xs" value={form.category} onChange={e => setForm({...form, category: e.target.value})}>
+            {categories.map(c => <option key={c} value={c}>{c}</option>)}
+          </select>
+          <select className="flex h-8 rounded-md border border-input bg-background px-2 text-xs" value={form.status} onChange={e => setForm({...form, status: e.target.value})}>
+            <option value="draft">草稿</option>
+            <option value="published">发布</option>
+          </select>
           <Input placeholder="标签,逗号分隔" value={form.tags} onChange={e => setForm({...form, tags: e.target.value})} className="h-8 text-xs"/>
         </div>
         {!isNew && <div className="flex gap-1 py-1">
@@ -147,6 +178,37 @@ export default function KnowledgeEditorPage() {
           <p>提示: 先写好标题, 再让AI根据标题生成正文。多次调用可以持续补充内容。</p>
         </div>
       </CardContent></Card>
+
+      {/* 版本历史 */}
+      {!isNew && (
+        <Card>
+          <CardContent className="p-4 space-y-2">
+            <button className="w-full flex items-center justify-between text-sm font-medium" onClick={loadVersions}>
+              <span className="flex items-center gap-1"><History className="h-4 w-4 text-muted-foreground" />版本历史</span>
+              <span className="text-xs text-muted-foreground">{showVersions ? '收起' : '展开'}</span>
+            </button>
+            {showVersions && (
+              <div className="space-y-2 max-h-64 overflow-y-auto">
+                {versions.length === 0 && <p className="text-xs text-muted-foreground">暂无历史版本（每次保存会自动留存上一版）</p>}
+                {versions.map(v => (
+                  <div key={v.id} className="flex items-center justify-between px-2.5 py-1.5 rounded-lg border border-gray-200 dark:border-gray-800">
+                    <div className="min-w-0">
+                      <div className="flex items-center gap-1.5">
+                        <Badge variant="outline" className="text-[10px]">v{v.version}</Badge>
+                        <span className="text-xs truncate">{v.title}</span>
+                      </div>
+                      <p className="text-[10px] text-muted-foreground mt-0.5">{formatTime(v.created_at)} · {v.content.length} 字符</p>
+                    </div>
+                    <Button variant="ghost" size="sm" className="h-6 text-[11px] text-amber-600 dark:text-amber-400" onClick={() => handleRollback(v.version)} disabled={rollingBack}>
+                      <RotateCcw className="h-3 w-3 mr-0.5" />回滚
+                    </Button>
+                  </div>
+                ))}
+              </div>
+            )}
+          </CardContent>
+        </Card>
+      )}
     </div>
   </div>
 }
