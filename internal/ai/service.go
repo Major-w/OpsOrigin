@@ -105,11 +105,12 @@ func (s *Service) Start(ctx context.Context) error {
 // req.stream=true 时返回 SSE(text/event-stream)流式输出; 否则返回 JSON。
 func (s *Service) handleChat(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		Prompt    string        `json:"prompt"`
-		AgentID   string        `json:"agent_id"`
-		History   []llm.Message `json:"history"`
-		Stream    bool          `json:"stream"`
-		Reasoning bool          `json:"reasoning"`
+		Prompt         string        `json:"prompt"`
+		AgentID        string        `json:"agent_id"`
+		History        []llm.Message `json:"history"`
+		Stream         bool          `json:"stream"`
+		Reasoning      bool          `json:"reasoning"`
+		ConversationID string        `json:"conversation_id"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
@@ -141,32 +142,33 @@ func (s *Service) handleChat(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if req.Reasoning && !req.Stream {
-		thinking, answer, err := s.Engine.ChatReasoning(r.Context(), req.AgentID, req.Prompt, req.History)
+		thinking, answer, convID, err := s.Engine.ChatReasoning(r.Context(), req.AgentID, req.Prompt, req.History, req.ConversationID)
 		if err != nil {
 			writeError(w, http.StatusBadGateway, chatFriendlyError(err.Error()))
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]string{"content": answer, "thinking": thinking})
+		_ = json.NewEncoder(w).Encode(map[string]string{"content": answer, "thinking": thinking, "conversation_id": convID})
 		return
 	}
 
-	out, err := s.Engine.Chat(r.Context(), req.AgentID, req.Prompt, req.History)
+	out, convID, err := s.Engine.Chat(r.Context(), req.AgentID, req.Prompt, req.History, req.ConversationID)
 	if err != nil {
 		writeError(w, http.StatusBadGateway, chatFriendlyError(err.Error()))
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(map[string]string{"content": out})
+	_ = json.NewEncoder(w).Encode(map[string]string{"content": out, "conversation_id": convID})
 }
 
 // handleChatStream SSE 流式输出。
 func (s *Service) handleChatStream(w http.ResponseWriter, r *http.Request, req *struct {
-	Prompt    string        `json:"prompt"`
-	AgentID   string        `json:"agent_id"`
-	History   []llm.Message `json:"history"`
-	Stream    bool          `json:"stream"`
-	Reasoning bool          `json:"reasoning"`
+	Prompt         string        `json:"prompt"`
+	AgentID        string        `json:"agent_id"`
+	History        []llm.Message `json:"history"`
+	Stream         bool          `json:"stream"`
+	Reasoning      bool          `json:"reasoning"`
+	ConversationID string        `json:"conversation_id"`
 }) {
 	flusher, ok := w.(http.Flusher)
 	if !ok {
@@ -178,7 +180,7 @@ func (s *Service) handleChatStream(w http.ResponseWriter, r *http.Request, req *
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
 
-	ch, err := s.Engine.ChatStream(r.Context(), req.AgentID, req.Prompt, req.History, req.Reasoning)
+	ch, convID, err := s.Engine.ChatStream(r.Context(), req.AgentID, req.Prompt, req.History, req.Reasoning, req.ConversationID)
 	if err != nil {
 		fmt.Fprintf(w, "event: error\ndata: %s\n\n", err.Error())
 		flusher.Flush()
@@ -189,6 +191,11 @@ func (s *Service) handleChatStream(w http.ResponseWriter, r *http.Request, req *
 		// SSE data 字段中的换行需转义; 简单实现: 用 JSON 字符串包裹 token。
 		b, _ := json.Marshal(token)
 		fmt.Fprintf(w, "data: %s\n\n", b)
+		flusher.Flush()
+	}
+	// 会话 ID 通过独立 SSE 事件下发(前端可监听 event:conversation 以续接多轮记忆)。
+	if convID != "" {
+		fmt.Fprintf(w, "event: conversation\ndata: %s\n\n", convID)
 		flusher.Flush()
 	}
 	fmt.Fprint(w, "data: [DONE]\n\n")

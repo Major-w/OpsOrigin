@@ -183,23 +183,23 @@ func (e *Engine) loadFromStore() error {
 
 // Chat 执行一次单轮(可带历史)的 LLM 推理,供 AI 助手聊天端点使用。
 // 支持 Function Calling:模型可自主调用已注册的运维工具(CMDB查询/工单/脚本执行/知识库检索)。
-func (e *Engine) Chat(ctx context.Context, agentID, prompt string, history []llm.Message) (string, error) {
-	out, _, _, err := e.chatWithTools(ctx, agentID, prompt, history, false)
-	return out, err
+func (e *Engine) Chat(ctx context.Context, agentID, prompt string, history []llm.Message, conversationID string) (content string, convID string, err error) {
+	content, _, _, convID, err = e.chatWithToolsConv(ctx, agentID, prompt, history, false, conversationID)
+	return
 }
 
 // ChatReasoning 思维链模式:返回思考过程和最终答案。
 // 优先返回模型原生 reasoning_content(DeepSeek-R1/Qwen 等),缺失时降级到 prompt 伪思维链。
-func (e *Engine) ChatReasoning(ctx context.Context, agentID, prompt string, history []llm.Message) (thinking string, answer string, err error) {
-	answer, reasoning, _, err := e.chatWithTools(ctx, agentID, prompt, history, true)
+func (e *Engine) ChatReasoning(ctx context.Context, agentID, prompt string, history []llm.Message, conversationID string) (thinking string, answer string, convID string, err error) {
+	answer, reasoning, _, convID, err := e.chatWithToolsConv(ctx, agentID, prompt, history, true, conversationID)
 	if err != nil {
-		return "", "", err
+		return "", "", "", err
 	}
 	if reasoning != "" {
-		return reasoning, answer, nil
+		return reasoning, answer, convID, nil
 	}
 	thinking, answer = parseCoT(answer)
-	return
+	return thinking, answer, convID, nil
 }
 
 // ToolInvocation 记录一次 Function Calling 循环中模型发起的工具调用及其结果。
@@ -211,9 +211,9 @@ type ToolInvocation struct {
 
 // ChatWithTools 执行带 Function Calling 的对话,返回最终答案与本次触发的所有工具调用。
 // 供需要审计/展示工具使用情况的调用方使用(如团队编排后的汇总)。
-func (e *Engine) ChatWithTools(ctx context.Context, agentID, prompt string, history []llm.Message, reasoning bool) (string, []ToolInvocation, error) {
-	out, _, inv, err := e.chatWithTools(ctx, agentID, prompt, history, reasoning)
-	return out, inv, err
+func (e *Engine) ChatWithTools(ctx context.Context, agentID, prompt string, history []llm.Message, reasoning bool, conversationID string) (out string, inv []ToolInvocation, convID string, err error) {
+	out, _, inv, convID, err = e.chatWithToolsConv(ctx, agentID, prompt, history, reasoning, conversationID)
+	return out, inv, convID, err
 }
 
 // chatWithTools 实现 Function Calling 循环:
@@ -225,32 +225,61 @@ func (e *Engine) ChatWithTools(ctx context.Context, agentID, prompt string, hist
 // 在模型支持时非空,否则为空(调用方降级到 prompt 伪思维链或忽略)。
 //
 // 内建工具 llm_chat / http_get 不暴露给模型,以避免自我递归/无副作用调用噪音。
-func (e *Engine) chatWithTools(ctx context.Context, agentID, prompt string, history []llm.Message, reasoning bool) (string, string, []ToolInvocation, error) {
+// chatWithToolsConv 实现 Function Calling 循环, 并支持会话持久化(单智能体跨轮记忆):
+//   - conversationID 非空时, 优先从服务端加载可信历史(含 tool 消息)替代客户端 history;
+//   - 对话成功后把本轮回合(用户问题 + assistant + tool 结果)增量追加回该会话并落库。
+//
+// 返回 (最终答案, 原生推理内容, 工具调用记录, 会话ID, error)。
+func (e *Engine) chatWithToolsConv(ctx context.Context, agentID, prompt string, history []llm.Message, reasoning bool, conversationID string) (string, string, []ToolInvocation, string, error) {
 	if prompt == "" {
-		return "", "", nil, fmt.Errorf("prompt is required")
+		return "", "", nil, "", fmt.Errorf("prompt is required")
 	}
 	if e.lim != nil && agentID != "" && !e.lim.Allow(agentID) {
 		AILLMRateLimitHits.Inc()
-		return "", "", nil, fmt.Errorf("rate limit exceeded for agent %s", agentID)
+		return "", "", nil, "", fmt.Errorf("rate limit exceeded for agent %s", agentID)
 	}
 
-	// 1. 构造初始消息
+	// 会话加载: 提供 conversationID 时优先用服务端持久历史(可信, 含 tool 消息), 否则用客户端 history。
+	var conv *Conversation
+	baseHistory := history
+	if conversationID != "" {
+		if c, e2 := e.GetConversation(conversationID); e2 == nil {
+			conv = c
+			baseHistory = c.Messages
+		} else if strings.Contains(e2.Error(), "not found") {
+			conv = &Conversation{ID: conversationID, AgentID: agentID, TenantID: tenantOf(ctx)}
+		}
+	}
+
 	userPrompt := prompt
 	if reasoning {
 		userPrompt = "请按以下格式回答：\n\n<think>\n先进行分步推理分析\n</think>\n<answer>\n再给出最终答案\n</answer>\n\n用户问题：" + prompt
 	}
-	msgs := e.buildInitialMessages(agentID, userPrompt, history)
-
+	// 从客户端历史提取 service 层注入的 system 补充(仅 RAG 上下文; 客户端 system 已被 SanitizeHistory 剥离),
+	// 避免续接会话时丢失知识库检索结果。服务端会话历史(baseHistory)不含 system。
+	var sysExtra string
+	for _, m := range history {
+		if m.Role == "system" {
+			if sysExtra != "" {
+				sysExtra += "\n\n"
+			}
+			sysExtra += m.Content
+		}
+	}
+	msgs, roundStart := e.buildMessages(agentID, userPrompt, baseHistory, sysExtra)
 	tools := e.buildToolDefs()
 	var invocations []ToolInvocation
 
-	// 2. 工具调用循环
+	var content, reasoningAcc string
+	var completed bool
+	var err error
 	for round := 0; round < maxToolRounds; round++ {
 		slot, ok := e.acquireLLMSlot(ctx)
 		if !ok {
-			return "", "", invocations, fmt.Errorf("llm concurrency limit reached")
+			err = fmt.Errorf("llm concurrency limit reached")
+			break
 		}
-		resp, err := e.llmClient.Load().Chat(ctx, llm.ChatRequest{
+		resp, cerr := e.llmClient.Load().Chat(ctx, llm.ChatRequest{
 			Model:       e.modelForAgent(agentID),
 			Messages:    msgs,
 			Tools:       tools,
@@ -258,21 +287,24 @@ func (e *Engine) chatWithTools(ctx context.Context, agentID, prompt string, hist
 			Temperature: e.genTemperatureVal(),
 		})
 		e.releaseLLMSlot(slot)
-		if err != nil {
-			return "", "", invocations, err
+		if cerr != nil {
+			err = cerr
+			break
 		}
 		if len(resp.Choices) == 0 {
-			return "", "", invocations, fmt.Errorf("llm: empty response")
+			err = fmt.Errorf("llm: empty response")
+			break
 		}
 		e.recordTokens(agentID, resp)
 
 		choiceMsg := resp.Choices[0].Message
-		// 把本次 assistant 消息(含 tool_calls)追加进上下文,供下一轮回填
 		msgs = append(msgs, choiceMsg)
 
-		// 无工具调用 -> 这是最终答案
 		if len(choiceMsg.ToolCalls) == 0 {
-			return choiceMsg.Content, choiceMsg.ReasoningContent, invocations, nil
+			content = choiceMsg.Content
+			reasoningAcc = choiceMsg.ReasoningContent
+			completed = true
+			break
 		}
 
 		// 执行每个工具调用(经 execToolChecked 做 RBAC/限流/截断)
@@ -297,18 +329,49 @@ func (e *Engine) chatWithTools(ctx context.Context, agentID, prompt string, hist
 			})
 		}
 	}
+	if !completed {
+		err = fmt.Errorf("function calling loop exceeded max rounds (%d)", maxToolRounds)
+	}
 
-	return "", "", invocations, fmt.Errorf("function calling loop exceeded max rounds (%d)", maxToolRounds)
+	// 持久化本轮(仅成功且 conv 已加载/新建时)
+	if conv != nil && err == nil {
+		roundMsgs := msgs[roundStart:]
+		conv.Messages = append(conv.Messages, roundMsgs...)
+		conv.AgentID = agentID
+		if conv.TenantID == "" {
+			conv.TenantID = tenantOf(ctx)
+		}
+		if serr := e.SaveConversation(ctx, conv); serr != nil {
+			slog.Warn("ai: save conversation failed", "err", serr)
+		}
+		conversationID = conv.ID
+	}
+	return content, reasoningAcc, invocations, conversationID, err
 }
 
-// buildInitialMessages 拼装 system + 历史(最近 20 条) + 用户问题。
-func (e *Engine) buildInitialMessages(agentID, userPrompt string, history []llm.Message) []llm.Message {
-	msgs := []llm.Message{{Role: "system", Content: e.resolveSystemPrompt(agentID)}}
+// buildMessages 拼装 system(+可选 sysExtra 补充, 如 RAG 注入) + 历史(最近 20 条) + 用户问题,
+// 并返回"用户消息之后的起始下标"(roundStart), 调用方可用 msgs[roundStart:] 精确裁剪出"本轮回合",
+// 便于增量持久化会话。
+func (e *Engine) buildMessages(agentID, userPrompt string, history []llm.Message, sysExtra string) ([]llm.Message, int) {
+	sys := e.resolveSystemPrompt(agentID)
+	if sysExtra != "" {
+		sys += "\n\n" + sysExtra
+	}
+	msgs := []llm.Message{{Role: "system", Content: sys}}
 	if len(history) > 20 {
 		history = history[len(history)-20:]
 	}
 	msgs = append(msgs, history...)
+	// roundStart 指向"本轮用户消息"在 msgs 中的下标: 持久化时 msgs[roundStart:] 即本轮回合(user + assistant/tool),
+	// 跳过 system 与历史, 避免重复累积。
+	roundStart := len(msgs)
 	msgs = append(msgs, llm.Message{Role: "user", Content: userPrompt})
+	return msgs, roundStart
+}
+
+// buildInitialMessages 兼容旧调用: 仅返回拼装后的消息切片(不暴露 roundStart/sysExtra)。
+func (e *Engine) buildInitialMessages(agentID, userPrompt string, history []llm.Message) []llm.Message {
+	msgs, _ := e.buildMessages(agentID, userPrompt, history, "")
 	return msgs
 }
 
@@ -1054,25 +1117,26 @@ func (e *Engine) ListTeams(tenantID string) []*model.AgentTeam {
 // ChatStream 流式输出(SSE)。service 在 req.stream=true 时调用本方法, 返回的文本块经 SSE 推给前端。
 // 基于 llmClient.StreamChat 实现真实流式: 文本/推理逐 token 推送, 工具调用在发生时实时发射 🔧/↳ 标记,
 // 循环内边收边发(与团队模式一致), 而非先跑完整个循环再按词切分(伪流式)。
-func (e *Engine) ChatStream(ctx context.Context, agentID, prompt string, history []llm.Message, reasoning bool) (<-chan string, error) {
+func (e *Engine) ChatStream(ctx context.Context, agentID, prompt string, history []llm.Message, reasoning bool, conversationID string) (<-chan string, string, error) {
 	if prompt == "" {
-		return nil, fmt.Errorf("prompt is required")
+		return nil, "", fmt.Errorf("prompt is required")
 	}
 	if e.lim != nil && agentID != "" && !e.lim.Allow(agentID) {
 		AILLMRateLimitHits.Inc()
-		return nil, fmt.Errorf("rate limit exceeded for agent %s", agentID)
+		return nil, "", fmt.Errorf("rate limit exceeded for agent %s", agentID)
 	}
 	out := make(chan string, 64)
 	go func() {
 		defer close(out)
-		err := e.chatWithToolsStream(ctx, agentID, prompt, history, reasoning, func(s string) {
+		err := e.chatWithToolsStream(ctx, agentID, prompt, history, reasoning, conversationID, func(s string) {
 			out <- s
 		})
 		if err != nil {
 			out <- "⚠️ " + err.Error()
 		}
 	}()
-	return out, nil
+	// 仅当显式提供 conversationID 时才持久化(用该 ID 作为会话标识; not found 时按同 ID 新建)。
+	return out, conversationID, nil
 }
 
 // chatWithToolsStream 真实流式版 Function Calling 循环:
@@ -1081,33 +1145,58 @@ func (e *Engine) ChatStream(ctx context.Context, agentID, prompt string, history
 //  3. 回到步骤 1, 直至模型不再请求工具(终轮,答案已流式推送)或达到最大轮次。
 //
 // 与 chatWithTools 共享 execToolChecked, 因此同样受 RBAC / 限流 / 结果截断约束。
-func (e *Engine) chatWithToolsStream(ctx context.Context, agentID, prompt string, history []llm.Message, reasoning bool, emit func(string)) error {
+func (e *Engine) chatWithToolsStream(ctx context.Context, agentID, prompt string, history []llm.Message, reasoning bool, conversationID string, emit func(string)) error {
 	if e.lim != nil && agentID != "" && !e.lim.Allow(agentID) {
 		return fmt.Errorf("rate limit exceeded for agent %s", agentID)
+	}
+
+	// 会话加载: 提供 conversationID 时优先用服务端持久历史(可信, 含 tool 消息), 否则用客户端 history。
+	var conv *Conversation
+	baseHistory := history
+	if conversationID != "" {
+		if c, e2 := e.GetConversation(conversationID); e2 == nil {
+			conv = c
+			baseHistory = c.Messages
+		} else if strings.Contains(e2.Error(), "not found") {
+			conv = &Conversation{ID: conversationID, AgentID: agentID, TenantID: tenantOf(ctx)}
+		}
 	}
 
 	userPrompt := prompt
 	if reasoning {
 		userPrompt = "请按以下格式回答：\n\n<think>\n先进行分步推理分析\n</think>\n<answer>\n再给出最终答案\n</answer>\n\n用户问题：" + prompt
 	}
-	msgs := e.buildInitialMessages(agentID, userPrompt, history)
+	// 从客户端历史提取 service 层注入的 system 补充(仅 RAG 上下文; 客户端 system 已被 SanitizeHistory 剥离),
+	// 避免续接会话时丢失知识库检索结果。服务端会话历史(baseHistory)不含 system。
+	var sysExtra string
+	for _, m := range history {
+		if m.Role == "system" {
+			if sysExtra != "" {
+				sysExtra += "\n\n"
+			}
+			sysExtra += m.Content
+		}
+	}
+	msgs, roundStart := e.buildMessages(agentID, userPrompt, baseHistory, sysExtra)
 	tools := e.buildToolDefs()
 
+	var err error
+	completed := false
 	for round := 0; round < maxToolRounds; round++ {
 		slot, ok := e.acquireLLMSlot(ctx)
 		if !ok {
 			return fmt.Errorf("llm concurrency limit reached")
 		}
-		ch, err := e.llmClient.Load().StreamChat(ctx, llm.ChatRequest{
+		ch, eerr := e.llmClient.Load().StreamChat(ctx, llm.ChatRequest{
 			Model:       e.modelForAgent(agentID),
 			Messages:    msgs,
 			Tools:       tools,
 			MaxTokens:   e.genMaxTokensVal(),
 			Temperature: e.genTemperatureVal(),
 		})
-		if err != nil {
+		if eerr != nil {
 			e.releaseLLMSlot(slot)
-			return err
+			return eerr
 		}
 
 		var content, reasoningAcc string
@@ -1133,7 +1222,8 @@ func (e *Engine) chatWithToolsStream(ctx context.Context, agentID, prompt string
 		if len(toolCalls) == 0 {
 			// 终轮: 答案已通过流式推送给前端
 			e.recordStreamTokens(agentID, content)
-			return nil
+			completed = true
+			break
 		}
 
 		// 执行本轮工具调用, 实时发射进度标记
@@ -1162,7 +1252,25 @@ func (e *Engine) chatWithToolsStream(ctx context.Context, agentID, prompt string
 			})
 		}
 	}
-	return fmt.Errorf("function calling loop exceeded max rounds (%d)", maxToolRounds)
+	if !completed {
+		if err == nil {
+			err = fmt.Errorf("function calling loop exceeded max rounds (%d)", maxToolRounds)
+		}
+	}
+
+	// 持久化本轮(仅成功且 conv 已加载/新建时)
+	if conv != nil && err == nil {
+		roundMsgs := msgs[roundStart:]
+		conv.Messages = append(conv.Messages, roundMsgs...)
+		conv.AgentID = agentID
+		if conv.TenantID == "" {
+			conv.TenantID = tenantOf(ctx)
+		}
+		if serr := e.SaveConversation(ctx, conv); serr != nil {
+			slog.Warn("ai: save conversation failed", "err", serr)
+		}
+	}
+	return err
 }
 
 // ——— 对话持久(内存) ———
