@@ -10,8 +10,10 @@ import { Badge } from '@/components/ui/badge'
 import { formatTime } from '@/lib/utils'
 import { apiFetch } from '@/lib/utils'
 import { toast } from '@/stores/toast'
-import { ChevronLeft, Save, Sparkles, Loader2, Trash2, Heart, Bookmark, Star, MessageSquare, Share2, History, RotateCcw, CheckCircle2 } from 'lucide-react'
-import { cn } from '@/lib/utils'
+import { ChevronLeft, Save, Sparkles, Loader2, Trash2, Heart, Bookmark, MessageSquare, Share2, History, RotateCcw, Pencil, Eye, PenLine, AlignLeft } from 'lucide-react'
+import { MarkdownViewer } from '@/components/markdown-viewer'
+import { RichTextEditor } from '@/components/rich-text-editor'
+import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs'
 
 export default function KnowledgeEditorPage() {
   const params = useParams(); const router = useRouter()
@@ -22,6 +24,11 @@ export default function KnowledgeEditorPage() {
   const [aiGenerating, setAiGenerating] = useState(false)
   const [aiPrompt, setAiPrompt] = useState('')
   const [loaded, setLoaded] = useState(false)
+  // 阅读/编辑双模式: 新文章直接进编辑; 已有文章默认阅读
+  const [mode, setMode] = useState<'read' | 'edit'>(isNew ? 'edit' : 'read')
+  const [editTab, setEditTab] = useState<'write' | 'preview'>('write')
+  // 录入方式: Markdown 源码 / 富文本所见即所得(底层仍存 Markdown)
+  const [inputMode, setInputMode] = useState<'markdown' | 'rich'>('markdown')
   // P1 内容管理: 版本历史
   const [versions, setVersions] = useState<ArticleVersion[]>([])
   const [showVersions, setShowVersions] = useState(false)
@@ -62,6 +69,7 @@ export default function KnowledgeEditorPage() {
       if (ok) router.push('/knowledge')
     } else {
       await update(String(params.id), data)
+      setMode('read') // 保存成功进入阅读模式查看渲染效果
     }
     setSaving(false)
   }
@@ -132,39 +140,80 @@ export default function KnowledgeEditorPage() {
     <div className="flex items-center justify-between gap-3">
       <div className="flex items-center gap-3">
         <Button variant="ghost" size="icon" onClick={() => router.push('/knowledge')}><ChevronLeft className="h-4 w-4"/></Button>
-        <h1 className="text-xl font-bold">{isNew ? 'AI 辅助写作' : '编辑文章'}</h1>
+        <h1 className="text-xl font-bold">{isNew ? 'AI 辅助写作' : (mode === 'read' ? '文章详情' : '编辑文章')}</h1>
       </div>
       <div className="flex gap-2">
+        {!isNew && mode === 'read' && (
+          <Button variant="outline" size="sm" onClick={() => setMode('edit')}><Pencil className="h-3.5 w-3.5 mr-1"/>编辑</Button>
+        )}
         {!isNew && <Button variant="destructive" size="sm" onClick={handleDelete}><Trash2 className="h-3.5 w-3.5 mr-1"/>删除</Button>}
-        <Button size="sm" onClick={handleSave} disabled={saving||!form.title}>{saving?<Loader2 className="h-4 w-4 mr-1 animate-spin"/>:<Save className="h-4 w-4 mr-1"/>}保存</Button>
+        {mode === 'edit' && (
+          <>
+            {!isNew && <Button variant="ghost" size="sm" onClick={() => setMode('read')}>取消</Button>}
+            <Button size="sm" onClick={handleSave} disabled={saving||!form.title}>{saving?<Loader2 className="h-4 w-4 mr-1 animate-spin"/>:<Save className="h-4 w-4 mr-1"/>}保存</Button>
+          </>
+        )}
       </div>
     </div>
 
-    <div className="grid md:grid-cols-3 gap-4">
-      <div className="md:col-span-2 space-y-3">
-        <Input placeholder="文章标题" value={form.title} onChange={e => setForm({...form, title: e.target.value})} className="text-lg font-bold"/>
-        <div className="flex gap-2">
-          <select className="flex h-8 rounded-md border border-input bg-background px-2 text-xs" value={form.category} onChange={e => setForm({...form, category: e.target.value})}>
-            {categories.map(c => <option key={c} value={c}>{c}</option>)}
-          </select>
-          <select className="flex h-8 rounded-md border border-input bg-background px-2 text-xs" value={form.status} onChange={e => setForm({...form, status: e.target.value})}>
-            <option value="draft">草稿</option>
-            <option value="published">发布</option>
-          </select>
-          <Input placeholder="标签,逗号分隔" value={form.tags} onChange={e => setForm({...form, tags: e.target.value})} className="h-8 text-xs"/>
+    {mode === 'read' && !isNew ? (
+      <article className="card-glass-static rounded-xl p-6 md:p-8 animate-fade-in-up">
+        <h1 className="text-2xl md:text-3xl font-bold tracking-tight">{form.title || '（无标题）'}</h1>
+        <div className="flex flex-wrap items-center gap-2 mt-3 text-xs text-muted-foreground">
+          {form.category && <Badge variant="secondary">{form.category}</Badge>}
+          <Badge variant={form.status === 'published' ? 'default' : 'outline'}>{form.status === 'published' ? '已发布' : '草稿'}</Badge>
+          {(form.tags||'').split(',').map((t: string) => t.trim()).filter(Boolean).map((t: string) => <Badge key={t} variant="outline">#{t}</Badge>)}
+          <span>· {form.author || 'admin'}</span>
         </div>
-        {!isNew && <div className="flex gap-1 py-1">
+
+        <div className="flex gap-1 py-3 border-b mb-4">
           <Button variant={liked?'default':'outline'} size="sm" className="h-7 text-xs gap-1" onClick={toggleLike}><Heart className="h-3 w-3" fill={liked?'currentColor':'none'}/>{likeCount}</Button>
           <Button variant={bookmarked?'default':'outline'} size="sm" className="h-7 text-xs gap-1" onClick={toggleBookmark}><Bookmark className="h-3 w-3" fill={bookmarked?'currentColor':'none'}/></Button>
           <Button variant="outline" size="sm" className="h-7 text-xs gap-1" onClick={handleShare}><Share2 className="h-3 w-3"/>分享</Button>
           <Button variant="outline" size="sm" className="h-7 text-xs gap-1" onClick={()=>setShowSocial(!showSocial)}><MessageSquare className="h-3 w-3"/>{commentCount}</Button>
-        </div>}
-        {!isNew && showSocial && <div className="rounded-md border p-3 space-y-2 text-sm">
+        </div>
+        {showSocial && <div className="rounded-md border p-3 space-y-2 text-sm mb-4">
           <div className="flex gap-2"><Input className="h-7 text-xs" placeholder="写评论..." value={newComment} onChange={e=>setNewComment(e.target.value)} onKeyDown={e=>e.key==='Enter'&&addComment()}/><Button size="sm" className="h-7" onClick={addComment}>发送</Button></div>
           {comments.map(c => <div key={c.id} className="text-xs"><span className="font-medium">{c.user_id}</span> <span className="text-muted-foreground">{c.content}</span></div>)}
         </div>}
-        <textarea className="flex min-h-[400px] w-full rounded-md border border-input bg-background px-3 py-2 text-sm font-mono" value={form.content} onChange={e => setForm({...form, content: e.target.value})} placeholder="文章正文 (支持Markdown)"/>
-      </div>
+
+        <MarkdownViewer content={form.content} className="mt-1" />
+      </article>
+    ) : (
+      <div className="grid md:grid-cols-3 gap-4">
+        <div className="md:col-span-2 space-y-3">
+          <Input placeholder="文章标题" value={form.title} onChange={e => setForm({...form, title: e.target.value})} className="text-lg font-bold"/>
+          <div className="flex gap-2">
+            <select className="flex h-8 rounded-md border border-input bg-background px-2 text-xs" value={form.category} onChange={e => setForm({...form, category: e.target.value})}>
+              {categories.map(c => <option key={c} value={c}>{c}</option>)}
+            </select>
+            <select className="flex h-8 rounded-md border border-input bg-background px-2 text-xs" value={form.status} onChange={e => setForm({...form, status: e.target.value})}>
+              <option value="draft">草稿</option>
+              <option value="published">发布</option>
+            </select>
+            <Input placeholder="标签,逗号分隔" value={form.tags} onChange={e => setForm({...form, tags: e.target.value})} className="h-8 text-xs"/>
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            <Tabs value={editTab} onValueChange={v => setEditTab(v as 'write' | 'preview')}>
+              <TabsList className="h-8">
+                <TabsTrigger value="write" className="text-xs py-1"><PenLine className="h-3 w-3 mr-1"/>编辑</TabsTrigger>
+                <TabsTrigger value="preview" className="text-xs py-1"><Eye className="h-3 w-3 mr-1"/>预览</TabsTrigger>
+              </TabsList>
+            </Tabs>
+            <div className="flex-1" />
+            <Tabs value={inputMode} onValueChange={v => setInputMode(v as 'markdown' | 'rich')}>
+              <TabsList className="h-8">
+                <TabsTrigger value="markdown" className="text-xs py-1"><PenLine className="h-3 w-3 mr-1"/>Markdown</TabsTrigger>
+                <TabsTrigger value="rich" className="text-xs py-1"><AlignLeft className="h-3 w-3 mr-1"/>富文本</TabsTrigger>
+              </TabsList>
+            </Tabs>
+          </div>
+          {editTab === 'write'
+            ? (inputMode === 'rich'
+                ? <RichTextEditor value={form.content} onChange={md => setForm(f => ({ ...f, content: md }))} />
+                : <textarea className="flex min-h-[400px] w-full rounded-md border border-input bg-background px-3 py-2 text-sm font-mono" value={form.content} onChange={e => setForm({...form, content: e.target.value})} placeholder="文章正文 (Markdown, 支持表格/任务列表等 GFM 语法)"/>)
+            : <div className="rounded-md border border-border bg-background p-4 md:p-6 min-h-[400px]"><MarkdownViewer content={form.content} /></div>}
+        </div>
 
       <Card><CardContent className="p-4 space-y-3">
         <h3 className="text-sm font-medium flex items-center gap-1"><Sparkles className="h-4 w-4 text-amber-500"/>AI 伴写</h3>
@@ -210,5 +259,6 @@ export default function KnowledgeEditorPage() {
         </Card>
       )}
     </div>
+    )}
   </div>
 }

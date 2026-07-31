@@ -22,7 +22,8 @@ const FALLBACK_CATEGORIES = ['常见问题', '变更操作', '故障处理', '�
 
 interface KnowledgeState {
   articles: Article[]; loading: boolean
-  categories: string[]
+  categories: string[]           // 分类名称(列表 Tab 过滤用)
+  categoryList: Category[]       // 完整分类元数据(管理弹窗用, 含 id/颜色/排序)
   fetch: (category?: string) => Promise<void>
   create: (data: any) => Promise<boolean>
   update: (id: string, data: any) => Promise<boolean>
@@ -30,14 +31,17 @@ interface KnowledgeState {
   // P1 内容管理
   fetchCategories: () => Promise<void>
   saveCategory: (data: { name: string; description?: string; sort_order?: number; color?: string }) => Promise<boolean>
+  updateCategory: (id: string, data: { name: string; description?: string; sort_order?: number; color?: string }) => Promise<boolean>
   deleteCategory: (id: string) => Promise<boolean>
   fetchVersions: (id: string) => Promise<ArticleVersion[]>
   rollbackVersion: (id: string, version: number) => Promise<boolean>
   importArticles: (items: { title: string; content: string; category?: string; tags?: string[]; status?: string }[]) => Promise<{ imported: number; errors: string[] }>
+  // 文件导入: 上传原始文件(.md/.txt/.json/.pdf/.docx), 由后端解析建文章
+  importFile: (file: File, category?: string) => Promise<{ imported: number; errors: string[] }>
 }
 
 export const useKnowledgeStore = create<KnowledgeState>((set, get) => ({
-  articles: [], loading: false, categories: FALLBACK_CATEGORIES,
+  articles: [], loading: false, categories: FALLBACK_CATEGORIES, categoryList: [],
 
   fetch: async (category) => {
     set({ loading: true })
@@ -89,7 +93,7 @@ export const useKnowledgeStore = create<KnowledgeState>((set, get) => ({
     try {
       const cats = await apiFetch<Category[]>('/knowledge/categories')
       const names = cats.map(c => c.name).filter(Boolean)
-      set({ categories: names.length > 0 ? names : FALLBACK_CATEGORIES })
+      set({ categoryList: cats, categories: names.length > 0 ? names : FALLBACK_CATEGORIES })
     } catch {
       /* 后端不可用时保持兜底分类 */
     }
@@ -102,6 +106,17 @@ export const useKnowledgeStore = create<KnowledgeState>((set, get) => ({
       return true
     } catch (e: any) {
       toast.error(`保存分类失败: ${e.message}`)
+      return false
+    }
+  },
+  updateCategory: async (id, data) => {
+    try {
+      await apiFetch(`/knowledge/categories/${id}`, { method: 'PUT', body: JSON.stringify(data) })
+      toast.success('分类已更新')
+      await get().fetchCategories()
+      return true
+    } catch (e: any) {
+      toast.error(`更新分类失败: ${e.message}`)
       return false
     }
   },
@@ -139,6 +154,27 @@ export const useKnowledgeStore = create<KnowledgeState>((set, get) => ({
       const res = await apiFetch<{ imported: number; errors: string[] }>('/knowledge/import', {
         method: 'POST', body: JSON.stringify({ items }),
       })
+      await get().fetch()
+      return res
+    } catch (e: any) {
+      toast.error(`导入失败: ${e.message}`)
+      return { imported: 0, errors: [e.message] }
+    }
+  },
+  importFile: async (file, category) => {
+    try {
+      const fd = new FormData()
+      fd.append('file', file)
+      if (category) fd.append('category', category)
+      // multipart 不走 apiFetch 的 JSON 头, 直接 fetch 同源接口
+      const resp = await fetch(`${window.location.origin}/api/v1/knowledge/import-file`, {
+        method: 'POST', body: fd,
+      })
+      if (!resp.ok) {
+        const msg = await resp.text().catch(() => resp.statusText)
+        throw new Error(msg || `HTTP ${resp.status}`)
+      }
+      const res = await resp.json() as { imported: number; errors: string[] }
       await get().fetch()
       return res
     } catch (e: any) {
