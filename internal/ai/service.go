@@ -13,6 +13,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/opsorigin/core/internal/ai/agentic"
+	"github.com/opsorigin/core/internal/ai/eval"
 	"github.com/opsorigin/core/internal/ai/mcp"
 	"github.com/opsorigin/core/internal/ai/model"
 	"github.com/opsorigin/core/internal/ai/ratelimit"
@@ -23,11 +24,12 @@ import (
 )
 
 type Service struct {
-	cfg      *config.Config
-	Engine   *agentic.Engine
-	Registry *mcp.Registry
-	limiter  ratelimit.RateLimiter
-	ragFn    func(ctx context.Context, query string) string // RAG上下文注入
+	cfg           *config.Config
+	Engine        *agentic.Engine
+	Registry      *mcp.Registry
+	limiter       ratelimit.RateLimiter
+	ragFn         func(ctx context.Context, query string) string // RAG上下文注入
+	feedbackStore agentic.FeedbackStore                             // 点赞/点踩反馈持久化(P2-Eval)
 }
 
 func NewService(cfg *config.Config, llmClient *llm.Client, redisClient *redisclient.Client, db *sql.DB) *Service {
@@ -50,6 +52,15 @@ func NewService(cfg *config.Config, llmClient *llm.Client, redisClient *rediscli
 		slog.Info("ai conversation store: using in-memory backend")
 	}
 
+	var feedbackStore agentic.FeedbackStore
+	if db != nil {
+		feedbackStore = agentic.NewPGFeedbackStore(db)
+		slog.Info("ai feedback store: using postgres backend")
+	} else {
+		feedbackStore = agentic.NewMemFeedbackStore()
+		slog.Info("ai feedback store: using in-memory backend")
+	}
+
 	eng := agentic.NewEngine(reg, lim, llmClient, convStore)
 
 	// 提示词外置化: 将配置中的默认 system prompt 注入引擎(环境变量可覆盖内置常量)。
@@ -61,10 +72,11 @@ func NewService(cfg *config.Config, llmClient *llm.Client, redisClient *rediscli
 	}
 
 	return &Service{
-		cfg:      cfg,
-		Engine:   eng,
-		Registry: reg,
-		limiter:  lim,
+		cfg:           cfg,
+		Engine:        eng,
+		Registry:      reg,
+		limiter:       lim,
+		feedbackStore: feedbackStore,
 	}
 }
 
@@ -90,6 +102,10 @@ func (s *Service) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/v1/ai/conversations", s.handleListConversations)
 	mux.HandleFunc("GET /api/v1/ai/conversations/{id}", s.handleGetConversation)
 	mux.HandleFunc("POST /api/v1/ai/conversations", s.handleSaveConversation)
+	mux.HandleFunc("POST /api/v1/ai/feedback", s.handleSubmitFeedback)
+	mux.HandleFunc("GET /api/v1/ai/feedback", s.handleListFeedback)
+	mux.HandleFunc("GET /api/v1/ai/feedback/stats", s.handleFeedbackStats)
+	mux.HandleFunc("GET /api/v1/ai/eval/cases", s.handleEvalCases)
 
 	// —— Feature 1: 多智能体团队 ——
 	mux.HandleFunc("POST /api/v1/ai/teams", s.handleCreateTeam)
@@ -114,6 +130,7 @@ func (s *Service) handleChat(w http.ResponseWriter, r *http.Request) {
 		Stream         bool          `json:"stream"`
 		Reasoning      bool          `json:"reasoning"`
 		ConversationID string        `json:"conversation_id"`
+		MessageID      string        `json:"message_id"` // 前端为本次 assistant 回复生成的稳定 ID, 反馈时用于精确关联
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
@@ -155,6 +172,7 @@ func (s *Service) handleChat(w http.ResponseWriter, r *http.Request) {
 			"content":          answer,
 			"thinking":         thinking,
 			"conversation_id":  convID,
+			"message_id":       req.MessageID,
 			"citations":        agentic.ExtractCitations(answer),
 		})
 		return
@@ -169,6 +187,7 @@ func (s *Service) handleChat(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(map[string]any{
 		"content":          out,
 		"conversation_id":  convID,
+		"message_id":       req.MessageID,
 		"citations":        agentic.ExtractCitations(out),
 	})
 }
@@ -181,6 +200,7 @@ func (s *Service) handleChatStream(w http.ResponseWriter, r *http.Request, req *
 	Stream         bool          `json:"stream"`
 	Reasoning      bool          `json:"reasoning"`
 	ConversationID string        `json:"conversation_id"`
+	MessageID      string        `json:"message_id"`
 }) {
 	flusher, ok := w.(http.Flusher)
 	if !ok {
@@ -436,6 +456,87 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 
 func writeError(w http.ResponseWriter, status int, msg string) {
 	writeJSON(w, status, map[string]string{"error": msg})
+}
+
+// ——— 反馈(Eval 与反馈, P2) ———
+
+// handleSubmitFeedback 接收用户对一条 AI 消息的点赞/点踩并落库(upsert)。
+func (s *Service) handleSubmitFeedback(w http.ResponseWriter, r *http.Request) {
+	if s.feedbackStore == nil {
+		writeError(w, http.StatusServiceUnavailable, "feedback store not configured")
+		return
+	}
+	var req struct {
+		ConversationID string `json:"conversation_id"`
+		MessageID      string `json:"message_id"`
+		Rating         string `json:"rating"` // "up" | "down"
+		Comment        string `json:"comment"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if req.Rating != "up" && req.Rating != "down" {
+		writeError(w, http.StatusBadRequest, "rating must be 'up' or 'down'")
+		return
+	}
+	if req.MessageID == "" && req.ConversationID == "" {
+		writeError(w, http.StatusBadRequest, "message_id or conversation_id is required")
+		return
+	}
+	tenant := tenantFromCtx(r.Context())
+	f := &agentic.Feedback{
+		TenantID:       tenant,
+		ConversationID: req.ConversationID,
+		MessageID:      req.MessageID,
+		Rating:         req.Rating,
+		Comment:        req.Comment,
+	}
+	if err := s.feedbackStore.Save(r.Context(), f); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to save feedback")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"id": f.ID, "ok": true})
+}
+
+// handleListFeedback 返回当前租户的反馈列表(可按 conversation_id 过滤)。
+func (s *Service) handleListFeedback(w http.ResponseWriter, r *http.Request) {
+	if s.feedbackStore == nil {
+		writeError(w, http.StatusServiceUnavailable, "feedback store not configured")
+		return
+	}
+	tenant := tenantFromCtx(r.Context())
+	convID := r.URL.Query().Get("conversation_id")
+	list, err := s.feedbackStore.List(r.Context(), tenant, convID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to list feedback")
+		return
+	}
+	if list == nil {
+		list = []*agentic.Feedback{}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"feedbacks": list})
+}
+
+// handleFeedbackStats 返回当前租户的反馈聚合统计(点赞/点踩计数)。
+func (s *Service) handleFeedbackStats(w http.ResponseWriter, r *http.Request) {
+	if s.feedbackStore == nil {
+		writeError(w, http.StatusServiceUnavailable, "feedback store not configured")
+		return
+	}
+	tenant := tenantFromCtx(r.Context())
+	up, down, err := s.feedbackStore.Stats(r.Context(), tenant)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to compute feedback stats")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"up": up, "down": down, "total": up + down})
+}
+
+// handleEvalCases 返回内置运维评测集,供前端展示或离线评估对话质量。
+func (s *Service) handleEvalCases(w http.ResponseWriter, r *http.Request) {
+	cases := eval.DefaultEvalSet()
+	writeJSON(w, http.StatusOK, map[string]any{"cases": cases})
 }
 
 func (s *Service) handleTokenStats(w http.ResponseWriter, r *http.Request) {
