@@ -175,7 +175,7 @@ func (s *Service) handleChatStream(w http.ResponseWriter, r *http.Request, req *
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
 
-	ch, err := s.Engine.ChatStream(r.Context(), req.AgentID, req.Prompt, req.History)
+	ch, err := s.Engine.ChatStream(r.Context(), req.AgentID, req.Prompt, req.History, req.Reasoning)
 	if err != nil {
 		fmt.Fprintf(w, "event: error\ndata: %s\n\n", err.Error())
 		flusher.Flush()

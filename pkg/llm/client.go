@@ -8,6 +8,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"sort"
 	"strings"
 	"time"
 )
@@ -132,10 +133,13 @@ func (c *Client) Chat(ctx context.Context, req ChatRequest) (*ChatResponse, erro
 }
 
 // StreamChunk 流式响应片段。Model 发送完内容块后, FinishReason 非空。
+// ToolCalls 在工具调用轮次末片(或流结束后兜底片)携带已聚合的全部工具调用,
+// 供上层 Function Calling 循环判断是否需执行工具。
 type StreamChunk struct {
-	Content      string `json:"content"`       // 当前增量文本
-	Reasoning    string `json:"reasoning"`     // 当前增量推理文本(原生思维链)
-	FinishReason string `json:"finish_reason"` // 发送完成后非空,如 "stop"
+	Content      string     `json:"content"`       // 当前增量文本
+	Reasoning    string     `json:"reasoning"`     // 当前增量推理文本(原生思维链)
+	ToolCalls    []ToolCall `json:"tool_calls"`     // 本片携带的(已聚合)工具调用
+	FinishReason string     `json:"finish_reason"` // 发送完成后非空,如 "stop"
 }
 
 // StreamChat 通过 SSE 逐块接收模型输出。返回只读 channel; Context 取消时后台收束。
@@ -200,6 +204,8 @@ func (c *Client) readSSE(ctx context.Context, r io.ReadCloser, ch chan<- StreamC
 	}
 
 	// ——— SSE 路径 ———
+	// toolAcc 按 index 聚合流式到达的 tool_calls 增量(arguments 分片拼接)。
+	toolAcc := map[int]*toolCallAcc{}
 	for _, line := range strings.Split(body, "\n") {
 		select {
 		case <-ctx.Done():
@@ -220,6 +226,15 @@ func (c *Client) readSSE(ctx context.Context, r io.ReadCloser, ch chan<- StreamC
 					Content   string `json:"content"`
 					Reasoning string `json:"reasoning"`
 					Role      string `json:"role"`
+					ToolCalls []struct {
+						Index    int    `json:"index"`
+						ID       string `json:"id"`
+						Type     string `json:"type"`
+						Function struct {
+							Name      string `json:"name"`
+							Arguments string `json:"arguments"`
+						} `json:"function"`
+					} `json:"tool_calls"`
 				} `json:"delta"`
 				FinishReason string `json:"finish_reason"`
 			} `json:"choices"`
@@ -229,10 +244,62 @@ func (c *Client) readSSE(ctx context.Context, r io.ReadCloser, ch chan<- StreamC
 			continue
 		}
 		for _, c := range chunk.Choices {
+			// 聚合 tool_calls(按 index 流式拼接 arguments)
+			for _, tc := range c.Delta.ToolCalls {
+				acc, ok := toolAcc[tc.Index]
+				if !ok {
+					acc = &toolCallAcc{}
+					toolAcc[tc.Index] = acc
+				}
+				if tc.ID != "" {
+					acc.id = tc.ID
+				}
+				if tc.Type != "" {
+					acc.typ = tc.Type
+				}
+				if tc.Function.Name != "" {
+					acc.name = tc.Function.Name
+				}
+				acc.args += tc.Function.Arguments
+			}
 			sc := StreamChunk{Content: c.Delta.Content, Reasoning: c.Delta.Reasoning, FinishReason: c.FinishReason}
 			ch <- sc
 		}
 	}
+	// 兜底: 若流中已聚合到 tool_calls 但未随任一 chunk 显式带出(部分实现不在流中回传 tool_calls),
+	// 补发一个携带 ToolCalls 的末片, 供上层 Function Calling 循环执行工具。
+	if len(toolAcc) > 0 {
+		ch <- StreamChunk{ToolCalls: buildToolCalls(toolAcc), FinishReason: "tool_calls"}
+	}
+}
+
+// toolCallAcc tool_calls 流式增量累加器。
+type toolCallAcc struct {
+	id   string
+	typ  string
+	name string
+	args string
+}
+
+// buildToolCalls 将按 index 聚合的增量还原为有序 ToolCall 列表。
+func buildToolCalls(m map[int]*toolCallAcc) []ToolCall {
+	keys := make([]int, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Ints(keys)
+	out := make([]ToolCall, 0, len(keys))
+	for _, k := range keys {
+		a := m[k]
+		tc := ToolCall{ID: a.id, Type: a.typ}
+		if tc.Type == "" {
+			tc.Type = "function"
+		}
+		tc.Function.Name = a.name
+		tc.Function.Arguments = a.args
+		out = append(out, tc)
+	}
+	return out
 }
 
 func truncate(s string, n int) string {

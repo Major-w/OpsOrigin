@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"sync"
 	"time"
@@ -131,6 +132,18 @@ func (s *Service) SetEmbedder(e Embedder) {
 	if ps, ok := s.store.(*pgStore); ok {
 		ps.SetEmbedder(e)
 	}
+}
+
+// ReindexAll 为存量文章补算 embedding(语义检索开启后的幂等回填, 仅处理 embedding IS NULL 的行)。
+func (s *Service) ReindexAll(ctx context.Context) (int, error) {
+	ps, ok := s.store.(*pgStore)
+	if !ok {
+		return 0, fmt.Errorf("reindex only supported with postgres store")
+	}
+	if !ps.VectorEnabled() {
+		return 0, fmt.Errorf("vector search not enabled (pgvector unavailable)")
+	}
+	return ps.ReindexAll(ctx)
 }
 
 // handleReindex 为存量文章补算 embedding(开启语义检索后的一次性回填)。

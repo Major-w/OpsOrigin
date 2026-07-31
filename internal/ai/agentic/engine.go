@@ -15,6 +15,7 @@ import (
 	"github.com/opsorigin/core/internal/ai/mcp"
 	"github.com/opsorigin/core/internal/ai/model"
 	"github.com/opsorigin/core/internal/ai/ratelimit"
+	"github.com/opsorigin/core/pkg/auth"
 	"github.com/opsorigin/core/pkg/llm"
 )
 
@@ -271,19 +272,14 @@ func (e *Engine) chatWithTools(ctx context.Context, agentID, prompt string, hist
 			return choiceMsg.Content, choiceMsg.ReasoningContent, invocations, nil
 		}
 
-		// 执行每个工具调用
+		// 执行每个工具调用(经 execToolChecked 做 RBAC/限流/截断)
 		for _, tc := range choiceMsg.ToolCalls {
 			var args map[string]any
 			if tc.Function.Arguments != "" {
 				_ = json.Unmarshal([]byte(tc.Function.Arguments), &args)
 			}
 			AIToolCalls.Inc()
-			slog.Info("ai function call", "tool", tc.Function.Name, "args", truncateJSON(args))
-			result, execErr := e.reg.Execute(ctx, tc.Function.Name, args)
-			if execErr != nil {
-				result = map[string]any{"error": execErr.Error()}
-				slog.Warn("ai tool execution failed", "tool", tc.Function.Name, "error", execErr)
-			}
+			result, _ := e.execToolChecked(ctx, tc)
 			invocations = append(invocations, ToolInvocation{
 				Name:      tc.Function.Name,
 				Arguments: args,
@@ -373,6 +369,86 @@ func truncateJSON(v any) string {
 		return s[:300] + "..."
 	}
 	return s
+}
+
+// ——— 工具执行安全边界(P3-0 / P3-2) ———
+
+// privilegedTools 需要 ai:tool:exec 权限的高风险/写操作工具。
+// 仅 script_run(在受管主机执行脚本) 与 ticket_create(创建工单) 受此约束;
+// 只读工具(cmdb_query / knowledge_search) 任何已认证用户均可经 AI 调用。
+var privilegedTools = map[string]bool{
+	"script_run":    true,
+	"ticket_create": true,
+}
+
+// maxToolResultLen 工具结果回填上下文前的最大长度; 超出则截断并标注, 防止大输出撑爆上下文窗口。
+const maxToolResultLen = 4096
+
+// execToolChecked 在 Function Calling 循环中执行单个工具, 并做纵深防御:
+//  1. 高风险工具(写/执行类)校验 RBAC 权限 ai:tool:exec, 越权不真正执行, 而是回填错误供模型向用户解释;
+//  2. 每工具令牌桶限流(与对话限流解耦), 超限同样回填错误;
+//  3. 结果长度上限截断(P3-2)。
+//
+// 返回 (结果, 是否真的发生了执行错误)。越权/限流属于"已受控", 以结构化错误结果返回而非 panic。
+func (e *Engine) execToolChecked(ctx context.Context, tc llm.ToolCall) (any, bool) {
+	name := tc.Function.Name
+	if privilegedTools[name] {
+		role := auth.RoleFromContext(ctx)
+		if role == "" || !auth.HasPermission(role, auth.PermissionAIToolExec) {
+			AIToolExecDenied.Inc()
+			slog.Warn("ai tool exec denied by RBAC", "tool", name, "role", role)
+			return map[string]any{"error": fmt.Sprintf("permission denied: tool %q requires permission %s", name, auth.PermissionAIToolExec)}, false
+		}
+	}
+	if e.lim != nil && !e.lim.Allow("tool:" + name) {
+		AIToolExecDenied.Inc()
+		slog.Warn("ai tool exec rate limited", "tool", name)
+		return map[string]any{"error": "rate limit exceeded for tool execution: " + name}, false
+	}
+
+	var args map[string]any
+	if tc.Function.Arguments != "" {
+		_ = json.Unmarshal([]byte(tc.Function.Arguments), &args)
+	}
+	result, execErr := e.reg.Execute(ctx, name, args)
+	if execErr != nil {
+		slog.Warn("ai tool execution failed", "tool", name, "error", execErr)
+		return map[string]any{"error": execErr.Error()}, true
+	}
+	return e.truncateToolResult(result), false
+}
+
+// truncateToolResult 对工具结果做长度上限截断, 避免大输出(如脚本日志)撑爆上下文窗口。
+func (e *Engine) truncateToolResult(result any) any {
+	b, err := json.Marshal(result)
+	if err != nil {
+		return result
+	}
+	if len(b) <= maxToolResultLen {
+		return result
+	}
+	s := string(b)
+	return map[string]any{
+		"_truncated":   true,
+		"original_len": len(b),
+		"preview":      s[:maxToolResultLen] + "...(truncated)",
+	}
+}
+
+// recordStreamTokens 估算并记录流式调用的 token 消耗(StreamChat 不回传 usage, 故按字符数粗估)。
+func (e *Engine) recordStreamTokens(agentID, content string) {
+	est := len([]rune(content)) / 4
+	if est < 1 {
+		est = 1
+	}
+	e.persistTokenRecord(model.TokenRecord{
+		Time:       time.Now(),
+		AgentID:    agentID,
+		Model:      "stream",
+		Prompt:     0,
+		Completion: est,
+		Total:      est,
+	})
 }
 
 // summarizeToolResult 把工具结果压缩为单行摘要,供流式输出展示。
@@ -909,16 +985,10 @@ func (e *Engine) ListTeams(tenantID string) []*model.AgentTeam {
 
 // ——— 流式输出 ———
 
-// ChatStream 非流式 Chat 的流式版本:逐 token 推送到返回的 channel。
-// 调用方负责消费 channel 直到关闭; ctx 取消时后台收束。
-func (e *Engine) ChatStream(ctx context.Context, agentID, prompt string, history []llm.Message) (<-chan string, error) {
-	return e.chatStreamImpl(ctx, agentID, prompt, history, false)
-}
-
-// chatStreamImpl 在后台 goroutine 中执行 Function Calling 循环,并把过程与最终答案
-// 以文本块形式推送到 channel,使 SSE 流既能展示工具调用又保留流式观感。
-// 工具活动以可读文本(🔧 调用 / ↳ 结果)呈现,最终答案按词切分模拟流式输出。
-func (e *Engine) chatStreamImpl(ctx context.Context, agentID, prompt string, history []llm.Message, reasoning bool) (<-chan string, error) {
+// ChatStream 流式输出(SSE)。service 在 req.stream=true 时调用本方法, 返回的文本块经 SSE 推给前端。
+// 基于 llmClient.StreamChat 实现真实流式: 文本/推理逐 token 推送, 工具调用在发生时实时发射 🔧/↳ 标记,
+// 循环内边收边发(与团队模式一致), 而非先跑完整个循环再按词切分(伪流式)。
+func (e *Engine) ChatStream(ctx context.Context, agentID, prompt string, history []llm.Message, reasoning bool) (<-chan string, error) {
 	if prompt == "" {
 		return nil, fmt.Errorf("prompt is required")
 	}
@@ -926,44 +996,103 @@ func (e *Engine) chatStreamImpl(ctx context.Context, agentID, prompt string, his
 		AILLMRateLimitHits.Inc()
 		return nil, fmt.Errorf("rate limit exceeded for agent %s", agentID)
 	}
-
-	out := make(chan string, 32)
+	out := make(chan string, 64)
 	go func() {
 		defer close(out)
-
-		final, reasoning, invocations, err := e.chatWithTools(ctx, agentID, prompt, history, reasoning)
+		err := e.chatWithToolsStream(ctx, agentID, prompt, history, reasoning, func(s string) {
+			out <- s
+		})
 		if err != nil {
 			out <- "⚠️ " + err.Error()
-			return
 		}
-
-		// 展示工具调用过程
-		for _, inv := range invocations {
-			out <- fmt.Sprintf("\n\n🔧 **调用工具 `%s`**\n", inv.Name)
-			if len(inv.Arguments) > 0 {
-				if b, e := json.MarshalIndent(inv.Arguments, "", "  "); e == nil {
-					out <- "```json\n" + string(b) + "\n```\n"
-				}
-			}
-			out <- fmt.Sprintf("\n↳ **结果**: %s\n\n", summarizeToolResult(inv.Result))
-		}
-
-		// 原生推理内容(若模型提供)作为独立块展示
-		if reasoning != "" {
-			out <- "\n\n> 💭 **推理过程**\n\n" + reasoning + "\n\n"
-		}
-
-		// 流式输出最终答案(按词切分,模拟 token 流)
-		streamWords(out, final)
 	}()
 	return out, nil
 }
 
-// streamWords 将文本按空白切分,逐词推入 channel 以模拟流式输出。
-func streamWords(out chan<- string, text string) {
-	for _, w := range strings.Fields(text) {
-		out <- w + " "
+// chatWithToolsStream 真实流式版 Function Calling 循环:
+//  1. 每轮用 StreamChat 边收边推(token/推理实时发往前端);
+//  2. 若本轮模型请求工具, 在流结束后实时发射 🔧 调用 / ↳ 结果 标记, 再执行工具并把结果回填;
+//  3. 回到步骤 1, 直至模型不再请求工具(终轮,答案已流式推送)或达到最大轮次。
+//
+// 与 chatWithTools 共享 execToolChecked, 因此同样受 RBAC / 限流 / 结果截断约束。
+func (e *Engine) chatWithToolsStream(ctx context.Context, agentID, prompt string, history []llm.Message, reasoning bool, emit func(string)) error {
+	if e.lim != nil && agentID != "" && !e.lim.Allow(agentID) {
+		return fmt.Errorf("rate limit exceeded for agent %s", agentID)
 	}
+
+	userPrompt := prompt
+	if reasoning {
+		userPrompt = "请按以下格式回答：\n\n<think>\n先进行分步推理分析\n</think>\n<answer>\n再给出最终答案\n</answer>\n\n用户问题：" + prompt
+	}
+	msgs := e.buildInitialMessages(agentID, userPrompt, history)
+	tools := e.buildToolDefs()
+
+	for round := 0; round < maxToolRounds; round++ {
+		if !e.acquireLLMSlot(ctx) {
+			return fmt.Errorf("llm concurrency limit reached")
+		}
+		ch, err := e.llmClient.StreamChat(ctx, llm.ChatRequest{
+			Messages:    msgs,
+			Tools:       tools,
+			MaxTokens:   e.genMaxTokensVal(),
+			Temperature: e.genTemperatureVal(),
+		})
+		e.releaseLLMSlot()
+		if err != nil {
+			return err
+		}
+
+		var content, reasoningAcc string
+		var toolCalls []llm.ToolCall
+		for sc := range ch {
+			if sc.Content != "" {
+				emit(sc.Content)
+			}
+			if sc.Reasoning != "" {
+				emit(sc.Reasoning)
+			}
+			content += sc.Content
+			reasoningAcc += sc.Reasoning
+			if len(sc.ToolCalls) > 0 {
+				toolCalls = sc.ToolCalls
+			}
+		}
+
+		msgs = append(msgs, llm.Message{Role: "assistant", Content: content, ReasoningContent: reasoningAcc, ToolCalls: toolCalls})
+
+		if len(toolCalls) == 0 {
+			// 终轮: 答案已通过流式推送给前端
+			e.recordStreamTokens(agentID, content)
+			return nil
+		}
+
+		// 执行本轮工具调用, 实时发射进度标记
+		for _, tc := range toolCalls {
+			var args map[string]any
+			if tc.Function.Arguments != "" {
+				_ = json.Unmarshal([]byte(tc.Function.Arguments), &args)
+			}
+			AIToolCalls.Inc()
+			slog.Info("ai function call", "tool", tc.Function.Name, "args", truncateJSON(args))
+			emit(fmt.Sprintf("\n\n🔧 **调用工具 `%s`**\n", tc.Function.Name))
+			if len(args) > 0 {
+				if b, e := json.MarshalIndent(args, "", "  "); e == nil {
+					emit("```json\n" + string(b) + "\n```\n")
+				}
+			}
+			result, _ := e.execToolChecked(ctx, tc)
+			emit(fmt.Sprintf("\n↳ **结果**: %s\n\n", summarizeToolResult(result)))
+
+			resBytes, _ := json.Marshal(result)
+			msgs = append(msgs, llm.Message{
+				Role:       "tool",
+				Content:    string(resBytes),
+				ToolCallID: tc.ID,
+				Name:       tc.Function.Name,
+			})
+		}
+	}
+	return fmt.Errorf("function calling loop exceeded max rounds (%d)", maxToolRounds)
 }
 
 // ——— 对话持久(内存) ———

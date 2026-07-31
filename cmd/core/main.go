@@ -355,6 +355,20 @@ func main() {
 	})
 	knowledgeSvc.SetEmbedder(llmClient) // 注入向量生成器,新建/更新知识库文章自动写入 embedding
 
+	// 存量知识库语义检索回填: 启动时幂等、非阻塞地补算 embedding(仅对 embedding IS NULL 的文章)。
+	// 失败(如 pgvector 未启用)仅告警, 不影响启动。
+	go func() {
+		defer func() { _ = recover() }()
+		n, err := knowledgeSvc.ReindexAll(context.Background())
+		if err != nil {
+			slog.Warn("knowledge reindex skipped", "err", err)
+			return
+		}
+		if n > 0 {
+			slog.Info("knowledge reindex done", "reindexed", n)
+		}
+	}()
+
 	userSvc := user.NewService(db, authProvider)
 	server.RegisterService(userSvc)
 

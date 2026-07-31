@@ -34,8 +34,14 @@ var (
 		Name: "ai_tool_calls_total",
 		Help: "Total number of MCP tool invocations initiated by the model via Function Calling",
 	})
+
+	// AIToolExecDenied 因 RBAC 权限不足或限流而被拒绝执行的工具调用次数。
+	AIToolExecDenied = prometheus.NewCounter(prometheus.CounterOpts{
+		Name: "ai_tool_exec_denied_total",
+		Help: "Total number of AI tool executions denied by RBAC or rate-limit (e.g. script_run by a viewer)",
+	})
 )
 
 func init() {
-	metrics.Registry.MustRegister(AIConcurrentSessions, AILLMInFlight, AILLMRateLimitHits, AIToolCalls)
+	metrics.Registry.MustRegister(AIConcurrentSessions, AILLMInFlight, AILLMRateLimitHits, AIToolCalls, AIToolExecDenied)
 }

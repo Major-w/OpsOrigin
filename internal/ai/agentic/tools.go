@@ -25,6 +25,15 @@ type embedderIface interface {
 	Embed(ctx context.Context, text string) ([]float32, error)
 }
 
+// tenantOf 从请求上下文解析当前租户; 缺省回退 "default"。
+// 使 AI 工具仅在请求者所属租户范围内查询 CMDB/工单/脚本/主机/知识库, 避免越租户访问。
+func tenantOf(ctx context.Context) string {
+	if t, ok := ctx.Value("tenant_id").(string); ok && t != "" {
+		return t
+	}
+	return "default"
+}
+
 // MCPToolSet 向 AI 引擎注册运维 MCP 工具（CMDB查询、工单创建、脚本执行、知识库检索）。
 type MCPToolSet struct {
 	db       *sql.DB
@@ -47,8 +56,8 @@ func (ts *MCPToolSet) cmdbQuery(ctx context.Context, args map[string]any) (any, 
 		query = "%"
 	}
 	rows, err := ts.db.QueryContext(ctx,
-		`SELECT id, type_id, name, attributes FROM cmdb_ci WHERE tenant_id='default' AND (name ILIKE $1 OR type_id ILIKE $1) LIMIT 20`,
-		"%"+query+"%")
+		`SELECT id, type_id, name, attributes FROM cmdb_ci WHERE tenant_id=$2 AND (name ILIKE $1 OR type_id ILIKE $1) LIMIT 20`,
+		"%"+query+"%", tenantOf(ctx))
 	if err != nil {
 		return nil, err
 	}
@@ -96,7 +105,7 @@ func (ts *MCPToolSet) scriptRun(ctx context.Context, args map[string]any) (any, 
 		name, _ := args["script_name"].(string)
 		if name != "" {
 			var sid string
-			ts.db.QueryRowContext(ctx, `SELECT id FROM automation_scripts WHERE tenant_id='default' AND name ILIKE $1 LIMIT 1`, "%"+name+"%").Scan(&sid)
+			ts.db.QueryRowContext(ctx, `SELECT id FROM automation_scripts WHERE tenant_id=$2 AND name ILIKE $1 LIMIT 1`, "%"+name+"%", tenantOf(ctx)).Scan(&sid)
 			scriptID = sid
 		}
 	}
@@ -109,13 +118,13 @@ func (ts *MCPToolSet) scriptRun(ctx context.Context, args map[string]any) (any, 
 	if agentID == "" {
 		if an, _ := args["agent_name"].(string); an != "" && ts.db != nil {
 			ts.db.QueryRowContext(ctx,
-				`SELECT id FROM agent_hosts WHERE tenant_id='default' AND name ILIKE $1 ORDER BY (status='online') DESC LIMIT 1`,
-				"%"+an+"%").Scan(&agentID)
+				`SELECT id FROM agent_hosts WHERE tenant_id=$2 AND name ILIKE $1 ORDER BY (status='online') DESC LIMIT 1`,
+				"%"+an+"%", tenantOf(ctx)).Scan(&agentID)
 		}
 	}
 	if agentID == "" && ts.db != nil {
 		ts.db.QueryRowContext(ctx,
-			`SELECT id FROM agent_hosts WHERE tenant_id='default' AND status='online' ORDER BY last_heartbeat DESC NULLS LAST LIMIT 1`).Scan(&agentID)
+			`SELECT id FROM agent_hosts WHERE tenant_id=$1 AND status='online' ORDER BY last_heartbeat DESC NULLS LAST LIMIT 1`, tenantOf(ctx)).Scan(&agentID)
 	}
 	if agentID == "" {
 		return map[string]any{"script_id": scriptID, "status": "error", "error": "no target agent: provide agent_id/agent_name or ensure an online agent exists"}, nil
@@ -138,7 +147,7 @@ func (ts *MCPToolSet) scriptRun(ctx context.Context, args map[string]any) (any, 
 	}
 	runAs, _ := args["run_as"].(string)
 
-	output, exitCode, err := ts.exec.Execute(scriptID, params, timeout, runAs, agentID, "default")
+	output, exitCode, err := ts.exec.Execute(scriptID, params, timeout, runAs, agentID, tenantOf(ctx))
 	if err != nil {
 		return map[string]any{
 			"script_id": scriptID, "agent_id": agentID, "exit_code": exitCode,
@@ -171,9 +180,9 @@ func (ts *MCPToolSet) searchKnowledge(ctx context.Context, query string, limit, 
 			lit := vectorLiteral(qv)
 			rows, qerr := ts.db.QueryContext(ctx,
 				`SELECT id, title, LEFT(content, $2) AS snippet FROM knowledge_articles
-				 WHERE tenant_id='default' AND embedding IS NOT NULL
+				 WHERE tenant_id=$4 AND embedding IS NOT NULL
 				 ORDER BY embedding <=> $1::vector LIMIT $3`,
-				lit, snippetLen, limit)
+				lit, snippetLen, limit, tenantOf(ctx))
 			if qerr == nil {
 				defer rows.Close()
 				var items []map[string]any
@@ -194,8 +203,8 @@ func (ts *MCPToolSet) searchKnowledge(ctx context.Context, query string, limit, 
 	}
 	// —— 回退:ILIKE 关键词匹配 ——
 	rows, err := ts.db.QueryContext(ctx,
-		`SELECT id, title, LEFT(content, $2) AS snippet FROM knowledge_articles WHERE tenant_id='default' AND (title ILIKE $1 OR content ILIKE $1) LIMIT $3`,
-		"%"+query+"%", snippetLen, limit)
+		`SELECT id, title, LEFT(content, $2) AS snippet FROM knowledge_articles WHERE tenant_id=$4 AND (title ILIKE $1 OR content ILIKE $1) LIMIT $3`,
+		"%"+query+"%", snippetLen, limit, tenantOf(ctx))
 	if err != nil {
 		return nil, err
 	}
