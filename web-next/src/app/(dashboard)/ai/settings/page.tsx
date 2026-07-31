@@ -95,6 +95,9 @@ export default function AISettingsPage() {
   const [sensitiveTools, setSensitiveTools] = useState<string[]>(DEFAULT_SENSITIVE_TOOLS)
   const [askTimeout, setAskTimeout] = useState(60)
   const [policySaving, setPolicySaving] = useState(false)
+  // 作用范围: global(默认) / agent(按 Agent 覆盖)
+  const [approvalScope, setApprovalScope] = useState<'global' | 'agent'>('global')
+  const [approvalAgentId, setApprovalAgentId] = useState('')
 
   useEffect(() => { fetchAgents(); loadTools(); loadSysConfig(); loadApprovalPolicy(); loadKbCategories(); loadCustomTools() }, [])
   
@@ -181,8 +184,8 @@ export default function AISettingsPage() {
     } catch {}
   }
 
-  const loadApprovalPolicy = async () => {
-    const p = await getApprovalPolicy()
+  const loadApprovalPolicy = async (agentId?: string) => {
+    const p = await getApprovalPolicy(agentId)
     if (p) {
       setApprovalMode(p.mode || 'sensitive_only')
       setSensitiveTools(p.sensitive_tools?.length ? p.sensitive_tools : DEFAULT_SENSITIVE_TOOLS)
@@ -192,7 +195,10 @@ export default function AISettingsPage() {
 
   const handleSaveApprovalPolicy = async () => {
     setPolicySaving(true)
-    await putApprovalPolicy({ mode: approvalMode, sensitive_tools: sensitiveTools, ask_timeout_sec: askTimeout })
+    // agent 级: 携带 agent_id 保存覆盖策略; 全局: 不带 agent_id
+    const payload: any = { mode: approvalMode, sensitive_tools: sensitiveTools, ask_timeout_sec: askTimeout }
+    if (approvalScope === 'agent' && approvalAgentId) payload.agent_id = approvalAgentId
+    await putApprovalPolicy(payload)
     setPolicySaving(false)
   }
 
@@ -720,6 +726,47 @@ export default function AISettingsPage() {
               <CardDescription>控制 AI 执行 script_run 等敏感操作时的确认方式（PRD 5.2.5）</CardDescription>
             </CardHeader>
             <CardContent className="space-y-5">
+              {/* 作用范围: 全局 / 指定 Agent */}
+              <div>
+                <label className="text-sm font-medium mb-2 block">作用范围</label>
+                <div className="flex gap-2">
+                  <button
+                    onClick={() => { setApprovalScope('global'); loadApprovalPolicy() }}
+                    className={cn(
+                      'flex-1 text-xs px-3 py-2 rounded-md border transition-colors text-left',
+                      approvalScope === 'global'
+                        ? 'bg-emerald-50 border-emerald-200 text-emerald-700 dark:bg-emerald-500/10 dark:border-emerald-500/30 dark:text-emerald-400'
+                        : 'border-gray-200 text-muted-foreground hover:border-gray-300 dark:border-gray-700 dark:hover:border-gray-600',
+                    )}
+                  >
+                    <span className="font-medium">🌐 全局默认</span>
+                    <span className="block text-[10px] opacity-60 mt-0.5">所有 Agent 未单独配置时生效</span>
+                  </button>
+                  <button
+                    onClick={() => { setApprovalScope('agent'); if (approvalAgentId) loadApprovalPolicy(approvalAgentId) }}
+                    className={cn(
+                      'flex-1 text-xs px-3 py-2 rounded-md border transition-colors text-left',
+                      approvalScope === 'agent'
+                        ? 'bg-emerald-50 border-emerald-200 text-emerald-700 dark:bg-emerald-500/10 dark:border-emerald-500/30 dark:text-emerald-400'
+                        : 'border-gray-200 text-muted-foreground hover:border-gray-300 dark:border-gray-700 dark:hover:border-gray-600',
+                    )}
+                  >
+                    <span className="font-medium">🤖 按 Agent 覆盖</span>
+                    <span className="block text-[10px] opacity-60 mt-0.5">为指定智能体单独配置策略</span>
+                  </button>
+                </div>
+                {approvalScope === 'agent' && (
+                  <select
+                    className="flex h-9 w-full mt-2 rounded-md border border-input bg-background px-3 py-1.5 text-sm"
+                    value={approvalAgentId}
+                    onChange={e => { setApprovalAgentId(e.target.value); if (e.target.value) loadApprovalPolicy(e.target.value) }}
+                  >
+                    <option value="">选择 Agent…</option>
+                    {agents.map(a => <option key={a.id} value={a.id}>{a.name}</option>)}
+                  </select>
+                )}
+              </div>
+
               {/* 模式选择 */}
               <div>
                 <label className="text-sm font-medium mb-2 block">策略模式</label>

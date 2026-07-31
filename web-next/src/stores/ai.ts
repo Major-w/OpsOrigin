@@ -207,6 +207,7 @@ interface AIState {
     explore?: boolean,
     onAsk?: (approval: PendingApproval) => void,
     serverConvId?: string,
+    signal?: AbortSignal,
   ) => Promise<void>
   loadConversations: (agentId?: string) => Promise<any[]>
   saveConversation: (conv: any) => Promise<any | null>
@@ -309,7 +310,7 @@ export const useAIStore = create<AIState>((set, get) => ({
       return null
     }
   },
-  streamChat: async (prompt, onToken, onDone, history = [], agentId, reasoning, onThinking, explore, onAsk, serverConvId) => {
+  streamChat: async (prompt, onToken, onDone, history = [], agentId, reasoning, onThinking, explore, onAsk, serverConvId, signal) => {
     try {
       // 为本次 AI 回复生成稳定的 message_id, 反馈时用于精确关联
       const messageId = `msg_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`
@@ -323,6 +324,7 @@ export const useAIStore = create<AIState>((set, get) => ({
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body),
+        signal,
       })
       if (!resp.ok) {
         toast.error(`AI 响应失败: ${resp.status}`)
@@ -387,6 +389,11 @@ export const useAIStore = create<AIState>((set, get) => ({
       }
       onDone({ message_id: messageId, conversation_id: conversationId, citations })
     } catch (e: any) {
+      // 主动中断(AbortController.abort)时静默处理, 不弹错误提示
+      if (e?.name === 'AbortError' || e?.name === 'TimeoutError') {
+        onDone()
+        return
+      }
       toast.error(`AI 流式响应失败: ${e.message}`)
       onDone()
     }

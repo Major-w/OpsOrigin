@@ -4,7 +4,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { useAIStore, type PendingApproval } from '@/stores/ai'
 import { renderMarkdown, renderExploreContent } from '@/lib/ai-render'
-import { Bot, X, Send, Loader2, Trash2, ExternalLink, ChevronRight, AlertTriangle, CheckCircle2, XCircle, Sparkles } from 'lucide-react'
+import { Bot, X, Send, Loader2, Trash2, ExternalLink, ChevronRight, AlertTriangle, CheckCircle2, XCircle, Sparkles, Square } from 'lucide-react'
 import { cn } from '@/lib/utils'
 
 // ============================================================================
@@ -78,6 +78,7 @@ export default function AIAssistant() {
     if (typeof window === 'undefined') return ''
     try { return localStorage.getItem(CONV_ID_KEY) || '' } catch { return '' }
   })
+  const abortRef = useRef<AbortController | null>(null)
 
   const listEndRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLTextAreaElement>(null)
@@ -121,6 +122,10 @@ export default function AIAssistant() {
     const content = input.trim()
     if (!content || streaming) return
     setInput('')
+
+    // 中止上一次流式请求(如果还在进行)
+    abortRef.current?.abort()
+    abortRef.current = new AbortController()
 
     const userMsg: FabMessage = { id: `u_${Date.now()}`, role: 'user', content, timestamp: Date.now() }
     const aiId = `a_${Date.now()}`
@@ -173,6 +178,7 @@ export default function AIAssistant() {
       mode === 'explore',
       onAsk,
       cid,
+      abortRef.current.signal,
     )
   }
 
@@ -192,6 +198,12 @@ export default function AIAssistant() {
     const ok = await respondApproval(pending.id, action)
     setApproving(false)
     if (ok) setPending(null)
+  }
+
+  const stopGeneration = () => {
+    abortRef.current?.abort()
+    setStreaming(false)
+    abortRef.current = null
   }
 
   // ============ 渲染 ============
@@ -361,13 +373,13 @@ export default function AIAssistant() {
             className="flex-1 resize-none rounded-xl border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-900 px-3 py-2 text-[13px] focus:outline-none focus:ring-2 focus:ring-emerald-500/50 min-h-[38px] max-h-32"
           />
           <button
-            onClick={send}
-            disabled={streaming || !input.trim()}
+            onClick={streaming ? stopGeneration : send}
+            disabled={!input.trim() && !streaming}
             className="flex h-9 w-9 items-center justify-center rounded-xl bg-emerald-600 text-white hover:bg-emerald-500 disabled:opacity-40 disabled:cursor-not-allowed transition-colors shrink-0"
-            title="发送"
-            aria-label="发送"
+            title={streaming ? '停止生成' : '发送'}
+            aria-label={streaming ? '停止生成' : '发送'}
           >
-            {streaming ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
+            {streaming ? <Square className="h-4 w-4" /> : <Send className="h-4 w-4" />}
           </button>
         </div>
         {mode === 'explore' && (

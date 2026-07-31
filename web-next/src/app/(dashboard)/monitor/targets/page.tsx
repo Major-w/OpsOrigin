@@ -31,6 +31,22 @@ export default function MonitorConfigPage() {
   const [ruleDialogOpen, setRuleDialogOpen] = useState(false)
   const [ruleForm, setRuleForm] = useState({ name: '', metric_name: 'cpu_usage_percent', operator: '>', threshold: 80, duration: 60, severity: 'warning' })
   const [probeForm, setProbeForm] = useState({ address: '', port: 80, protocol: 'tcp' })
+  // 采集指标趋势(来自采集任务 collect_metrics)
+  const [collectMetrics, setCollectMetrics] = useState<any[]>([])
+  const [metricsLoading, setMetricsLoading] = useState(false)
+
+  useEffect(() => {
+    if (tab === 'metrics') loadCollectMetrics()
+  }, [tab])
+
+  const loadCollectMetrics = async () => {
+    setMetricsLoading(true)
+    try {
+      const r = await fetch('/api/v1/collect-metrics?limit=500')
+      if (r.ok) setCollectMetrics(await r.json())
+    } catch { /* 后端不可用时静默 */ }
+    setMetricsLoading(false)
+  }
 
   useEffect(() => {
     store.fetchTargets()
@@ -176,6 +192,47 @@ export default function MonitorConfigPage() {
 
         {/* 指标历史 */}
         <TabsContent value="metrics" className="mt-4">
+          {/* 采集指标趋势(来自采集任务 collect_metrics, 指标落库持久化) */}
+          <Card className="mb-4">
+            <CardHeader className="pb-2 flex-row items-center justify-between">
+              <CardTitle className="text-sm">采集指标趋势</CardTitle>
+              <Button variant="ghost" size="sm" className="h-6 text-xs" onClick={loadCollectMetrics} disabled={metricsLoading}>
+                {metricsLoading ? <Loader2 className="h-3 w-3 animate-spin" /> : '刷新'}
+              </Button>
+            </CardHeader>
+            <CardContent>
+              {collectMetrics.length === 0 ? (
+                <p className="text-xs text-muted-foreground py-4 text-center">
+                  暂无采集指标数据。可在「自动化运维 → 数据采集」创建 metric 类型采集任务，指标会持久化到这里并绘制趋势。
+                </p>
+              ) : (() => {
+                // 按 agent + 指标名分组, 每组一条趋势线
+                const groups = new Map<string, { agent: string; name: string; unit: string; points: { t: number; v: number }[] }>()
+                for (const m of collectMetrics) {
+                  const key = `${m.agent_id || ''}::${m.name || ''}`
+                  if (!groups.has(key)) groups.set(key, { agent: m.agent_id || 'unknown', name: m.name || 'metric', unit: m.unit || '', points: [] })
+                  const g = groups.get(key)!
+                  const ts = m.collected_at ? new Date(m.collected_at).getTime() : 0
+                  g.points.push({ t: ts, v: Number(m.value) || 0 })
+                }
+                const list = Array.from(groups.values()).map(g => ({ ...g, points: g.points.sort((a, b) => a.t - b.t) }))
+                return (
+                  <div className="grid gap-4 md:grid-cols-2">
+                    {list.map(g => (
+                      <div key={`${g.agent}::${g.name}`} className="rounded-lg border border-gray-200 dark:border-gray-800 p-3">
+                        <div className="flex items-center justify-between mb-1">
+                          <span className="text-xs font-medium truncate">{g.name}</span>
+                          <span className="text-[10px] text-muted-foreground">{g.agent} · {g.unit}</span>
+                        </div>
+                        <CollectMetricChart points={g.points} />
+                      </div>
+                    ))}
+                  </div>
+                )
+              })()}
+            </CardContent>
+          </Card>
+
           <Card>
             <CardHeader><CardTitle className="text-sm">探测指标历史 (最近 {probeResults.length} 条)</CardTitle></CardHeader>
             <CardContent className="p-0">
@@ -270,6 +327,38 @@ export default function MonitorConfigPage() {
         </div>
         <DialogFooter><Button variant="outline" onClick={() => setRuleDialogOpen(false)}>取消</Button><Button onClick={handleCreateRule} disabled={!ruleForm.name}>创建</Button></DialogFooter>
       </Dialog>
+    </div>
+  )
+}
+
+// CollectMetricChart 轻量 SVG 折线趋势图(无第三方图表依赖, 60fps 渲染)。
+function CollectMetricChart({ points }: { points: { t: number; v: number }[] }) {
+  const W = 520, H = 110, PAD = 10
+  if (points.length < 2) {
+    return <p className="text-[10px] text-muted-foreground py-4 text-center">数据点不足(≥2 个采样才可绘制)</p>
+  }
+  const vals = points.map(p => p.v)
+  const min = Math.min(...vals)
+  const max = Math.max(...vals)
+  const range = max - min || 1
+  const pts = points.map((p, i) => {
+    const x = PAD + (i / (points.length - 1)) * (W - PAD * 2)
+    const y = H - PAD - ((p.v - min) / range) * (H - PAD * 2)
+    return `${x.toFixed(1)},${y.toFixed(1)}`
+  }).join(' ')
+  const first = new Date(points[0].t)
+  const last = new Date(points[points.length - 1].t)
+  const fmt = (d: Date) => `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`
+  return (
+    <div>
+      <svg viewBox={`0 0 ${W} ${H}`} className="w-full" preserveAspectRatio="none" role="img" aria-label="指标趋势">
+        <polyline points={pts} fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinejoin="round" className="text-emerald-500" />
+      </svg>
+      <div className="flex justify-between text-[10px] text-muted-foreground mt-0.5">
+        <span>{fmt(first)}</span>
+        <span>min {min.toFixed(1)} · max {max.toFixed(1)}</span>
+        <span>{fmt(last)}</span>
+      </div>
     </div>
   )
 }
