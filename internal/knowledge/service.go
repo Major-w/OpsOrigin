@@ -1,16 +1,26 @@
 package knowledge
 
 import (
+	"archive/zip"
+	"bytes"
 	"context"
 	"database/sql"
+	"encoding/hex"
 	"encoding/json"
+	"encoding/xml"
 	"fmt"
+	"io"
 	"net/http"
+	"path/filepath"
+	"regexp"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/google/uuid"
+	pdfapi "github.com/pdfcpu/pdfcpu/pkg/api"
+	pdfmodel "github.com/pdfcpu/pdfcpu/pkg/pdfcpu/model"
 )
 
 type Store interface {
@@ -186,6 +196,8 @@ func (s *Service) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/v1/knowledge/{id}/versions", s.handleListVersions)
 	mux.HandleFunc("POST /api/v1/knowledge/{id}/versions/{version}/rollback", s.handleRollbackVersion)
 	mux.HandleFunc("POST /api/v1/knowledge/import", s.handleImport)
+	// P1 文件导入: 后端解析 .md/.txt/.json/.pdf/.docx → 建文章
+	mux.HandleFunc("POST /api/v1/knowledge/import-file", s.handleImportFile)
 }
 
 // SetEmbedder 注入向量生成器,使新建/更新文章自动写入 embedding 以支持语义检索。
@@ -428,6 +440,233 @@ func (s *Service) handleImport(w http.ResponseWriter, r *http.Request) {
 		imported++
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"imported": imported, "errors": errs})
+}
+
+// handleImportFile 接收上传文件(.md/.txt/.json/.pdf/.docx), 服务端解析文本后批量建文章。
+// multipart 字段: file(必填); 可选 form: category(统一归类)。
+func (s *Service) handleImportFile(w http.ResponseWriter, r *http.Request) {
+	if err := r.ParseMultipartForm(32 << 20); err != nil {
+		writeError(w, http.StatusBadRequest, "解析上传失败(请使用 multipart/form-data)")
+		return
+	}
+	fh, ok := r.MultipartForm.File["file"]
+	if !ok || len(fh) == 0 {
+		writeError(w, http.StatusBadRequest, "缺少 file 字段")
+		return
+	}
+	header := fh[0]
+	f, err := header.Open()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "打开上传文件失败")
+		return
+	}
+	defer f.Close()
+	data, err := io.ReadAll(f)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "读取上传文件失败")
+		return
+	}
+	items, err := parseImportFile(header.Filename, data)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	category := r.FormValue("category")
+	tenantID := tenantFromCtx(r.Context())
+	imported := 0
+	var errs []string
+	for _, it := range items {
+		if strings.TrimSpace(it.Title) == "" || strings.TrimSpace(it.Content) == "" {
+			errs = append(errs, "skip: title/content required")
+			continue
+		}
+		it.ID = ""
+		it.TenantID = tenantID
+		if category != "" {
+			it.Category = category
+		}
+		if it.Status == "" {
+			it.Status = "draft"
+		}
+		if err := s.store.Create(r.Context(), &it); err != nil {
+			errs = append(errs, it.Title+": "+err.Error())
+			continue
+		}
+		imported++
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"imported": imported, "errors": errs})
+}
+
+// parseImportFile 按扩展名路由到对应解析器。
+func parseImportFile(name string, data []byte) ([]Article, error) {
+	ext := strings.ToLower(filepath.Ext(name))
+	base := strings.TrimSuffix(name, ext)
+	switch ext {
+	case ".json":
+		var items []Article
+		if err := json.Unmarshal(data, &items); err != nil {
+			return nil, fmt.Errorf("JSON 解析失败: %w", err)
+		}
+		return items, nil
+	case ".pdf":
+		text, err := extractPDFText(data)
+		if err != nil {
+			return nil, err
+		}
+		return []Article{{Title: base, Content: text}}, nil
+	case ".docx":
+		text, err := extractDocxText(data)
+		if err != nil {
+			return nil, err
+		}
+		return []Article{{Title: base, Content: text}}, nil
+	default: // .md/.markdown/.txt 等纯文本
+		return []Article{{Title: base, Content: string(data)}}, nil
+	}
+}
+
+// extractPDFText 用 pdfcpu 抽取每页内容流(自动解压 FlateDecode 等), 再从中解析可读文本。
+// pdfcpu 对最简/压缩/复杂排版 PDF 的读取比旧库更稳; 扫描件(纯图片)仍抽不到文本。
+func extractPDFText(data []byte) (string, error) {
+	conf := pdfmodel.NewDefaultConfiguration()
+	conf.ValidationMode = pdfmodel.ValidationRelaxed
+	var contents []string
+	err := pdfapi.ExtractContent(bytes.NewReader(data), nil, func(rd io.Reader, _ int) error {
+		b, e := io.ReadAll(rd)
+		if e != nil {
+			return e
+		}
+		contents = append(contents, string(b))
+		return nil
+	}, conf)
+	if err != nil {
+		return "", fmt.Errorf("PDF 解析失败: %w", err)
+	}
+	text := extractTextFromPDFContent(contents)
+	if strings.TrimSpace(text) == "" {
+		return "", fmt.Errorf("PDF 未提取到文本(可能为扫描件/图片型 PDF)")
+	}
+	return text, nil
+}
+
+var (
+	reTJPDF      = regexp.MustCompile(`\[([^\]]*)\]\s*TJ`)
+	reParenPDF   = regexp.MustCompile(`\(((?:\\.|[^()\\])*)\)`)
+	reParenTjPDF = regexp.MustCompile(`\(((?:\\.|[^()\\])*)\)\s*Tj`)
+	reHexTjPDF   = regexp.MustCompile(`<([0-9A-Fa-f]+)>\s*Tj`)
+	reHexTJPDF   = regexp.MustCompile(`<([0-9A-Fa-f]+)>`)
+)
+
+// extractTextFromPDFContent 从 pdfcpu 抽取的内容流中解析可读文本:
+// 支持 (str) Tj、[(str) num ...] TJ 字距数组、<hex> 十六进制串及其组合。
+func extractTextFromPDFContent(contents []string) string {
+	var out strings.Builder
+	for _, c := range contents {
+		// 1) TJ 字距数组: 抽取其中所有 (str) 与 <hex>, 忽略数字间距
+		for _, m := range reTJPDF.FindAllStringSubmatch(c, -1) {
+			for _, p := range reParenPDF.FindAllStringSubmatch(m[1], -1) {
+				out.WriteString(unescapePDFString(p[1]))
+			}
+			for _, h := range reHexTJPDF.FindAllStringSubmatch(m[1], -1) {
+				out.WriteString(decodePDFHex(h[1]))
+			}
+			out.WriteString("\n")
+		}
+		// 2) 独立 (str) Tj
+		for _, m := range reParenTjPDF.FindAllStringSubmatch(c, -1) {
+			out.WriteString(unescapePDFString(m[1]))
+			out.WriteString("\n")
+		}
+		// 3) 独立 <hex> Tj
+		for _, m := range reHexTjPDF.FindAllStringSubmatch(c, -1) {
+			out.WriteString(decodePDFHex(m[1]))
+			out.WriteString("\n")
+		}
+	}
+	return strings.TrimSpace(out.String())
+}
+
+func unescapePDFString(s string) string {
+	return strings.NewReplacer(
+		`\(`, "(", `\)`, ")", `\\`, "\\",
+		`\n`, "\n", `\r`, "\r", `\t`, "\t",
+	).Replace(s)
+}
+
+func decodePDFHex(s string) string {
+	if len(s)%2 != 0 {
+		s += "0"
+	}
+	b, err := hex.DecodeString(s)
+	if err != nil {
+		return ""
+	}
+	return string(b)
+}
+
+// extractDocxText 零依赖: docx 是 zip 包, 读取 word/document.xml 抽取 <w:t> 文本。
+func extractDocxText(data []byte) (string, error) {
+	zr, err := zip.NewReader(bytes.NewReader(data), int64(len(data)))
+	if err != nil {
+		return "", fmt.Errorf("docx 解压失败(非有效 .docx): %w", err)
+	}
+	var docFile *zip.File
+	for _, f := range zr.File {
+		if f.Name == "word/document.xml" {
+			docFile = f
+			break
+		}
+	}
+	if docFile == nil {
+		return "", fmt.Errorf("docx 内未找到 word/document.xml")
+	}
+	rc, err := docFile.Open()
+	if err != nil {
+		return "", err
+	}
+	defer rc.Close()
+	raw, err := io.ReadAll(rc)
+	if err != nil {
+		return "", err
+	}
+	return extractDocxTextFromXML(raw), nil
+}
+
+// extractDocxTextFromXML 流式解析 document.xml: 收集 <w:t> 文本, 段落(<w:p>)间换行。
+func extractDocxTextFromXML(raw []byte) string {
+	var sb strings.Builder
+	dec := xml.NewDecoder(bytes.NewReader(raw))
+	var inText, inPara bool
+	for {
+		tok, err := dec.Token()
+		if err != nil {
+			break
+		}
+		switch el := tok.(type) {
+		case xml.StartElement:
+			switch el.Name.Local {
+			case "t":
+				inText = true
+			case "p":
+				inPara = true
+			}
+		case xml.EndElement:
+			switch el.Name.Local {
+			case "t":
+				inText = false
+			case "p":
+				if inPara {
+					sb.WriteString("\n")
+				}
+				inPara = false
+			}
+		case xml.CharData:
+			if inText {
+				sb.Write(el)
+			}
+		}
+	}
+	return strings.TrimRight(sb.String(), "\n")
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {
