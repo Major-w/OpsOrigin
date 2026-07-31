@@ -7,20 +7,23 @@ import (
 
 // Permission 权限常量
 const (
-	PermissionCMDBRead    = "cmdb:read"
-	PermissionCMDBWrite   = "cmdb:write"
-	PermissionCMDBAdmin   = "cmdb:admin"
-	PermissionMonitorRead = "monitor:read"
+	PermissionCMDBRead     = "cmdb:read"
+	PermissionCMDBWrite    = "cmdb:write"
+	PermissionCMDBAdmin    = "cmdb:admin"
+	PermissionMonitorRead  = "monitor:read"
 	PermissionMonitorWrite = "monitor:write"
-	PermissionITSMRead    = "itsm:read"
-	PermissionITSMWrite   = "itsm:write"
-	PermissionITSMApprove = "itsm:approve"
-	PermissionUserRead    = "user:read"
-	PermissionUserWrite   = "user:write"
-	PermissionAgentRead   = "agent:read"
-	PermissionAgentWrite  = "agent:write"
-	PermissionAuditRead   = "audit:read"
-	PermissionSystemAdmin = "system:admin"
+	PermissionITSMRead     = "itsm:read"
+	PermissionITSMWrite    = "itsm:write"
+	PermissionITSMApprove  = "itsm:approve"
+	PermissionUserRead     = "user:read"
+	PermissionUserWrite    = "user:write"
+	PermissionAgentRead    = "agent:read"
+	PermissionAgentWrite   = "agent:write"
+	PermissionAuditRead    = "audit:read"
+	PermissionSystemAdmin  = "system:admin"
+	// PermissionAIToolExec 允许调用 /api/v1/ai/tools/{name}/execute 直接执行运维工具
+	// (含 script_run 在受管主机上执行脚本,属高风险操作)。
+	PermissionAIToolExec = "ai:tool:exec"
 )
 
 // Role 角色常量
@@ -39,6 +42,7 @@ var RolePermissions = map[string][]string{
 		PermissionUserRead, PermissionUserWrite,
 		PermissionAgentRead, PermissionAgentWrite,
 		PermissionAuditRead, PermissionSystemAdmin,
+		PermissionAIToolExec,
 	},
 	RoleOperator: {
 		PermissionCMDBRead, PermissionCMDBWrite,
@@ -46,7 +50,7 @@ var RolePermissions = map[string][]string{
 		PermissionITSMRead, PermissionITSMWrite,
 		PermissionUserRead,
 		PermissionAgentRead, PermissionAgentWrite,
-		PermissionAuditRead,
+		PermissionAuditRead, PermissionAIToolExec,
 	},
 	RoleViewer: {
 		PermissionCMDBRead,
@@ -155,6 +159,20 @@ func (m *RBACMiddleware) HasPermission(role, permission string) bool {
 	return false
 }
 
+// HasPermission 包级便捷函数:检查某角色是否拥有指定权限(无需构造 RBACMiddleware)。
+func HasPermission(role, permission string) bool {
+	perms, ok := RolePermissions[role]
+	if !ok {
+		return false
+	}
+	for _, p := range perms {
+		if p == permission {
+			return true
+		}
+	}
+	return false
+}
+
 // GetRolePermissions 获取角色的所有权限
 func (m *RBACMiddleware) GetRolePermissions(role string) []string {
 	return RolePermissions[role]
@@ -162,31 +180,31 @@ func (m *RBACMiddleware) GetRolePermissions(role string) []string {
 
 // PathPermissionMapping 路径权限映射
 var PathPermissionMapping = map[string]string{
-	"GET /api/v1/cmdb":              PermissionCMDBRead,
-	"POST /api/v1/cmdb":             PermissionCMDBWrite,
-	"PUT /api/v1/cmdb":              PermissionCMDBWrite,
-	"DELETE /api/v1/cmdb":           PermissionCMDBWrite,
-	"GET /api/v1/cmdb/model-type":   PermissionCMDBRead,
-	"POST /api/v1/cmdb/model-type":  PermissionCMDBAdmin,
-	"PUT /api/v1/cmdb/model-type":   PermissionCMDBAdmin,
+	"GET /api/v1/cmdb":               PermissionCMDBRead,
+	"POST /api/v1/cmdb":              PermissionCMDBWrite,
+	"PUT /api/v1/cmdb":               PermissionCMDBWrite,
+	"DELETE /api/v1/cmdb":            PermissionCMDBWrite,
+	"GET /api/v1/cmdb/model-type":    PermissionCMDBRead,
+	"POST /api/v1/cmdb/model-type":   PermissionCMDBAdmin,
+	"PUT /api/v1/cmdb/model-type":    PermissionCMDBAdmin,
 	"DELETE /api/v1/cmdb/model-type": PermissionCMDBAdmin,
-	"GET /api/v1/monitor":           PermissionMonitorRead,
-	"POST /api/v1/monitor":          PermissionMonitorWrite,
-	"PUT /api/v1/monitor":           PermissionMonitorWrite,
-	"DELETE /api/v1/monitor":        PermissionMonitorWrite,
-	"GET /api/v1/itsm":              PermissionITSMRead,
-	"POST /api/v1/itsm":             PermissionITSMWrite,
-	"PUT /api/v1/itsm":              PermissionITSMWrite,
-	"DELETE /api/v1/itsm":           PermissionITSMWrite,
-	"GET /api/v1/users":             PermissionUserRead,
-	"POST /api/v1/users":            PermissionUserWrite,
-	"PUT /api/v1/users":             PermissionUserWrite,
-	"DELETE /api/v1/users":          PermissionUserWrite,
-	"GET /api/v1/agents":            PermissionAgentRead,
-	"POST /api/v1/agents":           PermissionAgentWrite,
-	"PUT /api/v1/agents":            PermissionAgentWrite,
-	"DELETE /api/v1/agents":         PermissionAgentWrite,
-	"GET /api/v1/audit":             PermissionAuditRead,
+	"GET /api/v1/monitor":            PermissionMonitorRead,
+	"POST /api/v1/monitor":           PermissionMonitorWrite,
+	"PUT /api/v1/monitor":            PermissionMonitorWrite,
+	"DELETE /api/v1/monitor":         PermissionMonitorWrite,
+	"GET /api/v1/itsm":               PermissionITSMRead,
+	"POST /api/v1/itsm":              PermissionITSMWrite,
+	"PUT /api/v1/itsm":               PermissionITSMWrite,
+	"DELETE /api/v1/itsm":            PermissionITSMWrite,
+	"GET /api/v1/users":              PermissionUserRead,
+	"POST /api/v1/users":             PermissionUserWrite,
+	"PUT /api/v1/users":              PermissionUserWrite,
+	"DELETE /api/v1/users":           PermissionUserWrite,
+	"GET /api/v1/agents":             PermissionAgentRead,
+	"POST /api/v1/agents":            PermissionAgentWrite,
+	"PUT /api/v1/agents":             PermissionAgentWrite,
+	"DELETE /api/v1/agents":          PermissionAgentWrite,
+	"GET /api/v1/audit":              PermissionAuditRead,
 	// IAM:角色/用户组/权限管理
 	"GET /api/v1/iam":    PermissionUserRead,
 	"POST /api/v1/iam":   PermissionUserWrite,

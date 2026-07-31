@@ -46,7 +46,8 @@ type Engine struct {
 	teams          map[string]*model.AgentTeam
 	genMaxTokens   int
 	genTemperature float64
-	store          Store // PG 持久化（可选,nil=仅内存）
+	store          Store         // PG 持久化（可选,nil=仅内存）
+	teamConvStore  TeamConvStore // 团队对话历史（可选,nil=无跨轮记忆）
 }
 
 // NewEngine 构造引擎并注册内建工具。

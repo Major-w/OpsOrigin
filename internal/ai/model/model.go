@@ -14,48 +14,23 @@ type AgentInstance struct {
 }
 
 type ExecutionPlan struct {
-	ID          string    `json:"id"`
-	TicketID    string    `json:"ticket_id"`
-	AgentID     string    `json:"agent_id"`
-	TenantID    string    `json:"tenant_id"`
-	Steps       []Step    `json:"steps"`
-	RiskLevel   string    `json:"risk_level"`
-	Status      string    `json:"status"`
-	CreatedAt   time.Time `json:"created_at"`
+	ID        string    `json:"id"`
+	TicketID  string    `json:"ticket_id"`
+	AgentID   string    `json:"agent_id"`
+	TenantID  string    `json:"tenant_id"`
+	Steps     []Step    `json:"steps"`
+	RiskLevel string    `json:"risk_level"`
+	Status    string    `json:"status"`
+	CreatedAt time.Time `json:"created_at"`
 }
 
 type Step struct {
-	ID        string `json:"id"`
-	Tool      string `json:"tool"`
-	Input     any    `json:"input"`
-	Output    any    `json:"output,omitempty"`
-	Status    string `json:"status"`
-	Error     string `json:"error,omitempty"`
-}
-
-type ToolCall struct {
-	ID          string    `json:"id"`
-	AgentID     string    `json:"agent_id"`
-	ToolName    string    `json:"tool_name"`
-	Input       any       `json:"input"`
-	Output      any       `json:"output,omitempty"`
-	Success     bool      `json:"success"`
-	Error       string    `json:"error,omitempty"`
-	Elapsed     time.Duration `json:"elapsed_ms"`
-	Timestamp   time.Time `json:"timestamp"`
-}
-
-type ThinkLog struct {
-	AgentID     string    `json:"agent_id"`
-	TraceID     string    `json:"trace_id"`
-	Reasoning   string    `json:"reasoning"`
-	TokenUsage  TokenUsage `json:"token_usage"`
-}
-
-type TokenUsage struct {
-	Prompt     int `json:"prompt"`
-	Completion int `json:"completion"`
-	Total      int `json:"total"`
+	ID     string `json:"id"`
+	Tool   string `json:"tool"`
+	Input  any    `json:"input"`
+	Output any    `json:"output,omitempty"`
+	Status string `json:"status"`
+	Error  string `json:"error,omitempty"`
 }
 
 // TokenRecord 单次调用的 token 消耗记录。
@@ -70,7 +45,7 @@ type TokenRecord struct {
 
 // TokenStats 聚合统计。
 type TokenStats struct {
-	Period    string        `json:"period"`
+	Period     string       `json:"period"`
 	TotalCalls int          `json:"total_calls"`
 	Prompt     int          `json:"prompt_tokens"`
 	Completion int          `json:"completion_tokens"`
@@ -104,15 +79,15 @@ const (
 // TeamRole 团队成员角色。
 const (
 	TeamRoleSupervisor = "supervisor" // 主管：负责拆解 / 调度
-	TeamRoleMember    = "member"      // 普通成员：执行子任务
-	TeamRoleFinalizer = "finalizer"   // 汇总者：整合成员产出，给出最终答复
+	TeamRoleMember     = "member"     // 普通成员：执行子任务
+	TeamRoleFinalizer  = "finalizer"  // 汇总者：整合成员产出，给出最终答复
 )
 
 // TeamMember 团队中的一名成员（绑定一个底层 Agent 实例）。
 type TeamMember struct {
 	AgentID      string `json:"agent_id"`
 	AgentName    string `json:"agent_name"`
-	Role         string `json:"role"`          // supervisor / member / finalizer
+	Role         string `json:"role"`         // supervisor / member / finalizer
 	CanFinalize  bool   `json:"can_finalize"` // 该成员是否拥有定稿权
 	Weight       int    `json:"weight,omitempty"`
 	Persona      string `json:"persona,omitempty"`       // 角色画像（如「严谨的架构师」）
@@ -121,29 +96,29 @@ type TeamMember struct {
 
 // AgentTeam 一个多智能体团队定义。
 type AgentTeam struct {
-	ID          string        `json:"id"`
-	TenantID    string        `json:"tenant_id"`
-	Name        string        `json:"name"`
-	Description string        `json:"description,omitempty"`
-	Mode        string        `json:"mode"` // supervisor / parallel / sequential / debate
-	Members     []TeamMember  `json:"members"`
-	SystemPrompt string      `json:"system_prompt,omitempty"` // 团队级 persona 前缀
-	CreatedAt   time.Time     `json:"created_at"`
-	UpdatedAt   time.Time     `json:"updated_at"`
+	ID           string       `json:"id"`
+	TenantID     string       `json:"tenant_id"`
+	Name         string       `json:"name"`
+	Description  string       `json:"description,omitempty"`
+	Mode         string       `json:"mode"` // supervisor / parallel / sequential / debate
+	Members      []TeamMember `json:"members"`
+	SystemPrompt string       `json:"system_prompt,omitempty"` // 团队级 persona 前缀
+	CreatedAt    time.Time    `json:"created_at"`
+	UpdatedAt    time.Time    `json:"updated_at"`
 }
 
 // TeamChatRequest 团队对话请求。
 type TeamChatRequest struct {
-	TeamID   string `json:"team_id"`
-	Message  string `json:"message"`
+	TeamID    string `json:"team_id"`
+	Message   string `json:"message"`
 	SessionID string `json:"session_id,omitempty"`
-	Stream   bool   `json:"stream,omitempty"`
+	Stream    bool   `json:"stream,omitempty"`
 }
 
 // TeamChatResponse 团队对话（非流式）的响应。
 type TeamChatResponse struct {
-	SessionID    string `json:"session_id,omitempty"`
-	FinalAnswer  string `json:"final_answer"`
+	SessionID    string   `json:"session_id,omitempty"`
+	FinalAnswer  string   `json:"final_answer"`
 	InterActions []string `json:"interactions,omitempty"` // 各成员产出片段，便于审计
 }
 

@@ -16,6 +16,7 @@ import (
 	"github.com/opsorigin/core/internal/ai/mcp"
 	"github.com/opsorigin/core/internal/ai/model"
 	"github.com/opsorigin/core/internal/ai/ratelimit"
+	"github.com/opsorigin/core/pkg/auth"
 	"github.com/opsorigin/core/pkg/config"
 	"github.com/opsorigin/core/pkg/llm"
 	redisclient "github.com/opsorigin/core/pkg/redis"
@@ -50,6 +51,11 @@ func NewService(cfg *config.Config, llmClient *llm.Client, redisClient *rediscli
 	}
 
 	eng := agentic.NewEngine(reg, lim, llmClient, convStore)
+
+	if db != nil {
+		eng.SetTeamConvStore(agentic.NewPGTeamConvStore(db))
+		slog.Info("ai team conversation store: using postgres backend")
+	}
 
 	return &Service{
 		cfg:      cfg,
@@ -284,11 +290,24 @@ func (s *Service) handleListTools(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Service) handleExecuteTool(w http.ResponseWriter, r *http.Request) {
+	// P2-1: 工具执行端点鉴权 + 限流(此前为裸奔端点)。
+	// 工具含 script_run(在受管主机执行脚本)等高风险操作,仅 operator/admin 可执行,
+	// 且按租户维度令牌桶限流,防止滥用。
+	if !s.authorize(w, r, auth.PermissionAIToolExec) {
+		return
+	}
+
 	name := r.PathValue("name")
 
 	var input map[string]any
 	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+
+	tenantID := tenantFromCtx(r.Context())
+	if s.limiter != nil && !s.limiter.Allow(tenantID+":tool:"+name) {
+		writeError(w, http.StatusTooManyRequests, "rate limit exceeded for tool execution")
 		return
 	}
 
@@ -299,6 +318,21 @@ func (s *Service) handleExecuteTool(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{"result": result})
+}
+
+// authorize 检查当前请求的 RBAC 权限;不满足时写入错误响应并返回 false。
+// 身份(role)由全局 auth/audit/rbac 中间件注入 context;此处做纵深防御 + 端点级权限约束。
+func (s *Service) authorize(w http.ResponseWriter, r *http.Request, perm string) bool {
+	role := auth.RoleFromContext(r.Context())
+	if role == "" {
+		writeError(w, http.StatusUnauthorized, "unauthorized")
+		return false
+	}
+	if !auth.HasPermission(role, perm) {
+		writeError(w, http.StatusForbidden, "forbidden: missing permission "+perm)
+		return false
+	}
+	return true
 }
 
 func (s *Service) handleExecutePlan(w http.ResponseWriter, r *http.Request) {
@@ -548,13 +582,20 @@ func (s *Service) handleTeamChat(w http.ResponseWriter, r *http.Request) {
 		flusher.Flush()
 	}
 
-	final, _, err := s.Engine.RunTeamChat(r.Context(), team, req.Message, nil, emit)
+	// P2-2: 加载该团队的历史对话(跨轮记忆), 本轮结束后追加 user+assistant 一轮。
+	history := s.Engine.LoadTeamHistory(team.ID, 20)
+	tenantID := tenantFromCtx(r.Context())
+
+	final, _, err := s.Engine.RunTeamChat(r.Context(), team, req.Message, history, emit)
 	if err != nil {
 		emit(model.TeamStreamEvent{Type: "error", Content: chatFriendlyError(err.Error())})
 		fmt.Fprint(w, "data: [DONE]\n\n")
 		flusher.Flush()
 		return
 	}
+	// 持久化本轮对话,供下一轮作为历史注入
+	s.Engine.AppendTeamTurn(team.ID, tenantID, req.Message, final)
+
 	// RunTeamChat 已发射 final 事件; 保险再发一次确保闭合
 	_ = final
 	fmt.Fprint(w, "data: [DONE]\n\n")
