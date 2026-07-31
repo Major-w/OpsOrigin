@@ -431,3 +431,63 @@ func TestCompactHistorySummarizerFallbackOnError(t *testing.T) {
 		t.Fatalf("should fall back to anchor, got %#v", got[0])
 	}
 }
+
+// TestExecToolCheckedCacheHit 验证幂等/只读工具的结果被缓存: 相同 (name+tenant+args) 的第二次
+// 调用直接命中缓存, 不再触达底层 Handler。
+func TestExecToolCheckedCacheHit(t *testing.T) {
+	reg := mcp.NewRegistry()
+	var calls int
+	reg.Register(mcp.ToolDefinition{
+		Name: "cacheable_echo",
+		Handler: func(ctx context.Context, in map[string]any) (any, error) {
+			calls++
+			return map[string]any{"echo": in["q"]}, nil
+		},
+	})
+	e := NewEngine(reg, ratelimit.New(), nil, nil)
+	e.lim = nil // 关闭限流, 聚焦缓存行为
+	ctx := context.Background()
+	tc := llm.ToolCall{}
+	tc.Function.Name = "cacheable_echo"
+	tc.Function.Arguments = `{"q":"hello"}`
+
+	r1, _ := e.execToolChecked(ctx, tc)
+	r2, _ := e.execToolChecked(ctx, tc)
+	if calls != 1 {
+		t.Fatalf("handler should be called exactly once (2nd served from cache), got %d", calls)
+	}
+	if r1.(map[string]any)["echo"] != "hello" || r2.(map[string]any)["echo"] != "hello" {
+		t.Fatalf("unexpected cached results: %v / %v", r1, r2)
+	}
+}
+
+// TestExecToolCheckedNoCacheForSideEffects 验证 noCacheTools 中的工具不被结果缓存,
+// 每次都真实触达 Handler, 避免"缓存一次结果"导致后续调用跳过真实执行。
+func TestExecToolCheckedNoCacheForSideEffects(t *testing.T) {
+	reg := mcp.NewRegistry()
+	var calls int
+	const toolName = "nocache_dummy"
+	reg.Register(mcp.ToolDefinition{
+		Name: toolName,
+		Handler: func(ctx context.Context, in map[string]any) (any, error) {
+			calls++
+			return map[string]any{"ok": true}, nil
+		},
+	})
+	// 注册一个测试专用工具名到 noCacheTools(避免与内建 http_get 撞名触发真实网络调用)。
+	noCacheTools[toolName] = true
+	defer delete(noCacheTools, toolName)
+
+	e := NewEngine(reg, ratelimit.New(), nil, nil)
+	e.lim = nil
+	ctx := context.Background()
+	tc := llm.ToolCall{}
+	tc.Function.Name = toolName
+	tc.Function.Arguments = `{"x":"1"}`
+
+	e.execToolChecked(ctx, tc)
+	e.execToolChecked(ctx, tc)
+	if calls != 2 {
+		t.Fatalf("noCacheTools entry must not be cached; expected 2 handler calls, got %d", calls)
+	}
+}

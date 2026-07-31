@@ -46,8 +46,20 @@ var (
 		Name: "ai_history_compactions_total",
 		Help: "Total number of long-conversation history compactions (Token-budget compression) performed before building LLM messages",
 	})
+
+	// AIToolCacheHits 工具结果缓存命中次数(幂等/只读工具按 name+tenant+args 复用, 减少重复 LLM 工具往返)。
+	AIToolCacheHits = prometheus.NewCounter(prometheus.CounterOpts{
+		Name: "ai_tool_cache_hits_total",
+		Help: "Total number of AI tool-result cache hits (idempotent/read-only tools reused by name+tenant+args)",
+	})
+
+	// AIKnowledgeCacheHits 知识库检索缓存命中次数(embedding 去重 + 向量/ILIKE 检索结果复用)。
+	AIKnowledgeCacheHits = prometheus.NewCounter(prometheus.CounterOpts{
+		Name: "ai_knowledge_cache_hits_total",
+		Help: "Total number of knowledge-base search cache hits (embedding dedup + vector/ILIKE result reuse)",
+	})
 )
 
 func init() {
-	metrics.Registry.MustRegister(AIConcurrentSessions, AILLMInFlight, AILLMRateLimitHits, AIToolCalls, AIToolExecDenied, AIHistoryCompactions)
+	metrics.Registry.MustRegister(AIConcurrentSessions, AILLMInFlight, AILLMRateLimitHits, AIToolCalls, AIToolExecDenied, AIHistoryCompactions, AIToolCacheHits, AIKnowledgeCacheHits)
 }

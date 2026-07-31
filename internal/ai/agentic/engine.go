@@ -48,6 +48,10 @@ type Engine struct {
 	// defaultSystemPrompt 是未配置 Agent 级 system_prompt 时的全局默认提示词(外置化,见 SetDefaultSystemPrompt)。
 	defaultSystemPrompt string
 
+	// toolCache 工具结果缓存(name+tenant+args -> 结果), 跨请求复用, 降低重复 LLM 工具往返成本。
+	// 非幂等/有副作用工具(script_run/ticket_create)与内建工具不缓存(见 noCacheTools)。
+	toolCache *ttlCache
+
 	// historySummarizer 可选: 用 LLM 将超长历史的较早部分压缩为摘要,显著降低 Token 消耗。
 	// 未设置时 compactHistory 回退到确定性压缩(保留首条 user 原始意图 + 最近窗口)。
 	historySummarizer func(ctx context.Context, msgs []llm.Message) (string, error)
@@ -75,6 +79,7 @@ func NewEngine(reg *mcp.Registry, lim ratelimit.RateLimiter, llmClient *llm.Clie
 		semMu:     sync.Mutex{},
 		llmSem:    make(chan struct{}, 32),
 		defaultSystemPrompt: DefaultSystemPrompt,
+		toolCache:           newTTLCache(toolCacheTTL, 2048),
 	}
 	e.llmClient.Store(llmClient)
 	e.registerBuiltinTools()
@@ -516,6 +521,15 @@ var builtinToolDenyList = map[string]bool{
 	"http_get": true,
 }
 
+// noCacheTools 不参与工具结果缓存的工具: 有副作用/写操作(script_run/ticket_create)与内建辅助工具。
+// 缓存仅对幂等/只读的运维工具(cmdb_query/knowledge_search 等)生效, 避免缓存写操作或污染内部调用。
+var noCacheTools = map[string]bool{
+	"script_run":    true,
+	"ticket_create": true,
+	"llm_chat":      true,
+	"http_get":      true,
+}
+
 // buildToolDefs 将 Registry 中的运维工具转换为 LLM Function Calling 所需的 ToolDef。
 // 跳过内建工具与未注册 Handler 的工具。
 func (e *Engine) buildToolDefs() []llm.ToolDef {
@@ -611,12 +625,36 @@ func (e *Engine) execToolChecked(ctx context.Context, tc llm.ToolCall) (any, boo
 	if tc.Function.Arguments != "" {
 		_ = json.Unmarshal([]byte(tc.Function.Arguments), &args)
 	}
+
+	// 工具结果缓存: 仅对幂等/只读工具生效, 跨请求复用, 减少重复后端/LLM 工具往返。
+	// 缓存未命中才走真实执行与限流; 命中缓存不消耗限流额度(本就未触达后端)。
+	// key 含租户, 杜绝跨租户串味。
+	if e.toolCache != nil && !noCacheTools[name] {
+		ckey := name + "\x1f" + tenantOf(ctx) + "\x1f" + canonicalArgsKey(args)
+		if cached, ok := e.toolCache.get(ckey); ok {
+			AIToolCacheHits.Inc()
+			slog.Debug("ai tool result served from cache", "tool", name)
+			return cached, false
+		}
+	}
+
+	if e.lim != nil && !e.lim.Allow("tool:" + name) {
+		AIToolExecDenied.Inc()
+		slog.Warn("ai tool exec rate limited", "tool", name)
+		return map[string]any{"error": "rate limit exceeded for tool execution: " + name}, false
+	}
+
 	result, execErr := e.reg.Execute(ctx, name, args)
 	if execErr != nil {
 		slog.Warn("ai tool execution failed", "tool", name, "error", execErr)
 		return map[string]any{"error": execErr.Error()}, true
 	}
-	return e.truncateToolResult(result), false
+	truncated := e.truncateToolResult(result)
+	if e.toolCache != nil && !noCacheTools[name] {
+		ckey := name + "\x1f" + tenantOf(ctx) + "\x1f" + canonicalArgsKey(args)
+		e.toolCache.set(ckey, truncated)
+	}
+	return truncated, false
 }
 
 // truncateToolResult 对工具结果做长度上限截断, 避免大输出(如脚本日志)撑爆上下文窗口。

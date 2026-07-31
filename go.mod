@@ -23,6 +23,7 @@ require (
 require (
 	ariga.io/atlas v0.36.2-0.20250730182955-2c6300d0a3e1 // indirect
 	github.com/Azure/go-ntlmssp v0.1.0 // indirect
+	github.com/DATA-DOG/go-sqlmock v1.5.0
 	github.com/agext/levenshtein v1.2.3 // indirect
 	github.com/apparentlymart/go-textseg/v15 v15.0.0 // indirect
 	github.com/beorn7/perks v1.0.1 // indirect

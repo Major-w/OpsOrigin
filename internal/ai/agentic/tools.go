@@ -42,9 +42,20 @@ type MCPToolSet struct {
 	// approvedScripts 免于人工审批、允许 AI 直接执行的脚本白名单(script_id 或 script_name)。
 	// 为空时(默认)所有 AI 发起的脚本执行都须经人工审批(建变更单), 以安全优先(P0-2)。
 	approvedScripts map[string]bool
+
+	// 向量检索缓存: embedCache 缓存 query->embedding(去重 LLM embedding 调用),
+	// searchCache 缓存 (tenant,query,mode,limit,snippet)->结果(语义检索结果复用)。
+	embedCache  *ttlCache
+	searchCache *ttlCache
 }
 
-func NewMCPToolSet(db *sql.DB) *MCPToolSet { return &MCPToolSet{db: db} }
+func NewMCPToolSet(db *sql.DB) *MCPToolSet {
+	return &MCPToolSet{
+		db:          db,
+		embedCache:  newTTLCache(embedCacheTTL, 1024),
+		searchCache: newTTLCache(searchCacheTTL, 1024),
+	}
+}
 
 // SetScriptExecutor 注入脚本执行器（一般为 automation/script 服务）。
 func (ts *MCPToolSet) SetScriptExecutor(e ScriptExecutor) { ts.exec = e }
@@ -254,48 +265,92 @@ func (ts *MCPToolSet) knowledgeSearch(ctx context.Context, args map[string]any) 
 }
 
 // searchKnowledge 优先用向量语义检索,失败或无 embedding 时回退 ILIKE 关键词匹配。
+// 结果经 ttlCache 缓存: embedding 去重(query->向量) + 检索结果复用(tenant+query+mode+分页)。
 func (ts *MCPToolSet) searchKnowledge(ctx context.Context, query string, limit, snippetLen int) ([]map[string]any, error) {
+	tenant := tenantOf(ctx)
+
+	// —— 向量语义检索 ——
 	if ts.embedder != nil {
-		if qv, err := ts.embedder.Embed(ctx, query); err == nil && len(qv) > 0 {
+		// embedding 去重: 优先从 embedCache 取已算好的向量, 避免重复调用 LLM embedding 接口。
+		qv, embedErr := ts.cachedEmbed(ctx, query)
+		if embedErr == nil && len(qv) > 0 {
 			lit := vectorLiteral(qv)
+			vkey := ts.searchCacheKey(tenant, query, "vector", limit, snippetLen)
+			if v, ok := ts.searchCache.get(vkey); ok {
+				AIKnowledgeCacheHits.Inc()
+				return v.([]map[string]any), nil
+			}
 			rows, qerr := ts.db.QueryContext(ctx,
 				`SELECT id, title, LEFT(content, $2) AS snippet FROM knowledge_articles
 				 WHERE tenant_id=$4 AND embedding IS NOT NULL
 				 ORDER BY embedding <=> $1::vector LIMIT $3`,
-				lit, snippetLen, limit, tenantOf(ctx))
+				lit, snippetLen, limit, tenant)
 			if qerr == nil {
-				defer rows.Close()
-				var items []map[string]any
-				for rows.Next() {
-					var id, title, snippet string
-					if err := rows.Scan(&id, &title, &snippet); err != nil {
-						return nil, err
-					}
-					items = append(items, map[string]any{"id": id, "title": title, "snippet": snippet})
+				items, serr := scanKnowledgeRows(rows)
+				if serr != nil {
+					return nil, serr
 				}
-				if err := rows.Err(); err != nil {
-					return nil, err
-				}
+				ts.searchCache.set(vkey, items)
 				return items, nil
 			}
 			slog.Warn("knowledge: vector search failed, falling back to ILIKE", "err", qerr)
 		}
 	}
+
 	// —— 回退:ILIKE 关键词匹配 ——
+	ikey := ts.searchCacheKey(tenant, query, "ilike", limit, snippetLen)
+	if v, ok := ts.searchCache.get(ikey); ok {
+		AIKnowledgeCacheHits.Inc()
+		return v.([]map[string]any), nil
+	}
 	rows, err := ts.db.QueryContext(ctx,
 		`SELECT id, title, LEFT(content, $2) AS snippet FROM knowledge_articles WHERE tenant_id=$4 AND (title ILIKE $1 OR content ILIKE $1) LIMIT $3`,
-		"%"+query+"%", snippetLen, limit, tenantOf(ctx))
+		"%"+query+"%", snippetLen, limit, tenant)
 	if err != nil {
 		return nil, err
 	}
+	items, err := scanKnowledgeRows(rows)
+	if err != nil {
+		return nil, err
+	}
+	ts.searchCache.set(ikey, items)
+	return items, nil
+}
+
+// scanKnowledgeRows 扫描知识库查询结果, 返回统一的 []map 结构(含 id/title/snippet)。
+func scanKnowledgeRows(rows *sql.Rows) ([]map[string]any, error) {
 	defer rows.Close()
 	var items []map[string]any
 	for rows.Next() {
 		var id, title, snippet string
-		rows.Scan(&id, &title, &snippet)
+		if err := rows.Scan(&id, &title, &snippet); err != nil {
+			return nil, err
+		}
 		items = append(items, map[string]any{"id": id, "title": title, "snippet": snippet})
 	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
 	return items, nil
+}
+
+// cachedEmbed 返回 query 的向量, 优先用 embedCache 去重(避免重复调用 LLM embedding 接口);
+// 未命中则调用 embedder 并回填缓存。embedder 失败/返回空向量时返回错误, 交由调用方回退 ILIKE。
+func (ts *MCPToolSet) cachedEmbed(ctx context.Context, query string) ([]float32, error) {
+	if cv, ok := ts.embedCache.get(query); ok {
+		return cv.([]float32), nil
+	}
+	qv, err := ts.embedder.Embed(ctx, query)
+	if err != nil || len(qv) == 0 {
+		return nil, err
+	}
+	ts.embedCache.set(query, qv)
+	return qv, nil
+}
+
+// searchCacheKey 生成检索结果缓存键, 含租户/查询/检索模式/分页参数, 避免跨租户与跨参数串味。
+func (ts *MCPToolSet) searchCacheKey(tenant, query, mode string, limit, snippetLen int) string {
+	return tenant + "\x1f" + mode + "\x1f" + query + "\x1f" + strconv.Itoa(limit) + "\x1f" + strconv.Itoa(snippetLen)
 }
 
 // Register 将所有运维工具注册到 MCP Registry
