@@ -12,49 +12,49 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/opsorigin/core/internal/agentmgr"
+	"github.com/opsorigin/core/internal/ai"
+	"github.com/opsorigin/core/internal/ai/agentic"
+	"github.com/opsorigin/core/internal/audit"
+	"github.com/opsorigin/core/internal/automation/scheduler"
+	"github.com/opsorigin/core/internal/automation/script"
+	"github.com/opsorigin/core/internal/automation/workflow"
 	cloud "github.com/opsorigin/core/internal/cloud"
-	_ "github.com/opsorigin/core/internal/cloud/providers/all"
 	k8s "github.com/opsorigin/core/internal/cloud/k8s"
+	_ "github.com/opsorigin/core/internal/cloud/providers/all"
 	"github.com/opsorigin/core/internal/cmdb"
 	"github.com/opsorigin/core/internal/cmdb/dgraph"
 	"github.com/opsorigin/core/internal/cmdb/outbox"
 	"github.com/opsorigin/core/internal/cmdb/pg"
+	"github.com/opsorigin/core/internal/command"
+	"github.com/opsorigin/core/internal/deploy"
 	"github.com/opsorigin/core/internal/ent"
+	"github.com/opsorigin/core/internal/iam"
 	"github.com/opsorigin/core/internal/itsm"
 	"github.com/opsorigin/core/internal/itsm/catalog"
+	"github.com/opsorigin/core/internal/itsm/knowledge"
+	"github.com/opsorigin/core/internal/itsm/oncall"
 	"github.com/opsorigin/core/internal/itsm/process"
 	"github.com/opsorigin/core/internal/itsm/sla"
-	"github.com/opsorigin/core/internal/vuln"
-	"github.com/opsorigin/core/internal/ai"
-	"github.com/opsorigin/core/internal/ai/agentic"
-	"github.com/opsorigin/core/internal/deploy"
-	"github.com/opsorigin/core/internal/itsm/knowledge"
-	"github.com/opsorigin/core/internal/audit"
+	"github.com/opsorigin/core/internal/keystore"
+	"github.com/opsorigin/core/internal/lowcode/service"
 	"github.com/opsorigin/core/internal/monitor"
 	healthhandler "github.com/opsorigin/core/internal/monitor/health"
 	metricsregistry "github.com/opsorigin/core/internal/monitor/metrics"
+	"github.com/opsorigin/core/internal/notification"
 	"github.com/opsorigin/core/internal/ops"
+	"github.com/opsorigin/core/internal/sysconfig"
 	"github.com/opsorigin/core/internal/tunnel"
 	"github.com/opsorigin/core/internal/user"
+	"github.com/opsorigin/core/internal/vuln"
 	"github.com/opsorigin/core/internal/ws"
-	"github.com/opsorigin/core/internal/agentmgr"
-	"github.com/opsorigin/core/internal/automation/script"
-	"github.com/opsorigin/core/internal/automation/workflow"
-	"github.com/opsorigin/core/internal/automation/scheduler"
-	"github.com/opsorigin/core/internal/command"
-	"github.com/opsorigin/core/internal/iam"
-	"github.com/opsorigin/core/internal/notification"
-	"github.com/opsorigin/core/internal/itsm/oncall"
-	"github.com/opsorigin/core/internal/keystore"
-	"github.com/opsorigin/core/internal/lowcode/service"
-	"github.com/opsorigin/core/internal/sysconfig"
 	"github.com/opsorigin/core/pkg/auth"
 	"github.com/opsorigin/core/pkg/config"
 	entdbpkg "github.com/opsorigin/core/pkg/db"
 	"github.com/opsorigin/core/pkg/llm"
+	redisclient "github.com/opsorigin/core/pkg/redis"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/redis/go-redis/v9"
-	redisclient "github.com/opsorigin/core/pkg/redis"
 )
 
 func main() {
@@ -306,7 +306,9 @@ func main() {
 	})
 	schedulerSvc.SetScriptTrigger(func(ctx context.Context, tenantID, scriptID string, agentIDs []string) error {
 		agentID := ""
-		if len(agentIDs) > 0 { agentID = agentIDs[0] }
+		if len(agentIDs) > 0 {
+			agentID = agentIDs[0]
+		}
 		_, _, err := scriptSvc.Execute(scriptID, nil, 3600, "", agentID, tenantID)
 		return err
 	})
@@ -347,7 +349,11 @@ func main() {
 		Model:   cfg.LLM.Model,
 		BaseURL: cfg.LLM.BaseURL,
 		Timeout: time.Duration(cfg.LLM.Timeout) * time.Second,
+		// 语义检索:embedding 端点可独立配置,缺省复用聊天 Model/BaseURL 的同名端点。
+		EmbeddingModel:   cfg.LLM.EmbeddingModel,
+		EmbeddingBaseURL: cfg.LLM.EmbeddingBaseURL,
 	})
+	knowledgeSvc.SetEmbedder(llmClient) // 注入向量生成器,新建/更新知识库文章自动写入 embedding
 
 	userSvc := user.NewService(db, authProvider)
 	server.RegisterService(userSvc)
@@ -369,6 +375,7 @@ func main() {
 	aiSvc.Engine.SetStore(agentic.NewPGStore(db))
 	toolSet := agentic.NewMCPToolSet(db)
 	toolSet.SetScriptExecutor(scriptSvc) // AI 的 script_run 工具经 script 服务→Agent 通道真实执行
+	toolSet.SetEmbedder(llmClient)       // 知识库检索启用语义向量匹配
 	toolSet.Register(aiSvc.Registry)
 	aiSvc.SetRAGFunc(toolSet.RAGContext)
 	ai.LLMConfigHook = func(cfg2 llm.Config) { aiSvc.UpdateLLMConfig(cfg2) }

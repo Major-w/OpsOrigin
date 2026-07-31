@@ -13,10 +13,13 @@ import (
 )
 
 type Config struct {
-	APIKey  string `json:"api_key"`
-	Model   string `json:"model"`
-	BaseURL string `json:"base_url"`
+	APIKey  string        `json:"api_key"`
+	Model   string        `json:"model"`
+	BaseURL string        `json:"base_url"`
 	Timeout time.Duration `json:"timeout"`
+	// EmbeddingModel/EmbeddingBaseURL 可选；留空时分别回退到 Model/BaseURL 的同名 OpenAI 兼容端点。
+	EmbeddingModel   string `json:"embedding_model"`
+	EmbeddingBaseURL string `json:"embedding_base_url"`
 }
 
 type Client struct {
@@ -42,8 +45,8 @@ type ToolCall struct {
 }
 
 type ToolDef struct {
-	Type       string     `json:"type"`
-	Function   ToolFunc   `json:"function"`
+	Type     string   `json:"type"`
+	Function ToolFunc `json:"function"`
 }
 
 type ToolFunc struct {
@@ -53,12 +56,12 @@ type ToolFunc struct {
 }
 
 type ChatRequest struct {
-	Model       string     `json:"model"`
-	Messages    []Message  `json:"messages"`
-	Tools       []ToolDef  `json:"tools,omitempty"`
-	MaxTokens   int        `json:"max_tokens,omitempty"`
-	Temperature float64    `json:"temperature,omitempty"`
-	Stream      bool       `json:"stream"`
+	Model       string    `json:"model"`
+	Messages    []Message `json:"messages"`
+	Tools       []ToolDef `json:"tools,omitempty"`
+	MaxTokens   int       `json:"max_tokens,omitempty"`
+	Temperature float64   `json:"temperature,omitempty"`
+	Stream      bool      `json:"stream"`
 }
 
 type ChatResponse struct {
@@ -210,8 +213,8 @@ func (c *Client) readSSE(ctx context.Context, r io.ReadCloser, ch chan<- StreamC
 		var chunk struct {
 			Choices []struct {
 				Delta struct {
-					Content      string `json:"content"`
-					Role         string `json:"role"`
+					Content string `json:"content"`
+					Role    string `json:"role"`
 				} `json:"delta"`
 				FinishReason string `json:"finish_reason"`
 			} `json:"choices"`
@@ -232,6 +235,58 @@ func truncate(s string, n int) string {
 		return s
 	}
 	return s[:n] + "..."
+}
+
+// Embed 调用 OpenAI 兼容的 /v1/embeddings 端点，返回文本的向量表示。
+// 用于 RAG 知识库语义检索。embedding 模型/端点可独立配置，缺省复用聊天配置。
+func (c *Client) Embed(ctx context.Context, text string) ([]float32, error) {
+	model := c.config.EmbeddingModel
+	if model == "" {
+		model = "text-embedding-3-small"
+	}
+	base := c.config.EmbeddingBaseURL
+	if base == "" {
+		base = c.config.BaseURL
+	}
+	if base == "" {
+		return nil, fmt.Errorf("llm: embedding base url not configured")
+	}
+
+	body, _ := json.Marshal(map[string]any{"model": model, "input": text})
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimRight(base, "/")+"/v1/embeddings", bytes.NewReader(body))
+	if err != nil {
+		return nil, fmt.Errorf("llm: embed request: %w", err)
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+	if c.config.APIKey != "" {
+		httpReq.Header.Set("Authorization", "Bearer "+c.config.APIKey)
+	}
+
+	resp, err := c.client.Do(httpReq)
+	if err != nil {
+		return nil, fmt.Errorf("llm: embed do request: %w", err)
+	}
+	defer resp.Body.Close()
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("llm: embed read response: %w", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("llm: embed API error [%d]: %s", resp.StatusCode, string(respBody))
+	}
+
+	var er struct {
+		Data []struct {
+			Embedding []float32 `json:"embedding"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(respBody, &er); err != nil {
+		return nil, fmt.Errorf("llm: embed unmarshal: %w", err)
+	}
+	if len(er.Data) == 0 || len(er.Data[0].Embedding) == 0 {
+		return nil, fmt.Errorf("llm: embed returned empty vector")
+	}
+	return er.Data[0].Embedding, nil
 }
 
 // UpdateConfig 原子更新 Client 的配置与 http.Client(热生效, 无需重启)。

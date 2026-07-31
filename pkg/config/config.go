@@ -9,41 +9,41 @@ import (
 )
 
 type Config struct {
-	Core      CoreConfig    `json:"core"`
-	Proxy     ProxyConfig   `json:"proxy"`
-	Agent     AgentConfig   `json:"agent"`
-	TLS       TLSConfig     `json:"tls"`
-	Outbox    OutboxConfig  `json:"outbox"`
-	CMDB      CMDBConfig    `json:"cmdb"`
-	Auth      AuthConfig    `json:"auth"`
-	LLM           LLMConfig     `json:"llm"`
-	RedisAddr     string        `json:"redis_addr"`
-	RedisPoolSize int           `json:"redis_pool_size"`
-	LDAP          LDAPConfig    `json:"ldap"`
-	SSO       SSOConfig     `json:"sso"`
-	Tunnel    TunnelConfig  `json:"tunnel"`
-	FileStore FileStoreConfig `json:"file_store"` // §5 文件分发中心存储配置
-	Postgres  PostgresConfig   `json:"postgres"`
-	TaskQueue TaskQueueConfig   `json:"task_queue"`
-	Upgrade   UpgradeConfig     `json:"upgrade"`
+	Core          CoreConfig      `json:"core"`
+	Proxy         ProxyConfig     `json:"proxy"`
+	Agent         AgentConfig     `json:"agent"`
+	TLS           TLSConfig       `json:"tls"`
+	Outbox        OutboxConfig    `json:"outbox"`
+	CMDB          CMDBConfig      `json:"cmdb"`
+	Auth          AuthConfig      `json:"auth"`
+	LLM           LLMConfig       `json:"llm"`
+	RedisAddr     string          `json:"redis_addr"`
+	RedisPoolSize int             `json:"redis_pool_size"`
+	LDAP          LDAPConfig      `json:"ldap"`
+	SSO           SSOConfig       `json:"sso"`
+	Tunnel        TunnelConfig    `json:"tunnel"`
+	FileStore     FileStoreConfig `json:"file_store"` // §5 文件分发中心存储配置
+	Postgres      PostgresConfig  `json:"postgres"`
+	TaskQueue     TaskQueueConfig `json:"task_queue"`
+	Upgrade       UpgradeConfig   `json:"upgrade"`
 }
 
 type LDAPConfig struct {
-	Enabled  bool   `json:"enabled"`
-	Addr     string `json:"addr"`
-	BaseDN   string `json:"base_dn"`
-	BindDN   string `json:"bind_dn"`
-	BindPass string `json:"bind_pass"`
+	Enabled    bool   `json:"enabled"`
+	Addr       string `json:"addr"`
+	BaseDN     string `json:"base_dn"`
+	BindDN     string `json:"bind_dn"`
+	BindPass   string `json:"bind_pass"`
 	UserFilter string `json:"user_filter"`
 }
 
 type SSOConfig struct {
-	Enabled     bool   `json:"enabled"`
-	Provider    string `json:"provider"`
-	ClientID    string `json:"client_id"`
+	Enabled      bool   `json:"enabled"`
+	Provider     string `json:"provider"`
+	ClientID     string `json:"client_id"`
 	ClientSecret string `json:"client_secret"`
-	RedirectURL string `json:"redirect_url"`
-	IssuerURL   string `json:"issuer_url"`
+	RedirectURL  string `json:"redirect_url"`
+	IssuerURL    string `json:"issuer_url"`
 }
 
 type CoreConfig struct {
@@ -108,6 +108,9 @@ type LLMConfig struct {
 	Model   string `json:"model"`
 	BaseURL string `json:"base_url"`
 	Timeout int    `json:"timeout"`
+	// EmbeddingModel/EmbeddingBaseURL 可选；留空时分别回退到 Model/BaseURL 的同名端点。
+	EmbeddingModel   string `json:"embedding_model"`
+	EmbeddingBaseURL string `json:"embedding_base_url"`
 }
 
 type PostgresConfig struct {
@@ -167,6 +170,9 @@ func Load() (*Config, error) {
 			Model:   envStr("OPSNEXUS_LLM_MODEL", "deepseek-chat"),
 			BaseURL: envStr("OPSNEXUS_LLM_BASE_URL", "https://api.deepseek.com"),
 			Timeout: envInt("OPSNEXUS_LLM_TIMEOUT", 60),
+			// 留空则回退到通用 OpenAI embeddings 端点；接 OpenAI/兼容服务时只需填 model。
+			EmbeddingModel:   envStr("OPSNEXUS_LLM_EMBEDDING_MODEL", "text-embedding-3-small"),
+			EmbeddingBaseURL: envStr("OPSNEXUS_LLM_EMBEDDING_BASE_URL", ""),
 		},
 		RedisAddr:     envStr("OPSNEXUS_REDIS_ADDR", "localhost:6379"),
 		RedisPoolSize: envInt("OPSNEXUS_REDIS_POOL_SIZE", 50),
