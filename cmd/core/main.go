@@ -370,6 +370,10 @@ func main() {
 		}
 	}()
 
+	// P3-1 增量索引自愈: 后台循环定时扫描 embedding IS NULL 的文章带退避重试,
+	// 并刷新 knowledge_unindexed_articles 指标(覆盖启动回填之后新出现/失败的 embedding)。
+	knowledgeSvc.StartReindexLoop(context.Background(), 30*time.Second)
+
 	userSvc := user.NewService(db, authProvider)
 	server.RegisterService(userSvc)
 

@@ -146,6 +146,14 @@ func (s *Service) ReindexAll(ctx context.Context) (int, error) {
 	return ps.ReindexAll(ctx)
 }
 
+// StartReindexLoop 启动知识库增量索引自愈后台循环(embedding 失败文章带退避重试 + 未索引指标)。
+// 仅 pgStore 且在向量检索可用时生效;传入 ctx 取消即停止。
+func (s *Service) StartReindexLoop(ctx context.Context, interval time.Duration) {
+	if ps, ok := s.store.(*pgStore); ok {
+		ps.StartReindexLoop(ctx, interval)
+	}
+}
+
 // handleReindex 为存量文章补算 embedding(开启语义检索后的一次性回填)。
 func (s *Service) handleReindex(w http.ResponseWriter, r *http.Request) {
 	ps, ok := s.store.(*pgStore)
