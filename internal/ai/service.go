@@ -52,6 +52,9 @@ func NewService(cfg *config.Config, llmClient *llm.Client, redisClient *rediscli
 
 	eng := agentic.NewEngine(reg, lim, llmClient, convStore)
 
+	// 提示词外置化: 将配置中的默认 system prompt 注入引擎(环境变量可覆盖内置常量)。
+	eng.SetDefaultSystemPrompt(cfg.LLM.DefaultSystemPrompt)
+
 	if db != nil {
 		eng.SetTeamConvStore(agentic.NewPGTeamConvStore(db))
 		slog.Info("ai team conversation store: using postgres backend")
@@ -148,7 +151,12 @@ func (s *Service) handleChat(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]string{"content": answer, "thinking": thinking, "conversation_id": convID})
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"content":          answer,
+			"thinking":         thinking,
+			"conversation_id":  convID,
+			"citations":        agentic.ExtractCitations(answer),
+		})
 		return
 	}
 
@@ -158,7 +166,11 @@ func (s *Service) handleChat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(map[string]string{"content": out, "conversation_id": convID})
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"content":          out,
+		"conversation_id":  convID,
+		"citations":        agentic.ExtractCitations(out),
+	})
 }
 
 // handleChatStream SSE 流式输出。
@@ -187,8 +199,10 @@ func (s *Service) handleChatStream(w http.ResponseWriter, r *http.Request, req *
 		return
 	}
 
+	var full strings.Builder
 	for token := range ch {
 		// SSE data 字段中的换行需转义; 简单实现: 用 JSON 字符串包裹 token。
+		full.WriteString(token)
 		b, _ := json.Marshal(token)
 		fmt.Fprintf(w, "data: %s\n\n", b)
 		flusher.Flush()
@@ -197,6 +211,13 @@ func (s *Service) handleChatStream(w http.ResponseWriter, r *http.Request, req *
 	if convID != "" {
 		fmt.Fprintf(w, "event: conversation\ndata: %s\n\n", convID)
 		flusher.Flush()
+	}
+	// 引用来源: 从完整回答中解析 [^<id>] 标注并下发, 前端可据此展示知识库出处。
+	if cites := agentic.ExtractCitations(full.String()); len(cites) > 0 {
+		if cb, err := json.Marshal(cites); err == nil {
+			fmt.Fprintf(w, "event: citations\ndata: %s\n\n", cb)
+			flusher.Flush()
+		}
 	}
 	fmt.Fprint(w, "data: [DONE]\n\n")
 	flusher.Flush()

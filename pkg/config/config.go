@@ -115,6 +115,9 @@ type LLMConfig struct {
 	GenTemperature float64 `json:"gen_temperature"`
 	GenMaxTokens   int     `json:"gen_max_tokens"`
 	MaxInflight    int     `json:"max_inflight"`
+	// DefaultSystemPrompt 未配置 Agent 级 system_prompt 时使用的全局默认提示词;
+	// 留空则引擎回退到内置常量(与下方默认值一致)。运维可通过环境变量覆盖,实现提示词外置/版本化。
+	DefaultSystemPrompt string `json:"default_system_prompt"`
 }
 
 type PostgresConfig struct {
@@ -181,6 +184,8 @@ func Load() (*Config, error) {
 			GenTemperature: float64Env("OPSNEXUS_LLM_GEN_TEMPERATURE", 0),
 			GenMaxTokens:   envInt("OPSNEXUS_LLM_GEN_MAX_TOKENS", 0),
 			MaxInflight:    envInt("OPSNEXUS_LLM_MAX_INFLIGHT", 0),
+			DefaultSystemPrompt: envStr("OPSNEXUS_LLM_DEFAULT_SYSTEM_PROMPT",
+				"你是 OpsOrigin 智能运维助手,帮助用户完成主机巡检、故障排查、报告生成等运维任务。回答应简洁、专业、可操作。"),
 		},
 		RedisAddr:     envStr("OPSNEXUS_REDIS_ADDR", "localhost:6379"),
 		RedisPoolSize: envInt("OPSNEXUS_REDIS_POOL_SIZE", 50),

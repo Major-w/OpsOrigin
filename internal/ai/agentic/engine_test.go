@@ -86,6 +86,55 @@ func TestWithPersonaPrefix(t *testing.T) {
 	}
 }
 
+// TestSetDefaultSystemPrompt 验证提示词外置化: 引擎默认回退到内置常量,
+// SetDefaultSystemPrompt 可覆盖(供 sysconfig 热更新/env 注入), 空串回退到内置常量而非置空。
+func TestSetDefaultSystemPrompt(t *testing.T) {
+	e := NewEngine(mcp.NewRegistry(), ratelimit.New(), nil, nil)
+
+	if got := e.resolveSystemPrompt(""); got != DefaultSystemPrompt {
+		t.Fatalf("default prompt mismatch:\n got=%q\nwant=%q", got, DefaultSystemPrompt)
+	}
+
+	const overridden = "你是外部定义的运维助手,用于回归测试。"
+	e.SetDefaultSystemPrompt(overridden)
+	if got := e.resolveSystemPrompt(""); got != overridden {
+		t.Fatalf("overridden prompt mismatch: got=%q want=%q", got, overridden)
+	}
+
+	// 空串应回退到内置常量(不置空)。
+	e.SetDefaultSystemPrompt("")
+	if got := e.resolveSystemPrompt(""); got != DefaultSystemPrompt {
+		t.Fatalf("empty override should fall back to builtin constant, got=%q", got)
+	}
+}
+
+// TestExtractCitations 验证从模型回答中解析 [^<id>] 引用标注(去重)。
+func TestExtractCitations(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+		want []string
+	}{
+		{"single", "依据文章[^a1b2c3]可知故障原因。", []string{"a1b2c3"}},
+		{"multi and dedup", "见[^x][^y][^x]两篇。", []string{"x", "y"}},
+		{"with refs section", "结论[^id1]。\n\n## 引用来源\n- [id1] 标题", []string{"id1"}},
+		{"none", "没有任何引用。", nil},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := ExtractCitations(c.in)
+			if len(got) != len(c.want) {
+				t.Fatalf("len mismatch: got %#v want %#v", got, c.want)
+			}
+			for i := range c.want {
+				if got[i] != c.want[i] {
+					t.Errorf("idx %d: got %q want %q", i, got[i], c.want[i])
+				}
+			}
+		})
+	}
+}
+
 // newTestEngine 构造带 script_run(写/执行类) 与 knowledge_search(只读) 两个工具的最小引擎, 用于校验 execToolChecked 的 RBAC/截断行为。
 func newTestEngine(t *testing.T) *Engine {
 	t.Helper()

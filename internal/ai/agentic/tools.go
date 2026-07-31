@@ -303,7 +303,7 @@ func (ts *MCPToolSet) Register(reg *mcp.Registry) {
 	reg.Register(mcp.ToolDefinition{Name: "cmdb_query", Description: "Query CMDB assets by name or type. Args: query(string)", Handler: ts.cmdbQuery})
 	reg.Register(mcp.ToolDefinition{Name: "ticket_create", Description: "Create an ITSM ticket. Args: title(string), description(string), risk_level(string)", Handler: ts.ticketCreate})
 	reg.Register(mcp.ToolDefinition{Name: "script_run", Description: "Execute an automation script on a managed host and return its output. Args: script_id(string) or script_name(string); agent_id(string) or agent_name(string) REQUIRED target host (auto-selection of any online agent is disabled for safety); dry_run(bool) optional safe preview without execution; params(object) optional; timeout(number) seconds; run_as(string) optional. Scripts not on the approved allowlist require human approval and return status=pending_approval with a ticket_id.", Handler: ts.scriptRun})
-	reg.Register(mcp.ToolDefinition{Name: "knowledge_search", Description: "Search knowledge base articles for relevant documentation (RAG, semantic vector search). Args: query(string)", Handler: ts.knowledgeSearch})
+	reg.Register(mcp.ToolDefinition{Name: "knowledge_search", Description: "Search knowledge base articles for relevant documentation (RAG, semantic vector search). Args: query(string). Each returned item has an 'id' field — when you base your answer on an article, cite it inline as [^<id>] and list it under '## 引用来源'.", Handler: ts.knowledgeSearch})
 }
 
 // RAGContext 为给定查询检索知识库上下文（用于注入 LLM system prompt）
@@ -317,9 +317,15 @@ func (ts *MCPToolSet) RAGContext(ctx context.Context, query string) string {
 	}
 	var parts []string
 	for _, it := range items {
+		id, _ := it["id"].(string)
 		title, _ := it["title"].(string)
 		snippet, _ := it["snippet"].(string)
-		parts = append(parts, fmt.Sprintf("## %s\n%s", title, snippet))
+		// 在标题行附带文章 ID, 使模型能以 [^<id>] 引用(实现 RAG grounding)。
+		heading := title
+		if id != "" {
+			heading = fmt.Sprintf("[%s] %s", id, title)
+		}
+		parts = append(parts, fmt.Sprintf("## %s\n%s", heading, snippet))
 	}
 	return "\n\n--- 知识库相关文档 ---\n" + strings.Join(parts, "\n\n")
 }

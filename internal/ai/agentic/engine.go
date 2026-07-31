@@ -7,6 +7,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"regexp"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -44,6 +45,9 @@ type Engine struct {
 	semMu     sync.Mutex
 	llmSem    chan struct{}
 
+	// defaultSystemPrompt 是未配置 Agent 级 system_prompt 时的全局默认提示词(外置化,见 SetDefaultSystemPrompt)。
+	defaultSystemPrompt string
+
 	// ——— 多智能体团队（Feature 1）———
 	teams          map[string]*model.AgentTeam
 	genMaxTokens   int
@@ -66,6 +70,7 @@ func NewEngine(reg *mcp.Registry, lim ratelimit.RateLimiter, llmClient *llm.Clie
 		lim:       lim,
 		semMu:     sync.Mutex{},
 		llmSem:    make(chan struct{}, 32),
+		defaultSystemPrompt: DefaultSystemPrompt,
 	}
 	e.llmClient.Store(llmClient)
 	e.registerBuiltinTools()
@@ -354,6 +359,8 @@ func (e *Engine) chatWithToolsConv(ctx context.Context, agentID, prompt string, 
 // 便于增量持久化会话。
 func (e *Engine) buildMessages(agentID, userPrompt string, history []llm.Message, sysExtra string) ([]llm.Message, int) {
 	sys := e.resolveSystemPrompt(agentID)
+	// 注入引用标注指引(RAG grounding): 让模型在引用知识库/工具结果时标注来源。
+	sys += "\n\n" + citationGuidance
 	if sysExtra != "" {
 		sys += "\n\n" + sysExtra
 	}
@@ -894,7 +901,31 @@ func (e *Engine) agentCount() int {
 	return len(e.agents)
 }
 
-// resolveSystemPrompt 按 agentID 查找 Agent 的 system_prompt, 未设时返回默认值。
+// DefaultSystemPrompt 是全局默认 system prompt 的内置常量(外置化的兜底值)。
+// 运维可通过 LLMConfig.DefaultSystemPrompt(环境变量 OPSNEXUS_LLM_DEFAULT_SYSTEM_PROMPT)覆盖,
+// 实现"提示词外置/版本化": 不必改代码即可调整助手人设与行为边界。
+const DefaultSystemPrompt = "你是 OpsOrigin 智能运维助手,帮助用户完成主机巡检、故障排查、报告生成等运维任务。回答应简洁、专业、可操作。"
+
+// citationGuidance 注入到 system prompt 的引用标注指引(实现 RAG grounding)。
+// 要求模型在引用知识库/工具结果时用 [^<id>] 标注,并在文末列出引用来源。
+const citationGuidance = `引用与溯源要求:
+- 当你依据知识库文章(knowledge_search 返回结果的 id 字段)或工具返回数据作答时,必须在正文中用 [^<文章ID>] 标注引用,例如 [^a1b2c3]。
+- 回答结尾用 "## 引用来源" 列出所有被引用文章的标题与 ID。
+- 未引用任何资料时无需列出。
+- 禁止编造不存在的文章 ID;只能引用工具实际返回给你的资料 ID。`
+
+// SetDefaultSystemPrompt 设置全局默认 system prompt(外置化入口,可由 sysconfig 热更新调用)。
+// 传入空串时保留内置常量 DefaultSystemPrompt 作为兜底。
+func (e *Engine) SetDefaultSystemPrompt(p string) {
+	if p == "" {
+		p = DefaultSystemPrompt
+	}
+	e.mu.Lock()
+	e.defaultSystemPrompt = p
+	e.mu.Unlock()
+}
+
+// resolveSystemPrompt 按 agentID 查找 Agent 的 system_prompt, 未设时回退到外置化的全局默认值。
 func (e *Engine) resolveSystemPrompt(agentID string) string {
 	if agentID != "" {
 		e.mu.RLock()
@@ -904,7 +935,31 @@ func (e *Engine) resolveSystemPrompt(agentID string) string {
 			return a.SystemPrompt
 		}
 	}
-	return "你是 OpsOrigin 智能运维助手,帮助用户完成主机巡检、故障排查、报告生成等运维任务。回答应简洁、专业、可操作。"
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	return e.defaultSystemPrompt
+}
+
+// citationRE 匹配模型回答中的引用标注 [^<id>]。
+var citationRE = regexp.MustCompile(`\[\^([^\]]+)\]`)
+
+// ExtractCitations 从模型回答中解析引用标注 [^<id>], 返回去重后的文章 ID 列表。
+// 用于在 API 响应/落库中暴露"引用来源", 实现 RAG 回答的可溯源(grounding)。
+func ExtractCitations(text string) []string {
+	seen := make(map[string]struct{})
+	var out []string
+	for _, m := range citationRE.FindAllStringSubmatch(text, -1) {
+		id := strings.TrimSpace(m[1])
+		if id == "" {
+			continue
+		}
+		if _, ok := seen[id]; ok {
+			continue
+		}
+		seen[id] = struct{}{}
+		out = append(out, id)
+	}
+	return out
 }
 
 // modelForAgent 按 agentID 查找该 Agent 配置的目标模型; 未配置时返回空串,
