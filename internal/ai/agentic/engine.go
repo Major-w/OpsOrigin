@@ -172,15 +172,15 @@ func (e *Engine) loadFromStore() error {
 }
 
 // Chat 执行一次单轮(可带历史)的 LLM 推理,供 AI 助手聊天端点使用。
-// 与 ExecutePlan 的"无 Tool 步骤"共用底层 llm.Client,但此处直接构造消息,
-// 支持把对话历史透传进来,使多轮对话连贯。
+// 支持 Function Calling:模型可自主调用已注册的运维工具(CMDB查询/工单/脚本执行/知识库检索)。
 func (e *Engine) Chat(ctx context.Context, agentID, prompt string, history []llm.Message) (string, error) {
-	return e.chatImpl(ctx, agentID, prompt, history, false)
+	out, _, err := e.chatWithTools(ctx, agentID, prompt, history, false)
+	return out, err
 }
 
 // ChatReasoning 思维链模式:返回思考过程和最终答案。
 func (e *Engine) ChatReasoning(ctx context.Context, agentID, prompt string, history []llm.Message) (thinking string, answer string, err error) {
-	full, err := e.chatImpl(ctx, agentID, prompt, history, true)
+	full, _, err := e.chatWithTools(ctx, agentID, prompt, history, true)
 	if err != nil {
 		return "", "", err
 	}
@@ -188,45 +188,188 @@ func (e *Engine) ChatReasoning(ctx context.Context, agentID, prompt string, hist
 	return
 }
 
-func (e *Engine) chatImpl(ctx context.Context, agentID, prompt string, history []llm.Message, reasoning bool) (string, error) {
+// ToolInvocation 记录一次 Function Calling 循环中模型发起的工具调用及其结果。
+type ToolInvocation struct {
+	Name      string         `json:"name"`
+	Arguments map[string]any `json:"arguments"`
+	Result    any            `json:"result"`
+}
+
+// ChatWithTools 执行带 Function Calling 的对话,返回最终答案与本次触发的所有工具调用。
+// 供需要审计/展示工具使用情况的调用方使用(如团队编排后的汇总)。
+func (e *Engine) ChatWithTools(ctx context.Context, agentID, prompt string, history []llm.Message, reasoning bool) (string, []ToolInvocation, error) {
+	return e.chatWithTools(ctx, agentID, prompt, history, reasoning)
+}
+
+// chatWithTools 实现 Function Calling 循环:
+//  1. 构造系统提示 + 历史 + 用户问题 + 工具定义,调用 LLM(非流式);
+//  2. 若模型返回 tool_calls,逐个经 mcp.Registry 执行,把结果作为 tool 角色消息回填;
+//  3. 回到步骤 1,直至模型不再请求工具(finish_reason=stop)或达到最大轮次。
+//
+// 内建工具 llm_chat / http_get 不暴露给模型,以避免自我递归/无副作用调用噪音。
+func (e *Engine) chatWithTools(ctx context.Context, agentID, prompt string, history []llm.Message, reasoning bool) (string, []ToolInvocation, error) {
 	if prompt == "" {
-		return "", fmt.Errorf("prompt is required")
+		return "", nil, fmt.Errorf("prompt is required")
 	}
 	if e.lim != nil && agentID != "" && !e.lim.Allow(agentID) {
 		AILLMRateLimitHits.Inc()
-		return "", fmt.Errorf("rate limit exceeded for agent %s", agentID)
+		return "", nil, fmt.Errorf("rate limit exceeded for agent %s", agentID)
 	}
 
+	// 1. 构造初始消息
+	userPrompt := prompt
+	if reasoning {
+		userPrompt = "请按以下格式回答：\n\n<think>\n先进行分步推理分析\n</think>\n<answer>\n再给出最终答案\n</answer>\n\n用户问题：" + prompt
+	}
+	msgs := e.buildInitialMessages(agentID, userPrompt, history)
+
+	tools := e.buildToolDefs()
+	var invocations []ToolInvocation
+
+	// 2. 工具调用循环
+	for round := 0; round < maxToolRounds; round++ {
+		if !e.acquireLLMSlot(ctx) {
+			return "", invocations, fmt.Errorf("llm concurrency limit reached")
+		}
+		resp, err := e.llmClient.Chat(ctx, llm.ChatRequest{
+			Messages:    msgs,
+			Tools:       tools,
+			MaxTokens:   e.genMaxTokensVal(),
+			Temperature: e.genTemperatureVal(),
+		})
+		e.releaseLLMSlot()
+		if err != nil {
+			return "", invocations, err
+		}
+		if len(resp.Choices) == 0 {
+			return "", invocations, fmt.Errorf("llm: empty response")
+		}
+		e.recordTokens(agentID, resp)
+
+		choiceMsg := resp.Choices[0].Message
+		// 把本次 assistant 消息(含 tool_calls)追加进上下文,供下一轮回填
+		msgs = append(msgs, choiceMsg)
+
+		// 无工具调用 -> 这是最终答案
+		if len(choiceMsg.ToolCalls) == 0 {
+			return choiceMsg.Content, invocations, nil
+		}
+
+		// 执行每个工具调用
+		for _, tc := range choiceMsg.ToolCalls {
+			var args map[string]any
+			if tc.Function.Arguments != "" {
+				_ = json.Unmarshal([]byte(tc.Function.Arguments), &args)
+			}
+			AIToolCalls.Inc()
+			slog.Info("ai function call", "tool", tc.Function.Name, "args", truncateJSON(args))
+			result, execErr := e.reg.Execute(ctx, tc.Function.Name, args)
+			if execErr != nil {
+				result = map[string]any{"error": execErr.Error()}
+				slog.Warn("ai tool execution failed", "tool", tc.Function.Name, "error", execErr)
+			}
+			invocations = append(invocations, ToolInvocation{
+				Name:      tc.Function.Name,
+				Arguments: args,
+				Result:    result,
+			})
+			resBytes, _ := json.Marshal(result)
+			msgs = append(msgs, llm.Message{
+				Role:       "tool",
+				Content:    string(resBytes),
+				ToolCallID: tc.ID,
+				Name:       tc.Function.Name,
+			})
+		}
+	}
+
+	return "", invocations, fmt.Errorf("function calling loop exceeded max rounds (%d)", maxToolRounds)
+}
+
+// buildInitialMessages 拼装 system + 历史(最近 20 条) + 用户问题。
+func (e *Engine) buildInitialMessages(agentID, userPrompt string, history []llm.Message) []llm.Message {
 	msgs := []llm.Message{{Role: "system", Content: e.resolveSystemPrompt(agentID)}}
 	if len(history) > 20 {
 		history = history[len(history)-20:]
 	}
 	msgs = append(msgs, history...)
-
-	userPrompt := prompt
-	if reasoning {
-		userPrompt = "请按以下格式回答：\n\n<think>\n先进行分步推理分析\n</think>\n<answer>\n再给出最终答案\n</answer>\n\n用户问题：" + prompt
-	}
 	msgs = append(msgs, llm.Message{Role: "user", Content: userPrompt})
+	return msgs
+}
 
-	if !e.acquireLLMSlot(ctx) {
-		return "", fmt.Errorf("llm concurrency limit reached")
+// builtinToolDenyList 不被暴露给模型的内建工具(避免自我递归或噪音调用)。
+var builtinToolDenyList = map[string]bool{
+	"llm_chat":  true,
+	"http_get":  true,
+}
+
+// buildToolDefs 将 Registry 中的运维工具转换为 LLM Function Calling 所需的 ToolDef。
+// 跳过内建工具与未注册 Handler 的工具。
+func (e *Engine) buildToolDefs() []llm.ToolDef {
+	defs := e.reg.List()
+	out := make([]llm.ToolDef, 0, len(defs))
+	for _, d := range defs {
+		if builtinToolDenyList[d.Name] {
+			continue
+		}
+		props := map[string]any{}
+		required := []string{}
+		for pname, ps := range d.Parameters {
+			prop := map[string]any{"type": ps.Type, "description": ps.Description}
+			if ps.Enum != nil {
+				prop["enum"] = ps.Enum
+			}
+			if ps.Default != nil {
+				prop["default"] = ps.Default
+			}
+			props[pname] = prop
+			if ps.Required {
+				required = append(required, pname)
+			}
+		}
+		out = append(out, llm.ToolDef{
+			Type: "function",
+			Function: llm.ToolFunc{
+				Name:        d.Name,
+				Description: d.Description,
+				Parameters: map[string]any{
+					"type":       "object",
+					"properties": props,
+					"required":   required,
+				},
+			},
+		})
 	}
-	defer e.releaseLLMSlot()
+	return out
+}
 
-	resp, err := e.llmClient.Chat(ctx, llm.ChatRequest{
-		Messages:    msgs,
-		MaxTokens:   e.genMaxTokensVal(),
-		Temperature: e.genTemperatureVal(),
-	})
+// maxToolRounds 单次对话中 Function Calling 的最大轮次,防止模型无限循环请求工具。
+const maxToolRounds = 5
+
+// truncateJSON 安全地把任意参数序列化为单行摘要(用于日志)。
+func truncateJSON(v any) string {
+	b, err := json.Marshal(v)
 	if err != nil {
-		return "", err
+		return fmt.Sprintf("%v", v)
 	}
-	if len(resp.Choices) == 0 {
-		return "", fmt.Errorf("llm: empty response")
+	s := string(b)
+	if len(s) > 300 {
+		return s[:300] + "..."
 	}
-	e.recordTokens(agentID, resp)
-	return resp.Choices[0].Message.Content, nil
+	return s
+}
+
+// summarizeToolResult 把工具结果压缩为单行摘要,供流式输出展示。
+func summarizeToolResult(v any) string {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return fmt.Sprintf("%v", v)
+	}
+	s := string(b)
+	if len(s) > 400 {
+		return s[:400] + "..."
+	}
+	return s
 }
 
 // recordTokens 记录本次 LLM 调用的 token 用量。
@@ -716,6 +859,9 @@ func (e *Engine) ChatStream(ctx context.Context, agentID, prompt string, history
 	return e.chatStreamImpl(ctx, agentID, prompt, history, false)
 }
 
+// chatStreamImpl 在后台 goroutine 中执行 Function Calling 循环,并把过程与最终答案
+// 以文本块形式推送到 channel,使 SSE 流既能展示工具调用又保留流式观感。
+// 工具活动以可读文本(🔧 调用 / ↳ 结果)呈现,最终答案按词切分模拟流式输出。
 func (e *Engine) chatStreamImpl(ctx context.Context, agentID, prompt string, history []llm.Message, reasoning bool) (<-chan string, error) {
 	if prompt == "" {
 		return nil, fmt.Errorf("prompt is required")
@@ -725,41 +871,38 @@ func (e *Engine) chatStreamImpl(ctx context.Context, agentID, prompt string, his
 		return nil, fmt.Errorf("rate limit exceeded for agent %s", agentID)
 	}
 
-	sysPrompt := e.resolveSystemPrompt(agentID)
-	msgs := []llm.Message{{Role: "system", Content: sysPrompt}}
-	if len(history) > 20 {
-		history = history[len(history)-20:]
-	}
-	msgs = append(msgs, history...)
-	userPrompt := prompt
-	if reasoning {
-		userPrompt = "请按以下格式回答：\n\n<think>\n先进行分步推理分析\n</think>\n<answer>\n再给出最终答案\n</answer>\n\n用户问题：" + prompt
-	}
-	msgs = append(msgs, llm.Message{Role: "user", Content: userPrompt})
-
-	if !e.acquireLLMSlot(ctx) {
-		return nil, fmt.Errorf("llm concurrency limit reached")
-	}
-	chunkCh, err := e.llmClient.StreamChat(ctx, llm.ChatRequest{
-		Messages:    msgs,
-		MaxTokens:   e.genMaxTokensVal(),
-		Temperature: e.genTemperatureVal(),
-	})
-	if err != nil {
-		e.releaseLLMSlot()
-		return nil, err
-	}
 	out := make(chan string, 32)
 	go func() {
 		defer close(out)
-		defer e.releaseLLMSlot()
-		for c := range chunkCh {
-			if c.Content != "" {
-				out <- c.Content
-			}
+
+		final, invocations, err := e.chatWithTools(ctx, agentID, prompt, history, reasoning)
+		if err != nil {
+			out <- "⚠️ " + err.Error()
+			return
 		}
+
+		// 展示工具调用过程
+		for _, inv := range invocations {
+			out <- fmt.Sprintf("\n\n🔧 **调用工具 `%s`**\n", inv.Name)
+			if len(inv.Arguments) > 0 {
+				if b, e := json.MarshalIndent(inv.Arguments, "", "  "); e == nil {
+					out <- "```json\n" + string(b) + "\n```\n"
+				}
+			}
+			out <- fmt.Sprintf("\n↳ **结果**: %s\n\n", summarizeToolResult(inv.Result))
+		}
+
+		// 流式输出最终答案(按词切分,模拟 token 流)
+		streamWords(out, final)
 	}()
 	return out, nil
+}
+
+// streamWords 将文本按空白切分,逐词推入 channel 以模拟流式输出。
+func streamWords(out chan<- string, text string) {
+	for _, w := range strings.Fields(text) {
+		out <- w + " "
+	}
 }
 
 // ——— 对话持久(内存) ———

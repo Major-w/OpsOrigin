@@ -28,8 +28,14 @@ var (
 		Name: "ai_llm_ratelimit_hit_total",
 		Help: "Total number of LLM-layer rate-limit hits (agent/plan dimension)",
 	})
+
+	// AIToolCalls AI 助手通过 Function Calling 自主发起的 MCP 工具调用次数。
+	AIToolCalls = prometheus.NewCounter(prometheus.CounterOpts{
+		Name: "ai_tool_calls_total",
+		Help: "Total number of MCP tool invocations initiated by the model via Function Calling",
+	})
 )
 
 func init() {
-	metrics.Registry.MustRegister(AIConcurrentSessions, AILLMInFlight, AILLMRateLimitHits)
+	metrics.Registry.MustRegister(AIConcurrentSessions, AILLMInFlight, AILLMRateLimitHits, AIToolCalls)
 }
