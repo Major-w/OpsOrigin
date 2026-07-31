@@ -1,6 +1,7 @@
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   reactStrictMode: true,
+  transpilePackages: ['@tremor/react', 'echarts-for-react'],
   async rewrites() {
     return [
       {
