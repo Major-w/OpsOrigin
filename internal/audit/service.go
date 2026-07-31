@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"log/slog"
 	"net/http"
+	"strconv"
+	"time"
 
 	"github.com/opsorigin/core/internal/audit/interceptor"
 	"github.com/opsorigin/core/internal/audit/model"
@@ -88,21 +90,54 @@ func (s *Service) handleRecordEvent(w http.ResponseWriter, r *http.Request) {
 
 func (s *Service) handleQueryEvents(w http.ResponseWriter, r *http.Request) {
 	tenantID := interceptor.TenantIDFromContext(r.Context())
+	q := r.URL.Query()
 
 	filter := model.AuditFilter{
-		TenantID:  tenantID,
-		TraceID:   r.URL.Query().Get("trace_id"),
-		EventType: r.URL.Query().Get("event_type"),
-		ActorType: r.URL.Query().Get("actor_type"),
+		TenantID:   tenantID,
+		TraceID:    q.Get("trace_id"),
+		EventType:  q.Get("event_type"),
+		ActorType:  q.Get("actor_type"),
+		ActorID:    q.Get("actor_id"),
+		TargetType: q.Get("target_type"),
+		Keyword:    q.Get("q"),
 	}
+	if v := q.Get("success"); v == "true" || v == "false" {
+		b := v == "true"
+		filter.Success = &b
+	}
+	if v := q.Get("from"); v != "" {
+		if t, err := time.Parse(time.RFC3339, v); err == nil {
+			filter.From = t
+		}
+	}
+	if v := q.Get("to"); v != "" {
+		if t, err := time.Parse(time.RFC3339, v); err == nil {
+			filter.To = t
+		}
+	}
+	limit, _ := strconv.Atoi(q.Get("limit"))
+	if limit <= 0 || limit > 200 {
+		limit = 50
+	}
+	offset, _ := strconv.Atoi(q.Get("offset"))
+	if offset < 0 {
+		offset = 0
+	}
+	filter.Limit = limit
+	filter.Offset = offset
 
-	events, err := s.store.Query(r.Context(), filter)
+	events, total, err := s.store.Query(r.Context(), filter)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 
-	writeJSON(w, http.StatusOK, events)
+	writeJSON(w, http.StatusOK, map[string]any{
+		"items":  events,
+		"total":  total,
+		"limit":  limit,
+		"offset": offset,
+	})
 }
 
 func (s *Service) handleValidateQuery(w http.ResponseWriter, r *http.Request) {

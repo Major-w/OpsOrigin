@@ -53,6 +53,7 @@ export interface AlertRule {
 interface MonitorState {
   targets: MonitorTarget[]
   alerts: AlertEvent[]
+  alertHistory: AlertEvent[]   // 已确认/已解决的处理历史
   rules: AlertRule[]
   alertStats: Record<string, number>
   probeResult: ProbeResult | null
@@ -63,6 +64,7 @@ interface MonitorState {
   addTarget: (data: any) => Promise<boolean>
   deleteTarget: (id: string) => Promise<boolean>
   fetchAlerts: () => Promise<void>
+  fetchAlertHistory: () => Promise<void>
   fetchAlertStats: () => Promise<void>
   ackAlert: (id: string) => Promise<boolean>
   resolveAlert: (id: string) => Promise<boolean>
@@ -74,7 +76,7 @@ interface MonitorState {
 }
 
 export const useMonitorStore = create<MonitorState>((set, get) => ({
-  targets: [], alerts: [], rules: [], alertStats: {},
+  targets: [], alerts: [], alertHistory: [], rules: [], alertStats: {},
   probeResult: null, probeResults: [], loading: false, error: null,
 
   fetchTargets: async () => {
@@ -117,6 +119,14 @@ export const useMonitorStore = create<MonitorState>((set, get) => ({
     } catch (e: any) {
       set({ loading: false })
       toast.error(`加载监控告警失败: ${e.message}`)
+    }
+  },
+  fetchAlertHistory: async () => {
+    try {
+      const history = await apiFetch<AlertEvent[]>('/monitor/alerts?status=history')
+      set({ alertHistory: history })
+    } catch (e: any) {
+      toast.error(`加载告警历史失败: ${e.message}`)
     }
   },
   fetchAlertStats: async () => {

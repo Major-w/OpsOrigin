@@ -34,12 +34,16 @@ type AuditTarget struct {
 }
 
 type AuditFilter struct {
-	TenantID  string    `json:"tenant_id,omitempty"`
-	TraceID   string    `json:"trace_id,omitempty"`
-	EventType string    `json:"event_type,omitempty"`
-	ActorType string    `json:"actor_type,omitempty"`
-	From      time.Time `json:"from,omitempty"`
-	To        time.Time `json:"to,omitempty"`
-	Limit     int       `json:"limit,omitempty"`
-	Offset    int       `json:"offset,omitempty"`
+	TenantID   string    `json:"tenant_id,omitempty"`
+	TraceID    string    `json:"trace_id,omitempty"`
+	EventType  string    `json:"event_type,omitempty"`
+	ActorType  string    `json:"actor_type,omitempty"`
+	ActorID    string    `json:"actor_id,omitempty"`  // actor_id 模糊搜索(操作主体)
+	TargetType string    `json:"target_type,omitempty"`
+	Keyword    string    `json:"keyword,omitempty"` // action/target_name/trace_id 全局模糊搜索
+	Success    *bool     `json:"success,omitempty"` // nil=不过滤
+	From       time.Time `json:"from,omitempty"`
+	To         time.Time `json:"to,omitempty"`
+	Limit      int       `json:"limit,omitempty"`
+	Offset     int       `json:"offset,omitempty"`
 }

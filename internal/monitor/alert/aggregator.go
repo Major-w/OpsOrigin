@@ -181,6 +181,7 @@ func (a *Aggregator) Acknowledge(alertID, acknowledgedBy string) error {
 		if alert.ID == alertID {
 			delete(a.activeAlerts, alert.Fingerprint)
 			alert.ResolvedAt = timePtr(time.Now())
+			a.recordHistoryLocked(alert)
 			return nil
 		}
 	}
@@ -194,10 +195,33 @@ func (a *Aggregator) Resolve(alertID string) error {
 		if alert.ID == alertID {
 			alert.ResolvedAt = timePtr(time.Now())
 			delete(a.activeAlerts, fp)
+			a.recordHistoryLocked(alert)
 			return nil
 		}
 	}
 	return fmt.Errorf("alert %s not found", alertID)
+}
+
+// maxAlertHistory 保留的处理历史告警条数(环形上限)。
+const maxAlertHistory = 200
+
+// recordHistoryLocked 把已确认/已解决的告警追加到处理历史(调用方须持有 a.mu)。
+func (a *Aggregator) recordHistoryLocked(alert *model.AlertEvent) {
+	a.alertHistory = append(a.alertHistory, alert)
+	if len(a.alertHistory) > maxAlertHistory {
+		a.alertHistory = a.alertHistory[len(a.alertHistory)-maxAlertHistory:]
+	}
+}
+
+// GetAlertHistory 返回最近的处理历史(已确认/已解决告警, 时间倒序)。
+func (a *Aggregator) GetAlertHistory() []*model.AlertEvent {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	out := make([]*model.AlertEvent, 0, len(a.alertHistory))
+	for i := len(a.alertHistory) - 1; i >= 0; i-- {
+		out = append(out, a.alertHistory[i])
+	}
+	return out
 }
 
 func timePtr(t time.Time) *time.Time {

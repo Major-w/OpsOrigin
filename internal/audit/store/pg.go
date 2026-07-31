@@ -83,62 +83,40 @@ func (s *PGStore) Record(ctx context.Context, event *model.AuditEvent) error {
 	return nil
 }
 
-func (s *PGStore) Query(ctx context.Context, filter model.AuditFilter) ([]*model.AuditEvent, error) {
+func (s *PGStore) Query(ctx context.Context, filter model.AuditFilter) ([]*model.AuditEvent, int, error) {
+	// 条件构造: 返回 (whereSQL, args) 供数据查询与 COUNT 共用
+	whereSQL, args := s.buildWhere(filter)
+
+	// 总条数(分页用)
+	var total int
+	countArgs := append([]any{}, args...)
+	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM audit_events WHERE 1=1`+whereSQL, countArgs...).Scan(&total); err != nil {
+		return nil, 0, fmt.Errorf("count audit events: %w", err)
+	}
+
+	// 数据查询
 	query := `SELECT id, trace_id, tenant_id, event_type, actor_type, actor_id,
 	                 actor_display_name, actor_ticket_id, target_type, target_id, target_name,
 	                 action, request, response, success, error, ip_address, user_agent, timestamp
-	          FROM audit_events WHERE 1=1`
-	args := []any{}
-	argIdx := 1
+	          FROM audit_events WHERE 1=1` + whereSQL + ` ORDER BY timestamp DESC`
 
-	if filter.TenantID != "" {
-		query += fmt.Sprintf(` AND tenant_id = $%d`, argIdx)
-		args = append(args, filter.TenantID)
-		argIdx++
-	}
-	if filter.TraceID != "" {
-		query += fmt.Sprintf(` AND trace_id = $%d`, argIdx)
-		args = append(args, filter.TraceID)
-		argIdx++
-	}
-	if filter.EventType != "" {
-		query += fmt.Sprintf(` AND event_type = $%d`, argIdx)
-		args = append(args, filter.EventType)
-		argIdx++
-	}
-	if filter.ActorType != "" {
-		query += fmt.Sprintf(` AND actor_type = $%d`, argIdx)
-		args = append(args, filter.ActorType)
-		argIdx++
-	}
-	if !filter.From.IsZero() {
-		query += fmt.Sprintf(` AND timestamp >= $%d`, argIdx)
-		args = append(args, filter.From)
-		argIdx++
-	}
-	if !filter.To.IsZero() {
-		query += fmt.Sprintf(` AND timestamp <= $%d`, argIdx)
-		args = append(args, filter.To)
-		argIdx++
-	}
-
-	query += ` ORDER BY timestamp DESC`
-
+	argIdx := len(args) + 1
+	queryArgs := append([]any{}, args...)
 	if filter.Limit > 0 {
 		query += fmt.Sprintf(` LIMIT $%d`, argIdx)
-		args = append(args, filter.Limit)
+		queryArgs = append(queryArgs, filter.Limit)
 		argIdx++
 	} else {
 		query += ` LIMIT 100`
 	}
 	if filter.Offset > 0 {
 		query += fmt.Sprintf(` OFFSET $%d`, argIdx)
-		args = append(args, filter.Offset)
+		queryArgs = append(queryArgs, filter.Offset)
 	}
 
-	rows, err := s.db.QueryContext(ctx, query, args...)
+	rows, err := s.db.QueryContext(ctx, query, queryArgs...)
 	if err != nil {
-		return nil, fmt.Errorf("query audit events: %w", err)
+		return nil, 0, fmt.Errorf("query audit events: %w", err)
 	}
 	defer rows.Close()
 
@@ -154,7 +132,7 @@ func (s *PGStore) Query(ctx context.Context, filter model.AuditFilter) ([]*model
 			&targetType, &targetID, &targetName,
 			&action, &reqJSON, &respJSON,
 			&e.Success, &errStr, &ipAddr, &userAgent, &e.Timestamp); err != nil {
-			return nil, fmt.Errorf("scan audit event: %w", err)
+			return nil, 0, fmt.Errorf("scan audit event: %w", err)
 		}
 
 		e.Actor.ID = nullableStr(actorID)
@@ -177,7 +155,66 @@ func (s *PGStore) Query(ctx context.Context, filter model.AuditFilter) ([]*model
 
 		events = append(events, e)
 	}
-	return events, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, 0, err
+	}
+	if events == nil {
+		events = []*model.AuditEvent{}
+	}
+	return events, total, nil
+}
+
+// buildWhere 构造 WHERE 条件片段(不含 WHERE 1=1)与参数列表。
+func (s *PGStore) buildWhere(filter model.AuditFilter) (string, []any) {
+	query := ""
+	args := []any{}
+	argIdx := 1
+
+	add := func(cond string, v any) {
+		query += fmt.Sprintf(` AND %s $%d`, cond, argIdx)
+		args = append(args, v)
+		argIdx++
+	}
+
+	if filter.TenantID != "" {
+		add("tenant_id =", filter.TenantID)
+	}
+	if filter.TraceID != "" {
+		add("trace_id =", filter.TraceID)
+	}
+	if filter.EventType != "" {
+		add("event_type =", filter.EventType)
+	}
+	if filter.ActorType != "" {
+		add("actor_type =", filter.ActorType)
+	}
+	if filter.ActorID != "" {
+		// actor_id / display_name 模糊匹配(操作主体搜索)
+		query += fmt.Sprintf(` AND (actor_id ILIKE $%d OR actor_display_name ILIKE $%d)`, argIdx, argIdx+1)
+		like := "%" + filter.ActorID + "%"
+		args = append(args, like, like)
+		argIdx += 2
+	}
+	if filter.TargetType != "" {
+		add("target_type =", filter.TargetType)
+	}
+	if filter.Keyword != "" {
+		// 全局关键词: action / target_name / trace_id 模糊
+		query += fmt.Sprintf(` AND (action ILIKE $%d OR target_name ILIKE $%d OR trace_id ILIKE $%d OR event_type ILIKE $%d)`, argIdx, argIdx+1, argIdx+2, argIdx+3)
+		like := "%" + filter.Keyword + "%"
+		args = append(args, like, like, like, like)
+		argIdx += 4
+	}
+	if filter.Success != nil {
+		add("success =", *filter.Success)
+	}
+	if !filter.From.IsZero() {
+		add("timestamp >=", filter.From)
+	}
+	if !filter.To.IsZero() {
+		add("timestamp <=", filter.To)
+	}
+	return query, args
 }
 
 func nullable(s string) *string {

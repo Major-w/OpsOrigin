@@ -261,6 +261,21 @@ func (s *Service) handleRunProbe(w http.ResponseWriter, r *http.Request) {
 
 func (s *Service) handleListAlerts(w http.ResponseWriter, r *http.Request) {
 	tenantID := tenantFromCtx(r.Context())
+	// status=history 返回已确认/已解决的处理历史; 其余返回活跃告警
+	if r.URL.Query().Get("status") == "history" {
+		history := s.aggregator.GetAlertHistory()
+		filtered := make([]*model.AlertEvent, 0)
+		for _, a := range history {
+			if a.TenantID == tenantID {
+				filtered = append(filtered, a)
+			}
+		}
+		if filtered == nil {
+			filtered = []*model.AlertEvent{}
+		}
+		writeJSON(w, http.StatusOK, filtered)
+		return
+	}
 	allAlerts := s.aggregator.GetActiveAlerts()
 	filtered := make([]*model.AlertEvent, 0)
 	for _, a := range allAlerts {
