@@ -111,6 +111,10 @@ type LLMConfig struct {
 	// EmbeddingModel/EmbeddingBaseURL 可选；留空时分别回退到 Model/BaseURL 的同名端点。
 	EmbeddingModel   string `json:"embedding_model"`
 	EmbeddingBaseURL string `json:"embedding_base_url"`
+	// 生成参数(0 表示由引擎使用内置默认): GenTemperature 默认 0.7, GenMaxTokens 默认 1024, MaxInflight 默认 32。
+	GenTemperature float64 `json:"gen_temperature"`
+	GenMaxTokens   int     `json:"gen_max_tokens"`
+	MaxInflight    int     `json:"max_inflight"`
 }
 
 type PostgresConfig struct {
@@ -173,6 +177,10 @@ func Load() (*Config, error) {
 			// 留空则回退到通用 OpenAI embeddings 端点；接 OpenAI/兼容服务时只需填 model。
 			EmbeddingModel:   envStr("OPSNEXUS_LLM_EMBEDDING_MODEL", "text-embedding-3-small"),
 			EmbeddingBaseURL: envStr("OPSNEXUS_LLM_EMBEDDING_BASE_URL", ""),
+			// 生成参数(留空则引擎用内置默认:温度0.7/上限1024/并发32)
+			GenTemperature: float64Env("OPSNEXUS_LLM_GEN_TEMPERATURE", 0),
+			GenMaxTokens:   envInt("OPSNEXUS_LLM_GEN_MAX_TOKENS", 0),
+			MaxInflight:    envInt("OPSNEXUS_LLM_MAX_INFLIGHT", 0),
 		},
 		RedisAddr:     envStr("OPSNEXUS_REDIS_ADDR", "localhost:6379"),
 		RedisPoolSize: envInt("OPSNEXUS_REDIS_POOL_SIZE", 50),
@@ -268,6 +276,15 @@ func envBool(key string, fallback bool) bool {
 	if v := os.Getenv(key); v != "" {
 		if b, err := strconv.ParseBool(v); err == nil {
 			return b
+		}
+	}
+	return fallback
+}
+
+func float64Env(key string, fallback float64) float64 {
+	if v := os.Getenv(key); v != "" {
+		if f, err := strconv.ParseFloat(v, 64); err == nil {
+			return f
 		}
 	}
 	return fallback

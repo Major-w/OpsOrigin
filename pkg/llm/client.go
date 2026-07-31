@@ -33,6 +33,9 @@ type Message struct {
 	Name       string     `json:"name,omitempty"`
 	ToolCallID string     `json:"tool_call_id,omitempty"`
 	ToolCalls  []ToolCall `json:"tool_calls,omitempty"`
+	// ReasoningContent 模型原生推理字段(DeepSeek-R1 / Qwen 思维链等),
+	// 部分兼容后端将其放在与 content 并列的 reasoning_content 字段。
+	ReasoningContent string `json:"reasoning_content,omitempty"`
 }
 
 type ToolCall struct {
@@ -131,6 +134,7 @@ func (c *Client) Chat(ctx context.Context, req ChatRequest) (*ChatResponse, erro
 // StreamChunk 流式响应片段。Model 发送完内容块后, FinishReason 非空。
 type StreamChunk struct {
 	Content      string `json:"content"`       // 当前增量文本
+	Reasoning    string `json:"reasoning"`     // 当前增量推理文本(原生思维链)
 	FinishReason string `json:"finish_reason"` // 发送完成后非空,如 "stop"
 }
 
@@ -213,8 +217,9 @@ func (c *Client) readSSE(ctx context.Context, r io.ReadCloser, ch chan<- StreamC
 		var chunk struct {
 			Choices []struct {
 				Delta struct {
-					Content string `json:"content"`
-					Role    string `json:"role"`
+					Content   string `json:"content"`
+					Reasoning string `json:"reasoning"`
+					Role      string `json:"role"`
 				} `json:"delta"`
 				FinishReason string `json:"finish_reason"`
 			} `json:"choices"`
@@ -224,7 +229,7 @@ func (c *Client) readSSE(ctx context.Context, r io.ReadCloser, ch chan<- StreamC
 			continue
 		}
 		for _, c := range chunk.Choices {
-			sc := StreamChunk{Content: c.Delta.Content, FinishReason: c.FinishReason}
+			sc := StreamChunk{Content: c.Delta.Content, Reasoning: c.Delta.Reasoning, FinishReason: c.FinishReason}
 			ch <- sc
 		}
 	}

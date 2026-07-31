@@ -60,7 +60,7 @@ func (e *Engine) RunTeamChat(
 	}
 
 	var (
-		mu        sync.Mutex
+		mu         sync.Mutex
 		workerOuts = map[string]string{} // agentID -> 产出
 	)
 
@@ -319,8 +319,7 @@ func (e *Engine) recordTeamTokens(m model.TeamMember, content string) {
 	if est < 1 {
 		est = 1
 	}
-	e.tokenMu.Lock()
-	e.tokenRecs = append(e.tokenRecs, model.TokenRecord{
+	e.persistTokenRecord(model.TokenRecord{
 		Time:       time.Now(),
 		AgentID:    m.AgentID,
 		Model:      "team:" + m.Role,
@@ -328,8 +327,4 @@ func (e *Engine) recordTeamTokens(m model.TeamMember, content string) {
 		Completion: est,
 		Total:      est,
 	})
-	if len(e.tokenRecs) > 2000 {
-		e.tokenRecs = e.tokenRecs[len(e.tokenRecs)-2000:]
-	}
-	e.tokenMu.Unlock()
 }

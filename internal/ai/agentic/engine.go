@@ -28,19 +28,19 @@ import (
 // 存储当前为进程内 map(与仓库内 iam/notification 等服务一致)。
 // 多副本部署时如需持久化,应将 agents/plans 落到 Postgres(outbox 模式)。
 type Engine struct {
-	mu          sync.RWMutex
-	agents      map[string]*model.AgentInstance
-	plans       map[string]*model.ExecutionPlan
-	convStore   ConversationStore
-	convs       map[string]*Conversation
-	reg         *mcp.Registry
-	lim         ratelimit.RateLimiter
-	llmClient   *llm.Client
-	ready       bool
-	tokenRecs   []model.TokenRecord
-	tokenMu     sync.Mutex
-	semMu       sync.Mutex
-	llmSem      chan struct{}
+	mu        sync.RWMutex
+	agents    map[string]*model.AgentInstance
+	plans     map[string]*model.ExecutionPlan
+	convStore ConversationStore
+	convs     map[string]*Conversation
+	reg       *mcp.Registry
+	lim       ratelimit.RateLimiter
+	llmClient *llm.Client
+	ready     bool
+	tokenRecs []model.TokenRecord
+	tokenMu   sync.Mutex
+	semMu     sync.Mutex
+	llmSem    chan struct{}
 
 	// ——— 多智能体团队（Feature 1）———
 	teams          map[string]*model.AgentTeam
@@ -60,7 +60,7 @@ func NewEngine(reg *mcp.Registry, lim ratelimit.RateLimiter, llmClient *llm.Clie
 		convs:     make(map[string]*Conversation),
 		teams:     make(map[string]*model.AgentTeam),
 		reg:       reg,
-		lim:      lim,
+		lim:       lim,
 		llmClient: llmClient,
 		semMu:     sync.Mutex{},
 		llmSem:    make(chan struct{}, 32),
@@ -75,6 +75,7 @@ func NewEngine(reg *mcp.Registry, lim ratelimit.RateLimiter, llmClient *llm.Clie
 // 安全边界:
 //   - llm_chat : 纯 LLM 推理,无副作用;
 //   - http_get  : 仅只读 GET,不携带请求体,适合查询类集成;
+//
 // 如需 shell 执行 / 写操作类工具,必须经过显式安全评审后在此或业务侧注册。
 func (e *Engine) registerBuiltinTools() {
 	e.reg.Register(mcp.ToolDefinition{
@@ -154,7 +155,9 @@ func (e *Engine) SetStore(s Store) { e.store = s }
 func (e *Engine) loadFromStore() error {
 	ctx := context.Background()
 	agents, err := e.store.ListAgents(ctx, "default")
-	if err != nil { return err }
+	if err != nil {
+		return err
+	}
 	for _, a := range agents {
 		e.agents[a.ID] = &model.AgentInstance{
 			ID: a.ID, TenantID: a.TenantID, Name: a.Name,
@@ -163,10 +166,14 @@ func (e *Engine) loadFromStore() error {
 		}
 	}
 	teams, err := e.store.ListTeams(ctx, "default")
-	if err != nil { return err }
+	if err != nil {
+		return err
+	}
 	for _, t := range teams {
 		e.teams[t.ID] = &model.AgentTeam{ID: t.ID, Name: t.Name, Mode: t.Mode, SystemPrompt: t.Prompt}
-		if t.Members != nil { json.Unmarshal(t.Members, &e.teams[t.ID].Members) }
+		if t.Members != nil {
+			json.Unmarshal(t.Members, &e.teams[t.ID].Members)
+		}
 	}
 	return nil
 }
@@ -174,17 +181,21 @@ func (e *Engine) loadFromStore() error {
 // Chat 执行一次单轮(可带历史)的 LLM 推理,供 AI 助手聊天端点使用。
 // 支持 Function Calling:模型可自主调用已注册的运维工具(CMDB查询/工单/脚本执行/知识库检索)。
 func (e *Engine) Chat(ctx context.Context, agentID, prompt string, history []llm.Message) (string, error) {
-	out, _, err := e.chatWithTools(ctx, agentID, prompt, history, false)
+	out, _, _, err := e.chatWithTools(ctx, agentID, prompt, history, false)
 	return out, err
 }
 
 // ChatReasoning 思维链模式:返回思考过程和最终答案。
+// 优先返回模型原生 reasoning_content(DeepSeek-R1/Qwen 等),缺失时降级到 prompt 伪思维链。
 func (e *Engine) ChatReasoning(ctx context.Context, agentID, prompt string, history []llm.Message) (thinking string, answer string, err error) {
-	full, _, err := e.chatWithTools(ctx, agentID, prompt, history, true)
+	answer, reasoning, _, err := e.chatWithTools(ctx, agentID, prompt, history, true)
 	if err != nil {
 		return "", "", err
 	}
-	thinking, answer = parseCoT(full)
+	if reasoning != "" {
+		return reasoning, answer, nil
+	}
+	thinking, answer = parseCoT(answer)
 	return
 }
 
@@ -198,7 +209,8 @@ type ToolInvocation struct {
 // ChatWithTools 执行带 Function Calling 的对话,返回最终答案与本次触发的所有工具调用。
 // 供需要审计/展示工具使用情况的调用方使用(如团队编排后的汇总)。
 func (e *Engine) ChatWithTools(ctx context.Context, agentID, prompt string, history []llm.Message, reasoning bool) (string, []ToolInvocation, error) {
-	return e.chatWithTools(ctx, agentID, prompt, history, reasoning)
+	out, _, inv, err := e.chatWithTools(ctx, agentID, prompt, history, reasoning)
+	return out, inv, err
 }
 
 // chatWithTools 实现 Function Calling 循环:
@@ -206,14 +218,17 @@ func (e *Engine) ChatWithTools(ctx context.Context, agentID, prompt string, hist
 //  2. 若模型返回 tool_calls,逐个经 mcp.Registry 执行,把结果作为 tool 角色消息回填;
 //  3. 回到步骤 1,直至模型不再请求工具(finish_reason=stop)或达到最大轮次。
 //
+// 返回 (最终答案, 原生推理内容, 工具调用记录, error)。原生推理内容(reasoning_content)
+// 在模型支持时非空,否则为空(调用方降级到 prompt 伪思维链或忽略)。
+//
 // 内建工具 llm_chat / http_get 不暴露给模型,以避免自我递归/无副作用调用噪音。
-func (e *Engine) chatWithTools(ctx context.Context, agentID, prompt string, history []llm.Message, reasoning bool) (string, []ToolInvocation, error) {
+func (e *Engine) chatWithTools(ctx context.Context, agentID, prompt string, history []llm.Message, reasoning bool) (string, string, []ToolInvocation, error) {
 	if prompt == "" {
-		return "", nil, fmt.Errorf("prompt is required")
+		return "", "", nil, fmt.Errorf("prompt is required")
 	}
 	if e.lim != nil && agentID != "" && !e.lim.Allow(agentID) {
 		AILLMRateLimitHits.Inc()
-		return "", nil, fmt.Errorf("rate limit exceeded for agent %s", agentID)
+		return "", "", nil, fmt.Errorf("rate limit exceeded for agent %s", agentID)
 	}
 
 	// 1. 构造初始消息
@@ -229,7 +244,7 @@ func (e *Engine) chatWithTools(ctx context.Context, agentID, prompt string, hist
 	// 2. 工具调用循环
 	for round := 0; round < maxToolRounds; round++ {
 		if !e.acquireLLMSlot(ctx) {
-			return "", invocations, fmt.Errorf("llm concurrency limit reached")
+			return "", "", invocations, fmt.Errorf("llm concurrency limit reached")
 		}
 		resp, err := e.llmClient.Chat(ctx, llm.ChatRequest{
 			Messages:    msgs,
@@ -239,10 +254,10 @@ func (e *Engine) chatWithTools(ctx context.Context, agentID, prompt string, hist
 		})
 		e.releaseLLMSlot()
 		if err != nil {
-			return "", invocations, err
+			return "", "", invocations, err
 		}
 		if len(resp.Choices) == 0 {
-			return "", invocations, fmt.Errorf("llm: empty response")
+			return "", "", invocations, fmt.Errorf("llm: empty response")
 		}
 		e.recordTokens(agentID, resp)
 
@@ -252,7 +267,7 @@ func (e *Engine) chatWithTools(ctx context.Context, agentID, prompt string, hist
 
 		// 无工具调用 -> 这是最终答案
 		if len(choiceMsg.ToolCalls) == 0 {
-			return choiceMsg.Content, invocations, nil
+			return choiceMsg.Content, choiceMsg.ReasoningContent, invocations, nil
 		}
 
 		// 执行每个工具调用
@@ -283,7 +298,7 @@ func (e *Engine) chatWithTools(ctx context.Context, agentID, prompt string, hist
 		}
 	}
 
-	return "", invocations, fmt.Errorf("function calling loop exceeded max rounds (%d)", maxToolRounds)
+	return "", "", invocations, fmt.Errorf("function calling loop exceeded max rounds (%d)", maxToolRounds)
 }
 
 // buildInitialMessages 拼装 system + 历史(最近 20 条) + 用户问题。
@@ -299,8 +314,8 @@ func (e *Engine) buildInitialMessages(agentID, userPrompt string, history []llm.
 
 // builtinToolDenyList 不被暴露给模型的内建工具(避免自我递归或噪音调用)。
 var builtinToolDenyList = map[string]bool{
-	"llm_chat":  true,
-	"http_get":  true,
+	"llm_chat": true,
+	"http_get": true,
 }
 
 // buildToolDefs 将 Registry 中的运维工具转换为 LLM Function Calling 所需的 ToolDef。
@@ -372,11 +387,26 @@ func summarizeToolResult(v any) string {
 	return s
 }
 
+// persistTokenRecord 将一条 token 记录同时写入内存环形缓冲(便捷查询)与 PG(持久化统计)。
+// 内存缓冲仅保留最近 2000 条,PG 为真实可靠来源;store 为 nil 时只留内存。
+func (e *Engine) persistTokenRecord(r model.TokenRecord) {
+	e.tokenMu.Lock()
+	e.tokenRecs = append(e.tokenRecs, r)
+	if len(e.tokenRecs) > 2000 {
+		e.tokenRecs = e.tokenRecs[len(e.tokenRecs)-2000:]
+	}
+	e.tokenMu.Unlock()
+	if e.store != nil {
+		_ = e.store.SaveTokenRecord(context.Background(), &r)
+	}
+}
+
 // recordTokens 记录本次 LLM 调用的 token 用量。
 func (e *Engine) recordTokens(agentID string, resp *llm.ChatResponse) {
-	if resp.Usage == nil { return }
-	e.tokenMu.Lock()
-	e.tokenRecs = append(e.tokenRecs, model.TokenRecord{
+	if resp.Usage == nil {
+		return
+	}
+	e.persistTokenRecord(model.TokenRecord{
 		Time:       time.Now(),
 		AgentID:    agentID,
 		Model:      resp.Model,
@@ -384,19 +414,11 @@ func (e *Engine) recordTokens(agentID string, resp *llm.ChatResponse) {
 		Completion: resp.Usage.CompletionTokens,
 		Total:      resp.Usage.TotalTokens,
 	})
-	if len(e.tokenRecs) > 2000 {
-		e.tokenRecs = e.tokenRecs[len(e.tokenRecs)-2000:]
-	}
-	e.tokenMu.Unlock()
 }
 
 // GetTokenStats 返回 token 用量统计。
+// 优先从 PG(store)读取真实记录(避免内存重启丢失与重复计数),store 为 nil 时回退内存缓冲。
 func (e *Engine) GetTokenStats(period string) *model.TokenStats {
-	e.tokenMu.Lock()
-	recs := make([]model.TokenRecord, len(e.tokenRecs))
-	copy(recs, e.tokenRecs)
-	e.tokenMu.Unlock()
-
 	now := time.Now()
 	var cutoff time.Time
 	switch period {
@@ -411,31 +433,54 @@ func (e *Engine) GetTokenStats(period string) *model.TokenStats {
 		cutoff = now.Add(-24 * time.Hour)
 	}
 
+	var recs []model.TokenRecord
+	if e.store != nil {
+		recs, _ = e.store.TokenRecordsSince(context.Background(), cutoff)
+	} else {
+		e.tokenMu.Lock()
+		recs = make([]model.TokenRecord, len(e.tokenRecs))
+		copy(recs, e.tokenRecs)
+		e.tokenMu.Unlock()
+	}
+
+	return computeTokenStats(period, cutoff, recs)
+}
+
+// computeTokenStats 从记录切片聚合出统计。会按 cutoff 过滤(内存路径需自滤)。
+func computeTokenStats(period string, cutoff time.Time, recs []model.TokenRecord) *model.TokenStats {
 	stats := &model.TokenStats{Period: period}
 	hourMap := map[string]*model.HourBucket{}
 	dayMap := map[string]*model.DayBucket{}
 
 	for _, r := range recs {
-		if r.Time.Before(cutoff) { continue }
+		if r.Time.Before(cutoff) {
+			continue
+		}
 		stats.TotalCalls++
 		stats.Prompt += r.Prompt
 		stats.Completion += r.Completion
 		stats.Total += r.Total
 
 		hk := r.Time.Format("15:00")
-		if _, ok := hourMap[hk]; !ok { hourMap[hk] = &model.HourBucket{Hour: hk} }
+		if _, ok := hourMap[hk]; !ok {
+			hourMap[hk] = &model.HourBucket{Hour: hk}
+		}
 		hourMap[hk].Total += r.Total
 		hourMap[hk].Calls++
 
 		dk := r.Time.Format("01-02")
-		if _, ok := dayMap[dk]; !ok { dayMap[dk] = &model.DayBucket{Date: dk} }
+		if _, ok := dayMap[dk]; !ok {
+			dayMap[dk] = &model.DayBucket{Date: dk}
+		}
 		dayMap[dk].Total += r.Total
 		dayMap[dk].Calls++
 	}
 
 	for h := 0; h < 24; h++ {
 		hk := fmt.Sprintf("%02d:00", h)
-		if _, ok := hourMap[hk]; !ok { hourMap[hk] = &model.HourBucket{Hour: hk} }
+		if _, ok := hourMap[hk]; !ok {
+			hourMap[hk] = &model.HourBucket{Hour: hk}
+		}
 		stats.ByHour = append(stats.ByHour, *hourMap[hk])
 	}
 	for _, d := range dayMap {
@@ -475,13 +520,21 @@ func (e *Engine) CreateAgent(ctx context.Context, a *model.AgentInstance) error 
 
 // UpdateAgent 更新 Agent 的 system_prompt, model 等字段。
 func (e *Engine) UpdateAgent(ctx context.Context, a *model.AgentInstance) error {
-	if a.ID == "" { return fmt.Errorf("agent id is required") }
+	if a.ID == "" {
+		return fmt.Errorf("agent id is required")
+	}
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	existing, ok := e.agents[a.ID]
-	if !ok { return fmt.Errorf("agent not found: %s", a.ID) }
-	if a.Name != "" { existing.Name = a.Name }
-	if a.ModelName != "" { existing.ModelName = a.ModelName }
+	if !ok {
+		return fmt.Errorf("agent not found: %s", a.ID)
+	}
+	if a.Name != "" {
+		existing.Name = a.Name
+	}
+	if a.ModelName != "" {
+		existing.ModelName = a.ModelName
+	}
 	existing.SystemPrompt = a.SystemPrompt
 	existing.UpdatedAt = time.Now()
 	if e.store != nil {
@@ -496,7 +549,9 @@ func (e *Engine) DeleteAgent(ctx context.Context, id, tenantID string) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	_, ok := e.agents[id]
-	if !ok { return fmt.Errorf("agent not found: %s", id) }
+	if !ok {
+		return fmt.Errorf("agent not found: %s", id)
+	}
 	delete(e.agents, id)
 	if e.store != nil {
 		_ = e.store.DeleteAgent(ctx, id, tenantID)
@@ -875,7 +930,7 @@ func (e *Engine) chatStreamImpl(ctx context.Context, agentID, prompt string, his
 	go func() {
 		defer close(out)
 
-		final, invocations, err := e.chatWithTools(ctx, agentID, prompt, history, reasoning)
+		final, reasoning, invocations, err := e.chatWithTools(ctx, agentID, prompt, history, reasoning)
 		if err != nil {
 			out <- "⚠️ " + err.Error()
 			return
@@ -890,6 +945,11 @@ func (e *Engine) chatStreamImpl(ctx context.Context, agentID, prompt string, his
 				}
 			}
 			out <- fmt.Sprintf("\n↳ **结果**: %s\n\n", summarizeToolResult(inv.Result))
+		}
+
+		// 原生推理内容(若模型提供)作为独立块展示
+		if reasoning != "" {
+			out <- "\n\n> 💭 **推理过程**\n\n" + reasoning + "\n\n"
 		}
 
 		// 流式输出最终答案(按词切分,模拟 token 流)
@@ -909,13 +969,13 @@ func streamWords(out chan<- string, text string) {
 
 // Conversation 一次完整对话(多轮)。
 type Conversation struct {
-	ID        string       `json:"id"`
-	TenantID  string       `json:"tenant_id"`
-	AgentID   string       `json:"agent_id"`
-	Title     string       `json:"title"`
+	ID        string        `json:"id"`
+	TenantID  string        `json:"tenant_id"`
+	AgentID   string        `json:"agent_id"`
+	Title     string        `json:"title"`
 	Messages  []llm.Message `json:"messages"`
-	CreatedAt time.Time    `json:"created_at"`
-	UpdatedAt time.Time    `json:"updated_at"`
+	CreatedAt time.Time     `json:"created_at"`
+	UpdatedAt time.Time     `json:"updated_at"`
 }
 
 // SaveConversation 保存/更新对话。ID 为空时自动生成; title 取首条 user 消息前 40 字。
@@ -996,10 +1056,10 @@ func parseCoT(full string) (thinking string, answer string) {
 	answerEnd := strings.Index(full, "</answer>")
 
 	if thinkStart >= 0 && thinkEnd > thinkStart {
-		thinking = strings.TrimSpace(full[thinkStart+len("<think>"): thinkEnd])
+		thinking = strings.TrimSpace(full[thinkStart+len("<think>") : thinkEnd])
 	}
 	if answerStart >= 0 && answerEnd > answerStart {
-		answer = strings.TrimSpace(full[answerStart+len("<answer>"): answerEnd])
+		answer = strings.TrimSpace(full[answerStart+len("<answer>") : answerEnd])
 	}
 	if answer == "" {
 		// 没有 <answer> 标签: 把 <think> 之外的部分当做答案

@@ -22,11 +22,11 @@ import (
 )
 
 type Service struct {
-	cfg       *config.Config
-	Engine    *agentic.Engine
-	Registry  *mcp.Registry
-	limiter   ratelimit.RateLimiter
-	ragFn     func(ctx context.Context, query string) string // RAG上下文注入
+	cfg      *config.Config
+	Engine   *agentic.Engine
+	Registry *mcp.Registry
+	limiter  ratelimit.RateLimiter
+	ragFn    func(ctx context.Context, query string) string // RAG上下文注入
 }
 
 func NewService(cfg *config.Config, llmClient *llm.Client, redisClient *redisclient.Client, db *sql.DB) *Service {
@@ -77,6 +77,7 @@ func (s *Service) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/v1/ai/rate-limit/{agent_id}", s.handleGetRateLimit)
 	mux.HandleFunc("GET /api/v1/ai/token-stats", s.handleTokenStats)
 	mux.HandleFunc("POST /api/v1/ai/chat", s.handleChat)
+	mux.HandleFunc("POST /api/v1/ai/settings", s.handleUpdateSettings)
 	mux.HandleFunc("GET /api/v1/ai/conversations", s.handleListConversations)
 	mux.HandleFunc("GET /api/v1/ai/conversations/{id}", s.handleGetConversation)
 	mux.HandleFunc("POST /api/v1/ai/conversations", s.handleSaveConversation)
@@ -121,7 +122,8 @@ func (s *Service) handleChat(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// F4-D1: 会话计数入口
+	// F4-D1: 会话计数入口(逻辑并发, 与物理 LLM 槽位解耦)
+	agentic.AIConcurrentSessions.Inc()
 	defer agentic.AIConcurrentSessions.Dec()
 
 	if req.Stream {
@@ -346,11 +348,11 @@ func (s *Service) handleListPlans(w http.ResponseWriter, r *http.Request) {
 func (s *Service) handleGetRateLimit(w http.ResponseWriter, r *http.Request) {
 	agentID := r.PathValue("agent_id")
 	writeJSON(w, http.StatusOK, map[string]any{
-		"agent_id":  agentID,
-		"state":     s.limiter.GetState(agentID),
+		"agent_id":   agentID,
+		"state":      s.limiter.GetState(agentID),
 		"call_count": s.limiter.GetCount(agentID),
-		"limit":     ratelimit.DefaultLimit,
-		"window_s":  ratelimit.DefaultWindow.Seconds(),
+		"limit":      ratelimit.DefaultLimit,
+		"window_s":   ratelimit.DefaultWindow.Seconds(),
 	})
 }
 
@@ -373,9 +375,35 @@ func writeError(w http.ResponseWriter, status int, msg string) {
 
 func (s *Service) handleTokenStats(w http.ResponseWriter, r *http.Request) {
 	period := r.URL.Query().Get("period")
-	if period == "" { period = "24h" }
+	if period == "" {
+		period = "24h"
+	}
 	stats := s.Engine.GetTokenStats(period)
 	writeJSON(w, http.StatusOK, stats)
+}
+
+// handleUpdateSettings 运行时调整生成参数(温度/max_tokens)与物理 LLM 并发上限。
+// 字段为 0 时保持引擎当前值(引擎内置默认: 温度 0.7 / 上限 1024 / 并发 32)。
+func (s *Service) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		MaxTokens   int     `json:"max_tokens"`
+		Temperature float64 `json:"temperature"`
+		MaxInflight int     `json:"max_inflight"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if req.MaxTokens > 0 {
+		s.Engine.SetGenParams(req.MaxTokens, req.Temperature)
+	} else if req.Temperature > 0 {
+		s.Engine.SetGenParams(0, req.Temperature)
+	}
+	if req.MaxInflight > 0 {
+		s.Engine.SetLLMMaxInflight(req.MaxInflight)
+	}
+	slog.Info("ai settings updated", "max_tokens", req.MaxTokens, "temperature", req.Temperature, "max_inflight", req.MaxInflight)
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
 func (s *Service) handleUpdateAgent(w http.ResponseWriter, r *http.Request) {

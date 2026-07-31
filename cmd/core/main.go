@@ -373,6 +373,15 @@ func main() {
 
 	aiSvc := ai.NewService(cfg, llmClient, rdbClient, db)
 	aiSvc.Engine.SetStore(agentic.NewPGStore(db))
+	// 生成参数热更新:仅当配置显式给定时才覆盖引擎内置默认(温度0.7/上限1024/并发32)。
+	if cfg.LLM.GenTemperature > 0 {
+		aiSvc.Engine.SetGenParams(cfg.LLM.GenMaxTokens, cfg.LLM.GenTemperature)
+	} else if cfg.LLM.GenMaxTokens > 0 {
+		aiSvc.Engine.SetGenParams(cfg.LLM.GenMaxTokens, 0)
+	}
+	if cfg.LLM.MaxInflight > 0 {
+		aiSvc.Engine.SetLLMMaxInflight(cfg.LLM.MaxInflight)
+	}
 	toolSet := agentic.NewMCPToolSet(db)
 	toolSet.SetScriptExecutor(scriptSvc) // AI 的 script_run 工具经 script 服务→Agent 通道真实执行
 	toolSet.SetEmbedder(llmClient)       // 知识库检索启用语义向量匹配
