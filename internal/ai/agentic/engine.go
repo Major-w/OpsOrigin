@@ -48,6 +48,10 @@ type Engine struct {
 	// defaultSystemPrompt 是未配置 Agent 级 system_prompt 时的全局默认提示词(外置化,见 SetDefaultSystemPrompt)。
 	defaultSystemPrompt string
 
+	// historySummarizer 可选: 用 LLM 将超长历史的较早部分压缩为摘要,显著降低 Token 消耗。
+	// 未设置时 compactHistory 回退到确定性压缩(保留首条 user 原始意图 + 最近窗口)。
+	historySummarizer func(ctx context.Context, msgs []llm.Message) (string, error)
+
 	// ——— 多智能体团队（Feature 1）———
 	teams          map[string]*model.AgentTeam
 	genMaxTokens   int
@@ -75,6 +79,11 @@ func NewEngine(reg *mcp.Registry, lim ratelimit.RateLimiter, llmClient *llm.Clie
 	e.llmClient.Store(llmClient)
 	e.registerBuiltinTools()
 	SeedPresetTeams(e) // Feature 1: 预置平台交付团队（按 Name 幂等）
+	// 接入内置 LLM 历史摘要器(Token 预算压缩的"智能摘要"路径); 仅在客户端就绪时启用,
+	// 否则 compactHistory 自动回退到确定性压缩(保留原始意图 + 最近窗口)。
+	if llmClient != nil {
+		e.SetHistorySummarizer(e.defaultSummarize)
+	}
 	return e
 }
 
@@ -271,7 +280,7 @@ func (e *Engine) chatWithToolsConv(ctx context.Context, agentID, prompt string, 
 			sysExtra += m.Content
 		}
 	}
-	msgs, roundStart := e.buildMessages(agentID, userPrompt, baseHistory, sysExtra)
+	msgs, roundStart := e.buildMessages(ctx, agentID, userPrompt, baseHistory, sysExtra)
 	tools := e.buildToolDefs()
 	var invocations []ToolInvocation
 
@@ -354,10 +363,10 @@ func (e *Engine) chatWithToolsConv(ctx context.Context, agentID, prompt string, 
 	return content, reasoningAcc, invocations, conversationID, err
 }
 
-// buildMessages 拼装 system(+可选 sysExtra 补充, 如 RAG 注入) + 历史(最近 20 条) + 用户问题,
+// buildMessages 拼装 system(+可选 sysExtra 补充, 如 RAG 注入) + 历史(经 Token 预算压缩) + 用户问题,
 // 并返回"用户消息之后的起始下标"(roundStart), 调用方可用 msgs[roundStart:] 精确裁剪出"本轮回合",
 // 便于增量持久化会话。
-func (e *Engine) buildMessages(agentID, userPrompt string, history []llm.Message, sysExtra string) ([]llm.Message, int) {
+func (e *Engine) buildMessages(ctx context.Context, agentID, userPrompt string, history []llm.Message, sysExtra string) ([]llm.Message, int) {
 	sys := e.resolveSystemPrompt(agentID)
 	// 注入引用标注指引(RAG grounding): 让模型在引用知识库/工具结果时标注来源。
 	sys += "\n\n" + citationGuidance
@@ -365,9 +374,8 @@ func (e *Engine) buildMessages(agentID, userPrompt string, history []llm.Message
 		sys += "\n\n" + sysExtra
 	}
 	msgs := []llm.Message{{Role: "system", Content: sys}}
-	if len(history) > 20 {
-		history = history[len(history)-20:]
-	}
+	// Token 预算压缩: 超长历史压缩为"摘要(可选) + 最近窗口 + 原始意图锚点", 避免撑爆上下文。
+	history = e.compactHistory(ctx, history)
 	msgs = append(msgs, history...)
 	// roundStart 指向"本轮用户消息"在 msgs 中的下标: 持久化时 msgs[roundStart:] 即本轮回合(user + assistant/tool),
 	// 跳过 system 与历史, 避免重复累积。
@@ -377,15 +385,91 @@ func (e *Engine) buildMessages(agentID, userPrompt string, history []llm.Message
 }
 
 // buildInitialMessages 兼容旧调用: 仅返回拼装后的消息切片(不暴露 roundStart/sysExtra)。
-func (e *Engine) buildInitialMessages(agentID, userPrompt string, history []llm.Message) []llm.Message {
-	msgs, _ := e.buildMessages(agentID, userPrompt, history, "")
+func (e *Engine) buildInitialMessages(ctx context.Context, agentID, userPrompt string, history []llm.Message) []llm.Message {
+	msgs, _ := e.buildMessages(ctx, agentID, userPrompt, history, "")
 	return msgs
+}
+
+// SetHistorySummarizer 设置可选的 LLM 历史摘要器(用于 Token 预算压缩的"智能摘要"路径)。
+// 传入 nil 关闭, 回退到确定性压缩(保留首条 user 原始意图 + 最近窗口)。
+func (e *Engine) SetHistorySummarizer(fn func(ctx context.Context, msgs []llm.Message) (string, error)) {
+	e.historySummarizer = fn
+}
+
+// compactHistory 对超长历史做 Token 预算压缩:
+//   - 不超过 historyKeepRecent 条时原样返回;
+//   - 超过时保留最近 historyKeepRecent 条;
+//   - 较早部分优先用 historySummarizer 生成摘要(若已配置且成功), 否则回退为"保留首条非空 user 消息(原始意图锚点)"的确定性方案。
+//
+// 该压缩对服务端持久化历史(baseHistory, 可能很长)尤其重要; 压缩后的摘要消息会被持久化回会话, 实现跨轮累积压缩。
+func (e *Engine) compactHistory(ctx context.Context, history []llm.Message) []llm.Message {
+	if len(history) <= historyKeepRecent {
+		return history
+	}
+	overflow := history[:len(history)-historyKeepRecent]
+	recent := history[len(history)-historyKeepRecent:]
+
+	if e.historySummarizer != nil {
+		sum, serr := e.historySummarizer(ctx, overflow)
+		if serr == nil && strings.TrimSpace(sum) != "" {
+			AIHistoryCompactions.Inc()
+			return append([]llm.Message{{Role: "system", Content: "[历史对话摘要]\n" + sum}}, recent...)
+		}
+		if serr != nil {
+			slog.Warn("history summarizer failed, falling back to deterministic compaction", "err", serr)
+		}
+	}
+
+	// 确定性回退: 保留 overflow 中首条非空 user 消息作为原始意图锚点, 丢弃中间轮次。
+	for _, m := range overflow {
+		if m.Role == "user" && strings.TrimSpace(m.Content) != "" {
+			AIHistoryCompactions.Inc()
+			return append([]llm.Message{m}, recent...)
+		}
+	}
+	AIHistoryCompactions.Inc()
+	return recent
+}
+
+// defaultSummarize 内置的 LLM 历史摘要器: 将较早历史压缩为一段简短要点摘要,
+// 用于 Token 预算压缩的"智能摘要"路径。llmClient 未就绪时返回 error 以触发确定性回退。
+func (e *Engine) defaultSummarize(ctx context.Context, msgs []llm.Message) (string, error) {
+	c := e.llmClient.Load()
+	if c == nil {
+		return "", fmt.Errorf("llm client not ready")
+	}
+	var b strings.Builder
+	b.WriteString("请用不超过 200 字,以要点形式总结以下运维对话的关键结论、已执行操作与待办事项,保留可用于后续排查的具体指标/命令/错误。不要编造内容:\n\n")
+	for _, m := range msgs {
+		role := m.Role
+		if role == "" {
+			role = "user"
+		}
+		content := m.Content
+		if len(content) > 1000 {
+			content = content[:1000] + "...(已截断)"
+		}
+		b.WriteString(fmt.Sprintf("[%s] %s\n", role, content))
+	}
+	resp, err := c.Chat(ctx, llm.ChatRequest{
+		Messages:    []llm.Message{{Role: "user", Content: b.String()}},
+		MaxTokens:   300,
+		Temperature: 0,
+	})
+	if err != nil {
+		return "", err
+	}
+	if len(resp.Choices) == 0 {
+		return "", fmt.Errorf("empty summary response")
+	}
+	return strings.TrimSpace(resp.Choices[0].Message.Content), nil
 }
 
 // ——— 历史清洗(防御提示注入, P0-1) ———
 const (
-	maxHistoryMessages = 20    // 与 buildInitialMessages 的条数上限保持一致
+	maxHistoryMessages = 20    // SanitizeHistory 的总条数上限(防御注入 + 兜底)
 	maxHistoryMsgLen   = 8000 // 单条历史消息最大长度, 防止超长内容撑爆上下文
+	historyKeepRecent  = 16    // 超过该窗口时较早历史被压缩(保留该窗口 + 原始意图锚点/摘要)
 )
 
 // SanitizeHistory 清洗客户端提交的对话历史, 防止提示注入:
@@ -1232,7 +1316,7 @@ func (e *Engine) chatWithToolsStream(ctx context.Context, agentID, prompt string
 			sysExtra += m.Content
 		}
 	}
-	msgs, roundStart := e.buildMessages(agentID, userPrompt, baseHistory, sysExtra)
+	msgs, roundStart := e.buildMessages(ctx, agentID, userPrompt, baseHistory, sysExtra)
 	tools := e.buildToolDefs()
 
 	var err error

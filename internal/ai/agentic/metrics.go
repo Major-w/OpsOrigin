@@ -40,8 +40,14 @@ var (
 		Name: "ai_tool_exec_denied_total",
 		Help: "Total number of AI tool executions denied by RBAC or rate-limit (e.g. script_run by a viewer)",
 	})
+
+	// AIHistoryCompactions 因超长对话触发的 Token 预算压缩次数(确定性回退或 LLM 摘要)。
+	AIHistoryCompactions = prometheus.NewCounter(prometheus.CounterOpts{
+		Name: "ai_history_compactions_total",
+		Help: "Total number of long-conversation history compactions (Token-budget compression) performed before building LLM messages",
+	})
 )
 
 func init() {
-	metrics.Registry.MustRegister(AIConcurrentSessions, AILLMInFlight, AILLMRateLimitHits, AIToolCalls, AIToolExecDenied)
+	metrics.Registry.MustRegister(AIConcurrentSessions, AILLMInFlight, AILLMRateLimitHits, AIToolCalls, AIToolExecDenied, AIHistoryCompactions)
 }

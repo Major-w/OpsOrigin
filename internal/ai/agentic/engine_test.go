@@ -357,3 +357,77 @@ func TestConversationNotPersistedWithoutID(t *testing.T) {
 		t.Errorf("expected no persisted conversation, got %d", n)
 	}
 }
+
+// makeHistory 构造 n 条交替 user/assistant 的历史消息, 供压缩测试使用。
+func makeHistory(n int) []llm.Message {
+	msgs := make([]llm.Message, 0, n)
+	for i := 0; i < n; i++ {
+		role := "user"
+		if i%2 == 1 {
+			role = "assistant"
+		}
+		msgs = append(msgs, llm.Message{Role: role, Content: fmt.Sprintf("msg-%d", i)})
+	}
+	return msgs
+}
+
+// TestCompactHistoryNoOpShort 验证未超阈值时不压缩。
+func TestCompactHistoryNoOpShort(t *testing.T) {
+	e := NewEngine(mcp.NewRegistry(), ratelimit.New(), nil, nil)
+	// historyKeepRecent=16, 构造 16 条(等于阈值, 不触发)。
+	h := makeHistory(historyKeepRecent)
+	got := e.compactHistory(context.Background(), h)
+	if len(got) != historyKeepRecent {
+		t.Fatalf("expected %d unchanged, got %d", historyKeepRecent, len(got))
+	}
+}
+
+// TestCompactHistoryDeterministicFallback 验证无摘要器时回退到"保留首条 user 原始意图 + 最近窗口"。
+func TestCompactHistoryDeterministicFallback(t *testing.T) {
+	e := NewEngine(mcp.NewRegistry(), ratelimit.New(), nil, nil) // historySummarizer=nil
+	const total = 25
+	h := makeHistory(total)
+	got := e.compactHistory(context.Background(), h)
+	// 1(首条 user) + 最近 16 = 17
+	if len(got) != historyKeepRecent+1 {
+		t.Fatalf("expected %d, got %d", historyKeepRecent+1, len(got))
+	}
+	// 首条必须是原始意图锚点(history[0] = msg-0, user)。
+	if got[0].Role != "user" || got[0].Content != "msg-0" {
+		t.Fatalf("anchor not preserved: %#v", got[0])
+	}
+	// 末尾必须是原始历史的最后一条。
+	if got[len(got)-1].Content != fmt.Sprintf("msg-%d", total-1) {
+		t.Fatalf("recent tail not preserved: %#v", got[len(got)-1])
+	}
+}
+
+// TestCompactHistorySummarizer 验证配置摘要器时用其生成摘要。
+func TestCompactHistorySummarizer(t *testing.T) {
+	e := NewEngine(mcp.NewRegistry(), ratelimit.New(), nil, nil)
+	e.SetHistorySummarizer(func(ctx context.Context, msgs []llm.Message) (string, error) {
+		return "SUMMARY_OF_PAST", nil
+	})
+	got := e.compactHistory(context.Background(), makeHistory(25))
+	if len(got) != historyKeepRecent+1 {
+		t.Fatalf("expected %d, got %d", historyKeepRecent+1, len(got))
+	}
+	if got[0].Role != "system" || !strings.Contains(got[0].Content, "SUMMARY_OF_PAST") {
+		t.Fatalf("summary not injected: %#v", got[0])
+	}
+}
+
+// TestCompactHistorySummarizerFallbackOnError 验证摘要器失败时回退到确定性压缩。
+func TestCompactHistorySummarizerFallbackOnError(t *testing.T) {
+	e := NewEngine(mcp.NewRegistry(), ratelimit.New(), nil, nil)
+	e.SetHistorySummarizer(func(ctx context.Context, msgs []llm.Message) (string, error) {
+		return "", fmt.Errorf("boom")
+	})
+	got := e.compactHistory(context.Background(), makeHistory(25))
+	if len(got) != historyKeepRecent+1 {
+		t.Fatalf("expected %d, got %d", historyKeepRecent+1, len(got))
+	}
+	if got[0].Role != "user" || got[0].Content != "msg-0" {
+		t.Fatalf("should fall back to anchor, got %#v", got[0])
+	}
+}
