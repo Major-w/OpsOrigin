@@ -92,6 +92,12 @@ type TeamMember struct {
 	Weight       int    `json:"weight,omitempty"`
 	Persona      string `json:"persona,omitempty"`       // 角色画像（如「严谨的架构师」）
 	SystemPrompt string `json:"system_prompt,omitempty"` // 成员级覆盖提示词
+
+	// EnableTools 允许该成员在作答时调用工具(Function Calling): 查询 CMDB / 检索知识库 /
+	// 执行受管脚本等。为空时回退到团队级 AgentTeam.EnableTools。
+	EnableTools bool `json:"enable_tools,omitempty"`
+	// ModelName 该成员使用的模型覆盖; 非空时覆盖引擎/团队的默认模型(实现 per-member 模型路由)。
+	ModelName string `json:"model_name,omitempty"`
 }
 
 // AgentTeam 一个多智能体团队定义。
@@ -105,6 +111,21 @@ type AgentTeam struct {
 	SystemPrompt string       `json:"system_prompt,omitempty"` // 团队级 persona 前缀
 	CreatedAt    time.Time    `json:"created_at"`
 	UpdatedAt    time.Time    `json:"updated_at"`
+
+	// —— 编排增强配置（均为可选, 缺省回退到引擎内置默认值）——
+
+	// EnableTools 团队级开关: 成员是否可调用工具(Function Calling)。
+	// 若某成员显式设置 TeamMember.EnableTools=true, 则不论此处如何都生效。
+	EnableTools bool `json:"enable_tools,omitempty"`
+	// MemberTimeoutSec 单个成员作答的硬超时(秒)。默认 90s, 防止某成员挂死拖垮整次对话。
+	MemberTimeoutSec int `json:"member_timeout_sec,omitempty"`
+	// MemberRetries 单个成员失败后的重试次数(指数退避)。默认 1 次。
+	MemberRetries int `json:"member_retries,omitempty"`
+	// DebateRounds 辩论模式(debate)下的往返轮数。默认 2 轮。
+	DebateRounds int `json:"debate_rounds,omitempty"`
+	// SupervisorVerify 是否启用主管审核回路: 成员产出后由主管(supervisor)审核,
+	// 若判定需修订则指定某成员补充重做一轮, 再交汇总者定稿。默认关闭。
+	SupervisorVerify bool `json:"supervisor_verify,omitempty"`
 }
 
 // TeamChatRequest 团队对话请求。
@@ -124,11 +145,17 @@ type TeamChatResponse struct {
 
 // TeamStreamEvent SSE 流式事件。
 type TeamStreamEvent struct {
-	Type      string `json:"type"` // agent_start | token | agent_end | final | error
+	Type      string `json:"type"` // agent_start | token | agent_end | final | error | tool_call | tool_result | supervisor_review
 	AgentID   string `json:"agent_id,omitempty"`
 	AgentName string `json:"agent_name,omitempty"`
 	Role      string `json:"role,omitempty"`
 	Content   string `json:"content,omitempty"`
 	Done      bool   `json:"done,omitempty"`
 	Error     string `json:"error,omitempty"`
+
+	// —— 增强事件附加上下文 ——
+	Round     int    `json:"round,omitempty"`      // 辩论/多轮中的轮次(从 1 开始)
+	ToolName  string `json:"tool_name,omitempty"`  // tool_call / tool_result 事件: 工具名
+	ToolArgs  string `json:"tool_args,omitempty"`  // tool_call 事件: 入参 JSON
+	ToolResult string `json:"tool_result,omitempty"` // tool_result 事件: 出参 JSON(已截断)
 }
