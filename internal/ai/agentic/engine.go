@@ -251,6 +251,7 @@ func (e *Engine) chatWithTools(ctx context.Context, agentID, prompt string, hist
 			return "", "", invocations, fmt.Errorf("llm concurrency limit reached")
 		}
 		resp, err := e.llmClient.Load().Chat(ctx, llm.ChatRequest{
+			Model:       e.modelForAgent(agentID),
 			Messages:    msgs,
 			Tools:       tools,
 			MaxTokens:   e.genMaxTokensVal(),
@@ -843,6 +844,20 @@ func (e *Engine) resolveSystemPrompt(agentID string) string {
 	return "你是 OpsOrigin 智能运维助手,帮助用户完成主机巡检、故障排查、报告生成等运维任务。回答应简洁、专业、可操作。"
 }
 
+// modelForAgent 按 agentID 查找该 Agent 配置的目标模型; 未配置时返回空串,
+// 由底层 llm.Client 回退到全局默认模型。用于在多 Agent 场景下让不同 Agent 走不同 LLM。
+func (e *Engine) modelForAgent(agentID string) string {
+	if agentID != "" {
+		e.mu.RLock()
+		a, ok := e.agents[agentID]
+		e.mu.RUnlock()
+		if ok && a.ModelName != "" {
+			return a.ModelName
+		}
+	}
+	return ""
+}
+
 // ——— 热更新 ———
 
 // UpdateClient 热更新底层 LLM 客户端(sysconfig 修改 LLM 配置后调用)。
@@ -1084,6 +1099,7 @@ func (e *Engine) chatWithToolsStream(ctx context.Context, agentID, prompt string
 			return fmt.Errorf("llm concurrency limit reached")
 		}
 		ch, err := e.llmClient.Load().StreamChat(ctx, llm.ChatRequest{
+			Model:       e.modelForAgent(agentID),
 			Messages:    msgs,
 			Tools:       tools,
 			MaxTokens:   e.genMaxTokensVal(),

@@ -1,12 +1,16 @@
 package llm
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
+	"math/rand"
+	"net"
 	"net/http"
 	"sort"
 	"strings"
@@ -21,11 +25,14 @@ type Config struct {
 	// EmbeddingModel/EmbeddingBaseURL 可选；留空时分别回退到 Model/BaseURL 的同名 OpenAI 兼容端点。
 	EmbeddingModel   string `json:"embedding_model"`
 	EmbeddingBaseURL string `json:"embedding_base_url"`
+	// MaxRetries 可重试错误(网络错误/429/5xx)的最大重试次数; 0 表示使用默认值 3。
+	MaxRetries int `json:"max_retries"`
 }
 
 type Client struct {
-	config Config
-	client *http.Client
+	config     Config
+	client     *http.Client
+	maxRetries int
 }
 
 type Message struct {
@@ -92,9 +99,13 @@ func NewClient(cfg Config) *Client {
 	transport.MaxIdleConnsPerHost = 100
 	transport.MaxConnsPerHost = 0 // 0 = 不限制
 
+	if cfg.MaxRetries <= 0 {
+		cfg.MaxRetries = 3
+	}
 	return &Client{
-		config: cfg,
-		client: &http.Client{Timeout: cfg.Timeout, Transport: transport},
+		config:     cfg,
+		client:     &http.Client{Timeout: cfg.Timeout, Transport: transport},
+		maxRetries: cfg.MaxRetries,
 	}
 }
 
@@ -102,10 +113,35 @@ func (c *Client) Chat(ctx context.Context, req ChatRequest) (*ChatResponse, erro
 	if req.Model == "" {
 		req.Model = c.config.Model
 	}
-	req.Stream = false
+	var lastErr error
+	for attempt := 0; attempt <= c.maxRetries; attempt++ {
+		if attempt > 0 {
+			// 重试前退避; ctx 取消则立即放弃。
+			if err := sleepCtx(ctx, backoffDur(attempt)); err != nil {
+				return nil, lastErr
+			}
+			slog.Warn("llm: chat request retryable failure, retrying", "attempt", attempt+1, "max", c.maxRetries, "err", lastErr)
+		}
+		resp, err := c.doChatOnce(ctx, req)
+		if err == nil {
+			return resp, nil
+		}
+		lastErr = err
+		if !isRetryable(err) {
+			return nil, err
+		}
+	}
+	return nil, lastErr
+}
 
+// doChatOnce 执行单次(非流式)聊天请求, 不做重试。
+func (c *Client) doChatOnce(ctx context.Context, req ChatRequest) (*ChatResponse, error) {
+	req.Stream = false
 	body, _ := json.Marshal(req)
-	httpReq, _ := http.NewRequestWithContext(ctx, http.MethodPost, c.config.BaseURL+"/v1/chat/completions", bytes.NewReader(body))
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, c.config.BaseURL+"/v1/chat/completions", bytes.NewReader(body))
+	if err != nil {
+		return nil, fmt.Errorf("llm: create request: %w", err)
+	}
 	httpReq.Header.Set("Content-Type", "application/json")
 	httpReq.Header.Set("Authorization", "Bearer "+c.config.APIKey)
 
@@ -120,7 +156,7 @@ func (c *Client) Chat(ctx context.Context, req ChatRequest) (*ChatResponse, erro
 		return nil, fmt.Errorf("llm: read response: %w", err)
 	}
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("llm: API error [%d]: %s", resp.StatusCode, string(respBody))
+		return nil, &apiError{Status: resp.StatusCode, Body: string(respBody)}
 	}
 	var chatResp ChatResponse
 	if err := json.Unmarshal(respBody, &chatResp); err != nil {
@@ -147,8 +183,32 @@ func (c *Client) StreamChat(ctx context.Context, req ChatRequest) (<-chan Stream
 	if req.Model == "" {
 		req.Model = c.config.Model
 	}
-	req.Stream = true
+	var lastErr error
+	for attempt := 0; attempt <= c.maxRetries; attempt++ {
+		if attempt > 0 {
+			if err := sleepCtx(ctx, backoffDur(attempt)); err != nil {
+				return nil, lastErr
+			}
+			slog.Warn("llm: stream request retryable failure, retrying", "attempt", attempt+1, "max", c.maxRetries, "err", lastErr)
+		}
+		resp, err := c.doStreamOnce(ctx, req)
+		if err == nil {
+			ch := make(chan StreamChunk, 32)
+			go c.readSSE(ctx, resp.Body, ch)
+			return ch, nil
+		}
+		lastErr = err
+		if !isRetryable(err) {
+			return nil, err
+		}
+	}
+	return nil, lastErr
+}
 
+// doStreamOnce 建立一次流式请求(到首字节为止), 不做重试。流建立后的中途断流不重试,
+// 以避免向客户端重复推送已发出的内容片段。
+func (c *Client) doStreamOnce(ctx context.Context, req ChatRequest) (*http.Response, error) {
+	req.Stream = true
 	body, _ := json.Marshal(req)
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, c.config.BaseURL+"/v1/chat/completions", bytes.NewReader(body))
 	if err != nil {
@@ -163,113 +223,110 @@ func (c *Client) StreamChat(ctx context.Context, req ChatRequest) (<-chan Stream
 		return nil, fmt.Errorf("llm: do request: %w", err)
 	}
 	if resp.StatusCode != http.StatusOK {
+		b, _ := io.ReadAll(resp.Body)
 		resp.Body.Close()
-		body, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("llm: API error [%d]: %s", resp.StatusCode, string(body))
+		return nil, &apiError{Status: resp.StatusCode, Body: string(b)}
 	}
-
-	ch := make(chan StreamChunk, 32)
-	go c.readSSE(ctx, resp.Body, ch)
-	return ch, nil
+	return resp, nil
 }
 
-// readSSE 在后台 goroutine 中解析 SSE 流, 推送到 ch, 最后 close(ch)。
+// readSSE 在后台 goroutine 中逐行解析 SSE 流, 边解析边推送到 ch, 最后 close(ch)。
+// 采用 bufio.Reader 逐行读取而非一次性 ReadAll, 实现真正的边收边推(长推理/长回复不再整段滞留内存)。
 // 兼容性: 部分 OpenAI 兼容后端会忽略 stream 标志、直接返回普通 JSON。
-// 当响应体不含 SSE 的 "data: " 行时, 回退为整体解析 ChatResponse 并推送单个 chunk。
+// 当响应体从未出现 "data:" 行时, 回退为整体解析 ChatResponse 并推送单个 chunk。
 func (c *Client) readSSE(ctx context.Context, r io.ReadCloser, ch chan<- StreamChunk) {
 	defer r.Close()
 	defer close(ch)
 
-	raw, err := io.ReadAll(r)
-	if err != nil {
-		return
-	}
-	body := strings.TrimSpace(string(raw))
-	if body == "" {
-		return
-	}
-
-	if !strings.Contains(body, "\ndata: ") && !strings.HasPrefix(body, "data: ") {
-		// ——— 非 SSE 回退 ———
-		var cr ChatResponse
-		if err := json.Unmarshal([]byte(body), &cr); err != nil {
-			slog.Warn("llm: parse non-sse response failed", "err", err)
-			return
-		}
-		if len(cr.Choices) == 0 {
-			return
-		}
-		ch <- StreamChunk{Content: cr.Choices[0].Message.Content, FinishReason: "stop"}
-		return
-	}
-
-	// ——— SSE 路径 ———
+	reader := bufio.NewReader(r)
 	// toolAcc 按 index 聚合流式到达的 tool_calls 增量(arguments 分片拼接)。
 	toolAcc := map[int]*toolCallAcc{}
-	for _, line := range strings.Split(body, "\n") {
+	sawData := false
+	var nonSSE strings.Builder
+
+	for {
 		select {
 		case <-ctx.Done():
 			return
 		default:
 		}
-		line = strings.TrimSpace(line)
-		if !strings.HasPrefix(line, "data: ") {
-			continue
-		}
-		data := strings.TrimPrefix(line, "data: ")
-		if data == "[DONE]" {
-			return
-		}
-		var chunk struct {
-			Choices []struct {
-				Delta struct {
-					Content   string `json:"content"`
-					Reasoning string `json:"reasoning"`
-					Role      string `json:"role"`
-					ToolCalls []struct {
-						Index    int    `json:"index"`
-						ID       string `json:"id"`
-						Type     string `json:"type"`
-						Function struct {
-							Name      string `json:"name"`
-							Arguments string `json:"arguments"`
-						} `json:"function"`
-					} `json:"tool_calls"`
-				} `json:"delta"`
-				FinishReason string `json:"finish_reason"`
-			} `json:"choices"`
-		}
-		if err := json.Unmarshal([]byte(data), &chunk); err != nil {
-			slog.Warn("llm: parse sse chunk", "data", truncate(data, 100), "err", err)
-			continue
-		}
-		for _, c := range chunk.Choices {
-			// 聚合 tool_calls(按 index 流式拼接 arguments)
-			for _, tc := range c.Delta.ToolCalls {
-				acc, ok := toolAcc[tc.Index]
-				if !ok {
-					acc = &toolCallAcc{}
-					toolAcc[tc.Index] = acc
+
+		line, err := reader.ReadString('\n')
+		if len(line) > 0 {
+			trimmed := strings.TrimSpace(line)
+			if strings.HasPrefix(trimmed, "data:") {
+				sawData = true
+				data := strings.TrimSpace(strings.TrimPrefix(trimmed, "data:"))
+				if data == "[DONE]" {
+					break
 				}
-				if tc.ID != "" {
-					acc.id = tc.ID
+				var chunk struct {
+					Choices []struct {
+						Delta struct {
+							Content   string `json:"content"`
+							Reasoning string `json:"reasoning"`
+							Role      string `json:"role"`
+							ToolCalls []struct {
+								Index    int    `json:"index"`
+								ID       string `json:"id"`
+								Type     string `json:"type"`
+								Function struct {
+									Name      string `json:"name"`
+									Arguments string `json:"arguments"`
+								} `json:"function"`
+							} `json:"tool_calls"`
+						} `json:"delta"`
+						FinishReason string `json:"finish_reason"`
+					} `json:"choices"`
 				}
-				if tc.Type != "" {
-					acc.typ = tc.Type
+				if uerr := json.Unmarshal([]byte(data), &chunk); uerr != nil {
+					slog.Warn("llm: parse sse chunk", "data", truncate(data, 100), "err", uerr)
+				} else {
+					for _, c := range chunk.Choices {
+						// 聚合 tool_calls(按 index 流式拼接 arguments)
+						for _, tc := range c.Delta.ToolCalls {
+							acc, ok := toolAcc[tc.Index]
+							if !ok {
+								acc = &toolCallAcc{}
+								toolAcc[tc.Index] = acc
+							}
+							if tc.ID != "" {
+								acc.id = tc.ID
+							}
+							if tc.Type != "" {
+								acc.typ = tc.Type
+							}
+							if tc.Function.Name != "" {
+								acc.name = tc.Function.Name
+							}
+							acc.args += tc.Function.Arguments
+						}
+						sc := StreamChunk{Content: c.Delta.Content, Reasoning: c.Delta.Reasoning, FinishReason: c.FinishReason}
+						ch <- sc
+					}
 				}
-				if tc.Function.Name != "" {
-					acc.name = tc.Function.Name
-				}
-				acc.args += tc.Function.Arguments
+			} else if !sawData && !strings.HasPrefix(trimmed, ":") {
+				// 非 SSE 行(如纯 JSON 响应)且尚未见过 data: 行, 累积用于回退解析。
+				nonSSE.WriteString(line)
 			}
-			sc := StreamChunk{Content: c.Delta.Content, Reasoning: c.Delta.Reasoning, FinishReason: c.FinishReason}
-			ch <- sc
+		}
+		if err != nil {
+			break
 		}
 	}
+
 	// 兜底: 若流中已聚合到 tool_calls 但未随任一 chunk 显式带出(部分实现不在流中回传 tool_calls),
 	// 补发一个携带 ToolCalls 的末片, 供上层 Function Calling 循环执行工具。
 	if len(toolAcc) > 0 {
 		ch <- StreamChunk{ToolCalls: buildToolCalls(toolAcc), FinishReason: "tool_calls"}
+	}
+
+	// 非 SSE 回退: 整个响应从未出现 data: 行, 整体解析为 ChatResponse。
+	if !sawData && nonSSE.Len() > 0 {
+		var cr ChatResponse
+		if uerr := json.Unmarshal([]byte(strings.TrimSpace(nonSSE.String())), &cr); uerr == nil && len(cr.Choices) > 0 {
+			ch <- StreamChunk{Content: cr.Choices[0].Message.Content, FinishReason: "stop"}
+		}
 	}
 }
 
@@ -307,6 +364,67 @@ func truncate(s string, n int) string {
 		return s
 	}
 	return s[:n] + "..."
+}
+
+// apiError 描述 HTTP 层非 2xx 错误, 携带状态码供重试判定。
+type apiError struct {
+	Status int
+	Body   string
+}
+
+func (e *apiError) Error() string {
+	return fmt.Sprintf("llm: API error [%d]: %s", e.Status, truncate(e.Body, 300))
+}
+
+// isRetryable 判定错误是否可重试: 网络错误 / 429 / 5xx 可重试;
+// ctx 取消(用户中断)与 4xx(除 429)不重试。
+func isRetryable(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return false
+	}
+	var ae *apiError
+	if errors.As(err, &ae) {
+		return ae.Status == http.StatusTooManyRequests || ae.Status >= 500
+	}
+	var netErr net.Error
+	if errors.As(err, &netErr) {
+		return true
+	}
+	msg := err.Error()
+	for _, s := range []string{"connection refused", "connection reset", "EOF", "timeout", "broken pipe", "i/o timeout", "tls: "} {
+		if strings.Contains(msg, s) {
+			return true
+		}
+	}
+	return false
+}
+
+// backoffDur 计算第 attempt(>=1) 次重试前的指数退避时长, 上限 5s, 并附加 0~50% 抖动避免惊群。
+func backoffDur(attempt int) time.Duration {
+	if attempt < 1 {
+		attempt = 1
+	}
+	d := time.Duration(1<<uint(attempt-1)) * 200 * time.Millisecond
+	if d > 5*time.Second {
+		d = 5 * time.Second
+	}
+	jitter := time.Duration(rand.Int63n(int64(d / 2)))
+	return d + jitter
+}
+
+// sleepCtx 在 ctx 取消时立即返回 ctx.Err(), 否则休眠 d 后返回 nil。
+func sleepCtx(ctx context.Context, d time.Duration) error {
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-t.C:
+		return nil
+	}
 }
 
 // Embed 调用 OpenAI 兼容的 /v1/embeddings 端点，返回文本的向量表示。
