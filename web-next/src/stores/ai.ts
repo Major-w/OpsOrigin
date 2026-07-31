@@ -173,12 +173,13 @@ interface AIState {
   streamChat: (
     prompt: string,
     onToken: (t: string) => void,
-    onDone: () => void,
+    onDone: (meta?: { message_id?: string; conversation_id?: string; citations?: string[] }) => void,
     history?: { role: string; content: string }[],
     agentId?: string,
   ) => Promise<void>
   loadConversations: (agentId?: string) => Promise<any[]>
   saveConversation: (conv: any) => Promise<any | null>
+  submitFeedback: (params: { conversation_id?: string; message_id?: string; rating: 'up' | 'down'; comment?: string }) => Promise<boolean>
 
   // —— 多智能体团队（F1） ——
   teams: AgentTeam[]
@@ -267,7 +268,9 @@ export const useAIStore = create<AIState>((set, get) => ({
   },
   streamChat: async (prompt, onToken, onDone, history = [], agentId) => {
     try {
-      const body: any = { prompt, history, stream: true }
+      // 为本次 AI 回复生成稳定的 message_id, 反馈时用于精确关联
+      const messageId = `msg_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`
+      const body: any = { prompt, history, stream: true, message_id: messageId }
       if (agentId) body.agent_id = agentId
       const resp = await fetch(`${window.location.origin}/api/v1/ai/chat`, {
         method: 'POST',
@@ -283,6 +286,9 @@ export const useAIStore = create<AIState>((set, get) => ({
       if (!reader) { onDone(); return }
       const decoder = new TextDecoder()
       let buf = ''
+      let currentEvent = ''
+      let conversationId = ''
+      let citations: string[] = []
       while (true) {
         const { done, value } = await reader.read()
         if (done) break
@@ -290,16 +296,35 @@ export const useAIStore = create<AIState>((set, get) => ({
         const lines = buf.split('\n')
         buf = lines.pop() || ''
         for (const line of lines) {
+          // SSE 命名事件
+          if (line.startsWith('event: ')) {
+            currentEvent = line.slice(7).trim()
+            continue
+          }
           if (!line.startsWith('data: ')) continue
           const data = line.slice(6)
-          if (data === '[DONE]') { onDone(); return }
+          if (data === '[DONE]') {
+            onDone({ message_id: messageId, conversation_id: conversationId, citations })
+            return
+          }
+          if (currentEvent === 'conversation') {
+            conversationId = data
+            currentEvent = ''
+            continue
+          }
+          if (currentEvent === 'citations') {
+            try { citations = JSON.parse(data) } catch {}
+            currentEvent = ''
+            continue
+          }
+          currentEvent = ''
           try {
             const token = JSON.parse(data) as string
             onToken(token)
           } catch {}
         }
       }
-      onDone()
+      onDone({ message_id: messageId, conversation_id: conversationId, citations })
     } catch (e: any) {
       toast.error(`AI 流式响应失败: ${e.message}`)
       onDone()
@@ -321,6 +346,20 @@ export const useAIStore = create<AIState>((set, get) => ({
       })
     } catch {
       return null
+    }
+  },
+
+  submitFeedback: async (params) => {
+    try {
+      await apiFetch<void>('/ai/feedback', {
+        method: 'POST',
+        body: JSON.stringify(params),
+      })
+      toast.success(params.rating === 'up' ? '感谢你的认可！' : '感谢反馈，我们会持续改进')
+      return true
+    } catch (e: any) {
+      toast.error(`反馈提交失败: ${e.message}`)
+      return false
     }
   },
 

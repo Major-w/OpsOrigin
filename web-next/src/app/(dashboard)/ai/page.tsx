@@ -8,7 +8,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { Input } from '@/components/ui/input'
-import { Bot, Send, History, Settings, Sparkles, Terminal, FileText, Server, ChevronRight, Loader2, User, BarChart3, Users } from 'lucide-react'
+import { Bot, Send, History, Settings, Sparkles, Terminal, FileText, Server, ChevronRight, Loader2, User, BarChart3, Users, ThumbsUp, ThumbsDown } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { useThemeStore } from '@/stores/theme'
 
@@ -21,6 +21,8 @@ interface Message {
   role: 'user' | 'assistant'
   content: string
   thinking?: string
+  citations?: string[]
+  feedback_rating?: 'up' | 'down'
   timestamp: Date
 }
 
@@ -66,6 +68,8 @@ function renderMarkdown(text: string): string {
   html = html.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
   html = html.replace(/\*([^*\n]+?)\*/g, '<em>$1</em>')
   html = html.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a class="text-blue-500 underline" href="$2" target="_blank">$1</a>')
+  // RAG 引用标注 [^id] → 上标锚点
+  html = html.replace(/\[\^([a-zA-Z0-9_-]+)\]/g, '<sup class="text-emerald-500 font-semibold text-[10px] select-none" id="cite-ref-$1">[$1]</sup>')
   html = html.replace(/\n/g, '<br/>')
   return html
 }
@@ -93,7 +97,7 @@ const teamRoleLabel: Record<string, string> = {
 // ============================================================================
 
 export default function AIPage() {
-  const { agents, fetchAgents, streamChat, loadConversations } = useAIStore()
+  const { agents, fetchAgents, streamChat, loadConversations, submitFeedback: submitFB } = useAIStore()
   const { teams, loading: teamsLoading, loadTeams, streamTeamChat } = useTeams()
   const router = useRouter()
   const { theme } = useThemeStore()
@@ -160,6 +164,11 @@ export default function AIPage() {
     } catch {}
   }
 
+  // submitFeedback 上报点赞/点踩
+  const submitFeedback = async (msg: Message, rating: 'up' | 'down' = 'up') => {
+    await submitFB({ message_id: msg.id, rating })
+  }
+
   const sendMessage = async (text: string) => {
     const content = text.trim()
     if (!content || loading) return
@@ -196,7 +205,10 @@ export default function AIPage() {
     await streamChat(content, (token) => {
       full += token
       setMessages(prev => prev.map(m => m.id === aiId ? { ...m, content: full } : m))
-    }, () => {
+    }, (meta) => {
+      if (meta?.citations && meta.citations.length > 0) {
+        setMessages(prev => prev.map(m => m.id === aiId ? { ...m, content: full, citations: meta.citations } : m))
+      }
       setLoading(false)
     }, history, selectedAgent?.id)
   }
@@ -394,6 +406,50 @@ export default function AIPage() {
                               </details>
                             )}
                             <div dangerouslySetInnerHTML={{ __html: renderMarkdown(msg.content) }} />
+
+                            {/* RAG 引用来源 */}
+                            {msg.citations && msg.citations.length > 0 && (
+                              <details className="mt-2">
+                                <summary className="text-[10px] text-muted-foreground cursor-pointer hover:text-foreground">📚 引用来源 ({msg.citations.length})</summary>
+                                <div className="mt-1 space-y-0.5">
+                                  {msg.citations.map((c, i) => (
+                                    <div key={i} className="text-[10px] text-muted-foreground pl-2 border-l-2 border-emerald-200 dark:border-emerald-500/30">
+                                      {c.startsWith('[') ? c : `[${c}]`}
+                                    </div>
+                                  ))}
+                                </div>
+                              </details>
+                            )}
+
+                            {/* 反馈按钮 */}
+                            {msg.id !== '0' && (
+                              <div className="flex items-center gap-1 mt-2 pt-1.5 border-t border-gray-200 dark:border-[rgba(255,255,255,0.04)]">
+                                <button
+                                  onClick={() => {
+                                    if (msg.feedback_rating === 'up') return
+                                    submitFeedback(msg)
+                                    setMessages(prev => prev.map(m => m.id === msg.id ? { ...m, feedback_rating: 'up' as const } : m))
+                                  }}
+                                  disabled={!!msg.feedback_rating}
+                                  className={`p-1 rounded text-[10px] transition-colors ${msg.feedback_rating === 'up' ? 'text-emerald-500 bg-emerald-50 dark:bg-emerald-500/10' : 'text-muted-foreground hover:text-emerald-500'}`}
+                                  title="有帮助"
+                                >
+                                  <ThumbsUp className="h-3 w-3" />
+                                </button>
+                                <button
+                                  onClick={() => {
+                                    if (msg.feedback_rating === 'down') return
+                                    submitFeedback(msg, 'down')
+                                    setMessages(prev => prev.map(m => m.id === msg.id ? { ...m, feedback_rating: 'down' as const } : m))
+                                  }}
+                                  disabled={!!msg.feedback_rating}
+                                  className={`p-1 rounded text-[10px] transition-colors ${msg.feedback_rating === 'down' ? 'text-red-500 bg-red-50 dark:bg-red-500/10' : 'text-muted-foreground hover:text-red-500'}`}
+                                  title="没帮助"
+                                >
+                                  <ThumbsDown className="h-3 w-3" />
+                                </button>
+                              </div>
+                            )}
                           </>
                         )}
                       </div>
