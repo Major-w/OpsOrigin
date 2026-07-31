@@ -94,12 +94,12 @@ func TestSearchKnowledgeCacheHit(t *testing.T) {
 	ts := &MCPToolSet{db: db, embedCache: newTTLCache(embedCacheTTL, 8), searchCache: newTTLCache(searchCacheTTL, 8)}
 	ctx := context.Background()
 
-	// 第一次: embedder=nil -> ILIKE 路径, 数据库返回一行。
-	mock.ExpectQuery("SELECT id, title").
-		WithArgs("%disk full%", 500, 5, "default").
-		WillReturnRows(sqlmock.NewRows([]string{"id", "title", "snippet"}).AddRow("a1", "Disk Full", "cleanup steps"))
+	// 第一次: embedder=nil -> 仅关键词路(块级), 数据库返回一行。
+	mock.ExpectQuery("SELECT c.article_id, a.title, c.heading").
+		WithArgs("%disk full%", 500, 15, "default").
+		WillReturnRows(sqlmock.NewRows([]string{"article_id", "title", "heading", "snippet"}).AddRow("a1", "Disk Full", "2 磁盘满", "cleanup steps"))
 
-	items1, err := ts.searchKnowledge(ctx, "disk full", 5, 500)
+	items1, err := ts.searchKnowledge(ctx, "disk full", 5, 500, nil)
 	if err != nil {
 		t.Fatalf("first search failed: %v", err)
 	}
@@ -108,7 +108,7 @@ func TestSearchKnowledgeCacheHit(t *testing.T) {
 	}
 
 	// 第二次: 命中缓存, 不应再向 DB 发任何查询。
-	items2, err := ts.searchKnowledge(ctx, "disk full", 5, 500)
+	items2, err := ts.searchKnowledge(ctx, "disk full", 5, 500, nil)
 	if err != nil {
 		t.Fatalf("second search failed: %v", err)
 	}
@@ -137,19 +137,22 @@ func TestSearchKnowledgeEmbeddingDedup(t *testing.T) {
 	ts := &MCPToolSet{db: db, embedder: mockEmbed, embedCache: newTTLCache(embedCacheTTL, 8), searchCache: newTTLCache(searchCacheTTL, 8)}
 	ctx := context.Background()
 
-	// 两次都用 vector 路径(embedder 就绪); 第一次 Embed 被调用, 第二次从 embedCache 复用。
-	// 由于 searchCache 也会命中, DB 仅在第一次被查一次。
-	mock.ExpectQuery("SELECT id, title").
-		WithArgs("[0.1,0.2,0.3]", 500, 5, "default").
-		WillReturnRows(sqlmock.NewRows([]string{"id", "title", "snippet"}).AddRow("v1", "Vec", "v"))
+	// 双路召回(块级): 第一次调用走 vector 路(embedder 就绪) + keyword 路; searchCache 命中后第二次不再查 DB。
+	// topN = limit*3 = 15。
+	mock.ExpectQuery("SELECT c.article_id, a.title, c.heading").
+		WithArgs("[0.1,0.2,0.3]", 500, 15, "default").
+		WillReturnRows(sqlmock.NewRows([]string{"article_id", "title", "heading", "snippet"}).AddRow("v1", "Vec", "", "v"))
+	mock.ExpectQuery("SELECT c.article_id, a.title, c.heading").
+		WithArgs("%same query%", 500, 15, "default").
+		WillReturnRows(sqlmock.NewRows([]string{"article_id", "title", "heading", "snippet"}).AddRow("v1", "Vec", "", "v"))
 
-	_, err = ts.searchKnowledge(ctx, "same query", 5, 500)
+	_, err = ts.searchKnowledge(ctx, "same query", 5, 500, nil)
 	if err != nil {
-		t.Fatalf("first vector search: %v", err)
+		t.Fatalf("first search: %v", err)
 	}
-	_, err = ts.searchKnowledge(ctx, "same query", 5, 500)
+	_, err = ts.searchKnowledge(ctx, "same query", 5, 500, nil)
 	if err != nil {
-		t.Fatalf("second vector search: %v", err)
+		t.Fatalf("second search: %v", err)
 	}
 	if embedCalls != 1 {
 		t.Fatalf("Embed should be called once (deduped), got %d", embedCalls)

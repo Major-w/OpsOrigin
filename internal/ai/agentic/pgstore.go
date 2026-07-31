@@ -26,6 +26,12 @@ type Store interface {
 	TokenRecordsSince(ctx context.Context, cutoff time.Time) ([]model.TokenRecord, error)
 	// SaveTokenRecord 写入一条 token 用量记录(供 /ai/token-stats 持久化统计)。
 	SaveTokenRecord(ctx context.Context, r *model.TokenRecord) error
+
+	// ——— 自定义 MCP 工具 (PRD 5.2.2) ———
+	CreateCustomTool(ctx context.Context, t *CustomTool) error
+	UpdateCustomTool(ctx context.Context, t *CustomTool) error
+	DeleteCustomTool(ctx context.Context, id, tenantID string) error
+	ListCustomTools(ctx context.Context, tenantID string) ([]*CustomTool, error)
 }
 
 type AgentRecord struct {
@@ -38,6 +44,63 @@ type AgentRecord struct {
 	Extra        json.RawMessage `json:"extra,omitempty"`
 	CreatedAt    time.Time       `json:"created_at"`
 	UpdatedAt    time.Time       `json:"updated_at"`
+
+	// KnowledgeCategories 绑定的知识库分类列表, 经 extra JSONB 持久化。
+	KnowledgeCategories []string `json:"knowledge_categories,omitempty"`
+	// Tools 允许使用的 MCP 工具白名单(空=全部), 经 extra JSONB 持久化。
+	Tools []string `json:"tools,omitempty"`
+	// Skills 该 Agent 的可复用能力定义, 经 extra JSONB 持久化。
+	Skills []model.AgentSkill `json:"skills,omitempty"`
+}
+
+// encodeExtra 将 KnowledgeCategories/Tools/Skills 编码进 extra JSONB(合并保留其他字段)。
+func (a *AgentRecord) encodeExtra() []byte {
+	base := map[string]any{}
+	if len(a.Extra) > 0 {
+		_ = json.Unmarshal(a.Extra, &base)
+	}
+	base["knowledge_categories"] = a.KnowledgeCategories
+	base["tools"] = a.Tools
+	if a.Skills != nil {
+		base["skills"] = a.Skills
+	}
+	b, _ := json.Marshal(base)
+	return b
+}
+
+// decodeExtra 从 extra JSONB 解析 KnowledgeCategories/Tools/Skills(幂等)。
+func (a *AgentRecord) decodeExtra() {
+	if len(a.Extra) == 0 {
+		return
+	}
+	var m map[string]any
+	if err := json.Unmarshal(a.Extra, &m); err != nil {
+		return
+	}
+	if cats, ok := m["knowledge_categories"].([]any); ok {
+		a.KnowledgeCategories = nil
+		for _, c := range cats {
+			if s, ok := c.(string); ok && s != "" {
+				a.KnowledgeCategories = append(a.KnowledgeCategories, s)
+			}
+		}
+	}
+	if tools, ok := m["tools"].([]any); ok {
+		a.Tools = nil
+		for _, t := range tools {
+			if s, ok := t.(string); ok && s != "" {
+				a.Tools = append(a.Tools, s)
+			}
+		}
+	}
+	if raw, ok := m["skills"]; ok {
+		if b, err := json.Marshal(raw); err == nil {
+			var skills []model.AgentSkill
+			if json.Unmarshal(b, &skills) == nil {
+				a.Skills = skills
+			}
+		}
+	}
 }
 
 type TeamRecord struct {
@@ -83,6 +146,73 @@ func (s *PGStore) migrate() {
 		created_at TIMESTAMPTZ DEFAULT NOW()
 	)`)
 	s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_ai_token_records_created ON ai_token_records(created_at)`)
+	// 自定义 MCP 工具(PRD 5.2.2): 用户注册的 HTTP/CLI 工具定义
+	s.db.Exec(`CREATE TABLE IF NOT EXISTS ai_custom_tools (
+		id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL DEFAULT 'default',
+		name TEXT NOT NULL, description TEXT DEFAULT '', type TEXT DEFAULT 'http',
+		enabled BOOLEAN DEFAULT TRUE, parameters JSONB DEFAULT '[]',
+		http_method TEXT DEFAULT 'GET', http_url TEXT DEFAULT '', http_headers JSONB DEFAULT '{}',
+		timeout_sec INT DEFAULT 30, cli_command TEXT DEFAULT '',
+		created_at TIMESTAMPTZ DEFAULT NOW(), updated_at TIMESTAMPTZ DEFAULT NOW(),
+		UNIQUE(tenant_id, name)
+	)`)
+}
+
+// ——— 自定义 MCP 工具持久化 (PRD 5.2.2) ———
+
+func (s *PGStore) CreateCustomTool(ctx context.Context, t *CustomTool) error {
+	t.CreatedAt = time.Now()
+	t.UpdatedAt = t.CreatedAt
+	if t.TenantID == "" {
+		t.TenantID = "default"
+	}
+	params, _ := json.Marshal(t.Parameters)
+	headers, _ := json.Marshal(t.HTTPHeaders)
+	_, err := s.db.ExecContext(ctx,
+		`INSERT INTO ai_custom_tools(id,tenant_id,name,description,type,enabled,parameters,http_method,http_url,http_headers,timeout_sec,cli_command,created_at,updated_at)
+		 VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`,
+		t.ID, t.TenantID, t.Name, t.Description, t.Type, t.Enabled, params, t.HTTPMethod, t.HTTPURL, headers, t.TimeoutSec, t.CLICommand, t.CreatedAt, t.UpdatedAt)
+	return err
+}
+
+func (s *PGStore) UpdateCustomTool(ctx context.Context, t *CustomTool) error {
+	t.UpdatedAt = time.Now()
+	params, _ := json.Marshal(t.Parameters)
+	headers, _ := json.Marshal(t.HTTPHeaders)
+	_, err := s.db.ExecContext(ctx,
+		`UPDATE ai_custom_tools SET name=$1,description=$2,type=$3,enabled=$4,parameters=$5,http_method=$6,http_url=$7,http_headers=$8,timeout_sec=$9,cli_command=$10,updated_at=$11 WHERE id=$12 AND tenant_id=$13`,
+		t.Name, t.Description, t.Type, t.Enabled, params, t.HTTPMethod, t.HTTPURL, headers, t.TimeoutSec, t.CLICommand, t.UpdatedAt, t.ID, t.TenantID)
+	return err
+}
+
+func (s *PGStore) DeleteCustomTool(ctx context.Context, id, tenantID string) error {
+	_, err := s.db.ExecContext(ctx, `DELETE FROM ai_custom_tools WHERE id=$1 AND tenant_id=$2`, id, tenantID)
+	return err
+}
+
+func (s *PGStore) ListCustomTools(ctx context.Context, tenantID string) ([]*CustomTool, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT id,tenant_id,name,description,type,enabled,parameters,http_method,http_url,http_headers,timeout_sec,cli_command,created_at,updated_at FROM ai_custom_tools WHERE tenant_id=$1 ORDER BY created_at`, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []*CustomTool
+	for rows.Next() {
+		t := &CustomTool{}
+		var params, headers []byte
+		if err := rows.Scan(&t.ID, &t.TenantID, &t.Name, &t.Description, &t.Type, &t.Enabled, &params, &t.HTTPMethod, &t.HTTPURL, &headers, &t.TimeoutSec, &t.CLICommand, &t.CreatedAt, &t.UpdatedAt); err != nil {
+			return nil, err
+		}
+		if len(params) > 0 {
+			_ = json.Unmarshal(params, &t.Parameters)
+		}
+		if len(headers) > 0 {
+			_ = json.Unmarshal(headers, &t.HTTPHeaders)
+		}
+		out = append(out, t)
+	}
+	return out, rows.Err()
 }
 
 func (s *PGStore) CreateAgent(ctx context.Context, a *AgentRecord) error {
@@ -94,7 +224,7 @@ func (s *PGStore) CreateAgent(ctx context.Context, a *AgentRecord) error {
 	if a.Status == "" {
 		a.Status = "active"
 	}
-	extra, _ := json.Marshal(a.Extra)
+	extra := a.encodeExtra()
 	_, err := s.db.ExecContext(ctx,
 		`INSERT INTO ai_agents(id,tenant_id,name,model_name,system_prompt,status,extra,created_at,updated_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
 		a.ID, a.TenantID, a.Name, a.ModelName, a.SystemPrompt, a.Status, extra, a.CreatedAt, a.UpdatedAt)
@@ -108,6 +238,9 @@ func (s *PGStore) GetAgent(ctx context.Context, id, tenantID string) (*AgentReco
 		Scan(&a.ID, &a.TenantID, &a.Name, &a.ModelName, &a.SystemPrompt, &a.Status, &a.Extra, &a.CreatedAt, &a.UpdatedAt)
 	if err == sql.ErrNoRows {
 		return nil, nil
+	}
+	if err == nil {
+		a.decodeExtra()
 	}
 	return a, err
 }
@@ -125,6 +258,7 @@ func (s *PGStore) ListAgents(ctx context.Context, tenantID string) ([]*AgentReco
 		if err := rows.Scan(&a.ID, &a.TenantID, &a.Name, &a.ModelName, &a.SystemPrompt, &a.Status, &a.Extra, &a.CreatedAt, &a.UpdatedAt); err != nil {
 			return nil, err
 		}
+		a.decodeExtra()
 		out = append(out, a)
 	}
 	return out, rows.Err()
@@ -132,9 +266,10 @@ func (s *PGStore) ListAgents(ctx context.Context, tenantID string) ([]*AgentReco
 
 func (s *PGStore) UpdateAgent(ctx context.Context, a *AgentRecord) error {
 	a.UpdatedAt = time.Now()
+	extra := a.encodeExtra()
 	_, err := s.db.ExecContext(ctx,
-		`UPDATE ai_agents SET name=$1,model_name=$2,system_prompt=$3,status=$4,updated_at=$5 WHERE id=$6 AND tenant_id=$7`,
-		a.Name, a.ModelName, a.SystemPrompt, a.Status, a.UpdatedAt, a.ID, a.TenantID)
+		`UPDATE ai_agents SET name=$1,model_name=$2,system_prompt=$3,status=$4,extra=$5,updated_at=$6 WHERE id=$7 AND tenant_id=$8`,
+		a.Name, a.ModelName, a.SystemPrompt, a.Status, extra, a.UpdatedAt, a.ID, a.TenantID)
 	return err
 }
 

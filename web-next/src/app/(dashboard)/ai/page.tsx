@@ -8,9 +8,11 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { Input } from '@/components/ui/input'
-import { Bot, Send, History, Settings, Sparkles, Terminal, FileText, Server, ChevronRight, Loader2, User, BarChart3, Users, ThumbsUp, ThumbsDown } from 'lucide-react'
+import { Dialog, DialogFooter } from '@/components/ui/dialog'
+import { Bot, Send, History, Settings, Sparkles, Terminal, FileText, Server, ChevronRight, Loader2, User, BarChart3, Users, ThumbsUp, ThumbsDown, Rocket, Target, AlertTriangle, CheckCircle, XCircle } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { useThemeStore } from '@/stores/theme'
+import { renderMarkdown, renderExploreContent } from '@/lib/ai-render'
 
 // ============================================================================
 // 类型与本地工具
@@ -55,24 +57,7 @@ interface TeamTurnLocal {
   error?: string
 }
 
-type AIMode = 'normal' | 'cot' | 'team'
-
-// 轻量内联 Markdown→HTML。生产中可替换为 react-markdown+remark-gfm 获得完整 GFM 支持。
-function renderMarkdown(text: string): string {
-  let html = text
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-  html = html.replace(/```(\w*)\n([\s\S]*?)```/g, '<pre class="rounded bg-gray-900 text-gray-100 p-3 my-2 overflow-x-auto text-xs"><code>$2</code></pre>')
-  html = html.replace(/`([^`]+)`/g, '<code class="rounded bg-gray-200 dark:bg-gray-700 px-1 text-xs">$1</code>')
-  html = html.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
-  html = html.replace(/\*([^*\n]+?)\*/g, '<em>$1</em>')
-  html = html.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a class="text-blue-500 underline" href="$2" target="_blank">$1</a>')
-  // RAG 引用标注 [^id] → 上标锚点
-  html = html.replace(/\[\^([a-zA-Z0-9_-]+)\]/g, '<sup class="text-emerald-500 font-semibold text-[10px] select-none" id="cite-ref-$1">[$1]</sup>')
-  html = html.replace(/\n/g, '<br/>')
-  return html
-}
+type AIMode = 'normal' | 'explore' | 'team'
 
 const QUICK_ACTIONS = [
   { label: '查询主机状态', icon: Server, prompt: '帮我查询所有主机的运行状态' },
@@ -81,7 +66,7 @@ const QUICK_ACTIONS = [
   { label: '排查故障', icon: Sparkles, prompt: '帮我排查当前系统的异常情况' },
 ]
 
-const modeLabelMap: Record<AIMode, string> = { normal: '普通', cot: '思维链', team: '团队' }
+const modeLabelMap: Record<AIMode, string> = { normal: '普通', explore: '自主', team: '团队' }
 const teamModeBadge: Record<string, 'default' | 'info' | 'warning' | 'destructive'> = {
   supervisor: 'default', parallel: 'info', sequential: 'warning', debate: 'destructive',
 }
@@ -104,7 +89,13 @@ export default function AIPage() {
 
   const [mode, setMode] = useState<AIMode>('normal')
 
-  // —— 普通 / 思维链 模式状态 ——
+  // —— 全局思考过程开关(localStorage 持久化) ——
+  const [showThinking, setShowThinking] = useState<boolean>(() => {
+    if (typeof window === 'undefined') return true
+    return localStorage.getItem('ai.showThinking') !== 'false'
+  })
+
+  // —— 普通模式状态 ——
   const [messages, setMessages] = useState<Message[]>([
     { id: '0', role: 'assistant', content: '你好！我是 OpsOrigin AI 助手，可以帮你完成运维任务。\n\n👉 **快速开始：** 点击右上角「设置」→「模型」配置 LLM API Key 即可使用。\n\n配置完成后可直接提问，或选择右侧快捷操作。', timestamp: new Date() },
   ])
@@ -113,6 +104,8 @@ export default function AIPage() {
   const [selectedAgent, setSelectedAgent] = useState<any>(null)
   const [showHistory, setShowHistory] = useState(false)
   const [conversations, setConversations] = useState<any[]>([])
+  // 当前会话 ID: 加载历史后指向该会话, 继续发送时携带以续接服务端持久历史
+  const [convId, setConvId] = useState('')
   const messagesEndRef = useRef<HTMLDivElement>(null)
 
   // —— 团队模式状态 ——
@@ -122,7 +115,16 @@ export default function AIPage() {
   const [teamStreaming, setTeamStreaming] = useState(false)
   const teamMessagesEndRef = useRef<HTMLDivElement>(null)
 
-  const reasoning = mode === 'cot'
+  // —— 自主模式状态 ——
+  const [exploreRuns, setExploreRuns] = useState<{ id: string; goal: string; content: string; status: 'running' | 'done' | 'error'; error?: string }[]>([])
+  const [exploreInput, setExploreInput] = useState('')
+  const [exploreStreaming, setExploreStreaming] = useState(false)
+  const exploreEndRef = useRef<HTMLDivElement>(null)
+
+  // —— 敏感操作审批弹窗 ——
+  const [pendingApproval, setPendingApproval] = useState<any>(null)
+  const [approvalBusy, setApprovalBusy] = useState(false)
+  const { respondApproval } = useAIStore()
 
   useEffect(() => {
     fetchAgents()
@@ -135,6 +137,9 @@ export default function AIPage() {
   useEffect(() => {
     teamMessagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [teamTurns])
+  useEffect(() => {
+    exploreEndRef.current?.scrollIntoView({ behavior: 'smooth' })
+  }, [exploreRuns])
 
   // ----------------------- 普通 / 思维链 模式 -----------------------
 
@@ -160,6 +165,8 @@ export default function AIPage() {
         }))
         setMessages(msgs)
       }
+      // 绑定当前会话: 后续发送将携带该 conversation_id, 续接服务端可信历史(含 tool 消息)
+      setConvId(id)
       setShowHistory(false)
     } catch {}
   }
@@ -188,20 +195,15 @@ export default function AIPage() {
       .slice(-20)
       .map(m => ({ role: m.role, content: m.content }))
 
-    if (reasoning) {
-      try {
-        const resp = await fetch('/api/v1/ai/chat', {
-          method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ prompt: content, history, stream: false, reasoning: true, agent_id: selectedAgent?.id }),
-        })
-        const data = await resp.json()
-        setMessages(prev => prev.map(m => m.id === aiId ? { ...m, content: data.content || data.error || '无应答', thinking: data.thinking } : m))
-      } catch { setMessages(prev => prev.filter(m => m.id !== aiId)) }
-      setLoading(false)
-      return
+    // 会话续接: 已有会话(点历史加载)则携带其 ID; 否则本地生成新会话 ID, 后端按 ID 自动创建持久化
+    let cid = convId
+    if (!cid) {
+      cid = `ai_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`
+      setConvId(cid)
     }
 
     let full = ''
+    let thinkingAcc = ''
     await streamChat(content, (token) => {
       full += token
       setMessages(prev => prev.map(m => m.id === aiId ? { ...m, content: full } : m))
@@ -210,7 +212,10 @@ export default function AIPage() {
         setMessages(prev => prev.map(m => m.id === aiId ? { ...m, content: full, citations: meta.citations } : m))
       }
       setLoading(false)
-    }, history, selectedAgent?.id)
+    }, history, selectedAgent?.id, showThinking, showThinking ? (t) => {
+      thinkingAcc += t
+      setMessages(prev => prev.map(m => m.id === aiId ? { ...m, thinking: thinkingAcc } : m))
+    } : undefined, undefined, (approval) => setPendingApproval(approval), cid)
   }
 
   // ----------------------- 团队模式 -----------------------
@@ -318,6 +323,49 @@ export default function AIPage() {
     setTeamStreaming(false)
   }
 
+  // ----------------------- 自主模式 -----------------------
+
+  const handleExploreSend = async (text: string) => {
+    const goal = text.trim()
+    if (!goal || exploreStreaming) return
+
+    const runId = Date.now().toString()
+    const newRun = { id: runId, goal, content: '', status: 'running' as const }
+    setExploreRuns(prev => [...prev, newRun])
+    setExploreInput('')
+    setExploreStreaming(true)
+
+    let acc = ''
+    let thinkingAcc = ''
+    await streamChat(goal, (token) => {
+      acc += token
+      setExploreRuns(prev => prev.map(r => r.id === runId ? { ...r, content: acc } : r))
+    }, (meta) => {
+      // 结束时把思考过程以 <think> 标签前置展示(可折叠)
+      const final = thinkingAcc ? `<think>${thinkingAcc}</think>\n\n${acc}` : acc
+      setExploreRuns(prev => prev.map(r => r.id === runId ? { ...r, content: final, status: 'done' as const } : r))
+      setExploreStreaming(false)
+    }, [], undefined, showThinking, showThinking ? (t) => {
+      thinkingAcc += t
+    } : undefined, true, (approval) => setPendingApproval(approval))
+  }
+
+  const EXPLORE_EXAMPLES = [
+    '检查所有主机的运行状态，找出异常主机并给出处理建议',
+    '梳理当前 CMDB 中数据库资产的拓扑关系',
+    '分析近期告警，归类并给出根因分析',
+  ]
+
+  // ----------------------- 审批响应 -----------------------
+
+  const handleApprovalRespond = async (action: 'approve' | 'reject') => {
+    if (!pendingApproval) return
+    setApprovalBusy(true)
+    const ok = await respondApproval(pendingApproval.id, action)
+    setApprovalBusy(false)
+    if (ok) setPendingApproval(null)
+  }
+
   // ============================================================================
   // 渲染
   // ============================================================================
@@ -332,18 +380,36 @@ export default function AIPage() {
           </h1>
           <p className="text-sm text-muted-foreground">智能运维助手，帮你高效完成运维任务</p>
         </div>
-        {mode !== 'team' && (
-          <div className="flex gap-2">
-            <Button variant="outline" size="sm" onClick={() => router.push('/ai/analytics')}><BarChart3 className="h-4 w-4" />分析</Button>
-            <Button variant="outline" size="sm" onClick={handleOpenHistory}><History className="h-4 w-4" />{showHistory ? '返回' : '历史'}</Button>
-            <Button variant="outline" size="sm" onClick={() => router.push('/ai/settings')}><Settings className="h-4 w-4" />设置</Button>
-          </div>
-        )}
+        <div className="flex items-center gap-2">
+          {mode !== 'team' && (
+            <>
+              <button
+                onClick={() => { const v = !showThinking; setShowThinking(v); localStorage.setItem('ai.showThinking', String(v)) }}
+                className={cn(
+                  'px-2 py-1 rounded text-xs border transition-colors flex items-center gap-1',
+                  showThinking
+                    ? 'bg-purple-50 border-purple-200 text-purple-700 dark:bg-purple-500/10 dark:border-purple-500/30 dark:text-purple-400'
+                    : 'border-gray-200 text-muted-foreground hover:border-gray-300 dark:border-gray-700 dark:hover:border-gray-600',
+                )}
+                title="显示/隐藏 AI 思考过程"
+              >
+                💭 思考过程
+              </button>
+              {mode !== 'explore' && (
+                <>
+                  <Button variant="outline" size="sm" onClick={() => router.push('/ai/analytics')}><BarChart3 className="h-4 w-4" />分析</Button>
+                  <Button variant="outline" size="sm" onClick={handleOpenHistory}><History className="h-4 w-4" />{showHistory ? '返回' : '历史'}</Button>
+                  <Button variant="outline" size="sm" onClick={() => router.push('/ai/settings')}><Settings className="h-4 w-4" />设置</Button>
+                </>
+              )}
+            </>
+          )}
+        </div>
       </div>
 
-      {/* 模式 Tab：普通 / 思维链 / 团队 */}
+      {/* 模式 Tab：普通 / 自主 / 团队 */}
       <div className="flex gap-2 mb-4">
-        {(['normal', 'cot', 'team'] as AIMode[]).map(m => (
+        {(['normal', 'explore', 'team'] as AIMode[]).map(m => (
           <button
             key={m}
             onClick={() => setMode(m)}
@@ -359,8 +425,8 @@ export default function AIPage() {
         ))}
       </div>
 
-      {/* 普通 / 思维链 模式 */}
-      {mode !== 'team' && (
+      {/* 普通模式 */}
+      {mode === 'normal' && (
         <div className="flex-1 flex gap-4 min-h-0">
           <div className="flex-1 flex flex-col border rounded-lg overflow-hidden">
             <div className="flex-1 overflow-y-auto p-4 space-y-4">
@@ -491,30 +557,9 @@ export default function AIPage() {
               </div>
 
               <div className="flex gap-2 mt-2">
-                <button
-                  onClick={() => setMode('normal')}
-                  className={cn(
-                    'flex-1 text-xs px-3 py-1.5 rounded-md border transition-colors text-left',
-                    !reasoning
-                      ? 'bg-emerald-50 border-emerald-200 text-emerald-700 dark:bg-emerald-500/10 dark:border-emerald-500/30 dark:text-emerald-400'
-                      : 'border-gray-200 text-muted-foreground hover:border-gray-300 dark:border-gray-700 dark:hover:border-gray-600',
-                  )}
-                >
-                  <span className="font-medium">⚡ 普通模式</span>
-                  <span className="block text-[10px] opacity-60 mt-0.5">快速回答，流式输出</span>
-                </button>
-                <button
-                  onClick={() => setMode('cot')}
-                  className={cn(
-                    'flex-1 text-xs px-3 py-1.5 rounded-md border transition-colors text-left',
-                    reasoning
-                      ? 'bg-emerald-50 border-emerald-200 text-emerald-700 dark:bg-emerald-500/10 dark:border-emerald-500/30 dark:text-emerald-400'
-                      : 'border-gray-200 text-muted-foreground hover:border-gray-300 dark:border-gray-700 dark:hover:border-gray-600',
-                  )}
-                >
-                  <span className="font-medium">💭 思维链模式</span>
-                  <span className="block text-[10px] opacity-60 mt-0.5">展示推理过程，适合复杂问题</span>
-                </button>
+                <p className="text-[10px] text-muted-foreground">
+                  {showThinking ? '💭 思考过程已启用 — 每条回复会展示推理链' : '点击右上角 💭 可开启思考过程'}
+                </p>
               </div>
             </div>
           </div>
@@ -565,6 +610,89 @@ export default function AIPage() {
                 )}
               </CardContent>
             </Card>
+          </div>
+        </div>
+      )}
+
+      {/* 自主模式 */}
+      {mode === 'explore' && (
+        <div className="flex-1 flex flex-col min-h-0">
+          {/* 目标输入区 */}
+          <div className="rounded-lg border border-gray-200 dark:border-[rgba(255,255,255,0.06)] bg-gray-50/60 dark:bg-[rgba(255,255,255,0.02)] p-4 mb-4">
+            <div className="flex items-center gap-2 mb-2">
+              <Bot className="h-4 w-4 text-emerald-500" />
+              <span className="text-sm font-medium">下达运维目标</span>
+              <span className="text-[11px] text-muted-foreground">AI 将自主规划、调用工具、多步执行并汇报</span>
+            </div>
+            <div className="flex gap-2">
+              <textarea
+                value={exploreInput}
+                onChange={e => setExploreInput(e.target.value)}
+                onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleExploreSend(exploreInput) } }}
+                placeholder="例如：检查所有主机的运行状态，找出异常主机并给出处理建议"
+                rows={2}
+                className="flex-1 rounded-md border border-input bg-background px-3 py-2 text-sm resize-none placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+              />
+              <Button onClick={() => handleExploreSend(exploreInput)} disabled={!exploreInput.trim() || exploreStreaming} className="shrink-0 self-start">
+                {exploreStreaming ? <Loader2 className="h-4 w-4 animate-spin" /> : <Rocket className="h-4 w-4" />}
+                {exploreStreaming ? '执行中' : '自主执行'}
+              </Button>
+            </div>
+            <div className="flex gap-2 mt-2 flex-wrap">
+              {EXPLORE_EXAMPLES.map(ex => (
+                <button
+                  key={ex}
+                  onClick={() => setExploreInput(ex)}
+                  className="text-[11px] px-2 py-1 rounded border border-gray-200 dark:border-[rgba(255,255,255,0.08)] text-muted-foreground hover:border-emerald-300 hover:text-emerald-600 dark:hover:border-emerald-500/40 transition-colors"
+                >
+                  {ex}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {/* 执行过程 */}
+          <div className="flex-1 overflow-y-auto space-y-4 pr-1">
+            {exploreRuns.length === 0 ? (
+              <div className="h-full flex items-center justify-center">
+                <div className="text-center max-w-sm">
+                  <Bot className="h-10 w-10 mx-auto mb-3 text-emerald-500/40" />
+                  <p className="text-sm text-muted-foreground">
+                    输入一个目标，AI 将自动拆解计划、调用工具逐步执行，并在关键节点向你汇报。
+                  </p>
+                  <p className="text-xs text-muted-foreground/70 mt-2">提示：只读类任务（查询/分析/巡检）可放心交给自主模式；涉及执行类操作会触发安全审批。</p>
+                </div>
+              </div>
+            ) : (
+              exploreRuns.map(run => (
+                <div key={run.id} className="rounded-lg border border-gray-200 dark:border-[rgba(255,255,255,0.06)] bg-white dark:bg-transparent shadow-sm">
+                  {/* 目标头 */}
+                  <div className="flex items-start justify-between gap-3 px-4 py-3 border-b border-gray-100 dark:border-[rgba(255,255,255,0.04)]">
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center gap-1.5 text-[10px] text-muted-foreground mb-1">
+                        <Target className="h-3 w-3 text-emerald-500" /> 目标
+                      </div>
+                      <p className="text-sm font-medium text-gray-800 dark:text-gray-100 whitespace-pre-wrap">{run.goal}</p>
+                    </div>
+                    <Badge variant={run.status === 'done' ? 'success' : run.status === 'error' ? 'destructive' : 'info'} pulse={run.status === 'running'} className="shrink-0 text-[10px]">
+                      {run.status === 'running' ? '执行中' : run.status === 'done' ? '已完成' : '异常'}
+                    </Badge>
+                  </div>
+                  {/* 内容 */}
+                  <div className="px-4 py-3">
+                    {run.status === 'running' && !run.content ? (
+                      <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                        <Loader2 className="h-3.5 w-3.5 animate-spin text-emerald-500" />
+                        正在规划执行方案...
+                      </div>
+                    ) : (
+                      <div className="text-sm text-gray-700 dark:text-[#C7D2E0] leading-relaxed" dangerouslySetInnerHTML={{ __html: renderExploreContent(run.content) }} />
+                    )}
+                  </div>
+                </div>
+              ))
+            )}
+            <div ref={exploreEndRef} />
           </div>
         </div>
       )}
@@ -757,6 +885,42 @@ export default function AIPage() {
           </div>
         </div>
       )}
+
+      {/* 敏感操作审批弹窗 */}
+      <Dialog open={!!pendingApproval} onClose={() => { if (!approvalBusy) setPendingApproval(null) }} title="🔐 敏感操作确认">
+        {pendingApproval && (
+          <div className="space-y-3">
+            <div className={cn("flex items-center gap-2 text-xs p-3 rounded-lg", theme === 'dark' ? 'bg-amber-500/5 border border-amber-500/10' : 'bg-amber-50 border border-amber-200')}>
+              <AlertTriangle className="h-4 w-4 text-amber-500 shrink-0" />
+              <span>AI 请求执行敏感操作，请确认后放行。超时未响应将自动拒绝。</span>
+            </div>
+            <div className="grid gap-2 text-sm">
+              <div><span className="text-muted-foreground text-xs">操作：</span>
+                <code className="font-mono text-xs bg-gray-100 dark:bg-gray-800 rounded px-1.5 py-0.5">{pendingApproval.tool}</code>
+              </div>
+              <div><span className="text-muted-foreground text-xs">说明：</span><span className="text-sm">{pendingApproval.summary || '无'}</span></div>
+              {pendingApproval.args && pendingApproval.args !== '{}' && (
+                <div>
+                  <span className="text-muted-foreground text-xs">参数：</span>
+                  <pre className="mt-1 p-2 rounded bg-gray-100 dark:bg-gray-800 text-[11px] overflow-x-auto whitespace-pre-wrap max-h-28 overflow-y-auto">{pendingApproval.args}</pre>
+                </div>
+              )}
+              <div className="text-[11px] text-muted-foreground">
+                截止：{pendingApproval.deadline ? new Date(pendingApproval.deadline).toLocaleTimeString('zh-CN') : '-'}
+              </div>
+            </div>
+          </div>
+        )}
+        <DialogFooter>
+          <Button variant="outline" onClick={() => handleApprovalRespond('reject')} disabled={approvalBusy} className="border-red-200 text-red-600 hover:bg-red-50 dark:border-red-500/30 dark:text-red-400 dark:hover:bg-red-500/10">
+            <XCircle className="h-4 w-4 mr-1" />拒绝
+          </Button>
+          <Button onClick={() => handleApprovalRespond('approve')} disabled={approvalBusy}>
+            {approvalBusy ? <Loader2 className="h-4 w-4 mr-1 animate-spin" /> : <CheckCircle className="h-4 w-4 mr-1" />}
+            批准执行
+          </Button>
+        </DialogFooter>
+      </Dialog>
     </div>
   )
 }

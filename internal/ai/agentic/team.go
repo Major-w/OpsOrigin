@@ -308,7 +308,7 @@ func (e *Engine) runOneMemberRound(ctx context.Context, m model.TeamMember, team
 	msgs = append(msgs, hist...)
 	msgs = append(msgs, llm.Message{Role: "user", Content: prompt})
 
-	tools := e.buildToolDefs()
+	tools := e.buildToolDefs("")
 	var content string
 	for round := 0; round < maxToolRounds; round++ {
 		slot, ok := e.acquireLLMSlot(ctx)

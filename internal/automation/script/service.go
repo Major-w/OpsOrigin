@@ -816,7 +816,11 @@ func (s *Service) handleApprove(w http.ResponseWriter, r *http.Request) {
 	tenantID := tenantFromCtx(r.Context())
 	sc, err := s.store.Get(r.Context(), id, tenantID)
 	if err != nil || sc == nil { writeError(w, http.StatusNotFound, "script not found"); return }
-	if sc.ApprovalStatus != "pending" { writeError(w, http.StatusBadRequest, "script is not in pending status"); return }
+	// 接受 pending(公共脚本高危需审批)与 draft(AI 生成/私有脚本待批准) → approved
+	if sc.ApprovalStatus != "pending" && sc.ApprovalStatus != "draft" {
+		writeError(w, http.StatusBadRequest, "script is not in pending/draft status")
+		return
+	}
 	sc.ApprovalStatus = "approved"
 	ctx := context.WithValue(r.Context(), changeNoteCtxKey, "approved")
 	if err := s.store.Update(ctx, sc); err != nil { writeError(w, http.StatusInternalServerError, err.Error()); return }

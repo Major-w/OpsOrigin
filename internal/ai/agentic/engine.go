@@ -21,6 +21,13 @@ import (
 	"github.com/opsorigin/core/pkg/llm"
 )
 
+// StreamChunk SSE 流式事件单元。用于区分思考过程(token 或 thinking)与工具标注(tool/error),
+// 使前端可据此分别渲染折叠式思维链、答案正文和工具调用面板。
+type StreamChunk struct {
+	Type    string // "thinking": 推理过程; "token": 正常回答; "tool": 工具调用标注; "error": 异常
+	Content string
+}
+
 // Engine 是 AI 助手引擎的核心:管理 Agent 生命周期、编排 ExecutionPlan 的执行。
 //
 // 执行模型:
@@ -62,6 +69,15 @@ type Engine struct {
 	genTemperature float64
 	store          Store         // PG 持久化（可选,nil=仅内存）
 	teamConvStore  TeamConvStore // 团队对话历史（可选,nil=无跨轮记忆）
+
+	// ——— 敏感操作审批 (PRD 5.2.5) ———
+	approvals *ApprovalManager
+	// approvalPolicies 全局默认 + Agent 级覆盖策略: "default" 键为全局, 其余键为 agent_id。
+	approvalPolicies map[string]ApprovalPolicy
+
+	// ——— 自定义 MCP 工具 (PRD 5.2.2) ———
+	// customTools 用户注册的自定义工具(ID -> 定义), enabled 的工具动态注册到 reg。
+	customTools map[string]*CustomTool
 }
 
 // NewEngine 构造引擎并注册内建工具。
@@ -84,6 +100,13 @@ func NewEngine(reg *mcp.Registry, lim ratelimit.RateLimiter, llmClient *llm.Clie
 	e.llmClient.Store(llmClient)
 	e.registerBuiltinTools()
 	SeedPresetTeams(e) // Feature 1: 预置平台交付团队（按 Name 幂等）
+	// 敏感操作审批: 全局默认"仅敏感询问", 可由 API/管理员调整为每次询问或始终允许。
+	e.approvals = NewApprovalManager()
+	e.approvalPolicies = map[string]ApprovalPolicy{
+		"default": DefaultApprovalPolicy(),
+	}
+	// 自定义 MCP 工具(启动后由 Start/SyncCustomTools 从存储加载并注册)。
+	e.customTools = make(map[string]*CustomTool)
 	// 接入内置 LLM 历史摘要器(Token 预算压缩的"智能摘要"路径); 仅在客户端就绪时启用,
 	// 否则 compactHistory 自动回退到确定性压缩(保留原始意图 + 最近窗口)。
 	if llmClient != nil {
@@ -166,6 +189,10 @@ func (e *Engine) Start() error {
 		}
 	}
 	e.mu.Unlock()
+	// 加载并注册自定义 MCP 工具(PRD 5.2.2)
+	if err := e.SyncCustomTools(context.Background()); err != nil {
+		slog.Warn("failed to sync custom tools", "err", err)
+	}
 	slog.Info("agentic engine started",
 		"agents", e.agentCount(),
 		"tools", len(e.reg.List()))
@@ -185,6 +212,9 @@ func (e *Engine) loadFromStore() error {
 			ID: a.ID, TenantID: a.TenantID, Name: a.Name,
 			ModelName: a.ModelName, SystemPrompt: a.SystemPrompt,
 			Status: a.Status, CreatedAt: a.CreatedAt, UpdatedAt: a.UpdatedAt,
+			KnowledgeCategories: a.KnowledgeCategories,
+			Tools:               a.Tools,
+			Skills:              a.Skills,
 		}
 	}
 	teams, err := e.store.ListTeams(ctx, "default")
@@ -257,6 +287,8 @@ func (e *Engine) chatWithToolsConv(ctx context.Context, agentID, prompt string, 
 		AILLMRateLimitHits.Inc()
 		return "", "", nil, "", fmt.Errorf("rate limit exceeded for agent %s", agentID)
 	}
+	// 把 AI agent 身份写入上下文, 工具执行链可据此读取 Agent 级审批策略
+	ctx = withAgentID(ctx, agentID)
 
 	// 会话加载: 提供 conversationID 时优先用服务端持久历史(可信, 含 tool 消息), 否则用客户端 history。
 	var conv *Conversation
@@ -286,7 +318,7 @@ func (e *Engine) chatWithToolsConv(ctx context.Context, agentID, prompt string, 
 		}
 	}
 	msgs, roundStart := e.buildMessages(ctx, agentID, userPrompt, baseHistory, sysExtra)
-	tools := e.buildToolDefs()
+	tools := e.buildToolDefs(agentID)
 	var invocations []ToolInvocation
 
 	var content, reasoningAcc string
@@ -373,6 +405,10 @@ func (e *Engine) chatWithToolsConv(ctx context.Context, agentID, prompt string, 
 // 便于增量持久化会话。
 func (e *Engine) buildMessages(ctx context.Context, agentID, userPrompt string, history []llm.Message, sysExtra string) ([]llm.Message, int) {
 	sys := e.resolveSystemPrompt(agentID)
+	// 注入该 Agent 定义的 Skills(可复用能力指令, PRD 5.2.2)
+	if s := e.renderSkills(agentID); s != "" {
+		sys += "\n\n" + s
+	}
 	// 注入引用标注指引(RAG grounding): 让模型在引用知识库/工具结果时标注来源。
 	sys += "\n\n" + citationGuidance
 	if sysExtra != "" {
@@ -387,6 +423,34 @@ func (e *Engine) buildMessages(ctx context.Context, agentID, userPrompt string, 
 	roundStart := len(msgs)
 	msgs = append(msgs, llm.Message{Role: "user", Content: userPrompt})
 	return msgs, roundStart
+}
+
+// renderSkills 将 Agent 定义的 Skills 渲染为 system prompt 片段(能力指令块)。
+// 未定义技能或 agent 不存在时返回空串。
+func (e *Engine) renderSkills(agentID string) string {
+	a, ok := e.GetAgent(agentID)
+	if !ok || len(a.Skills) == 0 {
+		return ""
+	}
+	var parts []string
+	for _, sk := range a.Skills {
+		name := strings.TrimSpace(sk.Name)
+		if name == "" {
+			continue
+		}
+		block := "### 技能: " + name
+		if d := strings.TrimSpace(sk.Description); d != "" {
+			block += "\n用途: " + d
+		}
+		if ins := strings.TrimSpace(sk.Instructions); ins != "" {
+			block += "\n使用说明: " + ins
+		}
+		parts = append(parts, block)
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return "【你可用的技能】\n" + strings.Join(parts, "\n\n")
 }
 
 // buildInitialMessages 兼容旧调用: 仅返回拼装后的消息切片(不暴露 roundStart/sysExtra)。
@@ -532,11 +596,27 @@ var noCacheTools = map[string]bool{
 
 // buildToolDefs 将 Registry 中的运维工具转换为 LLM Function Calling 所需的 ToolDef。
 // 跳过内建工具与未注册 Handler 的工具。
-func (e *Engine) buildToolDefs() []llm.ToolDef {
+// agentID 非空且该 Agent 配置了 Tools 白名单时, 仅返回白名单内的工具; 否则返回全部。
+func (e *Engine) buildToolDefs(agentID string) []llm.ToolDef {
 	defs := e.reg.List()
+	// Agent 工具白名单(空 = 全部可用)
+	var allowlist map[string]bool
+	if agentID != "" {
+		if a, ok := e.GetAgent(agentID); ok && len(a.Tools) > 0 {
+			allowlist = make(map[string]bool, len(a.Tools))
+			for _, t := range a.Tools {
+				if t = strings.TrimSpace(t); t != "" {
+					allowlist[t] = true
+				}
+			}
+		}
+	}
 	out := make([]llm.ToolDef, 0, len(defs))
 	for _, d := range defs {
 		if builtinToolDenyList[d.Name] {
+			continue
+		}
+		if allowlist != nil && !allowlist[d.Name] {
 			continue
 		}
 		props := map[string]any{}
@@ -573,6 +653,10 @@ func (e *Engine) buildToolDefs() []llm.ToolDef {
 // maxToolRounds 单次对话中 Function Calling 的最大轮次,防止模型无限循环请求工具。
 const maxToolRounds = 5
 
+// maxToolRoundsExplore 自主模式(explore=true)的轮次上限。
+// 自主模式需要"规划→逐步执行→检查→总结"多轮迭代, 上限放宽; 仍由限流器约束总调用频次。
+const maxToolRoundsExplore = 12
+
 // truncateJSON 安全地把任意参数序列化为单行摘要(用于日志)。
 func truncateJSON(v any) string {
 	b, err := json.Marshal(v)
@@ -586,7 +670,212 @@ func truncateJSON(v any) string {
 	return s
 }
 
+// ——— 自定义 MCP 工具 (PRD 5.2.2) ———
+
+// CreateCustomTool 创建自定义工具并注册到 registry(启用时)。
+func (e *Engine) CreateCustomTool(ctx context.Context, t *CustomTool) error {
+	if t == nil {
+		return fmt.Errorf("custom tool is nil")
+	}
+	if t.ID == "" {
+		t.ID = uuid.New().String()
+	}
+	if t.TenantID == "" {
+		t.TenantID = "default"
+	}
+	e.mu.Lock()
+	e.customTools[t.ID] = t
+	e.syncCustomToolLocked(t)
+	e.mu.Unlock()
+	if e.store != nil {
+		if err := e.store.CreateCustomTool(ctx, t); err != nil {
+			return err
+		}
+	}
+	slog.Info("custom tool created", "id", t.ID, "name", t.Name, "type", t.Type, "enabled", t.Enabled)
+	return nil
+}
+
+// UpdateCustomTool 更新自定义工具并同步 registry。
+func (e *Engine) UpdateCustomTool(ctx context.Context, t *CustomTool) error {
+	if t.ID == "" {
+		return fmt.Errorf("custom tool id is required")
+	}
+	if t.TenantID == "" {
+		t.TenantID = "default"
+	}
+	e.mu.Lock()
+	existing, ok := e.customTools[t.ID]
+	if !ok {
+		e.mu.Unlock()
+		return fmt.Errorf("custom tool not found: %s", t.ID)
+	}
+	// 反注册旧定义, 再按新定义注册
+	e.reg.Unregister(existing.Name)
+	t.TenantID = existing.TenantID
+	e.customTools[t.ID] = t
+	e.syncCustomToolLocked(t)
+	e.mu.Unlock()
+	if e.store != nil {
+		if err := e.store.UpdateCustomTool(ctx, t); err != nil {
+			return err
+		}
+	}
+	slog.Info("custom tool updated", "id", t.ID, "name", t.Name, "enabled", t.Enabled)
+	return nil
+}
+
+// DeleteCustomTool 删除自定义工具并从 registry 反注册。
+func (e *Engine) DeleteCustomTool(ctx context.Context, id, tenantID string) error {
+	e.mu.Lock()
+	existing, ok := e.customTools[id]
+	if !ok {
+		e.mu.Unlock()
+		return fmt.Errorf("custom tool not found: %s", id)
+	}
+	e.reg.Unregister(existing.Name)
+	delete(e.customTools, id)
+	e.mu.Unlock()
+	if e.store != nil {
+		if err := e.store.DeleteCustomTool(ctx, id, tenantID); err != nil {
+			return err
+		}
+	}
+	slog.Info("custom tool deleted", "id", id, "name", existing.Name)
+	return nil
+}
+
+// ListCustomTools 列出当前引擎持有的自定义工具(含禁用)。
+func (e *Engine) ListCustomTools(tenantID string) []*CustomTool {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	out := make([]*CustomTool, 0)
+	for _, t := range e.customTools {
+		if t.TenantID == tenantID {
+			out = append(out, t)
+		}
+	}
+	return out
+}
+
+// SyncCustomTools 从持久化存储全量同步自定义工具到 registry(启动/热刷新时调用)。
+func (e *Engine) SyncCustomTools(ctx context.Context) error {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	// 反注册全部现有自定义工具
+	for _, t := range e.customTools {
+		e.reg.Unregister(t.Name)
+	}
+	e.customTools = make(map[string]*CustomTool)
+	if e.store == nil {
+		return nil
+	}
+	tools, err := e.store.ListCustomTools(ctx, "default")
+	if err != nil {
+		return err
+	}
+	for _, t := range tools {
+		e.customTools[t.ID] = t
+		if t.Enabled {
+			e.reg.Register(t.toToolDefinition())
+		}
+	}
+	slog.Info("custom tools synced", "count", len(tools))
+	return nil
+}
+
+// syncCustomToolLocked 按当前 enabled 状态注册/反注册单个工具(调用方须持有 e.mu)。
+func (e *Engine) syncCustomToolLocked(t *CustomTool) {
+	e.reg.Unregister(t.Name)
+	if t.Enabled {
+		e.reg.Register(t.toToolDefinition())
+	}
+}
+
+// ——— 自定义 MCP 工具 End ———
+
 // ——— 工具执行安全边界(P3-0 / P3-2) ———
+
+// aiAgentCtxKey 用于把当前 AI agent 写入 context, 使工具执行链(reg.Execute)能读取发起会话的 agent。
+type aiAgentCtxKey struct{}
+
+func withAgentID(ctx context.Context, agentID string) context.Context {
+	return context.WithValue(ctx, aiAgentCtxKey{}, agentID)
+}
+
+func agentIDFrom(ctx context.Context) string {
+	s, _ := ctx.Value(aiAgentCtxKey{}).(string)
+	return s
+}
+
+// SetApprovalPolicy 设置审批策略。agentID 为空或 "default" 时设置全局默认, 否则设置该 Agent 的覆盖。
+func (e *Engine) SetApprovalPolicy(agentID string, p ApprovalPolicy) {
+	key := agentID
+	if key == "" {
+		key = "default"
+	}
+	e.mu.Lock()
+	e.approvalPolicies[key] = p
+	e.mu.Unlock()
+}
+
+// GetApprovalPolicy 读取指定 Agent 生效的审批策略(Agent 级覆盖优先, 否则全局默认)。
+func (e *Engine) GetApprovalPolicy(agentID string) ApprovalPolicy {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	if agentID != "" {
+		if p, ok := e.approvalPolicies[agentID]; ok {
+			return p
+		}
+	}
+	if p, ok := e.approvalPolicies["default"]; ok {
+		return p
+	}
+	return DefaultApprovalPolicy()
+}
+
+// Approvals 返回审批管理器(service 层用于响应审批请求 / 挂起列表)。
+func (e *Engine) Approvals() *ApprovalManager {
+	return e.approvals
+}
+
+// ScriptApprovalChecker 引擎层的外部审批实现, 注入到 MCPToolSet.scriptRun:
+//   - 按策略(Agent 级 > 全局)判断 script_run 是否需要交互式确认;
+//   - 需要时发起 SSE ask 事件并挂起等待用户批准/拒绝(超时视为拒绝, fail-closed);
+//   - 批准返回 (true, ""), 拒绝/超时返回 (false, 人类可读原因), 策略放行直接返回 (true, "")。
+func (e *Engine) ScriptApprovalChecker(ctx context.Context, scriptID, targetAgentID string, args map[string]any) (bool, string) {
+	policy := e.GetApprovalPolicy(agentIDFrom(ctx))
+	if !policy.NeedsApproval("script_run") {
+		return true, ""
+	}
+
+	// 构造人类可读的操作描述
+	summary := "在主机 " + targetAgentID + " 上执行脚本 " + scriptID
+	if name, _ := args["script_name"].(string); name != "" {
+		summary = "在主机 " + targetAgentID + " 上执行脚本 " + name + " (" + scriptID + ")"
+	}
+	argsJSON, _ := json.Marshal(args)
+	timeout := time.Duration(policy.AskTimeoutSec) * time.Second
+
+	resp := e.approvals.Request(ctx, tenantOf(ctx), agentIDFrom(ctx), "script_run", string(argsJSON), summary, timeout)
+	if resp == nil {
+		return false, "操作未获批准(审批超时或已取消), 已停止执行"
+	}
+	if resp.Action == "approve" {
+		slog.Info("ai script approved by human", "script", scriptID, "agent", targetAgentID, "by", resp.By)
+		return true, ""
+	}
+	return false, "操作被用户拒绝" + suffixComment(resp.Comment)
+}
+
+// suffixComment 拼接审批备注(可选)。
+func suffixComment(comment string) string {
+	if comment == "" {
+		return ""
+	}
+	return ": " + comment
+}
+
 
 // privilegedTools 需要 ai:tool:exec 权限的高风险/写操作工具。
 // 仅 script_run(在受管主机执行脚本) 与 ticket_create(创建工单) 受此约束;
@@ -828,9 +1117,9 @@ func (e *Engine) CreateAgent(ctx context.Context, a *model.AgentInstance) error 
 	e.agents[a.ID] = a
 	e.mu.Unlock()
 	if e.store != nil {
-		_ = e.store.CreateAgent(ctx, &AgentRecord{ID: a.ID, TenantID: a.TenantID, Name: a.Name, ModelName: a.ModelName, SystemPrompt: a.SystemPrompt, Status: a.Status, CreatedAt: a.CreatedAt, UpdatedAt: a.UpdatedAt})
+		_ = e.store.CreateAgent(ctx, &AgentRecord{ID: a.ID, TenantID: a.TenantID, Name: a.Name, ModelName: a.ModelName, SystemPrompt: a.SystemPrompt, Status: a.Status, CreatedAt: a.CreatedAt, UpdatedAt: a.UpdatedAt, KnowledgeCategories: a.KnowledgeCategories, Tools: a.Tools, Skills: a.Skills})
 	}
-	slog.Info("agent created", "id", a.ID, "name", a.Name, "model", a.ModelName)
+	slog.Info("agent created", "id", a.ID, "name", a.Name, "model", a.ModelName, "knowledge", a.KnowledgeCategories, "tools", a.Tools)
 	return nil
 }
 
@@ -852,11 +1141,36 @@ func (e *Engine) UpdateAgent(ctx context.Context, a *model.AgentInstance) error 
 		existing.ModelName = a.ModelName
 	}
 	existing.SystemPrompt = a.SystemPrompt
+	// 知识库绑定: 显式传入(非 nil)才覆盖, 避免未传字段的清空误伤
+	if a.KnowledgeCategories != nil {
+		existing.KnowledgeCategories = a.KnowledgeCategories
+	}
+	// 工具白名单: 显式传入(非 nil)才覆盖
+	if a.Tools != nil {
+		existing.Tools = a.Tools
+	}
+	// Skills: 显式传入(非 nil)才覆盖
+	if a.Skills != nil {
+		existing.Skills = a.Skills
+	}
 	existing.UpdatedAt = time.Now()
 	if e.store != nil {
-		_ = e.store.UpdateAgent(ctx, &AgentRecord{ID: existing.ID, TenantID: existing.TenantID, Name: existing.Name, ModelName: existing.ModelName, SystemPrompt: existing.SystemPrompt, Status: existing.Status, UpdatedAt: existing.UpdatedAt})
+		_ = e.store.UpdateAgent(ctx, &AgentRecord{ID: existing.ID, TenantID: existing.TenantID, Name: existing.Name, ModelName: existing.ModelName, SystemPrompt: existing.SystemPrompt, Status: existing.Status, UpdatedAt: existing.UpdatedAt, KnowledgeCategories: existing.KnowledgeCategories, Tools: existing.Tools, Skills: existing.Skills})
 	}
 	slog.Info("agent updated", "id", a.ID, "name", existing.Name)
+	return nil
+}
+
+// AgentKnowledgeCategories 返回指定 Agent 绑定的知识库分类列表; 为空表示绑定全部。
+func (e *Engine) AgentKnowledgeCategories(agentID string) []string {
+	if agentID == "" {
+		return nil
+	}
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	if a, ok := e.agents[agentID]; ok {
+		return a.KnowledgeCategories
+	}
 	return nil
 }
 
@@ -1035,6 +1349,39 @@ const citationGuidance = `引用与溯源要求:
 - 回答结尾用 "## 引用来源" 列出所有被引用文章的标题与 ID。
 - 未引用任何资料时无需列出。
 - 禁止编造不存在的文章 ID;只能引用工具实际返回给你的资料 ID。`
+
+// explorePrompt 自主模式(explore=true)附加到 system prompt 的执行方法论。
+// 核心: 先规划 → 逐步执行(可多轮工具调用) → 检查 → 总结报告。
+// 通过 <plan>/<step>/<report> 标签让前端能够结构化解析渲染。
+const explorePrompt = `【自主模式执行方法论】
+用户将给你一个运维目标,而不是单个问题。你必须以"自主 Agent"方式完成:
+
+1. 规划: 先用 <plan> 标签输出执行计划,格式:
+   <plan>
+   1. 步骤描述 (涉及工具: xxx)
+   2. 步骤描述 (涉及工具: xxx)
+   ...
+   </plan>
+
+2. 执行: 按计划逐步执行。每一步:
+   - 可以用 <step> 标签标注当前步骤名,如 <step>检查主机状态</step>;
+   - 需要数据/操作时调用对应工具(cmake 查询、knowledge_search 检索等);
+   - 工具结果不理想时,自主调整下一步骤(允许偏离原计划,但需简短说明原因)。
+
+3. 检查: 每一步完成后核对结果是否符合目标,缺失信息主动补查。
+
+4. 总结: 全部完成或确认无法完成后,用 <report> 标签输出最终报告:
+   <report>
+   ## 目标
+   ## 执行过程(简述各步骤与工具结果)
+   ## 结论 / 发现
+   ## 建议的后续动作(如需人工介入,明确说明)
+   </report>
+
+安全边界(必须遵守):
+- 优先使用只读工具(cmdb_query / knowledge_search / http_get)完成任务;
+- script_run 等执行类工具受审批保护,若调用被拒绝,不要重试强攻,改为报告现状并建议人工处理;
+- 严禁执行与目标无关的操作;拿不准就停下来问用户。`
 
 // SetDefaultSystemPrompt 设置全局默认 system prompt(外置化入口,可由 sysconfig 热更新调用)。
 // 传入空串时保留内置常量 DefaultSystemPrompt 作为兜底。
@@ -1294,7 +1641,7 @@ func (e *Engine) ListTeams(tenantID string) []*model.AgentTeam {
 // ChatStream 流式输出(SSE)。service 在 req.stream=true 时调用本方法, 返回的文本块经 SSE 推给前端。
 // 基于 llmClient.StreamChat 实现真实流式: 文本/推理逐 token 推送, 工具调用在发生时实时发射 🔧/↳ 标记,
 // 循环内边收边发(与团队模式一致), 而非先跑完整个循环再按词切分(伪流式)。
-func (e *Engine) ChatStream(ctx context.Context, agentID, prompt string, history []llm.Message, reasoning bool, conversationID string) (<-chan string, string, error) {
+func (e *Engine) ChatStream(ctx context.Context, agentID, prompt string, history []llm.Message, reasoning bool, conversationID string, explore bool) (<-chan StreamChunk, string, error) {
 	if prompt == "" {
 		return nil, "", fmt.Errorf("prompt is required")
 	}
@@ -1302,14 +1649,14 @@ func (e *Engine) ChatStream(ctx context.Context, agentID, prompt string, history
 		AILLMRateLimitHits.Inc()
 		return nil, "", fmt.Errorf("rate limit exceeded for agent %s", agentID)
 	}
-	out := make(chan string, 64)
+	out := make(chan StreamChunk, 64)
 	go func() {
 		defer close(out)
-		err := e.chatWithToolsStream(ctx, agentID, prompt, history, reasoning, conversationID, func(s string) {
-			out <- s
+		err := e.chatWithToolsStream(ctx, agentID, prompt, history, reasoning, conversationID, explore, func(typ string, text string) {
+			out <- StreamChunk{Type: typ, Content: text}
 		})
 		if err != nil {
-			out <- "⚠️ " + err.Error()
+			out <- StreamChunk{Type: "error", Content: err.Error()}
 		}
 	}()
 	// 仅当显式提供 conversationID 时才持久化(用该 ID 作为会话标识; not found 时按同 ID 新建)。
@@ -1322,10 +1669,12 @@ func (e *Engine) ChatStream(ctx context.Context, agentID, prompt string, history
 //  3. 回到步骤 1, 直至模型不再请求工具(终轮,答案已流式推送)或达到最大轮次。
 //
 // 与 chatWithTools 共享 execToolChecked, 因此同样受 RBAC / 限流 / 结果截断约束。
-func (e *Engine) chatWithToolsStream(ctx context.Context, agentID, prompt string, history []llm.Message, reasoning bool, conversationID string, emit func(string)) error {
+func (e *Engine) chatWithToolsStream(ctx context.Context, agentID, prompt string, history []llm.Message, reasoning bool, conversationID string, explore bool, emit func(typ string, text string)) error {
 	if e.lim != nil && agentID != "" && !e.lim.Allow(agentID) {
 		return fmt.Errorf("rate limit exceeded for agent %s", agentID)
 	}
+	// 把 AI agent 身份写入上下文, 工具执行链可据此读取 Agent 级审批策略
+	ctx = withAgentID(ctx, agentID)
 
 	// 会话加载: 提供 conversationID 时优先用服务端持久历史(可信, 含 tool 消息), 否则用客户端 history。
 	var conv *Conversation
@@ -1343,6 +1692,10 @@ func (e *Engine) chatWithToolsStream(ctx context.Context, agentID, prompt string
 	if reasoning {
 		userPrompt = "请按以下格式回答：\n\n<think>\n先进行分步推理分析\n</think>\n<answer>\n再给出最终答案\n</answer>\n\n用户问题：" + prompt
 	}
+	if explore {
+		// 自主模式: 追加执行方法论, 并把用户输入声明为"目标"
+		userPrompt = "【运维目标】\n" + prompt
+	}
 	// 从客户端历史提取 service 层注入的 system 补充(仅 RAG 上下文; 客户端 system 已被 SanitizeHistory 剥离),
 	// 避免续接会话时丢失知识库检索结果。服务端会话历史(baseHistory)不含 system。
 	var sysExtra string
@@ -1354,12 +1707,24 @@ func (e *Engine) chatWithToolsStream(ctx context.Context, agentID, prompt string
 			sysExtra += m.Content
 		}
 	}
+	if explore {
+		// 自主模式: 注入执行方法论到 system prompt
+		if sysExtra != "" {
+			sysExtra += "\n\n"
+		}
+		sysExtra += explorePrompt
+	}
 	msgs, roundStart := e.buildMessages(ctx, agentID, userPrompt, baseHistory, sysExtra)
-	tools := e.buildToolDefs()
+	tools := e.buildToolDefs(agentID)
 
 	var err error
 	completed := false
-	for round := 0; round < maxToolRounds; round++ {
+	// 自主模式需要更长的工具循环上限(多步规划执行), 普通对话保持原上限。
+	maxRounds := maxToolRounds
+	if explore {
+		maxRounds = maxToolRoundsExplore
+	}
+	for round := 0; round < maxRounds; round++ {
 		slot, ok := e.acquireLLMSlot(ctx)
 		if !ok {
 			return fmt.Errorf("llm concurrency limit reached")
@@ -1380,10 +1745,10 @@ func (e *Engine) chatWithToolsStream(ctx context.Context, agentID, prompt string
 		var toolCalls []llm.ToolCall
 		for sc := range ch {
 			if sc.Content != "" {
-				emit(sc.Content)
+				emit("token", sc.Content)
 			}
 			if sc.Reasoning != "" {
-				emit(sc.Reasoning)
+				emit("thinking", sc.Reasoning)
 			}
 			content += sc.Content
 			reasoningAcc += sc.Reasoning
@@ -1411,14 +1776,14 @@ func (e *Engine) chatWithToolsStream(ctx context.Context, agentID, prompt string
 			}
 			AIToolCalls.Inc()
 			slog.Info("ai function call", "tool", tc.Function.Name, "args", truncateJSON(args))
-			emit(fmt.Sprintf("\n\n🔧 **调用工具 `%s`**\n", tc.Function.Name))
+			emit("tool", fmt.Sprintf("\n\n🔧 **调用工具 `%s`**\n", tc.Function.Name))
 			if len(args) > 0 {
 				if b, e := json.MarshalIndent(args, "", "  "); e == nil {
-					emit("```json\n" + string(b) + "\n```\n")
+					emit("tool", "```json\n"+string(b)+"\n```\n")
 				}
 			}
 			result, _ := e.execToolChecked(ctx, tc)
-			emit(fmt.Sprintf("\n↳ **结果**: %s\n\n", summarizeToolResult(result)))
+			emit("tool", fmt.Sprintf("\n↳ **结果**: %s\n\n", summarizeToolResult(result)))
 
 			resBytes, _ := json.Marshal(result)
 			msgs = append(msgs, llm.Message{
@@ -1431,7 +1796,7 @@ func (e *Engine) chatWithToolsStream(ctx context.Context, agentID, prompt string
 	}
 	if !completed {
 		if err == nil {
-			err = fmt.Errorf("function calling loop exceeded max rounds (%d)", maxToolRounds)
+			err = fmt.Errorf("function calling loop exceeded max rounds (%d)", maxRounds)
 		}
 	}
 

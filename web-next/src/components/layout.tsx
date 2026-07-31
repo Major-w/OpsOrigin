@@ -4,10 +4,11 @@ import { useState } from 'react'
 import Link from 'next/link'
 import { usePathname, useRouter } from 'next/navigation'
 import { cn } from '@/lib/utils'
-import { Server, TicketCheck, Activity, Bot, Shield, LayoutDashboard, Hexagon, LogOut, User, Terminal, Workflow, Clock, Search, BookOpen, Calendar, GitBranch, Package, Bell, Key, Blocks, Users, Settings, Sun, Moon, Scan, Bug, Download, PackagePlus, Network, AlertTriangle, History, FileText, Rocket, AppWindow, FileCheck2, Cloud, Play, Sparkles, type LucideIcon } from 'lucide-react'
+import { Server, TicketCheck, Activity, Bot, Shield, LayoutDashboard, Hexagon, LogOut, User, Terminal, Workflow, Clock, Search, BookOpen, Calendar, GitBranch, Package, Bell, Key, Blocks, Users, Settings, Sun, Moon, Scan, Bug, Download, PackagePlus, Network, AlertTriangle, History, FileText, Rocket, AppWindow, FileCheck2, Cloud, Play, Sparkles, Database, type LucideIcon } from 'lucide-react'
 import { useAuthStore } from '@/stores/auth'
 import { useThemeStore } from '@/stores/theme'
 import { ScrollToTop } from '@/components/ui/scroll-to-top'
+import AIAssistant from '@/components/ai-assistant'
 
 interface NavItem {
   to: string
@@ -46,6 +47,7 @@ const navGroups: (NavItem | NavGroup)[] = [
       { to: '/auto/vuln-scan', label: '漏洞扫描', icon: Bug },
       { to: '/auto/patch', label: '补丁安装', icon: Download },
       { to: '/auto/software', label: '文件分发', icon: PackagePlus },
+      { to: '/auto/collect', label: '数据采集', icon: Database },
     ]
   },
   {
@@ -82,9 +84,14 @@ const navGroups: (NavItem | NavGroup)[] = [
       { to: '/itsm/oncall', label: '值班管理', icon: Calendar },
     ]
   },
-  { to: '/monitor', label: '监控中心', icon: Activity },
-  { to: '/ai', label: 'AI 助手', icon: Bot },
   {
+    label: '监控中心', icon: Activity, items: [
+      { to: '/monitor', label: '监控总览', icon: Activity },
+      { to: '/monitor/alerts', label: '告警中心', icon: AlertTriangle },
+      { to: '/monitor/targets', label: '监控配置', icon: Settings },
+    ]
+  },
+  { to: '/ai', label: 'AI 助手', icon: Bot },  {
     label: '知识库', icon: BookOpen, items: [
       { to: '/knowledge', label: '文章列表', icon: BookOpen },
       { to: '/knowledge/new', label: 'AI 写作', icon: Sparkles },
@@ -300,6 +307,7 @@ export function Layout({ children }: { children: React.ReactNode }) {
         <div className="min-h-full">{children}</div>
       </main>
       <ScrollToTop />
+      <AIAssistant />
     </div>
   )
 }

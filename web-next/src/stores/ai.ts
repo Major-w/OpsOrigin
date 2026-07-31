@@ -85,6 +85,32 @@ export interface CreateTeamPayload {
   }>
 }
 
+// ============================================================================
+// 敏感操作审批策略 (PRD 5.2.5)
+// ============================================================================
+
+/** 审批策略模式 */
+export type ApprovalMode = 'always_ask' | 'always_allow' | 'sensitive_only'
+
+/** 审批策略配置 */
+export interface ApprovalPolicy {
+  mode: ApprovalMode
+  sensitive_tools: string[]
+  ask_timeout_sec: number
+}
+
+/** 挂起的审批请求(SSE ask 事件载荷) */
+export interface PendingApproval {
+  id: string
+  tenant_id?: string
+  agent_id?: string
+  tool: string
+  summary: string
+  args: string
+  created_at?: string
+  deadline: string
+}
+
 export type UpdateTeamPayload = CreateTeamPayload
 
 /**
@@ -176,6 +202,11 @@ interface AIState {
     onDone: (meta?: { message_id?: string; conversation_id?: string; citations?: string[] }) => void,
     history?: { role: string; content: string }[],
     agentId?: string,
+    reasoning?: boolean,
+    onThinking?: (t: string) => void,
+    explore?: boolean,
+    onAsk?: (approval: PendingApproval) => void,
+    serverConvId?: string,
   ) => Promise<void>
   loadConversations: (agentId?: string) => Promise<any[]>
   saveConversation: (conv: any) => Promise<any | null>
@@ -195,11 +226,23 @@ interface AIState {
     history: ChatMessage[],
     onEvent: (ev: TeamStreamEvent) => void,
   ) => Promise<void>
+
+  // —— 敏感操作审批策略 ——
+  getApprovalPolicy: (agentId?: string) => Promise<ApprovalPolicy | null>
+  putApprovalPolicy: (data: { agent_id?: string; mode?: ApprovalMode; sensitive_tools?: string[]; ask_timeout_sec?: number }) => Promise<ApprovalPolicy | null>
+  respondApproval: (id: string, action: 'approve' | 'reject', comment?: string) => Promise<boolean>
+  listPendingApprovals: () => Promise<PendingApproval[]>
+
+  // —— 全局悬浮助手 ——
+  assistantOpen: boolean
+  setAssistantOpen: (open: boolean) => void
+  toggleAssistant: () => void
 }
 
 export const useAIStore = create<AIState>((set, get) => ({
   agents: [], tools: [], plans: [], loading: false, error: null,
   teams: [], teamsLoading: false, teamsError: null,
+  assistantOpen: false,
 
   // ----------------------- 既有 AI 能力 -----------------------
   fetchAgents: async () => {
@@ -266,12 +309,16 @@ export const useAIStore = create<AIState>((set, get) => ({
       return null
     }
   },
-  streamChat: async (prompt, onToken, onDone, history = [], agentId) => {
+  streamChat: async (prompt, onToken, onDone, history = [], agentId, reasoning, onThinking, explore, onAsk, serverConvId) => {
     try {
       // 为本次 AI 回复生成稳定的 message_id, 反馈时用于精确关联
       const messageId = `msg_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`
       const body: any = { prompt, history, stream: true, message_id: messageId }
       if (agentId) body.agent_id = agentId
+      if (reasoning) body.reasoning = true
+      if (explore) body.explore = true
+      // 显式携带 conversation_id 时, 后端按该 ID 续接/新建持久化会话(SSE 返回 event:conversation 确认)。
+      if (serverConvId) body.conversation_id = serverConvId
       const resp = await fetch(`${window.location.origin}/api/v1/ai/chat`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -307,6 +354,7 @@ export const useAIStore = create<AIState>((set, get) => ({
             onDone({ message_id: messageId, conversation_id: conversationId, citations })
             return
           }
+          // conversation / citations 命名事件
           if (currentEvent === 'conversation') {
             conversationId = data
             currentEvent = ''
@@ -314,6 +362,19 @@ export const useAIStore = create<AIState>((set, get) => ({
           }
           if (currentEvent === 'citations') {
             try { citations = JSON.parse(data) } catch {}
+            currentEvent = ''
+            continue
+          }
+          if (currentEvent === 'thinking') {
+            try { const t = JSON.parse(data) as string; onThinking?.(t) } catch {}
+            currentEvent = ''
+            continue
+          }
+          if (currentEvent === 'ask') {
+            try {
+              const approval = JSON.parse(data) as PendingApproval
+              onAsk?.(approval)
+            } catch {}
             currentEvent = ''
             continue
           }
@@ -479,6 +540,58 @@ export const useAIStore = create<AIState>((set, get) => ({
       onEvent({ type: 'error', error: e?.message || '连接异常' })
     }
   },
+
+  // ----------------------- 敏感操作审批策略 -----------------------
+
+  getApprovalPolicy: async (agentId) => {
+    try {
+      const q = agentId ? `?agent_id=${encodeURIComponent(agentId)}` : ''
+      const d = await apiFetch<any>(`/ai/approval-policy${q}`)
+      return d?.policy || null
+    } catch (e: any) {
+      toast.error(`加载审批策略失败: ${e.message}`)
+      return null
+    }
+  },
+
+  putApprovalPolicy: async (data) => {
+    try {
+      const d = await apiFetch<any>('/ai/approval-policy', {
+        method: 'PUT',
+        body: JSON.stringify(data),
+      })
+      toast.success('审批策略已保存，即时生效')
+      return d?.policy || null
+    } catch (e: any) {
+      toast.error(`保存审批策略失败: ${e.message}`)
+      return null
+    }
+  },
+
+  respondApproval: async (id, action, comment) => {
+    try {
+      await apiFetch<void>(`/ai/approvals/${encodeURIComponent(id)}/respond`, {
+        method: 'POST',
+        body: JSON.stringify({ action, comment }),
+      })
+      return true
+    } catch (e: any) {
+      toast.error(`响应审批失败: ${e.message}`)
+      return false
+    }
+  },
+
+  listPendingApprovals: async () => {
+    try {
+      return await apiFetch<PendingApproval[]>('/ai/approvals/pending')
+    } catch {
+      return []
+    }
+  },
+
+  // —— 全局悬浮助手 ——
+  setAssistantOpen: (open) => set({ assistantOpen: open }),
+  toggleAssistant: () => set(st => ({ assistantOpen: !st.assistantOpen })),
 }))
 
 /**

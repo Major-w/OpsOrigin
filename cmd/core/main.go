@@ -33,7 +33,7 @@ import (
 	"github.com/opsorigin/core/internal/iam"
 	"github.com/opsorigin/core/internal/itsm"
 	"github.com/opsorigin/core/internal/itsm/catalog"
-	"github.com/opsorigin/core/internal/itsm/knowledge"
+	"github.com/opsorigin/core/internal/knowledge"
 	"github.com/opsorigin/core/internal/itsm/oncall"
 	"github.com/opsorigin/core/internal/itsm/process"
 	"github.com/opsorigin/core/internal/itsm/sla"
@@ -270,6 +270,8 @@ func main() {
 	// 沙箱环境不再是 Core 进程内的伪 Agent 记录,而是打在真实 Agent 上的标签
 	// (见 agentmgr.SandboxLabelKey)。此处清理历史遗留的伪记录。
 	agentSvc.CleanupLegacySandboxHosts()
+	// 默认沙箱池: 把 Server 所在主机的 Agent 自动标记为沙箱环境(可经环境变量调整)。
+	agentSvc.ApplySandboxPool(ctx)
 
 	// K8s 容器资源纳管：注入经 Agent 通道的发现器（鸭子类型 *agentmgr.Service 满足 cloud.K8sAgentRunner）。
 	cloudSvc.SetK8sDiscoverer(k8s.NewDiscoverer(agentSvc))
@@ -404,6 +406,10 @@ func main() {
 	toolSet := agentic.NewMCPToolSet(db)
 	toolSet.SetScriptExecutor(scriptSvc) // AI 的 script_run 工具经 script 服务→Agent 通道真实执行
 	toolSet.SetEmbedder(llmClient)       // 知识库检索启用语义向量匹配
+	// 审批策略: 引擎层按策略(每次询问/始终允许/仅敏感)做交互式确认, 白名单外且未获确认的脚本走 ITSM 工单兜底。
+	toolSet.SetExternalApproval(aiSvc.Engine.ScriptApprovalChecker)
+	// 知识库-AI 绑定: 按 Agent 解析其绑定的知识库分类, RAG 检索与 knowledge_search 工具据此过滤。
+	toolSet.SetKnowledgeCategoriesResolver(aiSvc.Engine.AgentKnowledgeCategories)
 	// P0-2: AI 可直接执行的脚本白名单(免人工审批); 缺省全部须经审批。格式: 逗号分隔的 script_id 或 script_name。
 	if s := os.Getenv("OPSNEXUS_AI_APPROVED_SCRIPTS"); s != "" {
 		var ids []string

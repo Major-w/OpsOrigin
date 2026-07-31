@@ -67,6 +67,28 @@ export default function ScriptsPage() {
 
   const typeLabel = (t: string) => SCRIPT_TYPES.find(st => st.value === t)?.label || t
 
+  // 审批状态 badge 文案/样式
+  const approvalMeta = (s: string | undefined): { label: string; cls: string } => {
+    switch (s) {
+      case 'draft': return { label: '待批准', cls: 'bg-amber-500/10 text-amber-600 dark:text-amber-400 border-amber-500/20' }
+      case 'pending': return { label: '审批中', cls: 'bg-blue-500/10 text-blue-600 dark:text-blue-400 border-blue-500/20' }
+      case 'approved': return { label: '已批准', cls: 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border-emerald-500/20' }
+      case 'rejected': return { label: '已拒绝', cls: 'bg-red-500/10 text-red-600 dark:text-red-400 border-red-500/20' }
+      default: return { label: '—', cls: '' }
+    }
+  }
+
+  // 批准 AI 生成/待审批的脚本
+  const handleApprove = async (sc: Script) => {
+    try {
+      await window.fetch(`/api/v1/scripts/${sc.id}/approve`, { method: 'POST' })
+      toast.success(`已批准脚本「${sc.name}」，现在可被 AI 与自动化调用`)
+      fetch()
+    } catch {
+      toast.error('批准失败')
+    }
+  }
+
   // 统计卡片数据
   const stats = useMemo(() => {
     const shellCount = scripts.filter(s => s.type === 'shell').length
@@ -209,6 +231,13 @@ export default function ScriptsPage() {
       <div className="w-20 shrink-0">
         <Badge variant="outline" className={cn("text-[10px] px-1.5 py-0", TYPE_COLORS[sc.type])}>{typeLabel(sc.type)}</Badge>
       </div>
+      <div className="w-16 shrink-0">
+        {sc.approval_status && sc.approval_status !== 'approved' && (
+          <Badge variant="outline" className={cn("text-[10px] px-1.5 py-0", approvalMeta(sc.approval_status).cls)}>
+            {approvalMeta(sc.approval_status).label}
+          </Badge>
+        )}
+      </div>
       <div className="w-16 shrink-0 text-xs text-muted-foreground flex items-center gap-0.5">
         <Clock className="h-2.5 w-2.5" />{sc.timeout}s
       </div>
@@ -219,7 +248,16 @@ export default function ScriptsPage() {
         <GitBranch className="h-2.5 w-2.5" />v{sc.version}
       </div>
       <div className="w-28 shrink-0 text-xs text-muted-foreground/70 hidden md:block">{formatTime(sc.updated_at)}</div>
-      <div className="w-28 shrink-0 flex justify-end gap-1">
+      <div className="w-32 shrink-0 flex justify-end gap-1">
+        {(sc.approval_status === 'draft' || sc.approval_status === 'pending') && (
+          <Button
+            variant="ghost" size="sm" className="h-6 px-1.5 text-[11px] text-amber-600 dark:text-amber-400 hover:bg-amber-500/10"
+            onClick={(e) => { e.stopPropagation(); handleApprove(sc) }}
+            title="批准后脚本可被 AI 与自动化调用"
+          >
+            <CheckCircle className="h-3 w-3 mr-0.5" />批准
+          </Button>
+        )}
         <Button variant="ghost" size="icon" className="h-6 w-6" onClick={(e) => { e.stopPropagation(); router.push(`/scripts/${sc.id}`) }} title="编辑">
           <Pencil className="h-3 w-3" />
         </Button>
@@ -261,10 +299,25 @@ export default function ScriptsPage() {
       <CardContent className="space-y-2 pt-0">
         <div className="flex items-center gap-2">
           <Badge variant="outline" className={cn("text-[10px]", TYPE_COLORS[sc.type])}>{typeLabel(sc.type)}</Badge>
+          {sc.approval_status && sc.approval_status !== 'approved' && (
+            <Badge variant="outline" className={cn("text-[10px]", approvalMeta(sc.approval_status).cls)}>
+              {approvalMeta(sc.approval_status).label}
+            </Badge>
+          )}
           <span className="text-[10px] text-muted-foreground flex items-center gap-0.5"><Clock className="h-2.5 w-2.5" />{sc.timeout}s</span>
           <span className="text-[10px] text-muted-foreground flex items-center gap-0.5"><Hash className="h-2.5 w-2.5" />{sc.input_params?.length || 0}</span>
           <span className="text-[10px] text-muted-foreground flex items-center gap-0.5"><GitBranch className="h-2.5 w-2.5" />v{sc.version}</span>
         </div>
+        {(sc.approval_status === 'draft' || sc.approval_status === 'pending') && (
+          <div className="flex gap-2" onClick={(e) => e.stopPropagation()}>
+            <Button
+              variant="outline" size="sm" className="h-6 text-[11px] text-amber-600 dark:text-amber-400 border-amber-500/30 hover:bg-amber-500/10"
+              onClick={() => handleApprove(sc)}
+            >
+              <CheckCircle className="h-3 w-3 mr-1" />批准脚本
+            </Button>
+          </div>
+        )}
         {sc.description && <p className="text-xs text-muted-foreground line-clamp-2">{sc.description}</p>}
         <pre className="text-[10px] text-muted-foreground font-mono line-clamp-3 bg-gray-50 dark:bg-[rgba(255,255,255,0.02)] rounded p-2">{sc.content}</pre>
         <div className="flex items-center gap-2 text-[10px] text-muted-foreground/70 pt-1 border-t">

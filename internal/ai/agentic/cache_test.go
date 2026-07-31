@@ -48,12 +48,17 @@ func TestCanonicalArgsKeyOrderIndependent(t *testing.T) {
 
 func TestSearchCacheKeyDistinguishesMode(t *testing.T) {
 	ts := &MCPToolSet{}
-	kVec := ts.searchCacheKey("t1", "q", "vector", 5, 500)
-	kIL := ts.searchCacheKey("t1", "q", "ilike", 5, 500)
+	kVec := ts.searchCacheKey("t1", "q", "vector", 5, 500, nil)
+	kIL := ts.searchCacheKey("t1", "q", "ilike", 5, 500, nil)
 	if kVec == kIL {
 		t.Fatalf("vector vs ilike must produce distinct keys")
 	}
-	if ts.searchCacheKey("t1", "q", "vector", 5, 500) != kVec {
+	if ts.searchCacheKey("t1", "q", "vector", 5, 500, nil) != kVec {
 		t.Fatalf("key must be stable for identical inputs")
+	}
+	// 分类绑定必须进入缓存键, 避免不同绑定的结果串用
+	kCat := ts.searchCacheKey("t1", "q", "vector", 5, 500, []string{"故障处理"})
+	if kCat == kVec {
+		t.Fatalf("category-bound key must differ from unbounded key")
 	}
 }

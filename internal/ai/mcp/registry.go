@@ -43,6 +43,16 @@ func (r *Registry) Register(tool ToolDefinition) {
 	slog.Info("mcp tool registered", "name", tool.Name)
 }
 
+// Unregister 从注册表移除指定工具(自定义工具禁用/删除时调用)。
+func (r *Registry) Unregister(name string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if _, ok := r.tools[name]; ok {
+		delete(r.tools, name)
+		slog.Info("mcp tool unregistered", "name", name)
+	}
+}
+
 func (r *Registry) List() []ToolDefinition {
 	r.mu.RLock()
 	defer r.mu.RUnlock()

@@ -11,6 +11,27 @@ type AgentInstance struct {
 	Status       string    `json:"status"`
 	CreatedAt    time.Time `json:"created_at"`
 	UpdatedAt    time.Time `json:"updated_at"`
+
+	// KnowledgeCategories 绑定的知识库分类列表(PRD 5.2.6)。
+	// 非空时, 该 Agent 的 RAG 检索(系统提示注入与 knowledge_search 工具)仅在这些分类内进行;
+	// 为空表示绑定全部知识库(默认行为, 兼容旧配置)。
+	KnowledgeCategories []string `json:"knowledge_categories,omitempty"`
+
+	// Tools 该 Agent 允许使用的 MCP 工具白名单(如 ["cmdb_query","knowledge_search"])。
+	// 空表示使用全部已注册工具(默认行为); 非空时, 未列入的工具对模型不可见(不可调用)。
+	Tools []string `json:"tools,omitempty"`
+
+	// Skills 该 Agent 具备的可复用能力定义(PRD 5.2.2)。
+	// 每个 Skill 以"能力指令"形式注入 system prompt, 使模型了解并遵循该技能的使用方式。
+	Skills []AgentSkill `json:"skills,omitempty"`
+}
+
+// AgentSkill 一个 Agent 的可复用能力定义: 名称 + 描述 + 执行指令。
+// 渲染到 system prompt 后, 模型在相关场景下会遵循该指令完成特定工作。
+type AgentSkill struct {
+	Name         string `json:"name"`
+	Description  string `json:"description,omitempty"`
+	Instructions string `json:"instructions,omitempty"` // 触发条件与执行步骤说明
 }
 
 type ExecutionPlan struct {

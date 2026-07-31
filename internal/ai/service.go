@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -28,7 +29,7 @@ type Service struct {
 	Engine        *agentic.Engine
 	Registry      *mcp.Registry
 	limiter       ratelimit.RateLimiter
-	ragFn         func(ctx context.Context, query string) string // RAG上下文注入
+	ragFn         func(ctx context.Context, query, agentID string) string // RAG上下文注入(按 Agent 绑定分类过滤)
 	feedbackStore agentic.FeedbackStore                             // 点赞/点踩反馈持久化(P2-Eval)
 }
 
@@ -83,7 +84,7 @@ func NewService(cfg *config.Config, llmClient *llm.Client, redisClient *rediscli
 // LLMConfigHook 在 sysconfig 修改 LLM 设置后被调用(热生效)。nil 表示未设置。
 var LLMConfigHook func(cfg llm.Config)
 
-func (s *Service) SetRAGFunc(fn func(ctx context.Context, query string) string) { s.ragFn = fn }
+func (s *Service) SetRAGFunc(fn func(ctx context.Context, query, agentID string) string) { s.ragFn = fn }
 
 func (s *Service) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/v1/ai/agents", s.handleCreateAgent)
@@ -93,6 +94,11 @@ func (s *Service) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("DELETE /api/v1/ai/agents/{id}", s.handleDeleteAgent)
 	mux.HandleFunc("GET /api/v1/ai/tools", s.handleListTools)
 	mux.HandleFunc("POST /api/v1/ai/tools/{name}/execute", s.handleExecuteTool)
+	// 自定义 MCP 工具注册 (PRD 5.2.2)
+	mux.HandleFunc("POST /api/v1/ai/tools/custom", s.handleCreateCustomTool)
+	mux.HandleFunc("GET /api/v1/ai/tools/custom", s.handleListCustomTools)
+	mux.HandleFunc("PUT /api/v1/ai/tools/custom/{id}", s.handleUpdateCustomTool)
+	mux.HandleFunc("DELETE /api/v1/ai/tools/custom/{id}", s.handleDeleteCustomTool)
 	mux.HandleFunc("POST /api/v1/ai/plans", s.handleExecutePlan)
 	mux.HandleFunc("GET /api/v1/ai/plans", s.handleListPlans)
 	mux.HandleFunc("GET /api/v1/ai/rate-limit/{agent_id}", s.handleGetRateLimit)
@@ -114,6 +120,12 @@ func (s *Service) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("PUT /api/v1/ai/teams/{id}", s.handleUpdateTeam)
 	mux.HandleFunc("DELETE /api/v1/ai/teams/{id}", s.handleDeleteTeam)
 	mux.HandleFunc("POST /api/v1/ai/teams/{id}/chat", s.handleTeamChat)
+
+	// —— 敏感操作审批策略 (PRD 5.2.5) ——
+	mux.HandleFunc("GET /api/v1/ai/approval-policy", s.handleGetApprovalPolicy)
+	mux.HandleFunc("PUT /api/v1/ai/approval-policy", s.handlePutApprovalPolicy)
+	mux.HandleFunc("GET /api/v1/ai/approvals/pending", s.handleListPendingApprovals)
+	mux.HandleFunc("POST /api/v1/ai/approvals/{id}/respond", s.handleRespondApproval)
 }
 
 func (s *Service) Start(ctx context.Context) error {
@@ -129,6 +141,7 @@ func (s *Service) handleChat(w http.ResponseWriter, r *http.Request) {
 		History        []llm.Message `json:"history"`
 		Stream         bool          `json:"stream"`
 		Reasoning      bool          `json:"reasoning"`
+		Explore        bool          `json:"explore"` // 自主模式: AI 自主规划-执行-总结
 		ConversationID string        `json:"conversation_id"`
 		MessageID      string        `json:"message_id"` // 前端为本次 assistant 回复生成的稳定 ID, 反馈时用于精确关联
 	}
@@ -144,9 +157,9 @@ func (s *Service) handleChat(w http.ResponseWriter, r *http.Request) {
 	// P0-1: 清洗客户端提交的对话历史, 丢弃 system/tool 角色与注入的 tool_calls, 防止提示注入绕过 RBAC。
 	req.History = agentic.SanitizeHistory(req.History)
 
-	// RAG: 从知识库检索相关内容注入到 system prompt
+	// RAG: 从知识库检索相关内容注入到 system prompt(按 Agent 绑定分类过滤, 空=全部)
 	if s.ragFn != nil {
-		ragCtx := s.ragFn(r.Context(), req.Prompt)
+		ragCtx := s.ragFn(r.Context(), req.Prompt, req.AgentID)
 		if ragCtx != "" {
 			req.History = append([]llm.Message{{Role: "system", Content: "你是运维AI助手。参考知识库文档回答问题：\n" + ragCtx}}, req.History...)
 		}
@@ -199,6 +212,7 @@ func (s *Service) handleChatStream(w http.ResponseWriter, r *http.Request, req *
 	History        []llm.Message `json:"history"`
 	Stream         bool          `json:"stream"`
 	Reasoning      bool          `json:"reasoning"`
+	Explore        bool          `json:"explore"`
 	ConversationID string        `json:"conversation_id"`
 	MessageID      string        `json:"message_id"`
 }) {
@@ -212,7 +226,21 @@ func (s *Service) handleChatStream(w http.ResponseWriter, r *http.Request, req *
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
 
-	ch, convID, err := s.Engine.ChatStream(r.Context(), req.AgentID, req.Prompt, req.History, req.Reasoning, req.ConversationID)
+	// 注入审批通知回调: 工具执行触发敏感操作审批时, 通过本 SSE 连接下发 ask 事件, 前端弹窗确认。
+	ctx := agentic.WithApprovalNotify(r.Context(), func(pa *agentic.PendingApproval) {
+		payload, _ := json.Marshal(map[string]any{
+			"id":        pa.ID,
+			"tool":      pa.Tool,
+			"summary":   pa.Summary,
+			"args":      pa.Args,
+			"deadline":  pa.Deadline.Format(time.RFC3339),
+			"agent_id":  pa.AgentID,
+		})
+		fmt.Fprintf(w, "event: ask\ndata: %s\n\n", payload)
+		flusher.Flush()
+	})
+
+	ch, convID, err := s.Engine.ChatStream(ctx, req.AgentID, req.Prompt, req.History, req.Reasoning, req.ConversationID, req.Explore)
 	if err != nil {
 		fmt.Fprintf(w, "event: error\ndata: %s\n\n", err.Error())
 		flusher.Flush()
@@ -220,14 +248,27 @@ func (s *Service) handleChatStream(w http.ResponseWriter, r *http.Request, req *
 	}
 
 	var full strings.Builder
-	for token := range ch {
-		// SSE data 字段中的换行需转义; 简单实现: 用 JSON 字符串包裹 token。
-		full.WriteString(token)
-		b, _ := json.Marshal(token)
-		fmt.Fprintf(w, "data: %s\n\n", b)
+	for c := range ch {
+		switch c.Type {
+		case "thinking":
+			// 思考过程: 通过命名事件下发, 前端可通过 event:thinking 独立渲染/折叠
+			b, _ := json.Marshal(c.Content)
+			fmt.Fprintf(w, "event: thinking\ndata: %s\n\n", b)
+		case "error":
+			fmt.Fprintf(w, "event: error\ndata: %s\n\n", c.Content)
+		case "tool":
+			// 工具标注走默认 data 流, 与 token 同轨(保持向前兼容)
+			b, _ := json.Marshal(c.Content)
+			fmt.Fprintf(w, "data: %s\n\n", b)
+			full.WriteString(c.Content)
+		default:
+			// "token" 或未指定: 标准回答 token
+			full.WriteString(c.Content)
+			b, _ := json.Marshal(c.Content)
+			fmt.Fprintf(w, "data: %s\n\n", b)
+		}
 		flusher.Flush()
 	}
-	// 会话 ID 通过独立 SSE 事件下发(前端可监听 event:conversation 以续接多轮记忆)。
 	if convID != "" {
 		fmt.Fprintf(w, "event: conversation\ndata: %s\n\n", convID)
 		flusher.Flush()
@@ -283,9 +324,12 @@ func (s *Service) handleGetConversation(w http.ResponseWriter, r *http.Request) 
 
 func (s *Service) handleCreateAgent(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		Name         string `json:"name"`
-		ModelName    string `json:"model_name"`
-		SystemPrompt string `json:"system_prompt"`
+		Name                string             `json:"name"`
+		ModelName           string             `json:"model_name"`
+		SystemPrompt        string             `json:"system_prompt"`
+		KnowledgeCategories []string           `json:"knowledge_categories"`
+		Tools               []string           `json:"tools"`
+		Skills              []model.AgentSkill `json:"skills"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
@@ -293,10 +337,13 @@ func (s *Service) handleCreateAgent(w http.ResponseWriter, r *http.Request) {
 	}
 
 	agent := &model.AgentInstance{
-		Name:         req.Name,
-		ModelName:    req.ModelName,
-		SystemPrompt: req.SystemPrompt,
-		TenantID:     tenantFromCtx(r.Context()),
+		Name:                req.Name,
+		ModelName:           req.ModelName,
+		SystemPrompt:        req.SystemPrompt,
+		KnowledgeCategories: req.KnowledgeCategories,
+		Tools:               req.Tools,
+		Skills:              req.Skills,
+		TenantID:            tenantFromCtx(r.Context()),
 	}
 
 	if err := s.Engine.CreateAgent(r.Context(), agent); err != nil {
@@ -371,6 +418,107 @@ func (s *Service) handleExecuteTool(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"result": result})
 }
 
+// ——— 自定义 MCP 工具注册 (PRD 5.2.2) ———
+
+// validateCustomTool 校验自定义工具定义的合法性。
+func validateCustomTool(t *agentic.CustomTool) error {
+	name := strings.TrimSpace(t.Name)
+	if name == "" {
+		return fmt.Errorf("tool name is required")
+	}
+	if !regexpMustCompile(`^[a-z][a-z0-9_]{1,63}$`).MatchString(name) {
+		return fmt.Errorf("tool name must match ^[a-z][a-z0-9_]{1,63}$ (e.g. weather_query)")
+	}
+	if t.Type != "http" && t.Type != "cli" {
+		return fmt.Errorf("tool type must be http or cli")
+	}
+	if t.Type == "http" && strings.TrimSpace(t.HTTPURL) == "" {
+		return fmt.Errorf("http_url is required for http tools")
+	}
+	if t.Type == "cli" && strings.TrimSpace(t.CLICommand) == "" {
+		return fmt.Errorf("cli_command is required for cli tools")
+	}
+	for _, p := range t.Parameters {
+		if strings.TrimSpace(p.Name) == "" {
+			return fmt.Errorf("parameter name is required")
+		}
+		switch p.Type {
+		case "string", "number", "boolean":
+		default:
+			return fmt.Errorf("parameter %q has invalid type %q (string|number|boolean)", p.Name, p.Type)
+		}
+	}
+	return nil
+}
+
+func regexpMustCompile(pattern string) *regexp.Regexp {
+	return regexp.MustCompile(pattern)
+}
+
+func (s *Service) handleCreateCustomTool(w http.ResponseWriter, r *http.Request) {
+	if !s.authorize(w, r, auth.PermissionAIToolExec) {
+		return
+	}
+	var t agentic.CustomTool
+	if err := json.NewDecoder(r.Body).Decode(&t); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if err := validateCustomTool(&t); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	t.TenantID = tenantFromCtx(r.Context())
+	if err := s.Engine.CreateCustomTool(r.Context(), &t); err != nil {
+		writeError(w, http.StatusConflict, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusCreated, t)
+}
+
+func (s *Service) handleListCustomTools(w http.ResponseWriter, r *http.Request) {
+	items := s.Engine.ListCustomTools(tenantFromCtx(r.Context()))
+	if items == nil {
+		items = []*agentic.CustomTool{}
+	}
+	writeJSON(w, http.StatusOK, items)
+}
+
+func (s *Service) handleUpdateCustomTool(w http.ResponseWriter, r *http.Request) {
+	if !s.authorize(w, r, auth.PermissionAIToolExec) {
+		return
+	}
+	id := r.PathValue("id")
+	var t agentic.CustomTool
+	if err := json.NewDecoder(r.Body).Decode(&t); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if err := validateCustomTool(&t); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	t.ID = id
+	t.TenantID = tenantFromCtx(r.Context())
+	if err := s.Engine.UpdateCustomTool(r.Context(), &t); err != nil {
+		writeError(w, http.StatusNotFound, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, t)
+}
+
+func (s *Service) handleDeleteCustomTool(w http.ResponseWriter, r *http.Request) {
+	if !s.authorize(w, r, auth.PermissionAIToolExec) {
+		return
+	}
+	id := r.PathValue("id")
+	if err := s.Engine.DeleteCustomTool(r.Context(), id, tenantFromCtx(r.Context())); err != nil {
+		writeError(w, http.StatusNotFound, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
+}
+
 // authorize 检查当前请求的 RBAC 权限;不满足时写入错误响应并返回 false。
 // 身份(role)由全局 auth/audit/rbac 中间件注入 context;此处做纵深防御 + 端点级权限约束。
 func (s *Service) authorize(w http.ResponseWriter, r *http.Request, perm string) bool {
@@ -439,6 +587,101 @@ func (s *Service) handleGetRateLimit(w http.ResponseWriter, r *http.Request) {
 		"limit":      ratelimit.DefaultLimit,
 		"window_s":   ratelimit.DefaultWindow.Seconds(),
 	})
+}
+
+// ——— 敏感操作审批策略 (PRD 5.2.5) ———
+
+// handleGetApprovalPolicy 读取审批策略。?agent_id=xxx 时返回该 Agent 的覆盖策略(可能不存在),
+// 不传时返回全局默认。
+func (s *Service) handleGetApprovalPolicy(w http.ResponseWriter, r *http.Request) {
+	agentID := r.URL.Query().Get("agent_id")
+	policy := s.Engine.GetApprovalPolicy(agentID)
+	writeJSON(w, http.StatusOK, map[string]any{
+		"agent_id": agentID,
+		"policy":   policy,
+	})
+}
+
+// handlePutApprovalPolicy 保存审批策略。body: {agent_id?, mode?, sensitive_tools?, ask_timeout_sec?}
+// agent_id 为空或 "default" 表示全局; 字段缺省时保留原策略对应值。
+func (s *Service) handlePutApprovalPolicy(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		AgentID        string   `json:"agent_id"`
+		Mode           string   `json:"mode"`
+		SensitiveTools []string `json:"sensitive_tools"`
+		AskTimeoutSec  int      `json:"ask_timeout_sec"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+
+	agentID := req.AgentID
+	key := agentID
+	if key == "" {
+		key = "default"
+	}
+	cur := s.Engine.GetApprovalPolicy(key)
+
+	switch req.Mode {
+	case string(agentic.ApprovalAlwaysAsk), string(agentic.ApprovalAlwaysAllow), string(agentic.ApprovalSensitiveOnly):
+		cur.Mode = agentic.ApprovalPolicyMode(req.Mode)
+	case "":
+		// 保留原值
+	default:
+		writeError(w, http.StatusBadRequest, "invalid mode: must be always_ask | always_allow | sensitive_only")
+		return
+	}
+	if req.SensitiveTools != nil {
+		cur.SensitiveTools = req.SensitiveTools
+	}
+	if req.AskTimeoutSec > 0 {
+		cur.AskTimeoutSec = req.AskTimeoutSec
+	}
+
+	s.Engine.SetApprovalPolicy(key, cur)
+	slog.Info("ai approval policy updated", "agent_id", key, "mode", cur.Mode)
+	writeJSON(w, http.StatusOK, map[string]any{
+		"agent_id": agentID,
+		"policy":   cur,
+	})
+}
+
+// handleListPendingApprovals 列出当前租户挂起的审批请求。
+func (s *Service) handleListPendingApprovals(w http.ResponseWriter, r *http.Request) {
+	tenantID := tenantFromCtx(r.Context())
+	items := s.Engine.Approvals().ListPending(tenantID)
+	if items == nil {
+		items = []*agentic.PendingApproval{}
+	}
+	writeJSON(w, http.StatusOK, items)
+}
+
+// handleRespondApproval 对挂起的审批请求做出响应: {action: "approve"|"reject", comment?}
+func (s *Service) handleRespondApproval(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	var req struct {
+		Action  string `json:"action"`
+		Comment string `json:"comment"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if req.Action != "approve" && req.Action != "reject" {
+		writeError(w, http.StatusBadRequest, "action must be approve or reject")
+		return
+	}
+	by := auth.UserIDFromContext(r.Context())
+	if by == "" {
+		by = "human"
+	}
+	if !s.Engine.Approvals().Respond(id, req.Action, by, req.Comment) {
+		writeError(w, http.StatusNotFound, "approval request not found or already expired")
+		return
+	}
+	slog.Info("ai approval responded", "id", id, "action", req.Action, "by", by)
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "action": req.Action})
 }
 
 func tenantFromCtx(ctx context.Context) string {
@@ -718,10 +961,11 @@ func (s *Service) handleTeamChat(w http.ResponseWriter, r *http.Request) {
 	history := s.Engine.LoadTeamHistory(team.ID, 20)
 	tenantID := tenantFromCtx(r.Context())
 
-	// RAG 上下文注入: 对用户消息检索知识库, 注入到团队成员/汇总者/主管的系统提示词中
+	// RAG 上下文注入: 对用户消息检索知识库, 注入到团队成员/汇总者/主管的系统提示词中。
+	// 团队场景无单一 Agent, 检索全部知识库(绑定过滤按成员 Agent 在工具链内生效)。
 	var ragCtx string
 	if s.ragFn != nil {
-		ragCtx = s.ragFn(r.Context(), req.Message)
+		ragCtx = s.ragFn(r.Context(), req.Message, "")
 	}
 
 	final, _, err := s.Engine.RunTeamChat(r.Context(), team, req.Message, history, emit, ragCtx)
