@@ -398,6 +398,9 @@ type Service struct {
 	// T12: 滚动升级通道
 	upgradeMgr *UpgradeManager
 
+	// 采集任务管理(CMDB/监控数据采集上报)
+	collect *CollectManager
+
 	// 全局目标版本策略（Agent 版本一致性管理）
 	versionPolicy   string
 	versionPolicyMu sync.Mutex
@@ -417,6 +420,11 @@ func NewService(db *sql.DB, rdb *redis.Client, entClient *ent.Client) *Service {
 	if db != nil {
 		st = newPGStore(db, entClient)
 	}
+	// 采集任务: PG 可用时持久化(重启不丢), 否则内存
+	var collectStore CollectStore
+	if pg, ok := st.(*pgStore); ok {
+		collectStore = pg
+	}
 	s := &Service{
 		store:           st,
 		entClient:       entClient,
@@ -425,12 +433,14 @@ func NewService(db *sql.DB, rdb *redis.Client, entClient *ent.Client) *Service {
 		stopCh:          make(chan struct{}),
 		remoteExec:      remoteexec.NewService(),
 		fileLimiter:     filelimit.New(0, 0), // 0 ⇒ 使用 filelimit 包默认值
+		collect:         NewCollectManager(collectStore),
 	}
 	// Start Redis→PG heartbeat sync worker
 	if rdb != nil {
 		go s.hbWriter.StartSync(context.Background())
 	}
 	go s.offlineDetector()
+	go s.startCollectScheduler(context.Background())
 	return s
 }
 
@@ -799,6 +809,13 @@ func (s *Service) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/v1/agents/batch-upgrade", s.handleBatchUpgrade)
 	mux.HandleFunc("POST /api/v1/agents/{id}/uninstall", s.handleUninstallAgent)
 	mux.HandleFunc("POST /api/v1/agents/{id}/cmdb", s.handleCMDBReport)
+	// 采集任务管理(CMDB/监控数据采集上报)
+	mux.HandleFunc("POST /api/v1/collect-tasks", s.handleCreateCollectTask)
+	mux.HandleFunc("GET /api/v1/collect-tasks", s.handleListCollectTasks)
+	mux.HandleFunc("GET /api/v1/collect-tasks/{id}/runs", s.handleCollectTaskRuns)
+	mux.HandleFunc("GET /api/v1/collect-metrics", s.handleQueryCollectMetrics)
+	mux.HandleFunc("PUT /api/v1/collect-tasks/{id}", s.handleUpdateCollectTask)
+	mux.HandleFunc("DELETE /api/v1/collect-tasks/{id}", s.handleDeleteCollectTask)
 	mux.HandleFunc("GET /api/v1/agents/{id}/download-tasks", s.handleDownloadTasks)
 	// §5 文件分发:创建下载任务,签发短期令牌并生成拓扑感知下载地址(POST)。
 	mux.HandleFunc("POST /api/v1/agents/{id}/download-tasks", s.handleCreateDownloadTask)
@@ -853,6 +870,7 @@ func (s *Service) handleListSandboxAgents(w http.ResponseWriter, r *http.Request
 // handleSetSandboxLabel 给指定的真实 Agent 打上/摘掉"沙箱环境"标签。
 // 这取代了旧的"Core 进程内注册伪沙箱 Agent"做法:沙箱不是一台新主机,
 // 而是既有 Agent 上的一个能力标记。
+// handleSetSandboxLabel 设置/取消 Agent 的沙箱标签(PUT /agents/{id}/sandbox)。
 func (s *Service) handleSetSandboxLabel(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	tenantID := tenantFromCtx(r.Context())
@@ -879,7 +897,56 @@ func (s *Service) handleSetSandboxLabel(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	slog.Info("sandbox label updated", "agent_id", id, "enabled", req.Enabled)
-	writeJSON(w, http.StatusOK, host)
+	writeJSON(w, http.StatusOK, map[string]any{"id": id, "sandbox": req.Enabled})
+}
+
+// ApplySandboxPool 把"Server 所在主机"的 Agent 自动标记为沙箱环境(默认沙箱池)。
+// 匹配规则:
+//   - 主机名(hostname)等于本机主机名的 Agent;
+//   - Agent ID 命中环境变量 OPSNEXUS_SANDBOX_AGENTS(逗号分隔)列表。
+// 可通过 OPSNEXUS_SANDBOX_AUTO=0 关闭自动标记。
+func (s *Service) ApplySandboxPool(ctx context.Context) {
+	if os.Getenv("OPSNEXUS_SANDBOX_AUTO") == "0" {
+		return
+	}
+	hostname, err := os.Hostname()
+	if err != nil {
+		hostname = ""
+	}
+	cfgSet := map[string]bool{}
+	if v := os.Getenv("OPSNEXUS_SANDBOX_AGENTS"); v != "" {
+		for _, p := range strings.Split(v, ",") {
+			if p = strings.TrimSpace(p); p != "" {
+				cfgSet[p] = true
+			}
+		}
+	}
+	agents, err := s.store.List(ctx, "default")
+	if err != nil {
+		slog.Warn("sandbox pool: list agents failed", "err", err)
+		return
+	}
+	marked := 0
+	for _, a := range agents {
+		if a.Type == AgentTypeAgentless {
+			continue
+		}
+		match := cfgSet[a.ID]
+		if hostname != "" && (a.Hostname == hostname || a.Name == hostname) {
+			match = true
+		}
+		if match && !a.IsSandbox() {
+			a.SetSandbox(true)
+			a.UpdatedAt = time.Now()
+			if err := s.store.Update(ctx, a); err == nil {
+				marked++
+				slog.Info("sandbox pool: marked agent as sandbox", "agent_id", a.ID, "hostname", a.Hostname)
+			}
+		}
+	}
+	if marked > 0 {
+		slog.Info("sandbox pool applied", "marked", marked)
+	}
 }
 
 // handleBatchExecute 在多台主机上并发执行命令(SSH 远程执行)。
@@ -2237,6 +2304,8 @@ func (s *Service) handleCompleteTask(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	// 采集任务完成: 按类型解析输出入库(CMDB 更新 / 指标记录)
+	s.handleCollectCompletion(r.Context(), agentID, taskID, &resp)
 	writeJSON(w, http.StatusOK, map[string]any{"status": "ok"})
 }
 
@@ -3033,24 +3102,34 @@ func (s *Service) handleCMDBReport(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var report struct {
-		Hostname  string            `json:"hostname"`
-		OS        string            `json:"os"`
-		OSVersion string            `json:"os_version"`
-		CPU       string            `json:"cpu"`
-		Memory    string            `json:"memory"`
-		Disk      string            `json:"disk"`
-		IPs       []string          `json:"ips"`
-		Labels    map[string]string `json:"labels,omitempty"`
-		Timestamp int64             `json:"timestamp"`
-	}
-
+	var report cmdbReportPayload
 	if err := json.NewDecoder(r.Body).Decode(&report); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
 
 	// Update host with CMDB data
+	applyCMDBReport(host, &report)
+
+	s.store.Update(r.Context(), host)
+	writeJSON(w, http.StatusOK, map[string]string{"status": "cmdb data received"})
+}
+
+// cmdbReportPayload 是 Agent 上报 CMDB 数据的载荷结构(供采集结果解析复用)。
+type cmdbReportPayload struct {
+	Hostname  string            `json:"hostname"`
+	OS        string            `json:"os"`
+	OSVersion string            `json:"os_version"`
+	CPU       string            `json:"cpu"`
+	Memory    string            `json:"memory"`
+	Disk      string            `json:"disk"`
+	IPs       []string          `json:"ips"`
+	Labels    map[string]string `json:"labels,omitempty"`
+	Timestamp int64             `json:"timestamp"`
+}
+
+// applyCMDBReport 把 CMDB 采集数据合并进 AgentHost(供上报端点与采集任务结果复用)。
+func applyCMDBReport(host *AgentHost, report *cmdbReportPayload) {
 	if report.Hostname != "" {
 		host.Hostname = report.Hostname
 	}
@@ -3080,9 +3159,6 @@ func (s *Service) handleCMDBReport(w http.ResponseWriter, r *http.Request) {
 			host.Labels[k] = v
 		}
 	}
-
-	s.store.Update(r.Context(), host)
-	writeJSON(w, http.StatusOK, map[string]string{"status": "cmdb data received"})
 }
 
 // handleDownloadTasks 返回该 agent 待执行的 pending 任务。

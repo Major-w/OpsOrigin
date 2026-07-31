@@ -57,9 +57,16 @@ type TaskRequest struct {
 	Params   map[string]any `json:"params,omitempty"`
 	Timeout  int            `json:"timeout,omitempty"`
 
+	// Mode 执行模式:
+	//   - "sandbox" 沙箱隔离: 强隔离执行不可信代码(独立临时目录+净化环境+进程组+venv);
+	//   - "collect" 只读采集: 可读主机系统信息(采集目的), 写仍被限制在临时目录, 环境净化, 拦截逃逸高危命令;
+	//   - "normal" 常规执行: 默认, 带 Agent 权限直跑(受命令白名单与审批闸门约束)。
+	// 为空时回退到 Sandbox 布尔字段的旧语义。
+	Mode         string   `json:"mode,omitempty"`
+
 	// 沙箱执行:为 true 时不直接裸跑脚本,而是在本机创建真实隔离环境
 	// (独立临时工作目录 + 净化环境变量 + 独立进程组;python 另建 venv)。
-	// 见 sandbox.go。
+	// 见 sandbox.go。Mode 非空时本字段被忽略。
 	Sandbox      bool     `json:"sandbox,omitempty"`
 	ScriptType   string   `json:"script_type,omitempty"`  // shell(默认) | python | bat
 	Requirements []string `json:"requirements,omitempty"` // python 沙箱内 pip 安装的依赖
@@ -634,46 +641,10 @@ func (a *Agent) executeTask(ctx context.Context, task TaskRequest) {
 		return
 	}
 
+	// 统一经 executeScript 分发: normal / sandbox / collect 模式。
 	start := time.Now()
-	timeout := time.Duration(task.Timeout) * time.Second
-	if timeout <= 0 {
-		timeout = 300 * time.Second
-	}
-	execCtx, cancel := context.WithTimeout(ctx, timeout)
-	defer cancel()
-
-	var cmd *exec.Cmd
-	switch {
-	case runtime.GOOS == "windows":
-		cmd = exec.CommandContext(execCtx, "cmd", "/C", task.Script)
-	default:
-		cmd = exec.CommandContext(execCtx, "/bin/sh", "-c", task.Script)
-	}
-
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-
-	err := cmd.Run()
+	result := a.executeScript(&task)
 	duration := time.Since(start)
-
-	exitCode := 0
-	if err != nil {
-		if exitErr, ok := err.(*exec.ExitError); ok {
-			exitCode = exitErr.ExitCode()
-		} else {
-			exitCode = -1
-		}
-	}
-
-	result := TaskResponse{
-		TaskID:   task.TaskID,
-		Success:  exitCode == 0,
-		Output:   stdout.String(),
-		ExitCode: exitCode,
-		Duration: duration.Milliseconds(),
-		Error:    stderr.String(),
-	}
 	data, _ := json.Marshal(result)
 
 	resp, err := a.client.Post(
@@ -685,15 +656,20 @@ func (a *Agent) executeTask(ctx context.Context, task TaskRequest) {
 	}
 	resp.Body.Close()
 	fmt.Printf("[agent] task %s completed in %dms, exit=%d\n",
-		task.TaskID, duration.Milliseconds(), exitCode)
+		task.TaskID, duration.Milliseconds(), result.ExitCode)
 }
 
 // executeScript 执行脚本任务并返回结果,不进行 HTTP 结果上报。
-// 供 tunnel 模式(handleTunnelAction)复用。
+// 供 tunnel 模式(handleTunnelAction)与轮询模式(executeTask)复用。
+// 按执行模式分发: sandbox(隔离) / collect(只读采集) / normal(默认)。
 func (a *Agent) executeScript(task *TaskRequest) TaskResponse {
-	// 沙箱任务走真实隔离执行路径(见 sandbox.go)。
-	if task.Sandbox {
+	switch task.execMode() {
+	case "sandbox":
+		// 沙箱任务走真实隔离执行路径(见 sandbox.go)。
 		return a.executeScriptSandboxed(task)
+	case "collect":
+		// 只读采集模式(见 sandbox.go executeScriptCollect)。
+		return a.executeScriptCollect(task)
 	}
 
 	// §6 命令白名单:执行前强制校验。
@@ -742,6 +718,17 @@ func (a *Agent) executeScript(task *TaskRequest) TaskResponse {
 		Duration: duration.Milliseconds(),
 		Error:    stderr.String(),
 	}
+}
+
+// execMode 解析任务执行模式: Mode 字段优先, 空时回退到旧 Sandbox 布尔语义。
+func (t *TaskRequest) execMode() string {
+	if t.Mode != "" {
+		return t.Mode
+	}
+	if t.Sandbox {
+		return "sandbox"
+	}
+	return "normal"
 }
 
 // handleTunnelAction 处理通过 Proxy 下发的命令。

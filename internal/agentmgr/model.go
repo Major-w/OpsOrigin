@@ -174,6 +174,13 @@ type TaskRequest struct {
 	Timeout int            `json:"timeout,omitempty"`
 	RunAs  string          `json:"run_as,omitempty"` // 以指定系统用户身份执行(Agent 端可 honor)
 
+	// Mode 执行模式(与 cmd/agent TaskRequest.Mode 对齐):
+	//   - "sandbox" 沙箱隔离执行不可信代码;
+	//   - "collect" 只读采集: 读取主机系统信息上报, 写被限制、环境净化、拦截逃逸高危命令;
+	//   - "normal"  常规执行(默认)。
+	// 为空时回退到 Sandbox 布尔字段旧语义。
+	Mode         string   `json:"mode,omitempty"`
+
 	// 沙箱执行(2026-07-30)。Sandbox=true 时 Agent 端不直接裸跑脚本,而是在目标
 	// 主机上创建真实隔离环境执行:独立临时工作目录 + 净化环境变量 + 独立进程组;
 	// ScriptType=python 时额外创建 Python 虚拟环境(venv)并按 Requirements 装依赖。

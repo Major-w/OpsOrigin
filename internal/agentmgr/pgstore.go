@@ -55,6 +55,21 @@ func (s *pgStore) init(ctx context.Context) {
 			created_at TIMESTAMPTZ NOT NULL, updated_at TIMESTAMPTZ NOT NULL)`,
 		`CREATE INDEX IF NOT EXISTS idx_agent_tasks_agent ON agent_tasks(agent_id, created_at DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_agent_tasks_tenant ON agent_tasks(tenant_id)`,
+		// 采集任务(CMDB/监控数据采集)
+		`CREATE TABLE IF NOT EXISTS collect_tasks (
+			id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL DEFAULT 'default',
+			name TEXT NOT NULL, type TEXT NOT NULL, script TEXT NOT NULL,
+			script_type TEXT DEFAULT 'shell', requirements TEXT DEFAULT '[]',
+			interval_sec INTEGER DEFAULT 60, target_agents TEXT DEFAULT '[]',
+			enabled BOOLEAN DEFAULT TRUE, timeout_sec INTEGER DEFAULT 60,
+			last_run_at TIMESTAMPTZ, created_at TIMESTAMPTZ NOT NULL, updated_at TIMESTAMPTZ NOT NULL)`,
+		// 采集指标(metric 类型采集任务的持久化结果)
+		`CREATE TABLE IF NOT EXISTS collect_metrics (
+			id BIGSERIAL PRIMARY KEY, tenant_id TEXT NOT NULL DEFAULT 'default',
+			agent_id TEXT NOT NULL, collect_task_id TEXT DEFAULT '',
+			name TEXT NOT NULL, value DOUBLE PRECISION NOT NULL, unit TEXT DEFAULT '',
+			collected_at TIMESTAMPTZ NOT NULL)`,
+		`CREATE INDEX IF NOT EXISTS idx_collect_metrics_agent_time ON collect_metrics(agent_id, collected_at DESC)`,
 	}
 	for _, st := range stmts {
 		if _, err := s.db.ExecContext(ctx, st); err != nil {

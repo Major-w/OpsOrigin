@@ -36,8 +36,23 @@ var sandboxEnvWhitelist = []string{
 	"PATH", "LANG", "LC_ALL", "TZ", "SystemRoot", "COMSPEC", "PATHEXT",
 }
 
-// executeScriptSandboxed 在目标主机的真实隔离环境中执行脚本。
+// executeScriptSandboxed 在目标主机的真实隔离环境中执行脚本(沙箱模式: 防读防写)。
 func (a *Agent) executeScriptSandboxed(task *TaskRequest) TaskResponse {
+	return a.runScriptIsolated(task, "sandbox")
+}
+
+// executeScriptCollect 只读采集模式: 允许脚本读取主机系统信息(采集上报是目的),
+// 但写仍被限制在隔离临时目录、环境净化(不泄漏 Agent 凭证)、拦截逃逸宿主的高危命令。
+// 与 sandbox 的差异在"读"的语义与未来隔离实现:
+//   - sandbox: 未来 bwrap 化时全隔离(不挂载主机路径);
+//   - collect:  未来 bwrap 化时只读挂载 /proc /sys /var/log 等采集所需路径。
+func (a *Agent) executeScriptCollect(task *TaskRequest) TaskResponse {
+	return a.runScriptIsolated(task, "collect")
+}
+
+// runScriptIsolated 进程级隔离执行(沙箱 / 只读采集共用骨架)。
+// mode 仅用于语义标记与日志: "sandbox" | "collect"。
+func (a *Agent) runScriptIsolated(task *TaskRequest, mode string) TaskResponse {
 	// 沙箱高危命令硬拦截:复用 command 包的高危检测逻辑,针对沙箱环境内置一组
 	// 禁止执行的规则(关机 / 删除系统目录 / 格式化磁盘 / 远程管道执行 等)。
 	// 命中的脚本直接拒绝——不进入隔离环境、不降级放行。
