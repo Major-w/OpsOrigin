@@ -37,6 +37,9 @@ const (
 //   - 主管审核(SupervisorVerify): 成员产出后由主管审核, 若判定需修订则指定某成员补充重做一轮再定稿。
 //   - 无汇总者(CanFinalize)时回退到 Members[0] 作为定稿人。
 //
+// ragCtx 为可选的知识库 RAG 上下文(由 service 层经 RAGFunc 检索得到)。
+// 非空时会被注入到每个成员的系统提示词中, 使团队也能基于知识库作答。
+//
 // emit 用于把 SSE 事件推给上层(service 负责 flush 到 HTTP 响应); 并发安全由调用方保证(加锁)。
 func (e *Engine) RunTeamChat(
 	ctx context.Context,
@@ -44,6 +47,7 @@ func (e *Engine) RunTeamChat(
 	message string,
 	history []llm.Message,
 	emit func(ev model.TeamStreamEvent),
+	ragCtx string,
 ) (final string, interactions []string, err error) {
 	if team == nil {
 		return "", nil, fmt.Errorf("team is nil")
@@ -84,7 +88,7 @@ func (e *Engine) RunTeamChat(
 	// 调用方负责发射 agent_start / agent_end; 本函数仅发射 token / tool_call / tool_result。
 	runTurn := func(m model.TeamMember, prompt string) (string, error) {
 		sys := e.resolveMemberSysPrompt(team, m)
-		return e.runMemberWithRetry(ctx, m, team, sys, prompt, history, emit)
+		return e.runMemberWithRetry(ctx, m, team, sys, prompt, history, emit, ragCtx)
 	}
 
 	switch team.Mode {
@@ -215,7 +219,7 @@ func (e *Engine) RunTeamChat(
 		} else if revise != nil {
 			emit(model.TeamStreamEvent{Type: "agent_start", AgentID: revise.AgentID, AgentName: revise.AgentName, Role: revise.Role, Content: "修订中: " + instr})
 			revisedPrompt := fmt.Sprintf("【修订指令】%s\n\n【用户原始问题】\n%s", instr, message)
-			c, rerr := e.runMemberWithRetry(ctx, *revise, team, e.resolveMemberSysPrompt(team, *revise), revisedPrompt, history, emit)
+			c, rerr := e.runMemberWithRetry(ctx, *revise, team, e.resolveMemberSysPrompt(team, *revise), revisedPrompt, history, emit, ragCtx)
 			if rerr == nil {
 				mu.Lock()
 				workerOuts[revise.AgentID] = c
@@ -243,7 +247,7 @@ func (e *Engine) RunTeamChat(
 		sb.String() + "\n【用户原始问题】\n" + message
 
 	emit(model.TeamStreamEvent{Type: "agent_start", AgentID: finalizer.AgentID, AgentName: finalizer.AgentName, Role: finalizer.Role})
-	finContent, ferr := e.runMemberWithRetry(ctx, finalizer, team, finSys, finPrompt, history, emit)
+	finContent, ferr := e.runMemberWithRetry(ctx, finalizer, team, finSys, finPrompt, history, emit, ragCtx)
 	if ferr != nil {
 		emit(model.TeamStreamEvent{Type: "error", AgentID: finalizer.AgentID, AgentName: finalizer.AgentName, Role: finalizer.Role, Error: ferr.Error()})
 		// 汇总失败: 回退为成员产出拼接
@@ -259,7 +263,7 @@ func (e *Engine) RunTeamChat(
 }
 
 // runMemberWithRetry 在成员级超时与重试边界内执行一次完整作答(含可能的多轮工具调用)。
-func (e *Engine) runMemberWithRetry(ctx context.Context, m model.TeamMember, team *model.AgentTeam, sys, prompt string, history []llm.Message, emit func(model.TeamStreamEvent)) (string, error) {
+func (e *Engine) runMemberWithRetry(ctx context.Context, m model.TeamMember, team *model.AgentTeam, sys, prompt string, history []llm.Message, emit func(model.TeamStreamEvent), ragCtx string) (string, error) {
 	retries := memberRetries(team)
 	var lastErr error
 	var content string
@@ -269,7 +273,7 @@ func (e *Engine) runMemberWithRetry(ctx context.Context, m model.TeamMember, tea
 			emit(model.TeamStreamEvent{Type: "error", AgentID: m.AgentID, AgentName: m.AgentName, Role: m.Role, Error: fmt.Sprintf("成员 %s 第 %d 次尝试失败, 重试中", m.AgentName, attempt)})
 		}
 		mctx, cancel := context.WithTimeout(ctx, memberTimeout(team))
-		content, lastErr = e.runOneMemberRound(mctx, m, team, sys, prompt, history, emit)
+		content, lastErr = e.runOneMemberRound(mctx, m, team, sys, prompt, history, emit, ragCtx)
 		cancel()
 		if lastErr == nil {
 			return content, nil
@@ -281,7 +285,7 @@ func (e *Engine) runMemberWithRetry(ctx context.Context, m model.TeamMember, tea
 // runOneMemberRound 执行单个成员的单轮作答: 若开启工具则走 Function Calling 循环,
 // 否则仅做一次普通补全。逐 token 经 emit 推送(此处以整段内容作为一个 token 事件, 保证工具过程可观测)。
 // 不发射 agent_start / agent_end(由调用方负责)。
-func (e *Engine) runOneMemberRound(ctx context.Context, m model.TeamMember, team *model.AgentTeam, sys, prompt string, history []llm.Message, emit func(model.TeamStreamEvent)) (string, error) {
+func (e *Engine) runOneMemberRound(ctx context.Context, m model.TeamMember, team *model.AgentTeam, sys, prompt string, history []llm.Message, emit func(model.TeamStreamEvent), ragCtx string) (string, error) {
 	client := e.llmClient.Load()
 	if client == nil {
 		return "", fmt.Errorf("llm client not configured")
@@ -289,7 +293,14 @@ func (e *Engine) runOneMemberRound(ctx context.Context, m model.TeamMember, team
 	useTools := useTools(m, team)
 	modelName := e.modelForMember(m)
 
-	msgs := []llm.Message{{Role: "system", Content: sys}}
+	// 注入团队级 RAG 上下文到系统提示词末尾（与单智能体 buildMessages 中 citationGuidance + sysExtra 同构）
+	fullSys := sys
+	if ragCtx != "" {
+		fullSys += "\n\n" + citationGuidance
+		fullSys += "\n\n" + ragCtx
+	}
+
+	msgs := []llm.Message{{Role: "system", Content: fullSys}}
 	hist := history
 	if len(hist) > historyKeepRecent {
 		hist = hist[len(hist)-historyKeepRecent:]
@@ -372,7 +383,7 @@ func (e *Engine) supervisorReview(ctx context.Context, team *model.AgentTeam, su
 		"\n\n你是团队的审核主管。请评估上述成员产出是否完整、无矛盾、可直接用于面向用户的最终答复。"
 	prompt := "请严格按以下格式输出:\nVERDICT: APPROVED\n或\nVERDICT: REVISE [成员名] [修订指令]\n\n" + sb.String()
 
-	content, werr := e.runMemberWithRetry(ctx, sup, team, sys, prompt, nil, emit)
+	content, werr := e.runMemberWithRetry(ctx, sup, team, sys, prompt, nil, emit, "")
 	if werr != nil {
 		return nil, "", werr
 	}
@@ -443,7 +454,7 @@ func (e *Engine) supervisorPlan(ctx context.Context, team *model.AgentTeam, sup 
 	)
 
 	emit(model.TeamStreamEvent{Type: "agent_start", AgentID: sup.AgentID, AgentName: sup.AgentName, Role: sup.Role})
-	plan, perr := e.runOneMemberRound(ctx, sup, team, planSys, planPrompt, nil, emit)
+	plan, perr := e.runOneMemberRound(ctx, sup, team, planSys, planPrompt, nil, emit, "")
 	if perr != nil {
 		emit(model.TeamStreamEvent{Type: "error", AgentID: sup.AgentID, AgentName: sup.AgentName, Role: sup.Role, Error: perr.Error()})
 		emit(model.TeamStreamEvent{Type: "agent_end", AgentID: sup.AgentID, AgentName: sup.AgentName, Role: sup.Role})

@@ -129,7 +129,7 @@ func TestTeamMemberUsesTools(t *testing.T) {
 			{AgentID: "f", AgentName: "F", Role: model.TeamRoleFinalizer, CanFinalize: true, SystemPrompt: "IDENTITY_F"},
 		},
 	}
-	final, _, err := e.RunTeamChat(context.WithValue(context.Background(), "role", "admin"), team, "故障排查", nil, emit)
+	final, _, err := e.RunTeamChat(context.WithValue(context.Background(), "role", "admin"), team, "故障排查", nil, emit, "")
 	if err != nil {
 		t.Fatalf("RunTeamChat error: %v", err)
 	}
@@ -167,7 +167,7 @@ func TestTeamMemberModelRouting(t *testing.T) {
 			{AgentID: "f", AgentName: "F", Role: model.TeamRoleFinalizer, CanFinalize: true},
 		},
 	}
-	if _, _, err := e.RunTeamChat(context.Background(), team, "hi", nil, func(model.TeamStreamEvent) {}); err != nil {
+	if _, _, err := e.RunTeamChat(context.Background(), team, "hi", nil, func(model.TeamStreamEvent) {}, ""); err != nil {
 		t.Fatalf("err: %v", err)
 	}
 	found := false
@@ -213,7 +213,7 @@ func TestTeamMemberRetry(t *testing.T) {
 			{AgentID: "f", AgentName: "F", Role: model.TeamRoleFinalizer, CanFinalize: true},
 		},
 	}
-	final, _, err := e.RunTeamChat(context.Background(), team, "hi", nil, emit)
+	final, _, err := e.RunTeamChat(context.Background(), team, "hi", nil, emit, "")
 	if err != nil {
 		t.Fatalf("err: %v", err)
 	}
@@ -255,7 +255,7 @@ func TestTeamDebateRounds(t *testing.T) {
 			{AgentID: "f", AgentName: "F", Role: model.TeamRoleFinalizer, CanFinalize: true},
 		},
 	}
-	final, _, err := e.RunTeamChat(context.Background(), team, "问题?", nil, func(model.TeamStreamEvent) {})
+	final, _, err := e.RunTeamChat(context.Background(), team, "问题?", nil, func(model.TeamStreamEvent) {}, "")
 	if err != nil {
 		t.Fatalf("err: %v", err)
 	}
@@ -304,7 +304,7 @@ func TestTeamSupervisorVerify(t *testing.T) {
 			{AgentID: "f", AgentName: "F", Role: model.TeamRoleFinalizer, CanFinalize: true},
 		},
 	}
-	final, _, err := e.RunTeamChat(context.Background(), team, "评估容量", nil, emit)
+	final, _, err := e.RunTeamChat(context.Background(), team, "评估容量", nil, emit, "")
 	if err != nil {
 		t.Fatalf("err: %v", err)
 	}

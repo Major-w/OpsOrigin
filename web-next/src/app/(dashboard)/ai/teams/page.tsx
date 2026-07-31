@@ -45,6 +45,8 @@ interface MemberForm {
   can_finalize: boolean
   persona: string
   system_prompt: string
+  enable_tools: boolean
+  model_name: string
 }
 
 interface TeamForm {
@@ -53,6 +55,11 @@ interface TeamForm {
   description: string
   mode: TeamMode
   system_prompt: string
+  enable_tools: boolean
+  member_timeout_sec: number
+  member_retries: number
+  debate_rounds: number
+  supervisor_verify: boolean
   members: MemberForm[]
 }
 
@@ -62,8 +69,13 @@ function emptyForm(): TeamForm {
     description: '',
     mode: 'supervisor',
     system_prompt: '',
+    enable_tools: false,
+    member_timeout_sec: 90,
+    member_retries: 1,
+    debate_rounds: 2,
+    supervisor_verify: false,
     members: [
-      { agent_id: '', agent_name: '', role: 'member', can_finalize: false, persona: '', system_prompt: '' },
+      { agent_id: '', agent_name: '', role: 'member', can_finalize: false, persona: '', system_prompt: '', enable_tools: false, model_name: '' },
     ],
   }
 }
@@ -75,6 +87,11 @@ function teamToForm(team: AgentTeam): TeamForm {
     description: team.description,
     mode: team.mode,
     system_prompt: team.system_prompt,
+    enable_tools: team.enable_tools,
+    member_timeout_sec: team.member_timeout_sec || 90,
+    member_retries: team.member_retries || 1,
+    debate_rounds: team.debate_rounds || 2,
+    supervisor_verify: team.supervisor_verify || false,
     members: team.members.length > 0
       ? team.members.map((m: TeamMember) => ({
           agent_id: m.agent_id,
@@ -83,6 +100,8 @@ function teamToForm(team: AgentTeam): TeamForm {
           can_finalize: m.can_finalize,
           persona: m.persona,
           system_prompt: m.system_prompt,
+          enable_tools: m.enable_tools,
+          model_name: m.model_name || '',
         }))
       : emptyForm().members,
   }
@@ -136,7 +155,7 @@ export default function TeamsPage() {
       ...f,
       members: [
         ...f.members,
-        { agent_id: '', agent_name: '', role: 'member', can_finalize: false, persona: '', system_prompt: '' },
+        { agent_id: '', agent_name: '', role: 'member', can_finalize: false, persona: '', system_prompt: '', enable_tools: false, model_name: '' },
       ],
     }))
   }
@@ -151,6 +170,11 @@ export default function TeamsPage() {
       description: form.description.trim(),
       mode: form.mode,
       system_prompt: form.system_prompt,
+      enable_tools: form.enable_tools,
+      member_timeout_sec: form.member_timeout_sec,
+      member_retries: form.member_retries,
+      debate_rounds: form.debate_rounds,
+      supervisor_verify: form.supervisor_verify,
       members: form.members.map(m => ({
         agent_id: m.agent_id.trim(),
         agent_name: m.agent_name.trim(),
@@ -158,6 +182,8 @@ export default function TeamsPage() {
         can_finalize: m.can_finalize,
         persona: m.persona,
         system_prompt: m.system_prompt,
+        enable_tools: m.enable_tools,
+        model_name: m.model_name.trim(),
       })),
     }
     if (form.id) {
@@ -294,6 +320,49 @@ export default function TeamsPage() {
                 placeholder="团队整体的目标与约束（可选）"
               />
             </div>
+
+            {/* 团队级编排配置 */}
+            <div className="border rounded-lg p-3 space-y-2">
+              <label className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">编排参数</label>
+              <div className="grid grid-cols-2 gap-2">
+                <div>
+                  <label className="text-[11px] text-muted-foreground">超时(秒)</label>
+                  <Input
+                    type="number" min={10} max={600}
+                    value={form.member_timeout_sec}
+                    onChange={e => setForm(f => ({ ...f, member_timeout_sec: parseInt(e.target.value) || 90 }))}
+                  />
+                </div>
+                <div>
+                  <label className="text-[11px] text-muted-foreground">重试次数</label>
+                  <Input
+                    type="number" min={0} max={5}
+                    value={form.member_retries}
+                    onChange={e => setForm(f => ({ ...f, member_retries: parseInt(e.target.value) || 1 }))}
+                  />
+                </div>
+              </div>
+              {form.mode === 'debate' && (
+                <div>
+                  <label className="text-[11px] text-muted-foreground">辩论轮数</label>
+                  <Input
+                    type="number" min={1} max={10}
+                    value={form.debate_rounds}
+                    onChange={e => setForm(f => ({ ...f, debate_rounds: parseInt(e.target.value) || 2 }))}
+                  />
+                </div>
+              )}
+              <div className="flex items-center gap-3 flex-wrap">
+                <label className="flex items-center gap-1 text-xs cursor-pointer">
+                  <input type="checkbox" checked={form.enable_tools} onChange={e => setForm(f => ({ ...f, enable_tools: e.target.checked }))} />
+                  团队启用工具调用
+                </label>
+                <label className="flex items-center gap-1 text-xs cursor-pointer">
+                  <input type="checkbox" checked={form.supervisor_verify} onChange={e => setForm(f => ({ ...f, supervisor_verify: e.target.checked }))} />
+                  主管审核修订
+                </label>
+              </div>
+            </div>
           </div>
 
           {/* 成员编辑 */}
@@ -359,6 +428,21 @@ export default function TeamsPage() {
                     onChange={e => updateMember(i, { system_prompt: e.target.value })}
                     placeholder="该成员专属的指令与约束"
                   />
+                </div>
+                <div className="flex items-center gap-3 flex-wrap">
+                  <label className="flex items-center gap-1 text-xs cursor-pointer">
+                    <input type="checkbox" checked={m.enable_tools} onChange={e => updateMember(i, { enable_tools: e.target.checked })} />
+                    启用工具调用
+                  </label>
+                  <div className="flex items-center gap-1">
+                    <label className="text-[11px] text-muted-foreground shrink-0">模型</label>
+                    <Input
+                      className="h-7 w-32 text-xs"
+                      value={m.model_name}
+                      onChange={e => updateMember(i, { model_name: e.target.value })}
+                      placeholder="覆盖默认模型"
+                    />
+                  </div>
                 </div>
               </div>
             ))}

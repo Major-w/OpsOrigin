@@ -24,6 +24,14 @@ interface Message {
   timestamp: Date
 }
 
+interface ToolCallLocal {
+  id: string
+  name: string
+  args: string
+  result: string
+  status: 'running' | 'done'
+}
+
 interface AgentRunLocal {
   agent_id: string
   agent_name: string
@@ -31,6 +39,8 @@ interface AgentRunLocal {
   status: 'streaming' | 'done' | 'error'
   text: string
   error?: string
+  toolCalls: ToolCallLocal[]
+  supervisorNote?: string
 }
 
 interface TeamTurnLocal {
@@ -220,21 +230,60 @@ export default function AIPage() {
             const agents = [...t.agents]
             const idx = agents.findIndex(a => a.agent_id === ev.agent_id)
             if (idx >= 0) agents[idx] = { ...agents[idx], status: 'streaming' }
-            else agents.push({ agent_id: ev.agent_id, agent_name: ev.agent_name, role: ev.role, status: 'streaming', text: '' })
+            else agents.push({ agent_id: ev.agent_id, agent_name: ev.agent_name, role: ev.role, status: 'streaming', text: '', toolCalls: [] })
             return { ...t, agents }
           }
           case 'token': {
             const agents = [...t.agents]
             const idx = agents.findIndex(a => a.agent_id === ev.agent_id)
             if (idx >= 0) agents[idx] = { ...agents[idx], text: agents[idx].text + ev.content, status: 'streaming' }
-            else agents.push({ agent_id: ev.agent_id, agent_name: ev.agent_name, role: ev.role, status: 'streaming', text: ev.content })
+            else agents.push({ agent_id: ev.agent_id, agent_name: ev.agent_name, role: ev.role, status: 'streaming', text: ev.content, toolCalls: [] })
             return { ...t, agents }
           }
           case 'agent_end': {
             const agents = [...t.agents]
             const idx = agents.findIndex(a => a.agent_id === ev.agent_id)
             if (idx >= 0) agents[idx] = { ...agents[idx], text: ev.content, status: 'done' }
-            else agents.push({ agent_id: ev.agent_id, agent_name: ev.agent_name, role: ev.role, status: 'done', text: ev.content })
+            else agents.push({ agent_id: ev.agent_id, agent_name: ev.agent_name, role: ev.role, status: 'done', text: ev.content, toolCalls: [] })
+            return { ...t, agents }
+          }
+          case 'tool_call': {
+            const agents = [...t.agents]
+            const idx = agents.findIndex(a => a.agent_id === ev.agent_id)
+            if (idx >= 0) {
+              agents[idx] = {
+                ...agents[idx],
+                status: 'streaming',
+                toolCalls: [...agents[idx].toolCalls, { id: ev.tool_name + '_' + Date.now(), name: ev.tool_name, args: ev.tool_args, result: '', status: 'running' }],
+              }
+            }
+            return { ...t, agents }
+          }
+          case 'tool_result': {
+            const agents = [...t.agents]
+            const idx = agents.findIndex(a => a.agent_id === ev.agent_id)
+            if (idx >= 0) {
+              const toolCalls = [...agents[idx].toolCalls]
+              // 逆序找到最后一个 running 的同名工具调用, 标记完成
+              for (let i = toolCalls.length - 1; i >= 0; i--) {
+                if (toolCalls[i].name === ev.tool_name && toolCalls[i].status === 'running') {
+                  toolCalls[i] = { ...toolCalls[i], result: ev.tool_result, status: 'done' }
+                  break
+                }
+              }
+              agents[idx] = { ...agents[idx], toolCalls }
+            }
+            return { ...t, agents }
+          }
+          case 'supervisor_review': {
+            const agents = [...t.agents]
+            const idx = agents.findIndex(a => a.agent_id === ev.agent_id)
+            if (idx >= 0) {
+              agents[idx] = { ...agents[idx], supervisorNote: ev.content }
+            }
+            else {
+              agents.push({ agent_id: ev.agent_id, agent_name: ev.agent_name, role: ev.role, status: 'done', text: '', toolCalls: [], supervisorNote: ev.content })
+            }
             return { ...t, agents }
           }
           case 'final':
@@ -542,6 +591,54 @@ export default function AIPage() {
                         {a.status === 'streaming' && <Loader2 className="h-3 w-3 animate-spin text-emerald-500" />}
                         {a.status === 'done' && <span className="text-[10px] text-emerald-500">✓ 完成</span>}
                       </div>
+
+                      {/* 工具调用过程（可观测面板） */}
+                      {a.toolCalls.length > 0 && (
+                        <details className="mb-1.5" open>
+                          <summary className="text-xs text-muted-foreground cursor-pointer hover:text-foreground">
+                            🔧 工具调用 ({a.toolCalls.length})
+                          </summary>
+                          <div className="mt-1 space-y-1">
+                            {a.toolCalls.map(tc => (
+                              <div key={tc.id} className={cn(
+                                'rounded border px-2 py-1 text-xs',
+                                tc.status === 'running'
+                                  ? 'border-amber-300 bg-amber-50 dark:border-amber-500/30 dark:bg-amber-500/10'
+                                  : 'border-gray-200 dark:border-[rgba(255,255,255,0.06)]',
+                              )}>
+                                <div className="flex items-center justify-between">
+                                  <span className="font-mono text-[11px] font-semibold">{tc.name}</span>
+                                  {tc.status === 'running' && <Loader2 className="h-3 w-3 animate-spin text-amber-500" />}
+                                  {tc.status === 'done' && <span className="text-[10px] text-emerald-500">✓</span>}
+                                </div>
+                                {tc.args && (
+                                  <details className="mt-0.5">
+                                    <summary className="text-[10px] text-muted-foreground cursor-pointer">参数</summary>
+                                    <pre className="mt-0.5 p-1 rounded bg-gray-100 dark:bg-gray-800 text-[10px] overflow-x-auto whitespace-pre-wrap max-h-20 overflow-y-auto">{tc.args}</pre>
+                                  </details>
+                                )}
+                                {tc.status === 'done' && tc.result && (
+                                  <details className="mt-0.5">
+                                    <summary className="text-[10px] text-muted-foreground cursor-pointer">结果</summary>
+                                    <pre className="mt-0.5 p-1 rounded bg-gray-100 dark:bg-gray-800 text-[10px] overflow-x-auto whitespace-pre-wrap max-h-24 overflow-y-auto">{tc.result}</pre>
+                                  </details>
+                                )}
+                              </div>
+                            ))}
+                          </div>
+                        </details>
+                      )}
+
+                      {/* 主管审核备注 */}
+                      {a.supervisorNote && (
+                        <details className="mb-1.5" open>
+                          <summary className="text-xs text-purple-600 dark:text-purple-400 cursor-pointer hover:underline">📋 主管审核</summary>
+                          <div className="mt-1 p-2 rounded border border-purple-200 dark:border-purple-500/30 bg-purple-50 dark:bg-purple-500/10 text-xs whitespace-pre-wrap">
+                            {a.supervisorNote}
+                          </div>
+                        </details>
+                      )}
+
                       {a.status === 'error' ? (
                         <p className="text-xs text-red-500 whitespace-pre-wrap">{a.error}</p>
                       ) : (

@@ -718,7 +718,13 @@ func (s *Service) handleTeamChat(w http.ResponseWriter, r *http.Request) {
 	history := s.Engine.LoadTeamHistory(team.ID, 20)
 	tenantID := tenantFromCtx(r.Context())
 
-	final, _, err := s.Engine.RunTeamChat(r.Context(), team, req.Message, history, emit)
+	// RAG 上下文注入: 对用户消息检索知识库, 注入到团队成员/汇总者/主管的系统提示词中
+	var ragCtx string
+	if s.ragFn != nil {
+		ragCtx = s.ragFn(r.Context(), req.Message)
+	}
+
+	final, _, err := s.Engine.RunTeamChat(r.Context(), team, req.Message, history, emit, ragCtx)
 	if err != nil {
 		emit(model.TeamStreamEvent{Type: "error", Content: chatFriendlyError(err.Error())})
 		fmt.Fprint(w, "data: [DONE]\n\n")

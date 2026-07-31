@@ -24,6 +24,12 @@ export interface TeamMember {
   can_finalize: boolean
   persona: string
   system_prompt: string
+  /** 成员是否启用工具调用(Function Calling) */
+  enable_tools: boolean
+  /** per-member 模型覆盖(覆盖引擎/团队默认模型) */
+  model_name: string
+  /** 成员权重(预留, 目前未使用) */
+  weight: number
   /** 可选：后端返回时可能携带的自身 ID */
   id?: string
 }
@@ -36,6 +42,16 @@ export interface AgentTeam {
   mode: TeamMode
   system_prompt: string
   members: TeamMember[]
+  /** 团队级启用工具调用(所有成员继承) */
+  enable_tools: boolean
+  /** 单成员作答硬超时(秒, 默认90) */
+  member_timeout_sec: number
+  /** 单成员失败重试次数(默认1) */
+  member_retries: number
+  /** 辩论模式往返轮数(默认2) */
+  debate_rounds: number
+  /** 是否启用主管审核修订回路 */
+  supervisor_verify: boolean
   created_at?: string
   updated_at?: string
 }
@@ -52,6 +68,11 @@ export interface CreateTeamPayload {
   description: string
   mode: TeamMode
   system_prompt: string
+  enable_tools: boolean
+  member_timeout_sec: number
+  member_retries: number
+  debate_rounds: number
+  supervisor_verify: boolean
   members: Array<{
     agent_id: string
     agent_name: string
@@ -59,6 +80,8 @@ export interface CreateTeamPayload {
     can_finalize: boolean
     persona: string
     system_prompt: string
+    enable_tools: boolean
+    model_name: string
   }>
 }
 
@@ -75,6 +98,9 @@ export type TeamStreamEvent =
   | { type: 'agent_start'; agent_id: string; agent_name: string; role: string }
   | { type: 'token'; agent_id: string; agent_name: string; role: string; content: string }
   | { type: 'agent_end'; agent_id: string; agent_name: string; role: string; content: string }
+  | { type: 'tool_call'; agent_id: string; agent_name: string; role: string; tool_name: string; tool_args: string }
+  | { type: 'tool_result'; agent_id: string; agent_name: string; role: string; tool_name: string; tool_result: string }
+  | { type: 'supervisor_review'; agent_id: string; agent_name: string; role: string; content: string }
   | { type: 'final'; content: string; done: boolean }
   | { type: 'error'; agent_id?: string; agent_name?: string; role?: string; error: string }
 
@@ -83,7 +109,7 @@ export function isTeamStreamEvent(value: unknown): value is TeamStreamEvent {
   if (typeof value !== 'object' || value === null) return false
   const v = value as Record<string, unknown>
   if (typeof v.type !== 'string') return false
-  switch (v.type) {
+      switch (v.type) {
     case 'agent_start':
     case 'token':
     case 'agent_end': {
@@ -97,6 +123,27 @@ export function isTeamStreamEvent(value: unknown): value is TeamStreamEvent {
       }
       return true
     }
+    case 'tool_call': {
+      const baseOk =
+        typeof v.agent_id === 'string' &&
+        typeof v.agent_name === 'string' &&
+        typeof v.role === 'string'
+      if (!baseOk) return false
+      return typeof v.tool_name === 'string' && typeof v.tool_args === 'string'
+    }
+    case 'tool_result': {
+      const baseOk =
+        typeof v.agent_id === 'string' &&
+        typeof v.agent_name === 'string' &&
+        typeof v.role === 'string'
+      if (!baseOk) return false
+      return typeof v.tool_name === 'string' && typeof v.tool_result === 'string'
+    }
+    case 'supervisor_review':
+      return typeof v.agent_id === 'string' &&
+        typeof v.agent_name === 'string' &&
+        typeof v.role === 'string' &&
+        typeof v.content === 'string'
     case 'final':
       return typeof v.content === 'string' && typeof v.done === 'boolean'
     case 'error':
