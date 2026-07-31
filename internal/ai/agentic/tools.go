@@ -39,6 +39,9 @@ type MCPToolSet struct {
 	db       *sql.DB
 	exec     ScriptExecutor
 	embedder embedderIface
+	// approvedScripts 免于人工审批、允许 AI 直接执行的脚本白名单(script_id 或 script_name)。
+	// 为空时(默认)所有 AI 发起的脚本执行都须经人工审批(建变更单), 以安全优先(P0-2)。
+	approvedScripts map[string]bool
 }
 
 func NewMCPToolSet(db *sql.DB) *MCPToolSet { return &MCPToolSet{db: db} }
@@ -48,6 +51,18 @@ func (ts *MCPToolSet) SetScriptExecutor(e ScriptExecutor) { ts.exec = e }
 
 // SetEmbedder 注入向量生成器,使知识库检索启用语义向量匹配(无则回退 ILIKE)。
 func (ts *MCPToolSet) SetEmbedder(e embedderIface) { ts.embedder = e }
+
+// SetApprovedScripts 设置 AI 可直接执行的脚本白名单(免人工审批)。
+// 传入空切片则恢复为"全部须经审批"的安全默认(P0-2)。
+func (ts *MCPToolSet) SetApprovedScripts(ids []string) {
+	m := make(map[string]bool, len(ids))
+	for _, id := range ids {
+		if id = strings.TrimSpace(id); id != "" {
+			m[id] = true
+		}
+	}
+	ts.approvedScripts = m
+}
 
 // cmdbQuery 查询 CMDB 资产
 func (ts *MCPToolSet) cmdbQuery(ctx context.Context, args map[string]any) (any, error) {
@@ -87,8 +102,8 @@ func (ts *MCPToolSet) ticketCreate(ctx context.Context, args map[string]any) (an
 	now := time.Now()
 	_, err := ts.db.ExecContext(ctx,
 		`INSERT INTO itsm_tickets(id,tenant_id,title,description,risk_level,status,created_by,created_by_type,created_at,updated_at)
-		 VALUES($1,'default',$2,$3,$4,'draft','ai_assistant','ai',$5,$5)`,
-		id, title, desc, risk, now)
+		 VALUES($1,$2,$3,$4,$5,'draft','ai_assistant','ai',$6,$6)`,
+		id, tenantOf(ctx), title, desc, risk, now)
 	if err != nil {
 		slog.Warn("ai ticket create failed", "err", err)
 		return map[string]any{"error": err.Error()}, nil
@@ -97,7 +112,12 @@ func (ts *MCPToolSet) ticketCreate(ctx context.Context, args map[string]any) (an
 }
 
 // scriptRun 在目标 Agent 主机上真实执行脚本并同步等待结果。
-// 目标 Agent 解析优先级：agent_id > agent_name(按名模糊匹配) > 任一在线 Agent。
+//
+// 安全约束(P0-2):
+//   - 目标 Agent 必须显式指定(agent_id 或 agent_name); 严禁"自动挑选任意在线 Agent"在随机主机上执行。
+//   - 默认(白名单为空)所有 AI 发起的脚本执行都须经人工审批: 自动建 ITSM 变更单并返回
+//     pending_approval, 而非直接执行。仅白名单内的脚本可免审批直执行。
+//   - dry_run=true 时仅回显执行计划, 不真正执行(安全预览)。
 func (ts *MCPToolSet) scriptRun(ctx context.Context, args map[string]any) (any, error) {
 	scriptID, _ := args["script_id"].(string)
 	if scriptID == "" {
@@ -113,7 +133,7 @@ func (ts *MCPToolSet) scriptRun(ctx context.Context, args map[string]any) (any, 
 		return nil, fmt.Errorf("script_id or script_name required")
 	}
 
-	// 解析目标 Agent
+	// 解析目标 Agent: 必须显式指定, 禁止自动挑选任意在线 Agent 在随机主机上执行。
 	agentID, _ := args["agent_id"].(string)
 	if agentID == "" {
 		if an, _ := args["agent_name"].(string); an != "" && ts.db != nil {
@@ -122,12 +142,40 @@ func (ts *MCPToolSet) scriptRun(ctx context.Context, args map[string]any) (any, 
 				"%"+an+"%", tenantOf(ctx)).Scan(&agentID)
 		}
 	}
-	if agentID == "" && ts.db != nil {
-		ts.db.QueryRowContext(ctx,
-			`SELECT id FROM agent_hosts WHERE tenant_id=$1 AND status='online' ORDER BY last_heartbeat DESC NULLS LAST LIMIT 1`, tenantOf(ctx)).Scan(&agentID)
-	}
 	if agentID == "" {
-		return map[string]any{"script_id": scriptID, "status": "error", "error": "no target agent: provide agent_id/agent_name or ensure an online agent exists"}, nil
+		return map[string]any{
+			"script_id": scriptID,
+			"status":    "error",
+			"error":     "target host not specified: provide explicit agent_id or agent_name (auto-selection of any online agent is disabled for safety)",
+		}, nil
+	}
+
+	// dry_run: 仅解析并回显执行计划, 不真正执行。
+	if dry, _ := args["dry_run"].(bool); dry {
+		return map[string]any{
+			"script_id": scriptID,
+			"agent_id":  agentID,
+			"status":    "dry_run",
+			"message":   "dry-run: script would be executed on the target host (no execution performed)",
+			"params":    args["params"],
+			"timeout":   args["timeout"],
+			"run_as":    args["run_as"],
+		}, nil
+	}
+
+	// 审批闸门: 未列入白名单的脚本须经人工审批(建变更单), 默认全部需要审批(安全优先)。
+	if !ts.isScriptApproved(scriptID, args) {
+		ticketID, terr := ts.createApprovalTicket(ctx, scriptID, agentID)
+		if terr != nil {
+			return map[string]any{"script_id": scriptID, "agent_id": agentID, "status": "error", "error": "script requires approval but ticket creation failed: " + terr.Error()}, nil
+		}
+		return map[string]any{
+			"script_id": scriptID,
+			"agent_id":  agentID,
+			"status":    "pending_approval",
+			"ticket_id": ticketID,
+			"message":   "script execution requires human approval; an ITSM change ticket has been created, execute after approval",
+		}, nil
 	}
 
 	if ts.exec == nil {
@@ -158,6 +206,38 @@ func (ts *MCPToolSet) scriptRun(ctx context.Context, args map[string]any) (any, 
 		"script_id": scriptID, "agent_id": agentID, "exit_code": exitCode,
 		"status": "success", "output": output,
 	}, nil
+}
+
+// isScriptApproved 判断脚本是否免于人工审批(在白名单内)。白名单为空时默认全部需要审批。
+func (ts *MCPToolSet) isScriptApproved(scriptID string, args map[string]any) bool {
+	if len(ts.approvedScripts) == 0 {
+		return false
+	}
+	if ts.approvedScripts[scriptID] {
+		return true
+	}
+	if id, _ := args["script_id"].(string); id != "" && ts.approvedScripts[id] {
+		return true
+	}
+	if name, _ := args["script_name"].(string); name != "" && ts.approvedScripts[name] {
+		return true
+	}
+	return false
+}
+
+// createApprovalTicket 为待审批的 AI 脚本执行创建一张 draft 状态的 ITSM 变更单。
+func (ts *MCPToolSet) createApprovalTicket(ctx context.Context, scriptID, agentID string) (string, error) {
+	id := uuid.NewString()
+	now := time.Now()
+	_, err := ts.db.ExecContext(ctx,
+		`INSERT INTO itsm_tickets(id,tenant_id,title,description,risk_level,status,created_by,created_by_type,created_at,updated_at)
+		 VALUES($1,$2,$3,$4,'high','draft','ai_assistant','ai',$5,$5)`,
+		id, tenantOf(ctx), "AI 脚本执行审批: "+scriptID,
+		fmt.Sprintf("AI assistant requested execution of script %s on host %s; requires human approval before run.", scriptID, agentID), now)
+	if err != nil {
+		return "", err
+	}
+	return id, nil
 }
 
 // knowledgeSearch 知识库 RAG 检索
@@ -222,7 +302,7 @@ func (ts *MCPToolSet) searchKnowledge(ctx context.Context, query string, limit, 
 func (ts *MCPToolSet) Register(reg *mcp.Registry) {
 	reg.Register(mcp.ToolDefinition{Name: "cmdb_query", Description: "Query CMDB assets by name or type. Args: query(string)", Handler: ts.cmdbQuery})
 	reg.Register(mcp.ToolDefinition{Name: "ticket_create", Description: "Create an ITSM ticket. Args: title(string), description(string), risk_level(string)", Handler: ts.ticketCreate})
-	reg.Register(mcp.ToolDefinition{Name: "script_run", Description: "Execute an automation script on a managed host and return its output. Args: script_id(string) or script_name(string); agent_id(string) or agent_name(string) target host (defaults to any online agent); params(object) optional; timeout(number) seconds; run_as(string) optional", Handler: ts.scriptRun})
+	reg.Register(mcp.ToolDefinition{Name: "script_run", Description: "Execute an automation script on a managed host and return its output. Args: script_id(string) or script_name(string); agent_id(string) or agent_name(string) REQUIRED target host (auto-selection of any online agent is disabled for safety); dry_run(bool) optional safe preview without execution; params(object) optional; timeout(number) seconds; run_as(string) optional. Scripts not on the approved allowlist require human approval and return status=pending_approval with a ticket_id.", Handler: ts.scriptRun})
 	reg.Register(mcp.ToolDefinition{Name: "knowledge_search", Description: "Search knowledge base articles for relevant documentation (RAG, semantic vector search). Args: query(string)", Handler: ts.knowledgeSearch})
 }
 

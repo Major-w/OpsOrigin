@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -399,6 +400,17 @@ func main() {
 	toolSet := agentic.NewMCPToolSet(db)
 	toolSet.SetScriptExecutor(scriptSvc) // AI 的 script_run 工具经 script 服务→Agent 通道真实执行
 	toolSet.SetEmbedder(llmClient)       // 知识库检索启用语义向量匹配
+	// P0-2: AI 可直接执行的脚本白名单(免人工审批); 缺省全部须经审批。格式: 逗号分隔的 script_id 或 script_name。
+	if s := os.Getenv("OPSNEXUS_AI_APPROVED_SCRIPTS"); s != "" {
+		var ids []string
+		for _, p := range strings.Split(s, ",") {
+			if p = strings.TrimSpace(p); p != "" {
+				ids = append(ids, p)
+			}
+		}
+		toolSet.SetApprovedScripts(ids)
+		slog.Info("ai script approval allowlist loaded", "count", len(ids))
+	}
 	toolSet.Register(aiSvc.Registry)
 	aiSvc.SetRAGFunc(toolSet.RAGContext)
 	ai.LLMConfigHook = func(cfg2 llm.Config) { aiSvc.UpdateLLMConfig(cfg2) }

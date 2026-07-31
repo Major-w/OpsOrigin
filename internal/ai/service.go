@@ -120,6 +120,9 @@ func (s *Service) handleChat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// P0-1: 清洗客户端提交的对话历史, 丢弃 system/tool 角色与注入的 tool_calls, 防止提示注入绕过 RBAC。
+	req.History = agentic.SanitizeHistory(req.History)
+
 	// RAG: 从知识库检索相关内容注入到 system prompt
 	if s.ragFn != nil {
 		ragCtx := s.ragFn(r.Context(), req.Prompt)

@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/google/uuid"
@@ -36,7 +37,7 @@ type Engine struct {
 	convs     map[string]*Conversation
 	reg       *mcp.Registry
 	lim       ratelimit.RateLimiter
-	llmClient *llm.Client
+	llmClient atomic.Pointer[llm.Client] // 热更新场景下的并发安全读写(避免 data race)
 	ready     bool
 	tokenRecs []model.TokenRecord
 	tokenMu   sync.Mutex
@@ -63,10 +64,10 @@ func NewEngine(reg *mcp.Registry, lim ratelimit.RateLimiter, llmClient *llm.Clie
 		teams:     make(map[string]*model.AgentTeam),
 		reg:       reg,
 		lim:       lim,
-		llmClient: llmClient,
 		semMu:     sync.Mutex{},
 		llmSem:    make(chan struct{}, 32),
 	}
+	e.llmClient.Store(llmClient)
 	e.registerBuiltinTools()
 	SeedPresetTeams(e) // Feature 1: 预置平台交付团队（按 Name 幂等）
 	return e
@@ -91,7 +92,7 @@ func (e *Engine) registerBuiltinTools() {
 			if prompt == "" {
 				return nil, fmt.Errorf("llm_chat: prompt is required")
 			}
-			resp, err := e.llmClient.Chat(ctx, llm.ChatRequest{
+			resp, err := e.llmClient.Load().Chat(ctx, llm.ChatRequest{
 				Messages: []llm.Message{{Role: "user", Content: prompt}},
 			})
 			if err != nil {
@@ -245,16 +246,17 @@ func (e *Engine) chatWithTools(ctx context.Context, agentID, prompt string, hist
 
 	// 2. 工具调用循环
 	for round := 0; round < maxToolRounds; round++ {
-		if !e.acquireLLMSlot(ctx) {
+		slot, ok := e.acquireLLMSlot(ctx)
+		if !ok {
 			return "", "", invocations, fmt.Errorf("llm concurrency limit reached")
 		}
-		resp, err := e.llmClient.Chat(ctx, llm.ChatRequest{
+		resp, err := e.llmClient.Load().Chat(ctx, llm.ChatRequest{
 			Messages:    msgs,
 			Tools:       tools,
 			MaxTokens:   e.genMaxTokensVal(),
 			Temperature: e.genTemperatureVal(),
 		})
-		e.releaseLLMSlot()
+		e.releaseLLMSlot(slot)
 		if err != nil {
 			return "", "", invocations, err
 		}
@@ -307,6 +309,50 @@ func (e *Engine) buildInitialMessages(agentID, userPrompt string, history []llm.
 	msgs = append(msgs, history...)
 	msgs = append(msgs, llm.Message{Role: "user", Content: userPrompt})
 	return msgs
+}
+
+// ——— 历史清洗(防御提示注入, P0-1) ———
+const (
+	maxHistoryMessages = 20    // 与 buildInitialMessages 的条数上限保持一致
+	maxHistoryMsgLen   = 8000 // 单条历史消息最大长度, 防止超长内容撑爆上下文
+)
+
+// SanitizeHistory 清洗客户端提交的对话历史, 防止提示注入:
+//   - 仅保留 user / assistant 角色, 丢弃 system / tool 等可绕过安全约束或伪造工具结果的角色;
+//   - 剥离 assistant 消息中的 tool_calls, 阻止客户端注入"待执行工具调用";
+//   - 限制单条长度与总条数。
+//
+// 注意: 服务端注入的 system 消息(如 RAG 上下文)应在调用本函数之后再追加,
+// 以免在 buildInitialMessages 中被当作客户端历史误删。
+func SanitizeHistory(h []llm.Message) []llm.Message {
+	if len(h) == 0 {
+		return nil
+	}
+	out := make([]llm.Message, 0, len(h))
+	for _, m := range h {
+		switch m.Role {
+		case "user", "assistant":
+			cm := llm.Message{Role: m.Role, Content: clampStr(m.Content, maxHistoryMsgLen)}
+			if m.Role == "assistant" {
+				cm.ReasoningContent = clampStr(m.ReasoningContent, maxHistoryMsgLen)
+			}
+			out = append(out, cm)
+		default:
+			// 丢弃 system / tool / 其他角色
+			continue
+		}
+	}
+	if len(out) > maxHistoryMessages {
+		out = out[len(out)-maxHistoryMessages:]
+	}
+	return out
+}
+
+func clampStr(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return s[:n]
 }
 
 // builtinToolDenyList 不被暴露给模型的内建工具(避免自我递归或噪音调用)。
@@ -733,11 +779,12 @@ func (e *Engine) runStep(ctx context.Context, step *model.Step) (any, error) {
 	if prompt == "" {
 		return nil, fmt.Errorf("step has neither tool nor prompt")
 	}
-	if !e.acquireLLMSlot(ctx) {
+	slot, ok := e.acquireLLMSlot(ctx)
+	if !ok {
 		return nil, fmt.Errorf("llm concurrency limit reached")
 	}
-	defer e.releaseLLMSlot()
-	resp, err := e.llmClient.Chat(ctx, llm.ChatRequest{
+	defer e.releaseLLMSlot(slot)
+	resp, err := e.llmClient.Load().Chat(ctx, llm.ChatRequest{
 		Messages: []llm.Message{{Role: "user", Content: prompt}},
 	})
 	if err != nil {
@@ -800,9 +847,10 @@ func (e *Engine) resolveSystemPrompt(agentID string) string {
 
 // UpdateClient 热更新底层 LLM 客户端(sysconfig 修改 LLM 配置后调用)。
 func (e *Engine) UpdateClient(c *llm.Client) {
-	e.mu.Lock()
-	e.llmClient = c
-	e.mu.Unlock()
+	if c == nil {
+		return
+	}
+	e.llmClient.Store(c)
 	slog.Info("engine llm client updated")
 }
 
@@ -811,6 +859,8 @@ func (e *Engine) UpdateClient(c *llm.Client) {
 // 后者受 llmSem 容量约束(默认 32), 防止底层 LLM 后端被瞬时打爆。
 
 // SetLLMMaxInflight 设置物理 LLM 调用的最大并发槽位数。
+// 注意: 热更新会创建新的 channel; 仍在途的请求在其捕获的旧 channel 上释放,
+// 不会丢失配额, AILLLMInFlight 计数保持准确(修复 P0-3 的计数器漂移)。
 func (e *Engine) SetLLMMaxInflight(n int) {
 	if n < 1 {
 		n = 1
@@ -821,25 +871,26 @@ func (e *Engine) SetLLMMaxInflight(n int) {
 	slog.Info("engine llm max-inflight updated", "max", n)
 }
 
-// acquireLLMSlot 抢占一个物理 LLM 调用槽位; ctx 取消时返回 false。
-func (e *Engine) acquireLLMSlot(ctx context.Context) bool {
+// acquireLLMSlot 抢占一个物理 LLM 调用槽位; ctx 取消时返回 (nil, false)。
+// 返回的 channel 必须在释放时原样传回, 确保槽位配额在热更新(channel 重建)后不丢失。
+func (e *Engine) acquireLLMSlot(ctx context.Context) (chan struct{}, bool) {
 	e.semMu.Lock()
 	ch := e.llmSem
 	e.semMu.Unlock()
 	select {
 	case ch <- struct{}{}:
 		AILLMInFlight.Inc()
-		return true
+		return ch, true
 	case <-ctx.Done():
-		return false
+		return nil, false
 	}
 }
 
-// releaseLLMSlot 释放一个物理 LLM 调用槽位。
-func (e *Engine) releaseLLMSlot() {
-	e.semMu.Lock()
-	ch := e.llmSem
-	e.semMu.Unlock()
+// releaseLLMSlot 释放一个物理 LLM 调用槽位(须传入 acquireLLMSlot 返回的 channel)。
+func (e *Engine) releaseLLMSlot(ch chan struct{}) {
+	if ch == nil {
+		return
+	}
 	select {
 	case <-ch:
 		AILLMInFlight.Dec()
@@ -1028,17 +1079,18 @@ func (e *Engine) chatWithToolsStream(ctx context.Context, agentID, prompt string
 	tools := e.buildToolDefs()
 
 	for round := 0; round < maxToolRounds; round++ {
-		if !e.acquireLLMSlot(ctx) {
+		slot, ok := e.acquireLLMSlot(ctx)
+		if !ok {
 			return fmt.Errorf("llm concurrency limit reached")
 		}
-		ch, err := e.llmClient.StreamChat(ctx, llm.ChatRequest{
+		ch, err := e.llmClient.Load().StreamChat(ctx, llm.ChatRequest{
 			Messages:    msgs,
 			Tools:       tools,
 			MaxTokens:   e.genMaxTokensVal(),
 			Temperature: e.genTemperatureVal(),
 		})
-		e.releaseLLMSlot()
 		if err != nil {
+			e.releaseLLMSlot(slot)
 			return err
 		}
 
@@ -1057,6 +1109,8 @@ func (e *Engine) chatWithToolsStream(ctx context.Context, agentID, prompt string
 				toolCalls = sc.ToolCalls
 			}
 		}
+		// 槽位须覆盖整个流式消费期(而非 StreamChat 返回即释放), 否则流式并发将失控(P0-3)。
+		e.releaseLLMSlot(slot)
 
 		msgs = append(msgs, llm.Message{Role: "assistant", Content: content, ReasoningContent: reasoningAcc, ToolCalls: toolCalls})
 

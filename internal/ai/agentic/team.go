@@ -162,10 +162,11 @@ func (e *Engine) RunTeamChat(
 // streamMember 以流式方式调用某成员的 LLM, 逐 token 通过 emit 推送, 返回完整内容。
 // 不负责发射 agent_start(由调用方发射, 以便汇总者的 start 与 worker 统一)。
 func (e *Engine) streamMember(ctx context.Context, m model.TeamMember, sysPrompt, prompt string, history []llm.Message, emit func(model.TeamStreamEvent)) (string, error) {
-	if !e.acquireLLMSlot(ctx) {
+	slot, ok := e.acquireLLMSlot(ctx)
+	if !ok {
 		return "", fmt.Errorf("llm concurrency limit reached")
 	}
-	defer e.releaseLLMSlot()
+	defer e.releaseLLMSlot(slot)
 
 	msgs := []llm.Message{{Role: "system", Content: sysPrompt}}
 	if len(history) > 20 {
@@ -174,7 +175,7 @@ func (e *Engine) streamMember(ctx context.Context, m model.TeamMember, sysPrompt
 	msgs = append(msgs, history...)
 	msgs = append(msgs, llm.Message{Role: "user", Content: prompt})
 
-	ch, err := e.llmClient.StreamChat(ctx, llm.ChatRequest{
+	ch, err := e.llmClient.Load().StreamChat(ctx, llm.ChatRequest{
 		Messages:    msgs,
 		MaxTokens:   e.genMaxTokensVal(),
 		Temperature: e.genTemperatureVal(),
