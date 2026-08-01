@@ -180,59 +180,76 @@ func NewAgent(cfg AgentConfig) *Agent {
 		// 让 Core 端 agent_hosts 不再是无资源信息的空壳。
 		a.grpcClient.sysInfo = a.collectSystemInfo()
 
-		// 内置任务(任务归任务、上报归上报): Agent 本地调度自主执行 + gRPC 主动上报。
-		// monitor 即时上报(断连丢弃); cmdb 低频(60s)可缓存(断连缓存, 重连补传, §4.7.1 QoS)。
-		a.scheduler = NewScheduler(func(task *Task, points []MetricPoint) {
-			if err := a.sendMetricsWithCMDBBackfill(task, points); err != nil {
-				slog.Warn("agent: metrics send failed", "task", task.ID, "err", err)
-			}
-		})
-		a.scheduler.Register(&Task{
-			ID: "builtin.monitor.basic", Name: "基础监控", Type: TaskMonitor,
-			Interval: 5 * time.Second,
-			Run:      func(ctx context.Context) ([]MetricPoint, error) { return CollectSystemMetrics(), nil },
-		})
-		a.scheduler.Register(&Task{
-			ID: "builtin.cmdb.basic", Name: "基础资产", Type: TaskCMDB,
-			Interval: 60 * time.Second,
-			Run:      a.collectCMDBMetrics,
-		})
-
 		// 自定义任务清单同步(Server 下发): 合并到本地调度器(AddOrUpdate/Remove)。
 		a.grpcClient.OnTaskList(func(list *pb.TaskList) {
-			for _, td := range list.Tasks {
-				if !td.Enabled {
-					a.scheduler.Remove(td.TaskId)
-					continue
-				}
-				if td.Script == "" {
-					continue // 内置任务由 Agent 本地管理, 跳过
-				}
-				a.scheduler.AddOrUpdate(&Task{
-					ID:       td.TaskId,
-					Name:     td.Name,
-					Type:     TaskType(td.Type),
-					Interval: time.Duration(td.IntervalSec) * time.Second,
-					Run:      a.runCustomScript(td.Script, td.ScriptType),
-				})
-				slog.Info("agent: custom task synced", "task", td.TaskId, "type", td.Type,
-					"interval_sec", td.IntervalSec)
-			}
+			a.applyTaskList(list)
 		})
+	}
+
+	// 任意接入模式(gRPC 直连 / Proxy 中转)均启用本地调度与指标上报:
+	// 内置任务(任务归任务、上报归上报)本地自主执行, sendMetricsOne 按模式选择通道。
+	if a.grpcClient != nil || a.tunnelClient != nil {
+		a.setupScheduler()
 	}
 
 	return a
 }
 
+// setupScheduler 初始化本地调度器并注册内置任务(基础监控 + 基础资产)。
+// 上报回调统一走 sendMetricsWithCMDBBackfill(按连接模式分发通道)。
+func (a *Agent) setupScheduler() {
+	a.scheduler = NewScheduler(func(task *Task, points []MetricPoint) {
+		if err := a.sendMetricsWithCMDBBackfill(task, points); err != nil {
+			slog.Warn("agent: metrics send failed", "task", task.ID, "err", err)
+		}
+	})
+	a.scheduler.Register(&Task{
+		ID: "builtin.monitor.basic", Name: "基础监控", Type: TaskMonitor,
+		Interval: 5 * time.Second,
+		Run:      func(ctx context.Context) ([]MetricPoint, error) { return CollectSystemMetrics(), nil },
+	})
+	a.scheduler.Register(&Task{
+		ID: "builtin.cmdb.basic", Name: "基础资产", Type: TaskCMDB,
+		Interval: 60 * time.Second,
+		Run:      a.collectCMDBMetrics,
+	})
+}
+
+// applyTaskList 合并 Server 下发的任务清单到本地调度器。
+func (a *Agent) applyTaskList(list *pb.TaskList) {
+	if a.scheduler == nil {
+		return
+	}
+	for _, td := range list.Tasks {
+		if !td.Enabled {
+			a.scheduler.Remove(td.TaskId)
+			continue
+		}
+		if td.Script == "" {
+			continue // 内置任务由 Agent 本地管理, 跳过
+		}
+		a.scheduler.AddOrUpdate(&Task{
+			ID:       td.TaskId,
+			Name:     td.Name,
+			Type:     TaskType(td.Type),
+			Interval: time.Duration(td.IntervalSec) * time.Second,
+			Run:      a.runCustomScript(td.Script, td.ScriptType),
+		})
+		slog.Info("agent: custom task synced", "task", td.TaskId, "type", td.Type,
+			"interval_sec", td.IntervalSec)
+	}
+}
+
 // sendMetricsWithCMDBBackfill 上报指标: 连接恢复时先补发 cmdb 缓存, 再发当前批次。
 // QoS(§4.7.1): monitor 失败即丢弃; cmdb 失败缓存(最多保留最近 8 批, 防内存膨胀)。
+// gRPC 直连走 grpcClient, Proxy 中转走 tunnelClient(两条通道统一 QoS 语义)。
 func (a *Agent) sendMetricsWithCMDBBackfill(task *Task, points []MetricPoint) error {
 	// 1) 先尝试补发断连期间缓存的 cmdb 批次
 	a.cmdbMu.Lock()
 	if len(a.pendingCMDB) > 0 {
 		allOK := true
 		for _, b := range a.pendingCMDB {
-			if err := a.grpcClient.SendMetrics(b.TaskID, b.Type, b.TS, b.Interval, b.Points); err != nil {
+			if err := a.sendMetricsOne(b.TaskID, b.Type, b.TS, b.Interval, b.Points); err != nil {
 				allOK = false
 				break // 仍断连, 保留缓存等待下次
 			}
@@ -245,13 +262,28 @@ func (a *Agent) sendMetricsWithCMDBBackfill(task *Task, points []MetricPoint) er
 	a.cmdbMu.Unlock()
 
 	// 2) 发送当前批次
-	if err := a.grpcClient.SendMetrics(task.ID, task.Type, time.Now(), int64(task.Interval/time.Second), points); err != nil {
+	if err := a.sendMetricsOne(task.ID, task.Type, time.Now(), int64(task.Interval/time.Second), points); err != nil {
 		if task.Type == TaskCMDB {
 			a.cacheCMDB(task, points)
 		}
 		return err
 	}
 	return nil
+}
+
+// sendMetricsOne 按连接模式选择上报通道。
+func (a *Agent) sendMetricsOne(taskID string, taskType TaskType, ts time.Time, intervalSec int64, points []MetricPoint) error {
+	if a.grpcClient != nil {
+		return a.grpcClient.SendMetrics(taskID, taskType, ts, intervalSec, points)
+	}
+	if a.tunnelClient != nil {
+		pts := make([]tunnel.TunnelMetricPoint, 0, len(points))
+		for _, p := range points {
+			pts = append(pts, tunnel.TunnelMetricPoint{Name: p.Name, Value: p.Value, Unit: p.Unit, Labels: p.Labels})
+		}
+		return a.tunnelClient.SendMetrics(taskID, string(taskType), ts, intervalSec, pts)
+	}
+	return fmt.Errorf("no metrics channel (grpc or proxy)")
 }
 
 // cacheCMDB 缓存一次失败的 cmdb 上报批次(上限 8 批)。

@@ -144,6 +144,21 @@ func (c *GRPCProxyClient) connectAndRun(ctx context.Context) error {
 	}
 }
 
+// SendMetrics 将 Agent 上报的指标批量透传为 gRPC MetricBatch 转发 Core。
+// 纯转发: 不聚合、不缓冲, 保持 Agent 上报时效(§4.5 Proxy 纯转发策略)。
+func (c *GRPCProxyClient) SendMetrics(agentID string, msg *pb.MetricBatch) error {
+	c.mu.Lock()
+	stream := c.stream
+	c.mu.Unlock()
+	if stream == nil {
+		return fmt.Errorf("not connected to core")
+	}
+	// 透传: Agent 的 task_id/task_type/timestamp 原样保留, Core 据此分流存储。
+	return stream.Send(&pb.TunnelMessage{
+		Payload: &pb.TunnelMessage_Metrics{Metrics: msg},
+	})
+}
+
 func (c *GRPCProxyClient) handleMessage(ctx context.Context, msg *pb.TunnelMessage) {
 	switch p := msg.Payload.(type) {
 	case *pb.TunnelMessage_Command:

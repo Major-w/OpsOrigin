@@ -12,6 +12,8 @@ const (
 	MsgCommandResp   MessageType = "command_resp"
 	MsgAgentCommand  MessageType = "agent_command"
 	MsgAgentResp     MessageType = "agent_resp"
+	// MsgMetrics Agent→Proxy→Core 的指标/资产批量上报(经 Proxy 中转路径, §4.5)。
+	MsgMetrics MessageType = "metrics"
 )
 
 type TunnelMessage struct {
@@ -75,6 +77,26 @@ type AgentResponse struct {
 	Success   bool   `json:"success"`
 	Output    []byte `json:"output,omitempty"`
 	Error     string `json:"error,omitempty"`
+}
+
+// TunnelMetricPoint Agent 上报的单个指标点(JSON 隧道 / Proxy 中转路径用)。
+// 与 pb.MetricPoint 字段对齐, 由 Proxy 透传时转换。
+type TunnelMetricPoint struct {
+	Name   string            `json:"name"`
+	Value  float64           `json:"value"`
+	Unit   string            `json:"unit,omitempty"`
+	Labels map[string]string `json:"labels,omitempty"`
+}
+
+// MetricsMessage Agent→Proxy→Core 的指标/资产批量上报负载。
+// 字段与 pb.MetricBatch 对齐: task_type 区分 cmdb(低频)/monitor(高频),
+// 由 Proxy 透传为 gRPC MetricBatch, Core 侧据此分流存储。
+type MetricsMessage struct {
+	TaskID      string              `json:"task_id"`
+	TaskType    string              `json:"task_type,omitempty"` // cmdb | monitor
+	Timestamp   int64               `json:"timestamp,omitempty"` // unix ms
+	IntervalSec int64               `json:"interval_sec,omitempty"`
+	Points      []TunnelMetricPoint `json:"points"`
 }
 
 func MarshalMessage(msgType MessageType, payload any, proxyID, traceID string) ([]byte, error) {

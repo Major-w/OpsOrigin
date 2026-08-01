@@ -30,6 +30,30 @@ func (a *AgentClient) OnAction(handler func(action string, payload []byte) ([]by
 	a.onAction = handler
 }
 
+// SendMetrics 通过 Proxy 中转上报指标/资产批量(MsgMetrics)。
+// 未连接或发送失败时返回错误: monitor QoS 丢弃(不缓存), cmdb 由上层补传。
+func (a *AgentClient) SendMetrics(taskID, taskType string, ts time.Time, intervalSec int64, points []TunnelMetricPoint) error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.conn == nil {
+		return fmt.Errorf("not connected to proxy")
+	}
+	msgData, err := MarshalMessage(MsgMetrics, MetricsMessage{
+		TaskID:      taskID,
+		TaskType:    taskType,
+		Timestamp:   ts.UnixMilli(),
+		IntervalSec: intervalSec,
+		Points:      points,
+	}, a.agentID, "")
+	if err != nil {
+		return fmt.Errorf("marshal metrics: %w", err)
+	}
+	if err := a.conn.SendRaw(msgData); err != nil {
+		return fmt.Errorf("send metrics to proxy: %w", err)
+	}
+	return nil
+}
+
 func (a *AgentClient) Start(ctx context.Context) error {
 	for {
 		select {

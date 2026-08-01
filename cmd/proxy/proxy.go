@@ -7,6 +7,7 @@ import (
 	"os"
 	"sync"
 
+	pb "github.com/opsorigin/core/api/proto"
 	"github.com/opsorigin/core/internal/tunnel"
 	"github.com/opsorigin/core/pkg/config"
 )
@@ -38,6 +39,34 @@ func NewProxy(cfg *config.Config) *Proxy {
 func (p *Proxy) Start(ctx context.Context) error {
 	ctx, cancel := context.WithCancel(ctx)
 	p.cancel = cancel
+
+	// 指标纯转发: Agent 上报(MsgMetrics) → gRPC MetricBatch 透传 Core。
+	// 不聚合不缓冲, 时效由 Agent 上报周期决定, Proxy 零额外延迟(§4.5)。
+	p.agents.OnMetrics(func(agentID string, msg *tunnel.MetricsMessage) {
+		if p.grpcClient == nil {
+			slog.Warn("proxy: metrics dropped, grpc client not ready", "agent_id", agentID)
+			return
+		}
+		pts := make([]*pb.MetricPoint, 0, len(msg.Points))
+		for _, pt := range msg.Points {
+			pts = append(pts, &pb.MetricPoint{
+				Name:   pt.Name,
+				Value:  pt.Value,
+				Unit:   pt.Unit,
+				Labels: pt.Labels,
+			})
+		}
+		batch := &pb.MetricBatch{
+			TaskId:      msg.TaskID,
+			TaskType:    msg.TaskType,
+			Timestamp:   msg.Timestamp,
+			IntervalSec: msg.IntervalSec,
+			Points:      pts,
+		}
+		if err := p.grpcClient.SendMetrics(agentID, batch); err != nil {
+			slog.Warn("proxy: metrics forward failed", "agent_id", agentID, "error", err)
+		}
+	})
 
 	// 优先使用 gRPC 连接 Core
 	if p.cfg.Proxy.GRPCListen != "" {
