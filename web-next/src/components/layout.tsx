@@ -4,7 +4,7 @@ import { useState } from 'react'
 import Link from 'next/link'
 import { usePathname, useRouter } from 'next/navigation'
 import { cn } from '@/lib/utils'
-import { Server, TicketCheck, Activity, Bot, Shield, LayoutDashboard, Hexagon, LogOut, User, Terminal, Workflow, Clock, Search, BookOpen, Calendar, GitBranch, Package, Bell, Key, Blocks, Users, Settings, Sun, Moon, Scan, Bug, Download, PackagePlus, Network, AlertTriangle, History, FileText, Rocket, AppWindow, FileCheck2, Cloud, Play, Sparkles, Database, type LucideIcon } from 'lucide-react'
+import { Server, TicketCheck, Activity, Bot, Shield, LayoutDashboard, Hexagon, LogOut, User, Terminal, Workflow, Clock, Search, BookOpen, Calendar, GitBranch, Package, Bell, Key, Blocks, Users, Settings, Sun, Moon, Scan, Bug, Download, PackagePlus, Network, AlertTriangle, History, FileText, Rocket, AppWindow, FileCheck2, Cloud, Play, Sparkles, Database, Radio, type LucideIcon } from 'lucide-react'
 import { useAuthStore } from '@/stores/auth'
 import { useThemeStore } from '@/stores/theme'
 import { ScrollToTop } from '@/components/ui/scroll-to-top'
@@ -64,6 +64,7 @@ const navGroups: (NavItem | NavGroup)[] = [
       { to: '/cmdb/instances', label: '实例管理', icon: Server },
       { to: '/cmdb/relations', label: '关系管理', icon: GitBranch },
       { to: '/cmdb/discovery', label: '自动发现', icon: Scan },
+      { to: '/cmdb/collection', label: '采集策略', icon: Radio },
       { to: '/cmdb/topology', label: '拓扑可视化', icon: Network },
       { to: '/cmdb/impact', label: '影响分析', icon: AlertTriangle },
       { to: '/cmdb/change-assess', label: '变更评估', icon: FileText },

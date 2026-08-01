@@ -4,12 +4,14 @@ import { useEffect, useState } from 'react'
 import { useAgentStore, type AgentHost, type ProxyInfo, type TaskInfo } from '@/stores/agent'
 import { useKeyStore } from '@/stores/keys'
 import { useCloudStore } from '@/stores/cloud'
+import { useCollectionStore } from '@/stores/collection'
 import { CLOUD_RESOURCE_TYPES, K8S_RESOURCE_TYPES, type CloudResource } from '@/lib/cloud'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { Input } from '@/components/ui/input'
 import { Dialog, DialogFooter } from '@/components/ui/dialog'
+import { SwitchField } from '@/components/ui/switch'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { ViewToggle, DataList, type ViewMode, type Column, type FilterOption, type BulkAction } from '@/components/ui/data-list'
 import { formatTime, apiBase, apiFetch } from '@/lib/utils'
@@ -65,6 +67,7 @@ export default function ResourcesPage() {
   const { agents, proxies, fetch, register, update, remove, batchInstall, testSSH, getInstallScript, fetchProxies, registerProxy, updateProxy, deleteProxy, getCircuitBreaker, setCircuitBreaker, restartAgent, upgradeAgent, uninstallAgent, fetchTasks, createTask } = useAgentStore()
   const { keys, fetch: fetchKeys, create: createKey } = useKeyStore()
   const { providers, resources, fetchProviders, listCredentials, saveCredential, listResources, syncToCMDB } = useCloudStore()
+  const { policy: collectPolicy, fetchPolicy, onboardResource } = useCollectionStore()
 
   // 云资源 tab 表单状态
   const [cloudProvider, setCloudProvider] = useState('')
@@ -76,6 +79,9 @@ export default function ResourcesPage() {
   const [cloudTypes, setCloudTypes] = useState<string[]>(['vm', 'database', 'load_balancer'])
   const [cloudDiscovering, setCloudDiscovering] = useState(false)
   const [cloudSyncing, setCloudSyncing] = useState(false)
+  // 采集开关：初值取平台全局默认策略，可针对本次纳管覆盖
+  const [cloudEnableCMDB, setCloudEnableCMDB] = useState(true)
+  const [cloudEnableMonitor, setCloudEnableMonitor] = useState(false)
 
   // K8s 容器资源纳管 tab 表单状态（经 Agent 通道发现，无需 AK/SK）
   const [k8sAgent, setK8sAgent] = useState('')
@@ -386,14 +392,21 @@ export default function ResourcesPage() {
     if (!cloudProvider.trim()) { toast.error('请选择云服务商'); return }
     const extra = parseCloudExtra()
     if (cloudExtra.trim() && !extra) return
+    // 保存凭证即完成通道建立；后端据开关创建对应默认采集任务（CMDB 统一调度）
     const ok = await saveCredential({
       provider: cloudProvider,
       region: cloudRegion,
       access_key: cloudAccessKey,
       secret_key: cloudSecretKey,
       extra,
+      enable_cmdb_collect: cloudEnableCMDB,
+      enable_monitor_collect: cloudEnableMonitor,
     })
-    if (ok) { setCloudSecretKey(''); setCloudExtra('') }
+    if (ok) {
+      setCloudSecretKey(''); setCloudExtra('')
+      const on = [cloudEnableCMDB && 'CMDB 采集', cloudEnableMonitor && '监控采集'].filter(Boolean)
+      if (on.length) toast.success(`已开启：${on.join('、')}（可在 CMDB · 采集策略中调整）`)
+    }
   }
 
   const handleCloudDiscover = async () => {
@@ -435,6 +448,13 @@ export default function ResourcesPage() {
         if (res.failed > 0) parts.push(`失败 ${res.failed}`)
         toast.success(`已同步到 CMDB：${parts.join('，')}`)
         if (res.failed > 0 && res.errors?.length) console.warn('cloud sync errors', res.errors)
+        // 纳管完成后按开关登记周期性采集任务（幂等：同 target+kind 已存在则跳过）
+        await onboardResource({
+          resource_type: 'cloud',
+          target: `cloud:${cloudProvider}`,
+          enable_cmdb_collect: cloudEnableCMDB,
+          enable_monitor_collect: cloudEnableMonitor,
+        })
       }
     } finally {
       setCloudSyncing(false)
@@ -444,6 +464,15 @@ export default function ResourcesPage() {
   // 确保 Agent 列表已加载（容器 tab 需要选择目标集群网关 Agent）。
   useEffect(() => {
     if (agents.length === 0) fetch()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  // 拉取平台默认采集策略，用于预填纳管表单的采集开关。
+  useEffect(() => {
+    fetchPolicy().then(p => {
+      setCloudEnableCMDB(p.default_cmdb_enabled)
+      setCloudEnableMonitor(p.default_monitor_enabled)
+    })
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
@@ -941,6 +970,27 @@ export default function ResourcesPage() {
                       <option value="">直连（不使用 Proxy）</option>
                       {proxies.map(p => <option key={p.id} value={p.id}>{p.name} · {p.address}</option>)}
                     </select>
+                  </div>
+                  {/* 采集开关：纳管即建立通道，是否开启周期性采集由此决定（默认值来自平台策略） */}
+                  <div className="space-y-2 pt-1">
+                    <div className="flex items-center justify-between">
+                      <label className="text-sm font-medium">采集设置</label>
+                      <a href="/cmdb/collection" className="text-xs text-emerald-600 dark:text-emerald-400 hover:underline">
+                        全局默认策略
+                      </a>
+                    </div>
+                    <SwitchField
+                      label="开启 CMDB 采集"
+                      description={`纳管后按 ${collectPolicy.cmdb_default_frequency} 周期采集配置项写入 CMDB`}
+                      checked={cloudEnableCMDB}
+                      onCheckedChange={setCloudEnableCMDB}
+                    />
+                    <SwitchField
+                      label="开启监控采集"
+                      description={`纳管后按 ${collectPolicy.monitor_default_frequency} 周期采集监控指标`}
+                      checked={cloudEnableMonitor}
+                      onCheckedChange={setCloudEnableMonitor}
+                    />
                   </div>
                   <div className="flex gap-2">
                     <Button size="sm" onClick={handleCloudSaveCredential}><Save className="h-3 w-3 mr-1" />保存凭证</Button>

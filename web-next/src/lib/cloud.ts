@@ -13,6 +13,10 @@ export interface CloudCredential {
   secret_key: string
   extra?: Record<string, string>
   has_secret?: boolean
+  // 纳管时的采集开关（可选）：为空则回落平台全局默认策略。
+  // 后端保存凭证成功后回调 CMDB 的 OnboardResource 创建对应默认采集任务。
+  enable_cmdb_collect?: boolean
+  enable_monitor_collect?: boolean
 }
 
 export interface CloudResource {
