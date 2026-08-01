@@ -51,6 +51,9 @@ type CoreConfig struct {
 	Addr       string `json:"addr"`
 	GRPCListen string `json:"grpc_listen"`
 	PublicURL  string `json:"public_url"` // Server 对外基址(如 http://host:8080),用于下发直连 Agent 的下载地址
+	// VMAddr VictoriaMetrics 时序库地址(如 http://localhost:8428)。
+	// 配置后监控指标写入 VM(高频 monitor), 未配置时回退内存 sink(仅演示/测试)。
+	VMAddr string `json:"vm_addr"`
 }
 
 type ProxyConfig struct {
@@ -144,6 +147,7 @@ func Load() (*Config, error) {
 			Port:       envInt("OPSNEXUS_CORE_PORT", 8080),
 			GRPCListen: envStr("OPSNEXUS_CORE_GRPC_LISTEN", ":9091"),
 			PublicURL:  envStr("OPSNEXUS_CORE_PUBLIC_URL", ""),
+			VMAddr:     envStr("OPSNEXUS_CORE_VM_ADDR", ""),
 		},
 		Proxy: ProxyConfig{
 			ID:         envStr("OPSNEXUS_PROXY_ID", "proxy-001"),

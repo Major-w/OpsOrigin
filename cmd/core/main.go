@@ -244,9 +244,22 @@ func main() {
 		}
 	})
 
-	// 监控/CMDB 指标上报管道(阶段 1): OnMetrics → 批量缓冲(背压) → MemorySink。
-	// 阶段 2 将 sink 切换为 VictoriaMetrics(高频 monitor) + PG(低频 cmdb), 缓冲层不变。
-	ingestSink := ingest.NewMemorySink()
+	// 监控/CMDB 指标上报管道(阶段 1/2): OnMetrics → 批量缓冲(背压) → Sink。
+	// 配置 OPSNEXUS_CORE_VM_ADDR 后写入 VictoriaMetrics(高频 monitor, Prometheus 文本导入);
+	// 未配置时回退内存 sink(仅演示/测试)。
+	var ingestSink ingest.Sink = ingest.NewMemorySink()
+	if cfg.Core.VMAddr != "" {
+		ingestSink = ingest.NewVMSink(cfg.Core.VMAddr)
+		slog.Info("metrics ingest: writing to VictoriaMetrics", "addr", cfg.Core.VMAddr)
+		// PromQL 查询代理(监控大盘/告警): GET /api/v1/monitor/ts/query
+		server.RegisterService(&staticHandlerRegistrar{
+			routes: map[string]http.Handler{
+				"GET /api/v1/monitor/ts/query": ingest.QueryHandler(cfg.Core.VMAddr),
+			},
+		})
+	} else {
+		slog.Warn("metrics ingest: OPSNEXUS_CORE_VM_ADDR not set, using in-memory sink (demo only)")
+	}
 	ingestBuf := ingest.NewBuffer(ingestSink, ingest.WithFlushInterval(2*time.Second))
 	ingestBuf.Start(ctx)
 	grpcTunnelServer.OnMetrics(func(report tunnel.MetricsReport) {
