@@ -243,9 +243,9 @@ func (m *RBACMiddleware) AutoPermissionMiddleware(next http.Handler) http.Handle
 			return
 		}
 
-		// 检查路径权限
-		key := r.Method + " " + getPathPrefix(r.URL.Path)
-		if permission, ok := PathPermissionMapping[key]; ok {
+		// 检查路径权限（最长前缀优先匹配，使 /api/v1/cmdb/model-type 等
+		// 专属映射能命中，而非一律回落到 /api/v1/cmdb 的通用映射）
+		if permission, ok := resolvePathPermission(r.Method, r.URL.Path); ok {
 			if !m.HasPermission(role, permission) {
 				http.Error(w, `{"error":"forbidden"}`, http.StatusForbidden)
 				return
@@ -289,12 +289,17 @@ func shouldSkipPermission(path string) bool {
 	return false
 }
 
-// getPathPrefix 获取路径前缀（用于匹配路由）
-func getPathPrefix(path string) string {
-	// 移除路径参数部分
+// resolvePathPermission 按最长路径前缀匹配权限映射。
+// 从完整路径逐级向上收敛到 4 段前缀(/api/v1/<mod>)，返回第一个命中的权限。
+// 这样 /api/v1/cmdb/model-type 的 cmdb:admin 专属映射可命中，
+// 而 /api/v1/cmdb/ci/{id} 等仍回落到 /api/v1/cmdb 的 cmdb:write。
+func resolvePathPermission(method, path string) (string, bool) {
 	parts := strings.Split(path, "/")
-	if len(parts) > 4 {
-		return strings.Join(parts[:4], "/")
+	for i := len(parts); i >= 4; i-- {
+		key := method + " " + strings.Join(parts[:i], "/")
+		if perm, ok := PathPermissionMapping[key]; ok {
+			return perm, true
+		}
 	}
-	return path
+	return "", false
 }
