@@ -149,6 +149,12 @@ func (s *Service) Start(ctx context.Context) error {
 		}
 	}()
 
+	// 阶段 4: PromQL 告警规则评估器(需配置 VictoriaMetrics 地址)。
+	// no_data 检测: 规则写 absent(<metric>) 表达式, 指标断流时命中告警。
+	if s.cfg.Core.VMAddr != "" {
+		go s.promqlEvalLoop(ctx)
+	}
+
 	s.ebpf.Start()
 	go func() {
 		<-ctx.Done()

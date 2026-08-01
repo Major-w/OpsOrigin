@@ -93,4 +93,14 @@ type AlertRule struct {
 	Severity    AlertSeverity     `json:"severity"`
 	Labels      map[string]string `json:"labels,omitempty"`
 	Enabled     bool              `json:"enabled"`
+
+	// Type 规则类型(阶段 4 PromQL 化):
+	//   - "threshold"(默认): 基于 MetricName+Operator+Threshold 的单指标阈值;
+	//   - "promql": 基于 Expr 的 PromQL 表达式(查询 VM, 命中非空即告警;
+	//     含 no_data 检测: 如 absent(cpu.usage) 表达式命中即"数据断流"告警)。
+	Type string `json:"type,omitempty"`
+	// Expr PromQL 表达式(Type=promql 时使用)。如 avg(cpu.usage) > 90 / absent(cpu.usage)。
+	Expr string `json:"expr,omitempty"`
+	// EvalIntervalSec 评估周期(秒, 默认 60)。PromQL 规则按此周期查询 VM。
+	EvalIntervalSec int `json:"eval_interval_sec,omitempty"`
 }
