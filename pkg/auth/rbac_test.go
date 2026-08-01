@@ -48,10 +48,10 @@ func TestAutoPermissionMiddleware_CMDB(t *testing.T) {
 		{"viewer create ci forbidden", "viewer", "POST", "/api/v1/cmdb/ci", http.StatusForbidden},
 		{"viewer delete ci forbidden", "viewer", "DELETE", "/api/v1/cmdb/ci/mt-123", http.StatusForbidden},
 
-		// operator：可读写数据，但模型管理需 admin
+		// operator：可读写数据，但删除(cmdb:delete)与模型管理(cmdb:admin)需 admin
 		{"operator create ci", "operator", "POST", "/api/v1/cmdb/ci", http.StatusOK},
 		{"operator update ci", "operator", "PUT", "/api/v1/cmdb/ci/mt-123", http.StatusOK},
-		{"operator delete ci", "operator", "DELETE", "/api/v1/cmdb/ci/mt-123", http.StatusOK},
+		{"operator delete ci forbidden", "operator", "DELETE", "/api/v1/cmdb/ci/mt-123", http.StatusForbidden},
 		{"operator relation write", "operator", "POST", "/api/v1/cmdb/relation", http.StatusOK},
 		{"operator onboard", "operator", "POST", "/api/v1/cmdb/onboard", http.StatusOK},
 		{"operator run collection task", "operator", "POST", "/api/v1/cmdb/collection-tasks/t1/run", http.StatusOK},
@@ -60,9 +60,10 @@ func TestAutoPermissionMiddleware_CMDB(t *testing.T) {
 		{"operator update model-type forbidden", "operator", "PUT", "/api/v1/cmdb/model-type/mt1", http.StatusForbidden},
 		{"operator delete model-type forbidden", "operator", "DELETE", "/api/v1/cmdb/model-type/mt1", http.StatusForbidden},
 
-		// admin：全部放行（含 model-type 管理）
+		// admin：全部放行（含 model-type 管理与删除）
 		{"admin create model-type", "admin", "POST", "/api/v1/cmdb/model-type", http.StatusOK},
 		{"admin delete model-type", "admin", "DELETE", "/api/v1/cmdb/model-type/mt1", http.StatusOK},
+		{"admin delete ci", "admin", "DELETE", "/api/v1/cmdb/ci/mt-123", http.StatusOK},
 	}
 
 	for _, c := range cases {
@@ -98,5 +99,65 @@ func TestResolvePathPermission(t *testing.T) {
 		if ok != c.ok || got != c.want {
 			t.Errorf("resolvePathPermission(%s,%s) = (%q,%v), want (%q,%v)", c.method, c.path, got, ok, c.want, c.ok)
 		}
+	}
+}
+
+// withTenant 把 tenant 写入 context，模拟认证中间件注入的租户声明。
+func withTenant(req *http.Request, tenant string) *http.Request {
+	return req.WithContext(context.WithValue(req.Context(), "tenant_id", tenant))
+}
+
+// TestAutoPermissionMiddleware_Resolver 验证中间件在注入 resolver 后,
+// 以 resolver 返回的权限为准(而非写死的 RolePermissions),使角色管理页的编辑实时生效。
+// 这里用一个内存 map 模拟 IAM 角色库,无需 PG。
+func TestAutoPermissionMiddleware_Resolver(t *testing.T) {
+	// 模拟 IAM 角色库:operator 被收窄为仅 cmdb:read(不再有 cmdb:write)
+	iamRoles := map[string][]string{
+		"operator": {PermissionCMDBRead},
+		"editor":   {PermissionCMDBRead, PermissionCMDBWrite, PermissionCMDBDelete},
+	}
+	m := NewRBACMiddleware(&Provider{})
+	m.SetPermissionResolver(func(tenantID, role string) []string {
+		if tenantID != "default" {
+			return nil
+		}
+		return iamRoles[role]
+	})
+
+	reach := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+	mw := m.AutoPermissionMiddleware(reach)
+
+	cases := []struct {
+		name   string
+		role   string
+		method string
+		path   string
+		want   int
+	}{
+		// resolver 把 operator 收窄为只读:写/删均 403(即便写死映射里 operator 可写)
+		{"resolver operator read ok", "operator", "GET", "/api/v1/cmdb/ci", http.StatusOK},
+		{"resolver operator write forbidden", "operator", "POST", "/api/v1/cmdb/ci", http.StatusForbidden},
+		{"resolver operator delete forbidden", "operator", "DELETE", "/api/v1/cmdb/ci/x", http.StatusForbidden},
+		// editor 由 resolver 授予 cmdb:delete:可删
+		{"resolver editor delete ok", "editor", "DELETE", "/api/v1/cmdb/ci/x", http.StatusOK},
+		// 未知租户:resolver 返回 nil → 回落写死映射(operator 可写)
+		{"unknown tenant falls back", "operator", "POST", "/api/v1/cmdb/ci", http.StatusOK},
+	}
+
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			req := httptest.NewRequest(c.method, c.path, nil)
+			req = withRole(req, c.role)
+			if c.name != "unknown tenant falls back" {
+				req = withTenant(req, "default")
+			}
+			rec := httptest.NewRecorder()
+			mw.ServeHTTP(rec, req)
+			if rec.Code != c.want {
+				t.Errorf("method=%s path=%s role=%q: got %d want %d", c.method, c.path, c.role, rec.Code, c.want)
+			}
+		})
 	}
 }

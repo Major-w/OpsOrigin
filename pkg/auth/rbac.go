@@ -10,6 +10,7 @@ const (
 	PermissionCMDBRead     = "cmdb:read"
 	PermissionCMDBWrite    = "cmdb:write"
 	PermissionCMDBAdmin    = "cmdb:admin"
+	PermissionCMDBDelete   = "cmdb:delete"
 	PermissionMonitorRead  = "monitor:read"
 	PermissionMonitorWrite = "monitor:write"
 	PermissionITSMRead     = "itsm:read"
@@ -36,7 +37,7 @@ const (
 // RolePermissions 角色默认权限映射
 var RolePermissions = map[string][]string{
 	RoleAdmin: {
-		PermissionCMDBRead, PermissionCMDBWrite, PermissionCMDBAdmin,
+		PermissionCMDBRead, PermissionCMDBWrite, PermissionCMDBAdmin, PermissionCMDBDelete,
 		PermissionMonitorRead, PermissionMonitorWrite,
 		PermissionITSMRead, PermissionITSMWrite, PermissionITSMApprove,
 		PermissionUserRead, PermissionUserWrite,
@@ -65,11 +66,20 @@ var RolePermissions = map[string][]string{
 // RBACMiddleware RBAC权限中间件
 type RBACMiddleware struct {
 	provider *Provider
+	// resolver 从外部(如 IAM 角色库)按 (tenantID, role) 解析角色权限。
+	// 若设置且返回非空,则取代写死的 RolePermissions,使角色管理页的权限配置实时生效。
+	resolver func(tenantID, role string) []string
 }
 
 // NewRBACMiddleware 创建新的RBAC中间件
 func NewRBACMiddleware(provider *Provider) *RBACMiddleware {
 	return &RBACMiddleware{provider: provider}
+}
+
+// SetPermissionResolver 注入角色权限解析器(通常来自 IAM 服务)。
+// 注入后,鉴权将以 IAM 角色库中的权限为准,回落到 RolePermissions 兜底。
+func (m *RBACMiddleware) SetPermissionResolver(fn func(tenantID, role string) []string) {
+	m.resolver = fn
 }
 
 // RequirePermission 要求特定权限的中间件
@@ -82,7 +92,7 @@ func (m *RBACMiddleware) RequirePermission(permission string) func(http.Handler)
 				return
 			}
 
-			if !m.HasPermission(role, permission) {
+			if !m.hasPerm(TenantIDFromContext(r.Context()), role, permission) {
 				http.Error(w, `{"error":"forbidden"}`, http.StatusForbidden)
 				return
 			}
@@ -102,9 +112,10 @@ func (m *RBACMiddleware) RequireAnyPermission(permissions ...string) func(http.H
 				return
 			}
 
+			tenantID := TenantIDFromContext(r.Context())
 			hasAny := false
 			for _, perm := range permissions {
-				if m.HasPermission(role, perm) {
+				if m.hasPerm(tenantID, role, perm) {
 					hasAny = true
 					break
 				}
@@ -148,15 +159,30 @@ func (m *RBACMiddleware) RequireRole(roles ...string) func(http.Handler) http.Ha
 	}
 }
 
-// HasPermission 检查角色是否有特定权限
-func (m *RBACMiddleware) HasPermission(role, permission string) bool {
-	permissions := RolePermissions[role]
-	for _, p := range permissions {
+// resolvePerms 解析某角色的最终权限列表:优先使用注入的 resolver(IAM 角色库),
+// 若 resolver 未设置或返回空则回落到写死的 RolePermissions(保证内置角色始终可用)。
+func (m *RBACMiddleware) resolvePerms(tenantID, role string) []string {
+	if m.resolver != nil {
+		if perms := m.resolver(tenantID, role); len(perms) > 0 {
+			return perms
+		}
+	}
+	return RolePermissions[role]
+}
+
+// hasPerm 检查 (tenantID, role) 是否拥有指定权限。
+func (m *RBACMiddleware) hasPerm(tenantID, role, permission string) bool {
+	for _, p := range m.resolvePerms(tenantID, role) {
 		if p == permission {
 			return true
 		}
 	}
 	return false
+}
+
+// HasPermission 检查角色是否有特定权限(无 tenant 上下文时按写死映射兜底)。
+func (m *RBACMiddleware) HasPermission(role, permission string) bool {
+	return m.hasPerm("", role, permission)
 }
 
 // HasPermission 包级便捷函数:检查某角色是否拥有指定权限(无需构造 RBACMiddleware)。
@@ -175,7 +201,7 @@ func HasPermission(role, permission string) bool {
 
 // GetRolePermissions 获取角色的所有权限
 func (m *RBACMiddleware) GetRolePermissions(role string) []string {
-	return RolePermissions[role]
+	return m.resolvePerms("", role)
 }
 
 // PathPermissionMapping 路径权限映射
@@ -183,7 +209,7 @@ var PathPermissionMapping = map[string]string{
 	"GET /api/v1/cmdb":               PermissionCMDBRead,
 	"POST /api/v1/cmdb":              PermissionCMDBWrite,
 	"PUT /api/v1/cmdb":               PermissionCMDBWrite,
-	"DELETE /api/v1/cmdb":            PermissionCMDBWrite,
+	"DELETE /api/v1/cmdb":            PermissionCMDBDelete,
 	"GET /api/v1/cmdb/model-type":    PermissionCMDBRead,
 	"POST /api/v1/cmdb/model-type":   PermissionCMDBAdmin,
 	"PUT /api/v1/cmdb/model-type":    PermissionCMDBAdmin,
@@ -243,10 +269,12 @@ func (m *RBACMiddleware) AutoPermissionMiddleware(next http.Handler) http.Handle
 			return
 		}
 
+		tenantID := TenantIDFromContext(r.Context())
+
 		// 检查路径权限（最长前缀优先匹配，使 /api/v1/cmdb/model-type 等
 		// 专属映射能命中，而非一律回落到 /api/v1/cmdb 的通用映射）
 		if permission, ok := resolvePathPermission(r.Method, r.URL.Path); ok {
-			if !m.HasPermission(role, permission) {
+			if !m.hasPerm(tenantID, role, permission) {
 				http.Error(w, `{"error":"forbidden"}`, http.StatusForbidden)
 				return
 			}

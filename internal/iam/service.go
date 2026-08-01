@@ -210,6 +210,11 @@ func (s *MemoryStore) GetUserRoles(ctx context.Context, userID, tenantID string)
 type Service struct {
 	store       Store
 	permissions []Permission
+
+	// permCache 缓存 (tenantID:roleName) -> 权限列表,避免每次请求回查 PG。
+	// 角色权限变更(Create/Update/Delete)时整体失效。
+	permCacheMu sync.Mutex
+	permCache   map[string][]string
 }
 
 // NewService 创建 Service 并 seed 预置权限与内置角色。
@@ -221,9 +226,42 @@ func NewService(db *sql.DB) *Service {
 	s := &Service{
 		store:       st,
 		permissions: seedPermissions(),
+		permCache:   make(map[string][]string),
 	}
 	s.seedBuiltinRoles()
 	return s
+}
+
+// ResolvePermissions 按 (tenantID, roleName) 解析角色权限,供 RBAC 中间件鉴权使用。
+// 优先返回 IAM 角色库中配置的权限;角色不存在时返回 nil(由中间件回落到写死映射)。
+// 结果按 (tenant,role) 缓存,角色变更时通过 invalidatePermCache 失效。
+func (s *Service) ResolvePermissions(tenantID, roleName string) []string {
+	if tenantID == "" {
+		tenantID = "default"
+	}
+	key := tenantID + ":" + roleName
+	s.permCacheMu.Lock()
+	if perms, ok := s.permCache[key]; ok {
+		s.permCacheMu.Unlock()
+		return perms
+	}
+	s.permCacheMu.Unlock()
+
+	role, err := s.store.GetRoleByName(context.Background(), roleName, tenantID)
+	if err != nil || role == nil {
+		return nil
+	}
+	s.permCacheMu.Lock()
+	s.permCache[key] = role.Permissions
+	s.permCacheMu.Unlock()
+	return role.Permissions
+}
+
+// invalidatePermCache 使权限解析缓存整体失效(角色增删改后调用)。
+func (s *Service) invalidatePermCache() {
+	s.permCacheMu.Lock()
+	s.permCache = make(map[string][]string)
+	s.permCacheMu.Unlock()
 }
 
 // seedPermissions 返回平台预定义的权限点清单。
@@ -233,6 +271,7 @@ func seedPermissions() []Permission {
 		{Name: "cmdb:read", Description: "查看 CMDB 资源", Category: "CMDB 资产管理"},
 		{Name: "cmdb:write", Description: "新增/修改 CMDB 资源", Category: "CMDB 资产管理"},
 		{Name: "cmdb:admin", Description: "管理 CMDB 模型(删除/改模型)", Category: "CMDB 资产管理"},
+		{Name: "cmdb:delete", Description: "删除 CMDB 实例/关系(高危)", Category: "CMDB 资产管理"},
 		{Name: "monitor:read", Description: "查看监控指标与告警", Category: "监控告警"},
 		{Name: "monitor:write", Description: "配置监控策略与告警规则", Category: "监控告警"},
 		{Name: "itsm:read", Description: "查看工单", Category: "ITSM 工单"},
@@ -244,11 +283,14 @@ func seedPermissions() []Permission {
 		{Name: "agent:write", Description: "纳管/卸载 Agent", Category: "Agent 管理"},
 		{Name: "audit:read", Description: "查看审计日志", Category: "审计"},
 		{Name: "system:admin", Description: "系统级管理(全权限)", Category: "系统"},
+		{Name: "ai:tool:exec", Description: "执行运维工具/脚本(高危)", Category: "运维工具"},
 	}
 }
 
-// seedBuiltinRoles 预置 admin/operator/viewer 三个内置角色,
-// 权限清单与 pkg/auth/rbac.go 的 RolePermissions 保持一致。
+// seedBuiltinRoles 预置 admin/operator/viewer 三个内置角色。
+// 幂等:角色已存在时跳过创建,但补齐种子中新增的权限点(如 cmdb:delete / ai:tool:exec),
+// 不删除用户已自定义的权限,使新增权限自动生效而不破坏既有配置。
+// 权限清单与 pkg/auth/rbac.go 的 RolePermissions 保持一致(operator 不含 cmdb:admin/cmdb:delete)。
 func (s *Service) seedBuiltinRoles() {
 	ctx := context.Background()
 	builtins := []struct {
@@ -256,12 +298,12 @@ func (s *Service) seedBuiltinRoles() {
 		perms                []string
 	}{
 		{"admin", "管理员", "系统管理员,拥有全部权限", []string{
-			"cmdb:read", "cmdb:write", "cmdb:admin",
+			"cmdb:read", "cmdb:write", "cmdb:admin", "cmdb:delete",
 			"monitor:read", "monitor:write",
 			"itsm:read", "itsm:write", "itsm:approve",
 			"user:read", "user:write",
 			"agent:read", "agent:write",
-			"audit:read", "system:admin",
+			"audit:read", "system:admin", "ai:tool:exec",
 		}},
 		{"operator", "操作员", "日常运维操作,无系统级权限", []string{
 			"cmdb:read", "cmdb:write",
@@ -269,7 +311,7 @@ func (s *Service) seedBuiltinRoles() {
 			"itsm:read", "itsm:write",
 			"user:read",
 			"agent:read", "agent:write",
-			"audit:read",
+			"audit:read", "ai:tool:exec",
 		}},
 		{"viewer", "只读用户", "仅可查看,不可修改", []string{
 			"cmdb:read",
@@ -281,16 +323,41 @@ func (s *Service) seedBuiltinRoles() {
 		}},
 	}
 	for _, b := range builtins {
-		r := &Role{
-			TenantID:    "default",
-			Name:        b.name,
-			DisplayName: b.display,
-			Description: b.desc,
-			Permissions: b.perms,
-			IsBuiltIn:   true,
+		existing, _ := s.store.GetRoleByName(ctx, b.name, "default")
+		if existing == nil {
+			r := &Role{
+				TenantID:    "default",
+				Name:        b.name,
+				DisplayName: b.display,
+				Description: b.desc,
+				Permissions: b.perms,
+				IsBuiltIn:   true,
+			}
+			s.store.CreateRole(ctx, r)
+			continue
 		}
-		s.store.CreateRole(ctx, r)
+		// 已存在:补齐种子中新增的权限点(并集,不删既有)
+		merged := mergeUnique(existing.Permissions, b.perms)
+		if len(merged) != len(existing.Permissions) {
+			updated := *existing
+			updated.Permissions = merged
+			s.store.UpdateRole(ctx, &updated)
+		}
 	}
+}
+
+// mergeUnique 返回 a 与 b 的并集(去重,保持原有顺序)。
+func mergeUnique(a, b []string) []string {
+	seen := make(map[string]struct{}, len(a)+len(b))
+	out := make([]string, 0, len(a)+len(b))
+	for _, p := range append(append([]string{}, a...), b...) {
+		if _, ok := seen[p]; ok {
+			continue
+		}
+		seen[p] = struct{}{}
+		out = append(out, p)
+	}
+	return out
 }
 
 func tenantFromCtx(ctx context.Context) string {
@@ -375,6 +442,7 @@ func (s *Service) handleCreateRole(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	s.invalidatePermCache()
 	writeJSON(w, http.StatusCreated, role)
 }
 
@@ -414,6 +482,7 @@ func (s *Service) handleUpdateRole(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	s.invalidatePermCache()
 	writeJSON(w, http.StatusOK, updated)
 }
 
@@ -433,6 +502,7 @@ func (s *Service) handleDeleteRole(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	s.invalidatePermCache()
 	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
 }
 

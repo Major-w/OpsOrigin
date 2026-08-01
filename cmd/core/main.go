@@ -467,7 +467,7 @@ func main() {
 	userSvc := user.NewService(db, authProvider)
 	server.RegisterService(userSvc)
 
-	// IAM:角色/用户组/权限管理(独立内存存储,预置 3 个内置角色 + 14 个权限点)
+	// IAM:角色/用户组/权限管理(PG 存储,预置 3 内置角色 + 权限点目录)
 	iamSvc := iam.NewService(db)
 	server.RegisterService(iamSvc)
 
@@ -476,8 +476,10 @@ func main() {
 	server.RegisterService(notifySvc)
 	schedulerSvc.SetNotifier(notifySvc)
 
-	// 初始化RBAC中间件
+	// 初始化RBAC中间件,并将角色权限解析接入 IAM 角色库,
+	// 使「系统设置 / 角色管理」中对权限的编辑实时生效(回落写死映射兜底)。
 	rbacMiddleware := auth.NewRBACMiddleware(authProvider)
+	rbacMiddleware.SetPermissionResolver(iamSvc.ResolvePermissions)
 	server.WithMiddleware(rbacMiddleware.AutoPermissionMiddleware)
 
 	aiSvc := ai.NewService(cfg, llmClient, rdbClient, db)
