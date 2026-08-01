@@ -204,6 +204,44 @@ func (c *GRPCAgentClient) connectAndRun(ctx context.Context) error {
 	}
 }
 
+// SendMetrics 经 gRPC 流上报一批监控/CMDB 指标(任务归任务、上报归上报)。
+// QoS(§4.7.1): monitor 即时上报——断连时返回错误, 由调用方丢弃(不缓存);
+// cmdb 可缓存补传——调用方按 task_type 决定是否本地缓存。
+// 非阻塞: stream.Send 写入 gRPC 内部缓冲, 失败即连接断开。
+func (c *GRPCAgentClient) SendMetrics(taskID string, taskType TaskType, ts time.Time, intervalSec int64, points []MetricPoint) error {
+	c.mu.Lock()
+	stream := c.stream
+	connected := c.connected
+	c.mu.Unlock()
+	if !connected || stream == nil {
+		return fmt.Errorf("grpc not connected")
+	}
+	if len(points) == 0 {
+		return nil
+	}
+	pbPts := make([]*pb.MetricPoint, 0, len(points))
+	for _, p := range points {
+		pbPts = append(pbPts, &pb.MetricPoint{
+			Name:   p.Name,
+			Value:  p.Value,
+			Unit:   p.Unit,
+			Labels: p.Labels,
+		})
+	}
+	msg := &pb.TunnelMessage{
+		Payload: &pb.TunnelMessage_Metrics{
+			Metrics: &pb.MetricBatch{
+				TaskId:      taskID,
+				TaskType:    string(taskType),
+				Timestamp:   ts.Unix(),
+				IntervalSec: intervalSec,
+				Points:      pbPts,
+			},
+		},
+	}
+	return stream.Send(msg)
+}
+
 func (c *GRPCAgentClient) handleMessage(ctx context.Context, msg *pb.TunnelMessage) {
 	switch p := msg.Payload.(type) {
 	case *pb.TunnelMessage_Command:

@@ -125,6 +125,7 @@ type Agent struct {
 	client       *http.Client
 	tunnelClient *tunnel.AgentClient // Proxy 中转客户端(可选)
 	grpcClient   *GRPCAgentClient    // gRPC 直连客户端(可选)
+	scheduler    *Scheduler         // 本地任务调度器(内置/自定义任务, 阶段 3)
 	stopCh       chan struct{}
 	stopOnce     sync.Once
 	wsConn       *websocket.Conn // WebSocket 长连接(可选)
@@ -164,9 +165,45 @@ func NewAgent(cfg AgentConfig) *Agent {
 		// 采集一次系统信息,注册时随 gRPC RegisterRequest 上报(OS/IP/CPU/Memory),
 		// 让 Core 端 agent_hosts 不再是无资源信息的空壳。
 		a.grpcClient.sysInfo = a.collectSystemInfo()
+
+		// 内置任务(任务归任务、上报归上报): Agent 本地调度自主执行 + gRPC 主动上报。
+		// monitor 即时上报(断连丢弃, §4.7.1 QoS); cmdb 低频(60s, 本轮先即时上报, 缓存补传留后续)。
+		a.scheduler = NewScheduler(func(task *Task, points []MetricPoint) {
+			if err := a.grpcClient.SendMetrics(task.ID, task.Type, time.Now(), int64(task.Interval/time.Second), points); err != nil {
+				slog.Warn("agent: metrics send failed (dropped)", "task", task.ID, "err", err)
+			}
+		})
+		a.scheduler.Register(&Task{
+			ID: "builtin.monitor.basic", Name: "基础监控", Type: TaskMonitor,
+			Interval: 5 * time.Second,
+			Run:      func(ctx context.Context) ([]MetricPoint, error) { return CollectSystemMetrics(), nil },
+		})
+		a.scheduler.Register(&Task{
+			ID: "builtin.cmdb.basic", Name: "基础资产", Type: TaskCMDB,
+			Interval: 60 * time.Second,
+			Run:      a.collectCMDBMetrics,
+		})
 	}
 
 	return a
+}
+
+// collectCMDBMetrics 内置 CMDB 任务: 将本机系统信息转为指标点上报(资产字段作为 labels)。
+// 与注册时的 RegisterRequest 系统信息互补(此处按任务周期持续刷新, 而非仅启动一次)。
+func (a *Agent) collectCMDBMetrics(ctx context.Context) ([]MetricPoint, error) {
+	si := a.collectSystemInfo()
+	ts := time.Now()
+	pts := []MetricPoint{
+		{Name: "asset.os", Value: 1, Labels: map[string]string{"value": si.OS}, Timestamp: ts},
+		{Name: "asset.os_version", Value: 1, Labels: map[string]string{"value": si.OSVersion}, Timestamp: ts},
+		{Name: "asset.cpu", Value: 1, Labels: map[string]string{"value": si.CPU}, Timestamp: ts},
+		{Name: "asset.memory", Value: 1, Labels: map[string]string{"value": si.Memory}, Timestamp: ts},
+		{Name: "asset.hostname", Value: 1, Labels: map[string]string{"value": si.Hostname}, Timestamp: ts},
+	}
+	for _, ip := range si.IPs {
+		pts = append(pts, MetricPoint{Name: "asset.ip", Value: 1, Labels: map[string]string{"value": ip}, Timestamp: ts})
+	}
+	return pts, nil
 }
 
 // ---------------------------------------------------------------------------
@@ -1197,6 +1234,11 @@ func (a *Agent) Run(ctx context.Context) error {
 	// 启动前拉取命令白名单(§6),并周期刷新;失败不阻塞启动。
 	a.fetchWhitelist(ctx)
 	go a.startWhitelistRefresh(ctx)
+
+	// 启动本地任务调度器(内置/自定义任务): 任务归任务、上报归上报(阶段 3)。
+	if a.scheduler != nil {
+		a.scheduler.Start(ctx)
+	}
 
 	// gRPC 直连模式:直接通过 gRPC 与 Core 通信
 	if a.grpcClient != nil {
