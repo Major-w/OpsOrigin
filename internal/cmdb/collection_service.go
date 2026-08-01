@@ -248,6 +248,7 @@ func (s *Service) ingestCollectionOutput(ctx context.Context, t *model.Collectio
 	switch t.Kind {
 	case "cmdb":
 		if len(out.CIs) > 0 {
+			applyCollectionMeta(out.CIs, t) // 按采集任务推导 source，逐字段写入来源/置信度
 			if err := s.upsertCIsByResourceID(ctx, t.TenantID, out.CIs); err != nil {
 				return err
 			}
@@ -262,6 +263,33 @@ func (s *Service) ingestCollectionOutput(ctx context.Context, t *model.Collectio
 		slog.Warn("unknown collection kind, skipped", "kind", t.Kind, "task", t.ID)
 	}
 	return nil
+}
+
+// applyCollectionMeta 为采集产出的 CI 逐字段写入来源/置信度元数据（字段级，平行存储）。
+// source 由采集任务推导：经 Agent 通道上报 → agent；服务端拉取（当前仅云） → cloud_api。
+// 若采集器已显式在 AttributeMeta 中上报（未来扩展点），则跳过兜底，允许其覆盖默认权重。
+// 人工编辑路径不走这里，由 repo 按 ChannelWeight 兜底标记为 manual。
+func applyCollectionMeta(cis []*model.CIModel, t *model.CollectionTask) {
+	src := model.SourceCloudAPI
+	if t.Channel == "agent" {
+		src = model.SourceAgent
+	}
+	now := time.Now()
+	for _, ci := range cis {
+		if ci.AttributeMeta == nil {
+			ci.AttributeMeta = make(map[string]model.AttrMeta)
+		}
+		for k := range ci.Attributes {
+			if _, ok := ci.AttributeMeta[k]; ok {
+				continue // 采集器已显式上报，跳过兜底
+			}
+			ci.AttributeMeta[k] = model.AttrMeta{
+				Source:     src,
+				Confidence: model.DefaultConfidence(src),
+				LastSeenAt: now,
+			}
+		}
+	}
 }
 
 // upsertCIsByResourceID 按 resource_id 幂等 upsert CI（复用 CreateCI/UpdateCI 渠道权重）。

@@ -115,6 +115,14 @@ func (r *Repository) CreateCI(ctx context.Context, ci *model.CIModel, traceID st
 	if err != nil {
 		return fmt.Errorf("marshal labels: %w", err)
 	}
+	if ci.AttributeMeta == nil {
+		// 兜底：按 Channel 推导来源（人工→manual 等）；采集路径已在调用前注入具体 source。
+		ci.AttributeMeta = model.BuildAttrMeta(ci.Attributes, model.SourceFromChannelWeight(ci.Channel), time.Now())
+	}
+	metaJSON, err := marshalAttrMeta(ci.AttributeMeta)
+	if err != nil {
+		return fmt.Errorf("marshal attribute_meta: %w", err)
+	}
 
 	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -123,10 +131,10 @@ func (r *Repository) CreateCI(ctx context.Context, ci *model.CIModel, traceID st
 	defer tx.Rollback()
 
 	_, err = tx.ExecContext(ctx, `
-		INSERT INTO cmdb_ci (id, type_id, tenant_id, name, description, status, attributes, labels, channel, created_at, updated_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
+		INSERT INTO cmdb_ci (id, type_id, tenant_id, name, description, status, attributes, labels, channel, created_at, updated_at, attribute_meta)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
 		ci.ID, ci.TypeID, ci.TenantID, ci.Name, nullIfEmpty(ci.Description),
-		string(ci.Status), attrsJSON, labelsJSON, int(ci.Channel), ci.CreatedAt, ci.UpdatedAt)
+		string(ci.Status), attrsJSON, labelsJSON, int(ci.Channel), ci.CreatedAt, ci.UpdatedAt, metaJSON)
 	if err != nil {
 		return fmt.Errorf("insert ci: %w", err)
 	}
@@ -173,11 +181,18 @@ func (r *Repository) BulkCreateCI(ctx context.Context, cis []*model.CIModel, tra
 		if err != nil {
 			return fmt.Errorf("marshal labels: %w", err)
 		}
+		if ci.AttributeMeta == nil {
+			ci.AttributeMeta = model.BuildAttrMeta(ci.Attributes, model.SourceFromChannelWeight(ci.Channel), time.Now())
+		}
+		metaJSON, err := marshalAttrMeta(ci.AttributeMeta)
+		if err != nil {
+			return fmt.Errorf("marshal attribute_meta: %w", err)
+		}
 		_, err = tx.ExecContext(ctx, `
-		INSERT INTO cmdb_ci (id, type_id, tenant_id, name, description, status, attributes, labels, channel, created_at, updated_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
+		INSERT INTO cmdb_ci (id, type_id, tenant_id, name, description, status, attributes, labels, channel, created_at, updated_at, attribute_meta)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
 			ci.ID, ci.TypeID, ci.TenantID, ci.Name, nullIfEmpty(ci.Description),
-			string(ci.Status), attrsJSON, labelsJSON, int(ci.Channel), ci.CreatedAt, ci.UpdatedAt)
+			string(ci.Status), attrsJSON, labelsJSON, int(ci.Channel), ci.CreatedAt, ci.UpdatedAt, metaJSON)
 		if err != nil {
 			return fmt.Errorf("insert ci (bulk): %w", err)
 		}
@@ -209,6 +224,7 @@ func (r *Repository) UpdateCI(ctx context.Context, ci *model.CIModel, channel mo
 
 	changed := false
 	changeLog := make([]model.AttributeChange, 0)
+	changedKeys := make(map[string]bool)
 
 	ci.UpdatedAt = time.Now()
 
@@ -218,6 +234,7 @@ func (r *Repository) UpdateCI(ctx context.Context, ci *model.CIModel, channel mo
 			continue
 		}
 		changed = true
+		changedKeys[k] = true
 		changeLog = append(changeLog, model.AttributeChange{
 			CIID:      ci.ID,
 			AttrName:  k,
@@ -241,6 +258,28 @@ func (r *Repository) UpdateCI(ctx context.Context, ci *model.CIModel, channel mo
 		return fmt.Errorf("marshal labels: %w", err)
 	}
 
+	// 字段级 meta：仅更新发生变化的字段的 meta，未变化字段保留既有来源。
+	merged := make(map[string]model.AttrMeta, len(existing.AttributeMeta))
+	for k, v := range existing.AttributeMeta {
+		merged[k] = v
+	}
+	fallback := model.SourceFromChannelWeight(channel)
+	for k := range changedKeys {
+		if m, ok := ci.AttributeMeta[k]; ok {
+			merged[k] = m
+		} else {
+			merged[k] = model.AttrMeta{
+				Source:     fallback,
+				Confidence: model.DefaultConfidence(fallback),
+				LastSeenAt: ci.UpdatedAt,
+			}
+		}
+	}
+	metaJSON, err := marshalAttrMeta(merged)
+	if err != nil {
+		return fmt.Errorf("marshal attribute_meta: %w", err)
+	}
+
 	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("begin tx: %w", err)
@@ -248,10 +287,10 @@ func (r *Repository) UpdateCI(ctx context.Context, ci *model.CIModel, channel mo
 	defer tx.Rollback()
 
 	result, err := tx.ExecContext(ctx, `
-		UPDATE cmdb_ci SET name=$1, description=$2, status=$3, attributes=$4, labels=$5, channel=$6, updated_at=$7
-		WHERE id=$8 AND tenant_id=$9`,
+		UPDATE cmdb_ci SET name=$1, description=$2, status=$3, attributes=$4, labels=$5, channel=$6, updated_at=$7, attribute_meta=$8
+		WHERE id=$9 AND tenant_id=$10`,
 		ci.Name, nullIfEmpty(ci.Description), string(ci.Status), attrsJSON, labelsJSON,
-		int(channel), ci.UpdatedAt, ci.ID, ci.TenantID)
+		int(channel), ci.UpdatedAt, metaJSON, ci.ID, ci.TenantID)
 	if err != nil {
 		return fmt.Errorf("update ci: %w", err)
 	}
@@ -358,7 +397,7 @@ func (r *Repository) ListCI(ctx context.Context, tenantID string, typeID string)
 // pushing the filter down to SQL (ILIKE) instead of loading the whole table
 // into memory and filtering in Go (see report issue 3.3).
 func (r *Repository) ListCIByQuery(ctx context.Context, tenantID, typeID, q string) ([]*model.CIModel, error) {
-	query := `SELECT id, type_id, tenant_id, name, description, status, attributes, labels, channel, created_at, updated_at
+	query := `SELECT id, type_id, tenant_id, name, description, status, attributes, labels, channel, created_at, updated_at, attribute_meta
 	FROM cmdb_ci WHERE tenant_id = $1`
 	args := []any{tenantID}
 	argIdx := 2
@@ -397,7 +436,7 @@ func (r *Repository) ListCIByQuery(ctx context.Context, tenantID, typeID, q stri
 }
 
 func (r *Repository) ListCIPaginated(ctx context.Context, tenantID, typeID, sortBy, sortOrder string, limit, offset int) ([]*model.CIModel, error) {
-	query := `SELECT id, type_id, tenant_id, name, description, status, attributes, labels, channel, created_at, updated_at
+	query := `SELECT id, type_id, tenant_id, name, description, status, attributes, labels, channel, created_at, updated_at, attribute_meta
 		FROM cmdb_ci WHERE tenant_id = $1`
 	args := []any{tenantID}
 	argIdx := 2
@@ -574,14 +613,14 @@ func (r *Repository) insertOutbox(ctx context.Context, tx *sql.Tx, tenantID stri
 
 func (r *Repository) getCIByID(ctx context.Context, id string) (*model.CIModel, error) {
 	row := r.db.QueryRowContext(ctx, `
-		SELECT id, type_id, tenant_id, name, description, status, attributes, labels, channel, created_at, updated_at
+		SELECT id, type_id, tenant_id, name, description, status, attributes, labels, channel, created_at, updated_at, attribute_meta
 		FROM cmdb_ci WHERE id = $1`, id)
 	return scanCI(row)
 }
 
 func (r *Repository) getCIByIDAndTenant(ctx context.Context, id, tenantID string) (*model.CIModel, error) {
 	row := r.db.QueryRowContext(ctx, `
-		SELECT id, type_id, tenant_id, name, description, status, attributes, labels, channel, created_at, updated_at
+		SELECT id, type_id, tenant_id, name, description, status, attributes, labels, channel, created_at, updated_at, attribute_meta
 		FROM cmdb_ci WHERE id = $1 AND tenant_id = $2`, id, tenantID)
 	return scanCI(row)
 }
@@ -593,11 +632,11 @@ type scannable interface {
 func scanCI(row scannable) (*model.CIModel, error) {
 	ci := &model.CIModel{}
 	var desc sql.NullString
-	var attrsJSON, labelsJSON []byte
+	var attrsJSON, labelsJSON, metaJSON []byte
 	var channel int
 
 	err := row.Scan(&ci.ID, &ci.TypeID, &ci.TenantID, &ci.Name, &desc, &ci.Status,
-		&attrsJSON, &labelsJSON, &channel, &ci.CreatedAt, &ci.UpdatedAt)
+		&attrsJSON, &labelsJSON, &channel, &ci.CreatedAt, &ci.UpdatedAt, &metaJSON)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, nil
@@ -616,7 +655,22 @@ func scanCI(row scannable) (*model.CIModel, error) {
 	if labelsJSON != nil {
 		json.Unmarshal(labelsJSON, &ci.Labels)
 	}
+	if metaJSON != nil {
+		json.Unmarshal(metaJSON, &ci.AttributeMeta)
+	}
+	if ci.AttributeMeta == nil {
+		ci.AttributeMeta = make(map[string]model.AttrMeta)
+	}
 	return ci, nil
+}
+
+// marshalAttrMeta 序列化字段级来源/置信度元数据；nil 时返回 "{}" 以符合
+// cmdb_ci.attribute_meta 列的 NOT NULL 约束。
+func marshalAttrMeta(m map[string]model.AttrMeta) ([]byte, error) {
+	if m == nil {
+		return []byte("{}"), nil
+	}
+	return json.Marshal(m)
 }
 
 func nullIfEmpty(s string) *string {
