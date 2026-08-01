@@ -34,10 +34,22 @@ export default function MonitorConfigPage() {
   // 采集指标趋势(来自采集任务 collect_metrics)
   const [collectMetrics, setCollectMetrics] = useState<any[]>([])
   const [metricsLoading, setMetricsLoading] = useState(false)
+  // 上报管道统计(ingest 背压缓冲: 收到/落库/丢弃/失败)
+  const [ingestStats, setIngestStats] = useState<{ received?: number; points?: number; dropped?: number; flushed?: number; flush_error?: number } | null>(null)
 
   useEffect(() => {
-    if (tab === 'metrics') loadCollectMetrics()
+    if (tab === 'metrics') {
+      loadCollectMetrics()
+      loadIngestStats()
+    }
   }, [tab])
+
+  const loadIngestStats = async () => {
+    try {
+      const r = await fetch('/api/v1/monitor/ingest/stats')
+      if (r.ok) setIngestStats(await r.json())
+    } catch { /* 后端不可用时静默 */ }
+  }
 
   const loadCollectMetrics = async () => {
     setMetricsLoading(true)
@@ -192,6 +204,45 @@ export default function MonitorConfigPage() {
 
         {/* 指标历史 */}
         <TabsContent value="metrics" className="mt-4">
+          {/* 上报管道状态(ingest 背压缓冲运行统计, 反映 Agent 上报链路健康度) */}
+          <Card className="mb-4">
+            <CardHeader className="pb-2 flex-row items-center justify-between">
+              <CardTitle className="text-sm flex items-center gap-2">
+                <span className={`h-2 w-2 rounded-full ${ingestStats ? (ingestStats.dropped ? 'bg-amber-500' : 'bg-emerald-500') : 'bg-gray-400'}`} />
+                上报管道状态
+              </CardTitle>
+              <Button variant="ghost" size="sm" className="h-6 text-xs" onClick={loadIngestStats}>刷新</Button>
+            </CardHeader>
+            <CardContent>
+              {ingestStats === null ? (
+                <p className="text-xs text-muted-foreground py-2 text-center">管道未启用或服务不可达(需配置 OPSNEXUS_CORE_VM_ADDR 并接入 Agent)。</p>
+              ) : (
+                <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
+                  <div className="rounded-lg border border-gray-200 dark:border-gray-800 p-3">
+                    <div className="text-lg font-bold">{ingestStats.received ?? 0}</div>
+                    <div className="text-[10px] text-muted-foreground">收到批次</div>
+                  </div>
+                  <div className="rounded-lg border border-gray-200 dark:border-gray-800 p-3">
+                    <div className="text-lg font-bold">{ingestStats.points ?? 0}</div>
+                    <div className="text-[10px] text-muted-foreground">指标点数</div>
+                  </div>
+                  <div className="rounded-lg border border-gray-200 dark:border-gray-800 p-3">
+                    <div className="text-lg font-bold">{ingestStats.flushed ?? 0}</div>
+                    <div className="text-[10px] text-muted-foreground">落库批次</div>
+                  </div>
+                  <div className={`rounded-lg border p-3 ${(ingestStats.dropped || 0) > 0 ? 'border-amber-500/50 bg-amber-500/5' : 'border-gray-200 dark:border-gray-800'}`}>
+                    <div className="text-lg font-bold text-amber-600 dark:text-amber-400">{ingestStats.dropped ?? 0}</div>
+                    <div className="text-[10px] text-muted-foreground">背压丢弃</div>
+                  </div>
+                  <div className={`rounded-lg border p-3 ${(ingestStats.flush_error || 0) > 0 ? 'border-red-500/50 bg-red-500/5' : 'border-gray-200 dark:border-gray-800'}`}>
+                    <div className="text-lg font-bold text-red-600 dark:text-red-400">{ingestStats.flush_error ?? 0}</div>
+                    <div className="text-[10px] text-muted-foreground">落库失败</div>
+                  </div>
+                </div>
+              )}
+            </CardContent>
+          </Card>
+
           {/* 采集指标趋势(来自采集任务 collect_metrics, 指标落库持久化) */}
           <Card className="mb-4">
             <CardHeader className="pb-2 flex-row items-center justify-between">

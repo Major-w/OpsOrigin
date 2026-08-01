@@ -266,6 +266,18 @@ func main() {
 		ingestBuf.Submit(report)
 	})
 
+	// ingest 管道运行统计: GET /api/v1/monitor/ingest/stats
+	// 前端监控页据此展示上报管道健康度(收到/落库/背压丢弃/失败)。
+	statsHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(ingestBuf.Stats())
+	})
+	server.RegisterService(&staticHandlerRegistrar{
+		routes: map[string]http.Handler{
+			"GET /api/v1/monitor/ingest/stats": statsHandler,
+		},
+	})
+
 	agentSvc := agentmgr.NewService(db, rdb, entClient)
 	// 设置 TLS 状态(影响安装脚本中下载链接的 scheme)
 	if cfg.TLS.Enabled {
