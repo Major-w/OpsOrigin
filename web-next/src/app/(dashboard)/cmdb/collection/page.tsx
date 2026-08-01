@@ -9,6 +9,7 @@ import { Select } from '@/components/ui/select'
 import { Switch, SwitchField } from '@/components/ui/switch'
 import { Dialog, DialogFooter } from '@/components/ui/dialog'
 import { useCollectionStore } from '@/stores/collection'
+import { useCan } from '@/stores/permissions'
 import {
   CHANNEL_LABELS,
   DEFAULT_PLATFORM_POLICY,
@@ -41,6 +42,7 @@ export default function CollectionPolicyPage() {
     useCollectionStore()
 
   const [draft, setDraft] = useState<PlatformPolicy>(DEFAULT_PLATFORM_POLICY)
+  const canDelete = useCan('cmdb:delete')
   const [kindFilter, setKindFilter] = useState<'all' | CollectionKind>('all')
   const [dialogOpen, setDialogOpen] = useState(false)
   const [form, setForm] = useState<{
@@ -322,13 +324,15 @@ export default function CollectionPolicyPage() {
                                 ? <Loader2 className="h-3.5 w-3.5 animate-spin" />
                                 : <Play className="h-3.5 w-3.5" />}
                             </Button>
-                            <Button
-                              variant="ghost" size="sm" className="h-7 w-7 p-0 text-red-500 hover:text-red-600"
-                              title="删除任务"
-                              onClick={() => { if (confirm(`确认删除采集任务「${t.name}」？`)) deleteTask(t.id) }}
-                            >
-                              <Trash2 className="h-3.5 w-3.5" />
-                            </Button>
+                            {canDelete && (
+                              <Button
+                                variant="ghost" size="sm" className="h-7 w-7 p-0 text-red-500 hover:text-red-600"
+                                title="删除任务"
+                                onClick={() => { if (confirm(`确认删除采集任务「${t.name}」？`)) deleteTask(t.id) }}
+                              >
+                                <Trash2 className="h-3.5 w-3.5" />
+                              </Button>
+                            )}
                           </div>
                         </td>
                       </tr>

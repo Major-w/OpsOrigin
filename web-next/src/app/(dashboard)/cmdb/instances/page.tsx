@@ -9,6 +9,7 @@ import { Input } from '@/components/ui/input'
 import { Dialog, DialogFooter } from '@/components/ui/dialog'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { formatTime, apiFetch } from '@/lib/utils'
+import { useCan } from '@/stores/permissions'
 import TopologyGraph from '@/components/TopologyGraph'
 import { Plus, Pencil, Trash2, Network, Search, ChevronLeft, ChevronRight, Link2, Unlink, AlertTriangle } from 'lucide-react'
 
@@ -26,6 +27,7 @@ function statusVariant(s: string): 'success' | 'destructive' | 'outline' {
 
 export default function CMDBPage() {
   const { items, relations, loading, fetch, search, create, update, remove, getAudit, fetchRelations, createRelation, deleteRelation } = useCMDBStore()
+  const canDelete = useCan('cmdb:delete')
   const [dialogOpen, setDialogOpen] = useState(false)
   const [editId, setEditId] = useState<string | null>(null)
   const [form, setForm] = useState<{ name: string; type_id: string; description: string; attributes: Record<string, any>; labels: Record<string, string> }>({ name: '', type_id: 'server', description: '', attributes: {}, labels: {} })
@@ -185,7 +187,7 @@ export default function CMDBPage() {
                         <span className="font-medium text-sm truncate">{item.name}</span>
                         <div className="flex gap-1 shrink-0">
                           <Button variant="ghost" size="icon" className="h-6 w-6" onClick={e => { e.stopPropagation(); handleEdit(item) }}><Pencil className="h-3 w-3" /></Button>
-                          <Button variant="ghost" size="icon" className="h-6 w-6" onClick={e => { e.stopPropagation(); remove(item.id); setSelectedCI(null) }}><Trash2 className="h-3 w-3" /></Button>
+                          {canDelete && <Button variant="ghost" size="icon" className="h-6 w-6" onClick={e => { e.stopPropagation(); remove(item.id); setSelectedCI(null) }}><Trash2 className="h-3 w-3" /></Button>}
                         </div>
                       </div>
                       <div className="flex gap-2 mt-1">
@@ -216,7 +218,7 @@ export default function CMDBPage() {
                     return (
                       <div key={rel.id} className="px-4 py-2 border-b last:border-0 flex items-center justify-between text-xs">
                         <span>{src?.name || rel.source_id.slice(0, 8)} <Badge variant="outline" className="text-[10px] px-1">{rel.relation_type}</Badge> {tgt?.name || rel.target_id.slice(0, 8)}</span>
-                        <Button variant="ghost" size="icon" className="h-5 w-5" onClick={() => handleDeleteRel(rel.id)}><Unlink className="h-3 w-3" /></Button>
+                        {canDelete && <Button variant="ghost" size="icon" className="h-5 w-5" onClick={() => handleDeleteRel(rel.id)}><Unlink className="h-3 w-3" /></Button>}
                       </div>
                     )
                   })}
@@ -266,7 +268,7 @@ export default function CMDBPage() {
                   <div className="flex gap-1">
                     <Button variant="outline" size="sm" onClick={handleEditAttrs}>编辑属性</Button>
                     <Button variant="outline" size="sm" onClick={e => { e.stopPropagation(); handleEdit(selectedCI) }}><Pencil className="h-3 w-3" /></Button>
-                    <Button variant="outline" size="sm" onClick={() => { remove(selectedCI.id); setSelectedCI(null) }}><Trash2 className="h-3 w-3" /></Button>
+                    {canDelete && <Button variant="outline" size="sm" onClick={() => { remove(selectedCI.id); setSelectedCI(null) }}><Trash2 className="h-3 w-3" /></Button>}
                   </div>
                 </div>
               </CardHeader>
@@ -328,7 +330,7 @@ export default function CMDBPage() {
                                 <td className="py-1 text-xs">{src?.name || rel.source_id.slice(0, 8)}</td>
                                 <td className="py-1 text-xs"><Badge variant="outline" className="text-[10px]">{rel.relation_type}</Badge></td>
                                 <td className="py-1 text-xs">{tgt?.name || rel.target_id.slice(0, 8)}</td>
-                                <td className="py-1"><Button variant="ghost" size="icon" className="h-5 w-5" onClick={() => handleDeleteRel(rel.id)}><Unlink className="h-3 w-3" /></Button></td>
+                                <td className="py-1">{canDelete && <Button variant="ghost" size="icon" className="h-5 w-5" onClick={() => handleDeleteRel(rel.id)}><Unlink className="h-3 w-3" /></Button>}</td>
                               </tr>
                             )
                           })}

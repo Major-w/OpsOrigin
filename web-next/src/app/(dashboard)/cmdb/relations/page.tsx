@@ -9,6 +9,7 @@ import { Dialog, DialogFooter } from '@/components/ui/dialog'
 import { apiFetch } from '@/lib/utils'
 import { Plus, Trash2, GitBranch, ArrowRight, Link } from 'lucide-react'
 import { useThemeStore } from '@/stores/theme'
+import { useCan } from '@/stores/permissions'
 import { cn } from '@/lib/utils'
 
 interface CIRelation {
@@ -40,6 +41,7 @@ export default function CMDBRelationsPage() {
   const [filter, setFilter] = useState('')
   const [form, setForm] = useState({ source_id: '', target_id: '', relation_type: 'depends_on', properties: '{}' })
   const { theme } = useThemeStore()
+  const canDelete = useCan('cmdb:delete')
 
   useEffect(() => {
     Promise.all([
@@ -148,9 +150,11 @@ export default function CMDBRelationsPage() {
                       </td>
                       <td className="px-4 py-3 text-xs text-muted-foreground">{r.created_at?.slice(0, 10)}</td>
                       <td className="px-4 py-3">
-                        <Button variant="ghost" size="sm" className="h-6 w-6 p-0 text-destructive" onClick={() => handleDelete(r.id)}>
-                          <Trash2 className="h-3 w-3" />
-                        </Button>
+                        {canDelete && (
+                          <Button variant="ghost" size="sm" className="h-6 w-6 p-0 text-destructive" onClick={() => handleDelete(r.id)}>
+                            <Trash2 className="h-3 w-3" />
+                          </Button>
+                        )}
                       </td>
                     </tr>
                   )

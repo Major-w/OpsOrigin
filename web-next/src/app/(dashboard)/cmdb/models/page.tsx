@@ -9,6 +9,7 @@ import { Dialog, DialogFooter } from '@/components/ui/dialog'
 import { apiFetch } from '@/lib/utils'
 import { Plus, Trash2, Package, GripVertical, Edit2 } from 'lucide-react'
 import { useThemeStore } from '@/stores/theme'
+import { useCan } from '@/stores/permissions'
 import { cn } from '@/lib/utils'
 
 interface SchemaField {
@@ -52,6 +53,7 @@ export default function CMDBModelsPage() {
   const [editFieldIdx, setEditFieldIdx] = useState<number | null>(null)
   const [fieldForm, setFieldForm] = useState<SchemaField>({ name: '', type: 'string', required: false, description: '' })
   const { theme } = useThemeStore()
+  const canAdmin = useCan('cmdb:admin')
 
   useEffect(() => {
     apiFetch<any[]>('/cmdb/ci?limit=500').then(items => {
@@ -142,7 +144,7 @@ export default function CMDBModelsPage() {
           <h1 className="text-2xl font-bold">CI 模型管理</h1>
           <p className="text-sm text-muted-foreground">定义 CI 类型及其属性字段 Schema</p>
         </div>
-        <Button onClick={openCreate}><Plus className="h-4 w-4" />新建模型</Button>
+        {canAdmin && <Button onClick={openCreate}><Plus className="h-4 w-4" />新建模型</Button>}
       </div>
 
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
@@ -154,9 +156,11 @@ export default function CMDBModelsPage() {
                   <span className="text-lg">{model.icon}</span>
                   {model.name}
                 </CardTitle>
-                <Button variant="ghost" size="sm" className="opacity-0 group-hover:opacity-100 h-7 w-7 p-0" onClick={() => openEdit(model)}>
-                  <Edit2 className="h-3.5 w-3.5" />
-                </Button>
+                {canAdmin && (
+                  <Button variant="ghost" size="sm" className="opacity-0 group-hover:opacity-100 h-7 w-7 p-0" onClick={() => openEdit(model)}>
+                    <Edit2 className="h-3.5 w-3.5" />
+                  </Button>
+                )}
               </div>
             </CardHeader>
             <CardContent className="space-y-2">
@@ -201,7 +205,7 @@ export default function CMDBModelsPage() {
           <div>
             <div className="flex items-center justify-between mb-2">
               <label className="text-sm font-medium">属性字段 ({fields.length})</label>
-              <Button variant="outline" size="sm" onClick={() => openFieldDialog()}><Plus className="h-3 w-3" />添加字段</Button>
+              {canAdmin && <Button variant="outline" size="sm" onClick={() => openFieldDialog()}><Plus className="h-3 w-3" />添加字段</Button>}
             </div>
             {fields.length === 0 ? (
               <div className="text-center py-4 border border-dashed rounded-md text-xs text-muted-foreground">暂无字段，点击上方按钮添加</div>
@@ -214,8 +218,8 @@ export default function CMDBModelsPage() {
                     <Badge variant="outline" className="text-[9px]">{f.type}</Badge>
                     {f.required && <Badge variant="destructive" className="text-[9px]">必填</Badge>}
                     {f.description && <span className="text-muted-foreground truncate flex-1">{f.description}</span>}
-                    <Button variant="ghost" size="sm" className="h-5 w-5 p-0" onClick={() => openFieldDialog(idx)}><Edit2 className="h-3 w-3" /></Button>
-                    <Button variant="ghost" size="sm" className="h-5 w-5 p-0 text-destructive" onClick={() => handleDeleteField(idx)}><Trash2 className="h-3 w-3" /></Button>
+                    {canAdmin && <Button variant="ghost" size="sm" className="h-5 w-5 p-0" onClick={() => openFieldDialog(idx)}><Edit2 className="h-3 w-3" /></Button>}
+                    {canAdmin && <Button variant="ghost" size="sm" className="h-5 w-5 p-0 text-destructive" onClick={() => handleDeleteField(idx)}><Trash2 className="h-3 w-3" /></Button>}
                   </div>
                 ))}
               </div>

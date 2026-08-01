@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/opsorigin/core/pkg/auth"
 	"github.com/opsorigin/core/pkg/validate"
 )
 
@@ -387,6 +388,8 @@ func (s *Service) RegisterRoutes(mux *http.ServeMux) {
 	// 用户-角色分配
 	mux.HandleFunc("GET /api/v1/iam/users/{user_id}/roles", s.handleGetUserRoles)
 	mux.HandleFunc("PUT /api/v1/iam/users/{user_id}/roles", s.handleAssignUserRoles)
+	// 当前用户自身权限(供前端权限感知,任意已登录用户可读)
+	mux.HandleFunc("GET /api/v1/iam/me/permissions", s.handleGetMyPermissions)
 }
 
 // ---------- 权限 ----------
@@ -632,6 +635,45 @@ func (s *Service) handleAssignUserRoles(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	writeJSON(w, http.StatusOK, UserRoles{UserID: userID, RoleIDs: req.RoleIDs})
+}
+
+// handleGetMyPermissions 返回当前登录用户的有效权限(主角色 + 已分配 IAM 角色聚合),
+// 供前端做权限感知(按角色隐藏越权按钮)。与 RBAC 中间件使用同一套 IAM 解析逻辑,
+// 故角色管理页的权限调整会实时反映到这里。
+func (s *Service) handleGetMyPermissions(w http.ResponseWriter, r *http.Request) {
+	userID := auth.UserIDFromContext(r.Context())
+	tenantID := auth.TenantIDFromContext(r.Context())
+	role := auth.RoleFromContext(r.Context())
+	perms := s.GetAggregatedPermissions(r.Context(), tenantID, userID, role)
+	writeJSON(w, http.StatusOK, map[string]any{"permissions": perms})
+}
+
+// GetAggregatedPermissions 聚合某用户的有效权限:主角色权限(经 ResolvePermissions 读取
+// iam_roles 最新配置,含 cmdb:delete 等)与已分配 IAM 角色权限的并集。
+func (s *Service) GetAggregatedPermissions(ctx context.Context, tenantID, userID, primaryRole string) []string {
+	if tenantID == "" {
+		tenantID = "default"
+	}
+	set := make(map[string]struct{})
+	add := func(ps []string) {
+		for _, p := range ps {
+			set[p] = struct{}{}
+		}
+	}
+	if primaryRole != "" {
+		add(s.ResolvePermissions(tenantID, primaryRole))
+	}
+	roleIDs, _ := s.store.GetUserRoles(ctx, userID, tenantID)
+	for _, rid := range roleIDs {
+		if role, _ := s.store.GetRole(ctx, rid, tenantID); role != nil {
+			add(role.Permissions)
+		}
+	}
+	out := make([]string, 0, len(set))
+	for p := range set {
+		out = append(out, p)
+	}
+	return out
 }
 
 // ---------- 辅助 ----------
