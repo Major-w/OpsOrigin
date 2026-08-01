@@ -129,3 +129,42 @@ func TestSendMetricsNotConnected(t *testing.T) {
 		t.Fatal("expected error when gRPC not connected (monitor QoS: drop)")
 	}
 }
+
+func TestSchedulerAddOrUpdateAndRemove(t *testing.T) {
+	var mu sync.Mutex
+	count := 0
+	sched := NewScheduler(func(task *Task, _ []MetricPoint) {
+		mu.Lock()
+		count++
+		mu.Unlock()
+	})
+	sched.Register(&Task{
+		ID: "custom.1", Type: TaskMetric, Interval: 30 * time.Millisecond,
+		Run: func(ctx context.Context) ([]MetricPoint, error) {
+			return []MetricPoint{{Name: "x", Value: 1}}, nil
+		},
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	sched.Start(ctx)
+	time.Sleep(70 * time.Millisecond) // 首轮立即 + ~2 tick
+
+	// 运行中更新: 更换 Run 后旧循环被取消, 新循环立即执行
+	sched.AddOrUpdate(&Task{
+		ID: "custom.1", Type: TaskMetric, Interval: time.Hour,
+		Run: func(ctx context.Context) ([]MetricPoint, error) {
+			return []MetricPoint{{Name: "y", Value: 2}}, nil
+		},
+	})
+
+	// 移除: 任务停止(允许 1 次在途 execute 的异步 report 落地)
+	sched.Remove("custom.1")
+	before := func() int { mu.Lock(); defer mu.Unlock(); return count }()
+	time.Sleep(200 * time.Millisecond)
+	after := func() int { mu.Lock(); defer mu.Unlock(); return count }()
+
+	if after-before > 1 {
+		t.Fatalf("task not stopped after Remove: before=%d after=%d", before, after)
+	}
+	cancel()
+}

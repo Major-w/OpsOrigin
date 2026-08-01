@@ -26,7 +26,9 @@ type GRPCAgentClient struct {
 	mu        sync.Mutex
 	connected bool
 	onAction  func(action string, payload []byte) ([]byte, error)
-	pending   sync.Map
+	// onTaskList 收到 Server 下发的任务清单(TaskSync)时回调(Agent 合并到本地调度器)。
+	onTaskList func(list *pb.TaskList)
+	pending    sync.Map
 
 	// tlsConfig 非 nil 时,以 mTLS 双向认证连接 Core(§3.1 / §6)。
 	tlsConfig *tls.Config
@@ -45,6 +47,11 @@ func NewGRPCAgentClient(coreAddr, agentID string) *GRPCAgentClient {
 		coreAddr: coreAddr,
 		agentID:  agentID,
 	}
+}
+
+// OnTaskList 注册任务清单回调:Server 下发 TaskSync 时触发(动态合并任务)。
+func (c *GRPCAgentClient) OnTaskList(handler func(list *pb.TaskList)) {
+	c.onTaskList = handler
 }
 
 // WithMTLS 配置客户端证书以启用双向 TLS(§3.1)。
@@ -249,6 +256,11 @@ func (c *GRPCAgentClient) handleMessage(ctx context.Context, msg *pb.TunnelMessa
 
 	case *pb.TunnelMessage_Forward:
 		go c.handleForward(ctx, msg.MessageId, p.Forward)
+
+	case *pb.TunnelMessage_TaskSync:
+		if c.onTaskList != nil {
+			c.onTaskList(p.TaskSync)
+		}
 
 	case *pb.TunnelMessage_Heartbeat:
 		// server heartbeat, ignore

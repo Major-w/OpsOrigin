@@ -23,7 +23,27 @@ message TunnelMessage {
     AgentResponse forward_resp = 41;
     // 监控/CMDB 指标批量上报(任务归任务、上报归上报: Agent 本地调度后经此主动上报)
     MetricBatch metrics = 50;
+    // 任务清单同步(Server→Agent, 阶段 3b): 任务定义一次下发, Agent 本地调度
+    TaskList task_sync = 51;
   }
+}
+
+// TaskDef 一个可下发到 Agent 的任务定义(内置或自定义)。
+message TaskDef {
+  string task_id = 1;
+  string name = 2;
+  string type = 3;         // cmdb | monitor | metric
+  int64 interval_sec = 4;
+  string script = 5;       // 自定义任务脚本(内置任务为空, Agent 内置实现)
+  string script_type = 6;  // shell | python
+  bool enabled = 7;
+}
+
+// TaskList 任务清单(版本化): Server 在 Agent 注册成功/任务变更时下发,
+// Agent 按 task_id 合并到本地调度器(AddOrUpdate/Remove)。
+message TaskList {
+  int64 version = 1;
+  repeated TaskDef tasks = 2;
 }
 
 // MetricPoint 单个指标点。labels 承载维度(CPU 核号/磁盘挂载点/网卡名等)。

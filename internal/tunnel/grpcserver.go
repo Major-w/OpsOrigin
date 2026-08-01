@@ -54,6 +54,10 @@ type GRPCServer struct {
 	// onMetrics 在收到 Agent 指标批量上报(MetricBatch)时触发,
 	// 供上层(agentmgr/ingest)做批量缓冲 + 按任务类型分流存储(PG/VM)。
 	onMetrics func(report MetricsReport)
+
+	// taskListProvider 在 Agent 注册成功后调用, 返回该 Agent 应执行的任务清单(TaskDef)。
+	// 由 agentmgr 注入(基于 collect_tasks 过滤 target_agents)。为 nil 时不下发。
+	taskListProvider func(agentID string) []*pb.TaskDef
 }
 
 // MetricPoint 一个被上报的指标点(内部表示, 与 pb 层解耦)。
@@ -133,6 +137,11 @@ func (s *GRPCServer) OnDisconnect(handler func(agentID string)) {
 // 由上层(agentmgr/ingest)接入批量缓冲与存储分流, 不阻塞 gRPC 读循环。
 func (s *GRPCServer) OnMetrics(handler func(report MetricsReport)) {
 	s.onMetrics = handler
+}
+
+// SetTaskListProvider 注入任务清单构造器: Agent 注册成功后下发任务清单(TaskDef 列表)。
+func (s *GRPCServer) SetTaskListProvider(fn func(agentID string) []*pb.TaskDef) {
+	s.taskListProvider = fn
 }
 
 // SetAgentIDResolver 注入指纹去重解析器(由 agentmgr 在 SetGRPCTunnel 时调用)。
@@ -265,6 +274,21 @@ func (s *GRPCServer) Connect(stream grpc.BidiStreamingServer[pb.TunnelMessage, p
 			IPs:          reg.Ips,
 			Capabilities: reg.Capabilities,
 		})
+	}
+
+	// 注册成功后下发任务清单(自定义/内置任务定义, Agent 本地调度执行)。
+	if s.taskListProvider != nil {
+		if tasks := s.taskListProvider(agentID); len(tasks) > 0 {
+			if err := stream.Send(&pb.TunnelMessage{
+				Payload: &pb.TunnelMessage_TaskSync{
+					TaskSync: &pb.TaskList{Tasks: tasks},
+				},
+			}); err != nil {
+				slog.Warn("grpc send task list failed", "agent_id", agentID, "error", err)
+			} else {
+				slog.Info("grpc task list pushed", "agent_id", agentID, "tasks", len(tasks))
+			}
+		}
 	}
 
 	// read loop

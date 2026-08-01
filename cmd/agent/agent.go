@@ -22,6 +22,7 @@ import (
 
 	"github.com/coder/websocket"
 	"github.com/google/uuid"
+	pb "github.com/opsorigin/core/api/proto"
 	"github.com/opsorigin/core/internal/command"
 	"github.com/opsorigin/core/internal/tunnel"
 )
@@ -136,6 +137,19 @@ type Agent struct {
 	whitelist       *command.Whitelist
 	whitelistMu     sync.RWMutex
 	whitelistVer    int64
+
+	// cmdb 断连缓存(§4.7.1 QoS): cmdb 任务上报失败时缓存, 重连后补传; monitor 不缓存。
+	cmdbMu     sync.Mutex
+	pendingCMDB []cachedBatch
+}
+
+// cachedBatch 断连期间缓存的 cmdb 上报批次。
+type cachedBatch struct {
+	TaskID   string
+	Type     TaskType
+	TS       time.Time
+	Interval int64
+	Points   []MetricPoint
 }
 
 func NewAgent(cfg AgentConfig) *Agent {
@@ -167,10 +181,10 @@ func NewAgent(cfg AgentConfig) *Agent {
 		a.grpcClient.sysInfo = a.collectSystemInfo()
 
 		// 内置任务(任务归任务、上报归上报): Agent 本地调度自主执行 + gRPC 主动上报。
-		// monitor 即时上报(断连丢弃, §4.7.1 QoS); cmdb 低频(60s, 本轮先即时上报, 缓存补传留后续)。
+		// monitor 即时上报(断连丢弃); cmdb 低频(60s)可缓存(断连缓存, 重连补传, §4.7.1 QoS)。
 		a.scheduler = NewScheduler(func(task *Task, points []MetricPoint) {
-			if err := a.grpcClient.SendMetrics(task.ID, task.Type, time.Now(), int64(task.Interval/time.Second), points); err != nil {
-				slog.Warn("agent: metrics send failed (dropped)", "task", task.ID, "err", err)
+			if err := a.sendMetricsWithCMDBBackfill(task, points); err != nil {
+				slog.Warn("agent: metrics send failed", "task", task.ID, "err", err)
 			}
 		})
 		a.scheduler.Register(&Task{
@@ -183,9 +197,101 @@ func NewAgent(cfg AgentConfig) *Agent {
 			Interval: 60 * time.Second,
 			Run:      a.collectCMDBMetrics,
 		})
+
+		// 自定义任务清单同步(Server 下发): 合并到本地调度器(AddOrUpdate/Remove)。
+		a.grpcClient.OnTaskList(func(list *pb.TaskList) {
+			for _, td := range list.Tasks {
+				if !td.Enabled {
+					a.scheduler.Remove(td.TaskId)
+					continue
+				}
+				if td.Script == "" {
+					continue // 内置任务由 Agent 本地管理, 跳过
+				}
+				a.scheduler.AddOrUpdate(&Task{
+					ID:       td.TaskId,
+					Name:     td.Name,
+					Type:     TaskType(td.Type),
+					Interval: time.Duration(td.IntervalSec) * time.Second,
+					Run:      a.runCustomScript(td.Script, td.ScriptType),
+				})
+				slog.Info("agent: custom task synced", "task", td.TaskId, "type", td.Type,
+					"interval_sec", td.IntervalSec)
+			}
+		})
 	}
 
 	return a
+}
+
+// sendMetricsWithCMDBBackfill 上报指标: 连接恢复时先补发 cmdb 缓存, 再发当前批次。
+// QoS(§4.7.1): monitor 失败即丢弃; cmdb 失败缓存(最多保留最近 8 批, 防内存膨胀)。
+func (a *Agent) sendMetricsWithCMDBBackfill(task *Task, points []MetricPoint) error {
+	// 1) 先尝试补发断连期间缓存的 cmdb 批次
+	a.cmdbMu.Lock()
+	if len(a.pendingCMDB) > 0 {
+		allOK := true
+		for _, b := range a.pendingCMDB {
+			if err := a.grpcClient.SendMetrics(b.TaskID, b.Type, b.TS, b.Interval, b.Points); err != nil {
+				allOK = false
+				break // 仍断连, 保留缓存等待下次
+			}
+		}
+		if allOK {
+			a.pendingCMDB = nil
+			slog.Info("agent: cmdb cached metrics backfilled")
+		}
+	}
+	a.cmdbMu.Unlock()
+
+	// 2) 发送当前批次
+	if err := a.grpcClient.SendMetrics(task.ID, task.Type, time.Now(), int64(task.Interval/time.Second), points); err != nil {
+		if task.Type == TaskCMDB {
+			a.cacheCMDB(task, points)
+		}
+		return err
+	}
+	return nil
+}
+
+// cacheCMDB 缓存一次失败的 cmdb 上报批次(上限 8 批)。
+func (a *Agent) cacheCMDB(task *Task, points []MetricPoint) {
+	a.cmdbMu.Lock()
+	defer a.cmdbMu.Unlock()
+	if len(a.pendingCMDB) >= 8 {
+		a.pendingCMDB = a.pendingCMDB[1:] // 丢弃最旧
+	}
+	a.pendingCMDB = append(a.pendingCMDB, cachedBatch{
+		TaskID: task.ID, Type: task.Type, TS: time.Now(),
+		Interval: int64(task.Interval / time.Second), Points: points,
+	})
+}
+
+// runCustomScript 构造自定义脚本任务的执行函数: 复用 executeScript(collect 模式),
+// 输出解析: JSON 指标数组 [{"name","value","unit","labels"}] 优先; 否则整行作为单条指标。
+func (a *Agent) runCustomScript(script, scriptType string) func(context.Context) ([]MetricPoint, error) {
+	return func(ctx context.Context) ([]MetricPoint, error) {
+		resp := a.executeScript(&TaskRequest{
+			Action:     "collect",
+			Script:     script,
+			ScriptType: scriptType,
+			Mode:       "collect",
+			Timeout:    60,
+		})
+		if !resp.Success {
+			return nil, fmt.Errorf("script exec failed: %s", resp.Error)
+		}
+		var pts []MetricPoint
+		if err := json.Unmarshal([]byte(resp.Output), &pts); err == nil && len(pts) > 0 {
+			return pts, nil
+		}
+		// 兜底: 整行输出作为一条指标(原始值放 label)
+		return []MetricPoint{{
+			Name:  "script.output",
+			Value: 0,
+			Labels: map[string]string{"value": strings.TrimSpace(resp.Output)},
+		}}, nil
+	}
 }
 
 // collectCMDBMetrics 内置 CMDB 任务: 将本机系统信息转为指标点上报(资产字段作为 labels)。

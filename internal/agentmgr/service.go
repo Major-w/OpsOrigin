@@ -19,7 +19,9 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	pb "github.com/opsorigin/core/api/proto"
 	"github.com/redis/go-redis/v9"
+	"slices"
 	"github.com/opsorigin/core/internal/command"
 	"github.com/opsorigin/core/internal/ent"
 	entFile "github.com/opsorigin/core/internal/ent/file"
@@ -479,6 +481,29 @@ func (s *Service) SetGRPCTunnel(gs *tunnel.GRPCServer) {
 	}
 	// 注入指纹去重解析器:gRPC 直连 Agent 注册时据此复用同机既有记录,避免重复建行。
 	gs.SetAgentIDResolver(s.resolveGRPCAgentID)
+	// 任务清单下发:Agent 注册成功后推送其应执行的任务定义(自定义采集任务)。
+	// 基于 collect_tasks 过滤: enabled 且 target_agents 为空(全局)或包含该 Agent。
+	gs.SetTaskListProvider(func(agentID string) []*pb.TaskDef {
+		tasks := s.collect.List("default")
+		defs := make([]*pb.TaskDef, 0, len(tasks))
+		for _, t := range tasks {
+			if !t.Enabled {
+				continue
+			}
+			if len(t.TargetAgents) > 0 && !slices.Contains(t.TargetAgents, agentID) {
+				continue
+			}
+			defs = append(defs, &pb.TaskDef{
+				TaskId:      t.ID,
+				Name:        t.Name,
+				Type:        string(t.Type),
+				IntervalSec: int64(t.IntervalSec),
+				Script:      t.Script,
+				ScriptType:  t.ScriptType,
+			})
+		}
+		return defs
+	})
 	// 隧道心跳回写:gRPC 直连 Agent 只发隧道内心跳(不走 HTTP heartbeat 端点),
 	// 若不在此回写 Redis/DB,agents 列表会永远显示 offline。注册时一并带上
 	// OS/IP/CPU/Memory,使 agent_hosts 不再是无资源信息的空壳。
