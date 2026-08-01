@@ -141,8 +141,8 @@ func main() {
 	server.WithMiddleware(authProvider.Middleware)
 	server.WithMiddleware(auditSvc.Middleware)
 
-	// T03: 注册 bypass 前缀 — /metrics 和 /health 跳过认证/审计/RBAC 中间件
-	server.WithBypassPrefixes("/metrics", "/api/v1/health")
+	// T03: 注册 bypass 前缀 — /metrics /healthz /readyz /api/v1/health 跳过认证/审计/RBAC 中间件
+	server.WithBypassPrefixes("/metrics", "/healthz", "/readyz", "/api/v1/health")
 
 	// T07: 给 Core http.Server 的 Handler 包一层 promhttp.InstrumentHandlerDuration
 	server.WithHandlerWrapper(func(next http.Handler) http.Handler {
@@ -166,9 +166,12 @@ func main() {
 	})
 
 	// T08: 创建 health handler 并通过注册器注册到 mux
+	// /healthz = liveness(存活), /readyz = readiness(依赖就绪), /api/v1/health 兼容旧路径
 	healthHandler := healthhandler.NewHealthHandler(db, rdb)
 	server.RegisterService(&staticHandlerRegistrar{
 		routes: map[string]http.Handler{
+			"GET /healthz":      healthHandler,
+			"GET /readyz":       healthHandler,
 			"GET /api/v1/health": healthHandler,
 		},
 	})
