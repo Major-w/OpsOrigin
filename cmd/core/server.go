@@ -66,10 +66,10 @@ func (s *Server) WithHandlerWrapper(wrap func(http.Handler) http.Handler) {
 	s.handlerWrapper = wrap
 }
 
-// Serve 启动网关，并在 ctx 取消或 GracefulStop 触发时优雅关闭。
-func (s *Server) Serve(ctx context.Context) error {
+// buildHandler 组装最终 HTTP handler：中间件按注册顺序由外到内包裹，
+// 命中 bypass 前缀的请求跳过中间件直达 mux，最后应用可选的最外层包装。
+func (s *Server) buildHandler() http.Handler {
 	var h http.Handler = s.mux
-	// 中间件按注册顺序由外到内包裹：最后一个注册的处于最内层。
 	for i := len(s.middlewares) - 1; i >= 0; i-- {
 		h = s.middlewares[i](h)
 	}
@@ -89,6 +89,19 @@ func (s *Server) Serve(ctx context.Context) error {
 	if s.handlerWrapper != nil {
 		final = s.handlerWrapper(final)
 	}
+	return final
+}
+
+// Handler 返回组装完成的 http.Handler（中间件链 + 旁路前缀 + 外层包装），
+// 与 Serve 实际使用的处理链完全一致。测试与嵌入式场景直接调用即可，
+// 无需复制中间件包裹逻辑。
+func (s *Server) Handler() http.Handler {
+	return s.buildHandler()
+}
+
+// Serve 启动网关，并在 ctx 取消或 GracefulStop 触发时优雅关闭。
+func (s *Server) Serve(ctx context.Context) error {
+	final := s.buildHandler()
 
 	srv := &http.Server{
 		Addr:    s.addr,
