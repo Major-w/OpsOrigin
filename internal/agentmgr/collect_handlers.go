@@ -102,6 +102,11 @@ func (s *Service) dispatchDueCollectTasks() {
 // dispatchCollectTask 向目标 Agent 派发一次采集任务(复用轮询任务通道)。
 // 目标为空时派发给全部在线 Agent。
 func (s *Service) dispatchCollectTask(task *CollectTask, now time.Time) {
+	// 内置类型(空脚本)由 Agent 本地调度器执行,CMDB 投影任务不在此(一次性命令)路径派发,
+	// 避免与 Agent 内置任务重复跑、且 server 侧无脚本可下发。
+	if task.Script == "" {
+		return
+	}
 	ctx := context.Background()
 	agents, err := s.store.List(ctx, task.TenantID)
 	if err != nil {

@@ -60,6 +60,9 @@ type Service struct {
 	store         Store          // 凭证持久层（MVP 用内存实现，重启即失）
 	cmdb          CMDBWriter    // CMDB 写入适配（同步发现的资源为 CI）
 	k8sDiscoverer K8sDiscoverer // K8s 发现器（可选；nil 时 k8s 发现/同步返回 400）
+	// onOnboard 在凭证保存（纳管通道建立）后回调，由 cmd/core 注入以联动 CMDB 创建采集任务。
+	// 参数为 (资源类型, target, 是否开启CMDB采集, 是否开启监控采集)；bool 指针为 nil 表示使用平台默认。
+	onOnboard func(resourceType, target string, enableCMDB, enableMonitor *bool)
 }
 
 // NewService 构造云资源 Service。
@@ -73,6 +76,11 @@ func NewService(store Store, cmdb CMDBWriter) *Service {
 
 // SetK8sDiscoverer 注入 K8s 发现器（由 cmd/core 用 *k8s.Discoverer 注入）。
 func (s *Service) SetK8sDiscoverer(d K8sDiscoverer) { s.k8sDiscoverer = d }
+
+// SetOnOnboard 注入纳管回调：凭证保存后联动 CMDB 创建采集任务（全局默认 + 逐资源覆盖）。
+func (s *Service) SetOnOnboard(fn func(resourceType, target string, enableCMDB, enableMonitor *bool)) {
+	s.onOnboard = fn
+}
 
 // RegisterRoutes 把云资源 REST 路由注册进 Core mux。
 // 路由前缀 /api/v1/cloud，经 Core 中间件链自动叠加 auth→audit→rbac。

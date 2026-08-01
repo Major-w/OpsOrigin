@@ -2,6 +2,7 @@ package agentmgr
 
 import (
 	"context"
+	"log/slog"
 	"sync"
 	"time"
 
@@ -156,6 +157,39 @@ func (m *CollectManager) Update(t *CollectTask) error {
 	return nil
 }
 
+// PutProjection 写入一条「投影」采集任务(由 CMDB 统一调度框架同步而来)。
+// 与 Create 不同：跳过脚本非空校验——投影任务的采集动作由 Agent 内置调度器执行
+// (cmdb/metric 类型空脚本即内置采集),CMDB 是单一来源与调度者,agentmgr 仅作传输层。
+func (m *CollectManager) PutProjection(t *CollectTask) error {
+	if t.ID == "" {
+		return errCollect("projection id is required")
+	}
+	if t.Type != CollectTypeCMDB && t.Type != CollectTypeMetric {
+		return errCollect("task type must be cmdb or metric")
+	}
+	if t.IntervalSec <= 0 {
+		t.IntervalSec = 60
+	}
+	if t.TimeoutSec <= 0 {
+		t.TimeoutSec = 60
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if existing, ok := m.tasks[t.ID]; ok {
+		t.TenantID = existing.TenantID
+		t.CreatedAt = existing.CreatedAt
+	} else {
+		now := time.Now()
+		t.CreatedAt = now
+	}
+	t.UpdatedAt = time.Now()
+	m.tasks[t.ID] = t
+	if m.store != nil {
+		return m.store.SaveCollectTask(context.Background(), t)
+	}
+	return nil
+}
+
 // Delete 删除采集任务。
 func (m *CollectManager) Delete(id string) error {
 	m.mu.Lock()
@@ -287,3 +321,55 @@ func errCollect(msg string) error {
 type collectError struct{ msg string }
 
 func (e *collectError) Error() string { return e.msg }
+
+// ============================================================
+// CMDB 投影接口（方案 X：CMDB 统一调度，agentmgr 为 Agent 传输层）
+//
+// CMDB 持有 channel=agent 的采集任务(主机/容器)，并通过 AgentChannel 接口把任务
+// 以「投影」形式同步到 agentmgr：agentmgr 仅负责把任务下发到对应 Agent(server 侧不拉取)。
+// 投影任务 ID 固定为 "cmdb:" + CmdbTaskID，保证幂等(重复同步=覆盖)。
+// ============================================================
+
+// CMDBCollectSpec 是 CMDB 同步过来的采集任务描述。
+type CMDBCollectSpec struct {
+	CmdbTaskID  string           // cmdb 采集任务 ID（投影键来源）
+	TenantID    string
+	AgentType   CollectTaskType  // cmdb | metric（由 cmdb.Kind 映射）
+	TargetAgents []string        // 目标 Agent ID 列表（由 cmdb.Target "host:<id>" 解析）
+	IntervalSec int              // 采集周期（秒）
+	Enabled     bool
+}
+
+// UpsertCollectTaskFromCMDB 把一条 CMDB 采集任务同步为 Agent 侧采集任务(投影)。
+// 内置 cmdb/metric 类型使用空脚本——采集由 Agent 本地调度器执行,不在此路径派发。
+func (s *Service) UpsertCollectTaskFromCMDB(spec CMDBCollectSpec) error {
+	id := "cmdb:" + spec.CmdbTaskID
+	t := &CollectTask{
+		ID:           id,
+		TenantID:     spec.TenantID,
+		Name:         "cmdb-synced " + spec.CmdbTaskID + " " + string(spec.AgentType),
+		Type:         spec.AgentType,
+		Script:       "", // 内置采集:由 Agent 本地调度器执行
+		IntervalSec:  spec.IntervalSec,
+		TargetAgents: spec.TargetAgents,
+		Enabled:      spec.Enabled,
+	}
+	if err := s.collect.PutProjection(t); err != nil {
+		return err
+	}
+	// 变更即推送:在线 Agent 立即收到最新任务清单。
+	s.pushTaskListToOnline()
+	slog.Info("cmdb collect task projected to agent", "cmdb_task", spec.CmdbTaskID, "type", spec.AgentType, "agents", spec.TargetAgents)
+	return nil
+}
+
+// RemoveCollectTaskFromCMDB 移除对应 Agent 侧投影任务(并推送空清单让 Agent 移除)。
+func (s *Service) RemoveCollectTaskFromCMDB(cmdbTaskID string) error {
+	id := "cmdb:" + cmdbTaskID
+	if err := s.collect.Delete(id); err != nil {
+		return err
+	}
+	s.pushTaskListToOnline()
+	slog.Info("cmdb collect task projection removed", "cmdb_task", cmdbTaskID)
+	return nil
+}

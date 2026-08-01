@@ -72,14 +72,18 @@ func (s *Service) handleListCredentials(w http.ResponseWriter, r *http.Request) 
 	writeJSON(w, http.StatusOK, map[string]any{"credentials": views})
 }
 
-// handleCreateCredential 保存一条云凭证到 Store，响应中不回显 SecretKey。
+// handleCreateCredential 保存一条云凭证到 Store（建立纳管通道），响应中不回显 SecretKey。
+// 若请求携带采集开关（enable_cmdb_collect / enable_monitor_collect），保存后回调 onOnboard
+// 联动 CMDB 创建对应采集任务（开关为 nil 时由 CMDB 按平台默认策略决定）。
 func (s *Service) handleCreateCredential(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		Provider  string            `json:"provider"`
-		Region    string            `json:"region"`
-		AccessKey string            `json:"access_key"`
-		SecretKey string            `json:"secret_key"`
-		Extra     map[string]string `json:"extra"`
+		Provider             string            `json:"provider"`
+		Region               string            `json:"region"`
+		AccessKey            string            `json:"access_key"`
+		SecretKey            string            `json:"secret_key"`
+		Extra                map[string]string `json:"extra"`
+		EnableCMDBCollect    *bool             `json:"enable_cmdb_collect,omitempty"`
+		EnableMonitorCollect *bool             `json:"enable_monitor_collect,omitempty"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
@@ -103,6 +107,10 @@ func (s *Service) handleCreateCredential(w http.ResponseWriter, r *http.Request)
 	if err := s.store.Save(cred); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to save credential")
 		return
+	}
+	// 纳管通道已建立 → 回调 CMDB 创建采集任务（若存在 onOnboard 注入）。
+	if s.onOnboard != nil {
+		s.onOnboard("cloud", "cloud:"+cred.Provider, req.EnableCMDBCollect, req.EnableMonitorCollect)
 	}
 	// 安全：响应中不携带 SecretKey，仅返回脱敏视图。
 	writeJSON(w, http.StatusCreated, credentialView{

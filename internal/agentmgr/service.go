@@ -403,6 +403,10 @@ type Service struct {
 	// 采集任务管理(CMDB/监控数据采集上报)
 	collect *CollectManager
 
+	// onAgentOnboard 主机/容器纳管成功后的回调(方案 X:统一经 CMDB 建采集任务)。
+	// 由 cmd/core 注入 cmdbSvc.OnboardResource,使纳管动作自动在 CMDB 侧建 channel=agent 任务。
+	onAgentOnboard func(tenantID, agentID string) error
+
 	// 全局目标版本策略（Agent 版本一致性管理）
 	versionPolicy   string
 	versionPolicyMu sync.Mutex
@@ -471,6 +475,11 @@ func (s *Service) SetTunnelServer(ts *tunnel.Server) {
 	s.tunnelServer = ts
 }
 
+// SetOnAgentOnboard 注入主机/容器纳管成功后的回调(方案 X:统一经 CMDB 建采集任务)。
+func (s *Service) SetOnAgentOnboard(fn func(tenantID, agentID string) error) {
+	s.onAgentOnboard = fn
+}
+
 // SetGRPCTunnel 注入 gRPC 隧道服务,启用后支持直连 Agent(gRPC)下发命令。
 // 直连 Agent 注册时 ProxyId=自身 agentID,会话落在 grpcTunnel.proxies[agentID];
 // 经 Proxy 中转时会话落在 tunnelServer(或 gRPC Proxy)的 proxiles[ProxyID]。
@@ -527,6 +536,11 @@ func (s *Service) buildTaskDefs(agentID string) []*pb.TaskDef {
 	defs := make([]*pb.TaskDef, 0, len(tasks))
 	for _, t := range tasks {
 		if !t.Enabled {
+			continue
+		}
+		// 内置类型(空脚本)由 Agent 本地调度器执行,投影任务不通过 TaskSync 下发
+		// (Agent 端 applyTaskList 也会跳过空脚本),避免无意义推送。
+		if t.Script == "" {
 			continue
 		}
 		if len(t.TargetAgents) > 0 && !slices.Contains(t.TargetAgents, agentID) {
@@ -1486,6 +1500,12 @@ func (s *Service) handleRegister(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	// 方案 X:主机纳管即触发 CMDB 采集任务创建(统一调度)。
+	if s.onAgentOnboard != nil {
+		if e := s.onAgentOnboard(tenantFromCtx(r.Context()), host.ID); e != nil {
+			slog.Warn("agent onboard → cmdb failed", "agent", host.ID, "err", e)
+		}
+	}
 	writeJSON(w, http.StatusCreated, host)
 }
 
@@ -1812,6 +1832,15 @@ func (s *Service) handleBatchInstall(w http.ResponseWriter, r *http.Request) {
 	serverBase := fmt.Sprintf("%s://%s", scheme, r.Host)
 	tenantID := tenantFromCtx(r.Context())
 
+	// 方案 X:主机纳管即触发 CMDB 采集任务创建(统一调度)。
+	onboard := func(agentID string) {
+		if s.onAgentOnboard != nil {
+			if e := s.onAgentOnboard(tenantID, agentID); e != nil {
+				slog.Warn("batch-install onboard → cmdb failed", "agent", agentID, "err", e)
+			}
+		}
+	}
+
 	results := make([]map[string]any, 0, len(addresses))
 	for _, addr := range addresses {
 		authType := "ssh"
@@ -1860,6 +1889,7 @@ func (s *Service) handleBatchInstall(w http.ResponseWriter, r *http.Request) {
 				continue
 			}
 			results = append(results, map[string]any{"address": addr, "status": "failed", "error": detail, "agent_id": host.ID})
+			onboard(host.ID)
 			continue
 		}
 
@@ -1880,10 +1910,11 @@ func (s *Service) handleBatchInstall(w http.ResponseWriter, r *http.Request) {
 				InstallMethod: InstallManual,
 				ProxyID:       req.ProxyID,
 			}
-			s.store.Register(r.Context(), host)
-			results = append(results, map[string]any{"address": addr, "status": "failed", "error": runErr.Error(), "agent_id": host.ID, "output": output})
-			continue
-		}
+		s.store.Register(r.Context(), host)
+		onboard(host.ID)
+		results = append(results, map[string]any{"address": addr, "status": "failed", "error": runErr.Error(), "agent_id": host.ID, "output": output})
+		continue
+	}
 
 		host := &AgentHost{
 			TenantID:      tenantID,
@@ -1902,6 +1933,7 @@ func (s *Service) handleBatchInstall(w http.ResponseWriter, r *http.Request) {
 			results = append(results, map[string]any{"address": addr, "status": "failed", "error": err.Error()})
 			continue
 		}
+		onboard(host.ID)
 		results = append(results, map[string]any{"address": addr, "status": "installed", "agent_id": host.ID, "output": output})
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"results": results})

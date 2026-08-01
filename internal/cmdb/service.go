@@ -23,9 +23,14 @@ type Service struct {
 	cfg         *config.Config
 	pg          *pg.Repository
 	dg          *dgraph.Client
-	mem         *memStore // PG/Dgraph 不可用时的内存回退
-	ing         *ingest.Ingestor // 异步批量落库器(F4-B)
-	onCICreated func(ctx context.Context, ciID, tenantID string)
+	mem            *memStore // PG/Dgraph 不可用时的内存回退
+	ing            *ingest.Ingestor // 异步批量落库器(F4-B)
+	onCICreated    func(ctx context.Context, ciID, tenantID string)
+
+	registry *collectorRegistry      // 采集器注册表（kind × resourceType → Collector）
+	onMetric func(point MetricPoint) // 监控指标落库回调（由 cmd/core 注入，路由到监控模块）
+	sched    *Scheduler              // 采集调度器（StartScheduler 后非 nil）
+	agentChan AgentChannel           // 经 Agent 通道上报的任务下发接口（方案 X：投影到 agentmgr）
 }
 
 func NewService(cfg *config.Config, pgRepo *pg.Repository, dgClient *dgraph.Client) *Service {
@@ -34,6 +39,8 @@ func NewService(cfg *config.Config, pgRepo *pg.Repository, dgClient *dgraph.Clie
 		pg:  pgRepo,
 		dg:  dgClient,
 		mem: newMemStore(),
+
+		registry: newCollectorRegistry(),
 	}
 	// F4-B 决策 B: 批量导入异步化。提交方(如 handleBatchCreateCI)只 Submit,
 	// 后台每 500ms 或缓冲满时把一批 CI 交给 flushFn 落库, 不阻塞调用方。
@@ -109,6 +116,16 @@ func (s *Service) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/v1/cmdb/discovery/{id}/results", s.handleListDiscoveryResults)
 	mux.HandleFunc("POST /api/v1/cmdb/discovery/{resultId}/sync", s.handleSyncDiscoveryResult)
 	mux.HandleFunc("POST /api/v1/cmdb/discovery/{taskId}/sync-all", s.handleSyncAllDiscoveryResults)
+
+	// 采集任务框架（全局默认策略 + 统一调度）
+	mux.HandleFunc("GET /api/v1/cmdb/collection-policy", s.handleGetCollectionPolicy)
+	mux.HandleFunc("PUT /api/v1/cmdb/collection-policy", s.handlePutCollectionPolicy)
+	mux.HandleFunc("GET /api/v1/cmdb/collection-tasks", s.handleListCollectionTasks)
+	mux.HandleFunc("POST /api/v1/cmdb/collection-tasks", s.handleCreateCollectionTask)
+	mux.HandleFunc("PUT /api/v1/cmdb/collection-tasks/{id}", s.handleUpdateCollectionTask)
+	mux.HandleFunc("DELETE /api/v1/cmdb/collection-tasks/{id}", s.handleDeleteCollectionTask)
+	mux.HandleFunc("POST /api/v1/cmdb/collection-tasks/{id}/run", s.handleRunCollectionTask)
+	mux.HandleFunc("POST /api/v1/cmdb/onboard", s.handleOnboardResource)
 }
 
 func (s *Service) handleCreateCI(w http.ResponseWriter, r *http.Request) {
@@ -969,36 +986,68 @@ func (s *Service) handleRunDiscoveryTask(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
+	// 架构边界：云/主机/容器属于「资源纳管」层（internal/cloud）职责，由纳管层
+	// 拉取后直接生成基础 CI（单一数据源）；CMDB 自动发现只负责在已纳管 CI 之上做
+	// 关系/拓扑推断(relation)及 agent/snmp 深度扫描，不得重复拉取资源。
+	switch task.Type {
+	case "cloud", "host", "container":
+		task.Status = "failed"
+		_ = s.pg.UpdateDiscoveryTask(r.Context(), task)
+		writeError(w, http.StatusBadRequest, "类型 "+task.Type+" 属于资源纳管层职责，请使用资源纳管（云/主机/容器）同步，而非 CMDB 自动发现")
+		return
+	case "relation", "agent", "snmp":
+		// 合法发现类型
+	default:
+		task.Status = "failed"
+		_ = s.pg.UpdateDiscoveryTask(r.Context(), task)
+		writeError(w, http.StatusBadRequest, "不支持的发现类型: "+task.Type)
+		return
+	}
+
 	// 更新状态为 running
 	task.Status = "running"
 	s.pg.UpdateDiscoveryTask(r.Context(), task)
 
-	// 模拟发现过程（实际应根据 task.Type 调用不同发现器）
 	go func() {
-		time.Sleep(2 * time.Second)
+		ctx := context.Background()
 		now := time.Now()
 		task.LastRunAt = &now
 
-		// 生成模拟发现结果
-		discoveredCIs := simulateDiscovery(task)
-
-		for _, ci := range discoveredCIs {
-			res := &model.DiscoveryResult{
-				TaskID:       task.ID,
-				TenantID:     tenantID,
-				CIName:       ci["name"].(string),
-				CIType:       ci["type"].(string),
-				IPAddress:    ci["ip"].(string),
-				Attributes:   ci["attributes"].(map[string]any),
-				Source:       task.Name,
-				DiscoveredAt: now,
+		var found int
+		switch task.Type {
+		case "relation":
+			// 纳管后自动发现：在已纳管 CI 之上推断关系，直接落库（不走 CI 预览/确认流程）
+			n, derr := s.discoverRelations(ctx, tenantID)
+			if derr != nil {
+				slog.Error("relation discovery failed", "err", derr)
+				task.Status = "failed"
+				_ = s.pg.UpdateDiscoveryTask(ctx, task)
+				return
 			}
-			s.pg.CreateDiscoveryResult(context.Background(), res)
+			found = n
+		default:
+			// agent / snmp 仍为模拟实现（已知 P0 缺口），产出预览结果供确认
+			time.Sleep(2 * time.Second)
+			discoveredCIs := simulateDiscovery(task)
+			for _, ci := range discoveredCIs {
+				res := &model.DiscoveryResult{
+					TaskID:       task.ID,
+					TenantID:     tenantID,
+					CIName:       ci["name"].(string),
+					CIType:       ci["type"].(string),
+					IPAddress:    ci["ip"].(string),
+					Attributes:   ci["attributes"].(map[string]any),
+					Source:       task.Name,
+					DiscoveredAt: now,
+				}
+				s.pg.CreateDiscoveryResult(ctx, res)
+			}
+			found = len(discoveredCIs)
 		}
 
 		task.Status = "success"
-		task.FoundCount = len(discoveredCIs)
-		s.pg.UpdateDiscoveryTask(context.Background(), task)
+		task.FoundCount = found
+		s.pg.UpdateDiscoveryTask(ctx, task)
 	}()
 
 	writeJSON(w, 200, map[string]string{"status": "started"})
@@ -1076,6 +1125,181 @@ func (s *Service) handleSyncAllDiscoveryResults(w http.ResponseWriter, r *http.R
 		return
 	}
 	writeJSON(w, 200, map[string]any{"synced_count": affected})
+}
+
+// discoverRelations 在已纳管 CI 之上自动推断关系（纳管后 CMDB 自动发现）。
+// 不调用任何外部采集器，纯基于纳管数据派生：扫描每个 CI 属性中以 _id 结尾的外键，
+// 匹配其他 CI 的 resource_id（按裸 id + provider 作用域），生成 relation 并去重后落库。
+// 这样云/主机/容器由纳管层拉取生成基础 CI，CMDB 只负责在已有 CI 上补全拓扑关系，不重复拉资源。
+func (s *Service) discoverRelations(ctx context.Context, tenantID string) (int, error) {
+	cis, err := s.loadAllCIs(ctx, tenantID)
+	if err != nil {
+		return 0, fmt.Errorf("load CIs: %w", err)
+	}
+
+	byFull := make(map[string]*model.CIModel, len(cis))
+	byBare := make(map[string][]*model.CIModel, len(cis))
+	for _, ci := range cis {
+		if ci.Attributes == nil {
+			continue
+		}
+		if rid, ok := ci.Attributes["resource_id"].(string); ok && rid != "" {
+			byFull[rid] = ci
+			b := bareID(rid)
+			byBare[b] = append(byBare[b], ci)
+		}
+	}
+
+	// 已有关系去重
+	existing := make(map[string]bool)
+	if rels, e := s.pg.ListRelations(ctx, tenantID); e == nil {
+		for _, r := range rels {
+			existing[r.SourceID+"|"+r.TargetID+"|"+r.RelationType] = true
+		}
+	}
+
+	created := 0
+	for _, ci := range cis {
+		if ci.Attributes == nil {
+			continue
+		}
+		for key, val := range ci.Attributes {
+			if !strings.HasSuffix(key, "_id") {
+				continue
+			}
+			ref, ok := val.(string)
+			if !ok || ref == "" {
+				continue
+			}
+			for _, t := range matchTargets(ref, ci, byFull, byBare) {
+				rt := relationTypeFor(key)
+				relKey := ci.ID + "|" + t.ID + "|" + rt
+				if existing[relKey] {
+					continue
+				}
+				rel := &model.CIRelation{
+					TenantID:     tenantID,
+					SourceID:     ci.ID,
+					TargetID:     t.ID,
+					RelationType: rt,
+					Properties: map[string]any{
+						"discovered_by": "cmdb-relation-discovery",
+						"ref_attr":      key,
+					},
+				}
+				if err := s.persistRelation(ctx, rel); err != nil {
+					slog.Warn("skip discovered relation", "src", ci.ID, "dst", t.ID, "err", err)
+					continue
+				}
+				existing[relKey] = true
+				created++
+			}
+		}
+	}
+	return created, nil
+}
+
+// loadAllCIs 分页拉取租户下全部 CI（typeID 留空表示不限类型）。
+func (s *Service) loadAllCIs(ctx context.Context, tenantID string) ([]*model.CIModel, error) {
+	var all []*model.CIModel
+	const batch = 100
+	for offset := 0; ; offset += batch {
+		page, err := s.pg.ListCIPaginated(ctx, tenantID, "", "", "ASC", batch, offset)
+		if err != nil {
+			return nil, err
+		}
+		all = append(all, page...)
+		if len(page) < batch {
+			break
+		}
+	}
+	return all, nil
+}
+
+// bareID 取 resource_id 的最后一段（自然键 "<provider>:<type>:<id>" 的裸 id）。
+func bareID(resourceID string) string {
+	if i := strings.LastIndex(resourceID, ":"); i >= 0 {
+		return resourceID[i+1:]
+	}
+	return resourceID
+}
+
+// relationTypeFor 把外键属性名映射为语义化关系类型。
+func relationTypeFor(refKey string) string {
+	switch refKey {
+	case "vpc_id":
+		return "belongs_to_vpc"
+	case "subnet_id":
+		return "in_subnet"
+	case "instance_id", "host_id":
+		return "runs_on"
+	case "cluster_id":
+		return "member_of_cluster"
+	case "node":
+		return "runs_on_node"
+	case "security_group_id", "security_group_ids":
+		return "protected_by_sg"
+	case "zone_id", "availability_zone":
+		return "located_in_zone"
+	default:
+		return "references"
+	}
+}
+
+// matchTargets 把外键值解析为候选目标 CI：先按完整 resource_id 精确匹配，
+// 再按裸 id 匹配（子资源的 vpc_id="vpc-123" 对应父资源 resource_id="aliyun:vpc:vpc-123"），
+// 最后按 provider 作用域收敛，避免跨云误连。
+func matchTargets(ref string, src *model.CIModel, byFull map[string]*model.CIModel, byBare map[string][]*model.CIModel) []*model.CIModel {
+	var raw []*model.CIModel
+	if ci, ok := byFull[ref]; ok {
+		raw = append(raw, ci)
+	}
+	if ci, ok := byBare[bareID(ref)]; ok {
+		raw = append(raw, ci...)
+	}
+
+	seen := make(map[string]bool)
+	srcProvider, _ := src.Attributes["provider"].(string)
+	var out []*model.CIModel
+	for _, t := range raw {
+		if t.ID == src.ID || seen[t.ID] {
+			continue
+		}
+		seen[t.ID] = true
+		// provider 作用域：双方都有 provider 时要求一致，降低跨云误连概率
+		if srcProvider != "" {
+			if tp, ok := t.Attributes["provider"].(string); ok && tp != "" && tp != srcProvider {
+				continue
+			}
+		}
+		out = append(out, t)
+	}
+	return out
+}
+
+// persistRelation 落库一条关系，先做环检测（Dgraph 或内存回退），避免引入拓扑环。
+func (s *Service) persistRelation(ctx context.Context, rel *model.CIRelation) error {
+	hasCycle := false
+	if s.dg != nil {
+		c, err := s.dg.DetectCycle(ctx, rel.SourceID, rel.TargetID, rel.TenantID)
+		if err != nil {
+			return fmt.Errorf("cycle detection failed: %w", err)
+		}
+		hasCycle = c
+	} else if s.mem != nil {
+		hasCycle = s.mem.detectCycle(rel.TenantID, rel.SourceID, rel.TargetID)
+	}
+	if hasCycle {
+		return fmt.Errorf("would create a topological cycle")
+	}
+	if s.pg != nil {
+		if err := s.pg.CreateRelation(ctx, rel, "discovery-relation"); err != nil {
+			return err
+		}
+	} else if s.mem != nil {
+		s.mem.createRelation(rel)
+	}
+	return nil
 }
 
 // simulateDiscovery 模拟发现过程

@@ -182,8 +182,29 @@ func main() {
 
 	// 云资源接出：注册 4 云 Provider（空白导入触发 init）并把云 Service 接入 Core mux，
 	// 经 cloudCMDBAdapter 把发现的资源同步进 CMDB（复用完整 CI 生命周期）。
-	cloudSvc := cloud.NewService(cloud.NewMemStore(), cloudCMDBAdapter{pgRepo: pgRepo, cmdbSvc: cmdbSvc})
+	// 注意：云/主机/容器属于「资源纳管」层职责，由 cloudSvc 拉取生成基础 CI；
+	// CMDB 的自动发现(relation/agent/snmp)不重复拉取资源，只在已纳管 CI 之上推断关系。
+	cloudCredStore := cloud.NewMemStore()
+	cloudSvc := cloud.NewService(cloudCredStore, cloudCMDBAdapter{pgRepo: pgRepo, cmdbSvc: cmdbSvc})
 	server.RegisterService(cloudSvc)
+
+	// 采集架构：CMDB 作为统一调度者。把云采集器注册进 CMDB 注册表，
+	// 云凭证纳管（建立通道）后联动 CMDB 创建采集任务，调度器按频率触发真实采集。
+	// 采集架构：CMDB 作为统一调度者。
+	// - cmdb:cloud → server 拉模式（拉云资源 → 落 CI）
+	// - monitor:cloud → server 拉模式（拉云监控指标 → 经 onMetric 落 ingest 管道）
+	// 两者共享同一 cloud.Collector 实例（复用凭证存储与厂商注册）。
+	cloudCol := cloud.NewCollector(cloudCredStore)
+	cmdbSvc.RegisterCollector("cmdb", "cloud", &cloudCollector{col: cloudCol})
+	cmdbSvc.RegisterCollector("monitor", "cloud", &cloudMetricCollector{col: cloudCol})
+	cloudSvc.SetOnOnboard(func(resourceType, target string, enableCMDB, enableMonitor *bool) {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		if err := cmdbSvc.OnboardResource(ctx, "default", resourceType, target, enableCMDB, enableMonitor); err != nil {
+			slog.Error("onboard resource → create collection task failed", "target", target, "err", err)
+		}
+	})
+	cmdbSvc.StartScheduler(ctx)
 
 	monitorSvc := monitor.NewService(cfg, rdb)
 	server.RegisterService(monitorSvc)
@@ -262,6 +283,24 @@ func main() {
 	}
 	ingestBuf := ingest.NewBuffer(ingestSink, ingest.WithFlushInterval(2*time.Second))
 	ingestBuf.Start(ctx)
+
+	// 将 CMDB 调度器(server 拉模式)产出的 monitor 指标路由到 ingest 管道
+	// (VM/内存 sink)。Agent 侧 push 的指标已由 grpcTunnelServer.OnMetrics 接入同一管道,
+	// 两条路径在此汇聚为统一的指标落库。
+	cmdbSvc.SetMetricSink(func(p cmdb.MetricPoint) {
+		ingestBuf.Submit(tunnel.MetricsReport{
+			AgentID:     p.ResourceID,
+			TaskID:      p.ResourceID,
+			TaskType:    "monitor",
+			Timestamp:   p.Timestamp,
+			IntervalSec: 0,
+			Points: []tunnel.MetricPoint{{
+				Name:   p.Name,
+				Value:  p.Value,
+				Labels: p.Labels,
+			}},
+		})
+	})
 	grpcTunnelServer.OnMetrics(func(report tunnel.MetricsReport) {
 		ingestBuf.Submit(report)
 	})
@@ -310,6 +349,17 @@ func main() {
 	agentSvc.CleanupLegacySandboxHosts()
 	// 默认沙箱池: 把 Server 所在主机的 Agent 自动标记为沙箱环境(可经环境变量调整)。
 	agentSvc.ApplySandboxPool(ctx)
+
+	// 方案 X:CMDB 统一调度主机/容器采集任务。
+	// 主机/容器经 Agent 纳管成功(注册或批量安装)后,回调 OnboardResource 创建 channel=agent 的
+	// cmdb/monitor 任务;cmdbSvc 通过 AgentChannel 适配器把这些任务投影到 agentmgr 下发,
+	// 采集动作由 Agent 本地执行并 push 上报(server 侧不主动拉取)。
+	agentSvc.SetOnAgentOnboard(func(tenantID, agentID string) error {
+		obCtx, obCancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer obCancel()
+		return cmdbSvc.OnboardResource(obCtx, tenantID, "host", "host:"+agentID, nil, nil)
+	})
+	cmdbSvc.SetAgentChannel(&agentChannelAdapter{agentSvc: agentSvc})
 
 	// K8s 容器资源纳管：注入经 Agent 通道的发现器（鸭子类型 *agentmgr.Service 满足 cloud.K8sAgentRunner）。
 	cloudSvc.SetK8sDiscoverer(k8s.NewDiscoverer(agentSvc))
@@ -522,6 +572,47 @@ func (s *staticHandlerRegistrar) RegisterRoutes(mux *http.ServeMux) {
 	for pattern, handler := range s.routes {
 		mux.HandleFunc(pattern, handler.ServeHTTP)
 	}
+}
+
+// agentChannelAdapter 实现 cmdb.AgentChannel:把 CMDB 统一调度的 channel=agent 采集任务
+// 投影到 agentmgr(Agent 传输层)。CMDB 持有调度权(采集频率/启停),采集动作 delegated 给
+// Agent 本地采集器执行并 push 上报。投影任务 ID 固定为 "cmdb:" + CmdbTaskID,保证幂等。
+type agentChannelAdapter struct {
+	agentSvc *agentmgr.Service
+}
+
+// SyncAgentCollectTask 把一条 cmdb 采集任务同步为 Agent 侧采集任务(投影 + 下发)。
+func (a *agentChannelAdapter) SyncAgentCollectTask(ctx context.Context, spec cmdb.AgentCollectTaskSpec) error {
+	agentType := agentmgr.CollectTypeCMDB
+	switch spec.Kind {
+	case "monitor":
+		agentType = agentmgr.CollectTypeMetric
+	case "cmdb":
+		agentType = agentmgr.CollectTypeCMDB
+	default:
+		slog.Warn("agent channel: unknown collect kind, defaulting to cmdb", "kind", spec.Kind)
+	}
+	// 目标解析: "host:<agentID>" → 该 Agent;容器等前缀后续扩展(container 纳管投影)。
+	// 未识别前缀回退为全量在线 Agent(空 TargetAgents),由 Agent 内置调度器按类型执行。
+	var targetAgents []string
+	if after, ok := strings.CutPrefix(spec.Target, "host:"); ok {
+		targetAgents = []string{after}
+	} else {
+		slog.Warn("agent channel: unmapped collect target, projecting to all online agents", "target", spec.Target)
+	}
+	return a.agentSvc.UpsertCollectTaskFromCMDB(agentmgr.CMDBCollectSpec{
+		CmdbTaskID:   spec.CmdbTaskID,
+		TenantID:     spec.TenantID,
+		AgentType:    agentType,
+		TargetAgents: targetAgents,
+		IntervalSec:  spec.IntervalSec,
+		Enabled:      spec.Enabled,
+	})
+}
+
+// RemoveAgentCollectTask 移除对应 Agent 侧投影任务(并推送空清单让 Agent 移除)。
+func (a *agentChannelAdapter) RemoveAgentCollectTask(ctx context.Context, cmdbTaskID string) error {
+	return a.agentSvc.RemoveCollectTaskFromCMDB(cmdbTaskID)
 }
 
 // cmdbInventoryAdapter 将 PG 资产表(pg.Repository.ListCI)按约定 schema 映射为 vuln.InventoryEntry。
