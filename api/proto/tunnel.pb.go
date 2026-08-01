@@ -5,7 +5,7 @@
 // versions:
 // 	protoc-gen-go v1.36.11
 // 	protoc        v7.35.1
-// source: tunnel.proto
+// source: api/proto/tunnel.proto
 
 package tunnel
 
@@ -38,6 +38,7 @@ type TunnelMessage struct {
 	//	*TunnelMessage_CommandResp
 	//	*TunnelMessage_Forward
 	//	*TunnelMessage_ForwardResp
+	//	*TunnelMessage_Metrics
 	Payload       isTunnelMessage_Payload `protobuf_oneof:"payload"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -45,7 +46,7 @@ type TunnelMessage struct {
 
 func (x *TunnelMessage) Reset() {
 	*x = TunnelMessage{}
-	mi := &file_tunnel_proto_msgTypes[0]
+	mi := &file_api_proto_tunnel_proto_msgTypes[0]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -57,7 +58,7 @@ func (x *TunnelMessage) String() string {
 func (*TunnelMessage) ProtoMessage() {}
 
 func (x *TunnelMessage) ProtoReflect() protoreflect.Message {
-	mi := &file_tunnel_proto_msgTypes[0]
+	mi := &file_api_proto_tunnel_proto_msgTypes[0]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -70,7 +71,7 @@ func (x *TunnelMessage) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TunnelMessage.ProtoReflect.Descriptor instead.
 func (*TunnelMessage) Descriptor() ([]byte, []int) {
-	return file_tunnel_proto_rawDescGZIP(), []int{0}
+	return file_api_proto_tunnel_proto_rawDescGZIP(), []int{0}
 }
 
 func (x *TunnelMessage) GetMessageId() string {
@@ -164,6 +165,15 @@ func (x *TunnelMessage) GetForwardResp() *AgentResponse {
 	return nil
 }
 
+func (x *TunnelMessage) GetMetrics() *MetricBatch {
+	if x != nil {
+		if x, ok := x.Payload.(*TunnelMessage_Metrics); ok {
+			return x.Metrics
+		}
+	}
+	return nil
+}
+
 type isTunnelMessage_Payload interface {
 	isTunnelMessage_Payload()
 }
@@ -196,6 +206,11 @@ type TunnelMessage_ForwardResp struct {
 	ForwardResp *AgentResponse `protobuf:"bytes,41,opt,name=forward_resp,json=forwardResp,proto3,oneof"`
 }
 
+type TunnelMessage_Metrics struct {
+	// 监控/CMDB 指标批量上报(任务归任务、上报归上报: Agent 本地调度后经此主动上报)
+	Metrics *MetricBatch `protobuf:"bytes,50,opt,name=metrics,proto3,oneof"`
+}
+
 func (*TunnelMessage_Register) isTunnelMessage_Payload() {}
 
 func (*TunnelMessage_RegisterResp) isTunnelMessage_Payload() {}
@@ -209,6 +224,155 @@ func (*TunnelMessage_CommandResp) isTunnelMessage_Payload() {}
 func (*TunnelMessage_Forward) isTunnelMessage_Payload() {}
 
 func (*TunnelMessage_ForwardResp) isTunnelMessage_Payload() {}
+
+func (*TunnelMessage_Metrics) isTunnelMessage_Payload() {}
+
+// MetricPoint 单个指标点。labels 承载维度(CPU 核号/磁盘挂载点/网卡名等)。
+type MetricPoint struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Name          string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
+	Value         float64                `protobuf:"fixed64,2,opt,name=value,proto3" json:"value,omitempty"`
+	Labels        map[string]string      `protobuf:"bytes,3,rep,name=labels,proto3" json:"labels,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
+	Unit          string                 `protobuf:"bytes,4,opt,name=unit,proto3" json:"unit,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *MetricPoint) Reset() {
+	*x = MetricPoint{}
+	mi := &file_api_proto_tunnel_proto_msgTypes[1]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *MetricPoint) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*MetricPoint) ProtoMessage() {}
+
+func (x *MetricPoint) ProtoReflect() protoreflect.Message {
+	mi := &file_api_proto_tunnel_proto_msgTypes[1]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use MetricPoint.ProtoReflect.Descriptor instead.
+func (*MetricPoint) Descriptor() ([]byte, []int) {
+	return file_api_proto_tunnel_proto_rawDescGZIP(), []int{1}
+}
+
+func (x *MetricPoint) GetName() string {
+	if x != nil {
+		return x.Name
+	}
+	return ""
+}
+
+func (x *MetricPoint) GetValue() float64 {
+	if x != nil {
+		return x.Value
+	}
+	return 0
+}
+
+func (x *MetricPoint) GetLabels() map[string]string {
+	if x != nil {
+		return x.Labels
+	}
+	return nil
+}
+
+func (x *MetricPoint) GetUnit() string {
+	if x != nil {
+		return x.Unit
+	}
+	return ""
+}
+
+// MetricBatch 一次批量上报: 一个任务/一批指标点的集合。
+// task_type 供 Core 分流: cmdb(低频→PG) | monitor(高频→VM)。
+type MetricBatch struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	TaskId        string                 `protobuf:"bytes,1,opt,name=task_id,json=taskId,proto3" json:"task_id,omitempty"`
+	TaskType      string                 `protobuf:"bytes,2,opt,name=task_type,json=taskType,proto3" json:"task_type,omitempty"`           // cmdb | monitor | metric
+	Timestamp     int64                  `protobuf:"varint,3,opt,name=timestamp,proto3" json:"timestamp,omitempty"`                        // 采集时间(unix 秒)
+	IntervalSec   int64                  `protobuf:"varint,4,opt,name=interval_sec,json=intervalSec,proto3" json:"interval_sec,omitempty"` // 采集周期, Core 侧可据此估算心跳/时序
+	Points        []*MetricPoint         `protobuf:"bytes,5,rep,name=points,proto3" json:"points,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *MetricBatch) Reset() {
+	*x = MetricBatch{}
+	mi := &file_api_proto_tunnel_proto_msgTypes[2]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *MetricBatch) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*MetricBatch) ProtoMessage() {}
+
+func (x *MetricBatch) ProtoReflect() protoreflect.Message {
+	mi := &file_api_proto_tunnel_proto_msgTypes[2]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use MetricBatch.ProtoReflect.Descriptor instead.
+func (*MetricBatch) Descriptor() ([]byte, []int) {
+	return file_api_proto_tunnel_proto_rawDescGZIP(), []int{2}
+}
+
+func (x *MetricBatch) GetTaskId() string {
+	if x != nil {
+		return x.TaskId
+	}
+	return ""
+}
+
+func (x *MetricBatch) GetTaskType() string {
+	if x != nil {
+		return x.TaskType
+	}
+	return ""
+}
+
+func (x *MetricBatch) GetTimestamp() int64 {
+	if x != nil {
+		return x.Timestamp
+	}
+	return 0
+}
+
+func (x *MetricBatch) GetIntervalSec() int64 {
+	if x != nil {
+		return x.IntervalSec
+	}
+	return 0
+}
+
+func (x *MetricBatch) GetPoints() []*MetricPoint {
+	if x != nil {
+		return x.Points
+	}
+	return nil
+}
 
 type RegisterRequest struct {
 	state        protoimpl.MessageState `protogen:"open.v1"`
@@ -235,7 +399,7 @@ type RegisterRequest struct {
 
 func (x *RegisterRequest) Reset() {
 	*x = RegisterRequest{}
-	mi := &file_tunnel_proto_msgTypes[1]
+	mi := &file_api_proto_tunnel_proto_msgTypes[3]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -247,7 +411,7 @@ func (x *RegisterRequest) String() string {
 func (*RegisterRequest) ProtoMessage() {}
 
 func (x *RegisterRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_tunnel_proto_msgTypes[1]
+	mi := &file_api_proto_tunnel_proto_msgTypes[3]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -260,7 +424,7 @@ func (x *RegisterRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RegisterRequest.ProtoReflect.Descriptor instead.
 func (*RegisterRequest) Descriptor() ([]byte, []int) {
-	return file_tunnel_proto_rawDescGZIP(), []int{1}
+	return file_api_proto_tunnel_proto_rawDescGZIP(), []int{3}
 }
 
 func (x *RegisterRequest) GetProxyId() string {
@@ -355,7 +519,7 @@ type RegisterResponse struct {
 
 func (x *RegisterResponse) Reset() {
 	*x = RegisterResponse{}
-	mi := &file_tunnel_proto_msgTypes[2]
+	mi := &file_api_proto_tunnel_proto_msgTypes[4]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -367,7 +531,7 @@ func (x *RegisterResponse) String() string {
 func (*RegisterResponse) ProtoMessage() {}
 
 func (x *RegisterResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_tunnel_proto_msgTypes[2]
+	mi := &file_api_proto_tunnel_proto_msgTypes[4]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -380,7 +544,7 @@ func (x *RegisterResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RegisterResponse.ProtoReflect.Descriptor instead.
 func (*RegisterResponse) Descriptor() ([]byte, []int) {
-	return file_tunnel_proto_rawDescGZIP(), []int{2}
+	return file_api_proto_tunnel_proto_rawDescGZIP(), []int{4}
 }
 
 func (x *RegisterResponse) GetAccepted() bool {
@@ -428,7 +592,7 @@ type Heartbeat struct {
 
 func (x *Heartbeat) Reset() {
 	*x = Heartbeat{}
-	mi := &file_tunnel_proto_msgTypes[3]
+	mi := &file_api_proto_tunnel_proto_msgTypes[5]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -440,7 +604,7 @@ func (x *Heartbeat) String() string {
 func (*Heartbeat) ProtoMessage() {}
 
 func (x *Heartbeat) ProtoReflect() protoreflect.Message {
-	mi := &file_tunnel_proto_msgTypes[3]
+	mi := &file_api_proto_tunnel_proto_msgTypes[5]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -453,7 +617,7 @@ func (x *Heartbeat) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Heartbeat.ProtoReflect.Descriptor instead.
 func (*Heartbeat) Descriptor() ([]byte, []int) {
-	return file_tunnel_proto_rawDescGZIP(), []int{3}
+	return file_api_proto_tunnel_proto_rawDescGZIP(), []int{5}
 }
 
 func (x *Heartbeat) GetTimestamp() int64 {
@@ -483,7 +647,7 @@ type CommandRequest struct {
 
 func (x *CommandRequest) Reset() {
 	*x = CommandRequest{}
-	mi := &file_tunnel_proto_msgTypes[4]
+	mi := &file_api_proto_tunnel_proto_msgTypes[6]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -495,7 +659,7 @@ func (x *CommandRequest) String() string {
 func (*CommandRequest) ProtoMessage() {}
 
 func (x *CommandRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_tunnel_proto_msgTypes[4]
+	mi := &file_api_proto_tunnel_proto_msgTypes[6]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -508,7 +672,7 @@ func (x *CommandRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CommandRequest.ProtoReflect.Descriptor instead.
 func (*CommandRequest) Descriptor() ([]byte, []int) {
-	return file_tunnel_proto_rawDescGZIP(), []int{4}
+	return file_api_proto_tunnel_proto_rawDescGZIP(), []int{6}
 }
 
 func (x *CommandRequest) GetCommandId() string {
@@ -558,7 +722,7 @@ type CommandResponse struct {
 
 func (x *CommandResponse) Reset() {
 	*x = CommandResponse{}
-	mi := &file_tunnel_proto_msgTypes[5]
+	mi := &file_api_proto_tunnel_proto_msgTypes[7]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -570,7 +734,7 @@ func (x *CommandResponse) String() string {
 func (*CommandResponse) ProtoMessage() {}
 
 func (x *CommandResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_tunnel_proto_msgTypes[5]
+	mi := &file_api_proto_tunnel_proto_msgTypes[7]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -583,7 +747,7 @@ func (x *CommandResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CommandResponse.ProtoReflect.Descriptor instead.
 func (*CommandResponse) Descriptor() ([]byte, []int) {
-	return file_tunnel_proto_rawDescGZIP(), []int{5}
+	return file_api_proto_tunnel_proto_rawDescGZIP(), []int{7}
 }
 
 func (x *CommandResponse) GetCommandId() string {
@@ -626,7 +790,7 @@ type AgentCommand struct {
 
 func (x *AgentCommand) Reset() {
 	*x = AgentCommand{}
-	mi := &file_tunnel_proto_msgTypes[6]
+	mi := &file_api_proto_tunnel_proto_msgTypes[8]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -638,7 +802,7 @@ func (x *AgentCommand) String() string {
 func (*AgentCommand) ProtoMessage() {}
 
 func (x *AgentCommand) ProtoReflect() protoreflect.Message {
-	mi := &file_tunnel_proto_msgTypes[6]
+	mi := &file_api_proto_tunnel_proto_msgTypes[8]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -651,7 +815,7 @@ func (x *AgentCommand) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AgentCommand.ProtoReflect.Descriptor instead.
 func (*AgentCommand) Descriptor() ([]byte, []int) {
-	return file_tunnel_proto_rawDescGZIP(), []int{6}
+	return file_api_proto_tunnel_proto_rawDescGZIP(), []int{8}
 }
 
 func (x *AgentCommand) GetCommandId() string {
@@ -695,7 +859,7 @@ type AgentResponse struct {
 
 func (x *AgentResponse) Reset() {
 	*x = AgentResponse{}
-	mi := &file_tunnel_proto_msgTypes[7]
+	mi := &file_api_proto_tunnel_proto_msgTypes[9]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -707,7 +871,7 @@ func (x *AgentResponse) String() string {
 func (*AgentResponse) ProtoMessage() {}
 
 func (x *AgentResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_tunnel_proto_msgTypes[7]
+	mi := &file_api_proto_tunnel_proto_msgTypes[9]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -720,7 +884,7 @@ func (x *AgentResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AgentResponse.ProtoReflect.Descriptor instead.
 func (*AgentResponse) Descriptor() ([]byte, []int) {
-	return file_tunnel_proto_rawDescGZIP(), []int{7}
+	return file_api_proto_tunnel_proto_rawDescGZIP(), []int{9}
 }
 
 func (x *AgentResponse) GetCommandId() string {
@@ -758,11 +922,11 @@ func (x *AgentResponse) GetError() string {
 	return ""
 }
 
-var File_tunnel_proto protoreflect.FileDescriptor
+var File_api_proto_tunnel_proto protoreflect.FileDescriptor
 
-const file_tunnel_proto_rawDesc = "" +
+const file_api_proto_tunnel_proto_rawDesc = "" +
 	"\n" +
-	"\ftunnel.proto\x12\x06tunnel\"\xfa\x03\n" +
+	"\x16api/proto/tunnel.proto\x12\x06tunnel\"\xab\x04\n" +
 	"\rTunnelMessage\x12\x1d\n" +
 	"\n" +
 	"message_id\x18\x01 \x01(\tR\tmessageId\x12\x19\n" +
@@ -775,8 +939,23 @@ const file_tunnel_proto_rawDesc = "" +
 	"\acommand\x18\x1e \x01(\v2\x16.tunnel.CommandRequestH\x00R\acommand\x12<\n" +
 	"\fcommand_resp\x18\x1f \x01(\v2\x17.tunnel.CommandResponseH\x00R\vcommandResp\x120\n" +
 	"\aforward\x18( \x01(\v2\x14.tunnel.AgentCommandH\x00R\aforward\x12:\n" +
-	"\fforward_resp\x18) \x01(\v2\x15.tunnel.AgentResponseH\x00R\vforwardRespB\t\n" +
-	"\apayload\"\xa7\x02\n" +
+	"\fforward_resp\x18) \x01(\v2\x15.tunnel.AgentResponseH\x00R\vforwardResp\x12/\n" +
+	"\ametrics\x182 \x01(\v2\x13.tunnel.MetricBatchH\x00R\ametricsB\t\n" +
+	"\apayload\"\xbf\x01\n" +
+	"\vMetricPoint\x12\x12\n" +
+	"\x04name\x18\x01 \x01(\tR\x04name\x12\x14\n" +
+	"\x05value\x18\x02 \x01(\x01R\x05value\x127\n" +
+	"\x06labels\x18\x03 \x03(\v2\x1f.tunnel.MetricPoint.LabelsEntryR\x06labels\x12\x12\n" +
+	"\x04unit\x18\x04 \x01(\tR\x04unit\x1a9\n" +
+	"\vLabelsEntry\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\xb1\x01\n" +
+	"\vMetricBatch\x12\x17\n" +
+	"\atask_id\x18\x01 \x01(\tR\x06taskId\x12\x1b\n" +
+	"\ttask_type\x18\x02 \x01(\tR\btaskType\x12\x1c\n" +
+	"\ttimestamp\x18\x03 \x01(\x03R\ttimestamp\x12!\n" +
+	"\finterval_sec\x18\x04 \x01(\x03R\vintervalSec\x12+\n" +
+	"\x06points\x18\x05 \x03(\v2\x13.tunnel.MetricPointR\x06points\"\xa7\x02\n" +
 	"\x0fRegisterRequest\x12\x19\n" +
 	"\bproxy_id\x18\x01 \x01(\tR\aproxyId\x12\x18\n" +
 	"\aversion\x18\x02 \x01(\tR\aversion\x12\x1a\n" +
@@ -831,51 +1010,57 @@ const file_tunnel_proto_rawDesc = "" +
 	"\aConnect\x12\x15.tunnel.TunnelMessage\x1a\x15.tunnel.TunnelMessage(\x010\x01B\vZ\t./;tunnelb\x06proto3"
 
 var (
-	file_tunnel_proto_rawDescOnce sync.Once
-	file_tunnel_proto_rawDescData []byte
+	file_api_proto_tunnel_proto_rawDescOnce sync.Once
+	file_api_proto_tunnel_proto_rawDescData []byte
 )
 
-func file_tunnel_proto_rawDescGZIP() []byte {
-	file_tunnel_proto_rawDescOnce.Do(func() {
-		file_tunnel_proto_rawDescData = protoimpl.X.CompressGZIP(unsafe.Slice(unsafe.StringData(file_tunnel_proto_rawDesc), len(file_tunnel_proto_rawDesc)))
+func file_api_proto_tunnel_proto_rawDescGZIP() []byte {
+	file_api_proto_tunnel_proto_rawDescOnce.Do(func() {
+		file_api_proto_tunnel_proto_rawDescData = protoimpl.X.CompressGZIP(unsafe.Slice(unsafe.StringData(file_api_proto_tunnel_proto_rawDesc), len(file_api_proto_tunnel_proto_rawDesc)))
 	})
-	return file_tunnel_proto_rawDescData
+	return file_api_proto_tunnel_proto_rawDescData
 }
 
-var file_tunnel_proto_msgTypes = make([]protoimpl.MessageInfo, 8)
-var file_tunnel_proto_goTypes = []any{
+var file_api_proto_tunnel_proto_msgTypes = make([]protoimpl.MessageInfo, 11)
+var file_api_proto_tunnel_proto_goTypes = []any{
 	(*TunnelMessage)(nil),    // 0: tunnel.TunnelMessage
-	(*RegisterRequest)(nil),  // 1: tunnel.RegisterRequest
-	(*RegisterResponse)(nil), // 2: tunnel.RegisterResponse
-	(*Heartbeat)(nil),        // 3: tunnel.Heartbeat
-	(*CommandRequest)(nil),   // 4: tunnel.CommandRequest
-	(*CommandResponse)(nil),  // 5: tunnel.CommandResponse
-	(*AgentCommand)(nil),     // 6: tunnel.AgentCommand
-	(*AgentResponse)(nil),    // 7: tunnel.AgentResponse
+	(*MetricPoint)(nil),      // 1: tunnel.MetricPoint
+	(*MetricBatch)(nil),      // 2: tunnel.MetricBatch
+	(*RegisterRequest)(nil),  // 3: tunnel.RegisterRequest
+	(*RegisterResponse)(nil), // 4: tunnel.RegisterResponse
+	(*Heartbeat)(nil),        // 5: tunnel.Heartbeat
+	(*CommandRequest)(nil),   // 6: tunnel.CommandRequest
+	(*CommandResponse)(nil),  // 7: tunnel.CommandResponse
+	(*AgentCommand)(nil),     // 8: tunnel.AgentCommand
+	(*AgentResponse)(nil),    // 9: tunnel.AgentResponse
+	nil,                      // 10: tunnel.MetricPoint.LabelsEntry
 }
-var file_tunnel_proto_depIdxs = []int32{
-	1, // 0: tunnel.TunnelMessage.register:type_name -> tunnel.RegisterRequest
-	2, // 1: tunnel.TunnelMessage.register_resp:type_name -> tunnel.RegisterResponse
-	3, // 2: tunnel.TunnelMessage.heartbeat:type_name -> tunnel.Heartbeat
-	4, // 3: tunnel.TunnelMessage.command:type_name -> tunnel.CommandRequest
-	5, // 4: tunnel.TunnelMessage.command_resp:type_name -> tunnel.CommandResponse
-	6, // 5: tunnel.TunnelMessage.forward:type_name -> tunnel.AgentCommand
-	7, // 6: tunnel.TunnelMessage.forward_resp:type_name -> tunnel.AgentResponse
-	0, // 7: tunnel.TunnelService.Connect:input_type -> tunnel.TunnelMessage
-	0, // 8: tunnel.TunnelService.Connect:output_type -> tunnel.TunnelMessage
-	8, // [8:9] is the sub-list for method output_type
-	7, // [7:8] is the sub-list for method input_type
-	7, // [7:7] is the sub-list for extension type_name
-	7, // [7:7] is the sub-list for extension extendee
-	0, // [0:7] is the sub-list for field type_name
+var file_api_proto_tunnel_proto_depIdxs = []int32{
+	3,  // 0: tunnel.TunnelMessage.register:type_name -> tunnel.RegisterRequest
+	4,  // 1: tunnel.TunnelMessage.register_resp:type_name -> tunnel.RegisterResponse
+	5,  // 2: tunnel.TunnelMessage.heartbeat:type_name -> tunnel.Heartbeat
+	6,  // 3: tunnel.TunnelMessage.command:type_name -> tunnel.CommandRequest
+	7,  // 4: tunnel.TunnelMessage.command_resp:type_name -> tunnel.CommandResponse
+	8,  // 5: tunnel.TunnelMessage.forward:type_name -> tunnel.AgentCommand
+	9,  // 6: tunnel.TunnelMessage.forward_resp:type_name -> tunnel.AgentResponse
+	2,  // 7: tunnel.TunnelMessage.metrics:type_name -> tunnel.MetricBatch
+	10, // 8: tunnel.MetricPoint.labels:type_name -> tunnel.MetricPoint.LabelsEntry
+	1,  // 9: tunnel.MetricBatch.points:type_name -> tunnel.MetricPoint
+	0,  // 10: tunnel.TunnelService.Connect:input_type -> tunnel.TunnelMessage
+	0,  // 11: tunnel.TunnelService.Connect:output_type -> tunnel.TunnelMessage
+	11, // [11:12] is the sub-list for method output_type
+	10, // [10:11] is the sub-list for method input_type
+	10, // [10:10] is the sub-list for extension type_name
+	10, // [10:10] is the sub-list for extension extendee
+	0,  // [0:10] is the sub-list for field type_name
 }
 
-func init() { file_tunnel_proto_init() }
-func file_tunnel_proto_init() {
-	if File_tunnel_proto != nil {
+func init() { file_api_proto_tunnel_proto_init() }
+func file_api_proto_tunnel_proto_init() {
+	if File_api_proto_tunnel_proto != nil {
 		return
 	}
-	file_tunnel_proto_msgTypes[0].OneofWrappers = []any{
+	file_api_proto_tunnel_proto_msgTypes[0].OneofWrappers = []any{
 		(*TunnelMessage_Register)(nil),
 		(*TunnelMessage_RegisterResp)(nil),
 		(*TunnelMessage_Heartbeat)(nil),
@@ -883,22 +1068,23 @@ func file_tunnel_proto_init() {
 		(*TunnelMessage_CommandResp)(nil),
 		(*TunnelMessage_Forward)(nil),
 		(*TunnelMessage_ForwardResp)(nil),
+		(*TunnelMessage_Metrics)(nil),
 	}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
-			RawDescriptor: unsafe.Slice(unsafe.StringData(file_tunnel_proto_rawDesc), len(file_tunnel_proto_rawDesc)),
+			RawDescriptor: unsafe.Slice(unsafe.StringData(file_api_proto_tunnel_proto_rawDesc), len(file_api_proto_tunnel_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   8,
+			NumMessages:   11,
 			NumExtensions: 0,
 			NumServices:   1,
 		},
-		GoTypes:           file_tunnel_proto_goTypes,
-		DependencyIndexes: file_tunnel_proto_depIdxs,
-		MessageInfos:      file_tunnel_proto_msgTypes,
+		GoTypes:           file_api_proto_tunnel_proto_goTypes,
+		DependencyIndexes: file_api_proto_tunnel_proto_depIdxs,
+		MessageInfos:      file_api_proto_tunnel_proto_msgTypes,
 	}.Build()
-	File_tunnel_proto = out.File
-	file_tunnel_proto_goTypes = nil
-	file_tunnel_proto_depIdxs = nil
+	File_api_proto_tunnel_proto = out.File
+	file_api_proto_tunnel_proto_goTypes = nil
+	file_api_proto_tunnel_proto_depIdxs = nil
 }

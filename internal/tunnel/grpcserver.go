@@ -50,6 +50,28 @@ type GRPCServer struct {
 	// 同时执行 boot_id 碰撞检测(同一 host_id 在不同 boot_id 上报时判定为克隆冲突)。
 	// 返回(规范 host_id, 是否需要 RESET_REGISTRATION)。为 nil 时(未注入)直接采用入站 ID。
 	resolveAgentID func(ctx context.Context, tenantID, incomingID, hostname string, ips []string, bootID string, forceNew bool) (string, bool)
+
+	// onMetrics 在收到 Agent 指标批量上报(MetricBatch)时触发,
+	// 供上层(agentmgr/ingest)做批量缓冲 + 按任务类型分流存储(PG/VM)。
+	onMetrics func(report MetricsReport)
+}
+
+// MetricPoint 一个被上报的指标点(内部表示, 与 pb 层解耦)。
+type MetricPoint struct {
+	Name   string
+	Value  float64
+	Unit   string
+	Labels map[string]string
+}
+
+// MetricsReport 一次指标批量上报。TaskType 供分流: cmdb(低频→PG) | monitor(高频→VM)。
+type MetricsReport struct {
+	AgentID     string
+	TaskID      string
+	TaskType    string
+	Timestamp   time.Time
+	IntervalSec int64
+	Points      []MetricPoint
 }
 
 // AgentHeartbeatInfo 携带 Agent 注册/心跳时的身份与系统信息,
@@ -105,6 +127,12 @@ func (s *GRPCServer) OnHeartbeat(handler func(info AgentHeartbeatInfo)) {
 // OnDisconnect 注册断连回调:会话结束(流关闭/出错)时触发。
 func (s *GRPCServer) OnDisconnect(handler func(agentID string)) {
 	s.onDisconnect = handler
+}
+
+// OnMetrics 注册指标上报回调:收到 Agent 的 MetricBatch 时触发。
+// 由上层(agentmgr/ingest)接入批量缓冲与存储分流, 不阻塞 gRPC 读循环。
+func (s *GRPCServer) OnMetrics(handler func(report MetricsReport)) {
+	s.onMetrics = handler
 }
 
 // SetAgentIDResolver 注入指纹去重解析器(由 agentmgr 在 SetGRPCTunnel 时调用)。
@@ -313,6 +341,34 @@ func (s *GRPCServer) handleMessage(session *GRPCProxySession, msg *pb.TunnelMess
 				}
 			}
 		}
+
+	case *pb.TunnelMessage_Metrics:
+		// 监控/CMDB 指标批量上报: 转内部 MetricsReport 交给上层缓冲与分流。
+		if s.onMetrics == nil || p.Metrics == nil {
+			return
+		}
+		mb := p.Metrics
+		pts := make([]MetricPoint, 0, len(mb.Points))
+		for _, pt := range mb.Points {
+			pts = append(pts, MetricPoint{
+				Name:   pt.Name,
+				Value:  pt.Value,
+				Unit:   pt.Unit,
+				Labels: pt.Labels,
+			})
+		}
+		ts := time.Now()
+		if mb.Timestamp > 0 {
+			ts = time.Unix(mb.Timestamp, 0)
+		}
+		s.onMetrics(MetricsReport{
+			AgentID:     session.ProxyID,
+			TaskID:      mb.TaskId,
+			TaskType:    mb.TaskType,
+			Timestamp:   ts,
+			IntervalSec: mb.IntervalSec,
+			Points:      pts,
+		})
 	}
 }
 

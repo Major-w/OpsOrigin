@@ -42,6 +42,7 @@ import (
 	"github.com/opsorigin/core/internal/monitor"
 	healthhandler "github.com/opsorigin/core/internal/monitor/health"
 	metricsregistry "github.com/opsorigin/core/internal/monitor/metrics"
+	"github.com/opsorigin/core/internal/monitor/ingest"
 	"github.com/opsorigin/core/internal/notification"
 	"github.com/opsorigin/core/internal/ops"
 	"github.com/opsorigin/core/internal/sysconfig"
@@ -241,6 +242,15 @@ func main() {
 			Success:   true,
 			Output:    []byte("routed"),
 		}
+	})
+
+	// 监控/CMDB 指标上报管道(阶段 1): OnMetrics → 批量缓冲(背压) → MemorySink。
+	// 阶段 2 将 sink 切换为 VictoriaMetrics(高频 monitor) + PG(低频 cmdb), 缓冲层不变。
+	ingestSink := ingest.NewMemorySink()
+	ingestBuf := ingest.NewBuffer(ingestSink, ingest.WithFlushInterval(2*time.Second))
+	ingestBuf.Start(ctx)
+	grpcTunnelServer.OnMetrics(func(report tunnel.MetricsReport) {
+		ingestBuf.Submit(report)
 	})
 
 	agentSvc := agentmgr.NewService(db, rdb, entClient)

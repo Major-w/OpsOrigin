@@ -21,7 +21,27 @@ message TunnelMessage {
     CommandResponse command_resp = 31;
     AgentCommand forward = 40;
     AgentResponse forward_resp = 41;
+    // 监控/CMDB 指标批量上报(任务归任务、上报归上报: Agent 本地调度后经此主动上报)
+    MetricBatch metrics = 50;
   }
+}
+
+// MetricPoint 单个指标点。labels 承载维度(CPU 核号/磁盘挂载点/网卡名等)。
+message MetricPoint {
+  string name = 1;
+  double value = 2;
+  map<string, string> labels = 3;
+  string unit = 4;
+}
+
+// MetricBatch 一次批量上报: 一个任务/一批指标点的集合。
+// task_type 供 Core 分流: cmdb(低频→PG) | monitor(高频→VM)。
+message MetricBatch {
+  string task_id = 1;
+  string task_type = 2;      // cmdb | monitor | metric
+  int64 timestamp = 3;       // 采集时间(unix 秒)
+  int64 interval_sec = 4;    // 采集周期, Core 侧可据此估算心跳/时序
+  repeated MetricPoint points = 5;
 }
 
 message RegisterRequest {
