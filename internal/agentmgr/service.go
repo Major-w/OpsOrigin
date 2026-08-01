@@ -483,27 +483,7 @@ func (s *Service) SetGRPCTunnel(gs *tunnel.GRPCServer) {
 	gs.SetAgentIDResolver(s.resolveGRPCAgentID)
 	// 任务清单下发:Agent 注册成功后推送其应执行的任务定义(自定义采集任务)。
 	// 基于 collect_tasks 过滤: enabled 且 target_agents 为空(全局)或包含该 Agent。
-	gs.SetTaskListProvider(func(agentID string) []*pb.TaskDef {
-		tasks := s.collect.List("default")
-		defs := make([]*pb.TaskDef, 0, len(tasks))
-		for _, t := range tasks {
-			if !t.Enabled {
-				continue
-			}
-			if len(t.TargetAgents) > 0 && !slices.Contains(t.TargetAgents, agentID) {
-				continue
-			}
-			defs = append(defs, &pb.TaskDef{
-				TaskId:      t.ID,
-				Name:        t.Name,
-				Type:        string(t.Type),
-				IntervalSec: int64(t.IntervalSec),
-				Script:      t.Script,
-				ScriptType:  t.ScriptType,
-			})
-		}
-		return defs
-	})
+	gs.SetTaskListProvider(s.buildTaskDefs)
 	// 隧道心跳回写:gRPC 直连 Agent 只发隧道内心跳(不走 HTTP heartbeat 端点),
 	// 若不在此回写 Redis/DB,agents 列表会永远显示 offline。注册时一并带上
 	// OS/IP/CPU/Memory,使 agent_hosts 不再是无资源信息的空壳。
@@ -537,6 +517,52 @@ func (s *Service) SetGRPCTunnel(gs *tunnel.GRPCServer) {
 			}
 		}
 	})
+}
+
+// buildTaskDefs 构造指定 Agent 应执行的任务清单(TaskDef 列表)。
+// 基于 collect_tasks 过滤: enabled 且 target_agents 为空(全局)或包含该 Agent。
+// 注册下发与变更推送共用, 保证两份清单一致。
+func (s *Service) buildTaskDefs(agentID string) []*pb.TaskDef {
+	tasks := s.collect.List("default")
+	defs := make([]*pb.TaskDef, 0, len(tasks))
+	for _, t := range tasks {
+		if !t.Enabled {
+			continue
+		}
+		if len(t.TargetAgents) > 0 && !slices.Contains(t.TargetAgents, agentID) {
+			continue
+		}
+		defs = append(defs, &pb.TaskDef{
+			TaskId:      t.ID,
+			Name:        t.Name,
+			Type:        string(t.Type),
+			IntervalSec: int64(t.IntervalSec),
+			Script:      t.Script,
+			ScriptType:  t.ScriptType,
+		})
+	}
+	return defs
+}
+
+// pushTaskListToOnline 在 collect_tasks 变更后主动推送最新清单给在线 Agent。
+// 全局任务(无 target_agents)推送所有在线 Agent; 指定目标任务只推送目标中在线的。
+// 增量同步无需 Agent 重连; 离线 Agent 下次注册时由 taskListProvider 全量补齐。
+func (s *Service) pushTaskListToOnline() {
+	if s.grpcTunnel == nil {
+		return
+	}
+	push := func(agentID string) {
+		defs := s.buildTaskDefs(agentID)
+		// 无任务也要推送空清单: 通知 Agent 移除已删除任务(enabled=false 语义)。
+		if err := s.grpcTunnel.PushTaskList(agentID, defs); err != nil {
+			slog.Debug("task list push skipped (agent offline)", "agent_id", agentID, "error", err)
+			return
+		}
+		slog.Info("task list pushed on change", "agent_id", agentID, "tasks", len(defs))
+	}
+	for _, id := range s.grpcTunnel.OnlineAgentIDs() {
+		push(id)
+	}
 }
 
 // resolveGRPCAgentID 在 gRPC 直连 Agent (或 TCP 隧道 Agent) 注册/心跳时执行主机身份解析与

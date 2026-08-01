@@ -144,6 +144,38 @@ func (s *GRPCServer) SetTaskListProvider(fn func(agentID string) []*pb.TaskDef) 
 	s.taskListProvider = fn
 }
 
+// PushTaskList 主动向指定在线 Agent 推送最新任务清单(TaskSync)。
+// 供上层(agentmgr)在 collect_tasks 变更时增量同步, 不依赖 Agent 重连。
+// Agent 不在线或推送失败时返回 error(调用方决定是否日志告警)。
+func (s *GRPCServer) PushTaskList(agentID string, tasks []*pb.TaskDef) error {
+	v, ok := s.proxies.Load(agentID)
+	if !ok {
+		return fmt.Errorf("agent %s not connected", agentID)
+	}
+	sess, ok := v.(*GRPCProxySession)
+	if !ok || sess.Stream == nil {
+		return fmt.Errorf("agent %s session invalid", agentID)
+	}
+	sess.mu.Lock()
+	defer sess.mu.Unlock()
+	return sess.Stream.Send(&pb.TunnelMessage{
+		Payload: &pb.TunnelMessage_TaskSync{
+			TaskSync: &pb.TaskList{Tasks: tasks},
+		},
+	})
+}
+
+// OnlineAgentIDs 返回当前在线(已建立 gRPC 会话)的 Agent ID 列表。
+// 供上层在全局任务变更时对所有在线 Agent 推送。
+func (s *GRPCServer) OnlineAgentIDs() []string {
+	ids := make([]string, 0, 16)
+	s.proxies.Range(func(k, _ any) bool {
+		ids = append(ids, k.(string))
+		return true
+	})
+	return ids
+}
+
 // SetAgentIDResolver 注入指纹去重解析器(由 agentmgr 在 SetGRPCTunnel 时调用)。
 // 入站 gRPC Agent 注册时,据此将入站 ID 解析为应复用的规范记录 ID,实现跨重启/跨通道去重。
 func (s *GRPCServer) SetAgentIDResolver(fn func(ctx context.Context, tenantID, incomingID, hostname string, ips []string, bootID string, forceNew bool) (string, bool)) {

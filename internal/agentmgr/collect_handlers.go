@@ -25,6 +25,8 @@ func (s *Service) handleCreateCollectTask(w http.ResponseWriter, r *http.Request
 		return
 	}
 	slog.Info("collect task created", "id", t.ID, "name", t.Name, "type", t.Type)
+	// 变更即推送:在线 Agent 立即收到最新任务清单(离线 Agent 注册时补齐)。
+	s.pushTaskListToOnline()
 	writeJSON(w, http.StatusCreated, t)
 }
 
@@ -48,6 +50,7 @@ func (s *Service) handleUpdateCollectTask(w http.ResponseWriter, r *http.Request
 		writeError(w, http.StatusNotFound, err.Error())
 		return
 	}
+	s.pushTaskListToOnline()
 	writeJSON(w, http.StatusOK, t)
 }
 
@@ -57,6 +60,7 @@ func (s *Service) handleDeleteCollectTask(w http.ResponseWriter, r *http.Request
 		writeError(w, http.StatusNotFound, err.Error())
 		return
 	}
+	s.pushTaskListToOnline()
 	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
 }
 
