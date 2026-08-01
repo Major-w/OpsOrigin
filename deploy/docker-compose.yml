@@ -24,8 +24,10 @@ services:
       retries: 5
 
   dgraph-zero:
-    image: dgraph/dgraph:v24.0.0
-    command: dgraph zero --my=dgraph-zero:5080
+    image: dgraph/dgraph:v25.4.0
+    # v25.4.0 起 Zero admin HTTP 端点(6080)默认仅放行 loopback, 显式声明
+    # whitelist 保持与 alpha 一致的信任域(compose 服务网络)。
+    command: dgraph zero --my=dgraph-zero:5080 --security "whitelist=127.0.0.1,dgraph-zero,dgraph-alpha"
     ports:
       - "5080:5080"
       - "6080:6080"
@@ -33,7 +35,7 @@ services:
       - dgraph_zero:/data
 
   dgraph-alpha:
-    image: dgraph/dgraph:v24.0.0
+    image: dgraph/dgraph:v25.4.0
     # Restrict the Dgraph security whitelist to loopback and the compose service
     # network names. 0.0.0.0/0 exposed the entire cluster to any host that
     # could reach the port (see report issue 1.6).

@@ -61,7 +61,7 @@ docker compose -f deploy/docker-compose.yml up -d postgres dgraph-zero dgraph-al
 - Dgraph gRPC：`localhost:9080`
 - Redis：`localhost:6379`
 
-> 生产环境建议将 Dgraph 镜像从 `latest` 固定为具体版本号（如 `dgraph/dgraph:v23.1.0`），避免拉取到不兼容版本。
+> 生产环境建议将 Dgraph 镜像从 `latest` 固定为具体版本号（如 `dgraph/dgraph:v25.4.0`），避免拉取到不兼容版本。
 
 ### 一键启动
 

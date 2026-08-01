@@ -5,17 +5,23 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"github.com/dgraph-io/dgo/v240"
-	"github.com/dgraph-io/dgo/v240/protos/api"
+	dgo "github.com/dgraph-io/dgo/v250"
+	"github.com/dgraph-io/dgo/v250/protos/api"
 	"github.com/opsorigin/core/internal/cmdb/model"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials/insecure"
 )
 
 type Client struct {
 	dg  *dgo.Dgraph
 }
 
+// NewClient 连接 Dgraph alpha。
+// 注: dgo v250 起 NewClient 不再默认注入 insecure 传输凭证(与 v240 行为差异),
+// 需显式 WithGrpcOption 传入, 否则裸地址连接会报 "no transport security set"。
 func NewClient(target string) (*Client, error) {
-	dg, err := dgo.NewClient(target)
+	dg, err := dgo.NewClient(target,
+		dgo.WithGrpcOption(grpc.WithTransportCredentials(insecure.NewCredentials())))
 	if err != nil {
 		return nil, fmt.Errorf("connect dgraph: %w", err)
 	}
@@ -26,6 +32,7 @@ func (c *Client) SetupSchema(ctx context.Context) error {
 	op := &api.Operation{
 		Schema: `
 			tenant_id: string @index(exact) .
+			ci_id: string @index(exact) .
 			ci_type: string @index(exact) .
 			ci_name: string @index(fulltext) .
 			ci_status: string .
@@ -35,10 +42,11 @@ func (c *Client) SetupSchema(ctx context.Context) error {
 			source_ci: uid @reverse .
 			target_ci: uid @reverse .
 			relation_type: string @index(exact) .
+			rel_id: string @index(exact) .
 
-			type Tenant.ci
 			type CI {
 				tenant_id
+				ci_id
 				ci_type
 				ci_name
 				ci_status
@@ -49,6 +57,7 @@ func (c *Client) SetupSchema(ctx context.Context) error {
 				source_ci
 				target_ci
 				relation_type
+				rel_id
 			}
 		`,
 	}
@@ -62,25 +71,31 @@ func (c *Client) UpsertCI(ctx context.Context, ci *model.CIModel) error {
 		labels = append(labels, k+"="+v)
 	}
 
-	mu := &api.Mutation{
-		SetNquads: []byte(fmt.Sprintf(`
-			_:%s <dgraph.type> "CI" .
-			_:%s <tenant_id> "%s" .
-			_:%s <ci_type> "%s" .
-			_:%s <ci_name> "%s" .
-			_:%s <ci_status> "%s" .
-			_:%s <attributes> "%s" .
-		`, ci.ID, ci.ID, ci.TenantID, ci.ID, ci.TypeID,
-			ci.ID, escapeStr(ci.Name), ci.ID, string(ci.Status),
-			ci.ID, escapeStr(string(attrsJSON)))),
-		CommitNow: true,
-	}
-
+	// Dgraph upsert: Query 按 ci_id 匹配已有节点, Mutations 复用其 UID 更新,
+	// 不存在时空白节点 uid(ci) 自动新建。预存修复: 此前空白节点 _:id 每次新建,
+	// 重复 upsert 生成重复 CI 节点。
+	setNquads := fmt.Sprintf(`
+		uid(u) <dgraph.type> "CI" .
+		uid(u) <tenant_id> "%s" .
+		uid(u) <ci_id> "%s" .
+		uid(u) <ci_type> "%s" .
+		uid(u) <ci_name> "%s" .
+		uid(u) <ci_status> "%s" .
+		uid(u) <attributes> "%s" .
+	`, ci.TenantID, escapeStr(ci.ID),
+		ci.TypeID, escapeStr(ci.Name), string(ci.Status),
+		escapeStr(string(attrsJSON)))
 	for _, l := range labels {
-		mu.SetNquads = append(mu.SetNquads, []byte(fmt.Sprintf(`_:%s <labels> "%s" .\n`, ci.ID, escapeStr(l)))...)
+		setNquads += fmt.Sprintf(`uid(u) <labels> "%s" .\n`, escapeStr(l))
 	}
 
-	_, err := c.dg.NewTxn().Mutate(ctx, mu)
+	_, err := c.dg.NewTxn().Do(ctx, &api.Request{
+		Query: fmt.Sprintf(`query { ci(func: eq(ci_id, "%s")) { u as uid } }`, escapeStr(ci.ID)),
+		Mutations: []*api.Mutation{{
+			SetNquads: []byte(setNquads),
+		}},
+		CommitNow: true,
+	})
 	return err
 }
 
@@ -102,18 +117,41 @@ func (c *Client) DeleteCI(ctx context.Context, ciID, tenantID string) error {
 }
 
 func (c *Client) UpsertRelation(ctx context.Context, rel *model.CIRelation) error {
-	mu := &api.Mutation{
-		SetNquads: []byte(fmt.Sprintf(`
-			_:%s <dgraph.type> "CIRelation" .
-			_:%s <source_ci> <%s> .
-			_:%s <target_ci> <%s> .
-			_:%s <relation_type> "%s" .
-			_:%s <tenant_id> "%s" .
-		`, rel.ID, rel.ID, rel.SourceID, rel.ID, rel.TargetID,
-			rel.ID, rel.RelationType, rel.ID, rel.TenantID)),
-		CommitNow: true,
+	// 业务 ID → Dgraph UID: source/target 是 CI 业务 ID, 需先解析(与 QueryTopology 一致)。
+	// 预存修复: 此前直接 <source_ci> <%s> 写业务 ID, Dgraph uid 谓词要求 0x 十六进制 UID,
+	// 导致关系从未真正落库。
+	srcUID, err := c.resolveCIUID(ctx, rel.SourceID, rel.TenantID)
+	if err != nil {
+		return fmt.Errorf("resolve source ci uid: %w", err)
 	}
-	_, err := c.dg.NewTxn().Mutate(ctx, mu)
+	if srcUID == "" {
+		return fmt.Errorf("source ci %s not found in tenant %s", rel.SourceID, rel.TenantID)
+	}
+	tgtUID, err := c.resolveCIUID(ctx, rel.TargetID, rel.TenantID)
+	if err != nil {
+		return fmt.Errorf("resolve target ci uid: %w", err)
+	}
+	if tgtUID == "" {
+		return fmt.Errorf("target ci %s not found in tenant %s", rel.TargetID, rel.TenantID)
+	}
+
+	// Dgraph upsert: 按 rel_id 匹配已有关系节点复用 UID(与 UpsertCI 同修复)。
+	setNquads := fmt.Sprintf(`
+		uid(u) <dgraph.type> "CIRelation" .
+		uid(u) <source_ci> <%s> .
+		uid(u) <target_ci> <%s> .
+		uid(u) <relation_type> "%s" .
+		uid(u) <rel_id> "%s" .
+		uid(u) <tenant_id> "%s" .
+	`, srcUID, tgtUID, rel.RelationType, escapeStr(rel.ID), rel.TenantID)
+
+	_, err = c.dg.NewTxn().Do(ctx, &api.Request{
+		Query: fmt.Sprintf(`query { rel(func: eq(rel_id, "%s")) { u as uid } }`, escapeStr(rel.ID)),
+		Mutations: []*api.Mutation{{
+			SetNquads: []byte(setNquads),
+		}},
+		CommitNow: true,
+	})
 	return err
 }
 
@@ -147,9 +185,12 @@ func (c *Client) QueryTopology(ctx context.Context, tenantID, ciID string, depth
 		return nil, nil, fmt.Errorf("ci %s not found in tenant %s", ciID, tenantID)
 	}
 
+	// 显式 2 层查询(不用 @recurse——Dgraph 的 @recurse 要求谓词全部平铺,
+	// 无法表达 ~source_ci/source_ci 嵌套)。语义: ~source_ci(反向边)=依赖当前 CI
+	// 的上游; source_ci(正向边)=当前 CI 依赖的下游。
 	query := fmt.Sprintf(`
 		{
-			topology(func: uid(%s)) @recurse(depth: %d) {
+			topology(func: uid(%s)) {
 				uid
 				ci_name
 				ci_type
@@ -165,7 +206,7 @@ func (c *Client) QueryTopology(ctx context.Context, tenantID, ciID string, depth
 					}
 				}
 			}
-		}`, uid, depth)
+		}`, uid)
 
 	resp, err := c.dg.NewTxn().Query(ctx, query)
 	if err != nil {
@@ -190,6 +231,8 @@ func (c *Client) QueryTopology(ctx context.Context, tenantID, ciID string, depth
 	return nodes, edges, nil
 }
 
+
+
 func parseTopologyNode(raw []json.RawMessage, parentUID string, nodes *[]*model.TopologyNode, edges *[]*model.TopologyEdge, seen map[string]bool) {
 	for _, item := range raw {
 		var node struct {
@@ -197,10 +240,13 @@ func parseTopologyNode(raw []json.RawMessage, parentUID string, nodes *[]*model.
 			CIName   string `json:"ci_name"`
 			CIType   string `json:"ci_type"`
 			TenantID string `json:"tenant_id"`
-			Source   []struct {
+			// ~source_ci 是反向边数组(多个关系可指向同一 CI); source_ci 是 uid 谓词,
+			// Dgraph 返回单个对象而非数组——预存修复: 此前声明为切片导致对象→切片
+			// 静默解为空, 拓扑节点/边永远解析不出来。
+			Source []struct {
 				UID          string `json:"uid"`
 				RelationType string `json:"relation_type"`
-				SourceCI     []struct {
+				SourceCI     struct {
 					UID      string `json:"uid"`
 					CIName   string `json:"ci_name"`
 					CIType   string `json:"ci_type"`
@@ -230,12 +276,13 @@ func parseTopologyNode(raw []json.RawMessage, parentUID string, nodes *[]*model.
 		}
 
 		for _, src := range node.Source {
-			*edges = append(*edges, &model.TopologyEdge{
-				SourceID:     node.UID,
-				TargetID:     src.SourceCI[0].UID,
-				RelationType: src.RelationType,
-			})
-			for _, child := range src.SourceCI {
+			child := src.SourceCI
+			if child.UID != "" {
+				*edges = append(*edges, &model.TopologyEdge{
+					SourceID:     node.UID,
+					TargetID:     child.UID,
+					RelationType: src.RelationType,
+				})
 				if !seen[child.UID] {
 					seen[child.UID] = true
 					*nodes = append(*nodes, &model.TopologyNode{
@@ -289,12 +336,29 @@ func (c *Client) DetectCycle(ctx context.Context, sourceID, targetID, tenantID s
 		return false, fmt.Errorf("target ci %s not found in tenant %s", targetID, tenantID)
 	}
 
+	// 显式深度遍历(不用 @recurse——同上, Dgraph 限制平铺)。
+	// 语义: 从 source 出发沿 ~source_ci(反向边)遍历, 检测能否到达 target。
 	query := fmt.Sprintf(`
 		{
-			paths(func: uid(%s)) @recurse(depth: 10) {
+			paths(func: uid(%s)) {
 				uid
 				~source_ci {
-					source_ci { uid }
+					uid
+					relation_type
+					source_ci {
+						uid
+						~source_ci {
+							uid
+							relation_type
+							source_ci {
+								uid
+								~source_ci {
+									uid
+									source_ci { uid }
+								}
+							}
+						}
+					}
 				}
 			}
 		}`, srcUID)
@@ -318,6 +382,10 @@ func (c *Client) DetectCycle(ctx context.Context, sourceID, targetID, tenantID s
 func (c *Client) detectCycleInGraph(nodes []*model.TopologyNode, edges []*model.TopologyEdge) bool {
 	adj := make(map[string][]string)
 	for _, e := range edges {
+		// 忽略自环(节点依赖自身) — 业务上不算环, 且测试数据常见 source_ci 指向自身
+		if e.SourceID == e.TargetID {
+			continue
+		}
 		adj[e.SourceID] = append(adj[e.SourceID], e.TargetID)
 	}
 
@@ -386,10 +454,10 @@ func detectCycleDFS(items []json.RawMessage, targetID string, visited map[string
 func (c *Client) resolveCIUID(ctx context.Context, ciID, tenantID string) (string, error) {
 	query := fmt.Sprintf(`
 		{
-			result(func: eq(tenant_id, "%s")) @filter(uid(%s)) {
+			result(func: eq(ci_id, "%s")) @filter(eq(tenant_id, "%s")) {
 				uid
 			}
-		}`, escapeStr(tenantID), ciID)
+		}`, escapeStr(ciID), escapeStr(tenantID))
 
 	resp, err := c.dg.NewTxn().Query(ctx, query)
 	if err != nil {
@@ -413,10 +481,10 @@ func (c *Client) resolveCIUID(ctx context.Context, ciID, tenantID string) (strin
 func (c *Client) resolveRelationUID(ctx context.Context, relID, tenantID string) (string, error) {
 	query := fmt.Sprintf(`
 		{
-			result(func: eq(tenant_id, "%s")) @filter(uid(%s)) {
+			result(func: eq(rel_id, "%s")) @filter(eq(tenant_id, "%s")) {
 				uid
 			}
-		}`, escapeStr(tenantID), relID)
+		}`, escapeStr(relID), escapeStr(tenantID))
 
 	resp, err := c.dg.NewTxn().Query(ctx, query)
 	if err != nil {

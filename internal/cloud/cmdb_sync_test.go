@@ -17,7 +17,8 @@ func TestCITypeOf(t *testing.T) {
 		// 默认分支：cloud_<type>
 		{TypeVPC, "cloud_vpc"},
 		{TypeBucket, "cloud_bucket"},
-		{TypeK8sCluster, "cloud_k8s_cluster"},
+		// K8s 类型经 Agent 通道发现（非 Provider），有显式映射分支，不带 cloud_ 前缀
+		{TypeK8sCluster, CITypeK8sCluster},
 	}
 	for _, c := range cases {
 		got := CITypeOf(Resource{Type: c.typ})

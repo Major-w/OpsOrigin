@@ -5,7 +5,7 @@ go 1.25.0
 require (
 	entgo.io/ent v0.14.6
 	github.com/coder/websocket v1.8.15
-	github.com/dgraph-io/dgo/v240 v240.2.0
+	github.com/dgraph-io/dgo/v250 v250.0.0
 	github.com/go-ldap/ldap/v3 v3.4.13
 	github.com/google/uuid v1.6.0
 	github.com/lib/pq v1.12.3
@@ -14,7 +14,7 @@ require (
 	github.com/redis/go-redis/v9 v9.21.0
 	golang.org/x/crypto v0.53.0
 	golang.org/x/oauth2 v0.36.0
-	google.golang.org/grpc v1.71.0
+	google.golang.org/grpc v1.75.1
 	google.golang.org/protobuf v1.36.11
 	k8s.io/api v0.29.3
 	k8s.io/apimachinery v0.29.3
@@ -42,7 +42,7 @@ require (
 	github.com/davecgh/go-spew v1.1.1 // indirect
 	github.com/emicklei/go-restful/v3 v3.11.0 // indirect
 	github.com/go-asn1-ber/asn1-ber v1.5.8-0.20250403174932-29230038a667 // indirect
-	github.com/go-logr/logr v1.4.2 // indirect
+	github.com/go-logr/logr v1.4.3 // indirect
 	github.com/go-openapi/inflect v0.19.0 // indirect
 	github.com/go-openapi/jsonpointer v0.19.6 // indirect
 	github.com/go-openapi/jsonreference v0.20.2 // indirect
