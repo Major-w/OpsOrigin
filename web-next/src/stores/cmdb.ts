@@ -3,6 +3,7 @@
 import { create } from 'zustand'
 import { apiFetch } from '@/lib/utils'
 import { toast } from '@/stores/toast'
+import type { AttrMeta } from '@/components/cmdb/SourceBadge'
 
 export interface CIModel {
   id: string
@@ -12,6 +13,7 @@ export interface CIModel {
   description?: string
   status: string
   attributes: Record<string, any>
+  attribute_meta?: Record<string, AttrMeta>
   labels?: Record<string, string>
   channel: number
   created_at: string

@@ -11,6 +11,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { formatTime, apiFetch } from '@/lib/utils'
 import { useCan } from '@/stores/permissions'
 import TopologyGraph from '@/components/TopologyGraph'
+import { SourceBadge, ProvenanceSummary } from '@/components/cmdb/SourceBadge'
 import { Plus, Pencil, Trash2, Network, Search, ChevronLeft, ChevronRight, Link2, Unlink, AlertTriangle } from 'lucide-react'
 
 interface TopologyNode { id: string; name: string; type: string }
@@ -292,15 +293,20 @@ export default function CMDBPage() {
                       <div className="col-span-2"><span className="text-muted-foreground">创建:</span> {formatTime(selectedCI.created_at)}</div>
                       <div className="col-span-2"><span className="text-muted-foreground">更新:</span> {formatTime(selectedCI.updated_at)}</div>
                     </div>
+                    <ProvenanceSummary meta={selectedCI.attribute_meta} />
                     {Object.keys(selectedCI.attributes || {}).length > 0 && (
                       <div>
                         <h4 className="text-sm font-medium mb-2">自定义属性</h4>
                         <table className="w-full text-sm border">
-                          <thead><tr className="bg-muted"><th className="px-2 py-1 text-left text-xs">属性</th><th className="px-2 py-1 text-left text-xs">值</th></tr></thead>
+                          <thead><tr className="bg-muted"><th className="px-2 py-1 text-left text-xs">属性</th><th className="px-2 py-1 text-left text-xs">值</th><th className="px-2 py-1 text-left text-xs">来源</th></tr></thead>
                           <tbody>
-                            {Object.entries(selectedCI.attributes || {}).map(([k, v]) => (
-                              <tr key={k} className="border-t"><td className="px-2 py-1 text-xs font-medium">{k}</td><td className="px-2 py-1 text-xs">{typeof v === 'object' ? JSON.stringify(v) : String(v)}</td></tr>
-                            ))}
+                            {Object.entries(selectedCI.attributes || {}).map(([k, v]) => {
+                              const meta = selectedCI.attribute_meta?.[k]
+                              const low = meta ? meta.confidence < 0.5 : false
+                              return (
+                              <tr key={k} className={`border-t ${low ? 'bg-amber-50 dark:bg-amber-500/5' : ''}`}><td className="px-2 py-1 text-xs font-medium">{k}</td><td className="px-2 py-1 text-xs">{typeof v === 'object' ? JSON.stringify(v) : String(v)}</td><td className="px-2 py-1"><SourceBadge meta={meta} /></td></tr>
+                              )
+                            })}
                           </tbody>
                         </table>
                       </div>

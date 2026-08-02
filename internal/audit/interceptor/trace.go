@@ -8,6 +8,8 @@ import (
 	"log/slog"
 	"net/http"
 	"strings"
+
+	"github.com/opsorigin/core/pkg/auth"
 )
 
 type contextKey string
@@ -117,31 +119,44 @@ func Middleware(next http.Handler) http.Handler {
 			}
 		}
 
-		// Use tenant_id from JWT/auth context (set by auth middleware), NOT from request headers
-		// to prevent tenant spoofing. Fall back to "default" only if no auth context exists.
-		existingTenantID, _ := ctx.Value(KeyTenantID).(string)
-		if existingTenantID == "" {
-			existingTenantID = "default"
+		// 租户：从鉴权上下文(JWT)取,禁止从请求头取,防止租户伪造。
+		// 回落 "default" 仅当无任何鉴权上下文(理论上鉴权中间件已先行拦截未登录请求)。
+		tenantID := auth.TenantIDFromContext(ctx)
+		if tenantID == "" {
+			tenantID = "default"
 		}
-		ctx = context.WithValue(ctx, KeyTenantID, existingTenantID)
+		ctx = context.WithValue(ctx, KeyTenantID, tenantID)
 
-		principal := r.Header.Get("X-Principal-Type")
+		// principal 解析优先级:
+		//  1) 显式 X-Principal-* 请求头(服务间调用 / AI Agent 旁路鉴权场景)
+		//  2) 否则从 JWT 鉴权上下文推导(浏览器/客户端走 Bearer 登录,不携带 X-Principal 头)
+		// 此前仅认请求头,导致所有 Bearer 登录请求被误判为 "missing principal credentials" 而 403。
+		principalType := r.Header.Get("X-Principal-Type")
 		principalID := r.Header.Get("X-Principal-ID")
-		if principal != "" && principalID != "" {
+		if principalType != "" && principalID != "" {
 			ctx = context.WithValue(ctx, KeyPrincipal, Principal{
-				Type: PrincipalType(principal),
+				Type: PrincipalType(principalType),
 				ID:   principalID,
 			})
-			slog.Debug("audit: request authenticated",
+			slog.Debug("audit: request authenticated via explicit principal header",
 				"trace_id", traceID,
-				"principal_type", principal,
+				"principal_type", principalType,
 				"principal_id", principalID)
 		} else {
-			slog.Warn("audit: request without principal credentials",
-				"trace_id", traceID,
-				"path", r.URL.Path)
-			http.Error(w, `{"error":"missing principal credentials"}`, http.StatusForbidden)
-			return
+			uid := auth.UserIDFromContext(ctx)
+			if uid == "" {
+				// 鉴权中间件应已拦截未登录请求;此处兜底为 401 而非 403。
+				slog.Warn("audit: authenticated context missing user_id",
+					"trace_id", traceID,
+					"path", r.URL.Path)
+				http.Error(w, `{"error":"unauthorized"}`, http.StatusUnauthorized)
+				return
+			}
+			// Bearer 登录的用户一律视为人类主体。
+			ctx = context.WithValue(ctx, KeyPrincipal, Principal{
+				Type: PrincipalHuman,
+				ID:   uid,
+			})
 		}
 
 		w.Header().Set("X-Trace-ID", traceID)
