@@ -150,3 +150,12 @@ func (s *Service) handleEscalateInspectionRun(w http.ResponseWriter, r *http.Req
 	}
 	writeJSON(w, http.StatusOK, run)
 }
+
+// handleWorkforceMetrics 返回数字员工运营效果聚合指标(巡检健康 + 发现/转单/处置漏斗 + 工单统计)。
+// 只读统计, 普通鉴权即可(无需 ai:tool:exec)。
+func (s *Service) handleWorkforceMetrics(w http.ResponseWriter, r *http.Request) {
+	tenantID := tenantFromCtx(r.Context())
+	m := s.Engine.GetWorkforceMetrics(tenantID)
+	s.Engine.FillTicketMetrics(r.Context(), tenantID, m)
+	writeJSON(w, http.StatusOK, m)
+}

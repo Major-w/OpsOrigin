@@ -80,6 +80,8 @@ type Engine struct {
 	CreateTicketFunc func(ctx context.Context, tenantID, title, description string, labels map[string]string) (string, error)
 	// InspectionNotifyFunc 由 cmd/core 注入的通知回调(nil=不通知), 巡检完成/失败后调用。
 	InspectionNotifyFunc func(ctx context.Context, tenantID, event, title, content string) error
+	// TicketMetricsProvider 由 cmd/core 注入的 ITSM 工单统计回调(nil=运营效果页不显示工单指标)。
+	TicketMetricsProvider func(ctx context.Context, tenantID string) (int, map[string]int, float64, error)
 
 	// ——— 敏感操作审批 (PRD 5.2.5) ———
 	approvals *ApprovalManager

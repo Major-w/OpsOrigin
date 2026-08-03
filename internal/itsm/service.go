@@ -37,6 +37,7 @@ type ProcessEngine interface {
 
 type Service struct {
 	cfg          *config.Config
+	db           *sql.DB
 	store        store.Store
 	risk         *risk.Classifier
 	webhook      *webhook.Callback
@@ -66,6 +67,7 @@ func NewService(cfg *config.Config, db *sql.DB) *Service {
 
 	return &Service{
 		cfg:     cfg,
+		db:      db,
 		store:   s,
 		risk:    risk.New(),
 		webhook: webhook.New(),
@@ -245,6 +247,49 @@ func (s *Service) handleGet(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, ticket)
+}
+
+// TicketMetricsBySource 按工单 labels 中 source 字段过滤统计(供 AI 数字员工运营效果评估)。
+// 返回: 工单总数、按状态分布、平均处置时长(分钟, 基于 succeeded 工单 completed_at-created_at)。
+// source 为空时统计该租户全部工单。db 为 nil(纯内存模式)时返回零值。
+func (s *Service) TicketMetricsBySource(ctx context.Context, tenantID, source string) (int, map[string]int, float64, error) {
+	if s.db == nil {
+		return 0, map[string]int{}, 0, nil
+	}
+	query := `SELECT status, completed_at, created_at FROM itsm_tickets WHERE tenant_id=$1`
+	args := []any{tenantID}
+	if source != "" {
+		query += ` AND labels::jsonb->>'source'=$2`
+		args = append(args, source)
+	}
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return 0, nil, 0, err
+	}
+	defer rows.Close()
+
+	byStatus := map[string]int{}
+	total := 0
+	var totalResolutionMin float64
+	var resolvedCount int
+	for rows.Next() {
+		var status string
+		var completedAt, createdAt sql.NullTime
+		if err := rows.Scan(&status, &completedAt, &createdAt); err != nil {
+			return 0, nil, 0, err
+		}
+		total++
+		byStatus[status]++
+		if status == string(model.StatusSucceeded) && completedAt.Valid && createdAt.Valid && completedAt.Time.After(createdAt.Time) {
+			totalResolutionMin += completedAt.Time.Sub(createdAt.Time).Minutes()
+			resolvedCount++
+		}
+	}
+	var avg float64
+	if resolvedCount > 0 {
+		avg = totalResolutionMin / float64(resolvedCount)
+	}
+	return total, byStatus, avg, rows.Err()
 }
 
 func (s *Service) handleList(w http.ResponseWriter, r *http.Request) {

@@ -146,6 +146,9 @@ func (s *Service) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/v1/ai/scene-templates/{id}", s.handleGetSceneTemplate)
 	mux.HandleFunc("POST /api/v1/ai/scene-templates/{id}/instantiate", s.handleInstantiateScene)
 
+	// —— 数字员工运营效果 (巡检健康 + 发现/转单/处置漏斗) ——
+	mux.HandleFunc("GET /api/v1/ai/workforce-metrics", s.handleWorkforceMetrics)
+
 	// —— 敏感操作审批策略 (PRD 5.2.5) ——
 	mux.HandleFunc("GET /api/v1/ai/approval-policy", s.handleGetApprovalPolicy)
 	mux.HandleFunc("PUT /api/v1/ai/approval-policy", s.handlePutApprovalPolicy)

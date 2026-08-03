@@ -440,6 +440,13 @@ func (e *Engine) SetInspectionCallbacks(
 	e.InspectionNotifyFunc = notify
 }
 
+// SetTicketMetricsProvider 注入数字员工运营效果所需的 ITSM 工单统计回调。
+func (e *Engine) SetTicketMetricsProvider(p func(ctx context.Context, tenantID string) (int, map[string]int, float64, error)) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.TicketMetricsProvider = p
+}
+
 // GetInspectionRun 按运行 ID 查巡检记录(租户校验; tenantID 空=不限租户)。
 func (e *Engine) GetInspectionRun(tenantID, runID string) (*InspectionRun, error) {
 	e.mu.RLock()

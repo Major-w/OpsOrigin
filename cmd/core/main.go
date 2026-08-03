@@ -552,6 +552,10 @@ func main() {
 			return notifySvc.NotifyEvent(ctx, tenantID, event, title, content)
 		},
 	)
+	// 数字员工运营效果: ITSM 工单统计(来源=ai_inspection 的工单)。
+	aiSvc.Engine.SetTicketMetricsProvider(func(ctx context.Context, tenantID string) (int, map[string]int, float64, error) {
+		return itsmSvc.TicketMetricsBySource(ctx, tenantID, "ai_inspection")
+	})
 	server.RegisterService(aiSvc)
 	aiSvc.Start(ctx)
 
