@@ -1,0 +1,448 @@
+package agentic
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"log/slog"
+	"strings"
+	"time"
+
+	"github.com/google/uuid"
+	"github.com/opsorigin/core/pkg/llm"
+)
+
+// —— 巡检周期(简化 cron) ——
+const (
+	ScheduleHourly  = "@hourly"
+	ScheduleEvery6h = "@every_6h"
+	ScheduleDaily   = "@daily"
+	ScheduleWeekly  = "@weekly"
+)
+
+// InspectionTemplate 内置巡检模板目录(与岗位模板同构, 平台交付即开箱可用)。
+type InspectionTemplate struct {
+	ID             string `json:"id"`
+	Name           string `json:"name"`
+	Category       string `json:"category"`
+	Description    string `json:"description"`
+	Prompt         string `json:"prompt"`          // 注入 Agent 系统提示的巡检指令
+	ScopeHint      string `json:"scope_hint"`       // 建议的巡检范围(给用户参考)
+	DefaultSchedule string `json:"default_schedule"`
+}
+
+// Inspection 一条用户可管理的巡检任务(启停/改周期/改范围)。
+type Inspection struct {
+	ID           string     `json:"id"`
+	TenantID     string     `json:"tenant_id"`
+	Name         string     `json:"name"`
+	TemplateID   string     `json:"template_id,omitempty"`
+	AgentID      string     `json:"agent_id,omitempty"` // 指定执行 Agent; 空=引擎默认(全工具)
+	Prompt       string     `json:"prompt"`             // 巡检指令(覆盖/补充模板)
+	Scope        string     `json:"scope"`              // 巡检范围描述(如 全部主机 / 某 CMDB 类型)
+	Schedule     string     `json:"schedule"`           // @hourly/@daily/...
+	Enabled      bool       `json:"enabled"`
+	LastRunAt    *time.Time `json:"last_run_at,omitempty"`
+	LastStatus   string     `json:"last_status,omitempty"`
+	NextRunAt    time.Time  `json:"next_run_at"`
+	CreatedAt    time.Time  `json:"created_at"`
+	UpdatedAt    time.Time  `json:"updated_at"`
+}
+
+// InspectionRun 一次巡检执行记录(只读追加, 便于追溯与复盘)。
+type InspectionRun struct {
+	ID           string     `json:"id"`
+	InspectionID string     `json:"inspection_id"`
+	TenantID     string     `json:"tenant_id"`
+	TriggeredBy  string     `json:"triggered_by"` // scheduled | manual
+	Status       string     `json:"status"`        // running | success | failed
+	Summary      string     `json:"summary"`       // 巡检报告正文
+	Findings     string     `json:"findings,omitempty"` // 结构化发现(JSON 字符串)
+	Error        string     `json:"error,omitempty"`
+	StartedAt    time.Time  `json:"started_at"`
+	FinishedAt   *time.Time `json:"finished_at,omitempty"`
+}
+
+// PresetInspectionTemplates 平台预置巡检目录。
+var PresetInspectionTemplates = []*InspectionTemplate{
+	{
+		ID:             "insp-config-drift",
+		Name:           "配置漂移巡检",
+		Category:       "配置合规",
+		Description:     "检测关键资产的配置与基线/上次记录是否发生非预期偏离。",
+		DefaultSchedule: ScheduleDaily,
+		ScopeHint:      "全部主机 / 关键中间件实例",
+		Prompt: "你是主动巡检 Agent, 正在执行「配置漂移巡检」:\n" +
+			"- 通过 cmdb_query 获取资产当前配置属性, 与安全基线/知识库(knowledge_search)中的标准配置比对;\n" +
+			"- 识别非预期的配置变化(新增端口、权限放宽、版本回退等), 标注 高/中/低 风险;\n" +
+			"- 说明漂移可能带来的后果与回滚/加固建议。",
+	},
+	{
+		ID:             "insp-capacity",
+		Name:           "容量水位巡检",
+		Category:       "容量",
+		Description:     "对主机/数据库/中间件的容量与增长趋势做每日体检, 提前预警。",
+		DefaultSchedule: ScheduleDaily,
+		ScopeHint:      "全部主机 / 数据库实例",
+		Prompt: "你是主动巡检 Agent, 正在执行「容量水位巡检」:\n" +
+			"- 通过 cmdb_query 盘点主机/数据库/中间件资产及其容量属性;\n" +
+			"- 结合知识库中的容量阈值, 标记已超阈值或 7 日内将达阈值的资源, 标注 高/中/低;\n" +
+			"- 给出扩容/降配/清理的量化建议与预估。",
+	},
+	{
+		ID:             "insp-security-baseline",
+		Name:           "安全基线巡检",
+		Category:       "安全",
+		Description:     "周期性核查资产是否符合安全基线(暴露面/弱口令风险/补丁)。",
+		DefaultSchedule: ScheduleWeekly,
+		ScopeHint:      "全部对外暴露资产 / 核心业务系统",
+		Prompt: "你是主动巡检 Agent, 正在执行「安全基线巡检」:\n" +
+			"- 通过 cmdb_query 梳理资产与暴露面, 对照知识库(knowledge_search)中的安全基线;\n" +
+			"- 检查不必要的公网暴露、权限过大、补丁缺失等, 标注 高/中/低;\n" +
+			"- 映射到合规要求并给出整改建议, 具体到资产实例。",
+	},
+	{
+		ID:             "insp-cert-expiry",
+		Name:           "证书到期巡检",
+		Category:       "安全",
+		Description:     "扫描 TLS/域名证书有效期, 提前提醒续期避免业务中断。",
+		DefaultSchedule: ScheduleWeekly,
+		ScopeHint:      "全部含证书的域名 / 负载均衡 / 网关",
+		Prompt: "你是主动巡检 Agent, 正在执行「证书到期巡检」:\n" +
+			"- 通过 cmdb_query 识别承载证书的域名/网关/负载均衡资产, 读取证书有效期属性;\n" +
+			"  (若 cmdb 无该属性, 明确说明, 并建议使用 knowledge_search 中的续期流程)\n" +
+			"- 标记 30 天内到期(高)、90 天内到期(中)的证书, 给出续期责任人与步骤。",
+	},
+	{
+		ID:             "insp-host-health",
+		Name:           "主机健康巡检",
+		Category:       "健康",
+		Description:     "每日体检主机运行状态、Agent 在线率与核心服务可用性。",
+		DefaultSchedule: ScheduleDaily,
+		ScopeHint:      "全部受管主机",
+		Prompt: "你是主动巡检 Agent, 正在执行「主机健康巡检」:\n" +
+			"- 通过 cmdb_query 盘点受管主机及其状态/在线情况;\n" +
+			"- 结合 script_executions 历史判断近期执行成功率, 标记离线/异常/高频失败主机(高/中/低);\n" +
+			"- 给出是否需要人工介入的判断与建议动作。",
+	},
+	{
+		ID:             "insp-kb-freshness",
+		Name:           "知识库时效巡检",
+		Category:       "知识",
+		Description:     "检查知识库文档时效, 标记长期未更新或可能过期的运维手册。",
+		DefaultSchedule: ScheduleWeekly,
+		ScopeHint:      "全部知识库文章",
+		Prompt: "你是主动巡检 Agent, 正在执行「知识库时效巡检」:\n" +
+			"- 通过 knowledge_search 检索运维手册类文章, 评估其时效与适用性;\n" +
+			"- 标记超过 365 天未更新、或内容与当前架构明显脱节的文章, 标注 中/低 风险;\n" +
+			"- 给出需复核/补充的文章清单与建议负责人。",
+	},
+}
+
+// ListInspectionTemplates 返回内置巡检模板目录。
+func (e *Engine) ListInspectionTemplates() []*InspectionTemplate {
+	out := make([]*InspectionTemplate, 0, len(PresetInspectionTemplates))
+	for _, t := range PresetInspectionTemplates {
+		out = append(out, t)
+	}
+	return out
+}
+
+// GetInspectionTemplate 按 ID 查模板。
+func (e *Engine) GetInspectionTemplate(id string) (*InspectionTemplate, bool) {
+	for _, t := range PresetInspectionTemplates {
+		if t.ID == id {
+			return t, true
+		}
+	}
+	return nil, false
+}
+
+// nextRunAt 根据周期计算下一次运行时间(从 from 起算)。未知周期回退每日。
+func (e *Engine) nextRunAt(schedule string, from time.Time) time.Time {
+	switch schedule {
+	case ScheduleHourly:
+		return from.Add(time.Hour)
+	case ScheduleEvery6h:
+		return from.Add(6 * time.Hour)
+	case ScheduleWeekly:
+		return from.Add(7 * 24 * time.Hour)
+	case ScheduleDaily, "":
+		return from.Add(24 * time.Hour)
+	default:
+		return from.Add(24 * time.Hour)
+	}
+}
+
+// CreateInspection 创建巡检任务。模板 ID 可预填巡检指令; 默认每日, 启用即排程。
+func (e *Engine) CreateInspection(ctx context.Context, in *Inspection) (*Inspection, error) {
+	if in == nil {
+		return nil, fmt.Errorf("inspection is nil")
+	}
+	if in.Name == "" {
+		return nil, fmt.Errorf("inspection name required")
+	}
+	if in.ID == "" {
+		in.ID = uuid.New().String()
+	}
+	if in.TenantID == "" {
+		in.TenantID = "default"
+	}
+	now := time.Now()
+	in.CreatedAt = now
+	in.UpdatedAt = now
+	if in.Schedule == "" {
+		in.Schedule = ScheduleDaily
+	}
+	if in.Prompt == "" && in.TemplateID != "" {
+		if t, ok := e.GetInspectionTemplate(in.TemplateID); ok {
+			in.Prompt = t.Prompt
+		}
+	}
+	if in.Enabled {
+		in.NextRunAt = e.nextRunAt(in.Schedule, now)
+	}
+	e.mu.Lock()
+	e.inspections[in.ID] = in
+	e.mu.Unlock()
+	if e.store != nil {
+		if err := e.store.CreateInspection(ctx, in); err != nil {
+			return nil, err
+		}
+	}
+	return in, nil
+}
+
+// GetInspection 按 ID 查巡检任务。
+func (e *Engine) GetInspection(id string) (*Inspection, bool) {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	ins, ok := e.inspections[id]
+	return ins, ok
+}
+
+// ListInspections 列出租户下巡检任务(tenant 空=全部)。
+func (e *Engine) ListInspections(tenantID string) []*Inspection {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	var out []*Inspection
+	for _, ins := range e.inspections {
+		if tenantID != "" && ins.TenantID != tenantID {
+			continue
+		}
+		out = append(out, ins)
+	}
+	return out
+}
+
+// UpdateInspection 更新巡检任务(名称/指令/范围/周期/启停/执行 Agent)。
+// 更新后按当前启用与周期重排下一次运行时间。
+func (e *Engine) UpdateInspection(ctx context.Context, in *Inspection) (*Inspection, error) {
+	if in.ID == "" {
+		return nil, fmt.Errorf("inspection id required")
+	}
+	e.mu.Lock()
+	existing, ok := e.inspections[in.ID]
+	if !ok {
+		e.mu.Unlock()
+		return nil, fmt.Errorf("inspection not found: %s", in.ID)
+	}
+	if in.Name != "" {
+		existing.Name = in.Name
+	}
+	if in.TemplateID != "" {
+		existing.TemplateID = in.TemplateID
+	}
+	if in.AgentID != "" {
+		existing.AgentID = in.AgentID
+	}
+	if in.Prompt != "" {
+		existing.Prompt = in.Prompt
+	}
+	if in.Scope != "" {
+		existing.Scope = in.Scope
+	}
+	if in.Schedule != "" {
+		existing.Schedule = in.Schedule
+	}
+	existing.Enabled = in.Enabled
+	existing.UpdatedAt = time.Now()
+	if existing.Enabled {
+		existing.NextRunAt = e.nextRunAt(existing.Schedule, existing.UpdatedAt)
+	} else {
+		existing.NextRunAt = time.Time{}
+	}
+	e.mu.Unlock()
+	if e.store != nil {
+		if err := e.store.UpdateInspection(ctx, existing); err != nil {
+			return nil, err
+		}
+	}
+	return existing, nil
+}
+
+// DeleteInspection 删除巡检任务及其运行记录。
+func (e *Engine) DeleteInspection(ctx context.Context, id, tenantID string) error {
+	e.mu.Lock()
+	delete(e.inspections, id)
+	delete(e.inspectionRuns, id)
+	e.mu.Unlock()
+	if e.store != nil {
+		if err := e.store.DeleteInspection(ctx, id, tenantID); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// ListInspectionRuns 列出某巡检任务的运行记录(按开始时间倒序)。
+func (e *Engine) ListInspectionRuns(inspectionID string) []*InspectionRun {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	runs := e.inspectionRuns[inspectionID]
+	out := make([]*InspectionRun, len(runs))
+	copy(out, runs)
+	// 倒序: 最新在前
+	for i, j := 0, len(out)-1; i < j; i, j = i+1, j-1 {
+		out[i], out[j] = out[j], out[i]
+	}
+	return out
+}
+
+// RunInspection 立即执行一次巡检(手动或定时触发)。
+// 通过 chatWithToolsConv 让 Agent 携带巡检指令作为 system 提示并可使用全部运维工具,
+// 最终报告与结构化发现写回运行记录。无 LLM 时记录失败状态(不阻塞)。
+func (e *Engine) RunInspection(ctx context.Context, id, triggeredBy string) (*InspectionRun, error) {
+	e.mu.RLock()
+	ins, ok := e.inspections[id]
+	e.mu.RUnlock()
+	if !ok {
+		return nil, fmt.Errorf("inspection not found: %s", id)
+	}
+
+	run := &InspectionRun{
+		ID:           uuid.New().String(),
+		InspectionID: id,
+		TenantID:     ins.TenantID,
+		TriggeredBy:  triggeredBy,
+		Status:       "running",
+		StartedAt:    time.Now(),
+	}
+	e.mu.Lock()
+	e.inspectionRuns[id] = append(e.inspectionRuns[id], run)
+	e.mu.Unlock()
+
+	systemPrompt := ins.Prompt
+	if systemPrompt == "" {
+		systemPrompt = "你是一名主动巡检运维助手, 负责发现潜在风险并给出处置建议。"
+	}
+	userPrompt := fmt.Sprintf("请对以下范围执行一次主动巡检, 并输出结构化报告:\n范围: %s\n\n要求:\n"+
+		"1. 使用 cmdb_query / knowledge_search 等工具获取真实数据, 引用你实际查到的内容;\n"+
+		"2. 明确指出发现的异常、风险及严重程度(高/中/低);\n"+
+		"3. 给出可操作的处置建议;\n"+
+		"4. 在文末用 ```json 代码块输出发现清单, 字段: [{\"level\":\"high|medium|low\",\"title\":\"...\",\"detail\":\"...\",\"suggestion\":\"...\"}]。",
+		orDefault(ins.Scope, "全部受管资产"))
+
+	history := []llm.Message{{Role: "system", Content: systemPrompt}}
+	summary, _, _, _, err := e.chatWithToolsConv(ctx, ins.AgentID, userPrompt, history, false, "")
+
+	now := time.Now()
+	run.FinishedAt = &now
+	if err != nil {
+		run.Status = "failed"
+		run.Error = err.Error()
+	} else {
+		run.Status = "success"
+		run.Summary = summary
+		if f := extractJSONFindings(summary); f != "" {
+			run.Findings = f
+		}
+	}
+
+	e.mu.Lock()
+	ins.LastRunAt = &now
+	ins.LastStatus = run.Status
+	if ins.Enabled {
+		ins.NextRunAt = e.nextRunAt(ins.Schedule, now)
+	} else {
+		ins.NextRunAt = time.Time{}
+	}
+	e.mu.Unlock()
+
+	if e.store != nil {
+		_ = e.store.UpdateInspection(ctx, ins)
+		_ = e.store.CreateInspectionRun(ctx, run) // upsert
+	}
+	return run, nil
+}
+
+// StartInspectionScheduler 启动进程内定时调度器(每 30s 扫描到期启用的巡检并异步执行)。
+// 在 Engine.Start() 中调用一次; 进程退出由 inspectCancel 控制(当前无显式 Stop)。
+func (e *Engine) StartInspectionScheduler() {
+	ctx, cancel := context.WithCancel(context.Background())
+	e.inspectCancel = cancel
+	ticker := time.NewTicker(30 * time.Second)
+	go func() {
+		for {
+			select {
+			case <-ctx.Done():
+				ticker.Stop()
+				return
+			case <-ticker.C:
+				e.runDueInspections(ctx)
+			}
+		}
+	}()
+	slog.Info("inspection scheduler started")
+}
+
+// runDueInspections 扫描并执行所有到期的启用中巡检(异步, 不阻塞调度循环)。
+func (e *Engine) runDueInspections(ctx context.Context) {
+	e.mu.RLock()
+	var due []*Inspection
+	now := time.Now()
+	for _, ins := range e.inspections {
+		if ins.Enabled && ins.NextRunAt.After(time.Time{}) && !ins.NextRunAt.After(now) {
+			due = append(due, ins)
+		}
+	}
+	e.mu.RUnlock()
+	for _, ins := range due {
+		go func(ins *Inspection) {
+			if _, err := e.RunInspection(ctx, ins.ID, "scheduled"); err != nil {
+				slog.Warn("scheduled inspection failed", "id", ins.ID, "err", err)
+			}
+		}(ins)
+	}
+}
+
+// extractJSONFindings 从巡检报告正文中提取 ```json ... ``` 代码块内容(结构化发现)。
+func extractJSONFindings(summary string) string {
+	start := strings.Index(summary, "```json")
+	if start < 0 {
+		return ""
+	}
+	bodyStart := strings.Index(summary[start:], "\n")
+	if bodyStart < 0 {
+		return ""
+	}
+	bodyStart += start + 1
+	end := strings.Index(summary[bodyStart:], "```")
+	if end < 0 {
+		return ""
+	}
+	raw := strings.TrimSpace(summary[bodyStart : bodyStart+end])
+	// 校验确为合法 JSON 数组/对象
+	var v any
+	if err := json.Unmarshal([]byte(raw), &v); err != nil {
+		return ""
+	}
+	return raw
+}
+
+func orDefault(s, def string) string {
+	if strings.TrimSpace(s) == "" {
+		return def
+	}
+	return s
+}

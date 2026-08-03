@@ -70,6 +70,11 @@ type Engine struct {
 	store          Store         // PG 持久化（可选,nil=仅内存）
 	teamConvStore  TeamConvStore // 团队对话历史（可选,nil=无跨轮记忆）
 
+	// ——— 主动巡检 Agent（P0）———
+	inspections    map[string]*Inspection
+	inspectionRuns map[string][]*InspectionRun
+	inspectCancel  context.CancelFunc
+
 	// ——— 敏感操作审批 (PRD 5.2.5) ———
 	approvals *ApprovalManager
 	// approvalPolicies 全局默认 + Agent 级覆盖策略: "default" 键为全局, 其余键为 agent_id。
@@ -90,6 +95,8 @@ func NewEngine(reg *mcp.Registry, lim ratelimit.RateLimiter, llmClient *llm.Clie
 		convStore:           store,
 		convs:               make(map[string]*Conversation),
 		teams:               make(map[string]*model.AgentTeam),
+		inspections:         make(map[string]*Inspection),
+		inspectionRuns:      make(map[string][]*InspectionRun),
 		reg:                 reg,
 		lim:                 lim,
 		semMu:               sync.Mutex{},
@@ -193,6 +200,8 @@ func (e *Engine) Start() error {
 	if err := e.SyncCustomTools(context.Background()); err != nil {
 		slog.Warn("failed to sync custom tools", "err", err)
 	}
+	// 主动巡检调度器(P0): 启动进程内定时循环, 扫描到期启用的巡检任务。
+	e.StartInspectionScheduler()
 	slog.Info("agentic engine started",
 		"agents", e.agentCount(),
 		"tools", len(e.reg.List()))
@@ -225,6 +234,25 @@ func (e *Engine) loadFromStore() error {
 		e.teams[t.ID] = &model.AgentTeam{ID: t.ID, Name: t.Name, Mode: t.Mode, SystemPrompt: t.Prompt}
 		if t.Members != nil {
 			json.Unmarshal(t.Members, &e.teams[t.ID].Members)
+		}
+	}
+	// 主动巡检任务(P0): 恢复定义与历史运行记录, 保证重启后排程不丢。
+	inspections, err := e.store.ListInspections(ctx, "")
+	if err != nil {
+		slog.Warn("failed to load inspections", "err", err)
+		return nil
+	}
+	for _, in := range inspections {
+		// 重启后若已过期(NextRunAt 落在过去), 顺延一个周期避免启动瞬间雪崩式补跑。
+		if in.Enabled && !in.NextRunAt.After(time.Now()) {
+			in.NextRunAt = e.nextRunAt(in.Schedule, time.Now())
+		}
+		e.inspections[in.ID] = in
+		if runs, err := e.store.ListInspectionRuns(ctx, in.ID, in.TenantID); err == nil {
+			// store 按时间倒序返回, 内存中统一保持正序(追加语义)。
+			for i := len(runs) - 1; i >= 0; i-- {
+				e.inspectionRuns[in.ID] = append(e.inspectionRuns[in.ID], runs[i])
+			}
 		}
 	}
 	return nil

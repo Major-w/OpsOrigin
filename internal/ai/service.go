@@ -125,6 +125,21 @@ func (s *Service) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("DELETE /api/v1/ai/teams/{id}", s.handleDeleteTeam)
 	mux.HandleFunc("POST /api/v1/ai/teams/{id}/chat", s.handleTeamChat)
 
+	// —— P0: 岗位数字员工模板(开箱即用的 Agent 矩阵) ——
+	mux.HandleFunc("GET /api/v1/ai/agent-templates", s.handleListAgentTemplates)
+	mux.HandleFunc("GET /api/v1/ai/agent-templates/{id}", s.handleGetAgentTemplate)
+	mux.HandleFunc("POST /api/v1/ai/agent-templates/{id}/instantiate", s.handleInstantiateAgentTemplate)
+
+	// —— P0: 主动巡检 Agent ——
+	mux.HandleFunc("GET /api/v1/ai/inspection-templates", s.handleListInspectionTemplates)
+	mux.HandleFunc("GET /api/v1/ai/inspections", s.handleListInspections)
+	mux.HandleFunc("POST /api/v1/ai/inspections", s.handleCreateInspection)
+	mux.HandleFunc("GET /api/v1/ai/inspections/{id}", s.handleGetInspection)
+	mux.HandleFunc("PUT /api/v1/ai/inspections/{id}", s.handleUpdateInspection)
+	mux.HandleFunc("DELETE /api/v1/ai/inspections/{id}", s.handleDeleteInspection)
+	mux.HandleFunc("POST /api/v1/ai/inspections/{id}/run", s.handleRunInspection)
+	mux.HandleFunc("GET /api/v1/ai/inspections/{id}/runs", s.handleListInspectionRuns)
+
 	// —— 敏感操作审批策略 (PRD 5.2.5) ——
 	mux.HandleFunc("GET /api/v1/ai/approval-policy", s.handleGetApprovalPolicy)
 	mux.HandleFunc("PUT /api/v1/ai/approval-policy", s.handlePutApprovalPolicy)

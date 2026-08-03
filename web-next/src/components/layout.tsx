@@ -4,7 +4,7 @@ import { useState } from 'react'
 import Link from 'next/link'
 import { usePathname, useRouter } from 'next/navigation'
 import { cn } from '@/lib/utils'
-import { Server, TicketCheck, Activity, Bot, Shield, LayoutDashboard, Hexagon, LogOut, User, Terminal, Workflow, Clock, Search, BookOpen, Calendar, GitBranch, Package, Bell, Key, Blocks, Users, Settings, Sun, Moon, Scan, Bug, Download, PackagePlus, Network, AlertTriangle, History, FileText, Rocket, AppWindow, FileCheck2, Cloud, Play, Sparkles, Database, Radio, BarChart3, Building2, type LucideIcon } from 'lucide-react'
+import { Server, TicketCheck, Activity, Bot, Shield, LayoutDashboard, Hexagon, LogOut, User, Terminal, Workflow, Clock, Search, BookOpen, Calendar, GitBranch, Package, Bell, Key, Blocks, Users, Settings, Sun, Moon, Scan, Bug, Download, PackagePlus, Network, AlertTriangle, History, FileText, Rocket, AppWindow, FileCheck2, Cloud, Play, Sparkles, Database, Radio, BarChart3, Building2, Radar, MessagesSquare, type LucideIcon } from 'lucide-react'
 import { useAuthStore } from '@/stores/auth'
 import { useThemeStore } from '@/stores/theme'
 import { ScrollToTop } from '@/components/ui/scroll-to-top'
@@ -96,7 +96,17 @@ const navGroups: (NavItem | NavGroup)[] = [
       { to: '/monitor/targets', label: '监控配置', icon: Settings },
     ]
   },
-  { to: '/ai', label: 'AI 助手', icon: Bot },  {
+  {
+    label: 'AI 助手', icon: Bot, items: [
+      { to: '/ai', label: 'AI 对话', icon: MessagesSquare },
+      { to: '/ai/digital-employees', label: '数字员工', icon: Sparkles },
+      { to: '/ai/inspections', label: '主动巡检', icon: Radar },
+      { to: '/ai/teams', label: '智能体团队', icon: Users },
+      { to: '/ai/analytics', label: '使用分析', icon: BarChart3 },
+      { to: '/ai/settings', label: 'AI 设置', icon: Settings },
+    ]
+  },
+  {
     label: '知识库', icon: BookOpen, items: [
       { to: '/knowledge', label: '文章列表', icon: BookOpen },
       { to: '/knowledge/new', label: 'AI 写作', icon: Sparkles },
@@ -127,12 +137,33 @@ function isNavGroup(v: NavItem | NavGroup): v is NavGroup {
   return 'items' in v
 }
 
+/** 路由命中判定：要求完整路径段匹配，避免 /ai 被 /aixxx 之类误命中。 */
+function pathMatches(pathname: string, to: string): boolean {
+  return pathname === to || pathname.startsWith(to + '/')
+}
+
+/**
+ * 在一组同级路由中选出唯一应高亮的项：命中且路径最长者胜出。
+ * 解决父路由(如 /ai)与其子路由(如 /ai/inspections)同时高亮的问题。
+ */
+function activeRoute(pathname: string, routes: string[]): string | null {
+  let best: string | null = null
+  for (const r of routes) {
+    if (pathMatches(pathname, r) && (best === null || r.length > best.length)) best = r
+  }
+  return best
+}
+
+/** 展开分组下的全部叶子路由(含二级子分组)。 */
+function leafRoutes(group: NavGroup): string[] {
+  return group.items.flatMap(i => (isNavItem(i) ? [i.to] : i.items.map(s => s.to)))
+}
+
 function NavGroupComponent({ group, collapsed, toggle }: { group: NavGroup; collapsed: boolean; toggle: () => void }) {
   const pathname = usePathname()
-  const isActive = group.items.some(i => {
-    if (isNavItem(i)) return pathname.startsWith(i.to)
-    return i.items.some(sub => pathname.startsWith(sub.to))
-  })
+  // 组内唯一高亮项：按最长匹配选出，父子路由不再同时点亮
+  const activeLeaf = activeRoute(pathname, leafRoutes(group))
+  const isActive = activeLeaf !== null
   const Icon = group.icon
   const { theme } = useThemeStore()
   const [openSubs, setOpenSubs] = useState<Record<string, boolean>>({})
@@ -160,7 +191,7 @@ function NavGroupComponent({ group, collapsed, toggle }: { group: NavGroup; coll
         <div className="ml-4 mt-0.5 space-y-0.5">
           {group.items.map((item, idx) => {
             if (isNavItem(item)) {
-              const active = pathname === item.to || (item.to !== '/dashboard' && pathname.startsWith(item.to))
+              const active = item.to === activeLeaf
               const Icon = item.icon
               return (
                 <Link key={item.to} href={item.to}
@@ -175,7 +206,7 @@ function NavGroupComponent({ group, collapsed, toggle }: { group: NavGroup; coll
                 </Link>
               )
             }
-            const isSubActive = item.items.some(sub => pathname.startsWith(sub.to))
+            const isSubActive = item.items.some(sub => sub.to === activeLeaf)
             return (
               <div key={item.label}>
                 <button
@@ -193,7 +224,7 @@ function NavGroupComponent({ group, collapsed, toggle }: { group: NavGroup; coll
                 {openSubs[item.label] && (
                   <div className="ml-3 mt-0.5 space-y-0.5">
                     {item.items.map(sub => {
-                      const active = pathname === sub.to || (sub.to !== '/dashboard' && pathname.startsWith(sub.to))
+                      const active = sub.to === activeLeaf
                       const Icon = sub.icon
                       return (
                         <Link key={sub.to} href={sub.to}
@@ -262,7 +293,7 @@ export function Layout({ children }: { children: React.ReactNode }) {
               )
             }
             const navItem = item as NavItem
-            const isActive = navItem.to === '/dashboard' ? pathname === '/dashboard' : pathname.startsWith(navItem.to)
+            const isActive = navItem.to === '/dashboard' ? pathname === '/dashboard' : pathMatches(pathname, navItem.to)
             const Icon = navItem.icon
             return (
               <Link

@@ -21,3 +21,4 @@ internal/ent/*.go
 !internal/ent/generate.go
 internal/ent/*/
 !internal/ent/schema/
+cmd/core/core
