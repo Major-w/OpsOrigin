@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -11,9 +12,8 @@ import (
 	"github.com/opsorigin/core/internal/agentmgr"
 	"github.com/opsorigin/core/internal/ai"
 	"github.com/opsorigin/core/internal/audit"
+	auditModel "github.com/opsorigin/core/internal/audit/model"
 	"github.com/opsorigin/core/internal/cmdb"
-	"github.com/opsorigin/core/internal/cmdb/dgraph"
-	"github.com/opsorigin/core/internal/cmdb/pg"
 	"github.com/opsorigin/core/internal/itsm"
 	"github.com/opsorigin/core/internal/knowledge"
 	"github.com/opsorigin/core/internal/monitor"
@@ -26,11 +26,14 @@ import (
 // testServices 持有冒烟测试中构造的全部业务服务。
 // 新增服务的构造签名变化只需改 newTestServices 一处。
 type testServices struct {
-	audit   *audit.Service
-	itsm    *itsm.Service
-	monitor *monitor.Service
-	user    *user.Service
-	ai      *ai.Service
+	audit     *audit.Service
+	itsm      *itsm.Service
+	monitor   *monitor.Service
+	user      *user.Service
+	ai        *ai.Service
+	cmdb      *cmdb.Service
+	knowledge *knowledge.Service
+	agentmgr  *agentmgr.Service
 }
 
 // newTestServer 构造最小 Core Server：挂 auth 与 ws 中间件，签发测试 token。
@@ -70,7 +73,8 @@ func newTestServer(t *testing.T) (*Server, *config.Config, string) {
 // newTestServices 统一构造并注册全部业务服务到 server。
 // 依赖均传 nil，各服务自动退化为内存实现，保证零外部依赖；
 // audit 中间件只在此挂载一次，避免请求被审计两次。
-func newTestServices(server *Server, cfg *config.Config, authProv *auth.Provider) *testServices {
+// 测试结束通过 t.Cleanup 停止 AI 引擎(巡检调度器 goroutine)，防止泄漏。
+func newTestServices(t *testing.T, server *Server, cfg *config.Config, authProv *auth.Provider) *testServices {
 	auditSvc := audit.NewService(cfg, nil)
 	server.WithMiddleware(auditSvc.Middleware)
 	server.RegisterService(auditSvc)
@@ -84,9 +88,14 @@ func newTestServices(server *Server, cfg *config.Config, authProv *auth.Provider
 	userSvc := user.NewService(nil, authProv)
 	server.RegisterService(userSvc)
 
-	// ai 服务不在测试中 Start（避免启动后台调度 goroutine 无法回收）
+	// ai 服务不调用 Start（避免在测试中启动巡检调度器）；仅注册路由，
+	// 并注册 t.Cleanup 兜底停止引擎（未 Start 时 Stop 幂等安全）。
 	aiSvc := ai.NewService(cfg, nil, nil, nil)
 	server.RegisterService(aiSvc)
+	t.Cleanup(func() { aiSvc.Engine.Stop() })
+
+	cmdbSvc := cmdb.NewService(cfg, nil, nil) // pg/dgraph 均 nil -> 内存实现
+	server.RegisterService(cmdbSvc)
 
 	knowledgeSvc := knowledge.NewService(nil)
 	server.RegisterService(knowledgeSvc)
@@ -95,11 +104,14 @@ func newTestServices(server *Server, cfg *config.Config, authProv *auth.Provider
 	server.RegisterService(agentmgrSvc)
 
 	return &testServices{
-		audit:   auditSvc,
-		itsm:    itsmSvc,
-		monitor: monitorSvc,
-		user:    userSvc,
-		ai:      aiSvc,
+		audit:     auditSvc,
+		itsm:      itsmSvc,
+		monitor:   monitorSvc,
+		user:      userSvc,
+		ai:        aiSvc,
+		cmdb:      cmdbSvc,
+		knowledge: knowledgeSvc,
+		agentmgr:  agentmgrSvc,
 	}
 }
 
@@ -170,14 +182,8 @@ func TestAuthLoginInvalid(t *testing.T) {
 }
 
 func TestCMDBListEmpty(t *testing.T) {
-	server, _, token := newTestServer(t)
-	pgRepo, err := pg.NewRepository("")
-	if err != nil || pgRepo == nil {
-		t.Skipf("PG not available, skipping CMDB test: %v", err)
-	}
-	dgClient, _ := dgraph.NewClient("")
-	cmdbSvc := cmdb.NewService(&config.Config{}, pgRepo, dgClient)
-	cmdbSvc.RegisterRoutes(server.mux)
+	server, cfg, token := newTestServer(t)
+	newTestServices(t, server, cfg, auth.NewProvider(cfg.Auth.JWTSecret, nil, nil))
 	handler := server.Handler()
 
 	resp := request(handler, "GET", "/api/v1/cmdb/ci", "", token)
@@ -196,7 +202,7 @@ func TestCMDBListEmpty(t *testing.T) {
 
 func TestITSMListEmpty(t *testing.T) {
 	server, cfg, token := newTestServer(t)
-	newTestServices(server, cfg, auth.NewProvider(cfg.Auth.JWTSecret, nil, nil))
+	newTestServices(t, server, cfg, auth.NewProvider(cfg.Auth.JWTSecret, nil, nil))
 	handler := server.Handler()
 	resp := request(handler, "GET", "/api/v1/itsm/tickets", "", token)
 	if resp.StatusCode != http.StatusOK {
@@ -214,17 +220,32 @@ func TestITSMListEmpty(t *testing.T) {
 
 func TestAIAgents(t *testing.T) {
 	server, cfg, token := newTestServer(t)
-	newTestServices(server, cfg, auth.NewProvider(cfg.Auth.JWTSecret, nil, nil))
+	newTestServices(t, server, cfg, auth.NewProvider(cfg.Auth.JWTSecret, nil, nil))
 	handler := server.Handler()
 	resp := request(handler, "POST", "/api/v1/ai/agents", `{"name":"test-agent","model_name":"deepseek"}`, token)
 	if resp.StatusCode != http.StatusCreated && resp.StatusCode != http.StatusOK {
 		t.Fatalf("expected 201 or 200, got %d", resp.StatusCode)
 	}
+
+	// 响应体断言: 返回 agent 含 id 与 name
+	var created struct {
+		ID   string `json:"id"`
+		Name string `json:"name"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&created); err != nil {
+		t.Fatalf("agent create response not JSON: %v", err)
+	}
+	if created.ID == "" {
+		t.Fatal("expected non-empty agent id")
+	}
+	if created.Name != "test-agent" {
+		t.Fatalf("expected name test-agent, got %s", created.Name)
+	}
 }
 
 func TestAITools(t *testing.T) {
 	server, cfg, token := newTestServer(t)
-	newTestServices(server, cfg, auth.NewProvider(cfg.Auth.JWTSecret, nil, nil))
+	newTestServices(t, server, cfg, auth.NewProvider(cfg.Auth.JWTSecret, nil, nil))
 	handler := server.Handler()
 	resp := request(handler, "GET", "/api/v1/ai/tools", "", token)
 	if resp.StatusCode != http.StatusOK {
@@ -240,21 +261,33 @@ func TestAITools(t *testing.T) {
 	if tools == nil {
 		t.Fatal("expected non-nil tools array")
 	}
+	// mcp 注册表连通性: 至少暴露内置工具(如 knowledge_search / cmdb_query)
+	if len(tools) == 0 {
+		t.Fatal("expected at least one registered tool")
+	}
 }
 
 func TestMonitorTargets(t *testing.T) {
 	server, cfg, token := newTestServer(t)
-	newTestServices(server, cfg, auth.NewProvider(cfg.Auth.JWTSecret, nil, nil))
+	newTestServices(t, server, cfg, auth.NewProvider(cfg.Auth.JWTSecret, nil, nil))
 	handler := server.Handler()
 	resp := request(handler, "GET", "/api/v1/monitor/targets", "", token)
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("expected 200, got %d", resp.StatusCode)
 	}
+
+	var items []any
+	if err := json.NewDecoder(resp.Body).Decode(&items); err != nil {
+		t.Fatalf("targets response not JSON: %v", err)
+	}
+	if items == nil {
+		t.Fatal("expected non-nil targets array")
+	}
 }
 
 func TestUnauthenticatedRequest(t *testing.T) {
 	server, cfg, _ := newTestServer(t)
-	newTestServices(server, cfg, auth.NewProvider(cfg.Auth.JWTSecret, nil, nil))
+	newTestServices(t, server, cfg, auth.NewProvider(cfg.Auth.JWTSecret, nil, nil))
 	handler := server.Handler()
 	resp := request(handler, "GET", "/api/v1/itsm/tickets", "", "")
 	if resp.StatusCode != http.StatusUnauthorized {
@@ -264,17 +297,82 @@ func TestUnauthenticatedRequest(t *testing.T) {
 
 func TestAuditEvents(t *testing.T) {
 	server, cfg, token := newTestServer(t)
-	newTestServices(server, cfg, auth.NewProvider(cfg.Auth.JWTSecret, nil, nil))
+	newTestServices(t, server, cfg, auth.NewProvider(cfg.Auth.JWTSecret, nil, nil))
 	handler := server.Handler()
 	resp := request(handler, "GET", "/api/v1/audit/events", "", token)
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("expected 200, got %d", resp.StatusCode)
 	}
+
+	// 响应为分页对象: {items, total, limit, offset}; 断言 items 可解析且非 nil
+	var page struct {
+		Items []struct {
+			EventType string `json:"event_type"`
+			TraceID   string `json:"trace_id"`
+		} `json:"items"`
+		Total int `json:"total"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&page); err != nil {
+		t.Fatalf("audit events response not JSON: %v", err)
+	}
+	if page.Items == nil {
+		t.Fatal("expected non-nil events items array")
+	}
+}
+
+// TestAuditWriteOnce 防回归: 同一 trace 的事件只写入一次。
+// 对应历史缺陷 #47: audit 中间件/服务被重复注册时, 事件写两条。
+// 通过服务实例写入指定 trace 的事件后按 trace 查询, 必须恰好命中 1 条。
+func TestAuditWriteOnce(t *testing.T) {
+	server, cfg, token := newTestServer(t)
+	svcs := newTestServices(t, server, cfg, auth.NewProvider(cfg.Auth.JWTSecret, nil, nil))
+	handler := server.Handler()
+
+	trace := "audit-dedup-verify-1"
+
+	// 1) 通过 audit 服务实例写入一条事件(带固定 trace; HTTP 写入端点位于 skipPaths,
+	//    不走上下文注入, 故直接调用服务方法, 验证写读闭环与单实例一致性)
+	ev := &auditModel.AuditEvent{
+		TraceID:   trace,
+		TenantID:  "default",
+		EventType: "ci.update",
+		Target: auditModel.AuditTarget{
+			Type: "ci",
+			ID:   "c1",
+		},
+		Action:  "update",
+		Success: true,
+		Actor: auditModel.AuditActor{
+			Type: "human",
+			ID:   "test-user",
+		},
+	}
+	if err := svcs.audit.RecordEvent(context.Background(), ev); err != nil {
+		t.Fatalf("record event: %v", err)
+	}
+
+	// 2) 按 trace 查询, 必须恰好 1 条(重复注册会写 2 条)
+	resp := request(handler, "GET", "/api/v1/audit/events?trace_id="+trace, "", token)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("query: expected 200, got %d", resp.StatusCode)
+	}
+	var page struct {
+		Items []struct {
+			TraceID string `json:"trace_id"`
+		} `json:"items"`
+		Total int `json:"total"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&page); err != nil {
+		t.Fatalf("query response not JSON: %v", err)
+	}
+	if page.Total != 1 {
+		t.Fatalf("expected exactly 1 audit event for trace %s, got %d (audit duplicate registration regression)", trace, page.Total)
+	}
 }
 
 func TestMonitorProbe(t *testing.T) {
 	server, cfg, token := newTestServer(t)
-	newTestServices(server, cfg, auth.NewProvider(cfg.Auth.JWTSecret, nil, nil))
+	newTestServices(t, server, cfg, auth.NewProvider(cfg.Auth.JWTSecret, nil, nil))
 	handler := server.Handler()
 	// 500ms 超时避免默认 5s 内网探测等待
 	body := `{"address":"10.0.0.1","port":80,"protocol":"tcp","timeout":"500ms"}`
@@ -282,28 +380,36 @@ func TestMonitorProbe(t *testing.T) {
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("expected 200, got %d", resp.StatusCode)
 	}
-	// 探测结果必须是可解析的 JSON, 且含 reachable 字段
+	// 探测结果必须是可解析的 JSON, 且含 reachable 字段; 内网不可达地址预期为 false
 	var result struct {
 		Reachable bool `json:"reachable"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
 		t.Fatalf("probe response not JSON: %v", err)
 	}
+	if result.Reachable {
+		t.Fatal("expected reachable=false for 10.0.0.1:80 (unreachable internal address)")
+	}
 }
 
 func TestMetricsEndpoint(t *testing.T) {
 	server, cfg, token := newTestServer(t)
-	newTestServices(server, cfg, auth.NewProvider(cfg.Auth.JWTSecret, nil, nil))
+	newTestServices(t, server, cfg, auth.NewProvider(cfg.Auth.JWTSecret, nil, nil))
 	handler := server.Handler()
 	resp := request(handler, "GET", "/api/v1/monitor/alert-stats", "", token)
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("expected 200, got %d", resp.StatusCode)
 	}
+
+	var stats any
+	if err := json.NewDecoder(resp.Body).Decode(&stats); err != nil {
+		t.Fatalf("alert-stats response not JSON: %v", err)
+	}
 }
 
 func TestITSMRiskLevels(t *testing.T) {
 	server, cfg, token := newTestServer(t)
-	newTestServices(server, cfg, auth.NewProvider(cfg.Auth.JWTSecret, nil, nil))
+	newTestServices(t, server, cfg, auth.NewProvider(cfg.Auth.JWTSecret, nil, nil))
 	handler := server.Handler()
 	for _, risk := range []string{"low", "medium", "high", "critical"} {
 		body := `{"title":"test-` + risk + `","description":"test","risk_level":"` + risk + `","change_plan":"test"}`
@@ -311,13 +417,30 @@ func TestITSMRiskLevels(t *testing.T) {
 		if resp.StatusCode != http.StatusCreated && resp.StatusCode != http.StatusConflict {
 			t.Fatalf("risk %s: expected 201 or 409, got %d", risk, resp.StatusCode)
 		}
+
+		// 响应体断言: 创建成功时返回工单 id
+		if resp.StatusCode == http.StatusCreated {
+			var created struct {
+				ID    string `json:"id"`
+				Title string `json:"title"`
+			}
+			if err := json.NewDecoder(resp.Body).Decode(&created); err != nil {
+				t.Fatalf("risk %s: create response not JSON: %v", risk, err)
+			}
+			if created.ID == "" {
+				t.Fatalf("risk %s: expected non-empty ticket id", risk)
+			}
+			if created.Title != "test-"+risk {
+				t.Fatalf("risk %s: expected title test-%s, got %s", risk, risk, created.Title)
+			}
+		}
 	}
 }
 
 // TestKnowledgeCreateAndList 覆盖知识库模块: 创建文章后列表能查到。
 func TestKnowledgeCreateAndList(t *testing.T) {
 	server, cfg, token := newTestServer(t)
-	newTestServices(server, cfg, auth.NewProvider(cfg.Auth.JWTSecret, nil, nil))
+	newTestServices(t, server, cfg, auth.NewProvider(cfg.Auth.JWTSecret, nil, nil))
 	handler := server.Handler()
 
 	body := `{"title":"test-knowledge-article","content":"hello world","author":"admin","status":"published"}`
@@ -351,22 +474,37 @@ func TestKnowledgeCreateAndList(t *testing.T) {
 // TestAgentsList 覆盖 Agent 管理模块列表端点。
 func TestAgentsList(t *testing.T) {
 	server, cfg, token := newTestServer(t)
-	newTestServices(server, cfg, auth.NewProvider(cfg.Auth.JWTSecret, nil, nil))
+	newTestServices(t, server, cfg, auth.NewProvider(cfg.Auth.JWTSecret, nil, nil))
 	handler := server.Handler()
 	resp := request(handler, "GET", "/api/v1/agents", "", token)
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+
+	var items []any
+	if err := json.NewDecoder(resp.Body).Decode(&items); err != nil {
+		t.Fatalf("agents response not JSON: %v", err)
+	}
+	if items == nil {
+		t.Fatal("expected non-nil agents array")
 	}
 }
 
 // TestApprovalPolicy 覆盖 AI 审批策略端点（默认策略可读）。
 func TestApprovalPolicy(t *testing.T) {
 	server, cfg, token := newTestServer(t)
-	newTestServices(server, cfg, auth.NewProvider(cfg.Auth.JWTSecret, nil, nil))
+	newTestServices(t, server, cfg, auth.NewProvider(cfg.Auth.JWTSecret, nil, nil))
 	handler := server.Handler()
 	resp := request(handler, "GET", "/api/v1/ai/approval-policy", "", token)
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+
+	var policy struct {
+		Default []any `json:"default"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&policy); err != nil {
+		t.Fatalf("approval policy response not JSON: %v", err)
 	}
 }
 

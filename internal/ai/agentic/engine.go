@@ -259,6 +259,20 @@ func (e *Engine) Start() error {
 	return nil
 }
 
+// Stop 停止引擎后台活动: 取消巡检调度器循环, 供测试 t.Cleanup 与优雅退出复用。
+// 幂等(未 Start 或已 Stop 均安全); 不销毁内存数据(进程退出即释放)。
+func (e *Engine) Stop() {
+	e.mu.Lock()
+	cancel := e.inspectCancel
+	e.inspectCancel = nil
+	e.ready = false
+	e.mu.Unlock()
+	if cancel != nil {
+		cancel()
+		slog.Info("agentic engine stopped")
+	}
+}
+
 func (e *Engine) SetStore(s Store) { e.store = s }
 
 func (e *Engine) loadFromStore() error {

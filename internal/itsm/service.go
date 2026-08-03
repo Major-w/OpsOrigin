@@ -872,11 +872,17 @@ func (s *Service) slaForRisk(risk model.RiskLevel) time.Duration {
 }
 
 func (s *Service) fireWebhook(ctx context.Context, event string, ticket *model.Ticket, changedBy string) {
+	// 异步 goroutine 前快照字段: ticket 指针会在调用方后续状态流转中被写
+	// (如 transition 修改 Status), 直接引用会与主 goroutine 产生数据竞争。
+	webhookURL := ticket.WebhookURL
+	id := ticket.ID
+	tenantID := ticket.TenantID
+	status := string(ticket.Status)
+	riskLevel := string(ticket.RiskLevel)
 	go func() {
-		if err := s.webhook.Notify(ctx, ticket.WebhookURL, event,
-			ticket.ID, ticket.TenantID, string(ticket.Status),
-			string(ticket.RiskLevel), changedBy); err != nil {
-			slog.Warn("webhook notify failed", "event", event, "ticket_id", ticket.ID, "error", err)
+		if err := s.webhook.Notify(ctx, webhookURL, event,
+			id, tenantID, status, riskLevel, changedBy); err != nil {
+			slog.Warn("webhook notify failed", "event", event, "ticket_id", id, "error", err)
 		}
 	}()
 }
