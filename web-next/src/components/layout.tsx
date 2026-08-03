@@ -4,7 +4,7 @@ import { useState } from 'react'
 import Link from 'next/link'
 import { usePathname, useRouter } from 'next/navigation'
 import { cn } from '@/lib/utils'
-import { Server, TicketCheck, Activity, Bot, Shield, LayoutDashboard, Hexagon, LogOut, User, Terminal, Workflow, Clock, Search, BookOpen, Calendar, GitBranch, Package, Bell, Key, Blocks, Users, Settings, Sun, Moon, Scan, Bug, Download, PackagePlus, Network, AlertTriangle, History, FileText, Rocket, AppWindow, FileCheck2, Cloud, Play, Sparkles, Database, Radio, BarChart3, Building2, Radar, MessagesSquare, Gauge, FlaskConical, type LucideIcon } from 'lucide-react'
+import { Server, TicketCheck, Activity, Bot, Shield, LayoutDashboard, Hexagon, LogOut, User, Terminal, Workflow, Clock, Search, BookOpen, Calendar, GitBranch, Package, Bell, Key, Blocks, Users, Settings, Sun, Moon, Scan, Bug, Download, PackagePlus, Network, AlertTriangle, History, FileText, Rocket, AppWindow, FileCheck2, Cloud, Play, Sparkles, Database, Radio, BarChart3, Building2, Radar, MessagesSquare, Gauge, FlaskConical, TrendingUp, type LucideIcon } from 'lucide-react'
 import { useAuthStore } from '@/stores/auth'
 import { useThemeStore } from '@/stores/theme'
 import { ScrollToTop } from '@/components/ui/scroll-to-top'
@@ -94,6 +94,7 @@ const navGroups: (NavItem | NavGroup)[] = [
       { to: '/monitor', label: '监控总览', icon: Activity },
       { to: '/monitor/alerts', label: '告警中心', icon: AlertTriangle },
       { to: '/monitor/targets', label: '监控配置', icon: Settings },
+      { to: '/monitor/predict', label: '趋势预测', icon: TrendingUp },
     ]
   },
   {

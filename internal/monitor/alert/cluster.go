@@ -195,6 +195,154 @@ func (a *Aggregator) AnalyzeRootCause(ctx context.Context, alerts []*model.Alert
 	return out
 }
 
+// RootCausePath 一条因果传播链路径(L2 预测性运维-因果 RCA 升级):
+// 根因节点(最早触发的上游) -> 中间传播 -> 受影响告警。
+type RootCausePath struct {
+	RootCIID      string   `json:"root_ci_id"`
+	RootTitle     string   `json:"root_title"`
+	RootSeverity  string   `json:"root_severity"`
+	Path          []string `json:"path"`            // [root, ..., leaf] CI 传播链
+	AffectedCount int      `json:"affected_count"`  // 受影响告警数(含根因)
+	EarliestAt    string   `json:"earliest_triggered"`
+	Confidence    float64  `json:"confidence"`      // 0-1: 拓扑确认的传播关系占比
+}
+
+// AnalyzeRootCausePaths 因果链分析: 把活跃告警按 拓扑祖先 + 触发时序 串成传播路径。
+// 规则:
+//   1. 告警 A 是 B 的拓扑祖先 且 A 先触发 -> B 受 A 影响(有向边 A→B);
+//   2. 无入边的节点 = 根因候选(不被任何其他告警影响);
+//   3. 从每个根因沿出边收集受影响节点 -> 一条传播路径(含多跳链);
+//   4. Confidence = 路径中拓扑确认边 / 总边数(无 topology 时按同 rule 族时间窗口近似, 置信度 0.5)。
+// 相比 AnalyzeRootCause(扁平评分候选), 本方法直接给出"根因→传播"因果链, 更贴近根因定位语义。
+func (a *Aggregator) AnalyzeRootCausePaths(ctx context.Context, alerts []*model.AlertEvent) []RootCausePath {
+	type node struct {
+		al    *model.AlertEvent
+		out   []int // 出边(受影响节点下标)
+		inCnt int   // 入边数(被影响次数)
+	}
+	nodes := make([]*node, 0, len(alerts))
+	for _, al := range alerts {
+		if al == nil || al.SourceCIID == "" {
+			continue
+		}
+		nodes = append(nodes, &node{al: al})
+	}
+	if len(nodes) == 0 {
+		return nil
+	}
+	// 按触发时间升序(先触发者先建立影响关系)
+	sort.SliceStable(nodes, func(i, j int) bool {
+		return nodes[i].al.TriggeredAt.Before(nodes[j].al.TriggeredAt)
+	})
+
+	confirmedEdges := 0
+	for i := 0; i < len(nodes); i++ {
+		for j := i + 1; j < len(nodes); j++ {
+			if nodes[i].al.SourceCIID == nodes[j].al.SourceCIID {
+				continue // 同一 CI 的告警视为同源, 不构成传播
+			}
+			affected := false
+			if a.topology != nil {
+				if isA, err := a.topology.IsAncestorOf(ctx, nodes[i].al.SourceCIID, nodes[j].al.SourceCIID); err == nil && isA {
+					affected = true
+					confirmedEdges++
+				}
+			} else {
+				// 无 topology 时: 同 rule 族(前缀相同)且 30 分钟窗口内先触发 -> 近似传播
+				if sameRuleFamily(nodes[i].al.RuleName, nodes[j].al.RuleName) &&
+					nodes[j].al.TriggeredAt.Sub(nodes[i].al.TriggeredAt) <= 30*time.Minute {
+					affected = true
+				}
+			}
+			if affected {
+				nodes[i].out = append(nodes[i].out, j)
+				nodes[j].inCnt++
+			}
+		}
+	}
+
+	var paths []RootCausePath
+	for i, n := range nodes {
+		if n.inCnt > 0 {
+			continue // 不是根因
+		}
+		path := RootCausePath{
+			RootCIID:      n.al.SourceCIID,
+			RootTitle:     n.al.Title,
+			RootSeverity:  string(n.al.Severity),
+			EarliestAt:    n.al.TriggeredAt.UTC().Format(time.RFC3339),
+			AffectedCount: 1,
+		}
+		chain := []string{n.al.SourceCIID}
+		// BFS 收集受影响节点(去重)
+		visited := map[int]bool{i: true}
+		queue := []int{i}
+		for len(queue) > 0 {
+			cur := queue[0]
+			queue = queue[1:]
+			for _, o := range nodes[cur].out {
+				if visited[o] {
+					continue
+				}
+				visited[o] = true
+				chain = append(chain, nodes[o].al.SourceCIID)
+				path.AffectedCount++
+				queue = append(queue, o)
+			}
+		}
+		path.Path = chain
+		// 置信度: 拓扑确认边占比(无 topology 全为近似边时给 0.5)
+		if confirmedEdges == 0 {
+			path.Confidence = 0.5
+		} else {
+			path.Confidence = float64(confirmedEdges) / float64(confirmedEdges+maxI(0, len(nodes)-confirmedEdges))
+		}
+		paths = append(paths, path)
+	}
+	// 按受影响范围降序
+	sort.SliceStable(paths, func(i, j int) bool {
+		return paths[i].AffectedCount > paths[j].AffectedCount
+	})
+	return paths
+}
+
+// sameRuleFamily 判断两个规则名是否同族(前缀相同, 如 "probe.fail" 与 "probe.timeout")。
+func sameRuleFamily(a, b string) bool {
+	if a == "" || b == "" {
+		return false
+	}
+	n := len(a)
+	if len(b) < n {
+		n = len(b)
+	}
+	// 取前缀(到第一个 "." 之后的分隔)比较
+	fa := a
+	fb := b
+	if i := indexByte(a, '.'); i > 0 {
+		fa = a[:i]
+	}
+	if i := indexByte(b, '.'); i > 0 {
+		fb = b[:i]
+	}
+	return fa == fb
+}
+
+func indexByte(s string, b byte) int {
+	for i := 0; i < len(s); i++ {
+		if s[i] == b {
+			return i
+		}
+	}
+	return -1
+}
+
+func maxI(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
+}
+
 func minF(a, b float64) float64 {
 	if a < b {
 		return a

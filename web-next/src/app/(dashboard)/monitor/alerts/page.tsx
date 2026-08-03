@@ -4,6 +4,18 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useMonitorStore, type AlertEvent, type RCAEntry } from '@/stores/monitor'
 import { useAIStore } from '@/stores/ai'
 import { renderMarkdown } from '@/lib/ai-render'
+import { apiFetch } from '@/lib/utils'
+
+// L2 因果链路径(根因 → 传播)
+interface RootCausePath {
+  root_ci_id: string
+  root_title: string
+  root_severity: string
+  path: string[]
+  affected_count: number
+  earliest_triggered: string
+  confidence: number
+}
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -30,6 +42,8 @@ export default function MonitorAlertsPage() {
   // —— RCA 根因分析(P0) ——
   const [rcaOpen, setRcaOpen] = useState(false)
   const [rcaLoading, setRcaLoading] = useState(false)
+  // —— L2 因果链路径(升级) ——
+  const [rcaPaths, setRcaPaths] = useState<RootCausePath[]>([])
   // —— AI 告警分析 ——
   const streamChat = useAIStore(s => s.streamChat)
   const [analyzeAlert, setAnalyzeAlert] = useState<AlertEvent | null>(null)
@@ -48,6 +62,9 @@ export default function MonitorAlertsPage() {
     setRcaOpen(true)
     setRcaLoading(true)
     await store.fetchRCA()
+    try {
+      setRcaPaths(await apiFetch<RootCausePath[]>('/monitor/alerts/rca/paths'))
+    } catch { setRcaPaths([]) }
     setRcaLoading(false)
   }
 
@@ -243,6 +260,33 @@ export default function MonitorAlertsPage() {
       {/* RCA 根因分析弹窗(P0 启发式: 拓扑 + 严重度 + 触发时序评分) */}
       <Dialog open={rcaOpen} onClose={() => setRcaOpen(false)} title="根因分析（活跃告警）">
         <div className="space-y-3">
+          <p className="text-xs text-muted-foreground">
+            因果链：按拓扑祖先 + 触发时序把告警串成传播路径（根因 → 受影响）。下方为按严重度/时序评分的根因候选。
+          </p>
+          {/* L2 因果链路径 */}
+          {!rcaLoading && rcaPaths.length > 0 && (
+            <div className="space-y-2">
+              <div className="text-xs font-medium text-muted-foreground">因果传播路径</div>
+              {rcaPaths.map((p, i) => (
+                <div key={i} className="rounded-lg border border-border p-2.5 space-y-1.5">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <Badge variant={p.root_severity === 'critical' || p.root_severity === 'high' ? 'destructive' : 'warning'} className="text-[10px]">根因</Badge>
+                    <span className="text-sm font-medium">{p.root_title}</span>
+                    <span className="text-[11px] text-muted-foreground">{p.root_ci_id}</span>
+                    <span className="ml-auto text-[11px] text-muted-foreground">影响 {p.affected_count} 项 · 置信度 {(p.confidence * 100).toFixed(0)}%</span>
+                  </div>
+                  <div className="flex items-center gap-1 flex-wrap text-[11px]">
+                    {p.path.map((ci, j) => (
+                      <span key={j} className="inline-flex items-center gap-1">
+                        {j > 0 && <span className="text-muted-foreground">→</span>}
+                        <code className="rounded bg-muted px-1.5 py-0.5 font-mono">{ci}</code>
+                      </span>
+                    ))}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
           <p className="text-xs text-muted-foreground">
             基于拓扑关系 + 严重度权重 + 触发时序的启发式评分。分数越高越可能是根因源头（祖先节点、更早触发、更严重优先）。
           </p>

@@ -79,6 +79,8 @@ func (s *Service) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/v1/monitor/alerts", s.handleListAlerts)
 	mux.HandleFunc("GET /api/v1/monitor/alert-stats", s.handleAlertStats)
 	mux.HandleFunc("GET /api/v1/monitor/alerts/rca", s.handleAlertRCA)
+	mux.HandleFunc("GET /api/v1/monitor/alerts/rca/paths", s.handleAlertRCAPaths)
+	mux.HandleFunc("POST /api/v1/monitor/predict", s.handlePredict)
 	mux.HandleFunc("POST /api/v1/monitor/alerts/{id}/ack", s.handleAckAlert)
 	mux.HandleFunc("POST /api/v1/monitor/alerts/{id}/resolve", s.handleResolveAlert)
 	mux.HandleFunc("GET /api/v1/monitor/rules", s.handleListRules)
