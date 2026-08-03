@@ -22,31 +22,41 @@ const (
 
 // InspectionTemplate 内置巡检模板目录(与岗位模板同构, 平台交付即开箱可用)。
 type InspectionTemplate struct {
-	ID             string `json:"id"`
-	Name           string `json:"name"`
-	Category       string `json:"category"`
-	Description    string `json:"description"`
-	Prompt         string `json:"prompt"`          // 注入 Agent 系统提示的巡检指令
-	ScopeHint      string `json:"scope_hint"`       // 建议的巡检范围(给用户参考)
+	ID              string `json:"id"`
+	Name            string `json:"name"`
+	Category        string `json:"category"`
+	Description     string `json:"description"`
+	Prompt          string `json:"prompt"`     // 注入 Agent 系统提示的巡检指令
+	ScopeHint       string `json:"scope_hint"` // 建议的巡检范围(给用户参考)
 	DefaultSchedule string `json:"default_schedule"`
 }
 
 // Inspection 一条用户可管理的巡检任务(启停/改周期/改范围)。
 type Inspection struct {
-	ID           string     `json:"id"`
-	TenantID     string     `json:"tenant_id"`
-	Name         string     `json:"name"`
-	TemplateID   string     `json:"template_id,omitempty"`
-	AgentID      string     `json:"agent_id,omitempty"` // 指定执行 Agent; 空=引擎默认(全工具)
-	Prompt       string     `json:"prompt"`             // 巡检指令(覆盖/补充模板)
-	Scope        string     `json:"scope"`              // 巡检范围描述(如 全部主机 / 某 CMDB 类型)
-	Schedule     string     `json:"schedule"`           // @hourly/@daily/...
-	Enabled      bool       `json:"enabled"`
-	LastRunAt    *time.Time `json:"last_run_at,omitempty"`
-	LastStatus   string     `json:"last_status,omitempty"`
-	NextRunAt    time.Time  `json:"next_run_at"`
-	CreatedAt    time.Time  `json:"created_at"`
-	UpdatedAt    time.Time  `json:"updated_at"`
+	ID         string     `json:"id"`
+	TenantID   string     `json:"tenant_id"`
+	Name       string     `json:"name"`
+	TemplateID string     `json:"template_id,omitempty"`
+	AgentID    string     `json:"agent_id,omitempty"` // 指定执行 Agent; 空=引擎默认(全工具)
+	Prompt     string     `json:"prompt"`             // 巡检指令(覆盖/补充模板)
+	Scope      string     `json:"scope"`              // 巡检范围描述(如 全部主机 / 某 CMDB 类型)
+	Schedule   string     `json:"schedule"`           // @hourly/@daily/...
+	Enabled    bool       `json:"enabled"`
+	LastRunAt  *time.Time `json:"last_run_at,omitempty"`
+	LastStatus string     `json:"last_status,omitempty"`
+	NextRunAt  time.Time  `json:"next_run_at"`
+	CreatedAt  time.Time  `json:"created_at"`
+	UpdatedAt  time.Time  `json:"updated_at"`
+}
+
+// Escalation 一条由巡检发现转出的 ITSM 工单记录(幂等: 同一发现只转一次)。
+type Escalation struct {
+	FindingIdx  int       `json:"finding_idx"`            // 对应 findings JSON 数组中的下标
+	Level       string    `json:"level"`                  // high | medium | low
+	Title       string    `json:"title"`                  // 发现标题
+	TicketID    string    `json:"ticket_id"`              // ITSM 工单 ID
+	TicketTitle string    `json:"ticket_title,omitempty"` // 工单标题
+	CreatedAt   time.Time `json:"created_at"`
 }
 
 // InspectionRun 一次巡检执行记录(只读追加, 便于追溯与复盘)。
@@ -54,84 +64,95 @@ type InspectionRun struct {
 	ID           string     `json:"id"`
 	InspectionID string     `json:"inspection_id"`
 	TenantID     string     `json:"tenant_id"`
-	TriggeredBy  string     `json:"triggered_by"` // scheduled | manual
-	Status       string     `json:"status"`        // running | success | failed
-	Summary      string     `json:"summary"`       // 巡检报告正文
+	TriggeredBy  string     `json:"triggered_by"`       // scheduled | manual
+	Status       string     `json:"status"`             // running | success | failed
+	Summary      string     `json:"summary"`            // 巡检报告正文
 	Findings     string     `json:"findings,omitempty"` // 结构化发现(JSON 字符串)
 	Error        string     `json:"error,omitempty"`
 	StartedAt    time.Time  `json:"started_at"`
 	FinishedAt   *time.Time `json:"finished_at,omitempty"`
+	// Escalations 已转工单的发现记录(通过 /runs/{id}/escalate 追加)。
+	Escalations []Escalation `json:"escalations,omitempty"`
+}
+
+// InspectionFinding 巡检发现的通用结构(findings JSON 数组元素)。
+// 与前端 parseFindings 及巡检指令要求的输出契约对齐。
+type InspectionFinding struct {
+	Level      string `json:"level"`                // high | medium | low
+	Title      string `json:"title"`                // 发现标题
+	Detail     string `json:"detail,omitempty"`     // 详情
+	Suggestion string `json:"suggestion,omitempty"` // 处置建议
 }
 
 // PresetInspectionTemplates 平台预置巡检目录。
 var PresetInspectionTemplates = []*InspectionTemplate{
 	{
-		ID:             "insp-config-drift",
-		Name:           "配置漂移巡检",
-		Category:       "配置合规",
+		ID:              "insp-config-drift",
+		Name:            "配置漂移巡检",
+		Category:        "配置合规",
 		Description:     "检测关键资产的配置与基线/上次记录是否发生非预期偏离。",
 		DefaultSchedule: ScheduleDaily,
-		ScopeHint:      "全部主机 / 关键中间件实例",
+		ScopeHint:       "全部主机 / 关键中间件实例",
 		Prompt: "你是主动巡检 Agent, 正在执行「配置漂移巡检」:\n" +
 			"- 通过 cmdb_query 获取资产当前配置属性, 与安全基线/知识库(knowledge_search)中的标准配置比对;\n" +
 			"- 识别非预期的配置变化(新增端口、权限放宽、版本回退等), 标注 高/中/低 风险;\n" +
 			"- 说明漂移可能带来的后果与回滚/加固建议。",
 	},
 	{
-		ID:             "insp-capacity",
-		Name:           "容量水位巡检",
-		Category:       "容量",
+		ID:              "insp-capacity",
+		Name:            "容量水位巡检",
+		Category:        "容量",
 		Description:     "对主机/数据库/中间件的容量与增长趋势做每日体检, 提前预警。",
 		DefaultSchedule: ScheduleDaily,
-		ScopeHint:      "全部主机 / 数据库实例",
+		ScopeHint:       "全部主机 / 数据库实例",
 		Prompt: "你是主动巡检 Agent, 正在执行「容量水位巡检」:\n" +
 			"- 通过 cmdb_query 盘点主机/数据库/中间件资产及其容量属性;\n" +
 			"- 结合知识库中的容量阈值, 标记已超阈值或 7 日内将达阈值的资源, 标注 高/中/低;\n" +
 			"- 给出扩容/降配/清理的量化建议与预估。",
 	},
 	{
-		ID:             "insp-security-baseline",
-		Name:           "安全基线巡检",
-		Category:       "安全",
+		ID:              "insp-security-baseline",
+		Name:            "安全基线巡检",
+		Category:        "安全",
 		Description:     "周期性核查资产是否符合安全基线(暴露面/弱口令风险/补丁)。",
 		DefaultSchedule: ScheduleWeekly,
-		ScopeHint:      "全部对外暴露资产 / 核心业务系统",
+		ScopeHint:       "全部对外暴露资产 / 核心业务系统",
 		Prompt: "你是主动巡检 Agent, 正在执行「安全基线巡检」:\n" +
 			"- 通过 cmdb_query 梳理资产与暴露面, 对照知识库(knowledge_search)中的安全基线;\n" +
 			"- 检查不必要的公网暴露、权限过大、补丁缺失等, 标注 高/中/低;\n" +
 			"- 映射到合规要求并给出整改建议, 具体到资产实例。",
 	},
 	{
-		ID:             "insp-cert-expiry",
-		Name:           "证书到期巡检",
-		Category:       "安全",
+		ID:              "insp-cert-expiry",
+		Name:            "证书到期巡检",
+		Category:        "安全",
 		Description:     "扫描 TLS/域名证书有效期, 提前提醒续期避免业务中断。",
 		DefaultSchedule: ScheduleWeekly,
-		ScopeHint:      "全部含证书的域名 / 负载均衡 / 网关",
+		ScopeHint:       "全部含证书的域名 / 负载均衡 / 网关",
 		Prompt: "你是主动巡检 Agent, 正在执行「证书到期巡检」:\n" +
 			"- 通过 cmdb_query 识别承载证书的域名/网关/负载均衡资产, 读取证书有效期属性;\n" +
 			"  (若 cmdb 无该属性, 明确说明, 并建议使用 knowledge_search 中的续期流程)\n" +
 			"- 标记 30 天内到期(高)、90 天内到期(中)的证书, 给出续期责任人与步骤。",
 	},
 	{
-		ID:             "insp-host-health",
-		Name:           "主机健康巡检",
-		Category:       "健康",
+		ID:              "insp-host-health",
+		Name:            "主机健康巡检",
+		Category:        "健康",
 		Description:     "每日体检主机运行状态、Agent 在线率与核心服务可用性。",
 		DefaultSchedule: ScheduleDaily,
-		ScopeHint:      "全部受管主机",
+		ScopeHint:       "全部受管主机",
 		Prompt: "你是主动巡检 Agent, 正在执行「主机健康巡检」:\n" +
 			"- 通过 cmdb_query 盘点受管主机及其状态/在线情况;\n" +
 			"- 结合 script_executions 历史判断近期执行成功率, 标记离线/异常/高频失败主机(高/中/低);\n" +
 			"- 给出是否需要人工介入的判断与建议动作。",
 	},
 	{
-		ID:             "insp-kb-freshness",
-		Name:           "知识库时效巡检",
-		Category:       "知识",
+		ID:              "insp-kb-freshness",
+		Name:            "知识库时效巡检",
+		Category:        "知识",
 		Description:     "检查知识库文档时效, 标记长期未更新或可能过期的运维手册。",
 		DefaultSchedule: ScheduleWeekly,
-		ScopeHint:      "全部知识库文章",
+		ScopeHint:       "全部知识库文章",
 		Prompt: "你是主动巡检 Agent, 正在执行「知识库时效巡检」:\n" +
 			"- 通过 knowledge_search 检索运维手册类文章, 评估其时效与适用性;\n" +
 			"- 标记超过 365 天未更新、或内容与当前架构明显脱节的文章, 标注 中/低 风险;\n" +
@@ -372,6 +393,159 @@ func (e *Engine) RunInspection(ctx context.Context, id, triggeredBy string) (*In
 	if e.store != nil {
 		_ = e.store.UpdateInspection(ctx, ins)
 		_ = e.store.CreateInspectionRun(ctx, run) // upsert
+	}
+
+	// 巡检闭环通知: 完成/失败后推送平台通知(未装配回调则跳过)。
+	if e.InspectionNotifyFunc != nil {
+		statusLabel := "完成"
+		if run.Status == "failed" {
+			statusLabel = "失败"
+		}
+		content := fmt.Sprintf("巡检「%s」执行%s。", ins.Name, statusLabel)
+		if run.Status == "success" {
+			if n, err := countFindings(run.Findings); err == nil && n > 0 {
+				content += fmt.Sprintf(" 本次发现 %d 项风险, 可在巡检历史查看并转工单处置。", n)
+			}
+		}
+		if run.Error != "" {
+			content += " 错误: " + run.Error
+		}
+		_ = e.InspectionNotifyFunc(ctx, ins.TenantID, "ai.inspection_finished", "巡检"+statusLabel+": "+ins.Name, content)
+	}
+	return run, nil
+}
+
+// countFindings 统计 findings JSON 数组中的发现条数(容错: 解析失败返回 0)。
+func countFindings(raw string) (int, error) {
+	if raw == "" {
+		return 0, nil
+	}
+	var fs []InspectionFinding
+	if err := json.Unmarshal([]byte(raw), &fs); err != nil {
+		return 0, err
+	}
+	return len(fs), nil
+}
+
+// SetInspectionCallbacks 注入巡检闭环回调(由 cmd/core 装配时调用):
+// createTicket 用于将巡检发现转 ITSM 工单; notify 用于巡检完成/失败通知。
+// 任一传 nil 表示关闭对应能力。
+func (e *Engine) SetInspectionCallbacks(
+	createTicket func(ctx context.Context, tenantID, title, description string, labels map[string]string) (string, error),
+	notify func(ctx context.Context, tenantID, event, title, content string) error,
+) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.CreateTicketFunc = createTicket
+	e.InspectionNotifyFunc = notify
+}
+
+// GetInspectionRun 按运行 ID 查巡检记录(租户校验; tenantID 空=不限租户)。
+func (e *Engine) GetInspectionRun(tenantID, runID string) (*InspectionRun, error) {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	for _, runs := range e.inspectionRuns {
+		for _, r := range runs {
+			if r.ID == runID {
+				if tenantID != "" && r.TenantID != tenantID {
+					return nil, fmt.Errorf("inspection run not found: %s", runID)
+				}
+				return r, nil
+			}
+		}
+	}
+	return nil, fmt.Errorf("inspection run not found: %s", runID)
+}
+
+// EscalateInspectionRun 将某次巡检运行记录中达到指定级别(含)的发现批量转 ITSM 工单。
+// severityLimit: "high"=仅高危, "medium"=高危+中危(默认), "low"=全部。
+// 幂等: 已在 run.Escalations 记录的发现自动跳过; 每成功一条追加一条 Escalation 并持久化。
+// 返回更新后的运行记录(含 escalations)。未装配 CreateTicketFunc 时报错。
+func (e *Engine) EscalateInspectionRun(ctx context.Context, tenantID, runID, severityLimit string) (*InspectionRun, error) {
+	run, err := e.GetInspectionRun(tenantID, runID)
+	if err != nil {
+		return nil, err
+	}
+	if e.CreateTicketFunc == nil {
+		return nil, fmt.Errorf("escalation disabled: create ticket callback not wired")
+	}
+	if severityLimit == "" {
+		severityLimit = "medium"
+	}
+	rank := func(lv string) int {
+		switch lv {
+		case "high":
+			return 3
+		case "medium":
+			return 2
+		case "low":
+			return 1
+		}
+		return 0
+	}
+	limitRank := rank(severityLimit)
+	if limitRank == 0 {
+		return nil, fmt.Errorf("invalid severity limit: %s", severityLimit)
+	}
+
+	// 已转工单的发现下标集合(幂等去重)
+	done := make(map[int]bool)
+	for _, es := range run.Escalations {
+		done[es.FindingIdx] = true
+	}
+
+	var findings []InspectionFinding
+	if run.Findings != "" {
+		_ = json.Unmarshal([]byte(run.Findings), &findings)
+	}
+
+	added := 0
+	var firstErr error
+	for i, f := range findings {
+		if done[i] || rank(f.Level) < limitRank {
+			continue
+		}
+		title := fmt.Sprintf("[AI巡检·%s] %s", strings.ToUpper(f.Level), orDefault(f.Title, "未命名发现"))
+		desc := f.Detail
+		if f.Suggestion != "" {
+			if desc != "" {
+				desc += "\n"
+			}
+			desc += "处置建议: " + f.Suggestion
+		}
+		ticketID, terr := e.CreateTicketFunc(ctx, run.TenantID, title, desc, map[string]string{
+			"source":        "ai_inspection",
+			"inspection_id": run.InspectionID,
+			"run_id":        run.ID,
+		})
+		if terr != nil {
+			slog.Warn("escalate finding failed", "run_id", run.ID, "finding_idx", i, "error", terr)
+			if firstErr == nil {
+				firstErr = terr
+			}
+			continue
+		}
+		run.Escalations = append(run.Escalations, Escalation{
+			FindingIdx:  i,
+			Level:       f.Level,
+			Title:       f.Title,
+			TicketID:    ticketID,
+			TicketTitle: title,
+			CreatedAt:   time.Now(),
+		})
+		added++
+	}
+
+	if added > 0 && e.store != nil {
+		if uerr := e.store.UpdateInspectionRun(ctx, run); uerr != nil {
+			slog.Error("persist run escalations failed", "run_id", run.ID, "error", uerr)
+		}
+	}
+	if added == 0 {
+		if firstErr != nil {
+			return run, fmt.Errorf("escalation failed: %v", firstErr)
+		}
+		return run, fmt.Errorf("no findings to escalate (level >= %s)", severityLimit)
 	}
 	return run, nil
 }

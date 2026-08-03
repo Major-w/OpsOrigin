@@ -5,9 +5,10 @@ import { Card, CardContent } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { Input } from '@/components/ui/input'
+import { Switch } from '@/components/ui/switch'
 import { Dialog, DialogFooter } from '@/components/ui/dialog'
 import { cn } from '@/lib/utils'
-import { useAgentTemplates, type AgentTemplate } from '@/stores/aiWorkforce'
+import { useAgentTemplates, useWorkforceStore, type AgentTemplate } from '@/stores/aiWorkforce'
 import { useAIStore } from '@/stores/ai'
 import {
   Database, Network, Shield, GitBranch, Siren, TrendingDown, Clock,
@@ -38,17 +39,22 @@ export default function DigitalEmployeesPage() {
   const { templates, loading, loadTemplates, instantiateTemplate } = useAgentTemplates()
   const agents = useAIStore(s => s.agents)
   const fetchAgents = useAIStore(s => s.fetchAgents)
+  // 巡检模板目录: 用于展示关联巡检名称(与巡检页共用同一 store, 不重复加载逻辑)
+  const inspectionTemplates = useWorkforceStore(s => s.inspectionTemplates)
+  const loadInspectionTemplates = useWorkforceStore(s => s.loadInspectionTemplates)
 
   const [preview, setPreview] = useState<AgentTemplate | null>(null)
   const [hireTarget, setHireTarget] = useState<AgentTemplate | null>(null)
   const [hireName, setHireName] = useState('')
+  const [withInspection, setWithInspection] = useState(true)
   const [hiring, setHiring] = useState(false)
   const [roleFilter, setRoleFilter] = useState<string>('')
 
   useEffect(() => {
     loadTemplates()
+    loadInspectionTemplates()
     fetchAgents()
-  }, [loadTemplates, fetchAgents])
+  }, [loadTemplates, loadInspectionTemplates, fetchAgents])
 
   const roles = useMemo(() => {
     const set = new Set(templates.map(t => t.role))
@@ -74,12 +80,13 @@ export default function DigitalEmployeesPage() {
   const openHire = (t: AgentTemplate) => {
     setHireTarget(t)
     setHireName('')
+    setWithInspection(true)
   }
 
   const confirmHire = async () => {
     if (!hireTarget) return
     setHiring(true)
-    const ok = await instantiateTemplate(hireTarget.id, hireName.trim())
+    const ok = await instantiateTemplate(hireTarget.id, hireName.trim(), withInspection)
     setHiring(false)
     if (ok) {
       setHireTarget(null)
@@ -285,6 +292,17 @@ export default function DigitalEmployeesPage() {
                 placeholder={hireTarget.name}
               />
             </div>
+            {hireTarget.inspection_template_id && (
+              <div className="flex items-center justify-between gap-3 rounded-lg border border-border p-3">
+                <div className="min-w-0">
+                  <div className="text-sm font-medium">同时创建关联巡检任务</div>
+                  <div className="text-xs text-muted-foreground mt-0.5">
+                    自动启用「{inspectionTemplates.find(t => t.id === hireTarget.inspection_template_id)?.name || '关联巡检'}」，让数字员工上岗即开始主动看护
+                  </div>
+                </div>
+                <Switch checked={withInspection} onCheckedChange={setWithInspection} />
+              </div>
+            )}
           </div>
         )}
         <DialogFooter>

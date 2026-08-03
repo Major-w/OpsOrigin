@@ -139,6 +139,7 @@ func (s *Service) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("DELETE /api/v1/ai/inspections/{id}", s.handleDeleteInspection)
 	mux.HandleFunc("POST /api/v1/ai/inspections/{id}/run", s.handleRunInspection)
 	mux.HandleFunc("GET /api/v1/ai/inspections/{id}/runs", s.handleListInspectionRuns)
+	mux.HandleFunc("POST /api/v1/ai/inspections/{id}/runs/{runID}/escalate", s.handleEscalateInspectionRun)
 
 	// —— 敏感操作审批策略 (PRD 5.2.5) ——
 	mux.HandleFunc("GET /api/v1/ai/approval-policy", s.handleGetApprovalPolicy)

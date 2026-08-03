@@ -33,6 +33,8 @@ export interface AgentTemplate {
   system_prompt: string
   knowledge_categories?: string[]
   tools?: string[]
+  /** 该岗位建议自动创建的关联巡检模板 ID（上岗时可开启，形成数字员工×巡检闭环） */
+  inspection_template_id?: string
   skills?: AgentSkill[]
   tags?: string[]
 }
@@ -69,6 +71,16 @@ export interface Inspection {
   updated_at: string
 }
 
+/** 巡检发现转出的 ITSM 工单记录 */
+export interface Escalation {
+  finding_idx: number
+  level: 'high' | 'medium' | 'low'
+  title: string
+  ticket_id: string
+  ticket_title?: string
+  created_at: string
+}
+
 /** 巡检运行记录 */
 export interface InspectionRun {
   id: string
@@ -81,6 +93,8 @@ export interface InspectionRun {
   error?: string
   started_at: string
   finished_at?: string
+  /** 已转工单的发现 */
+  escalations?: Escalation[]
 }
 
 /** 创建/更新巡检任务的入参 */
@@ -105,9 +119,11 @@ interface WorkforceState {
   runs: Record<string, InspectionRun[]>
   /** 正在执行中的巡检任务 ID 集合(用于按钮 loading) */
   running: string[]
+  /** 正在转工单的运行记录 ID 集合(用于按钮 loading) */
+  escalating: string[]
 
   loadTemplates: () => Promise<void>
-  instantiateTemplate: (id: string, name?: string) => Promise<boolean>
+  instantiateTemplate: (id: string, name?: string, withInspection?: boolean) => Promise<boolean>
 
   loadInspectionTemplates: () => Promise<void>
   loadInspections: () => Promise<void>
@@ -116,6 +132,8 @@ interface WorkforceState {
   deleteInspection: (id: string) => Promise<boolean>
   runInspection: (id: string) => Promise<boolean>
   loadRuns: (id: string) => Promise<void>
+  /** 将某次巡检运行记录中达到指定级别(含)的发现转 ITSM 工单, 返回更新后的运行记录 */
+  escalateRun: (inspectionId: string, runId: string, severity?: 'high' | 'medium' | 'low') => Promise<InspectionRun | null>
 }
 
 export const useWorkforceStore = create<WorkforceState>((set, get) => ({
@@ -126,6 +144,7 @@ export const useWorkforceStore = create<WorkforceState>((set, get) => ({
   inspectionsLoading: false,
   runs: {},
   running: [],
+  escalating: [],
 
   // ------------------------- 岗位数字员工 -------------------------
 
@@ -140,13 +159,17 @@ export const useWorkforceStore = create<WorkforceState>((set, get) => ({
     }
   },
 
-  instantiateTemplate: async (id, name) => {
+  instantiateTemplate: async (id, name, withInspection) => {
     try {
-      await apiFetch(`/ai/agent-templates/${id}/instantiate`, {
+      const resp = await apiFetch<{ agent: unknown; inspection: Inspection | null }>(`/ai/agent-templates/${id}/instantiate`, {
         method: 'POST',
-        body: JSON.stringify({ name: name || '' }),
+        body: JSON.stringify({ name: name || '', with_inspection: withInspection ?? true }),
       })
-      toast.success('数字员工已上岗')
+      if (resp.inspection) {
+        toast.success(`数字员工已上岗，并自动创建巡检「${resp.inspection.name}」`)
+      } else {
+        toast.success('数字员工已上岗')
+      }
       return true
     } catch (e: unknown) {
       toast.error(`上岗失败: ${(e as Error).message}`)
@@ -244,6 +267,25 @@ export const useWorkforceStore = create<WorkforceState>((set, get) => ({
       toast.error(`加载巡检历史失败: ${(e as Error).message}`)
     }
   },
+
+  escalateRun: async (inspectionId, runId, severity = 'medium') => {
+    set(s => ({ escalating: [...s.escalating, runId] }))
+    try {
+      const run = await apiFetch<InspectionRun>(`/ai/inspections/${inspectionId}/runs/${runId}/escalate`, {
+        method: 'POST',
+        body: JSON.stringify({ severity }),
+      })
+      const n = (run.escalations || []).length
+      toast.success(n > 0 ? `已转 ${n} 条发现为 ITSM 工单` : '已无新的可转发现')
+      await get().loadRuns(inspectionId)
+      return run
+    } catch (e: unknown) {
+      toast.error(`转工单失败: ${(e as Error).message}`)
+      return null
+    } finally {
+      set(s => ({ escalating: s.escalating.filter(r => r !== runId) }))
+    }
+  },
 }))
 
 /** 岗位数字员工目录 */
@@ -262,6 +304,7 @@ export function useInspections() {
   const loading = useWorkforceStore(s => s.inspectionsLoading)
   const runs = useWorkforceStore(s => s.runs)
   const running = useWorkforceStore(s => s.running)
+  const escalating = useWorkforceStore(s => s.escalating)
   const loadInspectionTemplates = useWorkforceStore(s => s.loadInspectionTemplates)
   const loadInspections = useWorkforceStore(s => s.loadInspections)
   const createInspection = useWorkforceStore(s => s.createInspection)
@@ -269,9 +312,10 @@ export function useInspections() {
   const deleteInspection = useWorkforceStore(s => s.deleteInspection)
   const runInspection = useWorkforceStore(s => s.runInspection)
   const loadRuns = useWorkforceStore(s => s.loadRuns)
+  const escalateRun = useWorkforceStore(s => s.escalateRun)
   return {
-    inspectionTemplates, inspections, loading, runs, running,
+    inspectionTemplates, inspections, loading, runs, running, escalating,
     loadInspectionTemplates, loadInspections,
-    createInspection, updateInspection, deleteInspection, runInspection, loadRuns,
+    createInspection, updateInspection, deleteInspection, runInspection, loadRuns, escalateRun,
   }
 }

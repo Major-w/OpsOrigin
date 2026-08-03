@@ -75,6 +75,12 @@ type Engine struct {
 	inspectionRuns map[string][]*InspectionRun
 	inspectCancel  context.CancelFunc
 
+	// CreateTicketFunc 由 cmd/core 注入的 ITSM 工单创建回调(nil=未装配, 巡检发现转工单不可用)。
+	// 返回新建工单 ID; 错误时 EscalateInspectionRun 记录失败并跳过该发现。
+	CreateTicketFunc func(ctx context.Context, tenantID, title, description string, labels map[string]string) (string, error)
+	// InspectionNotifyFunc 由 cmd/core 注入的通知回调(nil=不通知), 巡检完成/失败后调用。
+	InspectionNotifyFunc func(ctx context.Context, tenantID, event, title, content string) error
+
 	// ——— 敏感操作审批 (PRD 5.2.5) ———
 	approvals *ApprovalManager
 	// approvalPolicies 全局默认 + Agent 级覆盖策略: "default" 键为全局, 其余键为 agent_id。
@@ -253,6 +259,11 @@ func (e *Engine) loadFromStore() error {
 			for i := len(runs) - 1; i >= 0; i-- {
 				e.inspectionRuns[in.ID] = append(e.inspectionRuns[in.ID], runs[i])
 			}
+			if len(runs) > 0 {
+				slog.Info("restored inspection runs", "inspection", in.ID, "tenant", in.TenantID, "runs", len(runs))
+			}
+		} else {
+			slog.Warn("failed to restore inspection runs", "inspection", in.ID, "tenant", in.TenantID, "err", err)
 		}
 	}
 	return nil

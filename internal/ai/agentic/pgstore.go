@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"log/slog"
 	"time"
 
 	"github.com/opsorigin/core/internal/ai/model"
@@ -40,6 +41,7 @@ type Store interface {
 	UpdateInspection(ctx context.Context, in *Inspection) error
 	DeleteInspection(ctx context.Context, id, tenantID string) error
 	CreateInspectionRun(ctx context.Context, run *InspectionRun) error
+	UpdateInspectionRun(ctx context.Context, run *InspectionRun) error
 	ListInspectionRuns(ctx context.Context, inspectionID, tenantID string) ([]*InspectionRun, error)
 }
 
@@ -343,12 +345,21 @@ func (s *PGStore) ListInspectionRuns(ctx context.Context, inspectionID, tenantID
 			return nil, err
 		}
 		r := &InspectionRun{}
-		if json.Unmarshal(body, r) != nil {
+		if err := json.Unmarshal(body, r); err != nil {
+			slog.Warn("skip inspection run with invalid payload", "inspection_id", inspectionID, "err", err)
 			continue
 		}
 		out = append(out, r)
 	}
 	return out, rows.Err()
+}
+
+func (s *PGStore) UpdateInspectionRun(ctx context.Context, run *InspectionRun) error {
+	body, _ := json.Marshal(run)
+	_, err := s.db.ExecContext(ctx,
+		`UPDATE ai_inspection_runs SET run=$1 WHERE id=$2 AND tenant_id=$3`,
+		body, run.ID, run.TenantID)
+	return err
 }
 
 func (s *PGStore) CreateAgent(ctx context.Context, a *AgentRecord) error {

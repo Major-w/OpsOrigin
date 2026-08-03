@@ -136,7 +136,22 @@ func (s *Service) handleCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	tenantID := tenantFromCtx(r.Context())
+	ticket, err := s.CreateTicket(r.Context(), req)
+	if err != nil {
+		slog.Error("create ticket failed", "error", err)
+		writeError(w, http.StatusInternalServerError, "failed to create ticket")
+		return
+	}
+	writeJSON(w, http.StatusCreated, ticket)
+}
+
+// CreateTicket 创建一张工单, 供 HTTP handler 与内部模块(如 AI 巡检发现转单)复用。
+// 完整走与 handleCreate 相同的链路: 风险定级 → SLA 截止 → 落库 → webhook → 流程引擎接入。
+func (s *Service) CreateTicket(ctx context.Context, req model.CreateTicketRequest) (*model.Ticket, error) {
+	tenantID := tenantFromCtx(ctx)
+	if req.Title == "" {
+		return nil, fmt.Errorf("title is required")
+	}
 
 	if req.RiskLevel == "" || !req.RiskLevel.Valid() {
 		req.RiskLevel = s.risk.Classify(req.Title, req.Description, req.ChangePlan)
@@ -156,13 +171,13 @@ func (s *Service) handleCreate(w http.ResponseWriter, r *http.Request) {
 		WebhookURL:    req.WebhookURL,
 		Labels:        req.Labels,
 		CIIDs:         req.CIIDs,
-		TraceID:       traceIDFromCtx(r.Context()),
+		TraceID:       traceIDFromCtx(ctx),
 		ScheduledAt:   req.ScheduledAt,
 		DeadlineAt:    req.DeadlineAt,
 	}
 	if ticket.DeadlineAt == nil {
 		if s.slaStore != nil {
-			if pol, perr := s.slaStore.GetByRisk(r.Context(), tenantID, string(req.RiskLevel)); perr == nil && pol != nil && pol.ResolutionHours > 0 {
+			if pol, perr := s.slaStore.GetByRisk(ctx, tenantID, string(req.RiskLevel)); perr == nil && pol != nil && pol.ResolutionHours > 0 {
 				deadline := now.Add(time.Duration(pol.ResolutionHours) * time.Hour)
 				ticket.DeadlineAt = &deadline
 			} else if d := s.slaForRisk(req.RiskLevel); d > 0 {
@@ -175,19 +190,17 @@ func (s *Service) handleCreate(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	if err := s.store.Create(r.Context(), ticket); err != nil {
-		slog.Error("create ticket failed", "error", err)
-		writeError(w, http.StatusInternalServerError, "failed to create ticket")
-		return
+	if err := s.store.Create(ctx, ticket); err != nil {
+		return nil, err
 	}
 
-	s.fireWebhook(r.Context(), "ticket.created", ticket, req.CreatedBy)
+	s.fireWebhook(ctx, "ticket.created", ticket, req.CreatedBy)
 
 	// 流程引擎接入：绑定了流程模板则创建流程实例并推进到首个真实步骤，
 	// 由落点步骤类型映射工单初始状态（流程优先于基于风险的自动流转）。
 	processGoverned := false
 	if req.ProcessID != "" && s.processStore != nil {
-		_, landing, perr := s.processStore.StartInstance(r.Context(), tenantID, req.ProcessID, ticket.ID)
+		_, landing, perr := s.processStore.StartInstance(ctx, tenantID, req.ProcessID, ticket.ID)
 		if perr != nil {
 			slog.Warn("start process instance failed", "process_id", req.ProcessID, "ticket_id", ticket.ID, "error", perr)
 		} else {
@@ -199,22 +212,22 @@ func (s *Service) handleCreate(w http.ResponseWriter, r *http.Request) {
 					ticket.Status = model.TicketStatus(mapped)
 				}
 			}
-			if err := s.store.Update(r.Context(), ticket); err != nil {
+			if err := s.store.Update(ctx, ticket); err != nil {
 				slog.Error("persist ticket process binding failed", "error", err)
 			}
 			if prev != ticket.Status {
-				s.recordEvent(r.Context(), ticket, prev, ticket.Status, req.CreatedBy, "process instance started")
+				s.recordEvent(ctx, ticket, prev, ticket.Status, req.CreatedBy, "process instance started")
 			}
 		}
 	}
 
 	if !processGoverned && req.RiskLevel.RequiresApproval() {
-		if err := s.transition(r.Context(), ticket, model.StatusPendingReview, req.CreatedBy); err != nil {
+		if err := s.transition(ctx, ticket, model.StatusPendingReview, req.CreatedBy); err != nil {
 			slog.Error("auto-transition to pending_review failed", "error", err)
 		}
 	}
 
-	writeJSON(w, http.StatusCreated, ticket)
+	return ticket, nil
 }
 
 func (s *Service) handleGet(w http.ResponseWriter, r *http.Request) {

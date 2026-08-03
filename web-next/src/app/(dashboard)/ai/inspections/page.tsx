@@ -20,7 +20,7 @@ import {
 import { useAIStore } from '@/stores/ai'
 import {
   RadarIcon, Plus, RefreshCw, Play, Trash2, Edit, History,
-  AlertTriangle, CheckCircle2, XCircle, Clock, FileText,
+  AlertTriangle, CheckCircle2, XCircle, Clock, FileText, ArrowUpRight,
 } from 'lucide-react'
 
 // ----------------------------- 常量与工具 -----------------------------
@@ -116,9 +116,9 @@ function emptyForm(): FormState {
 
 export default function InspectionsPage() {
   const {
-    inspectionTemplates, inspections, loading, runs, running,
+    inspectionTemplates, inspections, loading, runs, running, escalating,
     loadInspectionTemplates, loadInspections,
-    createInspection, updateInspection, deleteInspection, runInspection, loadRuns,
+    createInspection, updateInspection, deleteInspection, runInspection, loadRuns, escalateRun,
   } = useInspections()
   const agents = useAIStore(s => s.agents)
   const fetchAgents = useAIStore(s => s.fetchAgents)
@@ -233,6 +233,13 @@ export default function InspectionsPage() {
   const openHistory = async (i: Inspection) => {
     setHistoryOf(i)
     await loadRuns(i.id)
+  }
+
+  // 将当前报告弹层中的发现转 ITSM 工单, 成功后用返回的最新运行记录刷新弹层内容
+  const doEscalate = async (severity: 'high' | 'medium') => {
+    if (!report) return
+    const updated = await escalateRun(report.inspection_id, report.id, severity)
+    if (updated) setReport(updated)
   }
 
   return (
@@ -452,41 +459,86 @@ export default function InspectionsPage() {
 
       {/* 巡检报告 */}
       <WideDialog open={!!report} onClose={() => setReport(null)} title="巡检报告">
-        {report && (
-          <div className="max-h-[65vh] overflow-y-auto space-y-4 pr-1">
-            <div className="flex items-center gap-2 flex-wrap text-xs text-muted-foreground">
-              <span>开始 {fmtTime(report.started_at)}</span>
-              <span>·</span>
-              <span>结束 {fmtTime(report.finished_at)}</span>
-            </div>
-
-            {parseFindings(report.findings).length > 0 && (
-              <div className="space-y-2">
-                <div className="text-sm font-medium">发现清单</div>
-                {parseFindings(report.findings).map((f, idx) => {
-                  const lv = LEVEL_META[f.level || 'low'] || LEVEL_META.low
-                  return (
-                    <div key={idx} className={cn('rounded-lg border p-3 space-y-1', lv.cls)}>
-                      <div className="flex items-center gap-2">
-                        <span className="text-[11px] font-semibold px-1.5 py-0.5 rounded border border-current">{lv.label}</span>
-                        <span className="text-sm font-medium">{f.title || '未命名发现'}</span>
-                      </div>
-                      {f.detail && <div className="text-xs opacity-90">{f.detail}</div>}
-                      {f.suggestion && <div className="text-xs opacity-90">建议：{f.suggestion}</div>}
-                    </div>
-                  )
-                })}
+        {report && (() => {
+          const findings = parseFindings(report.findings)
+          const escalations = report.escalations || []
+          const escalatedIdx = new Set(escalations.map(e => e.finding_idx))
+          const pendingCount = findings.filter((f, i) =>
+            (f.level === 'high' || f.level === 'medium') && !escalatedIdx.has(i),
+          ).length
+          const isEscalating = escalating.includes(report.id)
+          return (
+            <div className="max-h-[65vh] overflow-y-auto space-y-4 pr-1">
+              <div className="flex items-center gap-2 flex-wrap text-xs text-muted-foreground">
+                <span>开始 {fmtTime(report.started_at)}</span>
+                <span>·</span>
+                <span>结束 {fmtTime(report.finished_at)}</span>
+                {escalations.length > 0 && (
+                  <span className="inline-flex items-center gap-1 text-emerald-600 dark:text-emerald-400">
+                    <ArrowUpRight className="h-3 w-3" />已转 {escalations.length} 条工单
+                  </span>
+                )}
               </div>
-            )}
 
-            <div className="space-y-1">
-              <div className="text-sm font-medium">报告正文</div>
-              <pre className="text-xs whitespace-pre-wrap bg-muted/50 rounded-md p-3 leading-relaxed">
-                {report.summary || report.error || '无内容'}
-              </pre>
+              {findings.length > 0 && (
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between gap-2 flex-wrap">
+                    <div className="text-sm font-medium">发现清单</div>
+                    {pendingCount > 0 && (
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        className="gap-1 h-7 text-xs"
+                        disabled={isEscalating}
+                        onClick={() => doEscalate('medium')}
+                      >
+                        <ArrowUpRight className="h-3 w-3" />
+                        {isEscalating ? '转单中…' : `转 ${pendingCount} 条高危/中危为工单`}
+                      </Button>
+                    )}
+                  </div>
+                  {findings.map((f, idx) => {
+                    const lv = LEVEL_META[f.level || 'low'] || LEVEL_META.low
+                    const escalated = escalations.find(e => e.finding_idx === idx)
+                    return (
+                      <div key={idx} className={cn('rounded-lg border p-3 space-y-1', lv.cls)}>
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <span className="text-[11px] font-semibold px-1.5 py-0.5 rounded border border-current">{lv.label}</span>
+                          <span className="text-sm font-medium">{f.title || '未命名发现'}</span>
+                          {escalated && (
+                            <Badge variant="success" className="gap-1 text-[10px]">
+                              <ArrowUpRight className="h-3 w-3" />工单 {escalated.ticket_id.slice(0, 8)}
+                            </Badge>
+                          )}
+                          {(f.level === 'high' || f.level === 'medium') && !escalated && (
+                            <Button
+                              size="sm"
+                              variant="ghost"
+                              className="gap-1 h-6 text-xs ml-auto"
+                              disabled={isEscalating}
+                              onClick={() => doEscalate(f.level === 'high' ? 'high' : 'medium')}
+                            >
+                              <ArrowUpRight className="h-3 w-3" />转工单
+                            </Button>
+                          )}
+                        </div>
+                        {f.detail && <div className="text-xs opacity-90">{f.detail}</div>}
+                        {f.suggestion && <div className="text-xs opacity-90">建议：{f.suggestion}</div>}
+                      </div>
+                    )
+                  })}
+                </div>
+              )}
+
+              <div className="space-y-1">
+                <div className="text-sm font-medium">报告正文</div>
+                <pre className="text-xs whitespace-pre-wrap bg-muted/50 rounded-md p-3 leading-relaxed">
+                  {report.summary || report.error || '无内容'}
+                </pre>
+              </div>
             </div>
-          </div>
-        )}
+          )
+        })()}
         <DialogFooter>
           <Button variant="outline" onClick={() => setReport(null)}>关闭</Button>
         </DialogFooter>

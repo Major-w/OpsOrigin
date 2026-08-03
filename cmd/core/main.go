@@ -33,16 +33,17 @@ import (
 	"github.com/opsorigin/core/internal/iam"
 	"github.com/opsorigin/core/internal/itsm"
 	"github.com/opsorigin/core/internal/itsm/catalog"
-	"github.com/opsorigin/core/internal/knowledge"
+	itsmmodel "github.com/opsorigin/core/internal/itsm/model"
 	"github.com/opsorigin/core/internal/itsm/oncall"
 	"github.com/opsorigin/core/internal/itsm/process"
 	"github.com/opsorigin/core/internal/itsm/sla"
 	"github.com/opsorigin/core/internal/keystore"
+	"github.com/opsorigin/core/internal/knowledge"
 	"github.com/opsorigin/core/internal/lowcode/service"
 	"github.com/opsorigin/core/internal/monitor"
 	healthhandler "github.com/opsorigin/core/internal/monitor/health"
-	metricsregistry "github.com/opsorigin/core/internal/monitor/metrics"
 	"github.com/opsorigin/core/internal/monitor/ingest"
+	metricsregistry "github.com/opsorigin/core/internal/monitor/metrics"
 	"github.com/opsorigin/core/internal/notification"
 	"github.com/opsorigin/core/internal/ops"
 	"github.com/opsorigin/core/internal/sysconfig"
@@ -177,8 +178,8 @@ func main() {
 	healthHandler := healthhandler.NewHealthHandler(db, rdb)
 	server.RegisterService(&staticHandlerRegistrar{
 		routes: map[string]http.Handler{
-			"GET /healthz":      healthHandler,
-			"GET /readyz":       healthHandler,
+			"GET /healthz":       healthHandler,
+			"GET /readyz":        healthHandler,
 			"GET /api/v1/health": healthHandler,
 		},
 	})
@@ -529,6 +530,28 @@ func main() {
 	toolSet.Register(aiSvc.Registry)
 	aiSvc.SetRAGFunc(toolSet.RAGContext)
 	ai.LLMConfigHook = func(cfg2 llm.Config) { aiSvc.UpdateLLMConfig(cfg2) }
+
+	// AI 巡检闭环: 巡检发现转 ITSM 工单 + 完成/失败走平台通知中心(五渠道)。
+	// 回调由 cmd/core 装配, 避免 internal/ai 直接依赖 itsm/notification 造成模块耦合。
+	aiSvc.Engine.SetInspectionCallbacks(
+		func(ctx context.Context, tenantID, title, description string, labels map[string]string) (string, error) {
+			tctx := context.WithValue(ctx, "tenant_id", tenantID)
+			ticket, err := itsmSvc.CreateTicket(tctx, itsmmodel.CreateTicketRequest{
+				Title:         title,
+				Description:   description,
+				CreatedBy:     "ai-inspection",
+				CreatedByType: "system",
+				Labels:        labels,
+			})
+			if err != nil {
+				return "", err
+			}
+			return ticket.ID, nil
+		},
+		func(ctx context.Context, tenantID, event, title, content string) error {
+			return notifySvc.NotifyEvent(ctx, tenantID, event, title, content)
+		},
+	)
 	server.RegisterService(aiSvc)
 	aiSvc.Start(ctx)
 

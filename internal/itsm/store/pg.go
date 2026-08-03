@@ -173,7 +173,7 @@ func (s *PGStore) Create(ctx context.Context, ticket *model.Ticket) error {
 			 completed_by, rolled_back_by, rollback_reason, ci_ids, webhook_url,
 			 labels, trace_id, scheduled_at, deadline_at, created_at, updated_at,
 			 approved_at, executed_at, completed_at, rolled_back_at, process_id)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27)`,
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28)`,
 		ticket.ID, ticket.TenantID, ticket.Title, nullable(ticket.Description),
 		string(ticket.RiskLevel), string(ticket.Status), nullable(ticket.ChangePlan),
 		nullable(ticket.RollbackPlan), ticket.CreatedBy, ticket.CreatedByType,

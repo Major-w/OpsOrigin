@@ -129,3 +129,24 @@ func (s *Service) handleListInspectionRuns(w http.ResponseWriter, r *http.Reques
 	}
 	writeJSON(w, http.StatusOK, runs)
 }
+
+// handleEscalateInspectionRun 将某次巡检运行记录中的发现批量转 ITSM 工单, 形成处置闭环。
+// body 可选: {"severity": "high"|"medium"|"low"}。默认 medium(高危+中危一起转)。
+// 幂等: 已转工单的发现自动跳过。需 ai:tool:exec 权限。
+func (s *Service) handleEscalateInspectionRun(w http.ResponseWriter, r *http.Request) {
+	if !s.authorize(w, r, auth.PermissionAIToolExec) {
+		return
+	}
+	tenantID := tenantFromCtx(r.Context())
+	var req struct {
+		Severity string `json:"severity"`
+	}
+	_ = json.NewDecoder(r.Body).Decode(&req)
+
+	run, err := s.Engine.EscalateInspectionRun(r.Context(), tenantID, r.PathValue("runID"), req.Severity)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, run)
+}
