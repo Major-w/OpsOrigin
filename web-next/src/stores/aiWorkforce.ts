@@ -81,6 +81,7 @@ export interface Inspection {
   name: string
   template_id?: string
   agent_id?: string
+  team_id?: string
   prompt: string
   scope: string
   schedule: InspectionSchedule
@@ -161,7 +162,7 @@ interface WorkforceState {
   instantiateTemplate: (id: string, name?: string, withInspection?: boolean) => Promise<boolean>
 
   loadSceneTemplates: () => Promise<void>
-  instantiateScene: (id: string, name?: string) => Promise<boolean>
+  instantiateScene: (id: string, name?: string, autoCreateTickets?: boolean) => Promise<boolean>
 
   loadInspectionTemplates: () => Promise<void>
   loadInspections: () => Promise<void>
@@ -230,7 +231,7 @@ export const useWorkforceStore = create<WorkforceState>((set, get) => ({
     }
   },
 
-  instantiateScene: async (id, name) => {
+  instantiateScene: async (id, name, autoCreateTickets) => {
     set(s => ({ sceneLaunching: [...s.sceneLaunching, id] }))
     try {
       const resp = await apiFetch<{
@@ -238,14 +239,15 @@ export const useWorkforceStore = create<WorkforceState>((set, get) => ({
         inspection: { name: string } | null
         inspections: { name: string }[]
         catalog: SceneCatalogItem[]
+        created_catalog: number
       }>(`/ai/scene-templates/${id}/instantiate`, {
         method: 'POST',
-        body: JSON.stringify({ name: name || '' }),
+        body: JSON.stringify({ name: name || '', auto_create_tickets: autoCreateTickets ?? false }),
       })
       const inspCount = (resp.inspections?.length || 0) + (resp.inspection ? 1 : 0)
       toast.success(
         resp.agent
-          ? `场景已启用: 数字员工「${resp.agent.name}」+ ${inspCount} 项巡检`
+          ? `场景已启用: 数字员工「${resp.agent.name}」+ ${inspCount} 项巡检${resp.created_catalog ? ` + ${resp.created_catalog} 个工单类型` : ''}`
           : '场景已启用',
       )
       return true

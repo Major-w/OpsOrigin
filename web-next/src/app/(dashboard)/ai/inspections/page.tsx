@@ -102,6 +102,7 @@ interface FormState {
   name: string
   template_id: string
   agent_id: string
+  team_id: string
   prompt: string
   scope: string
   schedule: InspectionSchedule
@@ -109,7 +110,7 @@ interface FormState {
 }
 
 function emptyForm(): FormState {
-  return { name: '', template_id: '', agent_id: '', prompt: '', scope: '', schedule: '@daily', enabled: true }
+  return { name: '', template_id: '', agent_id: '', team_id: '', prompt: '', scope: '', schedule: '@daily', enabled: true }
 }
 
 // ----------------------------- 页面 -----------------------------
@@ -122,6 +123,8 @@ export default function InspectionsPage() {
   } = useInspections()
   const agents = useAIStore(s => s.agents)
   const fetchAgents = useAIStore(s => s.fetchAgents)
+  const teams = useAIStore(s => s.teams)
+  const loadTeams = useAIStore(s => s.loadTeams)
 
   const [formOpen, setFormOpen] = useState(false)
   const [form, setForm] = useState<FormState>(emptyForm())
@@ -136,7 +139,8 @@ export default function InspectionsPage() {
     loadInspectionTemplates()
     loadInspections()
     fetchAgents()
-  }, [loadInspectionTemplates, loadInspections, fetchAgents])
+    loadTeams()
+  }, [loadInspectionTemplates, loadInspections, fetchAgents, loadTeams])
 
   const agentOptions = useMemo(
     () => [
@@ -194,6 +198,7 @@ export default function InspectionsPage() {
       name: i.name,
       template_id: i.template_id || '',
       agent_id: i.agent_id || '',
+      team_id: i.team_id || '',
       prompt: i.prompt,
       scope: i.scope,
       schedule: i.schedule,
@@ -209,6 +214,7 @@ export default function InspectionsPage() {
       name: form.name.trim(),
       template_id: form.template_id || undefined,
       agent_id: form.agent_id || undefined,
+      team_id: form.team_id || undefined,
       prompt: form.prompt,
       scope: form.scope,
       schedule: form.schedule,
@@ -409,6 +415,16 @@ export default function InspectionsPage() {
             <div>
               <label className="text-xs text-muted-foreground">执行 Agent</label>
               <Select className="mt-1" options={agentOptions} value={form.agent_id} onChange={e => setForm({ ...form, agent_id: e.target.value })} />
+            </div>
+            <div>
+              <label className="text-xs text-muted-foreground">执行团队（多 Agent 协作）</label>
+              <Select
+                className="mt-1"
+                options={[{ value: '', label: '不使用团队' }, ...teams.map(t => ({ value: t.id, label: `${t.name} (${t.mode})` }))]}
+                value={form.team_id}
+                onChange={e => setForm({ ...form, team_id: e.target.value })}
+              />
+              {form.team_id && <p className="text-[11px] text-muted-foreground mt-1">绑定团队后巡检由团队成员分工协作执行</p>}
             </div>
           </div>
           <div>

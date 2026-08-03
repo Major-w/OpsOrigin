@@ -28,18 +28,21 @@ func (s *Service) handleGetSceneTemplate(w http.ResponseWriter, r *http.Request)
 }
 
 // handleInstantiateScene 一键启用场景包(创建岗位 Agent + 关联巡检 + 场景额外巡检)。
-// body 可选: {"name": "..."} 覆盖默认名(同名自动追加序号)。
+// body 可选: {"name": "...", "auto_create_tickets": true}
+//   - name 覆盖默认名(同名自动追加序号)
+//   - auto_create_tickets=true 时将场景推荐工单类型真实落库到 itsm_catalog(幂等同名跳过)
 // 需 ai:tool:exec 权限(场景启用属于配置变更)。
 func (s *Service) handleInstantiateScene(w http.ResponseWriter, r *http.Request) {
 	if !s.authorize(w, r, auth.PermissionAIToolExec) {
 		return
 	}
 	var req struct {
-		Name string `json:"name"`
+		Name              string `json:"name"`
+		AutoCreateTickets bool   `json:"auto_create_tickets"`
 	}
 	_ = json.NewDecoder(r.Body).Decode(&req)
 
-	result, err := s.Engine.InstantiateScene(tenantFromCtx(r.Context()), r.PathValue("id"), req.Name)
+	result, err := s.Engine.InstantiateScene(tenantFromCtx(r.Context()), r.PathValue("id"), req.Name, req.AutoCreateTickets)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return

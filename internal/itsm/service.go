@@ -305,11 +305,15 @@ func (s *Service) handleGet(w http.ResponseWriter, r *http.Request) {
 // TicketMetricsBySource 按工单 labels 中 source 字段过滤统计(供 AI 数字员工运营效果评估)。
 // 返回: 工单总数、按状态分布、平均处置时长(分钟, 基于 succeeded 工单 completed_at-created_at)。
 // source 为空时统计该租户全部工单。db 为 nil(纯内存模式)时返回零值。
-func (s *Service) TicketMetricsBySource(ctx context.Context, tenantID, source string) (int, map[string]int, float64, error) {
+// TicketMetricsBySource 按工单 labels 中 source 字段过滤统计(供 AI 数字员工运营效果评估)。
+// 返回: 工单总数、按状态分布、平均处置时长(分钟, 基于 succeeded 工单 completed_at-created_at)、
+// 处置效果评估分布(confirmed/false_positive, 取自 labels.ai_assessment)。
+// source 为空时统计该租户全部工单。
+func (s *Service) TicketMetricsBySource(ctx context.Context, tenantID, source string) (int, map[string]int, float64, map[string]int, error) {
 	if s.db == nil {
-		return 0, map[string]int{}, 0, nil
+		return 0, map[string]int{}, 0, map[string]int{}, nil
 	}
-	query := `SELECT status, completed_at, created_at FROM itsm_tickets WHERE tenant_id=$1`
+	query := `SELECT status, completed_at, created_at, labels::jsonb->>'ai_assessment' FROM itsm_tickets WHERE tenant_id=$1`
 	args := []any{tenantID}
 	if source != "" {
 		query += ` AND labels::jsonb->>'source'=$2`
@@ -317,22 +321,27 @@ func (s *Service) TicketMetricsBySource(ctx context.Context, tenantID, source st
 	}
 	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
-		return 0, nil, 0, err
+		return 0, nil, 0, nil, err
 	}
 	defer rows.Close()
 
 	byStatus := map[string]int{}
+	byAssessment := map[string]int{}
 	total := 0
 	var totalResolutionMin float64
 	var resolvedCount int
 	for rows.Next() {
 		var status string
 		var completedAt, createdAt sql.NullTime
-		if err := rows.Scan(&status, &completedAt, &createdAt); err != nil {
-			return 0, nil, 0, err
+		var assessment sql.NullString
+		if err := rows.Scan(&status, &completedAt, &createdAt, &assessment); err != nil {
+			return 0, nil, 0, nil, err
 		}
 		total++
 		byStatus[status]++
+		if assessment.Valid && assessment.String != "" {
+			byAssessment[assessment.String]++
+		}
 		if status == string(model.StatusSucceeded) && completedAt.Valid && createdAt.Valid && completedAt.Time.After(createdAt.Time) {
 			totalResolutionMin += completedAt.Time.Sub(createdAt.Time).Minutes()
 			resolvedCount++
@@ -342,7 +351,7 @@ func (s *Service) TicketMetricsBySource(ctx context.Context, tenantID, source st
 	if resolvedCount > 0 {
 		avg = totalResolutionMin / float64(resolvedCount)
 	}
-	return total, byStatus, avg, rows.Err()
+	return total, byStatus, avg, byAssessment, rows.Err()
 }
 
 func (s *Service) handleList(w http.ResponseWriter, r *http.Request) {
@@ -520,6 +529,14 @@ func (s *Service) handleComplete(w http.ResponseWriter, r *http.Request) {
 	ticket.CompletedBy = req.CompletedBy
 	now := time.Now()
 	ticket.CompletedAt = &now
+
+	// 处置效果评估: AI 工单(巡检/接管)完成时可标记确认有效或误报, 写入 labels 供运营效果统计。
+	if req.Assessment == model.AssessmentConfirmed || req.Assessment == model.AssessmentFalsePositive {
+		if ticket.Labels == nil {
+			ticket.Labels = map[string]string{}
+		}
+		ticket.Labels["ai_assessment"] = req.Assessment
+	}
 
 	if err := s.store.Update(r.Context(), ticket); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to update ticket")

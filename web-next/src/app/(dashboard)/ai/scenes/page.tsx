@@ -37,6 +37,7 @@ export default function ScenesPage() {
   const [preview, setPreview] = useState<SceneTemplate | null>(null)
   const [target, setTarget] = useState<SceneTemplate | null>(null)
   const [name, setName] = useState('')
+  const [autoTickets, setAutoTickets] = useState(false)
 
   useEffect(() => {
     loadSceneTemplates()
@@ -57,11 +58,12 @@ export default function ScenesPage() {
   const openLaunch = (s: SceneTemplate) => {
     setTarget(s)
     setName('')
+    setAutoTickets(false)
   }
 
   const confirmLaunch = async () => {
     if (!target) return
-    const ok = await instantiateScene(target.id, name.trim())
+    const ok = await instantiateScene(target.id, name.trim(), autoTickets)
     if (ok) {
       setTarget(null)
       await fetchAgents()
@@ -233,13 +235,16 @@ export default function ScenesPage() {
         {target && (
           <div className="space-y-3">
             <p className="text-sm text-muted-foreground">
-              将创建数字员工「{target.name}」岗位 Agent，并自动启用 (target.inspection_template_ids?.length || 0) + 1 项巡检。
-              推荐的标准化工单类型可查看场景明细, 启用后可到 ITSM 服务目录手动启用。
+              将创建数字员工「{target.name}」岗位 Agent，并自动启用 {(target.inspection_template_ids?.length || 0) + 1} 项巡检。
             </p>
             <div>
               <label className="text-xs text-muted-foreground">场景名称（留空使用默认名）</label>
               <Input className="mt-1" value={name} onChange={e => setName(e.target.value)} placeholder={target.name} />
             </div>
+            <label className="flex items-center gap-2 text-sm cursor-pointer select-none">
+              <input type="checkbox" checked={autoTickets} onChange={e => setAutoTickets(e.target.checked)} className="h-4 w-4 rounded border-input" />
+              同时创建推荐的标准化工单类型（{target.suggested_catalog?.length || 0} 项，落库到 ITSM 服务目录）
+            </label>
           </div>
         )}
         <DialogFooter>

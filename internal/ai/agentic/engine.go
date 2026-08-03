@@ -84,7 +84,11 @@ type Engine struct {
 	// InspectionNotifyFunc 由 cmd/core 注入的通知回调(nil=不通知), 巡检完成/失败后调用。
 	InspectionNotifyFunc func(ctx context.Context, tenantID, event, title, content string) error
 	// TicketMetricsProvider 由 cmd/core 注入的 ITSM 工单统计回调(nil=运营效果页不显示工单指标)。
-	TicketMetricsProvider func(ctx context.Context, tenantID string) (int, map[string]int, float64, error)
+	// 返回: 总数、按状态分布、平均处置时长(分钟)、处置效果评估分布(confirmed/false_positive)。
+	TicketMetricsProvider func(ctx context.Context, tenantID string) (int, map[string]int, float64, map[string]int, error)
+	// CreateCatalogItemFunc 由 cmd/core 注入的 ITSM 标准化工单目录创建回调(nil=场景包不自动建目录项)。
+	// 场景启用时可选自动将推荐工单类型落库到 itsm_catalog, 打通"场景→处置标准"。
+	CreateCatalogItemFunc func(ctx context.Context, tenantID, name, description, category string) error
 
 	// ——— 敏感操作审批 (PRD 5.2.5) ———
 	approvals *ApprovalManager

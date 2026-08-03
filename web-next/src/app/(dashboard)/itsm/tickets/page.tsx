@@ -71,6 +71,7 @@ export default function ITSMPage() {
   const [rejectReason, setRejectReason] = useState('')
   const [completeDialog, setCompleteDialog] = useState(false)
   const [completeComment, setCompleteComment] = useState('')
+  const [completeAssessment, setCompleteAssessment] = useState<'confirmed' | 'false_positive' | undefined>(undefined)
   const [rollbackDialog, setRollbackDialog] = useState(false)
   const [rollbackReason, setRollbackReason] = useState('')
   const [ciIdInput, setCiIdInput] = useState('')
@@ -165,8 +166,8 @@ export default function ITSMPage() {
 
   const handleComplete = async () => {
     if (!selectedTicket) return
-    await complete(selectedTicket.id, completeComment)
-    setCompleteDialog(false); setCompleteComment('')
+    await complete(selectedTicket.id, completeComment, completeAssessment)
+    setCompleteDialog(false); setCompleteComment(''); setCompleteAssessment(undefined)
     await handleSelectTicket(await getTicket(selectedTicket.id))
     fetchStats()
   }
@@ -643,6 +644,14 @@ export default function ITSMPage() {
       <Dialog open={completeDialog} onClose={() => setCompleteDialog(false)} title="完成执行">
         <div className="space-y-3">
           <div><label className="text-sm font-medium">完成备注</label><textarea className="flex h-20 w-full rounded-md border border-input bg-background px-3 py-2 text-sm" value={completeComment} onChange={e => setCompleteComment(e.target.value)} placeholder="完成备注（可选）" /></div>
+          <div>
+            <label className="text-sm font-medium">处置效果评估（AI 工单用于准确率统计）</label>
+            <div className="flex gap-2 mt-1">
+              <Button size="sm" variant={completeAssessment === 'confirmed' ? 'default' : 'outline'} onClick={() => setCompleteAssessment(completeAssessment === 'confirmed' ? undefined : 'confirmed')}>确认有效</Button>
+              <Button size="sm" variant={completeAssessment === 'false_positive' ? 'default' : 'outline'} onClick={() => setCompleteAssessment(completeAssessment === 'false_positive' ? undefined : 'false_positive')}>误报</Button>
+              {completeAssessment && <span className="text-xs text-muted-foreground self-center">将计入 AI 准确率统计</span>}
+            </div>
+          </div>
         </div>
         <DialogFooter><Button variant="outline" onClick={() => setCompleteDialog(false)}>取消</Button><Button onClick={handleComplete} disabled={!canWrite}>确认完成</Button></DialogFooter>
       </Dialog>

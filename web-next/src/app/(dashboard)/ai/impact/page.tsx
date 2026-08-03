@@ -11,7 +11,7 @@ interface WorkforceMetrics {
   inspections: { total: number; enabled: number; total_runs: number; success_runs: number; failed_runs: number; success_rate: number }
   findings: { high: number; medium: number; low: number; total: number }
   escalations: { total: number }
-  tickets: { total: number; by_status: Record<string, number>; avg_resolution_minutes: number } | null
+  tickets: { total: number; by_status: Record<string, number>; avg_resolution_minutes: number; by_assessment?: Record<string, number> } | null
 }
 
 const STATUS_LABELS: Record<string, string> = {
@@ -173,6 +173,17 @@ export default function ImpactPage() {
                     </Badge>
                   ))}
                 </div>
+                {(tickets.by_assessment?.confirmed || 0) + (tickets.by_assessment?.false_positive || 0) > 0 && (
+                  <div className="mt-3 pt-3 border-t">
+                    <div className="flex flex-wrap gap-2">
+                      <Badge variant="success" className="gap-1">确认有效 {tickets.by_assessment?.confirmed || 0}</Badge>
+                      <Badge variant="destructive" className="gap-1">误报 {tickets.by_assessment?.false_positive || 0}</Badge>
+                      <span className="text-[11px] text-muted-foreground self-center">
+                        AI 准确率 {fmtPct((tickets.by_assessment?.confirmed || 0) / ((tickets.by_assessment?.confirmed || 0) + (tickets.by_assessment?.false_positive || 0)))}
+                      </span>
+                    </div>
+                  </div>
+                )}
               </CardContent>
             </Card>
           )}

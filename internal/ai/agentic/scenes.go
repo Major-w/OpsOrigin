@@ -2,11 +2,16 @@ package agentic
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 
 	"github.com/opsorigin/core/internal/ai/model"
 )
+
+// ErrCatalogItemExists 场景工单类型落库时的同名幂等哨兵(由 cmd/core 注入的回调返回,
+// 引擎据此区分"已存在跳过"与"真实创建失败", 保证 created_catalog 计数准确)。
+var ErrCatalogItemExists = errors.New("catalog item already exists")
 
 // SceneTemplate 一个开箱即用的业务场景包(岗位 + 巡检 + 关联知识 + 推荐服务目录)。
 //
@@ -113,19 +118,30 @@ func (e *Engine) GetSceneTemplate(id string) (*SceneTemplate, bool) {
 	return nil, false
 }
 
+// SetSceneCatalogCreator 注入场景包自动创建 ITSM 标准化工单目录项的回调(cmd/core 装配)。
+// 未注入时 InstantiateScene(autoCreateTickets=true) 静默跳过目录创建(仅返回建议元数据)。
+func (e *Engine) SetSceneCatalogCreator(fn func(ctx context.Context, tenantID, name, description, category string) error) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.CreateCatalogItemFunc = fn
+}
+
 // SceneInstantiateResult 一键启用场景的结果(用于 HTTP 响应一次性展示)。
 type SceneInstantiateResult struct {
 	Agent       *model.AgentInstance `json:"agent,omitempty"`       // 创建的数字员工
 	Inspection  *Inspection          `json:"inspection,omitempty"`  // 岗位模板自带的关联巡检(若有)
 	Inspections []*Inspection        `json:"inspections,omitempty"` // 场景额外创建的巡检(含 Inspection)
-	Catalog     []SceneCatalogItem   `json:"catalog,omitempty"`     // 复述建议服务目录(元数据, 未落库)
+	Catalog     []SceneCatalogItem   `json:"catalog,omitempty"`     // 建议服务目录(元数据; autoCreateTickets=true 时已落库)
+	CreatedCatalog int               `json:"created_catalog"`       // 实际创建的目录项数(autoCreateTickets=true 且回调已装配时 >0)
 }
 
 // InstantiateScene 一键启用场景包: 创建数字员工 + 场景自带巡检 + 额外巡检。
 // overrideName 非空时覆盖 Agent 默认名(同名自动追加序号避免冲突)。
+// autoCreateTickets 为 true 且已装配 CreateCatalogItemFunc 时, 将场景推荐的标准化工单
+// 类型真实落库到 itsm_catalog(幂等同名跳过), 打通"场景 → 处置标准"闭环。
 // 复用既有的 InstantiateAgentTemplate(withInspection=true) 自动建关联巡检, 避免重复造轮子。
 // 返回值: SceneInstantiateResult(agent + 巡检列表 + 建议服务目录)。
-func (e *Engine) InstantiateScene(tenantID, sceneID, overrideName string) (*SceneInstantiateResult, error) {
+func (e *Engine) InstantiateScene(tenantID, sceneID, overrideName string, autoCreateTickets bool) (*SceneInstantiateResult, error) {
 	scene, ok := e.GetSceneTemplate(sceneID)
 	if !ok {
 		return nil, fmt.Errorf("scene template not found: %s", sceneID)
@@ -189,10 +205,29 @@ func (e *Engine) InstantiateScene(tenantID, sceneID, overrideName string) (*Scen
 		result.Inspections = append(result.Inspections, created)
 	}
 
+	// 3. 可选: 将推荐工单类型真实落库到 itsm_catalog(幂等同名跳过)。
+	if autoCreateTickets {
+		e.mu.RLock()
+		createFn := e.CreateCatalogItemFunc
+		e.mu.RUnlock()
+		if createFn != nil {
+			for _, item := range scene.SuggestedCatalog {
+				if err := createFn(context.Background(), tenantID, item.Name, item.Description, item.Category); err != nil {
+					if errors.Is(err, ErrCatalogItemExists) {
+						continue // 同名已存在, 幂等跳过(不计入新建数)
+					}
+					slog.Warn("create scene catalog item failed", "scene", sceneID, "item", item.Name, "error", err)
+					continue
+				}
+				result.CreatedCatalog++
+			}
+		}
+	}
+
 	slog.Info("scene instantiated",
 		"scene", sceneID, "tenant", tenantID,
 		"agent_id", agentIDOf(agent), "auto_insp", inspIDOf(insp),
-		"extra_insps", len(result.Inspections))
+		"extra_insps", len(result.Inspections), "created_catalog", result.CreatedCatalog)
 	return result, nil
 }
 

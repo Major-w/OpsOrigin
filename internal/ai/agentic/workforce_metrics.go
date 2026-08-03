@@ -37,6 +37,8 @@ type TicketMetrics struct {
 	Total                int            `json:"total"`
 	ByStatus             map[string]int `json:"by_status"`
 	AvgResolutionMinutes float64        `json:"avg_resolution_minutes"`
+	// ByAssessment 处置效果评估分布(人工完成时标记): confirmed=确认有效 / false_positive=误报。
+	ByAssessment map[string]int `json:"by_assessment,omitempty"`
 }
 
 // GetWorkforceMetrics 聚合数字员工运营效果指标(仅租户内数据)。
@@ -98,7 +100,7 @@ func (e *Engine) FillTicketMetrics(ctx context.Context, tenantID string, m *Work
 		m.Tickets = nil
 		return
 	}
-	total, byStatus, avgMin, err := e.TicketMetricsProvider(ctx, tenantID)
+	total, byStatus, avgMin, byAssessment, err := e.TicketMetricsProvider(ctx, tenantID)
 	if err != nil {
 		slog.Warn("load ticket metrics failed", "tenant", tenantID, "err", err)
 		m.Tickets = nil
@@ -107,9 +109,13 @@ func (e *Engine) FillTicketMetrics(ctx context.Context, tenantID string, m *Work
 	if byStatus == nil {
 		byStatus = map[string]int{}
 	}
+	if byAssessment == nil {
+		byAssessment = map[string]int{}
+	}
 	m.Tickets = &TicketMetrics{
 		Total:                total,
 		ByStatus:             byStatus,
 		AvgResolutionMinutes: avgMin,
+		ByAssessment:         byAssessment,
 	}
 }

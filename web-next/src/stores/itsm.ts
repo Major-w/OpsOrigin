@@ -87,7 +87,7 @@ interface ITSMState {
   approve: (id: string, comment?: string) => Promise<boolean>
   reject: (id: string, reason: string) => Promise<boolean>
   execute: (id: string) => Promise<boolean>
-  complete: (id: string, comment?: string) => Promise<boolean>
+  complete: (id: string, comment?: string, assessment?: 'confirmed' | 'false_positive') => Promise<boolean>
   rollback: (id: string, reason?: string) => Promise<boolean>
   fetchStats: () => Promise<void>
   // process
@@ -174,9 +174,9 @@ export const useITSMStore = create<ITSMState>((set, get) => ({
       return false
     }
   },
-  complete: async (id, comment?) => {
+  complete: async (id, comment?, assessment?) => {
     try {
-      await apiFetch(`/itsm/tickets/${id}/complete`, { method: 'POST', body: JSON.stringify({ completed_by: 'admin', comment: comment || '' }) })
+      await apiFetch(`/itsm/tickets/${id}/complete`, { method: 'POST', body: JSON.stringify({ completed_by: 'admin', comment: comment || '', assessment: assessment || '' }) })
       toast.success('完成成功')
       await get().fetch()
       return true

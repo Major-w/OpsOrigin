@@ -115,7 +115,16 @@ type ExecuteRequest struct {
 type CompleteRequest struct {
 	CompletedBy string `json:"completed_by"`
 	Comment     string `json:"comment,omitempty"`
+	// Assessment 处置效果评估(供 AI 数字员工运营效果统计): confirmed=确认有效 / false_positive=误报。
+	// 留空不写; 仅对 labels.source=ai_inspection / ai_oncall 的 AI 工单有意义。
+	Assessment string `json:"assessment,omitempty"`
 }
+
+// Assessment 值常量。
+const (
+	AssessmentConfirmed     = "confirmed"      // 确认有效(命中)
+	AssessmentFalsePositive = "false_positive" // 误报
+)
 
 type RollbackRequest struct {
 	RolledBackBy   string `json:"rolled_back_by"`

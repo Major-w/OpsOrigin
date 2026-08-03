@@ -38,6 +38,7 @@ type Inspection struct {
 	Name       string     `json:"name"`
 	TemplateID string     `json:"template_id,omitempty"`
 	AgentID    string     `json:"agent_id,omitempty"` // 指定执行 Agent; 空=引擎默认(全工具)
+	TeamID     string     `json:"team_id,omitempty"`  // 指定执行团队(多 Agent 协作编排); 优先级高于 AgentID
 	Prompt     string     `json:"prompt"`             // 巡检指令(覆盖/补充模板)
 	Scope      string     `json:"scope"`              // 巡检范围描述(如 全部主机 / 某 CMDB 类型)
 	Schedule   string     `json:"schedule"`           // @hourly/@daily/...
@@ -279,6 +280,9 @@ func (e *Engine) UpdateInspection(ctx context.Context, in *Inspection) (*Inspect
 	if in.AgentID != "" {
 		existing.AgentID = in.AgentID
 	}
+	if in.TeamID != "" {
+		existing.TeamID = in.TeamID
+	}
 	if in.Prompt != "" {
 		existing.Prompt = in.Prompt
 	}
@@ -400,7 +404,24 @@ func (e *Engine) runInspection(ctx context.Context, id, triggeredBy string, expe
 		orDefault(scope, "全部受管资产"))
 
 	history := []llm.Message{{Role: "system", Content: systemPrompt}}
-	summary, _, _, _, err := e.chatWithToolsConv(ctx, ins.AgentID, userPrompt, history, false, "")
+
+	// 团队级巡检(P2-3): 绑定团队时走多 Agent 协作编排(各成员分头巡检, 汇总者定稿),
+	// 否则回退到单 Agent 执行。TeamID 优先级高于 AgentID。
+	var summary string
+	var err error
+	if ins.TeamID != "" {
+		team, ok := e.GetTeam(ins.TeamID)
+		if !ok {
+			run.Status = "failed"
+			run.Error = "team not found: " + ins.TeamID
+			finishTime := time.Now()
+			run.FinishedAt = &finishTime
+			return run, nil
+		}
+		summary, _, err = e.RunTeamChat(ctx, team, userPrompt, history, nil, "")
+	} else {
+		summary, _, _, _, err = e.chatWithToolsConv(ctx, ins.AgentID, userPrompt, history, false, "")
+	}
 
 	now := time.Now()
 	run.FinishedAt = &now
@@ -476,7 +497,8 @@ func (e *Engine) SetInspectionCallbacks(
 }
 
 // SetTicketMetricsProvider 注入数字员工运营效果所需的 ITSM 工单统计回调。
-func (e *Engine) SetTicketMetricsProvider(p func(ctx context.Context, tenantID string) (int, map[string]int, float64, error)) {
+// p 返回: 总数、按状态分布、平均处置时长(分钟)、处置效果评估分布(confirmed/false_positive)。
+func (e *Engine) SetTicketMetricsProvider(p func(ctx context.Context, tenantID string) (int, map[string]int, float64, map[string]int, error)) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.TicketMetricsProvider = p
