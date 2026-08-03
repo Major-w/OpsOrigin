@@ -32,3 +32,11 @@ export function useCan(perm: string): boolean {
   if (!loaded) return true
   return permissions.includes(perm)
 }
+
+// useCanAny 判断当前用户是否拥有给定权限中的任意一个(用于「读或写」类按钮)。
+export function useCanAny(perms: string[]): boolean {
+  const permissions = usePermissions((s) => s.permissions)
+  const loaded = usePermissions((s) => s.loaded)
+  if (!loaded) return true
+  return perms.some(p => permissions.includes(p))
+}

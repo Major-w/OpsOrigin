@@ -20,6 +20,7 @@ export interface Ticket {
   rolled_back_by?: string
   rollback_reason?: string
   ci_ids?: string[]
+  process_id?: string
   created_at: string
   updated_at: string
   approved_at?: string

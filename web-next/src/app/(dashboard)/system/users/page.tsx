@@ -11,10 +11,12 @@ import { Select } from '@/components/ui/select'
 import { Dialog, DialogFooter } from '@/components/ui/dialog'
 import { Plus, Trash2, Edit, Search, Shield } from 'lucide-react'
 import { formatTime } from '@/lib/utils'
+import { useCan } from '@/stores/permissions'
 
 export default function SystemUsersPage() {
   const { users, fetch, create, update, remove } = useUserStore()
   const { roles, fetchRoles, fetchUserRoles, assignUserRoles } = useIAMStore()
+  const canWrite = useCan('user:write')
 
   const [searchQ, setSearchQ] = useState('')
   const [dialogOpen, setDialogOpen] = useState(false)
@@ -101,7 +103,7 @@ export default function SystemUsersPage() {
           <h1 className="text-2xl font-bold">用户管理</h1>
           <p className="text-sm text-muted-foreground">管理系统用户、主角色与权限分配</p>
         </div>
-        <Button size="sm" onClick={openCreate}><Plus className="h-4 w-4 mr-1" />添加用户</Button>
+        <Button size="sm" onClick={openCreate} disabled={!canWrite}><Plus className="h-4 w-4 mr-1" />添加用户</Button>
       </div>
 
       <div className="flex gap-2">
@@ -146,13 +148,13 @@ export default function SystemUsersPage() {
                       </td>
                       <td className="p-3 text-muted-foreground text-xs">{u.last_login ? formatTime(u.last_login) : '-'}</td>
                       <td className="p-3 text-right">
-                        <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => openRoleAssign(u)} title="分配角色">
+                        <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => openRoleAssign(u)} title="分配角色" disabled={!canWrite}>
                           <Shield className="h-3 w-3" />
                         </Button>
-                        <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => openEdit(u)} title="编辑">
+                        <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => openEdit(u)} title="编辑" disabled={!canWrite}>
                           <Edit className="h-3 w-3" />
                         </Button>
-                        <Button variant="ghost" size="icon" className="h-7 w-7 text-destructive" onClick={() => handleDelete(u)} title="删除">
+                        <Button variant="ghost" size="icon" className="h-7 w-7 text-destructive" onClick={() => handleDelete(u)} title="删除" disabled={!canWrite}>
                           <Trash2 className="h-3 w-3" />
                         </Button>
                       </td>
@@ -213,7 +215,7 @@ export default function SystemUsersPage() {
         </div>
         <DialogFooter>
           <Button variant="outline" onClick={() => setDialogOpen(false)}>取消</Button>
-          <Button onClick={handleSave} disabled={!editId && (!form.username || !form.password)}>
+          <Button onClick={handleSave} disabled={!canWrite || (!editId && (!form.username || !form.password))}>
             {editId ? '保存' : '创建'}
           </Button>
         </DialogFooter>
@@ -255,7 +257,7 @@ export default function SystemUsersPage() {
         </div>
         <DialogFooter>
           <Button variant="outline" onClick={() => setRoleDialogUser(null)}>取消</Button>
-          <Button onClick={handleSaveRoles}>保存分配</Button>
+          <Button onClick={handleSaveRoles} disabled={!canWrite}>保存分配</Button>
         </DialogFooter>
       </Dialog>
     </div>

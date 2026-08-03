@@ -10,6 +10,7 @@ import { Input } from '@/components/ui/input'
 import { Dialog, DialogFooter } from '@/components/ui/dialog'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { formatTime, apiFetch } from '@/lib/utils'
+import { useCan, useCanAny } from '@/stores/permissions'
 import { Plus, Check, X, Play, RotateCcw, Clock, FileText, Activity, ChevronRight, Paperclip, MessageSquare, Upload, Download, Trash2, FileUp, FileDown, BookOpen } from 'lucide-react'
 
 const riskBadge: Record<string, 'destructive' | 'warning' | 'secondary' | 'success'> = { critical: 'destructive', high: 'warning', medium: 'secondary', low: 'success' }
@@ -56,6 +57,8 @@ function formatFileSize(bytes: number): string {
 export default function ITSMPage() {
   const router = useRouter()
   const { tickets, stats, loading, fetch, create, approve, reject, execute, complete, rollback, getTicket, getEvents, fetchStats, processes, fetchProcesses } = useITSMStore()
+  const canWrite = useCan('itsm:write')
+  const canApprove = useCanAny(['itsm:approve', 'itsm:write'])
   const [dialogOpen, setDialogOpen] = useState(false)
   const [form, setForm] = useState({ title: '', description: '', risk_level: 'low', change_plan: '', rollback_plan: '', created_by: 'admin', process_id: '' })
   const [knowledgeRecs, setKnowledgeRecs] = useState<any[]>([])
@@ -287,10 +290,10 @@ export default function ITSMPage() {
         <div><h1 className="text-2xl font-bold">ITSM 工单</h1><p className="text-sm text-muted-foreground">变更审批与风险控制</p></div>
         <div className="flex gap-2">
           <input ref={importFileRef} type="file" accept=".csv" className="hidden" onChange={handleImportCSV} />
-          <Button variant="outline" onClick={() => importFileRef.current?.click()} disabled={importing}><FileUp className="h-4 w-4" />{importing ? '导入中...' : '批量导入'}</Button>
+          <Button variant="outline" onClick={() => importFileRef.current?.click()} disabled={importing || !canWrite}><FileUp className="h-4 w-4" />{importing ? '导入中...' : '批量导入'}</Button>
           <Button variant="outline" onClick={handleExportTickets}><FileDown className="h-4 w-4" />导出工单</Button>
           <Button variant="outline" onClick={handleExportStats}><FileDown className="h-4 w-4" />导出统计</Button>
-          <Button onClick={() => setDialogOpen(true)}><Plus className="h-4 w-4" />新建工单</Button>
+          <Button onClick={() => setDialogOpen(true)} disabled={!canWrite}><Plus className="h-4 w-4" />新建工单</Button>
         </div>
       </div>
 
@@ -364,20 +367,20 @@ export default function ITSMPage() {
                   </div>
                   <div className="flex gap-1">
                     {selectedTicket.status === 'pending_review' && (
-                      <><Button variant="outline" size="sm" onClick={() => { setApproveDialog(true); setApproveComment('') }}><Check className="h-3 w-3" />通过</Button>
-                        <Button variant="outline" size="sm" onClick={() => { setRejectDialog(true); setRejectReason('') }}><X className="h-3 w-3" />驳回</Button></>
+                      <><Button variant="outline" size="sm" onClick={() => { setApproveDialog(true); setApproveComment('') }} disabled={!canApprove}><Check className="h-3 w-3" />通过</Button>
+                        <Button variant="outline" size="sm" onClick={() => { setRejectDialog(true); setRejectReason('') }} disabled={!canApprove}><X className="h-3 w-3" />驳回</Button></>
                     )}
                     {selectedTicket.status === 'approved' && (
-                      <Button variant="outline" size="sm" onClick={handleExecute}><Play className="h-3 w-3" />执行</Button>
+                      <Button variant="outline" size="sm" onClick={handleExecute} disabled={!canWrite}><Play className="h-3 w-3" />执行</Button>
                     )}
                     {selectedTicket.status === 'executing' && (
-                      <Button variant="outline" size="sm" onClick={() => { setCompleteDialog(true); setCompleteComment('') }}>完成</Button>
+                      <Button variant="outline" size="sm" onClick={() => { setCompleteDialog(true); setCompleteComment('') }} disabled={!canWrite}>完成</Button>
                     )}
                     {(selectedTicket.status === 'failed' || selectedTicket.status === 'succeeded') && (
-                      <Button variant="outline" size="sm" onClick={() => { setRollbackDialog(true); setRollbackReason('') }}><RotateCcw className="h-3 w-3" />回滚</Button>
+                      <Button variant="outline" size="sm" onClick={() => { setRollbackDialog(true); setRollbackReason('') }} disabled={!canWrite}><RotateCcw className="h-3 w-3" />回滚</Button>
                     )}
                     {selectedTicket.status === 'succeeded' && (
-                      <Button variant="outline" size="sm" onClick={() => handleConvertToKnowledge(selectedTicket)}><BookOpen className="h-3 w-3 mr-1"/>转知识</Button>
+                      <Button variant="outline" size="sm" onClick={() => handleConvertToKnowledge(selectedTicket)} disabled={!canWrite}><BookOpen className="h-3 w-3 mr-1"/>转知识</Button>
                     )}
                   </div>
                 </div>
@@ -473,7 +476,7 @@ export default function ITSMPage() {
                           onKeyDown={e => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) handleAddComment() }}
                         />
                         <div className="flex justify-end">
-                          <Button size="sm" onClick={handleAddComment} disabled={!commentContent.trim() || commentLoading}>
+                          <Button size="sm" onClick={handleAddComment} disabled={!canWrite || !commentContent.trim() || commentLoading}>
                             {commentLoading ? '发送中...' : '发送评论'}
                           </Button>
                         </div>
@@ -494,6 +497,7 @@ export default function ITSMPage() {
                                   size="sm"
                                   className="h-6 w-6 p-0 opacity-0 group-hover:opacity-100 transition-opacity"
                                   onClick={() => handleDeleteComment(c.id)}
+                                  disabled={!canWrite}
                                 >
                                   <Trash2 className="h-3 w-3" />
                                 </Button>
@@ -518,7 +522,7 @@ export default function ITSMPage() {
                           variant="outline"
                           size="sm"
                           onClick={() => fileInputRef.current?.click()}
-                          disabled={uploading}
+                          disabled={uploading || !canWrite}
                         >
                           <Upload className="h-3 w-3 mr-1" />
                           {uploading ? '上传中...' : '上传附件'}
@@ -549,6 +553,7 @@ export default function ITSMPage() {
                                   size="sm"
                                   className="h-7 w-7 p-0 opacity-0 group-hover:opacity-100 transition-opacity"
                                   onClick={() => handleDeleteAttachment(a.id)}
+                                  disabled={!canWrite}
                                 >
                                   <Trash2 className="h-3 w-3" />
                                 </Button>
@@ -606,35 +611,35 @@ export default function ITSMPage() {
             {knowledgeRecs.map(a => <div key={a.id} className="text-[11px] text-muted-foreground hover:text-foreground cursor-pointer truncate" onClick={e => { e.stopPropagation(); window.open('/knowledge/' + a.id, '_blank') }}>· {a.title}</div>)}
           </div>}
         </div>
-        <DialogFooter><Button variant="outline" onClick={() => setDialogOpen(false)}>取消</Button><Button onClick={handleCreate} disabled={!form.title}>提交</Button></DialogFooter>
+        <DialogFooter><Button variant="outline" onClick={() => setDialogOpen(false)}>取消</Button><Button onClick={handleCreate} disabled={!canWrite || !form.title}>提交</Button></DialogFooter>
       </Dialog>
 
       <Dialog open={approveDialog} onClose={() => setApproveDialog(false)} title="审批通过">
         <div className="space-y-3">
           <div><label className="text-sm font-medium">审批意见</label><textarea className="flex h-20 w-full rounded-md border border-input bg-background px-3 py-2 text-sm" value={approveComment} onChange={e => setApproveComment(e.target.value)} placeholder="审批意见（可选）" /></div>
         </div>
-        <DialogFooter><Button variant="outline" onClick={() => setApproveDialog(false)}>取消</Button><Button onClick={handleApprove}>通过</Button></DialogFooter>
+        <DialogFooter><Button variant="outline" onClick={() => setApproveDialog(false)}>取消</Button><Button onClick={handleApprove} disabled={!canApprove}>通过</Button></DialogFooter>
       </Dialog>
 
       <Dialog open={rejectDialog} onClose={() => setRejectDialog(false)} title="驳回工单">
         <div className="space-y-3">
           <div><label className="text-sm font-medium">驳回原因 *</label><textarea className="flex h-20 w-full rounded-md border border-input bg-background px-3 py-2 text-sm" value={rejectReason} onChange={e => setRejectReason(e.target.value)} placeholder="请填写驳回原因" /></div>
         </div>
-        <DialogFooter><Button variant="outline" onClick={() => setRejectDialog(false)}>取消</Button><Button onClick={handleReject} disabled={!rejectReason}>驳回</Button></DialogFooter>
+        <DialogFooter><Button variant="outline" onClick={() => setRejectDialog(false)}>取消</Button><Button onClick={handleReject} disabled={!canApprove || !rejectReason}>驳回</Button></DialogFooter>
       </Dialog>
 
       <Dialog open={completeDialog} onClose={() => setCompleteDialog(false)} title="完成执行">
         <div className="space-y-3">
           <div><label className="text-sm font-medium">完成备注</label><textarea className="flex h-20 w-full rounded-md border border-input bg-background px-3 py-2 text-sm" value={completeComment} onChange={e => setCompleteComment(e.target.value)} placeholder="完成备注（可选）" /></div>
         </div>
-        <DialogFooter><Button variant="outline" onClick={() => setCompleteDialog(false)}>取消</Button><Button onClick={handleComplete}>确认完成</Button></DialogFooter>
+        <DialogFooter><Button variant="outline" onClick={() => setCompleteDialog(false)}>取消</Button><Button onClick={handleComplete} disabled={!canWrite}>确认完成</Button></DialogFooter>
       </Dialog>
 
       <Dialog open={rollbackDialog} onClose={() => setRollbackDialog(false)} title="回滚工单">
         <div className="space-y-3">
           <div><label className="text-sm font-medium">回滚原因</label><textarea className="flex h-20 w-full rounded-md border border-input bg-background px-3 py-2 text-sm" value={rollbackReason} onChange={e => setRollbackReason(e.target.value)} placeholder="请填写回滚原因（可选）" /></div>
         </div>
-        <DialogFooter><Button variant="outline" onClick={() => setRollbackDialog(false)}>取消</Button><Button onClick={handleRollback}>确认回滚</Button></DialogFooter>
+        <DialogFooter><Button variant="outline" onClick={() => setRollbackDialog(false)}>取消</Button><Button onClick={handleRollback} disabled={!canWrite}>确认回滚</Button></DialogFooter>
       </Dialog>
 
       <Dialog open={importDialog} onClose={() => setImportDialog(false)} title="导入结果">

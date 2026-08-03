@@ -11,6 +11,7 @@ import { Input } from '@/components/ui/input'
 import { Dialog, DialogFooter } from '@/components/ui/dialog'
 import { formatTime, cn } from '@/lib/utils'
 import { useWebSocket } from '@/lib/useWebSocket'
+import { useCan } from '@/stores/permissions'
 import { AlertTriangle, CheckCircle, XCircle, Eye, Search, Loader2, History, Sparkles, Bot } from 'lucide-react'
 
 const severityVariant: Record<string, 'destructive' | 'warning' | 'secondary'> = { critical: 'destructive', high: 'destructive', warning: 'warning', info: 'secondary' }
@@ -20,6 +21,7 @@ const SEVERITIES = ['critical', 'warning', 'info']
 export default function MonitorAlertsPage() {
   const store = useMonitorStore()
   const { alerts, alertHistory, loading } = store
+  const canWrite = useCan('monitor:write')
   const [view, setView] = useState<'active' | 'history'>('active')
   const [severity, setSeverity] = useState('')
   const [keyword, setKeyword] = useState('')
@@ -173,8 +175,8 @@ export default function MonitorAlertsPage() {
                           <Button variant="outline" size="sm" className="text-xs h-7" onClick={() => { setDetail(a); setDialog(true) }}><Eye className="h-3 w-3 mr-0.5" />详情</Button>
                           {!a.resolved_at && (
                             <>
-                              <Button variant="outline" size="sm" className="text-xs h-7" onClick={() => handleAck(a)}><CheckCircle className="h-3 w-3 mr-0.5" />确认</Button>
-                              <Button variant="outline" size="sm" className="text-xs h-7" onClick={() => handleResolve(a)}><XCircle className="h-3 w-3 mr-0.5" />解决</Button>
+                              <Button variant="outline" size="sm" className="text-xs h-7" onClick={() => handleAck(a)} disabled={!canWrite}><CheckCircle className="h-3 w-3 mr-0.5" />确认</Button>
+                              <Button variant="outline" size="sm" className="text-xs h-7" onClick={() => handleResolve(a)} disabled={!canWrite}><XCircle className="h-3 w-3 mr-0.5" />解决</Button>
                             </>
                           )}
                         </div>
@@ -214,8 +216,8 @@ export default function MonitorAlertsPage() {
           )}
           {detail && !detail.resolved_at && (
             <>
-              <Button variant="outline" size="sm" onClick={() => handleAck(detail)}><CheckCircle className="h-3 w-3 mr-1" />确认</Button>
-              <Button variant="outline" size="sm" onClick={() => handleResolve(detail)}><XCircle className="h-3 w-3 mr-1" />解决</Button>
+              <Button variant="outline" size="sm" onClick={() => handleAck(detail)} disabled={!canWrite}><CheckCircle className="h-3 w-3 mr-1" />确认</Button>
+              <Button variant="outline" size="sm" onClick={() => handleResolve(detail)} disabled={!canWrite}><XCircle className="h-3 w-3 mr-1" />解决</Button>
             </>
           )}
         </DialogFooter>
