@@ -46,6 +46,9 @@ type Engine struct {
 	reg       *mcp.Registry
 	lim       ratelimit.RateLimiter
 	llmClient atomic.Pointer[llm.Client] // 热更新场景下的并发安全读写(避免 data race)
+	// router 多模型路由池(P3, 可选): 非 nil 时聊天/流式调用走路由(权重+健康+失败降级),
+	// nil 时回退到 llmClient 单实例(行为与以往一致)。
+	router *ModelRouter
 	ready     bool
 	tokenRecs []model.TokenRecord
 	tokenMu   sync.Mutex
@@ -149,7 +152,7 @@ func (e *Engine) registerBuiltinTools() {
 			if prompt == "" {
 				return nil, fmt.Errorf("llm_chat: prompt is required")
 			}
-			resp, err := e.llmClient.Load().Chat(ctx, llm.ChatRequest{
+			resp, err := e.chatLLM(ctx, llm.ChatRequest{
 				Messages: []llm.Message{{Role: "user", Content: prompt}},
 			})
 			if err != nil {
@@ -192,6 +195,46 @@ func (e *Engine) registerBuiltinTools() {
 			}, nil
 		},
 	})
+}
+
+// SetModelRouter 注入多模型路由池(P3, 可选)。设置后聊天/流式调用走路由
+// (权重+健康状态+失败降级), 否则回退到单 llmClient。
+func (e *Engine) SetModelRouter(r *ModelRouter) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.router = r
+}
+
+// chatLLM 聊天调用统一入口: router 优先(多模型路由+降级), 否则单 client。
+func (e *Engine) chatLLM(ctx context.Context, req llm.ChatRequest) (*llm.ChatResponse, error) {
+	if e.router != nil {
+		return e.router.Chat(ctx, req)
+	}
+	return e.llmClient.Load().Chat(ctx, req)
+}
+
+// streamLLM 流式调用统一入口: router 优先, 否则单 client。
+func (e *Engine) streamLLM(ctx context.Context, req llm.ChatRequest) (<-chan llm.StreamChunk, error) {
+	if e.router != nil {
+		return e.router.StreamChat(ctx, req)
+	}
+	return e.llmClient.Load().StreamChat(ctx, req)
+}
+
+// GetModels 返回模型池状态(供 /api/v1/ai/models 展示)。
+// 未配置 router 时返回主 provider 单条信息。
+func (e *Engine) GetModels() []ModelStatus {
+	e.mu.RLock()
+	r := e.router
+	lc := e.llmClient.Load()
+	e.mu.RUnlock()
+	if r != nil {
+		return r.Models()
+	}
+	if lc == nil {
+		return []ModelStatus{}
+	}
+	return []ModelStatus{{Name: "default", Model: "deepseek-chat", Healthy: true}}
 }
 
 // Start 启动引擎。当前无后台 goroutine(执行是同步的),仅标记就绪并输出诊断信息。
@@ -371,7 +414,7 @@ func (e *Engine) chatWithToolsConv(ctx context.Context, agentID, prompt string, 
 			err = fmt.Errorf("llm concurrency limit reached")
 			break
 		}
-		resp, cerr := e.llmClient.Load().Chat(ctx, llm.ChatRequest{
+		resp, cerr := e.chatLLM(ctx, llm.ChatRequest{
 			Model:       e.modelForAgent(agentID),
 			Messages:    msgs,
 			Tools:       tools,
@@ -544,8 +587,7 @@ func (e *Engine) compactHistory(ctx context.Context, history []llm.Message) []ll
 // defaultSummarize 内置的 LLM 历史摘要器: 将较早历史压缩为一段简短要点摘要,
 // 用于 Token 预算压缩的"智能摘要"路径。llmClient 未就绪时返回 error 以触发确定性回退。
 func (e *Engine) defaultSummarize(ctx context.Context, msgs []llm.Message) (string, error) {
-	c := e.llmClient.Load()
-	if c == nil {
+	if e.llmClient.Load() == nil && e.router == nil {
 		return "", fmt.Errorf("llm client not ready")
 	}
 	var b strings.Builder
@@ -561,7 +603,7 @@ func (e *Engine) defaultSummarize(ctx context.Context, msgs []llm.Message) (stri
 		}
 		b.WriteString(fmt.Sprintf("[%s] %s\n", role, content))
 	}
-	resp, err := c.Chat(ctx, llm.ChatRequest{
+	resp, err := e.chatLLM(ctx, llm.ChatRequest{
 		Messages:    []llm.Message{{Role: "user", Content: b.String()}},
 		MaxTokens:   300,
 		Temperature: 0,
@@ -1331,7 +1373,7 @@ func (e *Engine) runStep(ctx context.Context, step *model.Step) (any, error) {
 		return nil, fmt.Errorf("llm concurrency limit reached")
 	}
 	defer e.releaseLLMSlot(slot)
-	resp, err := e.llmClient.Load().Chat(ctx, llm.ChatRequest{
+	resp, err := e.chatLLM(ctx, llm.ChatRequest{
 		Messages: []llm.Message{{Role: "user", Content: prompt}},
 	})
 	if err != nil {
@@ -1769,7 +1811,7 @@ func (e *Engine) chatWithToolsStream(ctx context.Context, agentID, prompt string
 		if !ok {
 			return fmt.Errorf("llm concurrency limit reached")
 		}
-		ch, eerr := e.llmClient.Load().StreamChat(ctx, llm.ChatRequest{
+		ch, eerr := e.streamLLM(ctx, llm.ChatRequest{
 			Model:       e.modelForAgent(agentID),
 			Messages:    msgs,
 			Tools:       tools,

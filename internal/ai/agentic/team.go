@@ -286,8 +286,7 @@ func (e *Engine) runMemberWithRetry(ctx context.Context, m model.TeamMember, tea
 // 否则仅做一次普通补全。逐 token 经 emit 推送(此处以整段内容作为一个 token 事件, 保证工具过程可观测)。
 // 不发射 agent_start / agent_end(由调用方负责)。
 func (e *Engine) runOneMemberRound(ctx context.Context, m model.TeamMember, team *model.AgentTeam, sys, prompt string, history []llm.Message, emit func(model.TeamStreamEvent), ragCtx string) (string, error) {
-	client := e.llmClient.Load()
-	if client == nil {
+	if e.llmClient.Load() == nil && e.router == nil {
 		return "", fmt.Errorf("llm client not configured")
 	}
 	useTools := useTools(m, team)
@@ -324,7 +323,7 @@ func (e *Engine) runOneMemberRound(ctx context.Context, m model.TeamMember, team
 		if useTools {
 			req.Tools = tools
 		}
-		resp, cerr := client.Chat(ctx, req)
+		resp, cerr := e.chatLLM(ctx, req)
 		e.releaseLLMSlot(slot)
 		if cerr != nil {
 			return "", cerr

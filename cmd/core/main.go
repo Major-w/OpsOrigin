@@ -457,6 +457,24 @@ func main() {
 	})
 	knowledgeSvc.SetEmbedder(llmClient) // 注入向量生成器,新建/更新知识库文章自动写入 embedding
 
+	// 多模型路由池(P3): 主配置为兜底 provider, 附加 provider 按权重参与路由(失败自动降级)。
+	var llmProviders []agentic.ProviderConfig
+	for _, p := range cfg.LLM.Providers {
+		llmProviders = append(llmProviders, agentic.ProviderConfig{
+			Name:    p.Name,
+			APIKey:  p.APIKey,
+			Model:   p.Model,
+			BaseURL: p.BaseURL,
+			Weight:  p.Weight,
+		})
+	}
+	llmRouter := agentic.NewModelRouter(llm.Config{
+		APIKey:  cfg.LLM.APIKey,
+		Model:   cfg.LLM.Model,
+		BaseURL: cfg.LLM.BaseURL,
+		Timeout: time.Duration(cfg.LLM.Timeout) * time.Second,
+	}, llmProviders)
+
 	// 存量知识库语义检索回填: 启动时幂等、非阻塞地补算 embedding(仅对 embedding IS NULL 的文章)。
 	// 失败(如 pgvector 未启用)仅告警, 不影响启动。
 	go func() {
@@ -516,6 +534,7 @@ func main() {
 
 	aiSvc := ai.NewService(cfg, llmClient, rdbClient, db)
 	aiSvc.Engine.SetStore(agentic.NewPGStore(db))
+	aiSvc.Engine.SetModelRouter(llmRouter) // 多模型路由池(权重+健康+失败降级)
 	// 生成参数热更新:仅当配置显式给定时才覆盖引擎内置默认(温度0.7/上限1024/并发32)。
 	if cfg.LLM.GenTemperature > 0 {
 		aiSvc.Engine.SetGenParams(cfg.LLM.GenMaxTokens, cfg.LLM.GenTemperature)

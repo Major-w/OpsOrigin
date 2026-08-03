@@ -69,6 +69,7 @@ export default function AISettingsPage() {
   const [form, setForm] = useState<{ name: string; model_name: string; system_prompt: string; knowledge_categories: string[]; tools: string[]; skills: SkillFormItem[] }>({ name: '', model_name: '', system_prompt: '', knowledge_categories: [], tools: [], skills: [] })
   const [sysConfig, setSysConfig] = useState<any>(null)
   const [llmForm, setLlmForm] = useState({ api_key: '', model: '', base_url: '', timeout: 60 })
+  const [modelPool, setModelPool] = useState<{ name: string; model: string; base_url: string; weight: number; healthy: boolean }[]>([])
   const [editing, setEditing] = useState<string | null>(null)
   const [saving, setSaving] = useState(false)
   const [editForm, setEditForm] = useState<{ name: string; model_name: string; system_prompt: string; knowledge_categories: string[]; tools: string[]; skills: SkillFormItem[] }>({ name: '', model_name: '', system_prompt: '', knowledge_categories: [], tools: [], skills: [] })
@@ -99,7 +100,13 @@ export default function AISettingsPage() {
   const [approvalScope, setApprovalScope] = useState<'global' | 'agent'>('global')
   const [approvalAgentId, setApprovalAgentId] = useState('')
 
-  useEffect(() => { fetchAgents(); loadTools(); loadSysConfig(); loadApprovalPolicy(); loadKbCategories(); loadCustomTools() }, [])
+  useEffect(() => { fetchAgents(); loadTools(); loadSysConfig(); loadApprovalPolicy(); loadKbCategories(); loadCustomTools(); loadModelPool() }, [])
+  const loadModelPool = async () => {
+    try {
+      const r = await fetch('/api/v1/ai/models')
+      if (r.ok) setModelPool(await r.json())
+    } catch {}
+  }
   
   const loadCustomTools = async () => {
     try {
@@ -277,6 +284,12 @@ export default function AISettingsPage() {
         </div>
       </div>
 
+      {/* 模型池 datalist: 为 Agent 表单的模型名提供下拉建议 */}
+      <datalist id="model-pool">
+        {modelPool.map(m => (
+          <option key={m.name} value={m.name}>{m.model}</option>
+        ))}
+      </datalist>
       <Tabs value={activeTab} onValueChange={setActiveTab} className="flex-1 flex flex-col min-h-0">
         <TabsList className="mb-4">
           <TabsTrigger value="agents"><Bot className="h-4 w-4 mr-1.5" />智能体</TabsTrigger>
@@ -292,7 +305,7 @@ export default function AISettingsPage() {
             <CardHeader><CardTitle className="text-base">创建智能体</CardTitle><CardDescription>定义 Agent 的名称、模型、系统提示词和知识库绑定</CardDescription></CardHeader>
             <CardContent className="space-y-3">
               <Input placeholder="Agent 名称 (如: 运维助手)" value={form.name} onChange={e => setForm({...form, name: e.target.value})} />
-              <Input placeholder="模型名 (如: deepseek-chat, 留空使用默认)" value={form.model_name} onChange={e => setForm({...form, model_name: e.target.value})} />
+              <Input list="model-pool" placeholder="模型名 (如: deepseek-chat / provider 名, 留空使用默认)" value={form.model_name} onChange={e => setForm({...form, model_name: e.target.value})} />
               <textarea placeholder="系统提示词, 定义 Agent 的行为和角色..." value={form.system_prompt} onChange={e => setForm({...form, system_prompt: e.target.value})} rows={4} className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 resize-none" />
               {/* 知识库绑定 */}
               <div>
@@ -379,7 +392,7 @@ export default function AISettingsPage() {
                     {editing === a.id ? (
                       <div className="space-y-2">
                         <Input value={editForm.name} onChange={e => setEditForm({...editForm, name: e.target.value})} placeholder="名称" />
-                        <Input value={editForm.model_name} onChange={e => setEditForm({...editForm, model_name: e.target.value})} placeholder="模型名" />
+                        <Input list="model-pool" value={editForm.model_name} onChange={e => setEditForm({...editForm, model_name: e.target.value})} placeholder="模型名" />
                         <textarea rows={3} value={editForm.system_prompt} onChange={e => setEditForm({...editForm, system_prompt: e.target.value})} className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm resize-none" placeholder="系统提示词" />
                         {/* 编辑态: 知识库绑定 */}
                         <div>
@@ -517,6 +530,35 @@ export default function AISettingsPage() {
 
         {/* 模型配置 */}
         <TabsContent value="model" className="flex-1 overflow-auto space-y-4">
+          {/* 模型池(多模型路由 P3): provider 状态一览 */}
+          <Card>
+            <CardHeader className="pb-2">
+              <CardTitle className="text-base flex items-center gap-2"><Brain className="h-4 w-4" />模型池（多模型路由）</CardTitle>
+              <CardDescription>按权重路由 + 健康检查 + 失败自动降级到下一个可用 provider。Agent 的模型名可填 provider 名或具体模型。</CardDescription>
+            </CardHeader>
+            <CardContent>
+              {modelPool.length === 0 ? (
+                <p className="text-xs text-muted-foreground py-2">未配置附加 provider，当前使用主 LLM 后端。</p>
+              ) : (
+                <div className="space-y-2">
+                  {modelPool.map(m => (
+                    <div key={m.name} className="flex items-center justify-between gap-3 rounded-lg border border-border p-2.5">
+                      <div className="flex items-center gap-2 min-w-0">
+                        <span className={cn('h-2 w-2 rounded-full shrink-0', m.healthy ? 'bg-emerald-500' : 'bg-red-500')} />
+                        <span className="text-sm font-medium">{m.name}</span>
+                        <span className="text-xs text-muted-foreground truncate">{m.model}</span>
+                      </div>
+                      <div className="flex items-center gap-2 shrink-0 text-[11px] text-muted-foreground">
+                        <Badge variant={m.healthy ? 'success' : 'destructive'} className="text-[10px]">{m.healthy ? '健康' : '降级'}</Badge>
+                        <span>权重 {m.weight}</span>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </CardContent>
+          </Card>
+
           <Card>
             <CardHeader><CardTitle className="text-base">LLM 后端配置</CardTitle><CardDescription>修改后即时热生效，无需重启 Core</CardDescription></CardHeader>
             <CardContent className="space-y-4">

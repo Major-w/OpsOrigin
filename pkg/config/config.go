@@ -1,7 +1,9 @@
 package config
 
 import (
+	"encoding/json"
 	"fmt"
+	"log/slog"
 	"os"
 	"strconv"
 	"strings"
@@ -121,6 +123,18 @@ type LLMConfig struct {
 	// DefaultSystemPrompt 未配置 Agent 级 system_prompt 时使用的全局默认提示词;
 	// 留空则引擎回退到内置常量(与下方默认值一致)。运维可通过环境变量覆盖,实现提示词外置/版本化。
 	DefaultSystemPrompt string `json:"default_system_prompt"`
+	// Providers 多模型路由池(P3): 在默认 provider 之外追加的 LLM provider。
+	// 留空=单 provider(默认配置), 行为与以往完全一致。
+	Providers []LLMProviderConfig `json:"providers"`
+}
+
+// LLMProviderConfig 模型池中的一个附加 provider(多模型路由 P3)。
+type LLMProviderConfig struct {
+	Name    string `json:"name"`     // 池内唯一标识(Agent.model_name 可填此名)
+	APIKey  string `json:"api_key"`
+	Model   string `json:"model"`    // 该 provider 的默认模型
+	BaseURL string `json:"base_url"`
+	Weight  int    `json:"weight"`   // 路由权重(越大越优先, 默认 50)
 }
 
 type PostgresConfig struct {
@@ -191,8 +205,7 @@ func Load() (*Config, error) {
 			DefaultSystemPrompt: envStr("OPSNEXUS_LLM_DEFAULT_SYSTEM_PROMPT",
 				"你是 OpsOrigin 智能运维助手,帮助用户完成主机巡检、故障排查、报告生成等运维任务。回答应简洁、专业、可操作。"),
 		},
-		RedisAddr:     envStr("OPSNEXUS_REDIS_ADDR", "localhost:6379"),
-		RedisPoolSize: envInt("OPSNEXUS_REDIS_POOL_SIZE", 50),
+		RedisAddr:     envStr("OPSNEXUS_REDIS_ADDR", "localhost:6379"),		RedisPoolSize: envInt("OPSNEXUS_REDIS_POOL_SIZE", 50),
 		LDAP: LDAPConfig{
 			Enabled:    envBool("OPSNEXUS_LDAP_ENABLED", false),
 			Addr:       envStr("OPSNEXUS_LDAP_ADDR", "ldap://localhost:389"),
@@ -238,6 +251,17 @@ func Load() (*Config, error) {
 	cfg.Upgrade = UpgradeConfig{
 		DefaultBatchSize:     envInt("OPSNEXUS_UPGRADE_DEFAULT_BATCH_SIZE", 10),
 		DefaultBatchInterval: envDuration("OPSNEXUS_UPGRADE_DEFAULT_BATCH_INTERVAL", 60*time.Second),
+	}
+
+	// 多模型路由池(P3): OPSNEXUS_LLM_PROVIDERS 为 JSON 数组, 如
+	// [{"name":"aliyun","api_key":"sk-xxx","model":"qwen-max","base_url":"https://dashscope.aliyuncs.com/compatible-mode/v1","weight":80}]
+	if raw := os.Getenv("OPSNEXUS_LLM_PROVIDERS"); raw != "" {
+		var ps []LLMProviderConfig
+		if err := json.Unmarshal([]byte(raw), &ps); err != nil {
+			slog.Warn("invalid OPSNEXUS_LLM_PROVIDERS json, ignored", "err", err)
+		} else {
+			cfg.LLM.Providers = ps
+		}
 	}
 
 	return cfg, nil

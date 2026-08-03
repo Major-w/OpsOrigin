@@ -184,3 +184,13 @@ func (s *Service) handleWorkforceMetrics(w http.ResponseWriter, r *http.Request)
 	s.Engine.FillTicketMetrics(r.Context(), tenantID, m)
 	writeJSON(w, http.StatusOK, m)
 }
+
+// handleListModels 返回模型池状态(多模型路由 P3): provider 名/默认模型/健康状态/权重。
+// 只读, 普通鉴权即可。
+func (s *Service) handleListModels(w http.ResponseWriter, r *http.Request) {
+	models := s.Engine.GetModels()
+	if models == nil {
+		models = []agentic.ModelStatus{}
+	}
+	writeJSON(w, http.StatusOK, models)
+}
