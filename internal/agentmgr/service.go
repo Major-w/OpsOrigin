@@ -407,6 +407,10 @@ type Service struct {
 	// 由 cmd/core 注入 cmdbSvc.OnboardResource,使纳管动作自动在 CMDB 侧建 channel=agent 任务。
 	onAgentOnboard func(tenantID, agentID string) error
 
+	// hostCIWriter 把 AgentHost 资产同步为 CMDB host CI 的实现(方案 X 闭环最后一跳)。
+	// 由 cmd/core 注入 agentCMDBAdapter;nil 时静默跳过(纯演示环境不阻塞主流程)。
+	hostCIWriter HostCIWriter
+
 	// 全局目标版本策略（Agent 版本一致性管理）
 	versionPolicy   string
 	versionPolicyMu sync.Mutex
@@ -1500,6 +1504,8 @@ func (s *Service) handleRegister(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	// 方案 X 闭环：主机注册即同步为 CMDB host CI（agent_hosts → CMDB 最后一跳）。
+	s.syncHostCI(r.Context(), tenantFromCtx(r.Context()), host)
 	// 方案 X:主机纳管即触发 CMDB 采集任务创建(统一调度)。
 	if s.onAgentOnboard != nil {
 		if e := s.onAgentOnboard(tenantFromCtx(r.Context()), host.ID); e != nil {
@@ -3195,6 +3201,8 @@ func (s *Service) handleCMDBReport(w http.ResponseWriter, r *http.Request) {
 	applyCMDBReport(host, &report)
 
 	s.store.Update(r.Context(), host)
+	// 方案 X 闭环：Agent 上报 CMDB 资产后立即同步为 CMDB host CI。
+	s.syncHostCI(r.Context(), tenantFromCtx(r.Context()), host)
 	writeJSON(w, http.StatusOK, map[string]string{"status": "cmdb data received"})
 }
 

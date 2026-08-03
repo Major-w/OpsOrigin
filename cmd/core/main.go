@@ -361,6 +361,10 @@ func main() {
 	})
 	cmdbSvc.SetAgentChannel(&agentChannelAdapter{agentSvc: agentSvc})
 
+	// 方案 X 闭环最后一跳：把 Agent 纳管的主机资产同步为 CMDB host CI。
+	// 此前 agent_hosts 的资产从没进 CMDB（与云路径的 cloudCMDBAdapter 不对称），此处补齐。
+	agentSvc.SetHostCIWriter(agentCMDBAdapter{pgRepo: pgRepo, cmdbSvc: cmdbSvc})
+
 	// K8s 容器资源纳管：注入经 Agent 通道的发现器（鸭子类型 *agentmgr.Service 满足 cloud.K8sAgentRunner）。
 	cloudSvc.SetK8sDiscoverer(k8s.NewDiscoverer(agentSvc))
 

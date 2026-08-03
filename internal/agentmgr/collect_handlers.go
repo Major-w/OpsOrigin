@@ -178,6 +178,8 @@ func (s *Service) handleCollectCompletion(ctx context.Context, agentID, taskID s
 					slog.Warn("collect: apply cmdb report failed", "agent", agentID, "err", err)
 				} else {
 					slog.Info("collect: cmdb data applied", "agent", agentID, "task", collectTaskID)
+					// 方案 X 闭环：采集资产落 agent_hosts 后立即同步为 CMDB host CI。
+					s.syncHostCI(ctx, "default", host)
 				}
 			}
 		}
