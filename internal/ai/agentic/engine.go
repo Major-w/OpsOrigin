@@ -55,6 +55,14 @@ type Engine struct {
 	semMu     sync.Mutex
 	llmSem    chan struct{}
 
+	// finetuneTasks 反馈驱动微调任务(L3): 进程内存储(与 agents/plans 同策略)。
+	// FinetuneRunnerFunc 由 cmd/core 注入真实微调后端; nil=未配置微调后端。
+	finetuneTasks      map[string]*FinetuneTask
+	FinetuneRunnerFunc FinetuneRunnerFunc
+
+	// faultInjections 故障仿真演练记录(L3-2 仿真验证飞轮): 进程内存储。
+	faultInjections map[string]*FaultInjectionRun
+
 	// defaultSystemPrompt 是未配置 Agent 级 system_prompt 时的全局默认提示词(外置化,见 SetDefaultSystemPrompt)。
 	defaultSystemPrompt string
 
@@ -201,6 +209,13 @@ func (e *Engine) registerBuiltinTools() {
 			}, nil
 		},
 	})
+}
+
+// SetFinetuneRunner 注入微调执行回调(cmd/core 装配; nil=关闭微调执行, 任务停留 pending)。
+func (e *Engine) SetFinetuneRunner(fn FinetuneRunnerFunc) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.FinetuneRunnerFunc = fn
 }
 
 // SetModelRouter 注入多模型路由池(P3, 可选)。设置后聊天/流式调用走路由

@@ -313,5 +313,38 @@ func (r *ModelRouter) UpdateProviders(primary llm.Config, extra []ProviderConfig
 	slog.Info("llm model pool hot-updated", "providers", len(next))
 }
 
+// AddProvider 热追加单个 provider(如 L3 微调产物模型注册进池)。
+// 已存在同名 provider 时整体替换(重置为健康态, 因为微调产物是新模型可重新验证);
+// 追加后按权重重排。供微调任务完成回调调用, 与 UpdateProviders 互补。
+func (r *ModelRouter) AddProvider(name string, cfg llm.Config, weight int) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if cfg.Model == "" {
+		cfg.Model = "deepseek-chat"
+	}
+	p := &ModelProvider{
+		Name:    name,
+		Weight:  weight,
+		Client:  llm.NewClient(cfg),
+		cfg:     cfg,
+		healthy: true,
+	}
+	replaced := false
+	for i, old := range r.providers {
+		if old.Name == name {
+			r.providers[i] = p
+			replaced = true
+			break
+		}
+	}
+	if !replaced {
+		r.providers = append(r.providers, p)
+	}
+	sort.SliceStable(r.providers, func(i, j int) bool {
+		return r.providers[i].Weight > r.providers[j].Weight
+	})
+	slog.Info("llm provider added", "name", name, "model", cfg.Model, "weight", weight)
+}
+
 // errNoHealthyModel 全池不可用错误。
 var errNoHealthyModel = errors.New("no healthy llm provider available")

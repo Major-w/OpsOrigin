@@ -150,6 +150,17 @@ func (s *Service) RegisterRoutes(mux *http.ServeMux) {
 	// —— 数字员工运营效果 (巡检健康 + 发现/转单/处置漏斗) ——
 	mux.HandleFunc("GET /api/v1/ai/workforce-metrics", s.handleWorkforceMetrics)
 
+	// —— 反馈驱动微调 (L3: 数据集 -> 微调任务 -> 产物注册模型池) ——
+	mux.HandleFunc("POST /api/v1/ai/finetune/tasks", s.handleCreateFinetuneTask)
+	mux.HandleFunc("GET /api/v1/ai/finetune/tasks", s.handleListFinetuneTasks)
+	mux.HandleFunc("GET /api/v1/ai/finetune/tasks/{id}", s.handleGetFinetuneTask)
+
+	// —— 故障仿真演练 (L3-2: 注入 -> Agent 处置评估 -> 报告/回滚) ——
+	mux.HandleFunc("GET /api/v1/ai/faultsim/scenarios", s.handleListFaultScenarios)
+	mux.HandleFunc("POST /api/v1/ai/faultsim/injections", s.handleStartFaultInjection)
+	mux.HandleFunc("GET /api/v1/ai/faultsim/injections", s.handleListFaultInjections)
+	mux.HandleFunc("POST /api/v1/ai/faultsim/injections/{id}/recover", s.handleRecoverFaultInjection)
+
 	// —— 训练数据集导出 (P3-1 反馈驱动微调) ——
 	mux.HandleFunc("GET /api/v1/ai/dataset", s.handleExportDataset)
 

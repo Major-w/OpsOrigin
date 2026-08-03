@@ -7,7 +7,7 @@ import { Input } from '@/components/ui/input'
 import { Badge } from '@/components/ui/badge'
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs'
 import { toast } from '@/stores/toast'
-import { Bot, Plus, Trash2, Save, Wrench, Brain, Settings2, Terminal, Wand2, AlertCircle, CheckCircle2, Loader2, ChevronRight, ShieldCheck, Database, Download, RefreshCw } from 'lucide-react'
+import { Bot, Plus, Trash2, Save, Wrench, Brain, Settings2, Terminal, Wand2, AlertCircle, CheckCircle2, Loader2, ChevronRight, ShieldCheck, Database, Download, RefreshCw, Sparkles } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { useThemeStore } from '@/stores/theme'
 import { useAIStore, type ApprovalMode } from '@/stores/ai'
@@ -27,6 +27,19 @@ const BUILTIN_TOOLS = new Set(['llm_chat', 'http_get'])
 
 // AgentSkill 前端表单类型
 interface SkillFormItem { name: string; description: string; instructions: string }
+
+// L3-1 微调任务项(数据集 -> 微调 -> 产物注册模型池)
+interface FinetuneTaskItem {
+  id: string
+  name: string
+  base_model: string
+  method: string
+  status: 'pending' | 'training' | 'succeeded' | 'failed'
+  result_model?: string
+  result_provider_name?: string
+  error?: string
+  created_at: string
+}
 
 const EMPTY_SKILL: SkillFormItem = { name: '', description: '', instructions: '' }
 
@@ -102,7 +115,7 @@ export default function AISettingsPage() {
   const [approvalScope, setApprovalScope] = useState<'global' | 'agent'>('global')
   const [approvalAgentId, setApprovalAgentId] = useState('')
 
-  useEffect(() => { fetchAgents(); loadTools(); loadSysConfig(); loadApprovalPolicy(); loadKbCategories(); loadCustomTools(); loadModelPool() }, [])
+  useEffect(() => { fetchAgents(); loadTools(); loadSysConfig(); loadApprovalPolicy(); loadKbCategories(); loadCustomTools(); loadModelPool(); loadFinetuneTasks() }, [])
   const loadModelPool = async () => {
     try {
       const r = await fetch('/api/v1/ai/models')
@@ -136,12 +149,44 @@ export default function AISettingsPage() {
       a.download = 'ai-dataset.ndjson'
       a.click()
       URL.revokeObjectURL(url)
-      toast.success('数据集已导出')
-    } catch (e: any) {
+      toast.success('数据集已导出')    } catch (e: any) {
       toast.error(`导出失败: ${e.message}`)
     } finally {
       setDatasetLoading(false)
     }
+  }
+
+  // —— L3-1 微调任务: 数据集 -> 微调 -> 产物注册模型池 ——
+  const [finetuneTasks, setFinetuneTasks] = useState<FinetuneTaskItem[]>([])
+  const [ftForm, setFtForm] = useState({ name: '', base_model: '', method: 'loRA' })
+  const [ftCreating, setFtCreating] = useState(false)
+  const [ftLoading, setFtLoading] = useState(false)
+
+  const loadFinetuneTasks = async () => {
+    setFtLoading(true)
+    try {
+      const r = await fetch('/api/v1/ai/finetune/tasks')
+      if (r.ok) setFinetuneTasks(await r.json())
+    } catch {}
+    setFtLoading(false)
+  }
+
+  const createFinetuneTask = async () => {
+    if (!ftForm.name.trim()) return toast.error('请填写任务名')
+    if (!ftForm.base_model) return toast.error('请选择基座模型')
+    setFtCreating(true)
+    try {
+      const r = await fetch('/api/v1/ai/finetune/tasks', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: ftForm.name, base_model: ftForm.base_model, method: ftForm.method }),
+      })
+      const d = await r.json().catch(() => ({}))
+      if (!r.ok) { toast.error(`创建失败: ${d.error || r.status}`); return }
+      toast.success('微调任务已创建，产物将自动注册进模型池')
+      setFtForm({ name: '', base_model: '', method: 'loRA' })
+      loadFinetuneTasks()
+    } catch (e: any) { toast.error(`创建失败: ${e.message}`) } finally { setFtCreating(false) }
   }
   
   const loadCustomTools = async () => {
@@ -596,8 +641,7 @@ export default function AISettingsPage() {
             </CardContent>
           </Card>
 
-          {/* 训练数据集导出(P3-1 反馈驱动微调): 人机反馈 + 处置案例 → JSONL */}
-          <Card>
+          {/* 训练数据集导出(P3-1 反馈驱动微调): 人机反馈 + 处置案例 → JSONL */}          <Card>
             <CardHeader className="pb-2">
               <CardTitle className="text-base flex items-center gap-2"><Database className="h-4 w-4" />训练数据集（反馈驱动微调）</CardTitle>
               <CardDescription>将用户反馈（点赞/点踩 + 对话上下文）与处置案例（知识库）导出为标准 JSONL 微调数据集，用于持续改进模型。</CardDescription>
@@ -622,6 +666,65 @@ export default function AISettingsPage() {
                   <div className="rounded-lg bg-muted/50 px-3 py-2"><div className="text-[11px] text-muted-foreground">点赞偏好</div><div className="text-lg font-semibold text-emerald-500">{datasetStats.preference_up}</div></div>
                   <div className="rounded-lg bg-muted/50 px-3 py-2"><div className="text-[11px] text-muted-foreground">点踩偏好</div><div className="text-lg font-semibold text-red-500">{datasetStats.preference_down}</div></div>
                   <div className="rounded-lg bg-muted/50 px-3 py-2"><div className="text-[11px] text-muted-foreground">处置案例</div><div className="text-lg font-semibold text-blue-500">{datasetStats.disposal_cases}</div></div>
+                </div>
+              )}
+            </CardContent>
+          </Card>
+
+          {/* 微调任务(L3-1): 数据集 -> 微调 -> 产物自动注册进模型池 */}
+          <Card>
+            <CardHeader className="pb-2">
+              <CardTitle className="text-base flex items-center gap-2"><Sparkles className="h-4 w-4" />微调任务（领域模型）</CardTitle>
+              <CardDescription>基于训练数据集对基座模型执行领域微调，产物自动注册进模型池供 Agent 选用（LoRA 推荐）。</CardDescription>
+            </CardHeader>
+            <CardContent>
+              <div className="flex gap-2 items-end mb-3">
+                <div className="flex-1">
+                  <label className="text-xs text-muted-foreground">任务名</label>
+                  <Input className="mt-1" value={ftForm.name} onChange={e => setFtForm(f => ({ ...f, name: e.target.value }))} placeholder="如: 容量预测微调" />
+                </div>
+                <div className="flex-1">
+                  <label className="text-xs text-muted-foreground">基座模型</label>
+                  <select className="mt-1 h-10 w-full rounded-md border border-input bg-background px-2 text-sm" value={ftForm.base_model} onChange={e => setFtForm(f => ({ ...f, base_model: e.target.value }))}>
+                    <option value="">选择基座</option>
+                    {modelPool.map(m => <option key={m.name} value={m.model}>{m.name}（{m.model}）</option>)}
+                  </select>
+                </div>
+                <div className="w-28">
+                  <label className="text-xs text-muted-foreground">方式</label>
+                  <select className="mt-1 h-10 w-full rounded-md border border-input bg-background px-2 text-sm" value={ftForm.method} onChange={e => setFtForm(f => ({ ...f, method: e.target.value }))}>
+                    <option value="loRA">loRA</option>
+                    <option value="full">full</option>
+                    <option value="api">api</option>
+                  </select>
+                </div>
+                <Button size="sm" className="gap-1" onClick={createFinetuneTask} disabled={ftCreating}>
+                  <Sparkles className="h-3.5 w-3.5" />创建任务
+                </Button>
+              </div>
+              <div className="flex items-center gap-2">
+                <Button size="sm" variant="outline" className="gap-1" onClick={loadFinetuneTasks} disabled={ftLoading}>
+                  <RefreshCw className={cn('h-3 w-3', ftLoading && 'animate-spin')} />刷新任务
+                </Button>
+                <span className="text-[11px] text-muted-foreground">训练集来自上方「训练数据集」导出（JSONL）</span>
+              </div>
+              {finetuneTasks.length === 0 ? (
+                <p className="text-xs text-muted-foreground py-3">暂无微调任务。创建后产物自动注册进模型池，Agent 可在表单中选择。</p>
+              ) : (
+                <div className="mt-2 space-y-2">
+                  {finetuneTasks.slice(0, 5).map(t => (
+                    <div key={t.id} className="flex items-center justify-between rounded-lg bg-muted/50 px-3 py-2">
+                      <div className="min-w-0">
+                        <div className="text-sm font-medium truncate">{t.name} <span className="text-xs text-muted-foreground ml-1">{t.base_model} · {t.method}</span></div>
+                        <div className="text-[11px] text-muted-foreground truncate">
+                          {t.result_provider_name ? `已注册: ${t.result_provider_name}（${t.result_model}）` : t.error || new Date(t.created_at).toLocaleString()}
+                        </div>
+                      </div>
+                      <Badge variant={t.status === 'succeeded' ? 'success' : t.status === 'failed' ? 'destructive' : t.status === 'training' ? 'warning' : 'secondary'} className="shrink-0">
+                        {t.status === 'succeeded' ? '成功' : t.status === 'failed' ? '失败' : t.status === 'training' ? '训练中' : '排队'}
+                      </Badge>
+                    </div>
+                  ))}
                 </div>
               )}
             </CardContent>
