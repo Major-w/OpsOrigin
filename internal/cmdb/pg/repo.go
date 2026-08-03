@@ -208,6 +208,27 @@ func (r *Repository) BulkCreateCI(ctx context.Context, cis []*model.CIModel, tra
 	return tx.Commit()
 }
 
+// incomingFieldSource 推断本次更新中某字段的来源（用于字段级 anti-flapping 比较）。
+// 采集链路已在 AttributeMeta 中显式注入具体来源(cloud_api/agent)，否则回退到 channel 推导。
+func incomingFieldSource(ci *model.CIModel, k string, ch model.ChannelWeight) model.SourceKind {
+	if ci.AttributeMeta != nil {
+		if m, ok := ci.AttributeMeta[k]; ok {
+			return m.Source
+		}
+	}
+	return model.SourceFromChannelWeight(ch)
+}
+
+// existingFieldSource 推断既有 CI 中某字段的来源；无字段级 meta 时回退到 CI 级 channel。
+func existingFieldSource(existing *model.CIModel, k string) model.SourceKind {
+	if existing.AttributeMeta != nil {
+		if m, ok := existing.AttributeMeta[k]; ok {
+			return m.Source
+		}
+	}
+	return model.SourceFromChannelWeight(existing.Channel)
+}
+
 func (r *Repository) UpdateCI(ctx context.Context, ci *model.CIModel, channel model.ChannelWeight, traceID string) error {
 	existing, err := r.getCIByID(ctx, ci.ID)
 	if err != nil {
@@ -217,14 +238,12 @@ func (r *Repository) UpdateCI(ctx context.Context, ci *model.CIModel, channel mo
 		return errors.New("ci not found")
 	}
 
-	if channel < model.ChannelWeight(existing.Channel) {
-		return fmt.Errorf("%w: got %d, existing %d (anti-flapping)",
-			ErrAntiFlapping, channel, existing.Channel)
-	}
-
+	// 字段级 anti-flapping：不再整 CI 拦截。
+	// 仅当某字段的「既有来源权重」高于「本次来源权重」时跳过该字段，其余字段照常刷新——
+	// 人工(manual,100)字段天然高于采集(≤30)，故不被覆盖，但同一 CI 上采集可继续刷新其它非人工字段。
 	changed := false
 	changeLog := make([]model.AttributeChange, 0)
-	changedKeys := make(map[string]bool)
+	appliedKeys := make(map[string]bool)
 
 	ci.UpdatedAt = time.Now()
 
@@ -233,8 +252,12 @@ func (r *Repository) UpdateCI(ctx context.Context, ci *model.CIModel, channel mo
 		if exists && deepEqual(oldVal, newVal) {
 			continue
 		}
+		// 字段级信任权重比较：低信任来源不得覆盖高信任字段
+		if !model.ShouldOverwriteField(incomingFieldSource(ci, k, channel), existingFieldSource(existing, k)) {
+			continue
+		}
 		changed = true
-		changedKeys[k] = true
+		appliedKeys[k] = true
 		changeLog = append(changeLog, model.AttributeChange{
 			CIID:      ci.ID,
 			AttrName:  k,
@@ -247,6 +270,13 @@ func (r *Repository) UpdateCI(ctx context.Context, ci *model.CIModel, channel mo
 
 	if !changed {
 		return nil
+	}
+
+	// CI 级 channel 列记录该 CI 的最高信任来源；采集(低权重)不得把人工(高权重)留下的
+	// 整 CI 信任等级拉低。逐字段的 changeLog 仍使用真实入参 channel，如实记录本次来源。
+	effectiveChannel := channel
+	if existing.Channel > effectiveChannel {
+		effectiveChannel = existing.Channel
 	}
 
 	attrsJSON, err := json.Marshal(ci.Attributes)
@@ -264,7 +294,7 @@ func (r *Repository) UpdateCI(ctx context.Context, ci *model.CIModel, channel mo
 		merged[k] = v
 	}
 	fallback := model.SourceFromChannelWeight(channel)
-	for k := range changedKeys {
+	for k := range appliedKeys {
 		if m, ok := ci.AttributeMeta[k]; ok {
 			merged[k] = m
 		} else {
@@ -290,7 +320,7 @@ func (r *Repository) UpdateCI(ctx context.Context, ci *model.CIModel, channel mo
 		UPDATE cmdb_ci SET name=$1, description=$2, status=$3, attributes=$4, labels=$5, channel=$6, updated_at=$7, attribute_meta=$8
 		WHERE id=$9 AND tenant_id=$10`,
 		ci.Name, nullIfEmpty(ci.Description), string(ci.Status), attrsJSON, labelsJSON,
-		int(channel), ci.UpdatedAt, metaJSON, ci.ID, ci.TenantID)
+		int(effectiveChannel), ci.UpdatedAt, metaJSON, ci.ID, ci.TenantID)
 	if err != nil {
 		return fmt.Errorf("update ci: %w", err)
 	}

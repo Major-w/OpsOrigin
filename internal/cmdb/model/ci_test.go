@@ -33,6 +33,27 @@ func TestSourceFromChannelWeight(t *testing.T) {
 	}
 }
 
+func TestShouldOverwriteField(t *testing.T) {
+	// 人工字段不可被任何采集来源覆盖
+	if ShouldOverwriteField(SourceCloudAPI, SourceManual) {
+		t.Error("cloud_api must NOT overwrite manual")
+	}
+	if ShouldOverwriteField(SourceAgent, SourceManual) {
+		t.Error("agent must NOT overwrite manual")
+	}
+	// 同/高权重采集源之间可相互刷新（新值胜出）
+	if !ShouldOverwriteField(SourceCloudAPI, SourceDiscovery) {
+		t.Error("cloud_api should overwrite discovery (equal-or-higher weight)")
+	}
+	if !ShouldOverwriteField(SourceAgent, SourceCloudAPI) {
+		t.Error("agent should overwrite cloud_api (equal weight)")
+	}
+	// 人工可覆盖采集
+	if !ShouldOverwriteField(SourceManual, SourceCloudAPI) {
+		t.Error("manual should overwrite cloud_api")
+	}
+}
+
 func TestBuildAttrMeta(t *testing.T) {
 	attrs := map[string]any{"ip": "1.2.3.4", "os": "linux"}
 	now := time.Now()

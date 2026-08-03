@@ -132,6 +132,14 @@ func BuildAttrMeta(attrs map[string]any, src SourceKind, now time.Time) map[stri
 	return m
 }
 
+// ShouldOverwriteField 字段级 anti-flapping 决策：返回 true 表示新来源可覆盖既有字段。
+// 规则：仅当新来源信任权重 >= 既有来源权重时允许覆盖。
+// 人工录入(manual,100) 永远高于采集来源(≤30)，因此采集链路不会覆盖人工改过的字段，
+// 但仍可继续刷新同一 CI 上其它非人工字段（从整 CI 级拦截升级到字段级）。
+func ShouldOverwriteField(incoming, existing SourceKind) bool {
+	return SourceWeight(incoming) >= SourceWeight(existing)
+}
+
 type CIRelation struct {
 	ID           string `json:"id"`
 	TenantID     string `json:"tenant_id"`
