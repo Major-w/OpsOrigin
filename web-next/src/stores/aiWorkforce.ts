@@ -102,12 +102,19 @@ export interface Escalation {
   created_at: string
 }
 
+/** 对比实验元数据(策略优化 A/B) */
+export interface ExperimentMeta {
+  prompt_override?: string
+  scope_override?: string
+  created_by?: string
+}
+
 /** 巡检运行记录 */
 export interface InspectionRun {
   id: string
   inspection_id: string
   tenant_id: string
-  triggered_by: 'scheduled' | 'manual'
+  triggered_by: 'scheduled' | 'manual' | 'experiment'
   status: 'running' | 'success' | 'failed'
   summary: string
   findings?: string
@@ -116,6 +123,8 @@ export interface InspectionRun {
   finished_at?: string
   /** 已转工单的发现 */
   escalations?: Escalation[]
+  /** 对比实验元数据(非实验运行为空) */
+  experiment?: ExperimentMeta
 }
 
 /** 创建/更新巡检任务的入参 */
@@ -160,6 +169,8 @@ interface WorkforceState {
   updateInspection: (id: string, payload: InspectionPayload) => Promise<boolean>
   deleteInspection: (id: string) => Promise<boolean>
   runInspection: (id: string) => Promise<boolean>
+  /** 执行一次对比实验(策略优化): 用覆盖 prompt/scope 跑同一巡检 */
+  runExperiment: (id: string, meta: ExperimentMeta) => Promise<InspectionRun | null>
   loadRuns: (id: string) => Promise<void>
   /** 将某次巡检运行记录中达到指定级别(含)的发现转 ITSM 工单, 返回更新后的运行记录 */
   escalateRun: (inspectionId: string, runId: string, severity?: 'high' | 'medium' | 'low') => Promise<InspectionRun | null>
@@ -328,6 +339,28 @@ export const useWorkforceStore = create<WorkforceState>((set, get) => ({
     }
   },
 
+  runExperiment: async (id, meta) => {
+    set(s => ({ running: [...s.running, id] }))
+    try {
+      const run = await apiFetch<InspectionRun>(`/ai/inspections/${id}/experiment`, {
+        method: 'POST',
+        body: JSON.stringify(meta),
+      })
+      if (run.status === 'failed') {
+        toast.error(`实验执行失败: ${run.error || '未知错误'}`)
+      } else {
+        toast.success('实验运行完成，已与基线并列展示')
+      }
+      await Promise.all([get().loadInspections(), get().loadRuns(id)])
+      return run.status === 'failed' ? null : run
+    } catch (e: unknown) {
+      toast.error(`实验执行失败: ${(e as Error).message}`)
+      return null
+    } finally {
+      set(s => ({ running: s.running.filter(r => r !== id) }))
+    }
+  },
+
   loadRuns: async (id) => {
     try {
       const list = await apiList<InspectionRun>(`/ai/inspections/${id}/runs`)
@@ -389,11 +422,12 @@ export function useInspections() {
   const updateInspection = useWorkforceStore(s => s.updateInspection)
   const deleteInspection = useWorkforceStore(s => s.deleteInspection)
   const runInspection = useWorkforceStore(s => s.runInspection)
+  const runExperiment = useWorkforceStore(s => s.runExperiment)
   const loadRuns = useWorkforceStore(s => s.loadRuns)
   const escalateRun = useWorkforceStore(s => s.escalateRun)
   return {
     inspectionTemplates, inspections, loading, runs, running, escalating,
     loadInspectionTemplates, loadInspections,
-    createInspection, updateInspection, deleteInspection, runInspection, loadRuns, escalateRun,
+    createInspection, updateInspection, deleteInspection, runInspection, runExperiment, loadRuns, escalateRun,
   }
 }

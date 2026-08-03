@@ -20,7 +20,7 @@ import {
 import { useAIStore } from '@/stores/ai'
 import {
   RadarIcon, Plus, RefreshCw, Play, Trash2, Edit, History,
-  AlertTriangle, CheckCircle2, XCircle, Clock, FileText, ArrowUpRight,
+  AlertTriangle, CheckCircle2, XCircle, Clock, FileText, ArrowUpRight, FlaskConical,
 } from 'lucide-react'
 
 // ----------------------------- 常量与工具 -----------------------------
@@ -118,7 +118,7 @@ export default function InspectionsPage() {
   const {
     inspectionTemplates, inspections, loading, runs, running, escalating,
     loadInspectionTemplates, loadInspections,
-    createInspection, updateInspection, deleteInspection, runInspection, loadRuns, escalateRun,
+    createInspection, updateInspection, deleteInspection, runInspection, runExperiment, loadRuns, escalateRun,
   } = useInspections()
   const agents = useAIStore(s => s.agents)
   const fetchAgents = useAIStore(s => s.fetchAgents)
@@ -128,6 +128,9 @@ export default function InspectionsPage() {
   const [saving, setSaving] = useState(false)
   const [historyOf, setHistoryOf] = useState<Inspection | null>(null)
   const [report, setReport] = useState<InspectionRun | null>(null)
+  const [expTarget, setExpTarget] = useState<Inspection | null>(null)
+  const [expPrompt, setExpPrompt] = useState('')
+  const [expScope, setExpScope] = useState('')
 
   useEffect(() => {
     loadInspectionTemplates()
@@ -242,6 +245,23 @@ export default function InspectionsPage() {
     if (updated) setReport(updated)
   }
 
+  const openExperiment = (i: Inspection) => {
+    setExpTarget(i)
+    setExpPrompt(i.prompt)
+    setExpScope(i.scope)
+  }
+
+  const confirmExperiment = async () => {
+    if (!expTarget) return
+    const meta = {
+      prompt_override: expPrompt.trim() || undefined,
+      scope_override: expScope.trim() || undefined,
+    }
+    const run = await runExperiment(expTarget.id, meta)
+    if (run) setReport(run)
+    setExpTarget(null)
+  }
+
   return (
     <div className="p-6 space-y-5">
       {/* 页头 */}
@@ -353,6 +373,9 @@ export default function InspectionsPage() {
                         <Play className={cn('h-3.5 w-3.5', isRunning && 'animate-pulse')} />
                         {isRunning ? '巡检中…' : '立即巡检'}
                       </Button>
+                      <Button size="sm" variant="ghost" className="gap-1 text-xs" title="对比实验(策略优化)" onClick={() => openExperiment(i)}>
+                        <FlaskConical className="h-3.5 w-3.5" />实验
+                      </Button>
                       <Button size="sm" variant="ghost" onClick={() => openHistory(i)} title="运行历史">
                         <History className="h-4 w-4" />
                       </Button>
@@ -433,7 +456,12 @@ export default function InspectionsPage() {
                   <div className="flex items-center justify-between gap-3 flex-wrap">
                     <div className="flex items-center gap-2">
                       {meta && <Badge variant={meta.variant} className="gap-1"><meta.Icon className="h-3 w-3" />{meta.label}</Badge>}
-                      <Badge variant="outline">{r.triggered_by === 'manual' ? '手动' : '定时'}</Badge>
+                      <Badge variant="outline">{r.triggered_by === 'manual' ? '手动' : r.triggered_by === 'experiment' ? '实验' : '定时'}</Badge>
+                      {r.triggered_by === 'experiment' && (
+                        <Badge variant="info" className="gap-1 text-[10px]">
+                          <FlaskConical className="h-3 w-3" />A/B
+                        </Badge>
+                      )}
                       <span className="text-xs text-muted-foreground">{fmtTime(r.started_at)}</span>
                       {high > 0 && (
                         <span className="inline-flex items-center gap-1 text-xs text-red-500">
@@ -543,6 +571,31 @@ export default function InspectionsPage() {
           <Button variant="outline" onClick={() => setReport(null)}>关闭</Button>
         </DialogFooter>
       </WideDialog>
+
+      {/* 对比实验（策略优化 A/B） */}
+      <Dialog open={!!expTarget} onClose={() => setExpTarget(null)} title="巡检对比实验">
+        {expTarget && (
+          <div className="space-y-3">
+            <p className="text-sm text-muted-foreground">
+              用覆盖的巡检指令与范围跑一次「{expTarget.name}」，结果带「实验」标记与基线并列，用于对比不同策略的巡检质量。
+            </p>
+            <div>
+              <label className="text-xs text-muted-foreground">实验指令（覆盖巡检 prompt）</label>
+              <Textarea className="mt-1" value={expPrompt} onChange={e => setExpPrompt(e.target.value)} placeholder="尝试不同的巡检口径…" />
+            </div>
+            <div>
+              <label className="text-xs text-muted-foreground">实验范围（覆盖巡检 scope）</label>
+              <Input className="mt-1" value={expScope} onChange={e => setExpScope(e.target.value)} placeholder="留空沿用任务范围" />
+            </div>
+          </div>
+        )}
+        <DialogFooter>
+          <Button variant="outline" onClick={() => setExpTarget(null)}>取消</Button>
+          <Button onClick={confirmExperiment} disabled={running.includes(expTarget?.id || '')}>
+            <FlaskConical className="h-4 w-4 mr-1" />运行实验
+          </Button>
+        </DialogFooter>
+      </Dialog>
     </div>
   )
 }

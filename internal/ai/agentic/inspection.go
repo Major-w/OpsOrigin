@@ -73,6 +73,8 @@ type InspectionRun struct {
 	FinishedAt   *time.Time `json:"finished_at,omitempty"`
 	// Escalations 已转工单的发现记录(通过 /runs/{id}/escalate 追加)。
 	Escalations []Escalation `json:"escalations,omitempty"`
+	// Experiment 对比实验元数据(策略优化 A/B), 非实验运行时为 nil。
+	Experiment *ExperimentMeta `json:"experiment,omitempty"`
 }
 
 // InspectionFinding 巡检发现的通用结构(findings JSON 数组元素)。
@@ -330,10 +332,28 @@ func (e *Engine) ListInspectionRuns(inspectionID string) []*InspectionRun {
 	return out
 }
 
+// ExperimentMeta 一次对比实验(策略优化)的覆盖参数。
+// 仅影响该次运行, 不改动巡检任务本身的 prompt/scope。
+type ExperimentMeta struct {
+	PromptOverride string `json:"prompt_override,omitempty"` // 覆盖巡检指令(空=沿用任务 prompt)
+	ScopeOverride  string `json:"scope_override,omitempty"`  // 覆盖巡检范围(空=沿用任务 scope)
+	CreatedBy      string `json:"created_by,omitempty"`      // 发起实验的人(用于审计)
+}
+
 // RunInspection 立即执行一次巡检(手动或定时触发)。
 // 通过 chatWithToolsConv 让 Agent 携带巡检指令作为 system 提示并可使用全部运维工具,
 // 最终报告与结构化发现写回运行记录。无 LLM 时记录失败状态(不阻塞)。
 func (e *Engine) RunInspection(ctx context.Context, id, triggeredBy string) (*InspectionRun, error) {
+	return e.runInspection(ctx, id, triggeredBy, nil)
+}
+
+// RunInspectionExperiment 执行一次对比实验: 用覆盖的 prompt/scope 跑同一巡检任务,
+// 运行记录带 experiment 标记, 便于与基线运行对比(策略优化 A/B)。
+func (e *Engine) RunInspectionExperiment(ctx context.Context, id string, meta *ExperimentMeta) (*InspectionRun, error) {
+	return e.runInspection(ctx, id, "experiment", meta)
+}
+
+func (e *Engine) runInspection(ctx context.Context, id, triggeredBy string, experiment *ExperimentMeta) (*InspectionRun, error) {
 	e.mu.RLock()
 	ins, ok := e.inspections[id]
 	e.mu.RUnlock()
@@ -349,11 +369,26 @@ func (e *Engine) RunInspection(ctx context.Context, id, triggeredBy string) (*In
 		Status:       "running",
 		StartedAt:    time.Now(),
 	}
+	if experiment != nil {
+		run.Experiment = experiment
+	}
 	e.mu.Lock()
 	e.inspectionRuns[id] = append(e.inspectionRuns[id], run)
 	e.mu.Unlock()
 
-	systemPrompt := ins.Prompt
+	// 实验模式下用覆盖参数, 不改动任务本身定义
+	prompt := ins.Prompt
+	scope := ins.Scope
+	if experiment != nil {
+		if experiment.PromptOverride != "" {
+			prompt = experiment.PromptOverride
+		}
+		if experiment.ScopeOverride != "" {
+			scope = experiment.ScopeOverride
+		}
+	}
+
+	systemPrompt := prompt
 	if systemPrompt == "" {
 		systemPrompt = "你是一名主动巡检运维助手, 负责发现潜在风险并给出处置建议。"
 	}
@@ -362,7 +397,7 @@ func (e *Engine) RunInspection(ctx context.Context, id, triggeredBy string) (*In
 		"2. 明确指出发现的异常、风险及严重程度(高/中/低);\n"+
 		"3. 给出可操作的处置建议;\n"+
 		"4. 在文末用 ```json 代码块输出发现清单, 字段: [{\"level\":\"high|medium|low\",\"title\":\"...\",\"detail\":\"...\",\"suggestion\":\"...\"}]。",
-		orDefault(ins.Scope, "全部受管资产"))
+		orDefault(scope, "全部受管资产"))
 
 	history := []llm.Message{{Role: "system", Content: systemPrompt}}
 	summary, _, _, _, err := e.chatWithToolsConv(ctx, ins.AgentID, userPrompt, history, false, "")

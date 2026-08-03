@@ -138,6 +138,7 @@ func (s *Service) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("PUT /api/v1/ai/inspections/{id}", s.handleUpdateInspection)
 	mux.HandleFunc("DELETE /api/v1/ai/inspections/{id}", s.handleDeleteInspection)
 	mux.HandleFunc("POST /api/v1/ai/inspections/{id}/run", s.handleRunInspection)
+	mux.HandleFunc("POST /api/v1/ai/inspections/{id}/experiment", s.handleRunInspectionExperiment)
 	mux.HandleFunc("GET /api/v1/ai/inspections/{id}/runs", s.handleListInspectionRuns)
 	mux.HandleFunc("POST /api/v1/ai/inspections/{id}/runs/{runID}/escalate", s.handleEscalateInspectionRun)
 

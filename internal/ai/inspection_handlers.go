@@ -116,6 +116,31 @@ func (s *Service) handleRunInspection(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, run)
 }
 
+// handleRunInspectionExperiment 执行一次对比实验(策略优化 A/B): 用覆盖的 prompt/scope
+// 跑同一巡检任务, 运行记录带 experiment 标记, 与基线运行并列对比。
+// body 可选: {"prompt_override":"...", "scope_override":"..."}。需 ai:tool:exec 权限。
+func (s *Service) handleRunInspectionExperiment(w http.ResponseWriter, r *http.Request) {
+	if !s.authorize(w, r, auth.PermissionAIToolExec) {
+		return
+	}
+	existing, ok := s.Engine.GetInspection(r.PathValue("id"))
+	if !ok || existing.TenantID != tenantFromCtx(r.Context()) {
+		writeError(w, http.StatusNotFound, "inspection not found")
+		return
+	}
+	var req agentic.ExperimentMeta
+	_ = json.NewDecoder(r.Body).Decode(&req)
+	if req.CreatedBy == "" {
+		req.CreatedBy = tenantFromCtx(r.Context())
+	}
+	run, err := s.Engine.RunInspectionExperiment(r.Context(), r.PathValue("id"), &req)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, run)
+}
+
 // handleListInspectionRuns 列出某巡检任务的历史运行记录(最新在前)。
 func (s *Service) handleListInspectionRuns(w http.ResponseWriter, r *http.Request) {
 	existing, ok := s.Engine.GetInspection(r.PathValue("id"))
