@@ -14,3 +14,10 @@ logs/
 .run/
 .env
 tsconfig.tsbuildinfo
+
+# ent ORM 生成代码：由 `go generate ./internal/ent/...` 重新生成（详见 tools/tools.go），
+# 不入库。仅保留手写入口 generate.go 与 schema 定义。
+internal/ent/*.go
+!internal/ent/generate.go
+internal/ent/*/
+!internal/ent/schema/
