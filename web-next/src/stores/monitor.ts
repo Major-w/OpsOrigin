@@ -35,8 +35,19 @@ export interface AlertEvent {
   description?: string
   is_suppressed: boolean
   root_cause_ci?: string
+  cluster_id?: string
   triggered_at: string
   resolved_at?: string
+}
+
+/** 启发式根因分析候选(按评分降序) */
+export interface RCAEntry {
+  ci_id: string
+  rule_name: string
+  title: string
+  severity: string
+  score: number
+  triggered_at: string
 }
 
 export interface AlertRule {
@@ -56,6 +67,7 @@ interface MonitorState {
   alertHistory: AlertEvent[]   // 已确认/已解决的处理历史
   rules: AlertRule[]
   alertStats: Record<string, number>
+  rcaEntries: RCAEntry[]
   probeResult: ProbeResult | null
   probeResults: any[]
   loading: boolean
@@ -66,6 +78,7 @@ interface MonitorState {
   fetchAlerts: () => Promise<void>
   fetchAlertHistory: () => Promise<void>
   fetchAlertStats: () => Promise<void>
+  fetchRCA: () => Promise<void>
   ackAlert: (id: string) => Promise<boolean>
   resolveAlert: (id: string) => Promise<boolean>
   fetchRules: () => Promise<void>
@@ -77,7 +90,7 @@ interface MonitorState {
 
 export const useMonitorStore = create<MonitorState>((set, get) => ({
   targets: [], alerts: [], alertHistory: [], rules: [], alertStats: {},
-  probeResult: null, probeResults: [], loading: false, error: null,
+  rcaEntries: [], probeResult: null, probeResults: [], loading: false, error: null,
 
   fetchTargets: async () => {
     set({ loading: true })
@@ -137,6 +150,14 @@ export const useMonitorStore = create<MonitorState>((set, get) => ({
     } catch (e: any) {
       set({ loading: false })
       toast.error(`加载告警统计失败: ${e.message}`)
+    }
+  },
+  fetchRCA: async () => {
+    try {
+      const entries = await apiList<RCAEntry>('/monitor/alerts/rca')
+      set({ rcaEntries: entries || [] })
+    } catch (e: any) {
+      toast.error(`加载根因分析失败: ${e.message}`)
     }
   },
   ackAlert: async (id) => {

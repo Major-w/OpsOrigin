@@ -1,7 +1,7 @@
 'use client'
 
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { useMonitorStore, type AlertEvent } from '@/stores/monitor'
+import { useMonitorStore, type AlertEvent, type RCAEntry } from '@/stores/monitor'
 import { useAIStore } from '@/stores/ai'
 import { renderMarkdown } from '@/lib/ai-render'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
@@ -12,7 +12,7 @@ import { Dialog, DialogFooter } from '@/components/ui/dialog'
 import { formatTime, cn } from '@/lib/utils'
 import { useWebSocket } from '@/lib/useWebSocket'
 import { useCan } from '@/stores/permissions'
-import { AlertTriangle, CheckCircle, XCircle, Eye, Search, Loader2, History, Sparkles, Bot } from 'lucide-react'
+import { AlertTriangle, CheckCircle, XCircle, Eye, Search, Loader2, History, Sparkles, Bot, Radar, Layers } from 'lucide-react'
 
 const severityVariant: Record<string, 'destructive' | 'warning' | 'secondary'> = { critical: 'destructive', high: 'destructive', warning: 'warning', info: 'secondary' }
 const severityLabel: Record<string, string> = { critical: '严重', high: '严重', warning: '警告', info: '提示' }
@@ -20,13 +20,16 @@ const SEVERITIES = ['critical', 'warning', 'info']
 
 export default function MonitorAlertsPage() {
   const store = useMonitorStore()
-  const { alerts, alertHistory, loading } = store
+  const { alerts, alertHistory, loading, rcaEntries } = store
   const canWrite = useCan('monitor:write')
   const [view, setView] = useState<'active' | 'history'>('active')
   const [severity, setSeverity] = useState('')
   const [keyword, setKeyword] = useState('')
   const [detail, setDetail] = useState<AlertEvent | null>(null)
   const [dialog, setDialog] = useState(false)
+  // —— RCA 根因分析(P0) ——
+  const [rcaOpen, setRcaOpen] = useState(false)
+  const [rcaLoading, setRcaLoading] = useState(false)
   // —— AI 告警分析 ——
   const streamChat = useAIStore(s => s.streamChat)
   const [analyzeAlert, setAnalyzeAlert] = useState<AlertEvent | null>(null)
@@ -38,7 +41,15 @@ export default function MonitorAlertsPage() {
     store.fetchAlerts()
     store.fetchAlertHistory()
     store.fetchAlertStats()
+    store.fetchRCA()
   }, [])
+
+  const openRCA = async () => {
+    setRcaOpen(true)
+    setRcaLoading(true)
+    await store.fetchRCA()
+    setRcaLoading(false)
+  }
 
   useEffect(() => { refresh() }, [refresh])
 
@@ -137,6 +148,9 @@ export default function MonitorAlertsPage() {
           <option value="">全部严重度</option>
           {SEVERITIES.map(s => <option key={s} value={s}>{severityLabel[s] || s}</option>)}
         </select>
+        <Button variant="outline" size="sm" className="gap-1 text-emerald-600 dark:text-emerald-400 border-emerald-500/30 hover:bg-emerald-500/10" onClick={openRCA}>
+          <Radar className="h-3.5 w-3.5" />根因分析
+        </Button>
       </div>
 
       <Card>
@@ -167,7 +181,10 @@ export default function MonitorAlertsPage() {
                       <td className="py-2 px-4 text-muted-foreground text-xs hidden lg:table-cell">{a.source_ci_id || '-'}</td>
                       <td className="py-2 px-4 text-muted-foreground text-xs whitespace-nowrap">{formatTime(a.triggered_at)}</td>
                       <td className="py-2 px-4 hidden md:table-cell">
-                        {a.resolved_at ? <Badge variant="success" className="text-[10px]">已解决</Badge> : a.is_suppressed ? <Badge variant="warning" className="text-[10px]">已抑制</Badge> : <Badge variant="destructive" className="text-[10px]">未处理</Badge>}
+                        <div className="flex flex-wrap gap-1">
+                          {a.resolved_at ? <Badge variant="success" className="text-[10px]">已解决</Badge> : a.is_suppressed ? <Badge variant="warning" className="text-[10px]">已抑制</Badge> : <Badge variant="destructive" className="text-[10px]">未处理</Badge>}
+                          {a.cluster_id && <Badge variant="outline" className="text-[10px] gap-1"><Layers className="h-2.5 w-2.5" />聚类</Badge>}
+                        </div>
                       </td>
                       <td className="py-2 px-4">
                         <div className="flex gap-1">
@@ -220,6 +237,43 @@ export default function MonitorAlertsPage() {
               <Button variant="outline" size="sm" onClick={() => handleResolve(detail)} disabled={!canWrite}><XCircle className="h-3 w-3 mr-1" />解决</Button>
             </>
           )}
+        </DialogFooter>
+      </Dialog>
+
+      {/* RCA 根因分析弹窗(P0 启发式: 拓扑 + 严重度 + 触发时序评分) */}
+      <Dialog open={rcaOpen} onClose={() => setRcaOpen(false)} title="根因分析（活跃告警）">
+        <div className="space-y-3">
+          <p className="text-xs text-muted-foreground">
+            基于拓扑关系 + 严重度权重 + 触发时序的启发式评分。分数越高越可能是根因源头（祖先节点、更早触发、更严重优先）。
+          </p>
+          {rcaLoading ? (
+            <p className="py-6 text-sm text-muted-foreground text-center flex items-center justify-center gap-2"><Loader2 className="h-4 w-4 animate-spin" />分析中...</p>
+          ) : rcaEntries.length === 0 ? (
+            <p className="py-6 text-sm text-muted-foreground text-center">暂无活跃告警，无需根因分析。</p>
+          ) : (
+            <div className="space-y-2">
+              {rcaEntries.map((r, i) => (
+                <div key={r.ci_id + i} className="flex items-center gap-3 rounded-lg border border-border p-2.5">
+                  <div className={cn('w-6 h-6 rounded-full flex items-center justify-center text-xs font-semibold shrink-0', i === 0 ? 'bg-red-500/15 text-red-500' : 'bg-muted text-muted-foreground')}>
+                    {i + 1}
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <div className="text-sm font-medium truncate">{r.title}</div>
+                    <div className="text-[11px] text-muted-foreground truncate">
+                      CI: {r.ci_id} · 规则: {r.rule_name} · 触发: {formatTime(r.triggered_at)}
+                    </div>
+                  </div>
+                  <div className="text-right shrink-0">
+                    <Badge variant={r.severity === 'critical' || r.severity === 'high' ? 'destructive' : 'warning'} className="text-[10px]">{severityLabel[r.severity] || r.severity}</Badge>
+                    <div className="text-xs font-semibold mt-1 text-emerald-600 dark:text-emerald-400">{r.score.toFixed(2)}</div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+        <DialogFooter>
+          <Button variant="outline" onClick={() => setRcaOpen(false)}>关闭</Button>
         </DialogFooter>
       </Dialog>
 

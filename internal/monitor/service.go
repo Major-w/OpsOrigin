@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"log/slog"
 	"net/http"
+	"strconv"
 	"sync"
 	"time"
 
@@ -77,6 +78,7 @@ func (s *Service) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/v1/monitor/probe", s.handleRunProbe)
 	mux.HandleFunc("GET /api/v1/monitor/alerts", s.handleListAlerts)
 	mux.HandleFunc("GET /api/v1/monitor/alert-stats", s.handleAlertStats)
+	mux.HandleFunc("GET /api/v1/monitor/alerts/rca", s.handleAlertRCA)
 	mux.HandleFunc("POST /api/v1/monitor/alerts/{id}/ack", s.handleAckAlert)
 	mux.HandleFunc("POST /api/v1/monitor/alerts/{id}/resolve", s.handleResolveAlert)
 	mux.HandleFunc("GET /api/v1/monitor/rules", s.handleListRules)
@@ -321,6 +323,30 @@ func (s *Service) handleListAlerts(w http.ResponseWriter, r *http.Request) {
 
 func (s *Service) handleAlertStats(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, s.aggregator.GetStats())
+}
+
+// handleAlertRCA 返回活跃告警的启发式根因分析(P0 补短板: 对标 Dynatrace Davis / AISWare RCA)。
+// 基于拓扑 + 严重度 + 触发时序评分, 输出根因候选列表。
+func (s *Service) handleAlertRCA(w http.ResponseWriter, r *http.Request) {
+	tenantID := tenantFromCtx(r.Context())
+	alerts := s.aggregator.GetActiveAlerts()
+	filtered := make([]*model.AlertEvent, 0, len(alerts))
+	for _, a := range alerts {
+		if a.TenantID == tenantID {
+			filtered = append(filtered, a)
+		}
+	}
+	topN := 5
+	if v := r.URL.Query().Get("top"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 && n <= 20 {
+			topN = n
+		}
+	}
+	entries := s.aggregator.AnalyzeRootCause(r.Context(), filtered, topN)
+	if entries == nil {
+		entries = []alert.RCAEntry{}
+	}
+	writeJSON(w, http.StatusOK, entries)
 }
 
 func (s *Service) handleAckAlert(w http.ResponseWriter, r *http.Request) {

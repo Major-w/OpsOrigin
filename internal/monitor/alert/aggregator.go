@@ -149,6 +149,10 @@ func (a *Aggregator) Ingest(ctx context.Context, alert *model.AlertEvent) (*mode
 		alert.RootCauseCI = rootCause
 	}
 
+	// 告警聚类降噪: 相似告警归簇, 命中已有簇时标记为簇成员(抑制重复通知, 由簇首代表)。
+	clusterID, clustered := a.clusterAlert(ctx, alert)
+	alert.ClusterID = clusterID
+
 	a.mu.Lock()
 	a.activeAlerts[alert.Fingerprint] = alert
 	a.alertHistory = append(a.alertHistory, alert)
@@ -161,12 +165,16 @@ func (a *Aggregator) Ingest(ctx context.Context, alert *model.AlertEvent) (*mode
 	notifyFn := a.onNotify
 	a.mu.Unlock()
 
-	if !alert.IsSuppressed && notifyFn != nil {
+	if !alert.IsSuppressed && !clustered && notifyFn != nil {
 		notifyFn(alert)
 	}
 
 	if alert.IsSuppressed {
 		slog.Debug("alert suppressed", "title", alert.Title, "root_cause", alert.RootCauseCI)
+		return alert, nil
+	}
+	if clustered {
+		slog.Debug("alert clustered (no duplicate notify)", "cluster", clusterID, "title", alert.Title)
 		return alert, nil
 	}
 
@@ -296,6 +304,7 @@ func (a *Aggregator) GetStats() map[string]any {
 	a.mu.RLock()
 	defer a.mu.RUnlock()
 	critical, warning, info := 0, 0, 0
+	clusters := map[string]bool{}
 	for _, alert := range a.activeAlerts {
 		switch alert.Severity {
 		case model.AlertCritical:
@@ -305,6 +314,9 @@ func (a *Aggregator) GetStats() map[string]any {
 		default:
 			info++
 		}
+		if alert.ClusterID != "" {
+			clusters[alert.ClusterID] = true
+		}
 	}
 	return map[string]any{
 		"active_alerts":     len(a.activeAlerts),
@@ -312,6 +324,7 @@ func (a *Aggregator) GetStats() map[string]any {
 		"critical":          critical,
 		"warning":           warning,
 		"info":              info,
+		"clusters":          len(clusters), // 告警聚类数(降噪后的独立事件簇)
 	}
 }
 
