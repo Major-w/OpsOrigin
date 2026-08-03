@@ -176,6 +176,30 @@ func NewService(db *sql.DB) *Service {
 	return &Service{store: st}
 }
 
+// CreateArticle 创建一篇知识库文章(供内部模块如 ITSM 工单案例沉淀复用)。
+// 未指定 ID/Status/Author 时自动补全, 默认直接发布。
+func (s *Service) CreateArticle(ctx context.Context, a *Article) error {
+	if a == nil {
+		return fmt.Errorf("article is nil")
+	}
+	if a.Title == "" {
+		return fmt.Errorf("article title required")
+	}
+	if a.ID == "" {
+		a.ID = uuid.New().String()
+	}
+	if a.TenantID == "" {
+		a.TenantID = "default"
+	}
+	if a.Status == "" {
+		a.Status = "published"
+	}
+	if a.Author == "" {
+		a.Author = "system"
+	}
+	return s.store.Create(ctx, a)
+}
+
 func tenantFromCtx(ctx context.Context) string {
 	if t, ok := ctx.Value("tenant_id").(string); ok && t != "" {
 		return t

@@ -11,7 +11,7 @@ import { Dialog, DialogFooter } from '@/components/ui/dialog'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { formatTime, apiFetch, apiList } from '@/lib/utils'
 import { useCan, useCanAny } from '@/stores/permissions'
-import { Plus, Check, X, Play, RotateCcw, Clock, FileText, Activity, ChevronRight, Paperclip, MessageSquare, Upload, Download, Trash2, FileUp, FileDown, BookOpen } from 'lucide-react'
+import { Plus, Check, X, Play, RotateCcw, Clock, FileText, Activity, ChevronRight, Paperclip, MessageSquare, Upload, Download, Trash2, FileUp, FileDown, BookOpen, BookOpenCheck } from 'lucide-react'
 
 const riskBadge: Record<string, 'destructive' | 'warning' | 'secondary' | 'success'> = { critical: 'destructive', high: 'warning', medium: 'secondary', low: 'success' }
 const riskLabels: Record<string, string> = { critical: '致命', high: '高危', medium: '中危', low: '低危' }
@@ -400,6 +400,18 @@ export default function ITSMPage() {
                   {selectedTicket.completed_at && <div><span className="text-muted-foreground">完成时间:</span> {formatTime(selectedTicket.completed_at)}</div>}
                   {selectedTicket.rolled_back_by && <div><span className="text-muted-foreground">回滚人:</span> {selectedTicket.rolled_back_by}</div>}
                   {selectedTicket.rollback_reason && <div className="col-span-3"><span className="text-muted-foreground">回滚原因:</span> <span className="text-amber-400">{selectedTicket.rollback_reason}</span></div>}
+                  {selectedTicket.labels?.source === 'ai_inspection' && (
+                    <div className="col-span-3">
+                      <span className="text-muted-foreground">AI 巡检:</span>{' '}
+                      {selectedTicket.labels?.kb_archived === 'true' ? (
+                        <Badge variant="success" className="text-xs gap-1">
+                          <BookOpenCheck className="h-3 w-3" />已沉淀知识库
+                        </Badge>
+                      ) : (
+                        <Badge variant="secondary" className="text-xs">巡检发现转单</Badge>
+                      )}
+                    </div>
+                  )}
                 </div>
 
                 <Tabs value={detailTab} onValueChange={setDetailTab}>

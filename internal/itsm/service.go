@@ -46,6 +46,8 @@ type Service struct {
 	wsHub        interface{ BroadcastToTenant(interface{}, string) }
 	stopCh       chan struct{}
 	stopOnce     sync.Once
+	// knowledgeArchiver 由 cmd/core 注入: 工单完成后将处置案例沉淀到知识库(nil=关闭)。
+	knowledgeArchiver func(ctx context.Context, tenantID, title, content string, tags []string) (string, error)
 }
 
 func NewService(cfg *config.Config, db *sql.DB) *Service {
@@ -230,6 +232,57 @@ func (s *Service) CreateTicket(ctx context.Context, req model.CreateTicketReques
 	}
 
 	return ticket, nil
+}
+
+// SetKnowledgeArchiver 注入工单完成后的知识库沉淀回调(由 cmd/core 装配)。
+// 仅对来源为 ai_inspection 的工单生效, 且同一工单只沉淀一次(幂等, 通过 labels.kb_archived 标记)。
+func (s *Service) SetKnowledgeArchiver(f func(ctx context.Context, tenantID, title, content string, tags []string) (string, error)) {
+	s.knowledgeArchiver = f
+}
+
+// archiveTicketToKnowledge 工单成功完成后, 将 AI 巡检产生的处置案例自动沉淀到知识库,
+// 供后续 AI 检索复用(持续改进闭环: 发现 → 处置 → 沉淀 → 复用)。
+func (s *Service) archiveTicketToKnowledge(ctx context.Context, ticket *model.Ticket, resultComment string) {
+	if s.knowledgeArchiver == nil {
+		return
+	}
+	if ticket.Labels == nil || ticket.Labels["source"] != "ai_inspection" {
+		return // 仅沉淀 AI 巡检来源的工单
+	}
+	if ticket.Labels["kb_archived"] == "true" {
+		return // 幂等: 已沉淀过
+	}
+
+	title := fmt.Sprintf("[处置案例] %s", ticket.Title)
+	content := "来源: 主动巡检发现并转工单处置\n"
+	if ticket.Description != "" {
+		content += "\n【问题描述】\n" + ticket.Description
+	}
+	content += "\n【风险级别】" + string(ticket.RiskLevel)
+	if resultComment != "" {
+		content += "\n【处置结果】\n" + resultComment
+	}
+	if len(ticket.CIIDs) > 0 {
+		content += "\n【关联资产】" + strings.Join(ticket.CIIDs, ", ")
+	}
+
+	articleID, err := s.knowledgeArchiver(ctx, ticket.TenantID, title, content,
+		[]string{"ai_inspection", "disposal-case", string(ticket.RiskLevel)})
+	if err != nil {
+		slog.Warn("archive ticket to knowledge failed", "ticket_id", ticket.ID, "error", err)
+		return
+	}
+	// 写回标记, 保证同一工单不重复沉淀
+	if ticket.Labels == nil {
+		ticket.Labels = map[string]string{}
+	}
+	ticket.Labels["kb_archived"] = "true"
+	ticket.Labels["kb_article_id"] = articleID
+	if err := s.store.Update(ctx, ticket); err != nil {
+		slog.Warn("persist ticket kb_archived label failed", "ticket_id", ticket.ID, "error", err)
+		return
+	}
+	slog.Info("ticket archived to knowledge", "ticket_id", ticket.ID, "article_id", articleID)
 }
 
 func (s *Service) handleGet(w http.ResponseWriter, r *http.Request) {
@@ -477,6 +530,7 @@ func (s *Service) handleComplete(w http.ResponseWriter, r *http.Request) {
 	s.fireWebhook(r.Context(), "ticket.completed", ticket, req.CompletedBy)
 	s.advanceProcess(r.Context(), ticket, "success")
 	s.broadcastTicketUpdate(ticket)
+	s.archiveTicketToKnowledge(r.Context(), ticket, req.Comment)
 	writeJSON(w, http.StatusOK, ticket)
 }
 

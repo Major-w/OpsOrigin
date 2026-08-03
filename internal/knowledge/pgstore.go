@@ -56,6 +56,13 @@ func (s *pgStore) init(ctx context.Context) {
 	}
 	s.db.ExecContext(ctx, `CREATE INDEX IF NOT EXISTS idx_knowledge_tenant ON knowledge_articles(tenant_id, category)`)
 
+	// P1 内容管理: 文档状态(draft/published) + 版本号 + 浏览数(兼容老库补列)。
+	// 注意: 必须在 pgvector 分支之前执行 —— pgvector 不可用时 init 会提前 return,
+	// 若补列迁移放在其后将被跳过, 导致 INSERT 带 status/views/version 列时报 42703。
+	s.db.ExecContext(ctx, `ALTER TABLE knowledge_articles ADD COLUMN IF NOT EXISTS views INT DEFAULT 0`)
+	s.db.ExecContext(ctx, `ALTER TABLE knowledge_articles ADD COLUMN IF NOT EXISTS status TEXT DEFAULT 'draft'`)
+	s.db.ExecContext(ctx, `ALTER TABLE knowledge_articles ADD COLUMN IF NOT EXISTS version INT DEFAULT 1`)
+
 	// —— 尝试启用 pgvector 语义检索(可选,失败则降级为 ILIKE 关键词匹配) ——
 	if _, err := s.db.ExecContext(ctx, `CREATE EXTENSION IF NOT EXISTS vector`); err != nil {
 		slog.Warn("knowledge: pgvector extension unavailable, falling back to ILIKE search", "err", err)
@@ -67,10 +74,6 @@ func (s *pgStore) init(ctx context.Context) {
 		s.vectorEnabled = false
 		return
 	}
-	// P1 内容管理: 文档状态(draft/published) + 版本号 + 浏览数(兼容老库补列)
-	s.db.ExecContext(ctx, `ALTER TABLE knowledge_articles ADD COLUMN IF NOT EXISTS views INT DEFAULT 0`)
-	s.db.ExecContext(ctx, `ALTER TABLE knowledge_articles ADD COLUMN IF NOT EXISTS status TEXT DEFAULT 'draft'`)
-	s.db.ExecContext(ctx, `ALTER TABLE knowledge_articles ADD COLUMN IF NOT EXISTS version INT DEFAULT 1`)
 	// —— RAG 分块表: 块级向量检索(2026-07-31 P0 增强) ——
 	// 文章按 Markdown 标题层级切成块, 每块独立 embedding, 检索命中"段落级"而非整篇。
 	if _, err := s.db.ExecContext(ctx, `

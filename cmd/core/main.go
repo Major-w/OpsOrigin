@@ -475,6 +475,22 @@ func main() {
 	// 并刷新 knowledge_unindexed_articles 指标(覆盖启动回填之后新出现/失败的 embedding)。
 	knowledgeSvc.StartReindexLoop(context.Background(), 30*time.Second)
 
+	// 持续改进闭环: AI 巡检工单完成后, 处置案例自动沉淀到知识库(供 AI 检索复用)。
+	itsmSvc.SetKnowledgeArchiver(func(ctx context.Context, tenantID, title, content string, tags []string) (string, error) {
+		article := &knowledge.Article{
+			TenantID: tenantID,
+			Title:    title,
+			Content:  content,
+			Category: "处置案例",
+			Tags:     tags,
+			Status:   "published",
+		}
+		if err := knowledgeSvc.CreateArticle(ctx, article); err != nil {
+			return "", err
+		}
+		return article.ID, nil
+	})
+
 	userSvc := user.NewService(db, authProvider)
 	server.RegisterService(userSvc)
 
