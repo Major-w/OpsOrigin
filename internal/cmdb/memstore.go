@@ -11,14 +11,14 @@ import (
 // memStore 是 CMDB 的内存回退实现,在 PG/Dgraph 不可用时使用。
 // 预置示例数据,用于演示关系图谱可视化与影响分析。
 type memStore struct {
-	mu         sync.RWMutex
-	cis        map[string]*model.CIModel
+	mu        sync.RWMutex
+	cis       map[string]*model.CIModel
 	relations map[string]*model.CIRelation
 }
 
 func newMemStore() *memStore {
 	m := &memStore{
-		cis:        make(map[string]*model.CIModel),
+		cis:       make(map[string]*model.CIModel),
 		relations: make(map[string]*model.CIRelation),
 	}
 	m.seed()
@@ -27,11 +27,11 @@ func newMemStore() *memStore {
 
 // seed 预置示例 CI 与关系数据,构建一个有意义的拓扑图:
 //
-//   [LB] --connects_to--> [web-app] --depends_on--> [postgres-db]
-//                         [web-app] --deployed_on-> [web-server-01]
-//   [postgres-db] --deployed_on-> [db-server-02]
-//   [web-server-01] --backup_of-> [web-server-02]
-//   [cache-svc] --connects_to--> [web-app]
+//	[LB] --connects_to--> [web-app] --depends_on--> [postgres-db]
+//	                      [web-app] --deployed_on-> [web-server-01]
+//	[postgres-db] --deployed_on-> [db-server-02]
+//	[web-server-01] --backup_of-> [web-server-02]
+//	[cache-svc] --connects_to--> [web-app]
 func (m *memStore) seed() {
 	now := time.Now()
 	cis := []struct {
@@ -129,6 +129,19 @@ func (m *memStore) updateCI(ci *model.CIModel) {
 	defer m.mu.Unlock()
 	ci.UpdatedAt = time.Now()
 	m.cis[ci.ID] = ci
+}
+
+// setCIStatus 内存回退模式下设置 CI 状态（归档/恢复）。返回是否找到并更新成功。
+func (m *memStore) setCIStatus(tenantID, id string, status model.CIStatus) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	ci, ok := m.cis[id]
+	if !ok || ci.TenantID != tenantID {
+		return false
+	}
+	ci.Status = status
+	ci.UpdatedAt = time.Now()
+	return true
 }
 
 func (m *memStore) deleteCI(id, tenantID string) bool {

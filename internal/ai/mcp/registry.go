@@ -9,18 +9,18 @@ import (
 )
 
 type ParamSchema struct {
-	Type        string      `json:"type"`
-	Description string      `json:"description,omitempty"`
-	Required    bool        `json:"required"`
-	Default     any         `json:"default,omitempty"`
-	Enum        []string    `json:"enum,omitempty"`
+	Type        string   `json:"type"`
+	Description string   `json:"description,omitempty"`
+	Required    bool     `json:"required"`
+	Default     any      `json:"default,omitempty"`
+	Enum        []string `json:"enum,omitempty"`
 }
 
 type ToolDefinition struct {
-	Name        string                `json:"name"`
-	Description string                `json:"description"`
+	Name        string                 `json:"name"`
+	Description string                 `json:"description"`
 	Parameters  map[string]ParamSchema `json:"parameters"`
-	Handler     ToolHandler           `json:"-"`
+	Handler     ToolHandler            `json:"-"`
 }
 
 type ToolHandler func(ctx context.Context, input map[string]any) (any, error)

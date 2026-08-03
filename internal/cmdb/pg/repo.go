@@ -56,6 +56,59 @@ func (r *Repository) Ping(ctx context.Context) error {
 	return r.db.PingContext(ctx)
 }
 
+// Migrate 对 cmdb_ci_model_type 做幂等加列迁移（分类/图标/二级分类/菜单显示/内置标记）。
+// 与审计表迁移同模式：启动期执行，失败阻断启动以暴露问题。
+func (r *Repository) Migrate(ctx context.Context) error {
+	cols := []string{
+		`category TEXT`,
+		`sub_category TEXT`,
+		`icon TEXT`,
+		`show_in_menu BOOLEAN NOT NULL DEFAULT TRUE`,
+		`builtin BOOLEAN NOT NULL DEFAULT FALSE`,
+		`author TEXT`,
+	}
+	for _, c := range cols {
+		if _, err := r.db.ExecContext(ctx, `ALTER TABLE cmdb_ci_model_type ADD COLUMN IF NOT EXISTS `+c); err != nil {
+			return fmt.Errorf("migrate cmdb_ci_model_type column %q: %w", c, err)
+		}
+	}
+	// 存量模型回填默认分类（platform），空分类在展示时按 platform 处理。
+	if _, err := r.db.ExecContext(ctx, `UPDATE cmdb_ci_model_type SET category='platform' WHERE category IS NULL OR category=''`); err != nil {
+		return fmt.Errorf("backfill cmdb_ci_model_type category: %w", err)
+	}
+	// 保存的查询策略表（P1-3「我想查」）+ 采集动态目标引用（P1-4）
+	if _, err := r.db.ExecContext(ctx, `
+		CREATE TABLE IF NOT EXISTS cmdb_saved_query (
+			id         TEXT PRIMARY KEY,
+			tenant_id  TEXT NOT NULL DEFAULT 'default',
+			name       TEXT NOT NULL,
+			type_id    TEXT,
+			query      JSONB NOT NULL DEFAULT '{}'::jsonb,
+			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+		)`); err != nil {
+		return fmt.Errorf("create cmdb_saved_query: %w", err)
+	}
+	// 采集任务动态目标字段（P1-4）：target_mode(static|query) + target_query(保存查询 ID)
+	for _, c := range []string{
+		`target_mode TEXT NOT NULL DEFAULT 'static'`,
+		`target_query TEXT`,
+	} {
+		if _, err := r.db.ExecContext(ctx, `ALTER TABLE cmdb_collection_task ADD COLUMN IF NOT EXISTS `+c); err != nil {
+			return fmt.Errorf("migrate cmdb_collection_task column %q: %w", c, err)
+		}
+	}
+	// 模型分类表 + 内置种子 + 存量分类名迁移（#2 可扩展分类）
+	if err := r.migrateModelCategory(ctx); err != nil {
+		return err
+	}
+	// P2 大块：统计/IDC/字段规则/消息订阅表
+	if err := r.migrateP2(ctx); err != nil {
+		return err
+	}
+	return nil
+}
+
 func (r *Repository) CreateCIModelType(ctx context.Context, mt *model.CIModelType) error {
 	mt.ID = uuid.New().String()
 	now := time.Now()
@@ -68,10 +121,12 @@ func (r *Repository) CreateCIModelType(ctx context.Context, mt *model.CIModelTyp
 	}
 
 	_, err = r.db.ExecContext(ctx, `
-		INSERT INTO cmdb_ci_model_type (id, tenant_id, name, description, parent_id, schema, created_at, updated_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+		INSERT INTO cmdb_ci_model_type (id, tenant_id, name, description, parent_id, schema, category, sub_category, icon, show_in_menu, builtin, author, created_at, updated_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)`,
 		mt.ID, mt.TenantID, mt.Name, nullIfEmpty(mt.Description), nullIfEmpty(mt.ParentID),
-		schemaJSON, mt.CreatedAt, mt.UpdatedAt)
+		schemaJSON, nullIfEmpty(mt.Category), nullIfEmpty(mt.SubCategory), nullIfEmpty(mt.Icon),
+		mt.ShowInMenu, mt.Builtin, nullIfEmpty(mt.Author),
+		mt.CreatedAt, mt.UpdatedAt)
 	if err != nil {
 		return fmt.Errorf("insert ci model type: %w", err)
 	}
@@ -81,12 +136,13 @@ func (r *Repository) CreateCIModelType(ctx context.Context, mt *model.CIModelTyp
 func (r *Repository) GetCIModelType(ctx context.Context, id, tenantID string) (*model.CIModelType, error) {
 	mt := &model.CIModelType{}
 	var schemaJSON []byte
-	var desc, parentID sql.NullString
+	var desc, parentID, category, subCategory, icon, author sql.NullString
+	var showInMenu, builtin sql.NullBool
 
 	err := r.db.QueryRowContext(ctx, `
-		SELECT id, tenant_id, name, description, parent_id, schema, created_at, updated_at
+		SELECT id, tenant_id, name, description, parent_id, schema, category, sub_category, icon, show_in_menu, builtin, author, created_at, updated_at
 		FROM cmdb_ci_model_type WHERE id = $1 AND tenant_id = $2`, id, tenantID).Scan(
-		&mt.ID, &mt.TenantID, &mt.Name, &desc, &parentID, &schemaJSON, &mt.CreatedAt, &mt.UpdatedAt)
+		&mt.ID, &mt.TenantID, &mt.Name, &desc, &parentID, &schemaJSON, &category, &subCategory, &icon, &showInMenu, &builtin, &author, &mt.CreatedAt, &mt.UpdatedAt)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, nil
@@ -95,6 +151,12 @@ func (r *Repository) GetCIModelType(ctx context.Context, id, tenantID string) (*
 	}
 	mt.Description = desc.String
 	mt.ParentID = parentID.String
+	mt.Category = category.String
+	mt.SubCategory = subCategory.String
+	mt.Icon = icon.String
+	mt.Author = author.String
+	mt.ShowInMenu = showInMenu.Bool
+	mt.Builtin = builtin.Bool
 	if err := json.Unmarshal(schemaJSON, &mt.Schema); err != nil {
 		return nil, fmt.Errorf("unmarshal schema: %w", err)
 	}
@@ -355,6 +417,110 @@ func (r *Repository) GetCI(ctx context.Context, id, tenantID string) (*model.CIM
 	return r.getCIByIDAndTenant(ctx, id, tenantID)
 }
 
+// UpdateCIStatus 仅更新 CI 状态（用于归档/恢复），并写 outbox 事件以便图同步。
+// 与 UpdateCI 解耦，避免归档动作触发大字段重写与字段级 anti-flapping 比较。
+func (r *Repository) UpdateCIStatus(ctx context.Context, id, tenantID string, status model.CIStatus, traceID string) error {
+	existing, err := r.getCIByID(ctx, id)
+	if err != nil {
+		return err
+	}
+	if existing == nil {
+		return errors.New("ci not found")
+	}
+	if existing.Status == status {
+		return nil
+	}
+
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin tx: %w", err)
+	}
+	defer tx.Rollback()
+
+	if _, err := tx.ExecContext(ctx, `UPDATE cmdb_ci SET status=$1, updated_at=NOW() WHERE id=$2 AND tenant_id=$3`,
+		string(status), id, tenantID); err != nil {
+		return fmt.Errorf("update ci status: %w", err)
+	}
+
+	payload, _ := json.Marshal(map[string]any{
+		"ci_id":      id,
+		"status":     string(status),
+		"old_status": string(existing.Status),
+	})
+	if err := r.insertOutbox(ctx, tx, tenantID, model.EventCIUpdated, "ci", id, string(payload), traceID); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// ListCIFiltered 与 ListCIPaginated 类似，但支持归档过滤模式：
+//   - archivedMode="archived"：仅返回已归档 CI
+//   - archivedMode="all"：返回全部（含归档）
+//   - 其它（含空）：排除已归档，仅返回 active/inactive
+//
+// 普通实例列表默认排除归档，归档视图用 "archived"，运维总览可用 "all"。
+func (r *Repository) ListCIFiltered(ctx context.Context, tenantID, typeID, archivedMode, sortBy, sortOrder string, limit, offset int) ([]*model.CIModel, error) {
+	query := `SELECT id, type_id, tenant_id, name, description, status, attributes, labels, channel, created_at, updated_at, attribute_meta
+		FROM cmdb_ci WHERE tenant_id = $1`
+	args := []any{tenantID}
+	argIdx := 2
+
+	if typeID != "" {
+		query += fmt.Sprintf(` AND type_id = $%d`, argIdx)
+		args = append(args, typeID)
+		argIdx++
+	}
+
+	switch archivedMode {
+	case "archived":
+		query += ` AND status = 'archived'`
+	case "all":
+		// 不过滤
+	default:
+		query += ` AND status <> 'archived'`
+	}
+
+	orderCol := "created_at"
+	if sortBy == "name" {
+		orderCol = "name"
+	} else if sortBy == "updated_at" {
+		orderCol = "updated_at"
+	}
+	orderDir := "DESC"
+	if sortOrder == "asc" {
+		orderDir = "ASC"
+	}
+	query += fmt.Sprintf(` ORDER BY %s %s`, orderCol, orderDir)
+
+	if limit > 0 {
+		query += fmt.Sprintf(` LIMIT $%d`, argIdx)
+		args = append(args, limit)
+		argIdx++
+	} else {
+		query += ` LIMIT 100`
+	}
+	if offset > 0 {
+		query += fmt.Sprintf(` OFFSET $%d`, argIdx)
+		args = append(args, offset)
+	}
+
+	rows, err := r.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("list ci filtered: %w", err)
+	}
+	defer rows.Close()
+
+	var cis []*model.CIModel
+	for rows.Next() {
+		ci, err := scanCI(rows)
+		if err != nil {
+			return nil, err
+		}
+		cis = append(cis, ci)
+	}
+	return cis, rows.Err()
+}
+
 func (r *Repository) DeleteCI(ctx context.Context, id, tenantID, traceID string) error {
 	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -369,6 +535,13 @@ func (r *Repository) DeleteCI(ctx context.Context, id, tenantID, traceID string)
 	_, err = tx.ExecContext(ctx, `DELETE FROM cmdb_ci_relation WHERE target_id=$1 AND tenant_id=$2`, id, tenantID)
 	if err != nil {
 		return fmt.Errorf("cascade delete target relations: %w", err)
+	}
+	// 级联删除审计与版本历史（否则有变更记录的 CI 会因外键无法删除——既有 bug）
+	if _, err := tx.ExecContext(ctx, `DELETE FROM cmdb_ci_audit WHERE ci_id=$1`, id); err != nil {
+		return fmt.Errorf("cascade delete ci audit: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM cmdb_ci_version WHERE ci_id=$1`, id); err != nil {
+		return fmt.Errorf("cascade delete ci versions: %w", err)
 	}
 
 	result, err := tx.ExecContext(ctx, `DELETE FROM cmdb_ci WHERE id=$1 AND tenant_id=$2`, id, tenantID)
@@ -732,7 +905,7 @@ func deepEqual(a, b any) bool {
 // ListCIModelTypes 列出所有CI模型类型
 func (r *Repository) ListCIModelTypes(ctx context.Context, tenantID string, limit, offset int) ([]*model.CIModelType, error) {
 	query := `
-		SELECT id, tenant_id, name, description, parent_id, schema, created_at, updated_at
+		SELECT id, tenant_id, name, description, parent_id, schema, category, sub_category, icon, show_in_menu, builtin, author, created_at, updated_at
 		FROM cmdb_ci_model_type
 		WHERE tenant_id = $1
 		ORDER BY created_at DESC
@@ -748,14 +921,21 @@ func (r *Repository) ListCIModelTypes(ctx context.Context, tenantID string, limi
 	for rows.Next() {
 		mt := &model.CIModelType{}
 		var schemaJSON []byte
-		var desc, parentID sql.NullString
+		var desc, parentID, category, subCategory, icon, author sql.NullString
+		var showInMenu, builtin sql.NullBool
 
-		err := rows.Scan(&mt.ID, &mt.TenantID, &mt.Name, &desc, &parentID, &schemaJSON, &mt.CreatedAt, &mt.UpdatedAt)
+		err := rows.Scan(&mt.ID, &mt.TenantID, &mt.Name, &desc, &parentID, &schemaJSON, &category, &subCategory, &icon, &showInMenu, &builtin, &author, &mt.CreatedAt, &mt.UpdatedAt)
 		if err != nil {
 			return nil, fmt.Errorf("scan ci model type: %w", err)
 		}
 		mt.Description = desc.String
 		mt.ParentID = parentID.String
+		mt.Category = category.String
+		mt.SubCategory = subCategory.String
+		mt.Icon = icon.String
+		mt.Author = author.String
+		mt.ShowInMenu = showInMenu.Bool
+		mt.Builtin = builtin.Bool
 		if schemaJSON != nil {
 			json.Unmarshal(schemaJSON, &mt.Schema)
 		}
@@ -786,14 +966,46 @@ func (r *Repository) UpdateCIModelType(ctx context.Context, mt *model.CIModelTyp
 
 	_, err = r.db.ExecContext(ctx, `
 		UPDATE cmdb_ci_model_type
-		SET name = $1, description = $2, parent_id = $3, schema = $4, updated_at = $5
-		WHERE id = $6 AND tenant_id = $7`,
+		SET name = $1, description = $2, parent_id = $3, schema = $4, category = $5, sub_category = $6, icon = $7, show_in_menu = $8, updated_at = $9
+		WHERE id = $10 AND tenant_id = $11`,
 		mt.Name, nullIfEmpty(mt.Description), nullIfEmpty(mt.ParentID),
-		schemaJSON, mt.UpdatedAt, mt.ID, mt.TenantID)
+		schemaJSON, nullIfEmpty(mt.Category), nullIfEmpty(mt.SubCategory), nullIfEmpty(mt.Icon),
+		mt.ShowInMenu, mt.UpdatedAt, mt.ID, mt.TenantID)
 	if err != nil {
 		return fmt.Errorf("update ci model type: %w", err)
 	}
 	return nil
+}
+
+// GetCIModelTypeByName 按名称查模型类型（用于导入重名检测）。
+func (r *Repository) GetCIModelTypeByName(ctx context.Context, name, tenantID string) (*model.CIModelType, error) {
+	mt := &model.CIModelType{}
+	var schemaJSON []byte
+	var desc, parentID, category, subCategory, icon, author sql.NullString
+	var showInMenu, builtin sql.NullBool
+
+	err := r.db.QueryRowContext(ctx, `
+		SELECT id, tenant_id, name, description, parent_id, schema, category, sub_category, icon, show_in_menu, builtin, author, created_at, updated_at
+		FROM cmdb_ci_model_type WHERE name = $1 AND tenant_id = $2`, name, tenantID).Scan(
+		&mt.ID, &mt.TenantID, &mt.Name, &desc, &parentID, &schemaJSON, &category, &subCategory, &icon, &showInMenu, &builtin, &author, &mt.CreatedAt, &mt.UpdatedAt)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("query ci model type by name: %w", err)
+	}
+	mt.Description = desc.String
+	mt.ParentID = parentID.String
+	mt.Category = category.String
+	mt.SubCategory = subCategory.String
+	mt.Icon = icon.String
+	mt.Author = author.String
+	mt.ShowInMenu = showInMenu.Bool
+	mt.Builtin = builtin.Bool
+	if schemaJSON != nil {
+		json.Unmarshal(schemaJSON, &mt.Schema)
+	}
+	return mt, nil
 }
 
 // DeleteCIModelType 删除CI模型类型

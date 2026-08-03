@@ -83,13 +83,13 @@ func TestToCIMapping(t *testing.T) {
 		t.Errorf("Attributes[resource_id] = %v, want %q", m.Attributes["resource_id"], "aws:vm:i-123")
 	}
 	expectAttrs := map[string]any{
-		"provider":     "aws",
+		"provider":      "aws",
 		"resource_type": "vm",
-		"region":       "us-east-1",
-		"zone":         "us-east-1a",
-		"status":       "running",
-		"public_ip":    "1.1.1.1",
-		"private_ip":   "10.0.0.1",
+		"region":        "us-east-1",
+		"zone":          "us-east-1a",
+		"status":        "running",
+		"public_ip":     "1.1.1.1",
+		"private_ip":    "10.0.0.1",
 	}
 	for k, v := range expectAttrs {
 		if m.Attributes[k] != v {

@@ -8,8 +8,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/redis/go-redis/v9"
 	"github.com/opsorigin/core/internal/monitor/metrics"
+	"github.com/redis/go-redis/v9"
 )
 
 // HeartbeatTTL is how long a heartbeat key lives in Redis without refresh.
@@ -25,10 +25,10 @@ func hbKey(id string) string { return "agent:hb:" + id }
 // HeartbeatWriter writes heartbeat data to Redis with TTL auto-expiry.
 // Falls back to direct Store.Heartbeat when Redis is unavailable.
 type HeartbeatWriter struct {
-	rdb       *redis.Client
-	store     Store            // fallback store for PG sync
-	lastSync  map[string]time.Time // track last PG sync time per agent
-	mu        sync.Mutex
+	rdb      *redis.Client
+	store    Store                // fallback store for PG sync
+	lastSync map[string]time.Time // track last PG sync time per agent
+	mu       sync.Mutex
 }
 
 // NewHeartbeatWriter creates a heartbeat writer. If rdb is nil, heartbeats
@@ -53,10 +53,10 @@ func (hw *HeartbeatWriter) Record(ctx context.Context, id, tenantID string, req 
 
 	now := time.Now()
 	fields := map[string]any{
-		"id":            id,
-		"tenant_id":     tenantID,
-		"status":        "online",
-		"last_seen":     now.Format(time.RFC3339),
+		"id":             id,
+		"tenant_id":      tenantID,
+		"status":         "online",
+		"last_seen":      now.Format(time.RFC3339),
 		"last_heartbeat": now.Format(time.RFC3339),
 	}
 	if req.AgentVersion != "" {

@@ -6,10 +6,11 @@
 //   - 任一 rule 命中即放行;全不命中则拒绝。
 //
 // Rule 类型:
-//   exact  : 命令首 token(可执行)与 Pattern 完全相等。
-//   prefix : 命令首 token 以 Pattern 开头(用于限定某命令族,如 /usr/bin/ 下)。
-//   regex  : 整条命令匹配正则(用于带参数的精确约束,如 ^systemctl (start|stop) \S+$)。
-//   path   : 命令首 token 须为绝对路径且等于 Pattern(锁定可执行文件路径,防 PATH 劫持)。
+//
+//	exact  : 命令首 token(可执行)与 Pattern 完全相等。
+//	prefix : 命令首 token 以 Pattern 开头(用于限定某命令族,如 /usr/bin/ 下)。
+//	regex  : 整条命令匹配正则(用于带参数的精确约束,如 ^systemctl (start|stop) \S+$)。
+//	path   : 命令首 token 须为绝对路径且等于 Pattern(锁定可执行文件路径,防 PATH 劫持)。
 package command
 
 import (
@@ -28,10 +29,10 @@ var ErrDenied = errors.New("command denied by whitelist")
 type RuleType string
 
 const (
-	RuleExact RuleType = "exact"
+	RuleExact  RuleType = "exact"
 	RulePrefix RuleType = "prefix"
-	RuleRegex RuleType = "regex"
-	RulePath  RuleType = "path"
+	RuleRegex  RuleType = "regex"
+	RulePath   RuleType = "path"
 )
 
 // Rule 单条白名单规则。

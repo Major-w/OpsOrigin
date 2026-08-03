@@ -7,27 +7,58 @@ type CIStatus string
 const (
 	CIStatusActive   CIStatus = "active"
 	CIStatusInactive CIStatus = "inactive"
+	CIStatusArchived CIStatus = "archived" // 归档：暂时保留却不展示在普通列表，可随时恢复
 	CIStatusDeleted  CIStatus = "deleted"
 )
 
 type ChannelWeight int
 
 const (
-	WeightHuman        ChannelWeight = 100
-	WeightITSM         ChannelWeight = 80
-	WeightAutoScript   ChannelWeight = 50
-	WeightDiscovery    ChannelWeight = 30
+	WeightHuman      ChannelWeight = 100
+	WeightITSM       ChannelWeight = 80
+	WeightAutoScript ChannelWeight = 50
+	WeightDiscovery  ChannelWeight = 30
 )
 
+// 模型分类（默认 5 大类，用户可扩展）：
+// 业务资源 / 应用资源 / 中间件资源 / 数据库资源 / 基础设施资源。
+// 分类由 cmdb_model_category 表承载（内置 5 类 + 用户自定义），
+// 此处常量仅作内置种子与默认值，不再作为白名单。
+const (
+	ModelCategoryBusiness    = "业务资源"
+	ModelCategoryApp         = "应用资源"
+	ModelCategoryMiddleware  = "中间件资源"
+	ModelCategoryDatabase    = "数据库资源"
+	ModelCategoryInfra       = "基础设施资源"
+	// 兼容别名（旧代码引用）：platform≈基础设施资源，org≈业务资源
+	ModelCategoryPlatform = ModelCategoryInfra
+	ModelCategoryOrg      = ModelCategoryBusiness
+)
+
+// ModelCategories 返回默认内置分类名（前端兜底 / 种子使用）。
+func ModelCategories() []string {
+	return []string{ModelCategoryBusiness, ModelCategoryApp, ModelCategoryMiddleware, ModelCategoryDatabase, ModelCategoryInfra}
+}
+
+// BuiltinAuthor 是系统内置模型的作者标识（内置模型治理语义）：
+// 内置模型不可删除、不可导入导出、不可删除内置属性（仅可加属性）。
+const BuiltinAuthor = "anonymous"
+
 type CIModelType struct {
-	ID          string            `json:"id"`
-	TenantID    string            `json:"tenant_id"`
-	Name        string            `json:"name"`
-	Description string            `json:"description,omitempty"`
-	ParentID    string            `json:"parent_id,omitempty"`
+	ID          string             `json:"id"`
+	TenantID    string             `json:"tenant_id"`
+	Name        string             `json:"name"`
+	Description string             `json:"description,omitempty"`
+	ParentID    string             `json:"parent_id,omitempty"` // 模型继承：父类模型 ID
+	Category    string             `json:"category,omitempty"`  // app|platform|infra|org，默认 platform
+	SubCategory string             `json:"sub_category,omitempty"`
+	Icon        string             `json:"icon,omitempty"`
+	ShowInMenu  bool               `json:"show_in_menu"` // 在顶部导航菜单显示
+	Builtin     bool               `json:"builtin"`      // 内置模型（不可删/导入导出）
+	Author      string             `json:"author,omitempty"` // 模型作者，内置为 anonymous
 	Schema      map[string]AttrDef `json:"schema"`
-	CreatedAt   time.Time         `json:"created_at"`
-	UpdatedAt   time.Time         `json:"updated_at"`
+	CreatedAt   time.Time          `json:"created_at"`
+	UpdatedAt   time.Time          `json:"updated_at"`
 }
 
 type AttrDef struct {
@@ -38,30 +69,33 @@ type AttrDef struct {
 }
 
 type CIModel struct {
-	ID           string            `json:"id"`
-	TypeID       string            `json:"type_id"`
-	TenantID     string            `json:"tenant_id"`
-	Name         string            `json:"name"`
-	Description  string            `json:"description,omitempty"`
-	Status       CIStatus          `json:"status"`
-	Attributes   map[string]any    `json:"attributes"`
+	ID            string              `json:"id"`
+	TypeID        string              `json:"type_id"`
+	TenantID      string              `json:"tenant_id"`
+	Name          string              `json:"name"`
+	Description   string              `json:"description,omitempty"`
+	Status        CIStatus            `json:"status"`
+	Attributes    map[string]any      `json:"attributes"`
 	AttributeMeta map[string]AttrMeta `json:"attribute_meta,omitempty"`
-	Labels       map[string]string `json:"labels,omitempty"`
-	Channel      ChannelWeight     `json:"channel"`
-	CreatedAt    time.Time         `json:"created_at"`
-	UpdatedAt    time.Time         `json:"updated_at"`
+	Labels        map[string]string   `json:"labels,omitempty"`
+	Channel       ChannelWeight       `json:"channel"`
+	// FieldAccess 字段级规则权限结果：field → hidden|readonly|visible（P2-4）。
+	// hidden 字段已从 attributes/attribute_meta 中剔除，前端据此渲染只读/隐藏。
+	FieldAccess map[string]string `json:"field_access,omitempty"`
+	CreatedAt   time.Time         `json:"created_at"`
+	UpdatedAt   time.Time         `json:"updated_at"`
 }
 
 // SourceKind 表示某个 CI 字段的数据来源。
 type SourceKind string
 
 const (
-	SourceManual      SourceKind = "manual"       // 人工录入（最高置信）
-	SourceITSM        SourceKind = "itsm"         // 从 ITSM 同步
-	SourceAgent       SourceKind = "agent"        // 主机/容器 Agent 采集
-	SourceCloudAPI    SourceKind = "cloud_api"    // 云厂商 API 拉取
-	SourceAutoScript  SourceKind = "auto_script"  // 自动化脚本
-	SourceDiscovery   SourceKind = "discovery"    // 自动发现（含模拟）
+	SourceManual     SourceKind = "manual"      // 人工录入（最高置信）
+	SourceITSM       SourceKind = "itsm"        // 从 ITSM 同步
+	SourceAgent      SourceKind = "agent"       // 主机/容器 Agent 采集
+	SourceCloudAPI   SourceKind = "cloud_api"   // 云厂商 API 拉取
+	SourceAutoScript SourceKind = "auto_script" // 自动化脚本
+	SourceDiscovery  SourceKind = "discovery"   // 自动发现（含模拟）
 )
 
 // AttrMeta 是单个 CI 属性的数据来源与置信度元数据。
@@ -141,13 +175,13 @@ func ShouldOverwriteField(incoming, existing SourceKind) bool {
 }
 
 type CIRelation struct {
-	ID           string `json:"id"`
-	TenantID     string `json:"tenant_id"`
-	SourceID     string `json:"source_id"`
-	TargetID     string `json:"target_id"`
-	RelationType string `json:"relation_type"`
+	ID           string         `json:"id"`
+	TenantID     string         `json:"tenant_id"`
+	SourceID     string         `json:"source_id"`
+	TargetID     string         `json:"target_id"`
+	RelationType string         `json:"relation_type"`
 	Properties   map[string]any `json:"properties,omitempty"`
-	CreatedAt    time.Time `json:"created_at"`
+	CreatedAt    time.Time      `json:"created_at"`
 }
 
 type AttributeChange struct {

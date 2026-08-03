@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useState } from 'react'
+import { useEffect, useState, useRef } from 'react'
 import { useCMDBStore, type CIModel, type AttributeChange, type CIRelation } from '@/stores/cmdb'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
@@ -8,21 +8,24 @@ import { Badge } from '@/components/ui/badge'
 import { Input } from '@/components/ui/input'
 import { Dialog, DialogFooter } from '@/components/ui/dialog'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
-import { formatTime, apiFetch } from '@/lib/utils'
+import { formatTime, apiFetch, apiList, apiBase, apiFetchRaw } from '@/lib/utils'
+import { toast } from '@/stores/toast'
 import { useCan } from '@/stores/permissions'
 import TopologyGraph from '@/components/TopologyGraph'
 import { SourceBadge, ProvenanceSummary } from '@/components/cmdb/SourceBadge'
-import { Plus, Pencil, Trash2, Network, Search, ChevronLeft, ChevronRight, Link2, Unlink, AlertTriangle } from 'lucide-react'
+import { Plus, Pencil, Trash2, Network, Search, ChevronLeft, ChevronRight, Link2, Unlink, AlertTriangle, Download, Upload, Archive, ArchiveRestore, Bookmark } from 'lucide-react'
 
 interface TopologyNode { id: string; name: string; type: string }
 interface TopologyEdge { source: string; target: string; type: string }
+interface SavedQuery { id: string; name: string; type_id?: string; query: { q?: string; status?: string; attrs?: Record<string, string> } }
 
 const CI_TYPES = ['server', 'web-server', 'database', 'switch', 'loadbalancer', 'dns-server', 'firewall', 'storage']
 const PAGE_SIZE = 20
 
-function statusVariant(s: string): 'success' | 'destructive' | 'outline' {
+function statusVariant(s: string): 'success' | 'destructive' | 'outline' | 'secondary' {
   if (s === 'active') return 'success'
   if (s === 'inactive') return 'outline'
+  if (s === 'archived') return 'secondary'
   return 'destructive'
 }
 
@@ -34,6 +37,10 @@ export default function CMDBPage() {
   const [form, setForm] = useState<{ name: string; type_id: string; description: string; attributes: Record<string, any>; labels: Record<string, string> }>({ name: '', type_id: 'server', description: '', attributes: {}, labels: {} })
   const [searchQ, setSearchQ] = useState('')
   const [typeFilter, setTypeFilter] = useState('')
+  const [archivedView, setArchivedView] = useState(false)
+  const [savedQueries, setSavedQueries] = useState<SavedQuery[]>([])
+  const [sqDialogOpen, setSqDialogOpen] = useState(false)
+  const [sqName, setSqName] = useState('')
   const [page, setPage] = useState(0)
   const [selectedCI, setSelectedCI] = useState<CIModel | null>(null)
   const [detailTab, setDetailTab] = useState('attrs')
@@ -46,24 +53,102 @@ export default function CMDBPage() {
   const [impactResult, setImpactResult] = useState<{ source_ci: string; affected_ci: string[]; has_cycle: boolean } | null>(null)
   const [editAttrsOpen, setEditAttrsOpen] = useState(false)
   const [attrForm, setAttrForm] = useState<Record<string, string>>({})
+  const fileRef = useRef<HTMLInputElement>(null)
+  const [importOpen, setImportOpen] = useState(false)
+  const [importResult, setImportResult] = useState<{ created: number; updated: number; failed: { row: number; error: string }[] } | null>(null)
 
   useEffect(() => {
     fetch({ limit: PAGE_SIZE, offset: page * PAGE_SIZE, sort_by: 'updated_at', sort_order: 'desc' })
     fetchRelations()
+    loadSavedQueries()
   }, [])
 
   const loadData = () => {
-    const params: any = { limit: PAGE_SIZE, offset: page * PAGE_SIZE, sort_by: 'updated_at', sort_order: 'desc' }
+    const params: any = { limit: PAGE_SIZE, offset: page * PAGE_SIZE, sort_by: 'updated_at', sort_order: 'desc', archived: archivedView ? 'true' : 'false' }
     if (typeFilter) params.type_id = typeFilter
-    if (searchQ) search(searchQ, typeFilter)
+    if (searchQ) search(searchQ, typeFilter, archivedView ? 'true' : 'false')
     else fetch(params)
   }
 
-  useEffect(() => { loadData() }, [page, typeFilter])
+  useEffect(() => { loadData() }, [page, typeFilter, archivedView])
+
+  const loadSavedQueries = async () => {
+    try { setSavedQueries(await apiList<SavedQuery>('/cmdb/saved-queries')) } catch { setSavedQueries([]) }
+  }
+
+  const handleArchive = async (id: string) => {
+    try {
+      await apiFetch(`/cmdb/ci/${id}/archive`, { method: 'POST' })
+      toast.success('已归档')
+      loadData()
+    } catch (e: any) { toast.error('归档失败: ' + e.message) }
+  }
+
+  const handleRestore = async (id: string) => {
+    try {
+      await apiFetch(`/cmdb/ci/${id}/restore`, { method: 'POST' })
+      toast.success('已恢复')
+      loadData()
+    } catch (e: any) { toast.error('恢复失败: ' + e.message) }
+  }
+
+  const handleSaveQuery = async () => {
+    if (!sqName.trim()) { toast.error('请输入查询名称'); return }
+    try {
+      await apiFetch('/cmdb/saved-queries', {
+        method: 'POST',
+        body: JSON.stringify({ name: sqName.trim(), type_id: typeFilter || undefined, query: { q: searchQ || undefined } }),
+      })
+      toast.success('已保存查询策略')
+      setSqDialogOpen(false); setSqName('')
+      loadSavedQueries()
+    } catch (e: any) { toast.error('保存失败: ' + e.message) }
+  }
+
+  const handleApplySavedQuery = (sq: SavedQuery) => {
+    setTypeFilter(sq.type_id || '')
+    setSearchQ(sq.query?.q || '')
+    setPage(0)
+    loadData()
+  }
 
   const handleSearch = () => {
-    if (searchQ) search(searchQ, typeFilter)
+    if (searchQ) search(searchQ, typeFilter, archivedView ? 'true' : 'false')
     else loadData()
+  }
+
+  const handleExport = async () => {
+    try {
+      const res = await apiFetchRaw(`/cmdb/ci/export?type_id=${encodeURIComponent(typeFilter)}`)
+      if (!res.ok) { alert('导出失败: ' + res.status); return }
+      const blob = await res.blob()
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      const cd = res.headers.get('Content-Disposition')
+      a.download = cd?.match(/filename=(.+)/)?.[1] || `cmdb_${typeFilter || 'all'}_export.csv`
+      a.click()
+      URL.revokeObjectURL(url)
+    } catch (e: any) { alert('导出失败: ' + e.message) }
+  }
+
+  const handleImportFile = async (e: any) => {
+    const file = e.target.files?.[0]
+    if (!file) return
+    try {
+      const fd = new FormData()
+      fd.append('file', file)
+      const res = await apiFetchRaw(`/cmdb/ci/import?type_id=${encodeURIComponent(typeFilter)}`, { method: 'POST', body: fd })
+      const data = await res.json()
+      setImportResult(data)
+      setImportOpen(true)
+      if ((data.created || 0) + (data.updated || 0) > 0) loadData()
+    } catch (e: any) {
+      setImportResult({ created: 0, updated: 0, failed: [{ row: 0, error: e.message }] })
+      setImportOpen(true)
+    } finally {
+      e.target.value = ''
+    }
   }
 
   const handleSubmit = async () => {
@@ -84,7 +169,7 @@ export default function CMDBPage() {
     setDetailTab('attrs')
     setImpactResult(null)
     try {
-      const [audit, rels] = await Promise.all([getAudit(item.id), apiFetch<CIRelation[]>('/cmdb/relation')])
+      const [audit, rels] = await Promise.all([getAudit(item.id), apiList<CIRelation>('/cmdb/relation')])
       setAuditLog(audit || [])
       setCiRelations((rels || []).filter((r: CIRelation) => r.source_id === item.id || r.target_id === item.id))
     } catch { setAuditLog([]); setCiRelations([]) }
@@ -150,7 +235,7 @@ export default function CMDBPage() {
     }
     await update(selectedCI.id, { ...selectedCI, name: selectedCI.name, description: selectedCI.description, attributes: parsed, labels: selectedCI.labels, channel: 100 })
     setEditAttrsOpen(false)
-    const items = await apiFetch<CIModel[]>('/cmdb/ci')
+    const items = await apiList<CIModel>('/cmdb/ci')
     const updated = items.find(i => i.id === selectedCI.id)
     if (updated) setSelectedCI(updated)
   }
@@ -159,7 +244,12 @@ export default function CMDBPage() {
     <div className="p-6 space-y-4">
       <div className="flex items-center justify-between">
         <div><h1 className="text-2xl font-bold">CMDB 资产</h1><p className="text-sm text-muted-foreground">配置项管理与拓扑</p></div>
-        <Button onClick={() => { setEditId(null); setForm({ name: '', type_id: 'server', description: '', attributes: {}, labels: {} }); setDialogOpen(true) }}><Plus className="h-4 w-4" />新建资产</Button>
+        <div className="flex gap-2">
+          <Button variant="outline" onClick={handleExport}><Download className="h-4 w-4" />导出 CSV</Button>
+          <Button variant="outline" onClick={() => fileRef.current?.click()}><Upload className="h-4 w-4" />导入 CSV</Button>
+          <Button variant="outline" onClick={() => setSqDialogOpen(true)}><Bookmark className="h-4 w-4" />保存查询</Button>
+          <Button onClick={() => { setEditId(null); setForm({ name: '', type_id: 'server', description: '', attributes: {}, labels: {} }); setDialogOpen(true) }}><Plus className="h-4 w-4" />新建资产</Button>
+        </div>
       </div>
 
       <div className="flex gap-2 items-center">
@@ -172,6 +262,15 @@ export default function CMDBPage() {
           {CI_TYPES.map(t => <option key={t} value={t}>{t}</option>)}
         </select>
         <Button variant="outline" onClick={handleSearch}>搜索</Button>
+        <Button variant={archivedView ? 'default' : 'outline'} onClick={() => { setArchivedView(v => !v); setPage(0) }}>
+          <Archive className="h-4 w-4" />{archivedView ? '归档视图' : '正常视图'}
+        </Button>
+        {savedQueries.length > 0 && (
+          <select className="h-10 rounded-md border border-input bg-background px-3 py-2 text-sm" value="" onChange={e => { const sq = savedQueries.find(s => s.id === e.target.value); if (sq) handleApplySavedQuery(sq); e.target.value = '' }}>
+            <option value="">应用保存的查询…</option>
+            {savedQueries.map(sq => <option key={sq.id} value={sq.id}>{sq.name}</option>)}
+          </select>
+        )}
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
@@ -188,6 +287,9 @@ export default function CMDBPage() {
                         <span className="font-medium text-sm truncate">{item.name}</span>
                         <div className="flex gap-1 shrink-0">
                           <Button variant="ghost" size="icon" className="h-6 w-6" onClick={e => { e.stopPropagation(); handleEdit(item) }}><Pencil className="h-3 w-3" /></Button>
+                          {item.status === 'archived'
+                            ? <Button variant="ghost" size="icon" className="h-6 w-6" title="恢复" onClick={e => { e.stopPropagation(); handleRestore(item.id) }}><ArchiveRestore className="h-3 w-3" /></Button>
+                            : <Button variant="ghost" size="icon" className="h-6 w-6" title="归档" onClick={e => { e.stopPropagation(); handleArchive(item.id) }}><Archive className="h-3 w-3" /></Button>}
                           {canDelete && <Button variant="ghost" size="icon" className="h-6 w-6" onClick={e => { e.stopPropagation(); remove(item.id); setSelectedCI(null) }}><Trash2 className="h-3 w-3" /></Button>}
                         </div>
                       </div>
@@ -268,6 +370,9 @@ export default function CMDBPage() {
                   </div>
                   <div className="flex gap-1">
                     <Button variant="outline" size="sm" onClick={handleEditAttrs}>编辑属性</Button>
+                    {selectedCI.status === 'archived'
+                      ? <Button variant="outline" size="sm" onClick={() => handleRestore(selectedCI.id)}><ArchiveRestore className="h-3 w-3" />恢复</Button>
+                      : <Button variant="outline" size="sm" onClick={() => handleArchive(selectedCI.id)}><Archive className="h-3 w-3" />归档</Button>}
                     <Button variant="outline" size="sm" onClick={e => { e.stopPropagation(); handleEdit(selectedCI) }}><Pencil className="h-3 w-3" /></Button>
                     {canDelete && <Button variant="outline" size="sm" onClick={() => { remove(selectedCI.id); setSelectedCI(null) }}><Trash2 className="h-3 w-3" /></Button>}
                   </div>
@@ -298,13 +403,14 @@ export default function CMDBPage() {
                       <div>
                         <h4 className="text-sm font-medium mb-2">自定义属性</h4>
                         <table className="w-full text-sm border">
-                          <thead><tr className="bg-muted"><th className="px-2 py-1 text-left text-xs">属性</th><th className="px-2 py-1 text-left text-xs">值</th><th className="px-2 py-1 text-left text-xs">来源</th></tr></thead>
+                          <thead><tr className="bg-muted"><th className="px-2 py-1 text-left text-xs">属性</th><th className="px-2 py-1 text-left text-xs">值</th><th className="px-2 py-1 text-left text-xs">来源</th><th className="px-2 py-1 text-left text-xs">访问</th></tr></thead>
                           <tbody>
                             {Object.entries(selectedCI.attributes || {}).map(([k, v]) => {
                               const meta = selectedCI.attribute_meta?.[k]
                               const low = meta ? meta.confidence < 0.5 : false
+                              const access = (selectedCI as any).field_access?.[k]
                               return (
-                              <tr key={k} className={`border-t ${low ? 'bg-amber-50 dark:bg-amber-500/5' : ''}`}><td className="px-2 py-1 text-xs font-medium">{k}</td><td className="px-2 py-1 text-xs">{typeof v === 'object' ? JSON.stringify(v) : String(v)}</td><td className="px-2 py-1"><SourceBadge meta={meta} /></td></tr>
+                              <tr key={k} className={`border-t ${low ? 'bg-amber-50 dark:bg-amber-500/5' : ''}`}><td className="px-2 py-1 text-xs font-medium">{k}</td><td className="px-2 py-1 text-xs">{typeof v === 'object' ? JSON.stringify(v) : String(v)}</td><td className="px-2 py-1"><SourceBadge meta={meta} /></td><td className="px-2 py-1">{access === 'readonly' && <Badge variant="outline" className="text-[9px] text-amber-500">只读</Badge>}</td></tr>
                               )
                             })}
                           </tbody>
@@ -464,23 +570,59 @@ export default function CMDBPage() {
 
       <Dialog open={editAttrsOpen} onClose={() => setEditAttrsOpen(false)} title="编辑自定义属性">
         <div className="space-y-3 max-h-[60vh] overflow-y-auto">
-          {Object.entries(attrForm).map(([k, v]) => (
+          {Object.entries(attrForm).map(([k, v]) => {
+            const readonly = (selectedCI as any)?.field_access?.[k] === 'readonly'
+            return (
             <div key={k} className="flex gap-2 items-center">
-              <Input className="flex-1 text-xs" value={k} onChange={e => {
+              <Input className="flex-1 text-xs" value={k} disabled={readonly} onChange={e => {
                 const newAttrs = { ...attrForm }
                 delete newAttrs[k]
                 newAttrs[e.target.value] = v
                 setAttrForm(newAttrs)
               }} placeholder="属性名" />
-              <Input className="flex-1 text-xs" value={v} onChange={e => setAttrForm(f => ({ ...f, [k]: e.target.value }))} placeholder="值" />
-              <Button variant="ghost" size="icon" className="h-8 w-8 shrink-0" onClick={() => {
+              <Input className="flex-1 text-xs" value={v} disabled={readonly} onChange={e => setAttrForm(f => ({ ...f, [k]: e.target.value }))} placeholder="值" />
+              {readonly ? <span className="w-8 shrink-0 text-[9px] text-amber-500 text-center">只读</span> : <Button variant="ghost" size="icon" className="h-8 w-8 shrink-0" onClick={() => {
                 const newAttrs = { ...attrForm }; delete newAttrs[k]; setAttrForm(newAttrs)
-              }}><Trash2 className="h-3 w-3" /></Button>
+              }}><Trash2 className="h-3 w-3" /></Button>}
             </div>
-          ))}
+            )
+          })}
           <Button variant="outline" size="sm" onClick={() => setAttrForm(f => ({ ...f, '': '' }))}><Plus className="h-3 w-3 mr-1" />添加属性</Button>
         </div>
         <DialogFooter><Button variant="outline" onClick={() => setEditAttrsOpen(false)}>取消</Button><Button onClick={handleSaveAttrs}>保存</Button></DialogFooter>
+      </Dialog>
+
+      <input ref={fileRef} type="file" accept=".csv" className="hidden" onChange={handleImportFile} />
+
+      <Dialog open={sqDialogOpen} onClose={() => setSqDialogOpen(false)} title="保存当前查询策略">
+        <div className="space-y-3">
+          <p className="text-sm text-muted-foreground">将当前筛选条件（类型：{typeFilter || '全部'}{searchQ ? `，关键字：${searchQ}` : ''}）存为可复用查询（"我想查"）。</p>
+          <div><label className="text-sm font-medium">查询名称 *</label><Input value={sqName} onChange={e => setSqName(e.target.value)} placeholder="例如：华东区 Web 服务器" /></div>
+        </div>
+        <DialogFooter><Button variant="outline" onClick={() => setSqDialogOpen(false)}>取消</Button><Button onClick={handleSaveQuery} disabled={!sqName.trim()}><Bookmark className="h-4 w-4 mr-1" />保存</Button></DialogFooter>
+      </Dialog>
+
+      <Dialog open={importOpen} onClose={() => setImportOpen(false)} title="导入结果">
+        <div className="space-y-2">
+          {importResult ? (
+            <>
+              <p className="text-sm">新建 <strong>{importResult.created}</strong> 条，更新 <strong>{importResult.updated}</strong> 条。</p>
+              {importResult.failed.length > 0 ? (
+                <div className="max-h-60 overflow-auto border rounded">
+                  <table className="w-full text-sm">
+                    <thead><tr className="bg-muted"><th className="px-2 py-1 text-left text-xs">行</th><th className="px-2 py-1 text-left text-xs">错误</th></tr></thead>
+                    <tbody>
+                      {importResult.failed.map((f, i) => (
+                        <tr key={i} className="border-t"><td className="px-2 py-1 text-xs">{f.row}</td><td className="px-2 py-1 text-xs text-destructive">{f.error}</td></tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              ) : <p className="text-sm text-muted-foreground">无失败行。</p>}
+            </>
+          ) : <p className="text-sm text-muted-foreground">无数据。</p>}
+        </div>
+        <DialogFooter><Button onClick={() => setImportOpen(false)}>关闭</Button></DialogFooter>
       </Dialog>
     </div>
   )

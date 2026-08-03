@@ -6,7 +6,7 @@ import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { Input } from '@/components/ui/input'
 import { Dialog, DialogFooter } from '@/components/ui/dialog'
-import { formatTime, apiFetch } from '@/lib/utils'
+import { formatTime, apiFetch, apiList } from '@/lib/utils'
 import { Plus, Trash2 } from 'lucide-react'
 
 export default function CMDBSearchPage() {
@@ -18,7 +18,7 @@ export default function CMDBSearchPage() {
   const handleSearch = async () => {
     setLoading(true)
     try {
-      const items = await apiFetch<any[]>('/cmdb/ci?limit=200')
+      const items = await apiList<any>('/cmdb/ci?limit=200')
       let filtered = items
       if (searchQ) {
         filtered = items.filter(i =>

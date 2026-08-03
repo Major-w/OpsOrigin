@@ -11,6 +11,8 @@ import (
 	"github.com/opsorigin/core/internal/user/model"
 	"github.com/opsorigin/core/internal/user/store"
 	"github.com/opsorigin/core/pkg/auth"
+
+	"github.com/opsorigin/core/pkg/httputil"
 )
 
 type Service struct {
@@ -233,7 +235,7 @@ func (s *Service) handleListUsers(w http.ResponseWriter, r *http.Request) {
 		CreatedAt string  `json:"created_at"`
 		UpdatedAt string  `json:"updated_at"`
 	}
-	
+
 	result := make([]userVO, 0)
 	for _, u := range users {
 		var lastLogin *string
@@ -308,7 +310,7 @@ func (s *Service) handleCreateUser(w http.ResponseWriter, r *http.Request) {
 func (s *Service) handleGetUser(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	tenantID := auth.TenantIDFromContext(r.Context())
-	
+
 	user, err := s.store.GetByID(context.Background(), id, tenantID)
 	if err != nil || user == nil {
 		writeError(w, http.StatusNotFound, "user not found")
@@ -322,7 +324,7 @@ func (s *Service) handleUpdateUser(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	role := auth.RoleFromContext(r.Context())
 	tenantID := auth.TenantIDFromContext(r.Context())
-	
+
 	// 只有admin可以更新其他用户，或者用户可以更新自己
 	if role != "admin" && auth.UserIDFromContext(r.Context()) != id {
 		writeError(w, http.StatusForbidden, "permission denied")
@@ -371,7 +373,7 @@ func (s *Service) handleDeleteUser(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	role := auth.RoleFromContext(r.Context())
 	tenantID := auth.TenantIDFromContext(r.Context())
-	
+
 	if role != "admin" {
 		writeError(w, http.StatusForbidden, "admin only")
 		return
@@ -395,7 +397,7 @@ func (s *Service) handleChangePassword(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	role := auth.RoleFromContext(r.Context())
 	tenantID := auth.TenantIDFromContext(r.Context())
-	
+
 	// 只有admin可以修改其他用户密码，或者用户可以修改自己密码
 	if role != "admin" && auth.UserIDFromContext(r.Context()) != id {
 		writeError(w, http.StatusForbidden, "permission denied")
@@ -440,7 +442,7 @@ func (s *Service) handleChangePassword(w http.ResponseWriter, r *http.Request) {
 func (s *Service) handleGetCurrentUser(w http.ResponseWriter, r *http.Request) {
 	userID := auth.UserIDFromContext(r.Context())
 	tenantID := auth.TenantIDFromContext(r.Context())
-	
+
 	user, err := s.store.GetByID(context.Background(), userID, tenantID)
 	if err != nil || user == nil {
 		writeError(w, http.StatusNotFound, "user not found")
@@ -457,6 +459,7 @@ func (s *Service) handleGetCurrentUser(w http.ResponseWriter, r *http.Request) {
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {
+	v = httputil.EmptySliceIfNil(v)
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	json.NewEncoder(w).Encode(v)

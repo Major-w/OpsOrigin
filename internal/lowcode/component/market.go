@@ -7,24 +7,24 @@ import (
 
 // ComponentMarketItem 组件市场项目
 type ComponentMarketItem struct {
-	ID          string            `json:"id"`
-	Name        string            `json:"name"`
-	Category    string            `json:"category"`    // basic, form, layout, chart, advanced
-	Type        string            `json:"type"`        // input, button, table, etc.
-	Version     string            `json:"version"`
-	Author      string            `json:"author"`
-	Description string            `json:"description"`
-	Icon        string            `json:"icon"`
-	Preview     string            `json:"preview"`     // 预览图URL
-	Download    int               `json:"download"`    // 下载次数
-	Rating      float64           `json:"rating"`      // 评分
-	IsOfficial  bool              `json:"is_official"` // 是否官方组件
-	IsFree      bool              `json:"is_free"`     // 是否免费
-	Price       float64           `json:"price"`       // 价格（积分）
-	Tags        []string          `json:"tags"`
+	ID          string                 `json:"id"`
+	Name        string                 `json:"name"`
+	Category    string                 `json:"category"` // basic, form, layout, chart, advanced
+	Type        string                 `json:"type"`     // input, button, table, etc.
+	Version     string                 `json:"version"`
+	Author      string                 `json:"author"`
+	Description string                 `json:"description"`
+	Icon        string                 `json:"icon"`
+	Preview     string                 `json:"preview"`     // 预览图URL
+	Download    int                    `json:"download"`    // 下载次数
+	Rating      float64                `json:"rating"`      // 评分
+	IsOfficial  bool                   `json:"is_official"` // 是否官方组件
+	IsFree      bool                   `json:"is_free"`     // 是否免费
+	Price       float64                `json:"price"`       // 价格（积分）
+	Tags        []string               `json:"tags"`
 	Config      map[string]interface{} `json:"config"` // 组件配置
-	CreatedAt   time.Time         `json:"created_at"`
-	UpdatedAt   time.Time         `json:"updated_at"`
+	CreatedAt   time.Time              `json:"created_at"`
+	UpdatedAt   time.Time              `json:"updated_at"`
 }
 
 // ComponentCategory 组件分类
@@ -79,10 +79,10 @@ func (s *MarketService) initDefaultData() {
 			IsFree:      true,
 			Tags:        []string{"按钮", "点击", "操作"},
 			Config: map[string]interface{}{
-				"text":      "按钮",
-				"variant":   "default",
-				"size":      "default",
-				"disabled":  false,
+				"text":     "按钮",
+				"variant":  "default",
+				"size":     "default",
+				"disabled": false,
 			},
 			CreatedAt: time.Now(),
 			UpdatedAt: time.Now(),
@@ -179,9 +179,9 @@ func (s *MarketService) initDefaultData() {
 			IsFree:      true,
 			Tags:        []string{"上传", "文件", "附件"},
 			Config: map[string]interface{}{
-				"multiple":  false,
-				"maxSize":   10,
-				"accept":    "*",
+				"multiple": false,
+				"maxSize":  10,
+				"accept":   "*",
 			},
 			CreatedAt: time.Now(),
 			UpdatedAt: time.Now(),
@@ -219,8 +219,8 @@ func (s *MarketService) initDefaultData() {
 			IsFree:      true,
 			Tags:        []string{"标签", "选项卡", "布局"},
 			Config: map[string]interface{}{
-				"type":      "line",
-				"animated":  false,
+				"type":     "line",
+				"animated": false,
 			},
 			CreatedAt: time.Now(),
 			UpdatedAt: time.Now(),
@@ -239,9 +239,9 @@ func (s *MarketService) initDefaultData() {
 			IsFree:      true,
 			Tags:        []string{"图表", "折线", "趋势"},
 			Config: map[string]interface{}{
-				"xField":    "x",
-				"yField":    "y",
-				"smooth":    true,
+				"xField": "x",
+				"yField": "y",
+				"smooth": true,
 			},
 			CreatedAt: time.Now(),
 			UpdatedAt: time.Now(),
@@ -259,8 +259,8 @@ func (s *MarketService) initDefaultData() {
 			IsFree:      true,
 			Tags:        []string{"图表", "柱状", "对比"},
 			Config: map[string]interface{}{
-				"xField":    "x",
-				"yField":    "y",
+				"xField":           "x",
+				"yField":           "y",
 				"columnWidthRatio": 0.5,
 			},
 			CreatedAt: time.Now(),
@@ -320,8 +320,8 @@ func (s *MarketService) initDefaultData() {
 			IsFree:      true,
 			Tags:        []string{"对话框", "弹窗", "模态"},
 			Config: map[string]interface{}{
-				"title":      "对话框",
-				"width":      520,
+				"title":        "对话框",
+				"width":        520,
 				"maskClosable": true,
 			},
 			CreatedAt: time.Now(),
@@ -415,7 +415,7 @@ func (s *MarketService) RateComponent(id string, rating float64) error {
 
 // contains 字符串包含检查
 func contains(s, substr string) bool {
-	return len(substr) > 0 && len(s) >= len(substr) && 
+	return len(substr) > 0 && len(s) >= len(substr) &&
 		(s == substr || len(s) > 0 && containsSubstring(s, substr))
 }
 

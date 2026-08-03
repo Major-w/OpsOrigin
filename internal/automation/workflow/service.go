@@ -15,6 +15,8 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/opsorigin/core/pkg/validate"
+
+	"github.com/opsorigin/core/pkg/httputil"
 )
 
 // ScriptExecutor executes a script by ID and returns its output, exit code and error.
@@ -625,7 +627,7 @@ func (s *Service) decideApproval(w http.ResponseWriter, r *http.Request, status 
 	}
 	var req struct {
 		DecidedBy string `json:"decided_by"`
-		Comment    string `json:"comment"`
+		Comment   string `json:"comment"`
 	}
 	json.NewDecoder(r.Body).Decode(&req)
 
@@ -804,8 +806,10 @@ func evalCondition(cond string, ctx map[string]any) bool {
 			lhs := resolveValue(strings.TrimSpace(parts[0]), ctx)
 			rhs := strings.Trim(strings.TrimSpace(parts[1]), `"'`)
 			switch op {
-			case "==": return lhs == rhs
-			case "!=": return lhs != rhs
+			case "==":
+				return lhs == rhs
+			case "!=":
+				return lhs != rhs
 			case "=~":
 				matched, _ := regexp.MatchString(rhs, lhs)
 				return matched
@@ -825,15 +829,20 @@ func compareNumbers(a, b, op string) bool {
 		return false
 	}
 	switch op {
-	case ">": return fa > fb
-	case ">=": return fa >= fb
-	case "<": return fa < fb
-	case "<=": return fa <= fb
+	case ">":
+		return fa > fb
+	case ">=":
+		return fa >= fb
+	case "<":
+		return fa < fb
+	case "<=":
+		return fa <= fb
 	}
 	return false
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {
+	v = httputil.EmptySliceIfNil(v)
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	json.NewEncoder(w).Encode(v)
@@ -883,25 +892,30 @@ func (s *Service) Trigger(ctx context.Context, tenantID, workflowID string, agen
 func (s *Service) handleCancelExecution(w http.ResponseWriter, r *http.Request) {
 	execID := r.PathValue("exec_id")
 	tenantID := r.Header.Get("X-Tenant-ID")
-	if tenantID == "" { tenantID = "default" }
+	if tenantID == "" {
+		tenantID = "default"
+	}
 	exec, err := s.store.GetExecution(r.Context(), execID, tenantID)
 	if err != nil || exec == nil {
-		writeError(w, http.StatusNotFound, "execution not found"); return
+		writeError(w, http.StatusNotFound, "execution not found")
+		return
 	}
 	if exec.Status != "running" && exec.Status != "waiting" {
-		writeError(w, http.StatusBadRequest, "cannot cancel execution in status: "+string(exec.Status)); return
+		writeError(w, http.StatusBadRequest, "cannot cancel execution in status: "+string(exec.Status))
+		return
 	}
 	if err := s.store.CancelExecution(r.Context(), execID, tenantID); err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error()); return
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "cancelled"})
 }
 
 func (s *Service) handleListTemplates(w http.ResponseWriter, r *http.Request) {
 	templates := []struct {
-		ID          string `json:"id"`
-		Name        string `json:"name"`
-		Description string `json:"description"`
+		ID          string         `json:"id"`
+		Name        string         `json:"name"`
+		Description string         `json:"description"`
 		Steps       []WorkflowStep `json:"steps"`
 	}{
 		{ID: "tmpl-ci", Name: "CI 部署流水线", Description: "拉取代码→构建→测试→部署",

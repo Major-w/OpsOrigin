@@ -1,7 +1,7 @@
 'use client'
 
 import { create } from 'zustand'
-import { apiFetch } from '@/lib/utils'
+import { apiFetch, apiList } from '@/lib/utils'
 import { toast } from '@/stores/toast'
 
 export interface KeyEntry {
@@ -25,7 +25,7 @@ export const useKeyStore = create<KeyState>((set, get) => ({
     set({ loading: true })
     try {
       const qs = type ? `?type=${type}` : ''
-      const keys = await apiFetch<KeyEntry[]>(`/keys${qs}`)
+      const keys = await apiList<KeyEntry>(`/keys${qs}`)
       set({ keys, loading: false })
     } catch (e: any) {
       set({ loading: false })

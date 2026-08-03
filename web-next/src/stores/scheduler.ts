@@ -1,7 +1,7 @@
 'use client'
 
 import { create } from 'zustand'
-import { apiFetch } from '@/lib/utils'
+import { apiFetch, apiList } from '@/lib/utils'
 import { toast } from '@/stores/toast'
 
 export interface ScheduledTask {
@@ -24,7 +24,7 @@ export const useSchedulerStore = create<SchedulerState>((set, get) => ({
   fetch: async () => {
     set({ loading: true })
     try {
-      const tasks = await apiFetch<ScheduledTask[]>('/schedules')
+      const tasks = await apiList<ScheduledTask>('/schedules')
       set({ tasks, loading: false })
     } catch (e: any) {
       set({ loading: false })

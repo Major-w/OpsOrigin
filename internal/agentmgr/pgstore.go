@@ -288,7 +288,7 @@ func (s *pgStore) Delete(ctx context.Context, id, tenantID string) error {
 // heartbeatBatch bundles heartbeat data for bulk upsert.
 type heartbeatBatch struct {
 	ID, TenantID, Version, OS, OSVersion, Hostname, CPU, Memory, IPs, Capabilities string
-	LastSeen, LastHeartbeat                                                     time.Time
+	LastSeen, LastHeartbeat                                                        time.Time
 }
 
 // BulkHeartbeat bulk-upserts agent heartbeat records in a single INSERT … ON CONFLICT statement.
@@ -306,7 +306,7 @@ func (s *pgStore) BulkHeartbeat(ctx context.Context, batch []heartbeatBatch) err
 			base+8, base+9, base+10, base+11, base+12, base+13, base+14, base+15, base+16, base+17))
 		args = append(args,
 			hb.ID, hb.TenantID,
-			hb.Hostname, // name 兜底用 hostname,纯隧道注册的 Agent 首次落库也有可读名称
+			hb.Hostname,            // name 兜底用 hostname,纯隧道注册的 Agent 首次落库也有可读名称
 			string(AgentTypeAgent), // 经 gRPC/隧道注册的统一标记为 agent 类型,避免 UI 兜底显示 "Agentless"
 			hb.Version, hb.OS, hb.OSVersion,
 			hb.Hostname, hb.CPU, hb.Memory,

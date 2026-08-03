@@ -16,28 +16,28 @@ const (
 
 // PageVersion 页面版本
 type PageVersion struct {
-	ID          string        `json:"id"`
-	PageID      string        `json:"page_id"`
-	Version     string        `json:"version"`      // 语义化版本号: 1.0.0
-	VersionNum  int           `json:"version_num"`  // 版本序号
-	Status      VersionStatus `json:"status"`
+	ID          string          `json:"id"`
+	PageID      string          `json:"page_id"`
+	Version     string          `json:"version"`     // 语义化版本号: 1.0.0
+	VersionNum  int             `json:"version_num"` // 版本序号
+	Status      VersionStatus   `json:"status"`
 	Content     []ComponentNode `json:"content"`    // 页面内容快照
-	ChangeLog   string        `json:"change_log"`   // 变更日志
-	CreatedBy   string        `json:"created_by"`
-	PublishedBy string        `json:"published_by,omitempty"`
-	PublishedAt *time.Time    `json:"published_at,omitempty"`
-	CreatedAt   time.Time     `json:"created_at"`
-	UpdatedAt   time.Time     `json:"updated_at"`
+	ChangeLog   string          `json:"change_log"` // 变更日志
+	CreatedBy   string          `json:"created_by"`
+	PublishedBy string          `json:"published_by,omitempty"`
+	PublishedAt *time.Time      `json:"published_at,omitempty"`
+	CreatedAt   time.Time       `json:"created_at"`
+	UpdatedAt   time.Time       `json:"updated_at"`
 }
 
 // ComponentNode 组件节点（用于版本快照）
 type ComponentNode struct {
-	ID         string                 `json:"id"`
-	Type       string                 `json:"type"`
-	Label      string                 `json:"label"`
-	Props      map[string]interface{} `json:"props"`
-	Children   []ComponentNode        `json:"children,omitempty"`
-	SortOrder  int                    `json:"sort_order"`
+	ID        string                 `json:"id"`
+	Type      string                 `json:"type"`
+	Label     string                 `json:"label"`
+	Props     map[string]interface{} `json:"props"`
+	Children  []ComponentNode        `json:"children,omitempty"`
+	SortOrder int                    `json:"sort_order"`
 }
 
 // ModelVersion 数据模型版本
@@ -47,7 +47,7 @@ type ModelVersion struct {
 	Version     string        `json:"version"`
 	VersionNum  int           `json:"version_num"`
 	Status      VersionStatus `json:"status"`
-	Schema      []FieldSchema `json:"schema"`      // 模型Schema快照
+	Schema      []FieldSchema `json:"schema"` // 模型Schema快照
 	ChangeLog   string        `json:"change_log"`
 	CreatedBy   string        `json:"created_by"`
 	PublishedBy string        `json:"published_by,omitempty"`
@@ -154,7 +154,7 @@ func (s *VersionService) RollbackPageVersion(pageID, versionID, operatorID strin
 	}
 
 	// 创建新版本，内容与目标版本相同
-	newVersion, err := s.CreatePageVersion(pageID, operatorID, 
+	newVersion, err := s.CreatePageVersion(pageID, operatorID,
 		fmt.Sprintf("Rollback to version %s", targetVersion.Version), targetVersion.Content)
 	if err != nil {
 		return nil, err

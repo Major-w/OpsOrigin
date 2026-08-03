@@ -31,33 +31,33 @@ const (
 
 // CollectTask 一个采集任务定义。
 type CollectTask struct {
-	ID           string           `json:"id"`
-	TenantID     string           `json:"tenant_id"`
-	Name         string           `json:"name"`
-	Type         CollectTaskType  `json:"type"` // cmdb | metric
-	Script       string           `json:"script"`
-	ScriptType   string           `json:"script_type,omitempty"` // shell(默认) | python
-	Requirements []string         `json:"requirements,omitempty"`
-	IntervalSec  int              `json:"interval_sec"`                    // 调度周期(秒)
-	TargetAgents []string         `json:"target_agents,omitempty"`         // 空 = 全部在线 Agent
-	Enabled      bool             `json:"enabled"`
-	TimeoutSec   int              `json:"timeout_sec,omitempty"`           // 默认 60
-	LastRunAt    *time.Time       `json:"last_run_at,omitempty"`
-	CreatedAt    time.Time        `json:"created_at"`
-	UpdatedAt    time.Time        `json:"updated_at"`
+	ID           string          `json:"id"`
+	TenantID     string          `json:"tenant_id"`
+	Name         string          `json:"name"`
+	Type         CollectTaskType `json:"type"` // cmdb | metric
+	Script       string          `json:"script"`
+	ScriptType   string          `json:"script_type,omitempty"` // shell(默认) | python
+	Requirements []string        `json:"requirements,omitempty"`
+	IntervalSec  int             `json:"interval_sec"`            // 调度周期(秒)
+	TargetAgents []string        `json:"target_agents,omitempty"` // 空 = 全部在线 Agent
+	Enabled      bool            `json:"enabled"`
+	TimeoutSec   int             `json:"timeout_sec,omitempty"` // 默认 60
+	LastRunAt    *time.Time      `json:"last_run_at,omitempty"`
+	CreatedAt    time.Time       `json:"created_at"`
+	UpdatedAt    time.Time       `json:"updated_at"`
 }
 
 // CollectRun 一次采集执行的记录。
 type CollectRun struct {
-	RunID         string    `json:"run_id"`
-	CollectTaskID string    `json:"collect_task_id"`
-	AgentID       string    `json:"agent_id"`
-	Success       bool      `json:"success"`
-	Output        string    `json:"output,omitempty"`
+	RunID         string        `json:"run_id"`
+	CollectTaskID string        `json:"collect_task_id"`
+	AgentID       string        `json:"agent_id"`
+	Success       bool          `json:"success"`
+	Output        string        `json:"output,omitempty"`
 	Metrics       []MetricPoint `json:"metrics,omitempty"`
-	Error         string    `json:"error,omitempty"`
-	StartedAt     time.Time `json:"started_at"`
-	FinishedAt    time.Time `json:"finished_at"`
+	Error         string        `json:"error,omitempty"`
+	StartedAt     time.Time     `json:"started_at"`
+	FinishedAt    time.Time     `json:"finished_at"`
 }
 
 // MetricPoint 采集到的单个指标点。
@@ -77,9 +77,9 @@ type CollectStore interface {
 // CollectManager 采集任务的内存管理器(可选持久化)。
 type CollectManager struct {
 	mu    sync.RWMutex
-	tasks map[string]*CollectTask // id -> task
+	tasks map[string]*CollectTask  // id -> task
 	runs  map[string][]*CollectRun // task_id -> runs(最近 100)
-	store CollectStore            // 可选持久化
+	store CollectStore             // 可选持久化
 }
 
 // maxCollectRuns ���个任务保留的最近运行记录数。
@@ -332,12 +332,12 @@ func (e *collectError) Error() string { return e.msg }
 
 // CMDBCollectSpec 是 CMDB 同步过来的采集任务描述。
 type CMDBCollectSpec struct {
-	CmdbTaskID  string           // cmdb 采集任务 ID（投影键来源）
-	TenantID    string
-	AgentType   CollectTaskType  // cmdb | metric（由 cmdb.Kind 映射）
+	CmdbTaskID   string // cmdb 采集任务 ID（投影键来源）
+	TenantID     string
+	AgentType    CollectTaskType // cmdb | metric（由 cmdb.Kind 映射）
 	TargetAgents []string        // 目标 Agent ID 列表（由 cmdb.Target "host:<id>" 解析）
-	IntervalSec int              // 采集周期（秒）
-	Enabled     bool
+	IntervalSec  int             // 采集周期（秒）
+	Enabled      bool
 }
 
 // UpsertCollectTaskFromCMDB 把一条 CMDB 采集任务同步为 Agent 侧采集任务(投影)。

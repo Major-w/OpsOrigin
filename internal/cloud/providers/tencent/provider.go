@@ -96,12 +96,12 @@ func (p *Provider) listCVM(ctx context.Context, cred cloud.Credential, region st
 	var r struct {
 		Response struct {
 			InstanceSet []struct {
-				InstanceId       string   `json:"InstanceId"`
-				InstanceName     string   `json:"InstanceName"`
-				InstanceState    string   `json:"InstanceState"`
+				InstanceId         string   `json:"InstanceId"`
+				InstanceName       string   `json:"InstanceName"`
+				InstanceState      string   `json:"InstanceState"`
 				PrivateIpAddresses []string `json:"PrivateIpAddresses"`
 				PublicIpAddresses  []string `json:"PublicIpAddresses"`
-				Placement        struct {
+				Placement          struct {
 					Zone string `json:"Zone"`
 				} `json:"Placement"`
 			} `json:"InstanceSet"`
@@ -187,10 +187,10 @@ func (p *Provider) listCLB(ctx context.Context, cred cloud.Credential, region st
 			LoadBalancerSet []struct {
 				LoadBalancerId   string `json:"LoadBalancerId"`
 				LoadBalancerName string `json:"LoadBalancerName"`
-				Address           string `json:"Address"`
-				Status            string `json:"Status"`
-				Region            string `json:"Region"`
-				Zone              string `json:"Zone"`
+				Address          string `json:"Address"`
+				Status           string `json:"Status"`
+				Region           string `json:"Region"`
+				Zone             string `json:"Zone"`
 			} `json:"LoadBalancerSet"`
 			Error *struct {
 				Code    string `json:"Code"`
@@ -228,11 +228,11 @@ func (p *Provider) call(ctx context.Context, cred cloud.Credential, svc, version
 	payloadHash := hex.EncodeToString(hashed[:])
 
 	headers := map[string]string{
-		"content-type": "application/json",
-		"host":         host,
-		"x-tc-action":  action,
-		"x-tc-region": region,
-		"x-tc-version": version,
+		"content-type":   "application/json",
+		"host":           host,
+		"x-tc-action":    action,
+		"x-tc-region":    region,
+		"x-tc-version":   version,
 		"x-tc-timestamp": fmt.Sprintf("%d", ts),
 	}
 

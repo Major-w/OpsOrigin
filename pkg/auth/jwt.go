@@ -31,16 +31,16 @@ type JWTHeader struct {
 
 // JWTPayload JWT载荷
 type JWTPayload struct {
-	Issuer    string `json:"iss,omitempty"`    // 签发者
-	Subject   string `json:"sub,omitempty"`    // 主题
-	Audience  string `json:"aud,omitempty"`    // 受众
-	ExpiresAt int64  `json:"exp"`              // 过期时间
-	NotBefore int64  `json:"nbf,omitempty"`    // 生效时间
-	IssuedAt  int64  `json:"iat,omitempty"`    // 签发时间
-	ID        string `json:"jti,omitempty"`    // Token ID
-	UserID    string `json:"uid"`              // 用户ID
-	TenantID  string `json:"tid"`              // 租户ID
-	Role      string `json:"role"`             // 用户角色
+	Issuer    string `json:"iss,omitempty"` // 签发者
+	Subject   string `json:"sub,omitempty"` // 主题
+	Audience  string `json:"aud,omitempty"` // 受众
+	ExpiresAt int64  `json:"exp"`           // 过期时间
+	NotBefore int64  `json:"nbf,omitempty"` // 生效时间
+	IssuedAt  int64  `json:"iat,omitempty"` // 签发时间
+	ID        string `json:"jti,omitempty"` // Token ID
+	UserID    string `json:"uid"`           // 用户ID
+	TenantID  string `json:"tid"`           // 租户ID
+	Role      string `json:"role"`          // 用户角色
 }
 
 // JWTManager JWT管理器

@@ -243,6 +243,53 @@ func (s *Service) markTaskDelegated(ctx context.Context, t *model.CollectionTask
 	_ = s.pg.TouchCollectionTask(ctx, t.ID, t.LastRunAt, t.Status, "")
 }
 
+// runCollectionTaskResolved 执行采集任务，对动态目标（query 模式）按保存查询实时解析
+// 命中 CI 集合后逐资源下发采集；静态目标直接执行。返回命中目标数 / 落库 CI 数 / 指标数。
+// 供手动触发（handleRunCollectionTask）与调度器（scheduler.runOne）共用，避免逻辑分叉。
+func (s *Service) runCollectionTaskResolved(ctx context.Context, t *model.CollectionTask, tenantID string) (resolved, cis, metrics int, err error) {
+	if t.TargetMode != "query" || t.TargetQuery == "" {
+		c, ok := s.registry.Lookup(t.Kind, t.ResourceType)
+		if !ok {
+			return 0, 0, 0, fmt.Errorf("no collector registered for %s", collectorKey(t.Kind, t.ResourceType))
+		}
+		out, e := c.Run(ctx, t)
+		if e != nil {
+			return 0, 0, 0, e
+		}
+		if e := s.ingestCollectionOutput(ctx, t, out); e != nil {
+			return 0, 0, 0, e
+		}
+		return 1, len(out.CIs), len(out.Metrics), nil
+	}
+
+	targets, rerr := s.ResolveSavedQueryTargetIDs(ctx, tenantID, t.TargetQuery)
+	if rerr != nil {
+		return 0, 0, 0, rerr
+	}
+	for _, res := range targets {
+		clone := *t
+		clone.Target = res
+		clone.TargetMode = "static"
+		cc, cok := s.registry.Lookup(clone.Kind, clone.ResourceType)
+		if !cok {
+			slog.Warn("skip resolved target: no collector", "target", res, "kind", clone.Kind)
+			continue
+		}
+		out, e := cc.Run(ctx, &clone)
+		if e != nil {
+			slog.Warn("collection failed for resolved target", "target", res, "err", e)
+			continue
+		}
+		if e := s.ingestCollectionOutput(ctx, &clone, out); e != nil {
+			slog.Warn("ingest failed for resolved target", "target", res, "err", e)
+			continue
+		}
+		cis += len(out.CIs)
+		metrics += len(out.Metrics)
+	}
+	return len(targets), cis, metrics, nil
+}
+
 // ingestCollectionOutput 按 Kind 路由落库：cmdb→CI upsert，monitor→指标回调。
 func (s *Service) ingestCollectionOutput(ctx context.Context, t *model.CollectionTask, out *CollectionOutput) error {
 	switch t.Kind {

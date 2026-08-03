@@ -1,7 +1,7 @@
 'use client'
 
 import { create } from 'zustand'
-import { apiFetch } from '@/lib/utils'
+import { apiFetch, apiList } from '@/lib/utils'
 import { toast } from '@/stores/toast'
 
 export interface Ticket {
@@ -107,7 +107,7 @@ export const useITSMStore = create<ITSMState>((set, get) => ({
   fetch: async () => {
     set({ loading: true })
     try {
-      const tickets = await apiFetch<Ticket[]>('/itsm/tickets')
+      const tickets = await apiList<Ticket>('/itsm/tickets')
       set({ tickets, loading: false })
     } catch (e: any) {
       set({ loading: false })
@@ -124,7 +124,7 @@ export const useITSMStore = create<ITSMState>((set, get) => ({
   },
   getEvents: async (id) => {
     try {
-      return await apiFetch<TicketEvent[]>(`/itsm/tickets/${id}/events`)
+      return await apiList<TicketEvent>(`/itsm/tickets/${id}/events`)
     } catch (e: any) {
       toast.error(`加载工单事件失败: ${e.message}`)
       throw e
@@ -206,7 +206,7 @@ export const useITSMStore = create<ITSMState>((set, get) => ({
   },
   fetchProcesses: async () => {
     try {
-      const processes = await apiFetch<Process[]>('/itsm/processes')
+      const processes = await apiList<Process>('/itsm/processes')
       set({ processes })
     } catch (e: any) {
       toast.error(`加载流程列表失败: ${e.message}`)

@@ -12,6 +12,8 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+
+	"github.com/opsorigin/core/pkg/httputil"
 )
 
 type Store interface {
@@ -152,7 +154,7 @@ func (s *Service) handleCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	key.TenantID = tenantFromCtx(r.Context())
-	
+
 	if key.Type == KeyTypeSSHPrivate || key.Type == KeyTypeSSHPublic {
 		key.Fingerprint = computeFingerprint(key.Content)
 		key.Size = estimateSize(key.Content)
@@ -160,7 +162,7 @@ func (s *Service) handleCreate(w http.ResponseWriter, r *http.Request) {
 		key.Fingerprint = ""
 		key.Size = len(key.Content)
 	}
-	
+
 	if key.Type == "" {
 		key.Type = KeyTypeSSHPrivate
 	}
@@ -223,11 +225,21 @@ func (s *Service) handleUpdate(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
-	if req.Name != "" { key.Name = req.Name }
-	if req.Type != "" { key.Type = req.Type }
-	if req.Username != "" { key.Username = req.Username }
-	if req.Host != "" { key.Host = req.Host }
-	if req.Port != "" { key.Port = req.Port }
+	if req.Name != "" {
+		key.Name = req.Name
+	}
+	if req.Type != "" {
+		key.Type = req.Type
+	}
+	if req.Username != "" {
+		key.Username = req.Username
+	}
+	if req.Host != "" {
+		key.Host = req.Host
+	}
+	if req.Port != "" {
+		key.Port = req.Port
+	}
 	if req.Content != "" {
 		key.Content = req.Content
 		if key.Type == KeyTypeSSHPrivate || key.Type == KeyTypeSSHPublic {
@@ -253,7 +265,9 @@ func (s *Service) handleDelete(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Service) handleBatchDelete(w http.ResponseWriter, r *http.Request) {
-	var req struct { IDs []string `json:"ids"` }
+	var req struct {
+		IDs []string `json:"ids"`
+	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
@@ -267,6 +281,7 @@ func (s *Service) handleBatchDelete(w http.ResponseWriter, r *http.Request) {
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {
+	v = httputil.EmptySliceIfNil(v)
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	json.NewEncoder(w).Encode(v)

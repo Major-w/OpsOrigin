@@ -69,7 +69,7 @@ type AgentHost struct {
 	ID            string            `json:"id"`
 	TenantID      string            `json:"tenant_id"`
 	Fingerprint   string            `json:"fingerprint,omitempty"`
-	Channels      []string          `json:"channels,omitempty"`       // 可用通道: ["agent","ssh"] 等 // SHA256(tenant:address), 用于去重
+	Channels      []string          `json:"channels,omitempty"` // 可用通道: ["agent","ssh"] 等 // SHA256(tenant:address), 用于去重
 	Name          string            `json:"name"`
 	Type          AgentType         `json:"type"`
 	Address       string            `json:"address"`
@@ -97,7 +97,7 @@ type AgentHost struct {
 	IPs           []string          `json:"ips,omitempty"` // 上报的 IP 列表,用于指纹去重/疑似重复判定
 	// DuplicateOf 非持久化字段:列表/详情时由后端动态计算,指向"疑似重复"的规范记录 ID。
 	// 当前记录与另一条同主机名/IP 的记录撞车且 ID 不同时,前端据此提示用户合并。
-	DuplicateOf string `json:"duplicate_of,omitempty"`
+	DuplicateOf string    `json:"duplicate_of,omitempty"`
 	CreatedAt   time.Time `json:"created_at"`
 	UpdatedAt   time.Time `json:"updated_at"`
 }
@@ -114,10 +114,10 @@ type RegisterAgentRequest struct {
 	SSHKey         string            `json:"ssh_key,omitempty"`
 	CredentialID   string            `json:"credential_id,omitempty"`
 	CredentialType string            `json:"credential_type,omitempty"`
-	InstallMethod InstallMethod     `json:"install_method,omitempty"`
+	InstallMethod  InstallMethod     `json:"install_method,omitempty"`
 	Labels         map[string]string `json:"labels,omitempty"`
 	// AsProxy 勾选时将该主机注册为 Proxy 而非 AgentHost
-	AsProxy bool `json:"as_proxy,omitempty"`
+	AsProxy bool   `json:"as_proxy,omitempty"`
 	ProxyID string `json:"proxy_id,omitempty"` // 通过 Proxy 连接时指定 Proxy ID,空表示直连
 }
 
@@ -152,7 +152,7 @@ type BatchInstallRequest struct {
 	CredentialType string   `json:"credential_type,omitempty"`
 	Port           int      `json:"port,omitempty"`
 	// AsProxy 勾选时将目标主机注册为 Proxy 节点
-	AsProxy bool `json:"as_proxy,omitempty"`
+	AsProxy bool   `json:"as_proxy,omitempty"`
 	ProxyID string `json:"proxy_id,omitempty"` // 通过 Proxy 连接时指定 Proxy ID,空表示直连
 }
 
@@ -172,14 +172,14 @@ type TaskRequest struct {
 	Script  string         `json:"script,omitempty"`
 	Params  map[string]any `json:"params,omitempty"`
 	Timeout int            `json:"timeout,omitempty"`
-	RunAs  string          `json:"run_as,omitempty"` // 以指定系统用户身份执行(Agent 端可 honor)
+	RunAs   string         `json:"run_as,omitempty"` // 以指定系统用户身份执行(Agent 端可 honor)
 
 	// Mode 执行模式(与 cmd/agent TaskRequest.Mode 对齐):
 	//   - "sandbox" 沙箱隔离执行不可信代码;
 	//   - "collect" 只读采集: 读取主机系统信息上报, 写被限制、环境净化、拦截逃逸高危命令;
 	//   - "normal"  常规执行(默认)。
 	// 为空时回退到 Sandbox 布尔字段旧语义。
-	Mode         string   `json:"mode,omitempty"`
+	Mode string `json:"mode,omitempty"`
 
 	// 沙箱执行(2026-07-30)。Sandbox=true 时 Agent 端不直接裸跑脚本,而是在目标
 	// 主机上创建真实隔离环境执行:独立临时工作目录 + 净化环境变量 + 独立进程组;
@@ -191,11 +191,11 @@ type TaskRequest struct {
 	// 文件分发(§5)相关字段。Agent 拉取 download-tasks 时,这些字段直接映射
 	// 到 Agent 端 FileDownloadRequest(file_url/file_path/expected_checksum/checksum_algo),
 	// 无需额外转换。FileURL 由 Server 在签发下载任务时填充(含短期令牌)。
-	FileID          string `json:"file_id,omitempty"`          // 中心存储 object key,用于令牌绑定与文件寻址
-	FileURL         string `json:"file_url,omitempty"`         // 完整下载地址(含短期令牌),拓扑感知(直连 Server 或经 Proxy)
-	FilePath        string `json:"file_path,omitempty"`        // Agent 本地落盘路径
+	FileID           string `json:"file_id,omitempty"`           // 中心存储 object key,用于令牌绑定与文件寻址
+	FileURL          string `json:"file_url,omitempty"`          // 完整下载地址(含短期令牌),拓扑感知(直连 Server 或经 Proxy)
+	FilePath         string `json:"file_path,omitempty"`         // Agent 本地落盘路径
 	ExpectedChecksum string `json:"expected_checksum,omitempty"` // 非空时 Agent 下载完成后强制校验(§5.3)
-	ChecksumAlgo   string `json:"checksum_algo,omitempty"`   // "sha256"(默认) / "md5"
+	ChecksumAlgo     string `json:"checksum_algo,omitempty"`     // "sha256"(默认) / "md5"
 }
 
 type TaskResponse struct {
@@ -210,7 +210,7 @@ type TaskResponse struct {
 // TaskInfo 任务完整信息(含状态)
 type TaskInfo struct {
 	TaskRequest
-	Status    TaskStatus   `json:"status"`
+	Status    TaskStatus    `json:"status"`
 	Response  *TaskResponse `json:"response,omitempty"`
 	CreatedAt time.Time     `json:"created_at"`
 	UpdatedAt time.Time     `json:"updated_at"`

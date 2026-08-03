@@ -22,8 +22,8 @@ type Store interface {
 
 // MemStore 是基于内存的凭证存储（开发/演示用）。
 type MemStore struct {
-	mu     sync.RWMutex
-	creds  map[string]map[string]Credential // provider -> id -> cred
+	mu    sync.RWMutex
+	creds map[string]map[string]Credential // provider -> id -> cred
 }
 
 // NewMemStore 创建内存凭证存储。
@@ -141,7 +141,7 @@ func (c *Collector) Collect(provider string) ([]Resource, []Metric, error) {
 			// 指标失败不阻断资源采集
 			continue
 		}
-			allMet = append(allMet, met...)
+		allMet = append(allMet, met...)
 	}
 	return allRes, allMet, nil
 }

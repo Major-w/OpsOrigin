@@ -541,7 +541,7 @@ func (ts *MCPToolSet) scriptGenerate(ctx context.Context, args map[string]any) (
 		}
 		return map[string]any{
 			"status": "blocked", "name": name,
-			"message": "script blocked: contains commands forbidden in sandbox (escape/destructive to host); no script saved",
+			"message":    "script blocked: contains commands forbidden in sandbox (escape/destructive to host); no script saved",
 			"violations": items,
 		}, nil
 	}
@@ -560,7 +560,7 @@ func (ts *MCPToolSet) scriptGenerate(ctx context.Context, args map[string]any) (
 	if !syntaxOK {
 		return map[string]any{
 			"status": "syntax_error", "name": name,
-			"message": "script syntax check failed; fix the script and retry: " + syntaxNote,
+			"message":      "script syntax check failed; fix the script and retry: " + syntaxNote,
 			"syntax_error": syntaxNote,
 		}, nil
 	}
@@ -586,7 +586,7 @@ func (ts *MCPToolSet) scriptGenerate(ctx context.Context, args map[string]any) (
 		return map[string]any{
 			"status": "validated", "name": name,
 			"message": "dry-run: script passed safety scan and syntax check; not saved",
-			"checks": map[string]any{"sandbox_scan": "passed", "syntax": syntaxNote},
+			"checks":  map[string]any{"sandbox_scan": "passed", "syntax": syntaxNote},
 		}, nil
 	}
 
@@ -750,6 +750,7 @@ func (ts *MCPToolSet) knowledgeSearch(ctx context.Context, args map[string]any) 
 //   - 路 2: 块级关键词检索(标题/块内容 ILIKE);
 //   - 双路按 RRF(Reciprocal Rank Fusion) 融合, 命中块聚合回文章;
 //   - 双路全空时回退文章级 ILIKE(兼容未升级/未 reindex 的存量数据)。
+//
 // categories 非空时仅在这些分类内检索(Agent 知识库绑定, PRD 5.2.6)。
 // 结果经 ttlCache 缓存: embedding 去重(query->向量) + 检索结果复用。
 func (ts *MCPToolSet) searchKnowledge(ctx context.Context, query string, limit, snippetLen int, categories []string) ([]map[string]any, error) {

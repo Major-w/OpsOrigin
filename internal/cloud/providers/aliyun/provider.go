@@ -98,11 +98,11 @@ func (p *Provider) listECS(ctx context.Context, cred cloud.Credential, region st
 	var r struct {
 		Instances struct {
 			Instance []struct {
-				InstanceId   string `json:"InstanceId"`
-				InstanceName string `json:"InstanceName"`
-				Status       string `json:"Status"`
-				RegionId     string `json:"RegionId"`
-				ZoneId       string `json:"ZoneId"`
+				InstanceId      string `json:"InstanceId"`
+				InstanceName    string `json:"InstanceName"`
+				Status          string `json:"Status"`
+				RegionId        string `json:"RegionId"`
+				ZoneId          string `json:"ZoneId"`
 				PublicIpAddress struct {
 					IpAddress []string `json:"IpAddress"`
 				} `json:"PublicIpAddress"`
@@ -183,10 +183,10 @@ func (p *Provider) listSLB(ctx context.Context, cred cloud.Credential, region st
 	var r struct {
 		LoadBalancers struct {
 			LoadBalancer []struct {
-				LoadBalancerId   string `json:"LoadBalancerId"`
-				LoadBalancerName string `json:"LoadBalancerName"`
-				Address          string `json:"Address"`
-				RegionId         string `json:"RegionId"`
+				LoadBalancerId     string `json:"LoadBalancerId"`
+				LoadBalancerName   string `json:"LoadBalancerName"`
+				Address            string `json:"Address"`
+				RegionId           string `json:"RegionId"`
 				LoadBalancerStatus string `json:"LoadBalancerStatus"`
 			} `json:"LoadBalancer"`
 		} `json:"LoadBalancers"`

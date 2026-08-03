@@ -13,6 +13,8 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/opsorigin/core/pkg/validate"
+
+	"github.com/opsorigin/core/pkg/httputil"
 )
 
 type Store interface {
@@ -152,18 +154,31 @@ func (s *Service) Start(ctx context.Context) {
 // scan 遍历所有启用的任务，命中 cron 表达式即触发。
 func (s *Service) scan(ctx context.Context) {
 	tasks, err := s.store.List(ctx, "")
-	if err != nil { slog.Warn("scheduler scan list failed", "err", err); return }
+	if err != nil {
+		slog.Warn("scheduler scan list failed", "err", err)
+		return
+	}
 	now := time.Now()
 	for _, t := range tasks {
-		if !t.Enabled || t.CronExpr == "" { continue }
-		if !matchCron(t.CronExpr, now) { continue }
-		if t.LastRunAt != nil && now.Sub(*t.LastRunAt) < time.Minute { continue }
+		if !t.Enabled || t.CronExpr == "" {
+			continue
+		}
+		if !matchCron(t.CronExpr, now) {
+			continue
+		}
+		if t.LastRunAt != nil && now.Sub(*t.LastRunAt) < time.Minute {
+			continue
+		}
 
 		switch t.TaskType {
 		case TaskTypeWorkflow:
-			if s.trigger == nil { continue }
+			if s.trigger == nil {
+				continue
+			}
 		case TaskTypeScript:
-			if s.scriptTrigger == nil { continue }
+			if s.scriptTrigger == nil {
+				continue
+			}
 		default:
 			continue
 		}
@@ -179,7 +194,9 @@ func (s *Service) scan(ctx context.Context) {
 			for attempt := 0; attempt < maxAttempts; attempt++ {
 				if attempt > 0 {
 					delay := task.RetryDelaySecs
-					if delay <= 0 { delay = 60 }
+					if delay <= 0 {
+						delay = 60
+					}
 					time.Sleep(time.Duration(delay) * time.Second)
 				}
 				var err error
@@ -190,7 +207,11 @@ func (s *Service) scan(ctx context.Context) {
 					err = s.scriptTrigger(context.WithoutCancel(ctx), task.TenantID, task.TargetID, task.AgentIDs)
 				}
 				if err == nil {
-					if task.RetryCount > 0 { task.RetryCount = 0; task.LastError = ""; _ = s.store.Update(ctx, task) }
+					if task.RetryCount > 0 {
+						task.RetryCount = 0
+						task.LastError = ""
+						_ = s.store.Update(ctx, task)
+					}
 					return
 				}
 				lastErr = err
@@ -331,6 +352,7 @@ func (s *Service) handleDelete(w http.ResponseWriter, r *http.Request) {
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {
+	v = httputil.EmptySliceIfNil(v)
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	json.NewEncoder(w).Encode(v)

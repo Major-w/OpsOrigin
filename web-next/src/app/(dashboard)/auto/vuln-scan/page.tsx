@@ -7,8 +7,8 @@ import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { Input } from '@/components/ui/input'
 import { Dialog, DialogFooter } from '@/components/ui/dialog'
-import { formatTime, apiFetch } from '@/lib/utils'
-import { Bug, Plus, RefreshCw, Download, Trash2, ShieldAlert, Shield, ShieldCheck, AlertTriangle, FileSpreadsheet, Database, Clock, Server, Calendar, Info } from 'lucide-react'
+import { formatTime, apiFetch, apiList } from '@/lib/utils'
+import { Bug, Plus, RefreshCw, Download, Trash2, ShieldAlert, Shield, ShieldCheck, AlertTriangle, FileSpreadsheet, Database, Clock, Server, Calendar, Info, HelpCircle, ChevronDown } from 'lucide-react'
 
 const sevBadge: Record<string, 'destructive' | 'warning' | 'secondary' | 'success'> = { critical: 'destructive', high: 'warning', medium: 'secondary', low: 'success' }
 const sevLabels: Record<string, string> = { critical: '致命', high: '高危', medium: '中危', low: '低危' }
@@ -26,12 +26,13 @@ export default function VulnScanPage() {
   const [findingsLoading, setFindingsLoading] = useState(false)
   const [loading, setLoading] = useState(false)
   const [expanded, setExpanded] = useState<string | null>(null)
+  const [dbInfoOpen, setDbInfoOpen] = useState(false)
   const [dialogOpen, setDialogOpen] = useState(false)
   const [form, setForm] = useState({ name: '', type: 'full', target_agent: '', scan_scope: 'host', schedule: 'once', demo_mode: true })
 
   const fetchStats = useCallback(async () => { try { setStats(await apiFetch<ScanStats>('/vuln/stats')) } catch {} }, [])
-  const fetchScans = useCallback(async () => { setLoading(true); try { setScans(await apiFetch<VulnScan[]>('/vuln/scans') || []) } catch {}; setLoading(false) }, [])
-  const fetchFindings = useCallback(async (scanId: string) => { setFindingsLoading(true); try { setFindings(await apiFetch<Finding[]>(`/vuln/scans/${scanId}/findings`) || []) } catch {}; setFindingsLoading(false) }, [])
+  const fetchScans = useCallback(async () => { setLoading(true); try { setScans(await apiList<VulnScan>('/vuln/scans') || []) } catch {}; setLoading(false) }, [])
+  const fetchFindings = useCallback(async (scanId: string) => { setFindingsLoading(true); try { setFindings(await apiList<Finding>(`/vuln/scans/${scanId}/findings`) || []) } catch {}; setFindingsLoading(false) }, [])
 
   useEffect(() => { fetchStats(); fetchScans(); fetchAgents('') }, [fetchStats, fetchScans, fetchAgents])
 
@@ -59,15 +60,30 @@ export default function VulnScanPage() {
         </div>
       </div>
 
-      {/* 漏洞库状态 */}
-      <Card className="border-blue-200 bg-blue-50/30">
-        <CardHeader className="py-3"><CardTitle className="text-sm flex items-center gap-2"><Database className="h-4 w-4" />漏洞库信息</CardTitle></CardHeader>
-        <CardContent className="text-xs text-muted-foreground space-y-1">
-          <p>漏洞数据源：<strong>Trivy DB</strong>（从 GitHub Container Registry 自动同步，每 6 小时更新一次）</p>
-          <p>覆盖范围：操作系统包（Alpine/Ubuntu/Debian/CentOS/RHEL）、语言依赖（Go/Node/Python/Java）、容器镜像层</p>
-          <p>漏洞库维护：Agent 端 trivy 二进制自动拉取最新 DB，Core 端不存储漏洞数据，扫描结果实时匹配</p>
-        </CardContent>
-      </Card>
+      {/* 漏洞库说明:默认收起,点击问号/箭头展开 */}
+      <div className="rounded-lg border border-blue-200 bg-blue-50/30 overflow-hidden">
+        <button
+          type="button"
+          onClick={() => setDbInfoOpen(v => !v)}
+          aria-expanded={dbInfoOpen}
+          className="w-full flex items-center gap-2 px-4 py-3 text-left hover:bg-blue-100/40 transition-colors"
+        >
+          <Database className="h-4 w-4 text-blue-600 shrink-0" />
+          <span className="text-sm font-medium text-blue-900">漏洞库信息</span>
+          <HelpCircle className="h-4 w-4 text-blue-500 shrink-0" aria-label="什么是漏洞库" />
+          <span className="ml-auto text-xs text-muted-foreground">{dbInfoOpen ? '收起' : '展开'}</span>
+          <ChevronDown className={`h-4 w-4 text-blue-500 transition-transform duration-300 ${dbInfoOpen ? 'rotate-180' : ''}`} />
+        </button>
+        <div className={`grid transition-all duration-300 ease-in-out ${dbInfoOpen ? 'grid-rows-[1fr] opacity-100' : 'grid-rows-[0fr] opacity-0'}`}>
+          <div className="overflow-hidden">
+            <dl className="px-4 pb-4 pt-1 text-xs text-muted-foreground space-y-1 border-t border-blue-200/60">
+              <p>漏洞数据源：<strong>Trivy DB</strong>（从 GitHub Container Registry 自动同步，每 6 小时更新一次）</p>
+              <p>覆盖范围：操作系统包（Alpine/Ubuntu/Debian/CentOS/RHEL）、语言依赖（Go/Node/Python/Java）、容器镜像层</p>
+              <p>漏洞库维护：Agent 端 trivy 二进制自动拉取最新 DB，Core 端不存储漏洞数据，扫描结果实时匹配</p>
+            </dl>
+          </div>
+        </div>
+      </div>
 
       {/* 统计 */}
       {stats && (

@@ -1,7 +1,7 @@
 'use client'
 
 import { create } from 'zustand'
-import { apiFetch, apiBase } from '@/lib/utils'
+import { apiFetch, apiBase, apiList } from '@/lib/utils'
 import { useAgentStore } from '@/stores/agent'
 import { toast } from '@/stores/toast'
 
@@ -22,7 +22,7 @@ export const useFileStore = create<FileState>((set, get) => ({
   fetch: async () => {
     set({ loading: true })
     try {
-      const files = await apiFetch<FileItem[]>('/files')
+      const files = await apiList<FileItem>('/files')
       set({ files, loading: false })
     } catch (e: any) { set({ loading: false }); toast.error('加载文件列表失败: ' + e.message) }
   },

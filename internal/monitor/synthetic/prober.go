@@ -18,11 +18,11 @@ import (
 type ProbeCallback func(target *model.MonitorTarget, result *model.ProbeResult)
 
 type Prober struct {
-	mu         sync.Mutex
-	targets    map[string]*model.MonitorTarget
+	mu           sync.Mutex
+	targets      map[string]*model.MonitorTarget
 	failureCount map[string]int
-	onResult   ProbeCallback
-	client     *http.Client
+	onResult     ProbeCallback
+	client       *http.Client
 }
 
 func NewProber() *Prober {

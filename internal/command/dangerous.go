@@ -13,7 +13,7 @@ import (
 type DangerousRule struct {
 	ID      string `json:"id"`
 	Pattern string `json:"pattern"` // regexp pattern matching the command line
-	Level   string `json:"level"`    // "critical" | "high" | "medium"
+	Level   string `json:"level"`   // "critical" | "high" | "medium"
 	Desc    string `json:"description"`
 	re      *regexp.Regexp
 }
@@ -112,6 +112,7 @@ func NewDangerousPolicy(extra ...DangerousRule) *DangerousPolicy {
 //   - 清空防火墙 / 降低内核安全(sysctl)
 //   - Fork Bomb(DoS)
 //   - 远程脚本管道执行(curl|wget | bash,逃逸并绕过审查)
+//
 // 像 `rm -rf ./build`、`chmod 777 tmpfile` 这类仅作用于沙箱目录内、不会损伤宿主
 // 机的操作不在此列——它们落在隔离目录中,随沙箱销毁而消失。
 var SandboxForbiddenRules = map[string]bool{

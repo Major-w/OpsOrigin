@@ -37,7 +37,7 @@ const (
 const (
 	DefaultWindow    = 60 * time.Second
 	DefaultLimit     = 30 // 单 key 每窗口最多 30 次下载请求(含 Range 续传)
-	MaxConsecFails  = 5
+	MaxConsecFails   = 5
 	CircuitResetTime = 120 * time.Second
 )
 
@@ -89,8 +89,8 @@ func (l *Limiter) reap() {
 }
 
 // Allow 判断是否放行本次请求。
-//  - 熔断器打开且在重置窗口内:直接拒绝。
-//  - 否则滑动窗口统计窗口内请求数,超过 limit 则拒绝(限流)。
+//   - 熔断器打开且在重置窗口内:直接拒绝。
+//   - 否则滑动窗口统计窗口内请求数,超过 limit 则拒绝(限流)。
 func (l *Limiter) Allow(key string) bool {
 	l.mu.Lock()
 	defer l.mu.Unlock()

@@ -39,17 +39,17 @@ type CABApproval struct {
 }
 
 type CreateChangeRequest struct {
-	Title        string   `json:"title"`
-	Description  string   `json:"description"`
+	Title        string    `json:"title"`
+	Description  string    `json:"description"`
 	RiskLevel    RiskLevel `json:"risk_level"`
-	ChangeType   string   `json:"change_type"`
-	Impact       string   `json:"impact"`
-	Urgency      string   `json:"urgency"`
-	CABMembers   []string `json:"cab_members"`
-	Plan         string   `json:"plan"`
-	RollbackPlan string   `json:"rollback_plan"`
-	CreatedBy    string   `json:"created_by"`
-	TicketID     string   `json:"ticket_id,omitempty"`
+	ChangeType   string    `json:"change_type"`
+	Impact       string    `json:"impact"`
+	Urgency      string    `json:"urgency"`
+	CABMembers   []string  `json:"cab_members"`
+	Plan         string    `json:"plan"`
+	RollbackPlan string    `json:"rollback_plan"`
+	CreatedBy    string    `json:"created_by"`
+	TicketID     string    `json:"ticket_id,omitempty"`
 }
 
 type VoteChangeRequest struct {

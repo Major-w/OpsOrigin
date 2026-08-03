@@ -6,7 +6,7 @@ import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { Input } from '@/components/ui/input'
 import { Dialog, DialogFooter } from '@/components/ui/dialog'
-import { formatTime, apiFetch } from '@/lib/utils'
+import { formatTime, apiFetch, apiList } from '@/lib/utils'
 import { Plus, Check, X, Play, ChevronRight, Shield } from 'lucide-react'
 
 interface CABApproval {
@@ -63,7 +63,7 @@ export default function ChangeManagementPage() {
   const fetchChanges = useCallback(async () => {
     setLoading(true)
     try {
-      const data = await apiFetch<ChangeRequest[]>('/itsm/changes')
+      const data = await apiList<ChangeRequest>('/itsm/changes')
       setChanges(data || [])
     } catch { /* ignore */ }
     setLoading(false)

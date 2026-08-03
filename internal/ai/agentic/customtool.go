@@ -30,21 +30,21 @@ import (
 
 // CustomToolParam 自定义工具的一个参数定义。
 type CustomToolParam struct {
-	Name        string `json:"name"`
-	Type        string `json:"type"` // string | number | boolean
-	Description string `json:"description,omitempty"`
-	Required    bool   `json:"required"`
+	Name        string   `json:"name"`
+	Type        string   `json:"type"` // string | number | boolean
+	Description string   `json:"description,omitempty"`
+	Required    bool     `json:"required"`
 	Enum        []string `json:"enum,omitempty"`
 }
 
 // CustomTool 一个用户自定义注册的 MCP 工具(持久化于 ai_custom_tools 表)。
 type CustomTool struct {
-	ID        string `json:"id"`
-	TenantID  string `json:"tenant_id"`
-	Name      string `json:"name"` // 工具名(租户内唯一, LLM function calling 名称)
+	ID          string `json:"id"`
+	TenantID    string `json:"tenant_id"`
+	Name        string `json:"name"` // 工具名(租户内唯一, LLM function calling 名称)
 	Description string `json:"description"`
-	Type      string `json:"type"` // "http" | "cli"
-	Enabled   bool   `json:"enabled"`
+	Type        string `json:"type"` // "http" | "cli"
+	Enabled     bool   `json:"enabled"`
 
 	// 参数 Schema(渲染给 LLM)
 	Parameters []CustomToolParam `json:"parameters"`

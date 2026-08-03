@@ -13,6 +13,8 @@ import (
 	"time"
 
 	"github.com/opsorigin/core/pkg/config"
+
+	"github.com/opsorigin/core/pkg/httputil"
 )
 
 type Service struct {
@@ -86,11 +88,11 @@ func (s *Service) handleHealth(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, statusCode, map[string]any{
-		"status":   overall,
-		"uptime":   time.Since(hs.StartedAt).String(),
-		"version":  hs.Version,
-		"modules":  hs.Modules,
-		"started":  hs.StartedAt.Format(time.RFC3339),
+		"status":  overall,
+		"uptime":  time.Since(hs.StartedAt).String(),
+		"version": hs.Version,
+		"modules": hs.Modules,
+		"started": hs.StartedAt.Format(time.RFC3339),
 	})
 }
 
@@ -133,6 +135,7 @@ func (s *Service) handleRestart(w http.ResponseWriter, r *http.Request) {
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {
+	v = httputil.EmptySliceIfNil(v)
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	json.NewEncoder(w).Encode(v)

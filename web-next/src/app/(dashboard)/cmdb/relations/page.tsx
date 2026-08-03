@@ -6,7 +6,7 @@ import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { Input } from '@/components/ui/input'
 import { Dialog, DialogFooter } from '@/components/ui/dialog'
-import { apiFetch } from '@/lib/utils'
+import { apiFetch, apiList } from '@/lib/utils'
 import { Plus, Trash2, GitBranch, ArrowRight, Link } from 'lucide-react'
 import { useThemeStore } from '@/stores/theme'
 import { useCan } from '@/stores/permissions'
@@ -45,8 +45,8 @@ export default function CMDBRelationsPage() {
 
   useEffect(() => {
     Promise.all([
-      apiFetch<any[]>('/cmdb/relation').catch(() => []),
-      apiFetch<any[]>('/cmdb/ci?limit=500').catch(() => []),
+      apiList<any>('/cmdb/relation').catch(() => []),
+      apiList<any>('/cmdb/ci?limit=500').catch(() => []),
     ]).then(([rels, cis]) => {
       const ciMap = new Map(cis.map((c: any) => [c.id, c]))
       setRelations(rels.map((r: any) => ({

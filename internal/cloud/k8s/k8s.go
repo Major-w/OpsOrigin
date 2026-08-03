@@ -223,12 +223,12 @@ func workloadResource(clusterName, agentID, ns, kind, name string, labels map[st
 		Status:   "running",
 		Labels:   labels,
 		Extra: map[string]any{
-			"cluster":  clusterName,
+			"cluster":   clusterName,
 			"namespace": ns,
-			"kind":     kind,
-			"replicas": replicas,
-			"images":   images,
-			"agent_id": agentID,
+			"kind":      kind,
+			"replicas":  replicas,
+			"images":    images,
+			"agent_id":  agentID,
 		},
 		DiscoveredAt: time.Now().UTC(),
 	}
@@ -236,7 +236,7 @@ func workloadResource(clusterName, agentID, ns, kind, name string, labels map[st
 
 func podResource(clusterName, agentID, ns, pod, node, phase, podIP, ownerKind, ownerName string, labels map[string]string) cloud.Resource {
 	extra := map[string]any{
-		"cluster":  clusterName,
+		"cluster":   clusterName,
 		"namespace": ns,
 		"node":      node,
 		"phase":     phase,
@@ -265,13 +265,13 @@ func containerResource(clusterName, agentID, ns, pod string, c k8sContainer, own
 		ports = append(ports, map[string]any{"container_port": p.ContainerPort, "protocol": p.Protocol})
 	}
 	extra := map[string]any{
-		"cluster":          clusterName,
-		"namespace":        ns,
-		"pod":              pod,
-		"image":            c.Image,
+		"cluster":           clusterName,
+		"namespace":         ns,
+		"pod":               pod,
+		"image":             c.Image,
 		"image_pull_policy": c.ImagePullPolicy,
-		"ports":            ports,
-		"agent_id":         agentID,
+		"ports":             ports,
+		"agent_id":          agentID,
 	}
 	if ownerKind != "" {
 		extra["owner_kind"] = ownerKind
@@ -292,9 +292,9 @@ func containerResource(clusterName, agentID, ns, pod string, c k8sContainer, own
 // ---- kubectl JSON 解析结构（最小化，按需扩展） ----
 
 type k8sMeta struct {
-	Name           string            `json:"name"`
-	Namespace      string            `json:"namespace"`
-	Labels         map[string]string `json:"labels"`
+	Name            string            `json:"name"`
+	Namespace       string            `json:"namespace"`
+	Labels          map[string]string `json:"labels"`
 	OwnerReferences []struct {
 		Kind string `json:"kind"`
 		Name string `json:"name"`
@@ -313,7 +313,7 @@ type k8sContainer struct {
 }
 
 type k8sPodSpec struct {
-	NodeName       string           `json:"nodeName"`
+	NodeName       string         `json:"nodeName"`
 	Containers     []k8sContainer `json:"containers"`
 	InitContainers []k8sContainer `json:"initContainers"`
 }
@@ -328,7 +328,7 @@ type k8sPod struct {
 }
 
 type k8sWorkload struct {
-	Kind     string   `json:"kind"`
+	Kind     string  `json:"kind"`
 	Metadata k8sMeta `json:"metadata"`
 	Spec     struct {
 		Replicas *int32 `json:"replicas"`

@@ -22,6 +22,8 @@ import (
 	"github.com/opsorigin/core/pkg/config"
 	"github.com/opsorigin/core/pkg/llm"
 	redisclient "github.com/opsorigin/core/pkg/redis"
+
+	"github.com/opsorigin/core/pkg/httputil"
 )
 
 type Service struct {
@@ -30,7 +32,7 @@ type Service struct {
 	Registry      *mcp.Registry
 	limiter       ratelimit.RateLimiter
 	ragFn         func(ctx context.Context, query, agentID string) string // RAG上下文注入(按 Agent 绑定分类过滤)
-	feedbackStore agentic.FeedbackStore                             // 点赞/点踩反馈持久化(P2-Eval)
+	feedbackStore agentic.FeedbackStore                                   // 点赞/点踩反馈持久化(P2-Eval)
 }
 
 func NewService(cfg *config.Config, llmClient *llm.Client, redisClient *redisclient.Client, db *sql.DB) *Service {
@@ -84,7 +86,9 @@ func NewService(cfg *config.Config, llmClient *llm.Client, redisClient *rediscli
 // LLMConfigHook 在 sysconfig 修改 LLM 设置后被调用(热生效)。nil 表示未设置。
 var LLMConfigHook func(cfg llm.Config)
 
-func (s *Service) SetRAGFunc(fn func(ctx context.Context, query, agentID string) string) { s.ragFn = fn }
+func (s *Service) SetRAGFunc(fn func(ctx context.Context, query, agentID string) string) {
+	s.ragFn = fn
+}
 
 func (s *Service) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/v1/ai/agents", s.handleCreateAgent)
@@ -182,11 +186,11 @@ func (s *Service) handleChat(w http.ResponseWriter, r *http.Request) {
 		}
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{
-			"content":          answer,
-			"thinking":         thinking,
-			"conversation_id":  convID,
-			"message_id":       req.MessageID,
-			"citations":        agentic.ExtractCitations(answer),
+			"content":         answer,
+			"thinking":        thinking,
+			"conversation_id": convID,
+			"message_id":      req.MessageID,
+			"citations":       agentic.ExtractCitations(answer),
 		})
 		return
 	}
@@ -198,10 +202,10 @@ func (s *Service) handleChat(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]any{
-		"content":          out,
-		"conversation_id":  convID,
-		"message_id":       req.MessageID,
-		"citations":        agentic.ExtractCitations(out),
+		"content":         out,
+		"conversation_id": convID,
+		"message_id":      req.MessageID,
+		"citations":       agentic.ExtractCitations(out),
 	})
 }
 
@@ -229,12 +233,12 @@ func (s *Service) handleChatStream(w http.ResponseWriter, r *http.Request, req *
 	// 注入审批通知回调: 工具执行触发敏感操作审批时, 通过本 SSE 连接下发 ask 事件, 前端弹窗确认。
 	ctx := agentic.WithApprovalNotify(r.Context(), func(pa *agentic.PendingApproval) {
 		payload, _ := json.Marshal(map[string]any{
-			"id":        pa.ID,
-			"tool":      pa.Tool,
-			"summary":   pa.Summary,
-			"args":      pa.Args,
-			"deadline":  pa.Deadline.Format(time.RFC3339),
-			"agent_id":  pa.AgentID,
+			"id":       pa.ID,
+			"tool":     pa.Tool,
+			"summary":  pa.Summary,
+			"args":     pa.Args,
+			"deadline": pa.Deadline.Format(time.RFC3339),
+			"agent_id": pa.AgentID,
 		})
 		fmt.Fprintf(w, "event: ask\ndata: %s\n\n", payload)
 		flusher.Flush()
@@ -692,6 +696,7 @@ func tenantFromCtx(ctx context.Context) string {
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {
+	v = httputil.EmptySliceIfNil(v)
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	json.NewEncoder(w).Encode(v)

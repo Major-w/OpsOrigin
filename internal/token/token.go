@@ -20,9 +20,9 @@ import (
 
 // ErrInvalid / ErrExpired 校验失败原因。
 var (
-	ErrInvalid  = errors.New("invalid download token")
-	ErrExpired  = errors.New("download token expired")
-	ErrNotYet   = errors.New("download token not yet valid")
+	ErrInvalid = errors.New("invalid download token")
+	ErrExpired = errors.New("download token expired")
+	ErrNotYet  = errors.New("download token not yet valid")
 )
 
 // Claims 令牌载荷。
@@ -38,7 +38,7 @@ const maxTTL = 10 * time.Minute
 // MaxTTL 返回令牌允许的最大有效期(§6:建议≤10 分钟)。
 func MaxTTL() time.Duration { return maxTTL }
 
-func b64(b []byte) string { return base64.RawURLEncoding.EncodeToString(b) }
+func b64(b []byte) string  { return base64.RawURLEncoding.EncodeToString(b) }
 func b64s(s string) string { return base64.RawURLEncoding.EncodeToString([]byte(s)) }
 
 func hmacSign(secret, signingInput string) string {

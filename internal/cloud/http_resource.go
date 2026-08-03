@@ -21,8 +21,8 @@ type resourceListRequest struct {
 	Types        []string            `json:"types"`
 	Credential   *resourceCredential `json:"credential"`
 	CredentialID string              `json:"credential_id"`
-	AgentID      string              `json:"agent_id"`          // k8s：目标集群网关 Agent
-	K8s          K8sDiscoverOptions `json:"k8s,omitempty"` // k8s：发现选项（kubeconfig/context）
+	AgentID      string              `json:"agent_id"`      // k8s：目标集群网关 Agent
+	K8s          K8sDiscoverOptions  `json:"k8s,omitempty"` // k8s：发现选项（kubeconfig/context）
 }
 
 // handleListResources 按厂商/地域/类型发现云资源并返回。

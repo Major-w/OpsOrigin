@@ -14,6 +14,8 @@ import (
 	"github.com/opsorigin/core/internal/vuln/model"
 	"github.com/opsorigin/core/internal/vuln/store"
 	"github.com/opsorigin/core/pkg/config"
+
+	"github.com/opsorigin/core/pkg/httputil"
 )
 
 // InventoryProvider 提供真实资产清单(从 CMDB 拉取并按约定 schema 映射)。
@@ -25,11 +27,11 @@ type InventoryProvider interface {
 
 // Service 漏洞扫描服务；Scanner 预留 Trivy/Grype/Nuclei/OpenSCAP 热插拔位。
 type Service struct {
-	cfg          *config.Config
-	store        store.Store
-	scanner      Scanner
-	invProvider  InventoryProvider
-	agentRunner  AgentRunner
+	cfg         *config.Config
+	store       store.Store
+	scanner     Scanner
+	invProvider InventoryProvider
+	agentRunner AgentRunner
 }
 
 // NewService 构造服务；优先 PG，Init 失败回退内存(租户隔离)。
@@ -76,9 +78,9 @@ func (s *Service) RegisterRoutes(mux *http.ServeMux) {
 
 func (s *Service) handleCreateScan(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		Name     string          `json:"name"`
-		Type     string          `json:"type"`
-		DemoMode bool            `json:"demo_mode"`
+		Name         string          `json:"name"`
+		Type         string          `json:"type"`
+		DemoMode     bool            `json:"demo_mode"`
 		Images       []string        `json:"images"`
 		AgentID      string          `json:"agent_id"`
 		Registry     *RegistryConfig `json:"registry"`
@@ -99,13 +101,13 @@ func (s *Service) handleCreateScan(w http.ResponseWriter, r *http.Request) {
 	tenantID := tenantFromCtx(r.Context())
 	now := time.Now()
 	scan := &model.Scan{
-		TenantID:      tenantID,
-		Name:          req.Name,
-		Type:          stype,
-		DemoMode:      req.DemoMode,
-		Status:        model.ScanStatusRunning,
+		TenantID:       tenantID,
+		Name:           req.Name,
+		Type:           stype,
+		DemoMode:       req.DemoMode,
+		Status:         model.ScanStatusRunning,
 		SeverityCounts: map[string]int{},
-		CreatedAt:     now,
+		CreatedAt:      now,
 	}
 	if err := s.store.CreateScan(r.Context(), scan); err != nil {
 		slog.Error("vuln: create scan failed", "error", err)
@@ -308,6 +310,7 @@ func tenantFromCtx(ctx context.Context) string {
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {
+	v = httputil.EmptySliceIfNil(v)
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	json.NewEncoder(w).Encode(v)

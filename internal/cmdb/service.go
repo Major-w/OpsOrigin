@@ -1,12 +1,15 @@
 package cmdb
 
 import (
+	"bytes"
 	"context"
+	"encoding/csv"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -17,20 +20,23 @@ import (
 	"github.com/opsorigin/core/internal/ingest"
 	"github.com/opsorigin/core/pkg/config"
 	"github.com/opsorigin/core/pkg/validate"
+
+	"github.com/opsorigin/core/pkg/httputil"
 )
 
 type Service struct {
 	cfg         *config.Config
 	pg          *pg.Repository
 	dg          *dgraph.Client
-	mem            *memStore // PG/Dgraph 不可用时的内存回退
-	ing            *ingest.Ingestor // 异步批量落库器(F4-B)
-	onCICreated    func(ctx context.Context, ciID, tenantID string)
+	mem         *memStore        // PG/Dgraph 不可用时的内存回退
+	ing         *ingest.Ingestor // 异步批量落库器(F4-B)
+	onCICreated func(ctx context.Context, ciID, tenantID string)
 
-	registry *collectorRegistry      // 采集器注册表（kind × resourceType → Collector）
-	onMetric func(point MetricPoint) // 监控指标落库回调（由 cmd/core 注入，路由到监控模块）
-	sched    *Scheduler              // 采集调度器（StartScheduler 后非 nil）
-	agentChan AgentChannel           // 经 Agent 通道上报的任务下发接口（方案 X：投影到 agentmgr）
+	registry  *collectorRegistry      // 采集器注册表（kind × resourceType → Collector）
+	onMetric  func(point MetricPoint) // 监控指标落库回调（由 cmd/core 注入，路由到监控模块）
+	sched     *Scheduler              // 采集调度器（StartScheduler 后非 nil）
+	agentChan AgentChannel            // 经 Agent 通道上报的任务下发接口（方案 X：投影到 agentmgr）
+	notifyCb  notifyFunc              // 平台通知中心回调（P2-5 消息订阅，cmd/core 注入）
 }
 
 func NewService(cfg *config.Config, pgRepo *pg.Repository, dgClient *dgraph.Client) *Service {
@@ -81,13 +87,23 @@ func (s *Service) OnCICreated(fn func(ctx context.Context, ciID, tenantID string
 
 func (s *Service) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/v1/cmdb/ci", s.handleListCI)
+	mux.HandleFunc("GET /api/v1/cmdb/ci/export", s.handleExportCI)   // P1-1 CSV 导出
+	mux.HandleFunc("POST /api/v1/cmdb/ci/import", s.handleImportCI)  // P1-1 CSV 导入
 	mux.HandleFunc("POST /api/v1/cmdb/ci", s.handleCreateCI)
 	mux.HandleFunc("POST /api/v1/cmdb/ci/batch", s.handleBatchCreateCI) // F4-B 批量 + D2 修复
 	mux.HandleFunc("GET /api/v1/cmdb/ci/{id}", s.handleGetCI)
 	mux.HandleFunc("PUT /api/v1/cmdb/ci/{id}", s.handleUpdateCI)
 	mux.HandleFunc("DELETE /api/v1/cmdb/ci/{id}", s.handleDeleteCI)
+	mux.HandleFunc("POST /api/v1/cmdb/ci/{id}/archive", s.handleArchiveCI)   // P1-2 归档
+	mux.HandleFunc("POST /api/v1/cmdb/ci/{id}/restore", s.handleRestoreCI)   // P1-2 恢复
 	mux.HandleFunc("GET /api/v1/cmdb/ci/{id}/audit", s.handleCIAudit)
 	mux.HandleFunc("GET /api/v1/cmdb/search", s.handleSearchCI)
+
+	// 保存的查询策略（"我想查"，P1-3）
+	mux.HandleFunc("GET /api/v1/cmdb/saved-queries", s.handleListSavedQueries)
+	mux.HandleFunc("POST /api/v1/cmdb/saved-queries", s.handleCreateSavedQuery)
+	mux.HandleFunc("GET /api/v1/cmdb/saved-queries/{id}/resolve", s.handleResolveSavedQuery)
+	mux.HandleFunc("DELETE /api/v1/cmdb/saved-queries/{id}", s.handleDeleteSavedQuery)
 
 	mux.HandleFunc("GET /api/v1/cmdb/topology/{id}", s.handleGetTopology)
 	mux.HandleFunc("GET /api/v1/cmdb/impact/{id}", s.handleImpactAnalysis)
@@ -101,6 +117,42 @@ func (s *Service) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/v1/cmdb/model-type/{id}", s.handleGetModelType)
 	mux.HandleFunc("PUT /api/v1/cmdb/model-type/{id}", s.handleUpdateModelType)
 	mux.HandleFunc("DELETE /api/v1/cmdb/model-type/{id}", s.handleDeleteModelType)
+	mux.HandleFunc("GET /api/v1/cmdb/model-type/export", s.handleExportModelTypes)
+	mux.HandleFunc("POST /api/v1/cmdb/model-type/import", s.handleImportModelTypes)
+
+	// 模型分类（内置 5 类 + 用户自定义，可扩展）
+	mux.HandleFunc("GET /api/v1/cmdb/model-categories", s.handleListModelCategories)
+	mux.HandleFunc("POST /api/v1/cmdb/model-categories", s.handleCreateModelCategory)
+	mux.HandleFunc("DELETE /api/v1/cmdb/model-categories/{id}", s.handleDeleteModelCategory)
+
+	// P2-1 统计大屏
+	mux.HandleFunc("GET /api/v1/cmdb/stats", s.handleStats)
+
+	// P2-2 机房机柜（IDC / Rack / U 位）
+	mux.HandleFunc("GET /api/v1/cmdb/idc", s.handleListIDC)
+	mux.HandleFunc("POST /api/v1/cmdb/idc", s.handleCreateIDC)
+	mux.HandleFunc("DELETE /api/v1/cmdb/idc/{id}", s.handleDeleteIDC)
+	mux.HandleFunc("GET /api/v1/cmdb/idc/{idcId}/racks", s.handleListRacks)
+	mux.HandleFunc("POST /api/v1/cmdb/idc/{idcId}/racks", s.handleCreateRack)
+	mux.HandleFunc("DELETE /api/v1/cmdb/racks/{id}", s.handleDeleteRack)
+	mux.HandleFunc("GET /api/v1/cmdb/racks/{id}/units", s.handleGetRackUnits)
+	mux.HandleFunc("POST /api/v1/cmdb/racks/{id}/units", s.handleAssignRackUnits)
+
+	// P2-3 应用架构拓扑（业务/分层视图数据）
+	mux.HandleFunc("GET /api/v1/cmdb/app-topology", s.handleAppTopology)
+
+	// P2-4 字段级规则权限
+	mux.HandleFunc("GET /api/v1/cmdb/field-rules", s.handleListFieldRules)
+	mux.HandleFunc("POST /api/v1/cmdb/field-rules", s.handleCreateFieldRule)
+	mux.HandleFunc("DELETE /api/v1/cmdb/field-rules/{id}", s.handleDeleteFieldRule)
+
+	// P2-5 消息订阅（CI 变更推送）
+	mux.HandleFunc("GET /api/v1/cmdb/subscriptions", s.handleListSubscriptions)
+	mux.HandleFunc("POST /api/v1/cmdb/subscriptions", s.handleCreateSubscription)
+	mux.HandleFunc("PUT /api/v1/cmdb/subscriptions/{id}", s.handleUpdateSubscription)
+	mux.HandleFunc("DELETE /api/v1/cmdb/subscriptions/{id}", s.handleDeleteSubscription)
+	mux.HandleFunc("POST /api/v1/cmdb/subscriptions/{id}/test", s.handleTestSubscription)
+	mux.HandleFunc("GET /api/v1/cmdb/subscription-deliveries", s.handleListSubscriptionDeliveries)
 
 	// Version History
 	mux.HandleFunc("GET /api/v1/cmdb/history", s.handleListHistory)
@@ -176,6 +228,9 @@ func (s *Service) handleCreateCI(w http.ResponseWriter, r *http.Request) {
 	if s.onCICreated != nil {
 		s.onCICreated(ctx, ci.ID, tenantID)
 	}
+
+	// P2-5 订阅分发：CI 创建事件
+	s.dispatchCIEvent(ctx, tenantID, "ci_created", ci)
 
 	writeJSON(w, http.StatusCreated, ci)
 }
@@ -253,6 +308,10 @@ func (s *Service) handleGetCI(w http.ResponseWriter, r *http.Request) {
 	if ci == nil {
 		writeError(w, http.StatusNotFound, "ci not found")
 		return
+	}
+	// P2-4 字段级规则权限
+	if rules, rerr := s.pg.ListFieldRules(r.Context(), tenantID, ci.TypeID); rerr == nil {
+		applyFieldRules([]*model.CIModel{ci}, rules, permissionsFromRequest(r))
 	}
 	writeJSON(w, http.StatusOK, ci)
 }
@@ -334,6 +393,9 @@ func (s *Service) handleUpdateCI(w http.ResponseWriter, r *http.Request) {
 		s.mem.updateCI(ci)
 	}
 
+	// P2-5 订阅分发：CI 更新事件
+	s.dispatchCIEvent(ctx, tenantID, "ci_updated", ci)
+
 	writeJSON(w, http.StatusOK, ci)
 }
 
@@ -350,6 +412,8 @@ func (s *Service) handleDeleteCI(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
 		return
 	}
+	// 删除前取快照，用于订阅分发（P2-5）
+	before, _ := s.pg.GetCI(r.Context(), id, tenantID)
 	if err := s.pg.DeleteCI(r.Context(), id, tenantID, traceID); err != nil {
 		if err.Error() == "ci not found" {
 			writeError(w, http.StatusNotFound, "ci not found")
@@ -357,6 +421,9 @@ func (s *Service) handleDeleteCI(w http.ResponseWriter, r *http.Request) {
 		}
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
+	}
+	if before != nil {
+		s.dispatchCIEvent(r.Context(), tenantID, "ci_deleted", before)
 	}
 	w.WriteHeader(http.StatusNoContent)
 }
@@ -368,22 +435,37 @@ func (s *Service) handleListCI(w http.ResponseWriter, r *http.Request) {
 	sortOrder := r.URL.Query().Get("sort_order")
 	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
 	offset, _ := strconv.Atoi(r.URL.Query().Get("offset"))
+	// archived 过滤：true=仅归档 / all=含归档 / 其它(含空)=排除归档（默认）
+	archivedMode := r.URL.Query().Get("archived")
+	if archivedMode == "true" {
+		archivedMode = "archived"
+	}
 
 	if s.pg == nil {
 		cis := s.mem.listCIs(tenantID, typeID)
 		if cis == nil {
 			cis = []*model.CIModel{}
 		}
+		// 内存回退：按 archivedMode 过滤（status 字段）
+		if archivedMode == "archived" {
+			cis = filterByStatus(cis, model.CIStatusArchived)
+		} else if archivedMode != "all" {
+			cis = filterExcludeStatus(cis, model.CIStatusArchived)
+		}
 		writeJSON(w, http.StatusOK, cis)
 		return
 	}
-	cis, err := s.pg.ListCIPaginated(r.Context(), tenantID, typeID, sortBy, sortOrder, limit, offset)
+	cis, err := s.pg.ListCIFiltered(r.Context(), tenantID, typeID, archivedMode, sortBy, sortOrder, limit, offset)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	if cis == nil {
 		cis = []*model.CIModel{}
+	}
+	// P2-4 字段级规则权限
+	if rules, rerr := s.pg.ListFieldRules(r.Context(), tenantID, typeID); rerr == nil {
+		applyFieldRules(cis, rules, permissionsFromRequest(r))
 	}
 	writeJSON(w, http.StatusOK, cis)
 }
@@ -455,6 +537,11 @@ func (s *Service) handleSearchCI(w http.ResponseWriter, r *http.Request) {
 	tenantID := tenantFromCtx(r.Context())
 	q := r.URL.Query().Get("q")
 	typeID := r.URL.Query().Get("type_id")
+	// archived 过滤：true=仅归档 / all=含归档 / 其它(含空)=排除归档（与列表保持一致）
+	archivedMode := r.URL.Query().Get("archived")
+	if archivedMode == "true" {
+		archivedMode = "archived"
+	}
 
 	if s.pg == nil {
 		cis := s.mem.listCIs(tenantID, typeID)
@@ -466,6 +553,11 @@ func (s *Service) handleSearchCI(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 			cis = filtered
+		}
+		if archivedMode == "archived" {
+			cis = filterByStatus(cis, model.CIStatusArchived)
+		} else if archivedMode != "all" {
+			cis = filterExcludeStatus(cis, model.CIStatusArchived)
 		}
 		if cis == nil {
 			cis = []*model.CIModel{}
@@ -482,8 +574,17 @@ func (s *Service) handleSearchCI(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
+		if archivedMode == "archived" {
+			cis = filterByStatus(cis, model.CIStatusArchived)
+		} else if archivedMode != "all" {
+			cis = filterExcludeStatus(cis, model.CIStatusArchived)
+		}
 		if cis == nil {
 			cis = []*model.CIModel{}
+		}
+		// P2-4 字段级规则权限
+		if rules, rerr := s.pg.ListFieldRules(r.Context(), tenantID, typeID); rerr == nil {
+			applyFieldRules(cis, rules, permissionsFromRequest(r))
 		}
 		writeJSON(w, http.StatusOK, cis)
 		return
@@ -493,19 +594,27 @@ func (s *Service) handleSearchCI(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	if archivedMode == "archived" {
+		cis = filterByStatus(cis, model.CIStatusArchived)
+	} else if archivedMode != "all" {
+		cis = filterExcludeStatus(cis, model.CIStatusArchived)
+	}
 	if cis == nil {
 		cis = []*model.CIModel{}
+	}
+	// P2-4 字段级规则权限
+	if rules, rerr := s.pg.ListFieldRules(r.Context(), tenantID, typeID); rerr == nil {
+		applyFieldRules(cis, rules, permissionsFromRequest(r))
 	}
 	writeJSON(w, http.StatusOK, cis)
 }
 
 func (s *Service) validateAttributes(ctx context.Context, typeID string, attrs map[string]any) error {
-	mt, err := s.pg.GetCIModelType(ctx, typeID, "default")
-	if err != nil || mt == nil {
-		tenantID := "default"
-		mt, err = s.pg.GetCIModelType(ctx, typeID, tenantID)
+	mt, err := s.ResolveModelType(ctx, typeID, "default")
+	if err != nil {
+		return nil
 	}
-	if mt == nil || err != nil {
+	if mt == nil {
 		return nil
 	}
 
@@ -623,6 +732,44 @@ func (s *Service) handleDeleteRelation(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// ResolveModelType 沿 ParentID 链合并父类属性（子类覆盖同名），并默认分类为 platform。
+// 带环检测，避免 ParentID 成环导致无限递归。用于属性校验与模型读取展示。
+func (s *Service) ResolveModelType(ctx context.Context, typeID, tenantID string) (*model.CIModelType, error) {
+	chain := []*model.CIModelType{}
+	visited := map[string]bool{}
+	curID := typeID
+	for curID != "" && len(chain) < 20 {
+		if visited[curID] {
+			break
+		}
+		visited[curID] = true
+		mt, err := s.pg.GetCIModelType(ctx, curID, tenantID)
+		if err != nil {
+			return nil, err
+		}
+		if mt == nil {
+			break
+		}
+		chain = append(chain, mt)
+		curID = mt.ParentID
+	}
+	if len(chain) == 0 {
+		return nil, nil
+	}
+	merged := map[string]model.AttrDef{}
+	for _, m := range chain { // 从根祖先到当前类型，后者覆盖前者
+		for k, v := range m.Schema {
+			merged[k] = v
+		}
+	}
+	result := chain[len(chain)-1]
+	result.Schema = merged
+	if result.Category == "" {
+		result.Category = model.ModelCategoryPlatform
+	}
+	return result, nil
+}
+
 func (s *Service) handleCreateModelType(w http.ResponseWriter, r *http.Request) {
 	var mt model.CIModelType
 	if err := json.NewDecoder(r.Body).Decode(&mt); err != nil {
@@ -634,6 +781,16 @@ func (s *Service) handleCreateModelType(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	mt.TenantID = tenantFromCtx(r.Context())
+
+	// 模型继承：禁止自引用（读取侧有环检测兜底，此处阻断明显错误）。
+	// 注意：新建时 mt.ID 与 mt.ParentID 均为空，不能误判为"继承自身"（历史 bug：新建必失败）。
+	if mt.ID != "" && mt.ParentID == mt.ID {
+		writeError(w, http.StatusBadRequest, "模型不能继承自身")
+		return
+	}
+	if mt.Category == "" {
+		mt.Category = model.ModelCategoryPlatform
+	}
 
 	if err := s.pg.CreateCIModelType(r.Context(), &mt); err != nil {
 		slog.Error("create model type failed", "error", err)
@@ -648,7 +805,7 @@ func (s *Service) handleGetModelType(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 
 	tenantID := tenantFromCtx(r.Context())
-	mt, err := s.pg.GetCIModelType(r.Context(), id, tenantID)
+	mt, err := s.ResolveModelType(r.Context(), id, tenantID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -682,12 +839,24 @@ func (s *Service) handleListModelTypes(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	// 合并继承属性并默认分类，保证列表/详情展示完整属性集
+	for _, mt := range types {
+		if resolved, rerr := s.ResolveModelType(r.Context(), mt.ID, tenantID); rerr == nil && resolved != nil {
+			mt.Schema = resolved.Schema
+		}
+		if mt.Category == "" {
+			mt.Category = model.ModelCategoryPlatform
+		}
+	}
 
 	// 获取总数
 	total, err := s.pg.CountCIModelTypes(r.Context(), tenantID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
+	}
+	if types == nil {
+		types = []*model.CIModelType{}
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{
@@ -757,6 +926,407 @@ func (s *Service) handleDeleteModelType(w http.ResponseWriter, r *http.Request) 
 	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
 }
 
+// handleExportModelTypes 导出模型定义为 JSON 数组（跳过内置模型：内置模型不可导出）。
+func (s *Service) handleExportModelTypes(w http.ResponseWriter, r *http.Request) {
+	tenantID := tenantFromCtx(r.Context())
+	types, err := s.pg.ListCIModelTypes(r.Context(), tenantID, 1000, 0)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	ids := map[string]bool{}
+	if q := r.URL.Query().Get("ids"); q != "" {
+		for _, x := range strings.Split(q, ",") {
+			if t := strings.TrimSpace(x); t != "" {
+				ids[t] = true
+			}
+		}
+	}
+	out := make([]map[string]any, 0, len(types))
+	for _, mt := range types {
+		if mt.Builtin {
+			continue
+		}
+		if len(ids) > 0 && !ids[mt.ID] {
+			continue
+		}
+		out = append(out, map[string]any{
+			"id":           mt.ID,
+			"name":         mt.Name,
+			"description":  mt.Description,
+			"parent_id":    mt.ParentID,
+			"category":     mt.Category,
+			"sub_category": mt.SubCategory,
+			"icon":         mt.Icon,
+			"show_in_menu": mt.ShowInMenu,
+			"schema":       mt.Schema,
+		})
+	}
+	w.Header().Set("Content-Disposition", `attachment; filename="cmdb-model-types.json"`)
+	w.Header().Set("Content-Type", "application/json")
+	writeJSON(w, http.StatusOK, out)
+}
+
+// handleImportModelTypes 从 JSON 数组导入模型定义。
+// 父子排序后创建，old id → new id 映射保证继承关系重建；重名/内置/无名跳过。
+func (s *Service) handleImportModelTypes(w http.ResponseWriter, r *http.Request) {
+	tenantID := tenantFromCtx(r.Context())
+	var raw []model.CIModelType
+	if err := json.NewDecoder(r.Body).Decode(&raw); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+
+	inSet := map[string]bool{}
+	for _, d := range raw {
+		if d.ID != "" {
+			inSet[d.ID] = true
+		}
+	}
+	type item struct {
+		d     model.CIModelType
+		parentFirst bool
+	}
+	var seq []item
+	for _, d := range raw {
+		parentFirst := d.ParentID == "" || !inSet[d.ParentID]
+		seq = append(seq, item{d: d, parentFirst: parentFirst})
+	}
+	// 父在前：parentFirst=true 的排前面
+	sort.SliceStable(seq, func(i, j int) bool {
+		return seq[i].parentFirst && !seq[j].parentFirst
+	})
+
+	idMap := map[string]string{} // old id -> new id
+	created, skipped := 0, 0
+	for _, it := range seq {
+		d := it.d
+		if d.Builtin || d.Name == "" {
+			skipped++
+			continue
+		}
+		if existing, _ := s.pg.GetCIModelTypeByName(r.Context(), d.Name, tenantID); existing != nil {
+			skipped++
+			continue
+		}
+		parentNew := ""
+		if d.ParentID != "" {
+			if v, ok := idMap[d.ParentID]; ok {
+				parentNew = v
+			} else if p, _ := s.pg.GetCIModelType(r.Context(), d.ParentID, tenantID); p != nil {
+				parentNew = d.ParentID // 父已在本租户
+			}
+		}
+		mt := &model.CIModelType{
+			Name:        d.Name,
+			Description: d.Description,
+			ParentID:    parentNew,
+			Category:    d.Category,
+			SubCategory: d.SubCategory,
+			Icon:        d.Icon,
+			ShowInMenu:  d.ShowInMenu,
+			Schema:      d.Schema,
+			TenantID:    tenantID,
+		}
+		if mt.Category == "" {
+			mt.Category = model.ModelCategoryPlatform
+		}
+		if err := s.pg.CreateCIModelType(r.Context(), mt); err != nil {
+			slog.Error("import model type failed", "error", err, "name", d.Name)
+			skipped++
+			continue
+		}
+		if d.ID != "" {
+			idMap[d.ID] = mt.ID
+		}
+		created++
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"created": created, "skipped": skipped})
+}
+
+// ---------- CI CSV 导入导出 (P1-1) ----------
+
+// toCSVValue 将 CI 属性值序列化为 CSV 单元格字符串。
+func toCSVValue(v any) string {
+	if v == nil {
+		return ""
+	}
+	switch val := v.(type) {
+	case string:
+		return val
+	case bool:
+		return strconv.FormatBool(val)
+	case float64:
+		return strconv.FormatFloat(val, 'f', -1, 64)
+	case float32:
+		return strconv.FormatFloat(float64(val), 'f', -1, 32)
+	case int:
+		return strconv.Itoa(val)
+	case int64:
+		return strconv.FormatInt(val, 10)
+	case json.Number:
+		return val.String()
+	case time.Time:
+		return val.Format(time.RFC3339)
+	default:
+		b, err := json.Marshal(val)
+		if err != nil {
+			return fmt.Sprintf("%v", val)
+		}
+		return string(b)
+	}
+}
+
+// fromCSVValue 将 CSV 单元格字符串按属性类型反序列化为 Go 值。
+func fromCSVValue(raw, typ string) (any, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil, nil
+	}
+	switch typ {
+	case "", "string":
+		return raw, nil
+	case "number", "int", "integer", "float":
+		return strconv.ParseFloat(raw, 64)
+	case "boolean", "bool":
+		return strconv.ParseBool(raw)
+	case "object", "array", "json":
+		var v any
+		if err := json.Unmarshal([]byte(raw), &v); err != nil {
+			return nil, err
+		}
+		return v, nil
+	default:
+		return raw, nil
+	}
+}
+
+// handleExportCI 导出某类型全部 CI 为 CSV 附件（表头: id,name,description,status + 模型 schema 属性列）。
+func (s *Service) handleExportCI(w http.ResponseWriter, r *http.Request) {
+	tenantID := tenantFromCtx(r.Context())
+	typeID := r.URL.Query().Get("type_id")
+	if typeID == "" {
+		writeError(w, http.StatusBadRequest, "type_id is required")
+		return
+	}
+	mt, err := s.ResolveModelType(r.Context(), typeID, tenantID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	attrCols := []string{}
+	if mt != nil {
+		for k := range mt.Schema {
+			attrCols = append(attrCols, k)
+		}
+		sort.Strings(attrCols)
+	}
+	cols := append([]string{"id", "name", "description", "status"}, attrCols...)
+
+	var cis []*model.CIModel
+	if s.pg != nil {
+		cis, err = s.pg.ListCI(r.Context(), tenantID, typeID)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+	} else {
+		cis = s.mem.listCIs(tenantID, typeID)
+	}
+	if cis == nil {
+		cis = []*model.CIModel{}
+	}
+
+	var buf bytes.Buffer
+	cw := csv.NewWriter(&buf)
+	if err := cw.Write(cols); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	for _, ci := range cis {
+		row := []string{ci.ID, ci.Name, ci.Description, string(ci.Status)}
+		for _, c := range attrCols {
+			row = append(row, toCSVValue(ci.Attributes[c]))
+		}
+		if err := cw.Write(row); err != nil {
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+	}
+	cw.Flush()
+	if err := cw.Error(); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	fname := fmt.Sprintf("cmdb_%s_%s.csv", typeID, time.Now().Format("20060102"))
+	w.Header().Set("Content-Type", "text/csv; charset=utf-8")
+	w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=%s", fname))
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(buf.Bytes())
+}
+
+// handleImportCI 从上传的 CSV 批量导入 CI（支持按 id 列 upsert 更新，否则新建）。
+func (s *Service) handleImportCI(w http.ResponseWriter, r *http.Request) {
+	tenantID := tenantFromCtx(r.Context())
+	typeID := r.URL.Query().Get("type_id")
+	if typeID == "" {
+		writeError(w, http.StatusBadRequest, "type_id is required")
+		return
+	}
+	mt, err := s.ResolveModelType(r.Context(), typeID, tenantID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if err := r.ParseMultipartForm(32 << 20); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid multipart form")
+		return
+	}
+	file, _, err := r.FormFile("file")
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "missing 'file' field")
+		return
+	}
+	defer file.Close()
+
+	reader := csv.NewReader(file)
+	reader.FieldsPerRecord = -1
+	records, err := reader.ReadAll()
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid csv: "+err.Error())
+		return
+	}
+	if len(records) < 2 {
+		writeJSON(w, http.StatusOK, map[string]any{"created": 0, "updated": 0, "failed": []any{}})
+		return
+	}
+
+	header := records[0]
+	idx := map[string]int{}
+	for i, h := range header {
+		idx[strings.TrimSpace(h)] = i
+	}
+	if _, ok := idx["name"]; !ok {
+		writeError(w, http.StatusBadRequest, "csv must contain a 'name' column")
+		return
+	}
+	get := func(row []string, col string) string {
+		if i, ok := idx[col]; ok && i < len(row) {
+			return strings.TrimSpace(row[i])
+		}
+		return ""
+	}
+
+	var toCreate []*model.CIModel
+	updated := 0
+	var failed []map[string]any
+	traceID := traceIDFromCtx(r.Context())
+
+	for ri, row := range records[1:] {
+		lineNo := ri + 2
+		recordFailed := func(msg string) {
+			failed = append(failed, map[string]any{"row": lineNo, "error": msg})
+		}
+		name := get(row, "name")
+		if name == "" {
+			recordFailed("name is empty")
+			continue
+		}
+		attrs := map[string]any{}
+		if mt != nil {
+			loopBroken := false
+			for k, def := range mt.Schema {
+				raw := get(row, k)
+				if raw == "" {
+					continue
+				}
+				v, cerr := fromCSVValue(raw, def.Type)
+				if cerr != nil {
+					recordFailed(fmt.Sprintf("attr %s: %v", k, cerr))
+					loopBroken = true
+					break
+				}
+				attrs[k] = v
+			}
+			if loopBroken {
+				continue
+			}
+			for k, def := range mt.Schema {
+				if def.Required {
+					if _, ok := attrs[k]; !ok {
+						recordFailed(fmt.Sprintf("required attr %s missing", k))
+						loopBroken = true
+						break
+					}
+				}
+			}
+			if loopBroken {
+				continue
+			}
+		}
+
+		// upsert: 含 id 且该 id 存在则更新，否则新建
+		if idVal := get(row, "id"); idVal != "" && s.pg != nil {
+			if existing, gerr := s.pg.GetCI(r.Context(), idVal, tenantID); gerr == nil && existing != nil {
+				existing.Name = name
+				if d := get(row, "description"); d != "" {
+					existing.Description = d
+				}
+				if st := get(row, "status"); st != "" {
+					existing.Status = model.CIStatus(st)
+				}
+				for k, v := range attrs {
+					existing.Attributes[k] = v
+				}
+				existing.Channel = model.WeightHuman
+				if uerr := s.pg.UpdateCI(r.Context(), existing, model.WeightHuman, traceID); uerr != nil {
+					recordFailed(uerr.Error())
+				} else {
+					updated++
+				}
+				continue
+			}
+		}
+
+		ci := &model.CIModel{
+			TypeID:      typeID,
+			TenantID:    tenantID,
+			Name:        name,
+			Description: get(row, "description"),
+			Status:      model.CIStatusActive,
+			Attributes:  attrs,
+			Channel:     model.WeightHuman,
+		}
+		if st := get(row, "status"); st != "" {
+			ci.Status = model.CIStatus(st)
+		}
+		toCreate = append(toCreate, ci)
+	}
+
+	created := 0
+	if len(toCreate) > 0 {
+		if s.pg != nil {
+			if berr := s.pg.BulkCreateCI(r.Context(), toCreate, traceID); berr != nil {
+				writeError(w, http.StatusInternalServerError, "bulk create failed: "+berr.Error())
+				return
+			}
+			created = len(toCreate)
+		} else {
+			for _, ci := range toCreate {
+				s.mem.createCI(ci)
+			}
+			created = len(toCreate)
+		}
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"created": created,
+		"updated": updated,
+		"failed":  failed,
+	})
+}
+
 func tenantFromCtx(ctx context.Context) string {
 	if t, ok := ctx.Value("tenant_id").(string); ok && t != "" {
 		return t
@@ -803,6 +1373,7 @@ func validateAttrType(typ string, val any) bool {
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {
+	v = httputil.EmptySliceIfNil(v)
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	json.NewEncoder(w).Encode(v)

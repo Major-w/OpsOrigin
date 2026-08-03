@@ -6,9 +6,9 @@ import (
 )
 
 var (
-	ErrInvalidTransition = errors.New("invalid state transition")
+	ErrInvalidTransition    = errors.New("invalid state transition")
 	ErrRiskRequiresApproval = errors.New("high/critical risk requires approval before execution")
-	ErrTicketClosed        = errors.New("ticket is already in a terminal state")
+	ErrTicketClosed         = errors.New("ticket is already in a terminal state")
 )
 
 type Transition struct {

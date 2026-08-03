@@ -24,8 +24,8 @@ import (
 type ApprovalPolicyMode string
 
 const (
-	ApprovalAlwaysAsk    ApprovalPolicyMode = "always_ask"
-	ApprovalAlwaysAllow  ApprovalPolicyMode = "always_allow"
+	ApprovalAlwaysAsk     ApprovalPolicyMode = "always_ask"
+	ApprovalAlwaysAllow   ApprovalPolicyMode = "always_allow"
 	ApprovalSensitiveOnly ApprovalPolicyMode = "sensitive_only"
 )
 
@@ -117,7 +117,7 @@ type PendingApproval struct {
 
 // ApprovalManager 管理挂起的审批请求: 创建、响应、超时。
 type ApprovalManager struct {
-	mu    sync.RWMutex
+	mu      sync.RWMutex
 	pending map[string]*PendingApproval
 	// defaultTimeout 无策略指定时使用的确认超时。
 	defaultTimeout time.Duration

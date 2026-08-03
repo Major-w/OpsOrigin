@@ -61,6 +61,8 @@ func (s *Service) handleCreateCollectionTask(w http.ResponseWriter, r *http.Requ
 		Name         string `json:"name"`
 		ResourceType string `json:"resource_type"`
 		Target       string `json:"target"`
+		TargetMode   string `json:"target_mode"`  // static | query（默认 static）
+		TargetQuery  string `json:"target_query"` // target_mode=query 时引用的保存查询 ID
 		Kind         string `json:"kind"`
 		Frequency    string `json:"frequency"`
 		Enabled      bool   `json:"enabled"`
@@ -77,9 +79,35 @@ func (s *Service) handleCreateCollectionTask(w http.ResponseWriter, r *http.Requ
 		writeError(w, http.StatusBadRequest, "kind must be cmdb|monitor")
 		return
 	}
-	if req.Target == "" {
-		writeError(w, http.StatusBadRequest, "target is required")
+	if req.TargetMode == "" {
+		req.TargetMode = "static"
+	}
+	if req.TargetMode != "static" && req.TargetMode != "query" {
+		writeError(w, http.StatusBadRequest, "target_mode must be static|query")
 		return
+	}
+	// 动态目标（query）模式：Target 留空，必须引用已存在的保存查询（"我想查"）。
+	if req.TargetMode == "query" {
+		if req.TargetQuery == "" {
+			writeError(w, http.StatusBadRequest, "target_query is required when target_mode=query")
+			return
+		}
+		if s.pg != nil {
+			sq, gerr := s.pg.GetSavedQuery(r.Context(), req.TargetQuery, tenantID)
+			if gerr != nil {
+				writeError(w, http.StatusInternalServerError, "failed to verify target_query")
+				return
+			}
+			if sq == nil {
+				writeError(w, http.StatusBadRequest, "target_query references a non-existent saved query")
+				return
+			}
+		}
+	} else {
+		if req.Target == "" {
+			writeError(w, http.StatusBadRequest, "target is required for static mode")
+			return
+		}
 	}
 	if req.Frequency == "" {
 		req.Frequency = "1h"
@@ -89,6 +117,8 @@ func (s *Service) handleCreateCollectionTask(w http.ResponseWriter, r *http.Requ
 		Name:         req.Name,
 		ResourceType: req.ResourceType,
 		Target:       req.Target,
+		TargetMode:   req.TargetMode,
+		TargetQuery:  req.TargetQuery,
 		Kind:         req.Kind,
 		Frequency:    req.Frequency,
 		Enabled:      req.Enabled,
@@ -117,8 +147,10 @@ func (s *Service) handleUpdateCollectionTask(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	var req struct {
-		Enabled   *bool   `json:"enabled"`
-		Frequency *string `json:"frequency"`
+		Enabled     *bool   `json:"enabled"`
+		Frequency   *string `json:"frequency"`
+		TargetMode  *string `json:"target_mode"`
+		TargetQuery *string `json:"target_query"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
@@ -129,6 +161,20 @@ func (s *Service) handleUpdateCollectionTask(w http.ResponseWriter, r *http.Requ
 	}
 	if req.Frequency != nil && *req.Frequency != "" {
 		t.Frequency = *req.Frequency
+	}
+	if req.TargetMode != nil && *req.TargetMode != "" {
+		if *req.TargetMode != "static" && *req.TargetMode != "query" {
+			writeError(w, http.StatusBadRequest, "target_mode must be static|query")
+			return
+		}
+		t.TargetMode = *req.TargetMode
+	}
+	if req.TargetQuery != nil {
+		if t.TargetMode == "query" && *req.TargetQuery == "" {
+			writeError(w, http.StatusBadRequest, "target_query is required when target_mode=query")
+			return
+		}
+		t.TargetQuery = *req.TargetQuery
 	}
 	if err := s.UpdateCollectionTask(r.Context(), t); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to update task")
@@ -166,6 +212,20 @@ func (s *Service) handleRunCollectionTask(w http.ResponseWriter, r *http.Request
 		writeError(w, http.StatusBadRequest, "no collector registered for "+collectorKey(t.Kind, t.ResourceType))
 		return
 	}
+
+	// P1-4 动态执行目标：target_mode=query 时按保存查询实时解析命中 CI，逐资源下发采集。
+	if t.TargetMode == "query" && t.TargetQuery != "" {
+		resolved, totalCIS, totalMetrics, rerr := s.runCollectionTaskResolved(r.Context(), t, tenantID)
+		if rerr != nil {
+			s.markTaskFailed(r.Context(), t, "resolve target query failed: "+rerr.Error())
+			writeError(w, http.StatusInternalServerError, "resolve target query failed: "+rerr.Error())
+			return
+		}
+		s.markTaskSuccess(r.Context(), t)
+		writeJSON(w, 200, map[string]any{"status": "success", "resolved_targets": resolved, "cis": totalCIS, "metrics": totalMetrics})
+		return
+	}
+
 	out, err := c.Run(r.Context(), t)
 	if err != nil {
 		s.markTaskFailed(r.Context(), t, err.Error())

@@ -8,9 +8,10 @@
 //   - 存储：数据存储（/api/vcenter/datastore）→ TypeDisk
 //
 // 凭证约定（复用 cloud.Credential）：
-//   AccessKey = vCenter 用户名
-//   SecretKey = vCenter 密码
-//   Extra["endpoint"] = vCenter 基址，如 https://vcsa.example.com
+//
+//	AccessKey = vCenter 用户名
+//	SecretKey = vCenter 密码
+//	Extra["endpoint"] = vCenter 基址，如 https://vcsa.example.com
 package vmware
 
 import (
@@ -99,19 +100,19 @@ func (p *provider) GetResource(ctx context.Context, cred cloud.Credential, regio
 		return nil, err
 	}
 	res := &cloud.Resource{
-		Provider:     "vmware",
-		Type:         cloud.TypeVM,
-		ID:           d.VM,
-		Name:         d.Name,
-		Region:       firstNonEmpty(region, "vcenter"),
-		Status:       strings.ToLower(d.PowerState),
-		PrivateIP:    firstIPv4(d.Nics),
+		Provider:  "vmware",
+		Type:      cloud.TypeVM,
+		ID:        d.VM,
+		Name:      d.Name,
+		Region:    firstNonEmpty(region, "vcenter"),
+		Status:    strings.ToLower(d.PowerState),
+		PrivateIP: firstIPv4(d.Nics),
 		Extra: map[string]any{
-			"cpu_count":      d.CPUCount,
-			"memory_MiB":     d.MemoryMiB,
-			"guest_os":       d.GuestOS,
-			"num_networks":   len(d.Nics),
-			"num_disks":      len(d.Disks),
+			"cpu_count":    d.CPUCount,
+			"memory_MiB":   d.MemoryMiB,
+			"guest_os":     d.GuestOS,
+			"num_networks": len(d.Nics),
+			"num_disks":    len(d.Disks),
 		},
 		DiscoveredAt: time.Now(),
 	}
@@ -200,9 +201,9 @@ func (p *provider) listVMs(ctx context.Context, endpoint, token, region string) 
 			Region:   region,
 			Status:   strings.ToLower(v.PowerState),
 			Extra: map[string]any{
-				"cpu_count":   v.CPUCount,
+				"cpu_count":  v.CPUCount,
 				"memory_MiB": v.MemoryMiB,
-				"guest_os":    v.GuestOS,
+				"guest_os":   v.GuestOS,
 			},
 			DiscoveredAt: now,
 		})
@@ -268,14 +269,14 @@ func (p *provider) listDatastores(ctx context.Context, endpoint, token, region s
 
 // vmDetail 对应 /api/vcenter/vm/{vm} 的返回结构（仅取纳管所需字段）。
 type vmDetail struct {
-	VM         string `json:"vm"`
-	Name       string `json:"name"`
-	PowerState string `json:"power_state"`
-	CPUCount   int    `json:"cpu_count"`
-	MemoryMiB  int    `json:"memory_size_MiB"`
-	GuestOS    string `json:"guest_OS"`
-	Nics  []vmDetailNics `json:"nics"`
-	Disks []struct {
+	VM         string         `json:"vm"`
+	Name       string         `json:"name"`
+	PowerState string         `json:"power_state"`
+	CPUCount   int            `json:"cpu_count"`
+	MemoryMiB  int            `json:"memory_size_MiB"`
+	GuestOS    string         `json:"guest_OS"`
+	Nics       []vmDetailNics `json:"nics"`
+	Disks      []struct {
 		Type string `json:"type"`
 	} `json:"disks"`
 }

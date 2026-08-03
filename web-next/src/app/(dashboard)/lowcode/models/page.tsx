@@ -7,7 +7,7 @@ import { Badge } from '@/components/ui/badge'
 import { Input } from '@/components/ui/input'
 import { Select } from '@/components/ui/select'
 import { Dialog, DialogFooter } from '@/components/ui/dialog'
-import { apiFetch } from '@/lib/utils'
+import { apiFetch, apiList } from '@/lib/utils'
 import { validateName, sanitizeName, NAME_RULE_TEXT } from '@/lib/validate'
 import {
   Plus, Trash2, Database, ChevronDown, ChevronRight,
@@ -58,7 +58,7 @@ export default function LowcodeModelsPage() {
   const [optionsInput, setOptionsInput] = useState('')
 
   const fetchModels = useCallback(() => {
-    apiFetch<Model[]>('/lowcode/models').then(setModels).catch(() => setModels([]))
+    apiList<Model>('/lowcode/models').then(setModels).catch(() => setModels([]))
   }, [])
 
   useEffect(() => { fetchModels() }, [fetchModels])

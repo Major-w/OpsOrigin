@@ -5,9 +5,9 @@ import (
 	"database/sql"
 	"encoding/json"
 
+	"fmt"
 	"github.com/opsorigin/core/internal/command"
 	"github.com/opsorigin/core/pkg/validate"
-	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
@@ -20,6 +20,8 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+
+	"github.com/opsorigin/core/pkg/httputil"
 )
 
 // Store defines the persistence interface for scripts, their version history
@@ -44,8 +46,8 @@ type Store interface {
 type MemoryStore struct {
 	mu         sync.RWMutex
 	scripts    map[string]*Script
-	versions   map[string][]*ScriptVersion    // scriptID -> versions (ascending by Version)
-	executions map[string][]*ExecutionResult  // scriptID -> executions (ascending by StartedAt)
+	versions   map[string][]*ScriptVersion   // scriptID -> versions (ascending by Version)
+	executions map[string][]*ExecutionResult // scriptID -> executions (ascending by StartedAt)
 }
 
 // NewMemoryStore creates an empty MemoryStore.
@@ -190,21 +192,21 @@ func (s *MemoryStore) ListExecutions(ctx context.Context, scriptID, tenantID str
 // snapshot builds an immutable ScriptVersion from a Script.
 func snapshot(sc *Script, at time.Time, changeNote, createdBy string) *ScriptVersion {
 	return &ScriptVersion{
-		ID:           uuid.New().String(),
-		ScriptID:     sc.ID,
-		TenantID:     sc.TenantID,
-		Version:      sc.Version,
-		Name:         sc.Name,
-		Type:         sc.Type,
-		Content:      sc.Content,
-		InputParams:  sc.InputParams,
-		OutputParams: sc.OutputParams,
-		Timeout:      sc.Timeout,
-		RunAs:        sc.RunAs,
-		ChangeNote:   changeNote,
-		CreatedBy:    createdBy,
-		CreatedAt:    at,
-		Public:       sc.Public,
+		ID:             uuid.New().String(),
+		ScriptID:       sc.ID,
+		TenantID:       sc.TenantID,
+		Version:        sc.Version,
+		Name:           sc.Name,
+		Type:           sc.Type,
+		Content:        sc.Content,
+		InputParams:    sc.InputParams,
+		OutputParams:   sc.OutputParams,
+		Timeout:        sc.Timeout,
+		RunAs:          sc.RunAs,
+		ChangeNote:     changeNote,
+		CreatedBy:      createdBy,
+		CreatedAt:      at,
+		Public:         sc.Public,
 		ApprovalStatus: sc.ApprovalStatus,
 	}
 }
@@ -225,8 +227,8 @@ type SandboxRunner interface {
 
 // Service exposes the script management HTTP API.
 type Service struct {
-	store       Store
-	agentRunner AgentRunner
+	store        Store
+	agentRunner  AgentRunner
 	cmdWhitelist *command.Whitelist
 	dangerous    *command.DangerousPolicy
 }
@@ -255,7 +257,7 @@ type ctxKey string
 
 const (
 	changeNoteCtxKey ctxKey = "change_note"
-	userCtxKey      ctxKey = "user_id"
+	userCtxKey       ctxKey = "user_id"
 )
 
 func tenantFromCtx(ctx context.Context) string {
@@ -527,10 +529,16 @@ func (s *Service) executeScript(sc *Script, req *ExecuteRequest) *ExecutionResul
 			return result
 		}
 		to := req.Timeout
-		if to <= 0 { to = sc.Timeout }
-		if to <= 0 { to = 300 }
+		if to <= 0 {
+			to = sc.Timeout
+		}
+		if to <= 0 {
+			to = 300
+		}
 		tid := req.TenantID
-		if tid == "" { tid = tenantFromCtx(context.Background()) }
+		if tid == "" {
+			tid = tenantFromCtx(context.Background())
+		}
 		agentID, perr := sr.PickSandboxAgentID(context.Background(), tid, req.AgentID)
 		if perr != nil {
 			result.finish("failed", -1, perr.Error(), started)
@@ -550,12 +558,20 @@ func (s *Service) executeScript(sc *Script, req *ExecuteRequest) *ExecutionResul
 	}
 	if req.AgentID != "" && s.agentRunner != nil {
 		to := req.Timeout
-		if to <= 0 { to = sc.Timeout }
-		if to <= 0 { to = 300 }
+		if to <= 0 {
+			to = sc.Timeout
+		}
+		if to <= 0 {
+			to = 300
+		}
 		ra := req.RunAs
-		if ra == "" { ra = sc.RunAs }
+		if ra == "" {
+			ra = sc.RunAs
+		}
 		tid := req.TenantID
-		if tid == "" { tid = tenantFromCtx(context.Background()) }
+		if tid == "" {
+			tid = tenantFromCtx(context.Background())
+		}
 		output, exitCode, rerr := s.agentRunner.RunScriptOnAgent(context.Background(), req.AgentID, tid, sc.Content, req.Params, to, ra)
 		if rerr != nil {
 			result.finish("failed", exitCode, rerr.Error(), started)
@@ -567,12 +583,18 @@ func (s *Service) executeScript(sc *Script, req *ExecuteRequest) *ExecutionResul
 		return result
 	}
 	timeout := req.Timeout
-	if timeout <= 0 { timeout = sc.Timeout }
-	if timeout <= 0 { timeout = 300 }
+	if timeout <= 0 {
+		timeout = sc.Timeout
+	}
+	if timeout <= 0 {
+		timeout = 300
+	}
 	pattern := "opsorigin-script-*.sh"
 	switch sc.Type {
-	case ScriptTypePython: pattern = "opsorigin-script-*.py"
-	case ScriptTypeBat:    pattern = "opsorigin-script-*.bat"
+	case ScriptTypePython:
+		pattern = "opsorigin-script-*.py"
+	case ScriptTypeBat:
+		pattern = "opsorigin-script-*.bat"
 	}
 	tmpFile, err := os.CreateTemp("", pattern)
 	if err != nil {
@@ -581,20 +603,26 @@ func (s *Service) executeScript(sc *Script, req *ExecuteRequest) *ExecutionResul
 	}
 	tmpPath := tmpFile.Name()
 	if _, err := tmpFile.WriteString(sc.Content); err != nil {
-		tmpFile.Close(); os.Remove(tmpPath)
+		tmpFile.Close()
+		os.Remove(tmpPath)
 		result.finish("failed", -1, fmt.Sprintf("write temp file: %v", err), started)
 		return result
 	}
 	tmpFile.Close()
 	defer os.Remove(tmpPath)
 	runAs := req.RunAs
-	if runAs == "" { runAs = sc.RunAs }
+	if runAs == "" {
+		runAs = sc.RunAs
+	}
 	if s.cmdWhitelist != nil {
 		var checkCmd string
 		switch sc.Type {
-		case ScriptTypeShell: checkCmd = "bash"
-		case ScriptTypePython: checkCmd = "python3"
-		case ScriptTypeBat: checkCmd = "cmd"
+		case ScriptTypeShell:
+			checkCmd = "bash"
+		case ScriptTypePython:
+			checkCmd = "python3"
+		case ScriptTypeBat:
+			checkCmd = "cmd"
 		}
 		if checkCmd != "" {
 			if err := s.cmdWhitelist.Verify(checkCmd); err != nil {
@@ -614,11 +642,23 @@ func (s *Service) executeScript(sc *Script, req *ExecuteRequest) *ExecutionResul
 	var cmd *exec.Cmd
 	switch sc.Type {
 	case ScriptTypeShell:
-		if runAs != "" { cmd = exec.CommandContext(ctx, "sudo", "-u", runAs, "bash", tmpPath) } else { cmd = exec.CommandContext(ctx, "bash", tmpPath) }
+		if runAs != "" {
+			cmd = exec.CommandContext(ctx, "sudo", "-u", runAs, "bash", tmpPath)
+		} else {
+			cmd = exec.CommandContext(ctx, "bash", tmpPath)
+		}
 	case ScriptTypePython:
-		if runAs != "" { cmd = exec.CommandContext(ctx, "sudo", "-u", runAs, "python3", tmpPath) } else { cmd = exec.CommandContext(ctx, "python3", tmpPath) }
+		if runAs != "" {
+			cmd = exec.CommandContext(ctx, "sudo", "-u", runAs, "python3", tmpPath)
+		} else {
+			cmd = exec.CommandContext(ctx, "python3", tmpPath)
+		}
 	case ScriptTypeBat:
-		if runAs != "" { cmd = exec.CommandContext(ctx, "sudo", "-u", runAs, "cmd", "/c", tmpPath) } else { cmd = exec.CommandContext(ctx, "cmd", "/c", tmpPath) }
+		if runAs != "" {
+			cmd = exec.CommandContext(ctx, "sudo", "-u", runAs, "cmd", "/c", tmpPath)
+		} else {
+			cmd = exec.CommandContext(ctx, "cmd", "/c", tmpPath)
+		}
 	default:
 		result.finish("failed", -1, fmt.Sprintf("unsupported script type: %s", sc.Type), started)
 		return result
@@ -632,64 +672,114 @@ func (s *Service) executeScript(sc *Script, req *ExecuteRequest) *ExecutionResul
 	result.FinishedAt = &now
 	switch {
 	case ctx.Err() == context.DeadlineExceeded:
-		result.Status = "timeout"; result.ExitCode = -1; result.Error = "execution timed out"
+		result.Status = "timeout"
+		result.ExitCode = -1
+		result.Error = "execution timed out"
 	case err != nil:
 		result.Status = "failed"
-		if exitErr, ok := err.(*exec.ExitError); ok { result.ExitCode = exitErr.ExitCode() } else { result.ExitCode = -1 }
+		if exitErr, ok := err.(*exec.ExitError); ok {
+			result.ExitCode = exitErr.ExitCode()
+		} else {
+			result.ExitCode = -1
+		}
 		result.Error = err.Error()
 	default:
-		result.Status = "success"; result.ExitCode = 0
+		result.Status = "success"
+		result.ExitCode = 0
 	}
 	result.parseOutput(sc.OutputParams)
 	return result
 }
 
 func (r *ExecutionResult) finish(status string, exitCode int, errMsg string, started time.Time) {
-	r.Status = status; r.ExitCode = exitCode; r.Error = errMsg
+	r.Status = status
+	r.ExitCode = exitCode
+	r.Error = errMsg
 	r.Duration = time.Since(started).Milliseconds()
-	now := time.Now(); r.FinishedAt = &now
+	now := time.Now()
+	r.FinishedAt = &now
 }
 
 func buildParamEnv(params map[string]string) []string {
 	var env []string
-	for k, v := range params { env = append(env, fmt.Sprintf("PARAM_%s=%s", strings.ToUpper(k), v)) }
+	for k, v := range params {
+		env = append(env, fmt.Sprintf("PARAM_%s=%s", strings.ToUpper(k), v))
+	}
 	return env
 }
 
 func (r *ExecutionResult) parseOutput(outputParams []ParamDef) {
-	if len(outputParams) == 0 || r.Output == "" { return }
+	if len(outputParams) == 0 || r.Output == "" {
+		return
+	}
 	out := make(map[string]any)
 	var full map[string]any
 	if json.Unmarshal([]byte(strings.TrimSpace(r.Output)), &full) == nil {
-		for _, p := range outputParams { if v, ok := full[p.Name]; ok { out[p.Name] = v } }
-		if len(out) > 0 { r.ParsedOutput = out; return }
+		for _, p := range outputParams {
+			if v, ok := full[p.Name]; ok {
+				out[p.Name] = v
+			}
+		}
+		if len(out) > 0 {
+			r.ParsedOutput = out
+			return
+		}
 	}
 	lines := strings.Split(strings.TrimSpace(r.Output), "\n")
 	lastLine := strings.TrimSpace(lines[len(lines)-1])
 	var last map[string]any
 	if json.Unmarshal([]byte(lastLine), &last) == nil {
-		for _, p := range outputParams { if v, ok := last[p.Name]; ok { out[p.Name] = v } }
-		if len(out) > 0 { r.ParsedOutput = out; return }
+		for _, p := range outputParams {
+			if v, ok := last[p.Name]; ok {
+				out[p.Name] = v
+			}
+		}
+		if len(out) > 0 {
+			r.ParsedOutput = out
+			return
+		}
 	}
 	for _, line := range lines {
 		line = strings.TrimSpace(line)
 		eq := strings.Index(line, "=")
-		if eq <= 0 { continue }
+		if eq <= 0 {
+			continue
+		}
 		k, v := line[:eq], line[eq+1:]
-		if strings.HasPrefix(k, "OUT_") { k = k[4:] }
-		for _, p := range outputParams { if p.Name == k { out[k] = v } }
+		if strings.HasPrefix(k, "OUT_") {
+			k = k[4:]
+		}
+		for _, p := range outputParams {
+			if p.Name == k {
+				out[k] = v
+			}
+		}
 	}
-	if len(out) > 0 { r.ParsedOutput = out }
+	if len(out) > 0 {
+		r.ParsedOutput = out
+	}
 }
 
 func diffVersions(from, to *ScriptVersion) *DiffResult {
 	result := &DiffResult{FromVersion: from.Version, ToVersion: to.Version}
-	if from.Name != to.Name { result.Changes = append(result.Changes, DiffEntry{Field: "name", OldValue: from.Name, NewValue: to.Name}) }
-	if from.Timeout != to.Timeout { result.Changes = append(result.Changes, DiffEntry{Field: "timeout", OldValue: fmt.Sprintf("%d", from.Timeout), NewValue: fmt.Sprintf("%d", to.Timeout)}) }
-	if from.RunAs != to.RunAs { result.Changes = append(result.Changes, DiffEntry{Field: "run_as", OldValue: from.RunAs, NewValue: to.RunAs}) }
-	if fromJ, toJ := toJSONString(from.InputParams), toJSONString(to.InputParams); fromJ != toJ { result.Changes = append(result.Changes, DiffEntry{Field: "input_params", OldValue: fromJ, NewValue: toJ}) }
-	if fromJ, toJ := toJSONString(from.OutputParams), toJSONString(to.OutputParams); fromJ != toJ { result.Changes = append(result.Changes, DiffEntry{Field: "output_params", OldValue: fromJ, NewValue: toJ}) }
-	if from.Content != to.Content { result.Changes = append(result.Changes, diffContent(from.Content, to.Content)...) }
+	if from.Name != to.Name {
+		result.Changes = append(result.Changes, DiffEntry{Field: "name", OldValue: from.Name, NewValue: to.Name})
+	}
+	if from.Timeout != to.Timeout {
+		result.Changes = append(result.Changes, DiffEntry{Field: "timeout", OldValue: fmt.Sprintf("%d", from.Timeout), NewValue: fmt.Sprintf("%d", to.Timeout)})
+	}
+	if from.RunAs != to.RunAs {
+		result.Changes = append(result.Changes, DiffEntry{Field: "run_as", OldValue: from.RunAs, NewValue: to.RunAs})
+	}
+	if fromJ, toJ := toJSONString(from.InputParams), toJSONString(to.InputParams); fromJ != toJ {
+		result.Changes = append(result.Changes, DiffEntry{Field: "input_params", OldValue: fromJ, NewValue: toJ})
+	}
+	if fromJ, toJ := toJSONString(from.OutputParams), toJSONString(to.OutputParams); fromJ != toJ {
+		result.Changes = append(result.Changes, DiffEntry{Field: "output_params", OldValue: fromJ, NewValue: toJ})
+	}
+	if from.Content != to.Content {
+		result.Changes = append(result.Changes, diffContent(from.Content, to.Content)...)
+	}
 	return result
 }
 
@@ -697,22 +787,45 @@ func diffContent(old, new string) []DiffEntry {
 	oldLines := strings.Split(old, "\n")
 	newLines := strings.Split(new, "\n")
 	oldCounts := make(map[string]int)
-	for _, l := range oldLines { oldCounts[l]++ }
+	for _, l := range oldLines {
+		oldCounts[l]++
+	}
 	newCounts := make(map[string]int)
-	for _, l := range newLines { newCounts[l]++ }
+	for _, l := range newLines {
+		newCounts[l]++
+	}
 	var entries []DiffEntry
 	remCounts := make(map[string]int)
-	for k, v := range oldCounts { if v > newCounts[k] { remCounts[k] = v - newCounts[k] } }
-	for _, l := range oldLines { if remCounts[l] > 0 { entries = append(entries, DiffEntry{Field: "content", OldValue: l}); remCounts[l]-- } }
+	for k, v := range oldCounts {
+		if v > newCounts[k] {
+			remCounts[k] = v - newCounts[k]
+		}
+	}
+	for _, l := range oldLines {
+		if remCounts[l] > 0 {
+			entries = append(entries, DiffEntry{Field: "content", OldValue: l})
+			remCounts[l]--
+		}
+	}
 	addCounts := make(map[string]int)
-	for k, v := range newCounts { if v > oldCounts[k] { addCounts[k] = v - oldCounts[k] } }
-	for _, l := range newLines { if addCounts[l] > 0 { entries = append(entries, DiffEntry{Field: "content", NewValue: l}); addCounts[l]-- } }
+	for k, v := range newCounts {
+		if v > oldCounts[k] {
+			addCounts[k] = v - oldCounts[k]
+		}
+	}
+	for _, l := range newLines {
+		if addCounts[l] > 0 {
+			entries = append(entries, DiffEntry{Field: "content", NewValue: l})
+			addCounts[l]--
+		}
+	}
 	return entries
 }
 
 func toJSONString(v any) string { b, _ := json.Marshal(v); return string(b) }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {
+	v = httputil.EmptySliceIfNil(v)
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	json.NewEncoder(w).Encode(v)
@@ -724,8 +837,14 @@ func writeError(w http.ResponseWriter, status int, msg string) {
 
 func (s *Service) handleCheck(w http.ResponseWriter, r *http.Request) {
 	var req CheckRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil { writeError(w, http.StatusBadRequest, "invalid request body"); return }
-	if req.Type == "" || req.Content == "" { writeError(w, http.StatusBadRequest, "type and content are required"); return }
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if req.Type == "" || req.Content == "" {
+		writeError(w, http.StatusBadRequest, "type and content are required")
+		return
+	}
 	writeJSON(w, http.StatusOK, checkSyntax(string(req.Type), req.Content))
 }
 
@@ -734,62 +853,99 @@ var pythonErrRE = regexp.MustCompile(`line\s+(\d+)`)
 
 func checkSyntax(scriptType, content string) *CheckResult {
 	switch ScriptType(scriptType) {
-	case ScriptTypeShell: return checkShell(content)
-	case ScriptTypePython: return checkPython(content)
-	case ScriptTypeBat: return &CheckResult{Valid: true}
-	default: return &CheckResult{Valid: false, Errors: []CheckError{{Message: fmt.Sprintf("unsupported script type: %s", scriptType)}}}
+	case ScriptTypeShell:
+		return checkShell(content)
+	case ScriptTypePython:
+		return checkPython(content)
+	case ScriptTypeBat:
+		return &CheckResult{Valid: true}
+	default:
+		return &CheckResult{Valid: false, Errors: []CheckError{{Message: fmt.Sprintf("unsupported script type: %s", scriptType)}}}
 	}
 }
 
 func checkShell(content string) *CheckResult {
 	tmp, err := os.CreateTemp("", "opsorigin-script-check-*.sh")
-	if err != nil { return &CheckResult{Valid: false, Errors: []CheckError{{Message: fmt.Sprintf("failed to create temp file: %v", err)}}} }
+	if err != nil {
+		return &CheckResult{Valid: false, Errors: []CheckError{{Message: fmt.Sprintf("failed to create temp file: %v", err)}}}
+	}
 	defer os.Remove(tmp.Name())
-	if _, err := tmp.WriteString(content); err != nil { return &CheckResult{Valid: false, Errors: []CheckError{{Message: fmt.Sprintf("failed to write temp file: %v", err)}}} }
+	if _, err := tmp.WriteString(content); err != nil {
+		return &CheckResult{Valid: false, Errors: []CheckError{{Message: fmt.Sprintf("failed to write temp file: %v", err)}}}
+	}
 	tmp.Close()
 	cmd := exec.Command("bash", "-n", tmp.Name())
 	stderr, err := cmd.CombinedOutput()
-	if err == nil { return &CheckResult{Valid: true} }
+	if err == nil {
+		return &CheckResult{Valid: true}
+	}
 	lines := strings.Split(string(stderr), "\n")
 	var errors []CheckError
 	for _, line := range lines {
 		line = strings.TrimSpace(line)
-		if line == "" { continue }
+		if line == "" {
+			continue
+		}
 		m := bashErrRE.FindStringSubmatch(line)
-		if m != nil { ln, _ := strconv.Atoi(m[1]); errors = append(errors, CheckError{Line: ln, Message: strings.TrimSpace(m[2])}) } else { errors = append(errors, CheckError{Message: line}) }
+		if m != nil {
+			ln, _ := strconv.Atoi(m[1])
+			errors = append(errors, CheckError{Line: ln, Message: strings.TrimSpace(m[2])})
+		} else {
+			errors = append(errors, CheckError{Message: line})
+		}
 	}
-	if len(errors) == 0 { errors = append(errors, CheckError{Message: string(stderr)}) }
+	if len(errors) == 0 {
+		errors = append(errors, CheckError{Message: string(stderr)})
+	}
 	return &CheckResult{Valid: false, Errors: errors}
 }
 
 func checkPython(content string) *CheckResult {
 	tmp, err := os.CreateTemp("", "opsorigin-script-check-*.py")
-	if err != nil { return &CheckResult{Valid: false, Errors: []CheckError{{Message: fmt.Sprintf("failed to create temp file: %v", err)}}} }
+	if err != nil {
+		return &CheckResult{Valid: false, Errors: []CheckError{{Message: fmt.Sprintf("failed to create temp file: %v", err)}}}
+	}
 	defer os.Remove(tmp.Name())
-	if _, err := tmp.WriteString(content); err != nil { return &CheckResult{Valid: false, Errors: []CheckError{{Message: fmt.Sprintf("failed to write temp file: %v", err)}}} }
+	if _, err := tmp.WriteString(content); err != nil {
+		return &CheckResult{Valid: false, Errors: []CheckError{{Message: fmt.Sprintf("failed to write temp file: %v", err)}}}
+	}
 	tmp.Close()
 	cmd := exec.Command("python3", "-m", "py_compile", tmp.Name())
 	stderr, err := cmd.CombinedOutput()
-	if err == nil { return &CheckResult{Valid: true} }
+	if err == nil {
+		return &CheckResult{Valid: true}
+	}
 	lines := strings.Split(string(stderr), "\n")
 	var errors []CheckError
 	current := CheckError{}
 	for _, line := range lines {
 		line = strings.TrimSpace(line)
-		if line == "" { continue }
+		if line == "" {
+			continue
+		}
 		m := pythonErrRE.FindStringSubmatch(line)
-		if m != nil { current.Line, _ = strconv.Atoi(m[1]) } else if strings.HasPrefix(line, "SyntaxError:") || strings.HasPrefix(line, "IndentationError:") || strings.HasPrefix(line, "TabError:") {
-			current.Message = line; errors = append(errors, current); current = CheckError{}
-		} else if !strings.HasPrefix(line, "File ") && !strings.HasPrefix(line, "^") { errors = append(errors, CheckError{Message: line}) }
+		if m != nil {
+			current.Line, _ = strconv.Atoi(m[1])
+		} else if strings.HasPrefix(line, "SyntaxError:") || strings.HasPrefix(line, "IndentationError:") || strings.HasPrefix(line, "TabError:") {
+			current.Message = line
+			errors = append(errors, current)
+			current = CheckError{}
+		} else if !strings.HasPrefix(line, "File ") && !strings.HasPrefix(line, "^") {
+			errors = append(errors, CheckError{Message: line})
+		}
 	}
-	if len(errors) == 0 { errors = append(errors, CheckError{Message: string(stderr)}) }
+	if len(errors) == 0 {
+		errors = append(errors, CheckError{Message: string(stderr)})
+	}
 	return &CheckResult{Valid: false, Errors: errors}
 }
 
 // ------- 公共脚本审批 -------
 
 func (s *Service) determineApproval(sc *Script) string {
-	if !sc.Public { return "draft" }
+	if !sc.Public {
+		return "draft"
+	}
 	if s.dangerous != nil {
 		matches := s.dangerous.ScanScript(sc.Content)
 		if len(matches) > 0 {
@@ -804,10 +960,19 @@ func (s *Service) handlePublish(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	tenantID := tenantFromCtx(r.Context())
 	sc, err := s.store.Get(r.Context(), id, tenantID)
-	if err != nil || sc == nil { writeError(w, http.StatusNotFound, "script not found"); return }
-	if !sc.Public { writeError(w, http.StatusBadRequest, "only public scripts can be published"); return }
+	if err != nil || sc == nil {
+		writeError(w, http.StatusNotFound, "script not found")
+		return
+	}
+	if !sc.Public {
+		writeError(w, http.StatusBadRequest, "only public scripts can be published")
+		return
+	}
 	sc.ApprovalStatus = s.determineApproval(sc)
-	if err := s.store.Update(r.Context(), sc); err != nil { writeError(w, http.StatusInternalServerError, err.Error()); return }
+	if err := s.store.Update(r.Context(), sc); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
 	writeJSON(w, http.StatusOK, sc)
 }
 
@@ -815,7 +980,10 @@ func (s *Service) handleApprove(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	tenantID := tenantFromCtx(r.Context())
 	sc, err := s.store.Get(r.Context(), id, tenantID)
-	if err != nil || sc == nil { writeError(w, http.StatusNotFound, "script not found"); return }
+	if err != nil || sc == nil {
+		writeError(w, http.StatusNotFound, "script not found")
+		return
+	}
 	// 接受 pending(公共脚本高危需审批)与 draft(AI 生成/私有脚本待批准) → approved
 	if sc.ApprovalStatus != "pending" && sc.ApprovalStatus != "draft" {
 		writeError(w, http.StatusBadRequest, "script is not in pending/draft status")
@@ -823,7 +991,10 @@ func (s *Service) handleApprove(w http.ResponseWriter, r *http.Request) {
 	}
 	sc.ApprovalStatus = "approved"
 	ctx := context.WithValue(r.Context(), changeNoteCtxKey, "approved")
-	if err := s.store.Update(ctx, sc); err != nil { writeError(w, http.StatusInternalServerError, err.Error()); return }
+	if err := s.store.Update(ctx, sc); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
 	writeJSON(w, http.StatusOK, sc)
 }
 
@@ -831,10 +1002,19 @@ func (s *Service) handleReject(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	tenantID := tenantFromCtx(r.Context())
 	sc, err := s.store.Get(r.Context(), id, tenantID)
-	if err != nil || sc == nil { writeError(w, http.StatusNotFound, "script not found"); return }
-	if sc.ApprovalStatus != "pending" { writeError(w, http.StatusBadRequest, "script is not in pending status"); return }
+	if err != nil || sc == nil {
+		writeError(w, http.StatusNotFound, "script not found")
+		return
+	}
+	if sc.ApprovalStatus != "pending" {
+		writeError(w, http.StatusBadRequest, "script is not in pending status")
+		return
+	}
 	sc.ApprovalStatus = "rejected"
 	ctx := context.WithValue(r.Context(), changeNoteCtxKey, "rejected")
-	if err := s.store.Update(ctx, sc); err != nil { writeError(w, http.StatusInternalServerError, err.Error()); return }
+	if err := s.store.Update(ctx, sc); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
 	writeJSON(w, http.StatusOK, sc)
 }

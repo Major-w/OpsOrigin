@@ -1,7 +1,7 @@
 'use client'
 
 import { create } from 'zustand'
-import { apiFetch } from '@/lib/utils'
+import { apiFetch, apiList } from '@/lib/utils'
 import { toast } from '@/stores/toast'
 
 export type StepType =
@@ -137,7 +137,7 @@ export const useWorkflowStore = create<WorkflowState>((set, get) => ({
   fetch: async () => {
     set({ loading: true })
     try {
-      const workflows = await apiFetch<Workflow[]>('/workflows')
+      const workflows = await apiList<Workflow>('/workflows')
       set({ workflows, loading: false })
     } catch (e: any) {
       set({ loading: false })
@@ -204,7 +204,7 @@ export const useWorkflowStore = create<WorkflowState>((set, get) => ({
   fetchExecutions: async (id) => {
     set({ loading: true })
     try {
-      const executions = await apiFetch<WorkflowExecution[]>(`/workflows/${id}/executions`)
+      const executions = await apiList<WorkflowExecution>(`/workflows/${id}/executions`)
       set({ executions, loading: false })
     } catch (e: any) {
       set({ loading: false })
@@ -214,7 +214,7 @@ export const useWorkflowStore = create<WorkflowState>((set, get) => ({
 
   fetchApprovals: async () => {
     try {
-      const approvals = await apiFetch<StepApproval[]>('/workflows/approvals')
+      const approvals = await apiList<StepApproval>('/workflows/approvals')
       set({ approvals })
     } catch (e: any) {
       toast.error(`加载审批列表失败: ${e.message}`)

@@ -47,16 +47,24 @@ func (s *pgStore) init(ctx context.Context) {
 }
 
 func toJSON(v any) []byte {
-	if v == nil { return []byte("null") }
+	if v == nil {
+		return []byte("null")
+	}
 	b, _ := json.Marshal(v)
 	return b
 }
 
 func (s *pgStore) CreateChannel(ctx context.Context, c *Channel) error {
-	if c.ID == "" { c.ID = uuid.New().String() }
-	if c.TenantID == "" { c.TenantID = "default" }
+	if c.ID == "" {
+		c.ID = uuid.New().String()
+	}
+	if c.TenantID == "" {
+		c.TenantID = "default"
+	}
 	now := time.Now()
-	if c.CreatedAt.IsZero() { c.CreatedAt = now }
+	if c.CreatedAt.IsZero() {
+		c.CreatedAt = now
+	}
 	c.UpdatedAt = now
 	_, err := s.db.ExecContext(ctx,
 		`INSERT INTO notification_channels(id,tenant_id,name,type,config,enabled,created_at,updated_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8) ON CONFLICT(id) DO NOTHING`,
@@ -66,12 +74,17 @@ func (s *pgStore) CreateChannel(ctx context.Context, c *Channel) error {
 
 func (s *pgStore) GetChannel(ctx context.Context, id, tenantID string) (*Channel, error) {
 	c := &Channel{}
-	var cfg []byte; var typ string
+	var cfg []byte
+	var typ string
 	err := s.db.QueryRowContext(ctx,
 		`SELECT id,tenant_id,name,type,config,enabled,created_at,updated_at FROM notification_channels WHERE id=$1 AND tenant_id=$2`, id, tenantID).
 		Scan(&c.ID, &c.TenantID, &c.Name, &typ, &cfg, &c.Enabled, &c.CreatedAt, &c.UpdatedAt)
-	if err == sql.ErrNoRows { return nil, nil }
-	if err != nil { return nil, err }
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
 	c.Type = ChannelType(typ)
 	_ = json.Unmarshal(cfg, &c.Config)
 	return c, nil
@@ -80,13 +93,18 @@ func (s *pgStore) GetChannel(ctx context.Context, id, tenantID string) (*Channel
 func (s *pgStore) ListChannels(ctx context.Context, tenantID string) ([]*Channel, error) {
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT id,tenant_id,name,type,config,enabled,created_at,updated_at FROM notification_channels WHERE tenant_id=$1 ORDER BY updated_at DESC`, tenantID)
-	if err != nil { return nil, err }
+	if err != nil {
+		return nil, err
+	}
 	defer rows.Close()
 	var out []*Channel
 	for rows.Next() {
 		c := &Channel{}
-		var cfg []byte; var typ string
-		if err := rows.Scan(&c.ID, &c.TenantID, &c.Name, &typ, &cfg, &c.Enabled, &c.CreatedAt, &c.UpdatedAt); err != nil { return nil, err }
+		var cfg []byte
+		var typ string
+		if err := rows.Scan(&c.ID, &c.TenantID, &c.Name, &typ, &cfg, &c.Enabled, &c.CreatedAt, &c.UpdatedAt); err != nil {
+			return nil, err
+		}
 		c.Type = ChannelType(typ)
 		_ = json.Unmarshal(cfg, &c.Config)
 		out = append(out, c)
@@ -108,10 +126,16 @@ func (s *pgStore) DeleteChannel(ctx context.Context, id, tenantID string) error 
 }
 
 func (s *pgStore) CreatePolicy(ctx context.Context, p *Policy) error {
-	if p.ID == "" { p.ID = uuid.New().String() }
-	if p.TenantID == "" { p.TenantID = "default" }
+	if p.ID == "" {
+		p.ID = uuid.New().String()
+	}
+	if p.TenantID == "" {
+		p.TenantID = "default"
+	}
 	now := time.Now()
-	if p.CreatedAt.IsZero() { p.CreatedAt = now }
+	if p.CreatedAt.IsZero() {
+		p.CreatedAt = now
+	}
 	p.UpdatedAt = now
 	_, err := s.db.ExecContext(ctx,
 		`INSERT INTO notification_policies(id,tenant_id,name,event,channel_ids,template,quiet_hours,enabled,created_at,updated_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) ON CONFLICT(id) DO NOTHING`,
@@ -121,12 +145,17 @@ func (s *pgStore) CreatePolicy(ctx context.Context, p *Policy) error {
 
 func (s *pgStore) GetPolicy(ctx context.Context, id, tenantID string) (*Policy, error) {
 	p := &Policy{}
-	var cids []byte; var evt string
+	var cids []byte
+	var evt string
 	err := s.db.QueryRowContext(ctx,
 		`SELECT id,tenant_id,name,event,channel_ids,template,quiet_hours,enabled,created_at,updated_at FROM notification_policies WHERE id=$1 AND tenant_id=$2`, id, tenantID).
 		Scan(&p.ID, &p.TenantID, &p.Name, &evt, &cids, &p.Template, &p.QuietHours, &p.Enabled, &p.CreatedAt, &p.UpdatedAt)
-	if err == sql.ErrNoRows { return nil, nil }
-	if err != nil { return nil, err }
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
 	p.Event = EventType(evt)
 	_ = json.Unmarshal(cids, &p.ChannelIDs)
 	return p, nil
@@ -135,13 +164,18 @@ func (s *pgStore) GetPolicy(ctx context.Context, id, tenantID string) (*Policy, 
 func (s *pgStore) ListPolicies(ctx context.Context, tenantID string) ([]*Policy, error) {
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT id,tenant_id,name,event,channel_ids,template,quiet_hours,enabled,created_at,updated_at FROM notification_policies WHERE tenant_id=$1 ORDER BY updated_at DESC`, tenantID)
-	if err != nil { return nil, err }
+	if err != nil {
+		return nil, err
+	}
 	defer rows.Close()
 	var out []*Policy
 	for rows.Next() {
 		p := &Policy{}
-		var cids []byte; var evt string
-		if err := rows.Scan(&p.ID, &p.TenantID, &p.Name, &evt, &cids, &p.Template, &p.QuietHours, &p.Enabled, &p.CreatedAt, &p.UpdatedAt); err != nil { return nil, err }
+		var cids []byte
+		var evt string
+		if err := rows.Scan(&p.ID, &p.TenantID, &p.Name, &evt, &cids, &p.Template, &p.QuietHours, &p.Enabled, &p.CreatedAt, &p.UpdatedAt); err != nil {
+			return nil, err
+		}
 		p.Event = EventType(evt)
 		_ = json.Unmarshal(cids, &p.ChannelIDs)
 		out = append(out, p)
@@ -163,10 +197,18 @@ func (s *pgStore) DeletePolicy(ctx context.Context, id, tenantID string) error {
 }
 
 func (s *pgStore) SaveNotification(ctx context.Context, n *Notification) error {
-	if n.ID == "" { n.ID = uuid.New().String() }
-	if n.TenantID == "" { n.TenantID = "default" }
-	if n.Status == "" { n.Status = "sent" }
-	if n.CreatedAt.IsZero() { n.CreatedAt = time.Now() }
+	if n.ID == "" {
+		n.ID = uuid.New().String()
+	}
+	if n.TenantID == "" {
+		n.TenantID = "default"
+	}
+	if n.Status == "" {
+		n.Status = "sent"
+	}
+	if n.CreatedAt.IsZero() {
+		n.CreatedAt = time.Now()
+	}
 	_, err := s.db.ExecContext(ctx,
 		`INSERT INTO notification_history(id,tenant_id,channel_id,event,title,content,status,error,created_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
 		n.ID, n.TenantID, n.ChannelID, string(n.Event), n.Title, n.Content, n.Status, n.Error, n.CreatedAt)
@@ -176,15 +218,23 @@ func (s *pgStore) SaveNotification(ctx context.Context, n *Notification) error {
 func (s *pgStore) ListNotifications(ctx context.Context, tenantID string, limit int) ([]*Notification, error) {
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT id,tenant_id,channel_id,event,title,content,status,error,created_at FROM notification_history WHERE tenant_id=$1 ORDER BY created_at DESC LIMIT $2`, tenantID, limit)
-	if err != nil { return nil, err }
+	if err != nil {
+		return nil, err
+	}
 	defer rows.Close()
 	var out []*Notification
 	for rows.Next() {
 		n := &Notification{}
 		var evt, chID sql.NullString
-		if err := rows.Scan(&n.ID, &n.TenantID, &chID, &evt, &n.Title, &n.Content, &n.Status, &n.Error, &n.CreatedAt); err != nil { return nil, err }
-		if evt.Valid { n.Event = EventType(evt.String) }
-		if chID.Valid { n.ChannelID = chID.String }
+		if err := rows.Scan(&n.ID, &n.TenantID, &chID, &evt, &n.Title, &n.Content, &n.Status, &n.Error, &n.CreatedAt); err != nil {
+			return nil, err
+		}
+		if evt.Valid {
+			n.Event = EventType(evt.String)
+		}
+		if chID.Valid {
+			n.ChannelID = chID.String
+		}
 		out = append(out, n)
 	}
 	return out, rows.Err()

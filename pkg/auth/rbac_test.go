@@ -20,6 +20,7 @@ func withRole(req *http.Request, role string) *http.Request {
 //   - operator 可读写数据，但模型管理(model-type)仅 admin 可写
 //   - admin 全部放行
 //   - 未携带角色 → 401
+//
 // 重点覆盖此前 model-type→cmdb:admin 专属映射因路径前缀截断而失效的缺陷。
 func TestAutoPermissionMiddleware_CMDB(t *testing.T) {
 	m := NewRBACMiddleware(&Provider{})

@@ -7,7 +7,7 @@ import { Card, CardContent } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Badge } from '@/components/ui/badge'
-import { formatTime } from '@/lib/utils'
+import { formatTime, apiList } from '@/lib/utils'
 import { apiFetch } from '@/lib/utils'
 import { toast } from '@/stores/toast'
 import { ChevronLeft, Save, Sparkles, Loader2, Trash2, Heart, Bookmark, MessageSquare, Share2, History, RotateCcw, Pencil, Eye, PenLine, AlignLeft } from 'lucide-react'
@@ -55,7 +55,7 @@ export default function KnowledgeEditorPage() {
     apiFetch<any>(`/knowledge/${params.id}/stats?user=${userId}`).then(st => {
       setLiked(st.liked); setBookmarked(st.bookmarked); setLikeCount(st.likes)
     }).catch(() => {})
-    apiFetch<any[]>(`/knowledge/${params.id}/comments`).then(c => {
+    apiList<any>(`/knowledge/${params.id}/comments`).then(c => {
       setComments(c||[]); setCommentCount((c||[]).length)
     }).catch(() => {})
   }, [params.id, isNew])

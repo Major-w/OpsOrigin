@@ -5,20 +5,20 @@ import "time"
 type TargetStatus string
 
 const (
-	TargetUp   TargetStatus = "up"
-	TargetDown TargetStatus = "down"
+	TargetUp      TargetStatus = "up"
+	TargetDown    TargetStatus = "down"
 	TargetUnknown TargetStatus = "unknown"
 )
 
 type ProbeProtocol string
 
 const (
-	ProbeICMP   ProbeProtocol = "icmp"
-	ProbeTCP    ProbeProtocol = "tcp"
-	ProbeUDP    ProbeProtocol = "udp"
-	ProbeHTTP   ProbeProtocol = "http"
-	ProbeDNS    ProbeProtocol = "dns"
-	ProbeSSL    ProbeProtocol = "ssl"
+	ProbeICMP ProbeProtocol = "icmp"
+	ProbeTCP  ProbeProtocol = "tcp"
+	ProbeUDP  ProbeProtocol = "udp"
+	ProbeHTTP ProbeProtocol = "http"
+	ProbeDNS  ProbeProtocol = "dns"
+	ProbeSSL  ProbeProtocol = "ssl"
 )
 
 type MonitorTarget struct {
@@ -38,15 +38,15 @@ type MonitorTarget struct {
 }
 
 type ProbeTask struct {
-	ID        string         `json:"id"`
-	TargetID  string         `json:"target_id"`
-	TenantID  string         `json:"tenant_id"`
-	Protocol  ProbeProtocol  `json:"protocol"`
-	Address   string         `json:"address"`
-	Port      int            `json:"port,omitempty"`
-	Timeout   time.Duration  `json:"timeout"`
-	Result    *ProbeResult   `json:"result,omitempty"`
-	CreatedAt time.Time      `json:"created_at"`
+	ID        string        `json:"id"`
+	TargetID  string        `json:"target_id"`
+	TenantID  string        `json:"tenant_id"`
+	Protocol  ProbeProtocol `json:"protocol"`
+	Address   string        `json:"address"`
+	Port      int           `json:"port,omitempty"`
+	Timeout   time.Duration `json:"timeout"`
+	Result    *ProbeResult  `json:"result,omitempty"`
+	CreatedAt time.Time     `json:"created_at"`
 }
 
 type ProbeResult struct {
@@ -66,33 +66,33 @@ const (
 )
 
 type AlertEvent struct {
-	ID          string            `json:"id"`
-	TenantID    string            `json:"tenant_id"`
-	TargetID    string            `json:"target_id"`
-	SourceCIID  string            `json:"source_ci_id"`
-	RuleName    string            `json:"rule_name"`
-	Severity    AlertSeverity     `json:"severity"`
-	Title       string            `json:"title"`
-	Description string            `json:"description,omitempty"`
-	Labels      map[string]string `json:"labels,omitempty"`
-	IsSuppressed bool             `json:"is_suppressed"`
-	RootCauseCI string            `json:"root_cause_ci,omitempty"`
-	Fingerprint string            `json:"fingerprint"`
-	TriggeredAt time.Time         `json:"triggered_at"`
-	ResolvedAt  *time.Time        `json:"resolved_at,omitempty"`
+	ID           string            `json:"id"`
+	TenantID     string            `json:"tenant_id"`
+	TargetID     string            `json:"target_id"`
+	SourceCIID   string            `json:"source_ci_id"`
+	RuleName     string            `json:"rule_name"`
+	Severity     AlertSeverity     `json:"severity"`
+	Title        string            `json:"title"`
+	Description  string            `json:"description,omitempty"`
+	Labels       map[string]string `json:"labels,omitempty"`
+	IsSuppressed bool              `json:"is_suppressed"`
+	RootCauseCI  string            `json:"root_cause_ci,omitempty"`
+	Fingerprint  string            `json:"fingerprint"`
+	TriggeredAt  time.Time         `json:"triggered_at"`
+	ResolvedAt   *time.Time        `json:"resolved_at,omitempty"`
 }
 
 type AlertRule struct {
-	ID          string            `json:"id"`
-	TenantID    string            `json:"tenant_id"`
-	Name        string            `json:"name"`
-	MetricName  string            `json:"metric_name"`
-	Operator    string            `json:"operator"`
-	Threshold   float64           `json:"threshold"`
-	Duration    time.Duration     `json:"duration"`
-	Severity    AlertSeverity     `json:"severity"`
-	Labels      map[string]string `json:"labels,omitempty"`
-	Enabled     bool              `json:"enabled"`
+	ID         string            `json:"id"`
+	TenantID   string            `json:"tenant_id"`
+	Name       string            `json:"name"`
+	MetricName string            `json:"metric_name"`
+	Operator   string            `json:"operator"`
+	Threshold  float64           `json:"threshold"`
+	Duration   time.Duration     `json:"duration"`
+	Severity   AlertSeverity     `json:"severity"`
+	Labels     map[string]string `json:"labels,omitempty"`
+	Enabled    bool              `json:"enabled"`
 
 	// Type 规则类型(阶段 4 PromQL 化):
 	//   - "threshold"(默认): 基于 MetricName+Operator+Threshold 的单指标阈值;

@@ -25,11 +25,15 @@ func (r *Repository) CreateCollectionTask(ctx context.Context, t *model.Collecti
 	if t.Channel == "" {
 		t.Channel = "server"
 	}
+	if t.TargetMode == "" {
+		t.TargetMode = "static"
+	}
 	_, err := r.db.ExecContext(ctx, `
 		INSERT INTO cmdb_collection_task
-			(id, tenant_id, name, resource_type, target, kind, channel, frequency, enabled, last_run_at, status, error, created_at, updated_at)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`,
+			(id, tenant_id, name, resource_type, target, kind, channel, frequency, enabled, target_mode, target_query, last_run_at, status, error, created_at, updated_at)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)`,
 		t.ID, t.TenantID, t.Name, t.ResourceType, t.Target, t.Kind, t.Channel, t.Frequency, t.Enabled,
+		t.TargetMode, nullIfEmpty(t.TargetQuery),
 		nullTime(t.LastRunAt), t.Status, nullString(t.Error), t.CreatedAt, t.UpdatedAt)
 	if err != nil {
 		return fmt.Errorf("insert collection task: %w", err)
@@ -42,11 +46,12 @@ func (r *Repository) GetCollectionTask(ctx context.Context, id, tenantID string)
 	t := &model.CollectionTask{}
 	var lastRun sql.NullTime
 	var errStr sql.NullString
+	var targetMode, targetQuery sql.NullString
 	err := r.db.QueryRowContext(ctx, `
-		SELECT id, tenant_id, name, resource_type, target, kind, channel, frequency, enabled, last_run_at, status, error, created_at, updated_at
+		SELECT id, tenant_id, name, resource_type, target, kind, channel, frequency, enabled, target_mode, target_query, last_run_at, status, error, created_at, updated_at
 		FROM cmdb_collection_task WHERE id=$1 AND tenant_id=$2`, id, tenantID).
 		Scan(&t.ID, &t.TenantID, &t.Name, &t.ResourceType, &t.Target, &t.Kind, &t.Channel, &t.Frequency,
-			&t.Enabled, &lastRun, &t.Status, &errStr, &t.CreatedAt, &t.UpdatedAt)
+			&t.Enabled, &targetMode, &targetQuery, &lastRun, &t.Status, &errStr, &t.CreatedAt, &t.UpdatedAt)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, nil
@@ -56,6 +61,11 @@ func (r *Repository) GetCollectionTask(ctx context.Context, id, tenantID string)
 	if lastRun.Valid {
 		t.LastRunAt = &lastRun.Time
 	}
+	t.TargetMode = targetMode.String
+	if t.TargetMode == "" {
+		t.TargetMode = "static"
+	}
+	t.TargetQuery = targetQuery.String
 	t.Error = errStr.String
 	return t, nil
 }
@@ -63,7 +73,7 @@ func (r *Repository) GetCollectionTask(ctx context.Context, id, tenantID string)
 // ListCollectionTasks 列出某租户全部采集任务。
 func (r *Repository) ListCollectionTasks(ctx context.Context, tenantID string) ([]*model.CollectionTask, error) {
 	rows, err := r.db.QueryContext(ctx, `
-		SELECT id, tenant_id, name, resource_type, target, kind, channel, frequency, enabled, last_run_at, status, error, created_at, updated_at
+		SELECT id, tenant_id, name, resource_type, target, kind, channel, frequency, enabled, target_mode, target_query, last_run_at, status, error, created_at, updated_at
 		FROM cmdb_collection_task WHERE tenant_id=$1 ORDER BY created_at ASC`, tenantID)
 	if err != nil {
 		return nil, fmt.Errorf("list collection tasks: %w", err)
@@ -75,7 +85,7 @@ func (r *Repository) ListCollectionTasks(ctx context.Context, tenantID string) (
 // ListAllEnabledCollectionTasks 列出全部租户中启用且未删除的采集任务（供调度器扫描）。
 func (r *Repository) ListAllEnabledCollectionTasks(ctx context.Context) ([]*model.CollectionTask, error) {
 	rows, err := r.db.QueryContext(ctx, `
-		SELECT id, tenant_id, name, resource_type, target, kind, channel, frequency, enabled, last_run_at, status, error, created_at, updated_at
+		SELECT id, tenant_id, name, resource_type, target, kind, channel, frequency, enabled, target_mode, target_query, last_run_at, status, error, created_at, updated_at
 		FROM cmdb_collection_task WHERE enabled=TRUE ORDER BY created_at ASC`)
 	if err != nil {
 		return nil, fmt.Errorf("list enabled collection tasks: %w", err)
@@ -90,9 +100,10 @@ func (r *Repository) UpdateCollectionTask(ctx context.Context, t *model.Collecti
 	_, err := r.db.ExecContext(ctx, `
 		UPDATE cmdb_collection_task
 		SET name=$2, resource_type=$3, target=$4, kind=$5, channel=$6, frequency=$7, enabled=$8,
-		    last_run_at=$9, status=$10, error=$11, updated_at=$12
-		WHERE id=$1 AND tenant_id=$13`,
+		    target_mode=$9, target_query=$10, last_run_at=$11, status=$12, error=$13, updated_at=$14
+		WHERE id=$1 AND tenant_id=$15`,
 		t.ID, t.Name, t.ResourceType, t.Target, t.Kind, t.Channel, t.Frequency, t.Enabled,
+		t.TargetMode, nullIfEmpty(t.TargetQuery),
 		nullTime(t.LastRunAt), t.Status, nullString(t.Error), t.UpdatedAt, t.TenantID)
 	if err != nil {
 		return fmt.Errorf("update collection task: %w", err)
@@ -178,13 +189,19 @@ func scanCollectionTasks(rows *sql.Rows) ([]*model.CollectionTask, error) {
 		t := &model.CollectionTask{}
 		var lastRun sql.NullTime
 		var errStr sql.NullString
+		var targetMode, targetQuery sql.NullString
 		if err := rows.Scan(&t.ID, &t.TenantID, &t.Name, &t.ResourceType, &t.Target, &t.Kind, &t.Channel,
-			&t.Frequency, &t.Enabled, &lastRun, &t.Status, &errStr, &t.CreatedAt, &t.UpdatedAt); err != nil {
+			&t.Frequency, &t.Enabled, &targetMode, &targetQuery, &lastRun, &t.Status, &errStr, &t.CreatedAt, &t.UpdatedAt); err != nil {
 			return nil, fmt.Errorf("scan collection task: %w", err)
 		}
 		if lastRun.Valid {
 			t.LastRunAt = &lastRun.Time
 		}
+		t.TargetMode = targetMode.String
+		if t.TargetMode == "" {
+			t.TargetMode = "static"
+		}
+		t.TargetQuery = targetQuery.String
 		t.Error = errStr.String
 		out = append(out, t)
 	}

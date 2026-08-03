@@ -8,39 +8,39 @@ import (
 type FieldType string
 
 const (
-	FieldTypeText     FieldType = "text"
-	FieldTypeNumber   FieldType = "number"
-	FieldTypeBoolean  FieldType = "boolean"
-	FieldTypeDate     FieldType = "date"
-	FieldTypeDateTime FieldType = "datetime"
-	FieldTypeSelect   FieldType = "select"
+	FieldTypeText        FieldType = "text"
+	FieldTypeNumber      FieldType = "number"
+	FieldTypeBoolean     FieldType = "boolean"
+	FieldTypeDate        FieldType = "date"
+	FieldTypeDateTime    FieldType = "datetime"
+	FieldTypeSelect      FieldType = "select"
 	FieldTypeMultiSelect FieldType = "multi_select"
-	FieldTypeEmail    FieldType = "email"
-	FieldTypePhone    FieldType = "phone"
-	FieldTypeURL      FieldType = "url"
-	FieldTypeFile     FieldType = "file"
-	FieldTypeRichText FieldType = "rich_text"
-	FieldTypeJSON     FieldType = "json"
-	FieldTypeRelation FieldType = "relation"
+	FieldTypeEmail       FieldType = "email"
+	FieldTypePhone       FieldType = "phone"
+	FieldTypeURL         FieldType = "url"
+	FieldTypeFile        FieldType = "file"
+	FieldTypeRichText    FieldType = "rich_text"
+	FieldTypeJSON        FieldType = "json"
+	FieldTypeRelation    FieldType = "relation"
 )
 
 // FieldDefinition 字段定义
 type FieldDefinition struct {
-	ID          string            `json:"id"`
-	Name        string            `json:"name"`
-	Label       string            `json:"label"`
-	Type        FieldType         `json:"type"`
-	Required    bool              `json:"required"`
-	Unique      bool              `json:"unique"`
-	DefaultValue any              `json:"default_value,omitempty"`
-	Options     []FieldOption     `json:"options,omitempty"`
-	Validation  *ValidationRule   `json:"validation,omitempty"`
-	Relation    *RelationConfig   `json:"relation,omitempty"`
-	SortOrder   int               `json:"sort_order"`
-	Hidden      bool              `json:"hidden"`
-	ReadOnly    bool              `json:"read_only"`
-	Placeholder string            `json:"placeholder,omitempty"`
-	Description string            `json:"description,omitempty"`
+	ID           string          `json:"id"`
+	Name         string          `json:"name"`
+	Label        string          `json:"label"`
+	Type         FieldType       `json:"type"`
+	Required     bool            `json:"required"`
+	Unique       bool            `json:"unique"`
+	DefaultValue any             `json:"default_value,omitempty"`
+	Options      []FieldOption   `json:"options,omitempty"`
+	Validation   *ValidationRule `json:"validation,omitempty"`
+	Relation     *RelationConfig `json:"relation,omitempty"`
+	SortOrder    int             `json:"sort_order"`
+	Hidden       bool            `json:"hidden"`
+	ReadOnly     bool            `json:"read_only"`
+	Placeholder  string          `json:"placeholder,omitempty"`
+	Description  string          `json:"description,omitempty"`
 }
 
 // FieldOption 字段选项
@@ -51,12 +51,12 @@ type FieldOption struct {
 
 // ValidationRule 验证规则
 type ValidationRule struct {
-	Min        *float64 `json:"min,omitempty"`
-	Max        *float64 `json:"max,omitempty"`
-	MinLength  *int     `json:"min_length,omitempty"`
-	MaxLength  *int     `json:"max_length,omitempty"`
-	Pattern    string   `json:"pattern,omitempty"`
-	CustomMsg  string   `json:"custom_msg,omitempty"`
+	Min       *float64 `json:"min,omitempty"`
+	Max       *float64 `json:"max,omitempty"`
+	MinLength *int     `json:"min_length,omitempty"`
+	MaxLength *int     `json:"max_length,omitempty"`
+	Pattern   string   `json:"pattern,omitempty"`
+	CustomMsg string   `json:"custom_msg,omitempty"`
 }
 
 // RelationConfig 关联配置
@@ -81,12 +81,12 @@ type DataModel struct {
 
 // ModelInstance 模型实例
 type ModelInstance struct {
-	ID         string         `json:"id"`
-	ModelID    string         `json:"model_id"`
-	TenantID   string         `json:"tenant_id"`
-	Data       map[string]any `json:"data"`
-	CreatedAt  time.Time      `json:"created_at"`
-	UpdatedAt  time.Time      `json:"updated_at"`
+	ID        string         `json:"id"`
+	ModelID   string         `json:"model_id"`
+	TenantID  string         `json:"tenant_id"`
+	Data      map[string]any `json:"data"`
+	CreatedAt time.Time      `json:"created_at"`
+	UpdatedAt time.Time      `json:"updated_at"`
 }
 
 // PageDefinition 页面定义
@@ -116,53 +116,53 @@ const (
 
 // UIComponent UI组件
 type UIComponent struct {
-	ID         string         `json:"id"`
-	Type       string         `json:"type"`
-	Label      string         `json:"label,omitempty"`
-	Field      string         `json:"field,omitempty"`
-	Props      map[string]any `json:"props,omitempty"`
-	Children   []UIComponent `json:"children,omitempty"`
-	Layout     *ComponentLayout `json:"layout,omitempty"`
+	ID       string           `json:"id"`
+	Type     string           `json:"type"`
+	Label    string           `json:"label,omitempty"`
+	Field    string           `json:"field,omitempty"`
+	Props    map[string]any   `json:"props,omitempty"`
+	Children []UIComponent    `json:"children,omitempty"`
+	Layout   *ComponentLayout `json:"layout,omitempty"`
 }
 
 // ComponentLayout 组件布局
 type ComponentLayout struct {
-	Width    string `json:"width,omitempty"`
-	Height   string `json:"height,omitempty"`
-	Margin   string `json:"margin,omitempty"`
-	Padding  string `json:"padding,omitempty"`
-	Flex     *FlexLayout `json:"flex,omitempty"`
+	Width   string      `json:"width,omitempty"`
+	Height  string      `json:"height,omitempty"`
+	Margin  string      `json:"margin,omitempty"`
+	Padding string      `json:"padding,omitempty"`
+	Flex    *FlexLayout `json:"flex,omitempty"`
 }
 
 // FlexLayout Flex布局
 type FlexLayout struct {
-	Direction  string `json:"direction,omitempty"`
-	Justify    string `json:"justify,omitempty"`
-	Align      string `json:"align,omitempty"`
-	Wrap       string `json:"wrap,omitempty"`
-	Gap        string `json:"gap,omitempty"`
+	Direction string `json:"direction,omitempty"`
+	Justify   string `json:"justify,omitempty"`
+	Align     string `json:"align,omitempty"`
+	Wrap      string `json:"wrap,omitempty"`
+	Gap       string `json:"gap,omitempty"`
 }
 
 // PageLayout 页面布局
 type PageLayout struct {
-	Type     string         `json:"type"` // grid, flex, absolute
-	Columns  int            `json:"columns,omitempty"`
-	Gap      string         `json:"gap,omitempty"`
-	Padding  string         `json:"padding,omitempty"`
+	Type     string        `json:"type"` // grid, flex, absolute
+	Columns  int           `json:"columns,omitempty"`
+	Gap      string        `json:"gap,omitempty"`
+	Padding  string        `json:"padding,omitempty"`
 	Children []UIComponent `json:"children,omitempty"`
 }
 
 // FormRule 表单规则
 type FormRule struct {
-	Field    string `json:"field"`
-	Type     string `json:"type"` // required, min, max, pattern, custom
-	Value    any    `json:"value,omitempty"`
-	Message  string `json:"message,omitempty"`
+	Field   string `json:"field"`
+	Type    string `json:"type"` // required, min, max, pattern, custom
+	Value   any    `json:"value,omitempty"`
+	Message string `json:"message,omitempty"`
 }
 
 // FormData 表单数据
 type FormData struct {
-	ModelID  string         `json:"model_id"`
-	PageID   string         `json:"page_id,omitempty"`
-	Data     map[string]any `json:"data"`
+	ModelID string         `json:"model_id"`
+	PageID  string         `json:"page_id,omitempty"`
+	Data    map[string]any `json:"data"`
 }

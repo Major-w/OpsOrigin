@@ -10,16 +10,16 @@ import (
 )
 
 const (
-	redisRateLimitPrefix   = "ratelimit:%s"
-	redisCircuitStateKey   = "circuit:%s:state"
-	redisCircuitCountKey   = "circuit:%s:fails"
-	redisCircuitLastFail   = "circuit:%s:last_fail"
+	redisRateLimitPrefix = "ratelimit:%s"
+	redisCircuitStateKey = "circuit:%s:state"
+	redisCircuitCountKey = "circuit:%s:fails"
+	redisCircuitLastFail = "circuit:%s:last_fail"
 )
 
 type RedisLimiter struct {
-	client  *redis.Client
-	window  time.Duration
-	limit   int
+	client *redis.Client
+	window time.Duration
+	limit  int
 }
 
 func NewRedisLimiter(client *redis.Client) *RedisLimiter {

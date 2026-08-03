@@ -10,7 +10,7 @@ import { Input } from '@/components/ui/input'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { CodeEditor } from '@/components/ui/code-editor'
 import { Plus, Trash2, Code2, FileText, Copy, Clock, Play, History, Pencil, Terminal, Hash, ChevronRight, GitBranch, GitCompare, CheckCircle, XCircle, Eye, Loader2, Star, ChevronLeft, Save, X, AlertCircle, Sparkles } from 'lucide-react'
-import { cn, formatTime, apiFetch } from '@/lib/utils'
+import { cn, formatTime, apiFetch, apiList } from '@/lib/utils'
 import { toast } from '@/stores/toast'
 import { validateName, sanitizeName, NAME_RULE_TEXT } from '@/lib/validate'
 
@@ -403,7 +403,7 @@ export default function ScriptDetailPage() {
     setExecuteLocal(false)
     setExecuteDialogOpen(true)
     // 加载主机列表
-    apiFetch<any[]>('/agents').then(arr => {
+    apiList<any>('/agents').then(arr => {
       setHosts((arr || []).filter((h: any) => h.type !== 'sandbox'))
     }).catch(() => {})
     // 加载沙箱 Agent 列表(带沙箱标签的真实 Agent)

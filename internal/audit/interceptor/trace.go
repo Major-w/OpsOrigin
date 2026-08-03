@@ -49,11 +49,11 @@ func EnsureTraceID(ctx context.Context) (context.Context, string) {
 }
 
 var skipPaths = map[string]bool{
-	"/api/v1/ops/health":           true,
-	"/api/v1/ops/status":           true,
-	"/api/v1/auth/login":           true,
-	"/api/v1/audit/events":         true,
-	"/api/v1/agents/download":      true,
+	"/api/v1/ops/health":            true,
+	"/api/v1/ops/status":            true,
+	"/api/v1/auth/login":            true,
+	"/api/v1/audit/events":          true,
+	"/api/v1/agents/download":       true,
 	"/api/v1/agents/install-script": true,
 	"/api/v1/agents/test-ssh":       true,
 	"/api/v1/agents/batch-install":  true,

@@ -7,7 +7,7 @@ import { Badge } from '@/components/ui/badge'
 import { Input } from '@/components/ui/input'
 import { Select } from '@/components/ui/select'
 import { Dialog, DialogFooter } from '@/components/ui/dialog'
-import { apiFetch } from '@/lib/utils'
+import { apiFetch, apiList } from '@/lib/utils'
 import {
   Plus, Trash2, FileText, Pencil, Search, X,
   Layout, List, Eye, Layers, GripVertical,
@@ -62,11 +62,11 @@ export default function LowcodePagesPage() {
   const [previewMode, setPreviewMode] = useState<'live' | 'responsive'>('live')
 
   const fetchPages = useCallback(() => {
-    apiFetch<Page[]>('/lowcode/pages').then(setPages).catch(() => setPages([]))
+    apiList<Page>('/lowcode/pages').then(setPages).catch(() => setPages([]))
   }, [])
 
   const fetchModels = useCallback(() => {
-    apiFetch<Model[]>('/lowcode/models').then(setModels).catch(() => setModels([]))
+    apiList<Model>('/lowcode/models').then(setModels).catch(() => setModels([]))
   }, [])
 
   useEffect(() => { fetchPages(); fetchModels() }, [fetchPages, fetchModels])

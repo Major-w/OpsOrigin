@@ -12,8 +12,8 @@ type syncRequest struct {
 	Types        []string            `json:"types"`
 	Credential   *resourceCredential `json:"credential"`
 	CredentialID string              `json:"credential_id"`
-	AgentID      string              `json:"agent_id"`    // k8s：目标集群网关 Agent
-	K8s          K8sDiscoverOptions `json:"k8s,omitempty"` // k8s：发现选项
+	AgentID      string              `json:"agent_id"`      // k8s：目标集群网关 Agent
+	K8s          K8sDiscoverOptions  `json:"k8s,omitempty"` // k8s：发现选项
 	Resources    []Resource          `json:"resources"`
 }
 

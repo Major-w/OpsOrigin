@@ -6,7 +6,7 @@ import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { Input } from '@/components/ui/input'
 import { Dialog, DialogFooter } from '@/components/ui/dialog'
-import { apiFetch } from '@/lib/utils'
+import { apiFetch, apiList } from '@/lib/utils'
 import { Plus, Play, RefreshCw, Server, Wifi, Cloud, Terminal, CheckCircle, Clock, Loader2 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 
@@ -53,7 +53,7 @@ export default function CMDBDiscoveryPage() {
   const fetchTasks = async () => {
     setLoading(true)
     try {
-      const data = await apiFetch<DiscoveryTask[]>('/cmdb/discovery')
+      const data = await apiList<DiscoveryTask>('/cmdb/discovery')
       setTasks(data || [])
     } catch { setTasks([]) }
     setLoading(false)
@@ -61,7 +61,7 @@ export default function CMDBDiscoveryPage() {
 
   const fetchResults = async (taskId: string) => {
     try {
-      const data = await apiFetch<DiscoveryResult[]>(`/cmdb/discovery/${taskId}/results`)
+      const data = await apiList<DiscoveryResult>(`/cmdb/discovery/${taskId}/results`)
       setResults(data || [])
     } catch { setResults([]) }
   }

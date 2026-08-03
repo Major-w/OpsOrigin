@@ -10,6 +10,8 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/opsorigin/core/pkg/httputil"
 )
 
 func NewService(db *sql.DB) *Service { return &Service{store: NewStore(db)} }
@@ -58,16 +60,24 @@ func (s *Service) handleListApps(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, apps)
 }
 func (s *Service) handleCreateApp(w http.ResponseWriter, r *http.Request) {
-	var a DeployApp; json.NewDecoder(r.Body).Decode(&a); a.TenantID = tenant(r)
-	s.store.CreateApp(r.Context(), &a); writeJSON(w, 201, a)
+	var a DeployApp
+	json.NewDecoder(r.Body).Decode(&a)
+	a.TenantID = tenant(r)
+	s.store.CreateApp(r.Context(), &a)
+	writeJSON(w, 201, a)
 }
 func (s *Service) handleUpdateApp(w http.ResponseWriter, r *http.Request) {
-	id := r.PathValue("id"); var a DeployApp; json.NewDecoder(r.Body).Decode(&a)
-	a.ID = id; a.TenantID = tenant(r)
-	s.store.UpdateApp(r.Context(), &a); writeJSON(w, 200, a)
+	id := r.PathValue("id")
+	var a DeployApp
+	json.NewDecoder(r.Body).Decode(&a)
+	a.ID = id
+	a.TenantID = tenant(r)
+	s.store.UpdateApp(r.Context(), &a)
+	writeJSON(w, 200, a)
 }
 func (s *Service) handleDeleteApp(w http.ResponseWriter, r *http.Request) {
-	id := r.PathValue("id"); s.store.DeleteApp(r.Context(), id, tenant(r))
+	id := r.PathValue("id")
+	s.store.DeleteApp(r.Context(), id, tenant(r))
 	writeJSON(w, 200, map[string]string{"ok": "deleted"})
 }
 
@@ -76,67 +86,102 @@ func (s *Service) handleListReleases(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, rel)
 }
 func (s *Service) handleCreateRelease(w http.ResponseWriter, r *http.Request) {
-	var r2 ReleaseTicket; json.NewDecoder(r.Body).Decode(&r2); r2.TenantID = tenant(r)
+	var r2 ReleaseTicket
+	json.NewDecoder(r.Body).Decode(&r2)
+	r2.TenantID = tenant(r)
 	if r2.AppName == "" {
 		var a DeployApp
 		apps, _ := s.store.ListApps(r.Context(), tenant(r))
-		for _, app := range apps { if app.ID == r2.AppID { a = app; break } }
-		r2.AppName = a.Name; r2.AppCode = a.Code
+		for _, app := range apps {
+			if app.ID == r2.AppID {
+				a = app
+				break
+			}
+		}
+		r2.AppName = a.Name
+		r2.AppCode = a.Code
 	}
-	if r2.Operator == "" { r2.Operator = operatorOf(r) }
+	if r2.Operator == "" {
+		r2.Operator = operatorOf(r)
+	}
 	s.store.CreateRelease(r.Context(), &r2)
 	writeJSON(w, 201, r2)
 }
 func (s *Service) handleUpdateRelease(w http.ResponseWriter, r *http.Request) {
-	id := r.PathValue("id"); var r2 ReleaseTicket; json.NewDecoder(r.Body).Decode(&r2)
-	r2.ID = id; r2.TenantID = tenant(r)
-	s.store.UpdateRelease(r.Context(), &r2); writeJSON(w, 200, r2)
+	id := r.PathValue("id")
+	var r2 ReleaseTicket
+	json.NewDecoder(r.Body).Decode(&r2)
+	r2.ID = id
+	r2.TenantID = tenant(r)
+	s.store.UpdateRelease(r.Context(), &r2)
+	writeJSON(w, 200, r2)
 }
 func (s *Service) handleDeleteRelease(w http.ResponseWriter, r *http.Request) {
-	id := r.PathValue("id"); s.store.DeleteRelease(r.Context(), id, tenant(r))
+	id := r.PathValue("id")
+	s.store.DeleteRelease(r.Context(), id, tenant(r))
 	writeJSON(w, 200, map[string]string{"ok": "deleted"})
 }
 
 // handleApproveRelease 审批通过，校验审批人是否在 approvers 名单内（名单非空时）。
 func (s *Service) handleApproveRelease(w http.ResponseWriter, r *http.Request) {
-	id := r.PathValue("id"); t := tenant(r)
+	id := r.PathValue("id")
+	t := tenant(r)
 	rel, err := s.store.GetRelease(r.Context(), id, t)
-	if err != nil || rel == nil { writeJSON(w, 404, map[string]string{"error": "not found"}); return }
+	if err != nil || rel == nil {
+		writeJSON(w, 404, map[string]string{"error": "not found"})
+		return
+	}
 	operator := operatorOf(r)
 	if len(rel.Approvers) > 0 && !contains(rel.Approvers, operator) {
 		writeJSON(w, 403, map[string]string{"error": "审批人不在 approvers 名单内", "operator": operator})
 		return
 	}
-	rel.Status = "approved"; rel.ApprovedBy = operator
-	now := time.Now(); rel.ApprovedAt = &now
+	rel.Status = "approved"
+	rel.ApprovedBy = operator
+	now := time.Now()
+	rel.ApprovedAt = &now
 	s.store.UpdateRelease(r.Context(), rel)
 	writeJSON(w, 200, rel)
 }
 func (s *Service) handleRejectRelease(w http.ResponseWriter, r *http.Request) {
-	id := r.PathValue("id"); t := tenant(r)
-	var body struct { Reason string `json:"reason"` }
+	id := r.PathValue("id")
+	t := tenant(r)
+	var body struct {
+		Reason string `json:"reason"`
+	}
 	json.NewDecoder(r.Body).Decode(&body)
 	rel, err := s.store.GetRelease(r.Context(), id, t)
-	if err != nil || rel == nil { writeJSON(w, 404, map[string]string{"error": "not found"}); return }
-	rel.Status = "rejected"; rel.RejectedBy = operatorOf(r); rel.RejectReason = body.Reason
+	if err != nil || rel == nil {
+		writeJSON(w, 404, map[string]string{"error": "not found"})
+		return
+	}
+	rel.Status = "rejected"
+	rel.RejectedBy = operatorOf(r)
+	rel.RejectReason = body.Reason
 	s.store.UpdateRelease(r.Context(), rel)
 	writeJSON(w, 200, rel)
 }
 
 // handleDeployRelease 触发真实部署：先置 deploying，再异步经 Agent 通道执行。
 func (s *Service) handleDeployRelease(w http.ResponseWriter, r *http.Request) {
-	id := r.PathValue("id"); t := tenant(r)
+	id := r.PathValue("id")
+	t := tenant(r)
 	rel, err := s.store.GetRelease(r.Context(), id, t)
-	if err != nil || rel == nil { writeJSON(w, 404, map[string]string{"error": "not found"}); return }
+	if err != nil || rel == nil {
+		writeJSON(w, 404, map[string]string{"error": "not found"})
+		return
+	}
 	if rel.Status == "deploying" {
 		writeJSON(w, 409, map[string]string{"error": "deploy already in progress"})
 		return
 	}
 	rel.Operator = operatorOf(r)
 	rel.Status = "deploying"
-	now := time.Now(); rel.DeployedAt = &now
+	now := time.Now()
+	rel.DeployedAt = &now
 	if err := s.store.UpdateRelease(r.Context(), rel); err != nil {
-		writeJSON(w, 500, map[string]string{"error": err.Error()}); return
+		writeJSON(w, 500, map[string]string{"error": err.Error()})
+		return
 	}
 	// 脱离请求上下文，避免客户端断开导致部署中断。
 	go s.executeDeploy(rel)
@@ -146,13 +191,22 @@ func (s *Service) handleDeployRelease(w http.ResponseWriter, r *http.Request) {
 // handleRollbackRelease 回滚到该应用+环境的上一成功版本。
 // 容器模式走 kubectl rollout undo；主机模式重新下发上一成功版本的部署脚本。
 func (s *Service) handleRollbackRelease(w http.ResponseWriter, r *http.Request) {
-	id := r.PathValue("id"); t := tenant(r)
+	id := r.PathValue("id")
+	t := tenant(r)
 	rel, err := s.store.GetRelease(r.Context(), id, t)
-	if err != nil || rel == nil { writeJSON(w, 404, map[string]string{"error": "not found"}); return }
+	if err != nil || rel == nil {
+		writeJSON(w, 404, map[string]string{"error": "not found"})
+		return
+	}
 
 	apps, _ := s.store.ListApps(r.Context(), t)
 	var app DeployApp
-	for _, a := range apps { if a.ID == rel.AppID { app = a; break } }
+	for _, a := range apps {
+		if a.ID == rel.AppID {
+			app = a
+			break
+		}
+	}
 	env := s.findEnv(r.Context(), t, rel.Env)
 	operator := operatorOf(r)
 
@@ -162,7 +216,9 @@ func (s *Service) handleRollbackRelease(w http.ResponseWriter, r *http.Request) 
 		rel.Status = "rolled_back"
 		s.store.UpdateRelease(r.Context(), rel)
 		note := operator + " 触发回滚（容器模式）"
-		if !ok { note += " 失败:\n" + out }
+		if !ok {
+			note += " 失败:\n" + out
+		}
 		s.historyFor(rel, "rolled_back", note+"\n"+out)
 		writeJSON(w, 200, rel)
 		return
@@ -183,7 +239,9 @@ func (s *Service) handleRollbackRelease(w http.ResponseWriter, r *http.Request) 
 		for _, agentID := range env.AgentIDs {
 			o, code, e := s.runner.RunScriptOnAgent(ctx, agentID, t, app.DeployScript, params, 600, "")
 			fmt.Fprintf(&b, "[agent %s] exit=%d err=%v\n%s\n", agentID, code, e, o)
-			if e != nil || code != 0 { ok = false }
+			if e != nil || code != 0 {
+				ok = false
+			}
 		}
 		out = b.String()
 		if !ok {
@@ -197,7 +255,9 @@ func (s *Service) handleRollbackRelease(w http.ResponseWriter, r *http.Request) 
 	rel.Status = "rolled_back"
 	s.store.UpdateRelease(r.Context(), rel)
 	note := operator + " 触发回滚"
-	if prev != nil { note += " 至版本 " + prev.Version }
+	if prev != nil {
+		note += " 至版本 " + prev.Version
+	}
 	s.historyFor(rel, "rolled_back", note)
 	writeJSON(w, 200, rel)
 }
@@ -205,6 +265,7 @@ func (s *Service) handleRollbackRelease(w http.ResponseWriter, r *http.Request) 
 // executeDeploy 是真实部署引擎：依据环境 Mode 在目标落地下发指令。
 //   - host 模式：经主机 Agent 下发 DeployScript（shell）。
 //   - container 模式：经 K8s 网关 Agent 下发 kubectl（set image / apply）。
+//
 // 每一步都如实写入 running→succeeded/failed/skipped 与输出；任一失败则整体 failed。
 func (s *Service) executeDeploy(rel *ReleaseTicket) {
 	if s.runner == nil {
@@ -220,7 +281,12 @@ func (s *Service) executeDeploy(rel *ReleaseTicket) {
 
 	apps, _ := s.store.ListApps(ctx, t)
 	var app DeployApp
-	for _, a := range apps { if a.ID == rel.AppID { app = a; break } }
+	for _, a := range apps {
+		if a.ID == rel.AppID {
+			app = a
+			break
+		}
+	}
 	env := s.findEnv(ctx, t, rel.Env)
 
 	rel.Steps = nil
@@ -241,7 +307,12 @@ func (s *Service) executeDeploy(rel *ReleaseTicket) {
 	} else if env.Mode == ModeContainer {
 		ok, out := s.runContainerDeploy(ctx, t, app, env, rel.Version)
 		step.Output = out
-		if ok { step.Status = "succeeded" } else { step.Status = "failed"; failed = true }
+		if ok {
+			step.Status = "succeeded"
+		} else {
+			step.Status = "failed"
+			failed = true
+		}
 	} else {
 		// 主机模式：下发 DeployScript
 		if app.DeployScript == "" {
@@ -256,10 +327,17 @@ func (s *Service) executeDeploy(rel *ReleaseTicket) {
 			for _, agentID := range env.AgentIDs {
 				o, code, e := s.runner.RunScriptOnAgent(ctx, agentID, t, app.DeployScript, params, 600, "")
 				fmt.Fprintf(&deployOut, "[agent %s] exit=%d err=%v\n%s\n", agentID, code, e, o)
-				if e != nil || code != 0 { ok = false }
+				if e != nil || code != 0 {
+					ok = false
+				}
 			}
 			step.Output = deployOut.String()
-			if ok { step.Status = "succeeded" } else { step.Status = "failed"; failed = true }
+			if ok {
+				step.Status = "succeeded"
+			} else {
+				step.Status = "failed"
+				failed = true
+			}
 		}
 	}
 	s.persist(ctx, rel)
@@ -271,7 +349,12 @@ func (s *Service) executeDeploy(rel *ReleaseTicket) {
 	if env != nil && env.Mode == ModeContainer {
 		ok, out := s.runContainerHealth(ctx, t, app, env)
 		hc.Output = out
-		if ok { hc.Status = "succeeded" } else { hc.Status = "failed"; failed = true }
+		if ok {
+			hc.Status = "succeeded"
+		} else {
+			hc.Status = "failed"
+			failed = true
+		}
 	} else {
 		if app.HealthCheckURL == "" {
 			hc.Status = "skipped"
@@ -304,7 +387,9 @@ func (s *Service) executeDeploy(rel *ReleaseTicket) {
 	}
 	rel.Status = "succeeded"
 	if app.ID != "" {
-		if app.CurrentVersions == nil { app.CurrentVersions = map[DeployEnv]string{} }
+		if app.CurrentVersions == nil {
+			app.CurrentVersions = map[DeployEnv]string{}
+		}
 		app.CurrentVersions[rel.Env] = rel.Version
 		s.store.UpdateApp(ctx, &app)
 	}
@@ -324,7 +409,9 @@ func (s *Service) runContainerDeploy(ctx context.Context, t string, app DeployAp
 	for _, agentID := range env.AgentIDs {
 		o, code, e := s.runner.RunScriptOnAgent(ctx, agentID, t, script, nil, 600, "")
 		fmt.Fprintf(&b, "[agent %s] exit=%d err=%v\n%s\n", agentID, code, e, o)
-		if e != nil || code != 0 { ok = false }
+		if e != nil || code != 0 {
+			ok = false
+		}
 	}
 	return ok, b.String()
 }
@@ -364,7 +451,9 @@ func (s *Service) runContainerRollback(ctx context.Context, t string, app Deploy
 	for _, agentID := range env.AgentIDs {
 		o, code, e := s.runner.RunScriptOnAgent(ctx, agentID, t, cmd, nil, 600, "")
 		fmt.Fprintf(&b, "[agent %s] exit=%d err=%v\n%s\n", agentID, code, e, o)
-		if e != nil || code != 0 { ok = false }
+		if e != nil || code != 0 {
+			ok = false
+		}
 	}
 	return b.String(), ok
 }
@@ -373,18 +462,26 @@ func (s *Service) runContainerRollback(ctx context.Context, t string, app Deploy
 // 若配置了 manifest 则优先 kubectl apply -f -；否则 kubectl set image。
 func buildContainerDeployScript(app DeployApp, version string) string {
 	ns := app.Namespace
-	if ns == "" { ns = "default" }
+	if ns == "" {
+		ns = "default"
+	}
 	var b strings.Builder
 	b.WriteString("#!/bin/sh\nset -e\n")
 	if app.Manifest != "" {
 		b.WriteString("cat <<'OO_MANIFEST' | kubectl -n " + ns + " apply -f -\n")
 		b.WriteString(app.Manifest)
-		if !strings.HasSuffix(app.Manifest, "\n") { b.WriteString("\n") }
+		if !strings.HasSuffix(app.Manifest, "\n") {
+			b.WriteString("\n")
+		}
 		b.WriteString("OO_MANIFEST\n")
 	} else {
 		cnt := app.ContainerName
-		if cnt == "" { cnt = app.Code }
-		if cnt == "" { cnt = app.Name }
+		if cnt == "" {
+			cnt = app.Code
+		}
+		if cnt == "" {
+			cnt = app.Name
+		}
 		img := imageWithTag(app.ImageURL, version)
 		b.WriteString(fmt.Sprintf("kubectl -n %s set image %s %s=%s --record\n", ns, app.Workload, cnt, img))
 	}
@@ -393,7 +490,9 @@ func buildContainerDeployScript(app DeployApp, version string) string {
 
 // imageWithTag 将 version 作为 tag 拼到镜像地址上（若已有 tag 则替换）。
 func imageWithTag(base, version string) string {
-	if version == "" { return base }
+	if version == "" {
+		return base
+	}
 	if i := strings.LastIndex(base, ":"); i > strings.LastIndex(base, "/") {
 		base = base[:i]
 	}
@@ -410,15 +509,23 @@ func (s *Service) persist(ctx context.Context, rel *ReleaseTicket) {
 // findEnv 按环境类型（dev/test/staging/prod）查找绑定的环境。
 func (s *Service) findEnv(ctx context.Context, t, env string) *DeployEnvironment {
 	envs, err := s.store.ListEnvs(ctx, t)
-	if err != nil { return nil }
-	for i := range envs { if envs[i].Type == env { return &envs[i] } }
+	if err != nil {
+		return nil
+	}
+	for i := range envs {
+		if envs[i].Type == env {
+			return &envs[i]
+		}
+	}
 	return nil
 }
 
 // findPrevSucceeded 查找该应用+环境（排除当前发布单）最近一条 succeeded 的发布历史。
 func (s *Service) findPrevSucceeded(ctx context.Context, t, appID, env, excludeID string) (*ReleaseHistory, error) {
 	hist, err := s.store.ListHistory(ctx, t)
-	if err != nil { return nil, err }
+	if err != nil {
+		return nil, err
+	}
 	for _, h := range hist {
 		if h.AppID == appID && h.Env == env && h.Status == "succeeded" && h.ReleaseID != excludeID {
 			return &h, nil
@@ -447,16 +554,24 @@ func (s *Service) handleListEnvs(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, envs)
 }
 func (s *Service) handleCreateEnv(w http.ResponseWriter, r *http.Request) {
-	var e DeployEnvironment; json.NewDecoder(r.Body).Decode(&e); e.TenantID = tenant(r)
-	s.store.CreateEnv(r.Context(), &e); writeJSON(w, 201, e)
+	var e DeployEnvironment
+	json.NewDecoder(r.Body).Decode(&e)
+	e.TenantID = tenant(r)
+	s.store.CreateEnv(r.Context(), &e)
+	writeJSON(w, 201, e)
 }
 func (s *Service) handleUpdateEnv(w http.ResponseWriter, r *http.Request) {
-	id := r.PathValue("id"); var e DeployEnvironment; json.NewDecoder(r.Body).Decode(&e)
-	e.ID = id; e.TenantID = tenant(r)
-	s.store.UpdateEnv(r.Context(), &e); writeJSON(w, 200, e)
+	id := r.PathValue("id")
+	var e DeployEnvironment
+	json.NewDecoder(r.Body).Decode(&e)
+	e.ID = id
+	e.TenantID = tenant(r)
+	s.store.UpdateEnv(r.Context(), &e)
+	writeJSON(w, 200, e)
 }
 func (s *Service) handleDeleteEnv(w http.ResponseWriter, r *http.Request) {
-	id := r.PathValue("id"); s.store.DeleteEnv(r.Context(), id, tenant(r))
+	id := r.PathValue("id")
+	s.store.DeleteEnv(r.Context(), id, tenant(r))
 	writeJSON(w, 200, map[string]string{"ok": "deleted"})
 }
 
@@ -467,23 +582,35 @@ func (s *Service) handleListHistory(w http.ResponseWriter, r *http.Request) {
 
 func tenant(r *http.Request) string {
 	t := r.Header.Get("X-Tenant-ID")
-	if t == "" { t = "default" }
+	if t == "" {
+		t = "default"
+	}
 	return t
 }
 
 func operatorOf(r *http.Request) string {
-	if v := r.Header.Get("X-User-ID"); v != "" { return v }
-	if v := r.Header.Get("X-Principal-ID"); v != "" { return v }
+	if v := r.Header.Get("X-User-ID"); v != "" {
+		return v
+	}
+	if v := r.Header.Get("X-Principal-ID"); v != "" {
+		return v
+	}
 	return "system"
 }
 
 func contains(s []string, v string) bool {
-	for _, x := range s { if x == v { return true } }
+	for _, x := range s {
+		if x == v {
+			return true
+		}
+	}
 	return false
 }
 
 func truncate(s string, n int) string {
-	if len(s) <= n { return s }
+	if len(s) <= n {
+		return s
+	}
 	return s[:n] + "..."
 }
 
@@ -491,15 +618,20 @@ func truncate(s string, n int) string {
 func httpProbe(url string, timeout time.Duration) (int, string, error) {
 	client := &http.Client{Timeout: timeout}
 	req, err := http.NewRequest(http.MethodGet, url, nil)
-	if err != nil { return 0, "", err }
+	if err != nil {
+		return 0, "", err
+	}
 	resp, err := client.Do(req)
-	if err != nil { return 0, "", err }
+	if err != nil {
+		return 0, "", err
+	}
 	defer resp.Body.Close()
 	b, _ := io.ReadAll(io.LimitReader(resp.Body, 4<<10))
 	return resp.StatusCode, string(b), nil
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {
+	v = httputil.EmptySliceIfNil(v)
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	json.NewEncoder(w).Encode(v)

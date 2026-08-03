@@ -20,41 +20,41 @@ type ParamDef struct {
 
 // Script 脚本定义(当前版本)
 type Script struct {
-	ID          string            `json:"id"`
-	TenantID    string            `json:"tenant_id"`
-	Name        string            `json:"name"`
-	Type        ScriptType        `json:"type"`
-	Content     string            `json:"content"`
-	Description string            `json:"description,omitempty"`
-	InputParams []ParamDef        `json:"input_params"`
-	OutputParams []ParamDef       `json:"output_params"`
-	Timeout     int               `json:"timeout"`
-	RunAs       string            `json:"run_as,omitempty"`
-	Labels      map[string]string `json:"labels,omitempty"`
-	Version     int               `json:"version"`
+	ID           string            `json:"id"`
+	TenantID     string            `json:"tenant_id"`
+	Name         string            `json:"name"`
+	Type         ScriptType        `json:"type"`
+	Content      string            `json:"content"`
+	Description  string            `json:"description,omitempty"`
+	InputParams  []ParamDef        `json:"input_params"`
+	OutputParams []ParamDef        `json:"output_params"`
+	Timeout      int               `json:"timeout"`
+	RunAs        string            `json:"run_as,omitempty"`
+	Labels       map[string]string `json:"labels,omitempty"`
+	Version      int               `json:"version"`
 	// 公共脚本 & 审批
-	Public         bool   `json:"public"`                     // 是否标记为公共脚本（需审批）
-	ApprovalStatus string `json:"approval_status,omitempty"`  // "draft"|"pending"|"approved"|"rejected"
+	Public         bool      `json:"public"`                    // 是否标记为公共脚本（需审批）
+	ApprovalStatus string    `json:"approval_status,omitempty"` // "draft"|"pending"|"approved"|"rejected"
 	CreatedAt      time.Time `json:"created_at"`
 	UpdatedAt      time.Time `json:"updated_at"`
 }
 
 // ScriptVersion 脚本历史版本快照
 type ScriptVersion struct {
-	ID         string    `json:"id"`
-	ScriptID   string    `json:"script_id"`
-	TenantID   string    `json:"tenant_id"`
-	Version    int       `json:"version"`
-	Name       string    `json:"name"`
-	Type       ScriptType `json:"type"`
-	Content    string    `json:"content"`
-	InputParams []ParamDef `json:"input_params"`
+	ID           string     `json:"id"`
+	ScriptID     string     `json:"script_id"`
+	TenantID     string     `json:"tenant_id"`
+	Version      int        `json:"version"`
+	Name         string     `json:"name"`
+	Type         ScriptType `json:"type"`
+	Content      string     `json:"content"`
+	InputParams  []ParamDef `json:"input_params"`
 	OutputParams []ParamDef `json:"output_params"`
-	Timeout    int       `json:"timeout"`
-	RunAs      string    `json:"run_as,omitempty"`
-	ChangeNote string    `json:"change_note,omitempty"`
-	CreatedBy  string    `json:"created_by,omitempty"`
-	CreatedAt  time.Time `json:"created_at"`
+	Timeout      int        `json:"timeout"`
+	RunAs        string     `json:"run_as,omitempty"`
+	ChangeNote   string     `json:"change_note,omitempty"`
+	CreatedBy    string     `json:"created_by,omitempty"`
+	CreatedAt    time.Time  `json:"created_at"`
 	// 审批快照
 	Public         bool   `json:"public"`
 	ApprovalStatus string `json:"approval_status,omitempty"`
@@ -94,8 +94,8 @@ type ExecutionResult struct {
 
 // DiffResult 版本比对结果
 type DiffResult struct {
-	FromVersion int      `json:"from_version"`
-	ToVersion   int      `json:"to_version"`
+	FromVersion int         `json:"from_version"`
+	ToVersion   int         `json:"to_version"`
 	Changes     []DiffEntry `json:"changes"`
 }
 

@@ -13,7 +13,7 @@ import (
 )
 
 type Client struct {
-	dg  *dgo.Dgraph
+	dg *dgo.Dgraph
 }
 
 // NewClient 连接 Dgraph alpha。
@@ -230,8 +230,6 @@ func (c *Client) QueryTopology(ctx context.Context, tenantID, ciID string, depth
 
 	return nodes, edges, nil
 }
-
-
 
 func parseTopologyNode(raw []json.RawMessage, parentUID string, nodes *[]*model.TopologyNode, edges *[]*model.TopologyEdge, seen map[string]bool) {
 	for _, item := range raw {

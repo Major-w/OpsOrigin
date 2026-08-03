@@ -43,23 +43,23 @@ type ScanType string
 const (
 	ScanTypeFull  ScanType = "full"
 	ScanTypeQuick ScanType = "quick"
-	ScanTypeCVE  ScanType = "cve"
+	ScanTypeCVE   ScanType = "cve"
 	ScanTypeAgent ScanType = "agent"
 	ScanTypeImage ScanType = "image"
 )
 
 // Scan 一次漏洞扫描记录。
 type Scan struct {
-	ID            string            `json:"id"`
-	TenantID      string            `json:"tenant_id"`
-	Name          string            `json:"name"`
-	Type          ScanType          `json:"type"`
-	DemoMode      bool              `json:"demo_mode"`
-	Status        ScanStatus        `json:"status"`
-	SeverityCounts map[string]int  `json:"severity_counts"`
-	TotalFindings int               `json:"total_findings"`
-	CreatedAt     time.Time         `json:"created_at"`
-	CompletedAt   *time.Time       `json:"completed_at,omitempty"`
+	ID             string         `json:"id"`
+	TenantID       string         `json:"tenant_id"`
+	Name           string         `json:"name"`
+	Type           ScanType       `json:"type"`
+	DemoMode       bool           `json:"demo_mode"`
+	Status         ScanStatus     `json:"status"`
+	SeverityCounts map[string]int `json:"severity_counts"`
+	TotalFindings  int            `json:"total_findings"`
+	CreatedAt      time.Time      `json:"created_at"`
+	CompletedAt    *time.Time     `json:"completed_at,omitempty"`
 }
 
 // Finding 一条漏洞发现项。
@@ -83,6 +83,6 @@ type Finding struct {
 type VulnStats struct {
 	TotalScans    int            `json:"total_scans"`
 	TotalFindings int            `json:"total_findings"`
-	BySeverity   map[string]int `json:"by_severity"`
-	ByStatus     map[string]int `json:"by_status"`
+	BySeverity    map[string]int `json:"by_severity"`
+	ByStatus      map[string]int `json:"by_status"`
 }

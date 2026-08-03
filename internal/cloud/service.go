@@ -14,6 +14,8 @@ import (
 	"encoding/json"
 	"log/slog"
 	"net/http"
+
+	"github.com/opsorigin/core/pkg/httputil"
 )
 
 // CMDBWriter 是云资源同步进 CMDB 的契约。由 cmd/core/cloud_adapter.go
@@ -49,7 +51,7 @@ type K8sDiscoverer interface {
 // K8sDiscoverOptions 发现选项；kubeconfig/context 经 env 注入（非 CLI 参数）。
 type K8sDiscoverOptions struct {
 	KubeconfigB64 string `json:"kubeconfig_b64,omitempty"` // 可选：base64(kubeconfig)，MVP 默认空=用网关 Pod 的 SA
-	KubeContext    string `json:"kube_context,omitempty"`    // 可选：指定 context；MVP 默认空=current-context
+	KubeContext   string `json:"kube_context,omitempty"`   // 可选：指定 context；MVP 默认空=current-context
 }
 
 // K8sProviderName 虚拟 provider 名（不进 registry，特判处理）。
@@ -57,7 +59,7 @@ const K8sProviderName = "k8s"
 
 // Service 是云资源「接出」的 HTTP 服务：提供凭证管理与资源发现/同步能力。
 type Service struct {
-	store         Store          // 凭证持久层（MVP 用内存实现，重启即失）
+	store         Store         // 凭证持久层（MVP 用内存实现，重启即失）
 	cmdb          CMDBWriter    // CMDB 写入适配（同步发现的资源为 CI）
 	k8sDiscoverer K8sDiscoverer // K8s 发现器（可选；nil 时 k8s 发现/同步返回 400）
 	// onOnboard 在凭证保存（纳管通道建立）后回调，由 cmd/core 注入以联动 CMDB 创建采集任务。
@@ -110,6 +112,7 @@ func traceIDFromCtx(ctx context.Context) string {
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {
+	v = httputil.EmptySliceIfNil(v)
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	if err := json.NewEncoder(w).Encode(v); err != nil {

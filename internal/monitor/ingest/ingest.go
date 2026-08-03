@@ -18,13 +18,13 @@ import (
 
 // Batch 一次可落库的指标批次(内部表示)。
 type Batch struct {
-	TenantID  string
-	AgentID   string
-	TaskID    string
-	TaskType  string // cmdb | monitor | metric
-	Timestamp time.Time
+	TenantID    string
+	AgentID     string
+	TaskID      string
+	TaskType    string // cmdb | monitor | metric
+	Timestamp   time.Time
 	IntervalSec int64
-	Points    []tunnel.MetricPoint
+	Points      []tunnel.MetricPoint
 }
 
 // Sink 指标批次的存储目标。实现: MemorySink(演示/测试)、PGSink(阶段 1)、VMSink(阶段 2)。

@@ -80,27 +80,27 @@ func (s *AgentScanner) Scan(ctx context.Context, tenantID, scanID, scanType stri
 		}
 		for _, vs := range m {
 			for _, v := range vs {
-			sev := mapSeverity(v.Severity)
-			if scanType == string(model.ScanTypeQuick) && sev.Rank() < 3 {
-				// quick 仅取 rank>=3 的 critical/high。
-				continue
+				sev := mapSeverity(v.Severity)
+				if scanType == string(model.ScanTypeQuick) && sev.Rank() < 3 {
+					// quick 仅取 rank>=3 的 critical/high。
+					continue
+				}
+				findings = append(findings, &model.Finding{
+					ID:          uuid.New().String(),
+					ScanID:      scanID,
+					TenantID:    tenantID,
+					CVE:         v.VulnerabilityID,
+					Title:       v.Title,
+					Description: v.Title,
+					Severity:    sev,
+					Affected:    v.PkgName,
+					Installed:   v.InstalledVersion,
+					Fixed:       v.FixedVersion,
+					Reference:   v.PrimaryURL,
+					Rank:        sev.Rank(),
+					CreatedAt:   time.Now(),
+				})
 			}
-			findings = append(findings, &model.Finding{
-				ID:          uuid.New().String(),
-				ScanID:      scanID,
-				TenantID:    tenantID,
-				CVE:         v.VulnerabilityID,
-				Title:       v.Title,
-				Description: v.Title,
-				Severity:    sev,
-				Affected:    v.PkgName,
-				Installed:   v.InstalledVersion,
-				Fixed:       v.FixedVersion,
-				Reference:   v.PrimaryURL,
-				Rank:        sev.Rank(),
-				CreatedAt:   time.Now(),
-			})
-		}
 		}
 	}
 	return findings, nil
@@ -112,7 +112,7 @@ type trivyVuln struct {
 	PkgName          string `json:"PkgName"`
 	InstalledVersion string `json:"InstalledVersion"`
 	FixedVersion     string `json:"FixedVersion"`
-	Severity        string `json:"Severity"`
+	Severity         string `json:"Severity"`
 	Title            string `json:"Title"`
 	PrimaryURL       string `json:"PrimaryURL"`
 }

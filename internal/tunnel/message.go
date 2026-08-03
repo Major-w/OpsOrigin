@@ -5,13 +5,13 @@ import "encoding/json"
 type MessageType string
 
 const (
-	MsgRegister      MessageType = "register"
-	MsgRegisterResp  MessageType = "register_resp"
-	MsgHeartbeat     MessageType = "heartbeat"
-	MsgCommand       MessageType = "command"
-	MsgCommandResp   MessageType = "command_resp"
-	MsgAgentCommand  MessageType = "agent_command"
-	MsgAgentResp     MessageType = "agent_resp"
+	MsgRegister     MessageType = "register"
+	MsgRegisterResp MessageType = "register_resp"
+	MsgHeartbeat    MessageType = "heartbeat"
+	MsgCommand      MessageType = "command"
+	MsgCommandResp  MessageType = "command_resp"
+	MsgAgentCommand MessageType = "agent_command"
+	MsgAgentResp    MessageType = "agent_resp"
 	// MsgMetrics Agent→Proxy→Core 的指标/资产批量上报(经 Proxy 中转路径, §4.5)。
 	MsgMetrics MessageType = "metrics"
 )
@@ -36,9 +36,9 @@ type RegisterRequest struct {
 }
 
 type RegisterResponse struct {
-	Accepted    bool   `json:"accepted"`
-	SessionID   string `json:"session_id"`
-	Error       string `json:"error,omitempty"`
+	Accepted  bool   `json:"accepted"`
+	SessionID string `json:"session_id"`
+	Error     string `json:"error,omitempty"`
 	// 克隆冲突:Server 要求 Agent 清空本地身份(追加随机盐)后以新 host_id 重注册。
 	Reset       bool   `json:"reset,omitempty"`
 	ResetReason string `json:"reset_reason,omitempty"`

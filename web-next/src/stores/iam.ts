@@ -1,7 +1,7 @@
 'use client'
 
 import { create } from 'zustand'
-import { apiFetch } from '@/lib/utils'
+import { apiFetch, apiList } from '@/lib/utils'
 import { toast } from '@/stores/toast'
 
 export interface Permission {
@@ -63,7 +63,7 @@ export const useIAMStore = create<IAMState>((set, get) => ({
 
   fetchPermissions: async () => {
     try {
-      const permissions = await apiFetch<Permission[]>('/iam/permissions')
+      const permissions = await apiList<Permission>('/iam/permissions')
       set({ permissions })
     } catch (e: any) {
       toast.error(`加载权限列表失败: ${e.message}`)
@@ -73,7 +73,7 @@ export const useIAMStore = create<IAMState>((set, get) => ({
   fetchRoles: async () => {
     set({ loading: true })
     try {
-      const roles = await apiFetch<Role[]>('/iam/roles')
+      const roles = await apiList<Role>('/iam/roles')
       set({ roles, loading: false })
     } catch (e: any) {
       set({ loading: false })
@@ -120,7 +120,7 @@ export const useIAMStore = create<IAMState>((set, get) => ({
   fetchGroups: async () => {
     set({ loading: true })
     try {
-      const groups = await apiFetch<Group[]>('/iam/groups')
+      const groups = await apiList<Group>('/iam/groups')
       set({ groups, loading: false })
     } catch (e: any) {
       set({ loading: false })

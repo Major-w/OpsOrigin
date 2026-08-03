@@ -14,6 +14,8 @@ import (
 	"github.com/opsorigin/core/internal/audit/rls"
 	"github.com/opsorigin/core/internal/audit/store"
 	"github.com/opsorigin/core/pkg/config"
+
+	"github.com/opsorigin/core/pkg/httputil"
 )
 
 type Service struct {
@@ -163,6 +165,7 @@ func (s *Service) handleValidateQuery(w http.ResponseWriter, r *http.Request) {
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {
+	v = httputil.EmptySliceIfNil(v)
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	json.NewEncoder(w).Encode(v)

@@ -21,6 +21,8 @@ import (
 	"github.com/google/uuid"
 	pdfapi "github.com/pdfcpu/pdfcpu/pkg/api"
 	pdfmodel "github.com/pdfcpu/pdfcpu/pkg/pdfcpu/model"
+
+	"github.com/opsorigin/core/pkg/httputil"
 )
 
 type Store interface {
@@ -670,6 +672,7 @@ func extractDocxTextFromXML(raw []byte) string {
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {
+	v = httputil.EmptySliceIfNil(v)
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	json.NewEncoder(w).Encode(v)

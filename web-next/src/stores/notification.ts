@@ -1,7 +1,7 @@
 'use client'
 
 import { create } from 'zustand'
-import { apiFetch } from '@/lib/utils'
+import { apiFetch, apiList } from '@/lib/utils'
 import { toast } from '@/stores/toast'
 
 // 通知渠道类型(与后端 ChannelType 一一对应)
@@ -117,7 +117,7 @@ export const useNotificationStore = create<NotificationState>((set, get) => ({
   fetchChannels: async () => {
     set({ loading: true })
     try {
-      const channels = await apiFetch<Channel[]>('/notification/channels')
+      const channels = await apiList<Channel>('/notification/channels')
       set({ channels, loading: false })
     } catch (e: any) {
       set({ loading: false })
@@ -184,7 +184,7 @@ export const useNotificationStore = create<NotificationState>((set, get) => ({
   fetchPolicies: async () => {
     set({ loading: true })
     try {
-      const policies = await apiFetch<Policy[]>('/notification/policies')
+      const policies = await apiList<Policy>('/notification/policies')
       set({ policies, loading: false })
     } catch (e: any) {
       set({ loading: false })
@@ -232,7 +232,7 @@ export const useNotificationStore = create<NotificationState>((set, get) => ({
 
   fetchChannelTypes: async () => {
     try {
-      const types = await apiFetch<ChannelTypeMeta[]>('/notification/channel-types')
+      const types = await apiList<ChannelTypeMeta>('/notification/channel-types')
       set({ channelTypes: types })
     } catch (e: any) {
       toast.error(`加载渠道类型失败: ${e.message}`)
@@ -241,7 +241,7 @@ export const useNotificationStore = create<NotificationState>((set, get) => ({
 
   fetchEvents: async () => {
     try {
-      const events = await apiFetch<EventType[]>('/notification/events')
+      const events = await apiList<EventType>('/notification/events')
       set({ events })
     } catch (e: any) {
       toast.error(`加载事件类型失败: ${e.message}`)
@@ -252,7 +252,7 @@ export const useNotificationStore = create<NotificationState>((set, get) => ({
 
   fetchHistory: async (limit = 100) => {
     try {
-      const notifications = await apiFetch<NotificationRecord[]>(`/notification/history?limit=${limit}`)
+      const notifications = await apiList<NotificationRecord>(`/notification/history?limit=${limit}`)
       set({ notifications })
     } catch (e: any) {
       toast.error(`加载发送历史失败: ${e.message}`)

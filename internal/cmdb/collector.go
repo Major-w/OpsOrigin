@@ -39,7 +39,7 @@ func collectorKey(kind, resourceType string) string {
 
 // collectorRegistry 是 (kind × resourceType) → Collector 的注册表。
 type collectorRegistry struct {
-	mu        sync.RWMutex
+	mu         sync.RWMutex
 	collectors map[string]Collector
 }
 

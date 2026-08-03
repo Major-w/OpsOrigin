@@ -6,15 +6,15 @@ import "time"
 type StepType string
 
 const (
-	StepStart     StepType = "start"     // 开始事件
-	StepEnd       StepType = "end"       // 结束事件
-	StepUser      StepType = "user"      // 人工任务（审批/执行）
-	StepService   StepType = "service"   // 服务任务（自动执行脚本）
-	StepGateway   StepType = "gateway"   // 排他网关（条件分支）
-	StepTimer     StepType = "timer"     // 定时器（SLA超时触发）
-	StepNotify    StepType = "notify"    // 通知任务
-	StepParallel  StepType = "parallel"  // 并行网关
-	StepSubflow   StepType = "subflow"   // 子流程
+	StepStart    StepType = "start"    // 开始事件
+	StepEnd      StepType = "end"      // 结束事件
+	StepUser     StepType = "user"     // 人工任务（审批/执行）
+	StepService  StepType = "service"  // 服务任务（自动执行脚本）
+	StepGateway  StepType = "gateway"  // 排他网关（条件分支）
+	StepTimer    StepType = "timer"    // 定时器（SLA超时触发）
+	StepNotify   StepType = "notify"   // 通知任务
+	StepParallel StepType = "parallel" // 并行网关
+	StepSubflow  StepType = "subflow"  // 子流程
 )
 
 // DAGDependency  — 上游依赖
@@ -25,21 +25,21 @@ type Dependency struct {
 
 // Step  — 流程步骤（前端 JSON 对齐 Web 版 WorkflowStep）
 type Step struct {
-	ID          string       `json:"id"`
-	Name        string       `json:"name"`
-	Type        StepType     `json:"type"`
-	Description string       `json:"description,omitempty"`
+	ID          string   `json:"id"`
+	Name        string   `json:"name"`
+	Type        StepType `json:"type"`
+	Description string   `json:"description,omitempty"`
 	// 人工任务
-	Approvers    []string `json:"approvers,omitempty"`
-	ApprovalMsg  string   `json:"approval_msg,omitempty"`
+	Approvers   []string `json:"approvers,omitempty"`
+	ApprovalMsg string   `json:"approval_msg,omitempty"`
 	// 服务任务
-	ScriptID string            `json:"script_id,omitempty"`
-	Inputs   map[string]any    `json:"inputs,omitempty"`
+	ScriptID string         `json:"script_id,omitempty"`
+	Inputs   map[string]any `json:"inputs,omitempty"`
 	// 网关
 	Condition string `json:"condition,omitempty"`
 	// 定时器
-	Duration  string `json:"duration,omitempty"`   // 1h / 30m / 3d
-	Deadline  string `json:"deadline,omitempty"`   // SLA 截止描述
+	Duration string `json:"duration,omitempty"` // 1h / 30m / 3d
+	Deadline string `json:"deadline,omitempty"` // SLA 截止描述
 	// 通知
 	NotifyChannel string `json:"notify_channel,omitempty"`
 	NotifyTitle   string `json:"notify_title,omitempty"`
@@ -70,15 +70,15 @@ type Process struct {
 
 // ProcessInstance — 工作流运行实例（工单关联流程后自动创建）
 type ProcessInstance struct {
-	ID           string              `json:"id"`
-	ProcessID    string              `json:"process_id"`
-	TicketID     string              `json:"ticket_id"`
-	TenantID     string              `json:"tenant_id"`
-	CurrentStep  string              `json:"current_step"`   // 当前步骤 ID
-	Status       string              `json:"status"`         // running / waiting / completed / terminated
-	StepResults  map[string]any      `json:"step_results,omitempty"` // step_id → {status, output}
-	StartedAt    time.Time           `json:"started_at"`
-	FinishedAt   *time.Time          `json:"finished_at,omitempty"`
-	CreatedAt    time.Time           `json:"created_at"`
-	UpdatedAt    time.Time           `json:"updated_at"`
+	ID          string         `json:"id"`
+	ProcessID   string         `json:"process_id"`
+	TicketID    string         `json:"ticket_id"`
+	TenantID    string         `json:"tenant_id"`
+	CurrentStep string         `json:"current_step"`           // 当前步骤 ID
+	Status      string         `json:"status"`                 // running / waiting / completed / terminated
+	StepResults map[string]any `json:"step_results,omitempty"` // step_id → {status, output}
+	StartedAt   time.Time      `json:"started_at"`
+	FinishedAt  *time.Time     `json:"finished_at,omitempty"`
+	CreatedAt   time.Time      `json:"created_at"`
+	UpdatedAt   time.Time      `json:"updated_at"`
 }

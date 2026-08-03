@@ -6,6 +6,8 @@ import (
 	"strconv"
 
 	"github.com/opsorigin/core/internal/lowcode/model"
+
+	"github.com/opsorigin/core/pkg/httputil"
 )
 
 // Handler 低代码HTTP处理器
@@ -387,8 +389,8 @@ func (h *Handler) handleValidateForm(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{
-		"valid":   len(errors) == 0,
-		"errors":  errors,
+		"valid":  len(errors) == 0,
+		"errors": errors,
 	})
 }
 
@@ -418,6 +420,7 @@ func (h *Handler) handleGenerateSQL(w http.ResponseWriter, r *http.Request) {
 // ========== 工具函数 ==========
 
 func writeJSON(w http.ResponseWriter, status int, v any) {
+	v = httputil.EmptySliceIfNil(v)
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	json.NewEncoder(w).Encode(v)

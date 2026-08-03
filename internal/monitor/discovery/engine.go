@@ -9,8 +9,8 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/redis/go-redis/v9"
 	"github.com/opsorigin/core/internal/monitor/model"
+	"github.com/redis/go-redis/v9"
 )
 
 type EventHandler func(ctx context.Context, event ChangeEvent)
@@ -215,5 +215,3 @@ func (e *Engine) guessProbes(ciTypeID string) []model.ProbeProtocol {
 		return []model.ProbeProtocol{model.ProbeICMP}
 	}
 }
-
-

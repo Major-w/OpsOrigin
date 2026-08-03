@@ -79,6 +79,12 @@ func main() {
 		slog.Warn("pg not available, running in stub mode", "error", err)
 	}
 
+	if pgRepo != nil {
+		if err := pgRepo.Migrate(ctx); err != nil {
+			slog.Error("cmdb schema migrate failed", "error", err)
+		}
+	}
+
 	dgClient, err := dgraph.NewClient(cfg.CMDB.DgraphTarget)
 	if err != nil {
 		slog.Warn("dgraph not available, running in stub mode", "error", err)
@@ -479,6 +485,11 @@ func main() {
 	notifySvc := notification.NewService(db)
 	server.RegisterService(notifySvc)
 	schedulerSvc.SetNotifier(notifySvc)
+
+	// P2-5 CMDB 消息订阅：通知渠道经平台通知中心分发（避免 cmdb↔notification 循环依赖）
+	cmdbSvc.SetNotifyCallback(func(ctx context.Context, tenantID, title, content string) error {
+		return notifySvc.NotifyEvent(ctx, tenantID, string(notification.EventCMDBChanged), title, content)
+	})
 
 	// 初始化RBAC中间件,并将角色权限解析接入 IAM 角色库,
 	// 使「系统设置 / 角色管理」中对权限的编辑实时生效(回落写死映射兜底)。

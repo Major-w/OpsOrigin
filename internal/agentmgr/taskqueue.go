@@ -112,12 +112,12 @@ func (tq *TaskQueue) processTask(ctx context.Context, id int, taskID string) {
 	}
 
 	var ti struct {
-		id, agentID, action, script        string
-		params                             []byte
-		timeout                            sql.NullInt64
-		runAs                              sql.NullString
-		fileID, fileURL, filePath          sql.NullString
-		expectedChecksum, checksumAlgo     sql.NullString
+		id, agentID, action, script    string
+		params                         []byte
+		timeout                        sql.NullInt64
+		runAs                          sql.NullString
+		fileID, fileURL, filePath      sql.NullString
+		expectedChecksum, checksumAlgo sql.NullString
 	}
 	if err := rows.Scan(&ti.id, &ti.agentID, &ti.action, &ti.script, &ti.params, &ti.timeout, &ti.runAs,
 		&ti.fileID, &ti.fileURL, &ti.filePath, &ti.expectedChecksum, &ti.checksumAlgo); err != nil {

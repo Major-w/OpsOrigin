@@ -110,8 +110,8 @@ func (p *Provider) listECS(ctx context.Context, cred cloud.Credential, region, p
 				Version string `json:"version"`
 				Addr    string `json:"addr"`
 			} `json:"addresses"`
-			Metadata   struct {
-				Region    string `json:"region"`
+			Metadata struct {
+				Region           string `json:"region"`
 				AvailabilityZone string `json:"availability_zone"`
 			} `json:"metadata"`
 		} `json:"servers"`
@@ -190,11 +190,11 @@ func (p *Provider) listELB(ctx context.Context, cred cloud.Credential, region, p
 	}
 	var r struct {
 		Loadbalancers []struct {
-			ID          string `json:"id"`
-			Name        string `json:"name"`
-			VipAddress  string `json:"vip_address"`
-			ProvStatus  string `json:"provisioning_status"`
-			OpStatus    string `json:"operating_status"`
+			ID         string `json:"id"`
+			Name       string `json:"name"`
+			VipAddress string `json:"vip_address"`
+			ProvStatus string `json:"provisioning_status"`
+			OpStatus   string `json:"operating_status"`
 		} `json:"loadbalancers"`
 	}
 	if err := json.Unmarshal(body, &r); err != nil {

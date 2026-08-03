@@ -11,6 +11,8 @@ import (
 	"github.com/google/uuid"
 	"github.com/opsorigin/core/pkg/auth"
 	"github.com/opsorigin/core/pkg/validate"
+
+	"github.com/opsorigin/core/pkg/httputil"
 )
 
 // Store 定义 IAM 的持久化接口。当前由 MemoryStore 实现，
@@ -296,7 +298,7 @@ func (s *Service) seedBuiltinRoles() {
 	ctx := context.Background()
 	builtins := []struct {
 		name, display, desc string
-		perms                []string
+		perms               []string
 	}{
 		{"admin", "管理员", "系统管理员,拥有全部权限", []string{
 			"cmdb:read", "cmdb:write", "cmdb:admin", "cmdb:delete",
@@ -704,6 +706,7 @@ func joinStrings(ss []string) string {
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {
+	v = httputil.EmptySliceIfNil(v)
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	json.NewEncoder(w).Encode(v)

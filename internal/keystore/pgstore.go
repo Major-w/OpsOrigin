@@ -36,10 +36,16 @@ func (s *pgStore) init(ctx context.Context) {
 }
 
 func (s *pgStore) Create(ctx context.Context, k *KeyEntry) error {
-	if k.ID == "" { k.ID = uuid.New().String() }
-	if k.TenantID == "" { k.TenantID = "default" }
+	if k.ID == "" {
+		k.ID = uuid.New().String()
+	}
+	if k.TenantID == "" {
+		k.TenantID = "default"
+	}
 	now := time.Now()
-	if k.CreatedAt.IsZero() { k.CreatedAt = now }
+	if k.CreatedAt.IsZero() {
+		k.CreatedAt = now
+	}
 	k.UpdatedAt = now
 	_, err := s.db.ExecContext(ctx,
 		`INSERT INTO keystore_entries(id,tenant_id,name,type,content,fingerprint,size,algorithm,created_at,updated_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) ON CONFLICT(id) DO NOTHING`,
@@ -53,8 +59,12 @@ func (s *pgStore) Get(ctx context.Context, id, tenantID string) (*KeyEntry, erro
 	err := s.db.QueryRowContext(ctx,
 		`SELECT id,tenant_id,name,type,content,fingerprint,size,algorithm,created_at,updated_at FROM keystore_entries WHERE id=$1 AND tenant_id=$2`, id, tenantID).
 		Scan(&k.ID, &k.TenantID, &k.Name, &typ, &k.Content, &k.Fingerprint, &k.Size, &k.Algorithm, &k.CreatedAt, &k.UpdatedAt)
-	if err == sql.ErrNoRows { return nil, nil }
-	if err != nil { return nil, err }
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
 	k.Type = KeyType(typ)
 	return k, nil
 }
@@ -68,13 +78,17 @@ func (s *pgStore) List(ctx context.Context, tenantID string, keyType KeyType) ([
 	}
 	query += ` ORDER BY updated_at DESC`
 	rows, err := s.db.QueryContext(ctx, query, args...)
-	if err != nil { return nil, err }
+	if err != nil {
+		return nil, err
+	}
 	defer rows.Close()
 	var out []*KeyEntry
 	for rows.Next() {
 		k := &KeyEntry{}
 		var typ string
-		if err := rows.Scan(&k.ID, &k.TenantID, &k.Name, &typ, &k.Content, &k.Fingerprint, &k.Size, &k.Algorithm, &k.CreatedAt, &k.UpdatedAt); err != nil { return nil, err }
+		if err := rows.Scan(&k.ID, &k.TenantID, &k.Name, &typ, &k.Content, &k.Fingerprint, &k.Size, &k.Algorithm, &k.CreatedAt, &k.UpdatedAt); err != nil {
+			return nil, err
+		}
 		k.Type = KeyType(typ)
 		out = append(out, k)
 	}
@@ -96,10 +110,14 @@ func (s *pgStore) Delete(ctx context.Context, id, tenantID string) error {
 
 func (s *pgStore) BatchDelete(ctx context.Context, tenantID string, ids []string) error {
 	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil { return err }
+	if err != nil {
+		return err
+	}
 	defer tx.Rollback()
 	for _, id := range ids {
-		if _, err := tx.ExecContext(ctx, `DELETE FROM keystore_entries WHERE id=$1 AND tenant_id=$2`, id, tenantID); err != nil { return err }
+		if _, err := tx.ExecContext(ctx, `DELETE FROM keystore_entries WHERE id=$1 AND tenant_id=$2`, id, tenantID); err != nil {
+			return err
+		}
 	}
 	return tx.Commit()
 }

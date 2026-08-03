@@ -6,7 +6,7 @@ import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { Input } from '@/components/ui/input'
 import { Package, Plus, Trash2 } from 'lucide-react'
-import { apiFetch } from '@/lib/utils'
+import { apiFetch, apiList } from '@/lib/utils'
 import { toast } from '@/stores/toast'
 import { useITSMStore } from '@/stores/itsm'
 
@@ -20,7 +20,7 @@ export default function ITSMCatalogPage() {
   const [pid, setPid] = useState('')
   const [editing, setEditing] = useState<string | null>(null)
 
-  const fetch = () => apiFetch<ServiceItem[]>('/itsm/catalog').then(setItems).catch(()=>toast.error('加载失败'))
+  const fetch = () => apiList<ServiceItem>('/itsm/catalog').then(setItems).catch(()=>toast.error('加载失败'))
 
   useEffect(() => { fetch(); fetchProcesses() }, [])
 

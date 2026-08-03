@@ -8,7 +8,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/redis/go-redis/v9"
 	"github.com/opsorigin/core/internal/monitor/alert"
 	"github.com/opsorigin/core/internal/monitor/discovery"
 	"github.com/opsorigin/core/internal/monitor/ebpf"
@@ -16,29 +15,32 @@ import (
 	"github.com/opsorigin/core/internal/monitor/model"
 	"github.com/opsorigin/core/internal/monitor/synthetic"
 	"github.com/opsorigin/core/pkg/config"
+	"github.com/redis/go-redis/v9"
+
+	"github.com/opsorigin/core/pkg/httputil"
 )
 
 type Service struct {
-	cfg        *config.Config
-	discovery  *discovery.Engine
-	prober     *synthetic.Prober
-	ebpf       *ebpf.Collector
-	aggregator *alert.Aggregator
-	topology   *SimpleTopology
-	wsHub      interface{ BroadcastToTenant(interface{}, string) }
-	probeMu     sync.Mutex
+	cfg          *config.Config
+	discovery    *discovery.Engine
+	prober       *synthetic.Prober
+	ebpf         *ebpf.Collector
+	aggregator   *alert.Aggregator
+	topology     *SimpleTopology
+	wsHub        interface{ BroadcastToTenant(interface{}, string) }
+	probeMu      sync.Mutex
 	probeResults []*model.ProbeResult
 }
 
 func NewService(cfg *config.Config, rdb *redis.Client) *Service {
 	topo := NewSimpleTopology()
 	return &Service{
-		cfg:         cfg,
-		discovery:   discovery.NewEngine(rdb),
-		prober:      synthetic.NewProber(),
-		ebpf:       ebpf.NewCollector(),
-		aggregator: alert.NewAggregator(topo),
-		topology:    topo,
+		cfg:          cfg,
+		discovery:    discovery.NewEngine(rdb),
+		prober:       synthetic.NewProber(),
+		ebpf:         ebpf.NewCollector(),
+		aggregator:   alert.NewAggregator(topo),
+		topology:     topo,
 		probeResults: make([]*model.ProbeResult, 0),
 	}
 }
@@ -191,11 +193,11 @@ func (s *Service) handleGetTarget(w http.ResponseWriter, r *http.Request) {
 
 func (s *Service) handleAddTarget(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		Name    string              `json:"name"`
-		Address string              `json:"address"`
-		Port    int                 `json:"port,omitempty"`
+		Name    string                `json:"name"`
+		Address string                `json:"address"`
+		Port    int                   `json:"port,omitempty"`
 		Probes  []model.ProbeProtocol `json:"probes,omitempty"`
-		CIID    string              `json:"ci_id,omitempty"`
+		CIID    string                `json:"ci_id,omitempty"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
@@ -239,10 +241,10 @@ func (s *Service) handleDeleteTarget(w http.ResponseWriter, r *http.Request) {
 
 func (s *Service) handleRunProbe(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		Address  string             `json:"address"`
-		Port     int                `json:"port"`
+		Address  string              `json:"address"`
+		Port     int                 `json:"port"`
 		Protocol model.ProbeProtocol `json:"protocol"`
-		Timeout  string             `json:"timeout,omitempty"`
+		Timeout  string              `json:"timeout,omitempty"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
@@ -400,6 +402,7 @@ func tenantFromCtx(ctx context.Context) string {
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {
+	v = httputil.EmptySliceIfNil(v)
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	json.NewEncoder(w).Encode(v)

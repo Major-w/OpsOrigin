@@ -64,14 +64,14 @@ func resourceNaturalKey(res Resource) string {
 // 其余属性透传 provider/resource_type/region/zone/status/public_ip/private_ip/labels/extra。
 func ToCIMapping(res Resource, tenantID string) CIMapping {
 	attrs := map[string]any{
-		"provider":     res.Provider,
+		"provider":      res.Provider,
 		"resource_type": string(res.Type),
-		"region":       res.Region,
-		"zone":         res.Zone,
-		"status":       res.Status,
-		"public_ip":    res.PublicIP,
-		"private_ip":   res.PrivateIP,
-		"resource_id":  resourceNaturalKey(res),
+		"region":        res.Region,
+		"zone":          res.Zone,
+		"status":        res.Status,
+		"public_ip":     res.PublicIP,
+		"private_ip":    res.PrivateIP,
+		"resource_id":   resourceNaturalKey(res),
 	}
 	if len(res.Labels) > 0 {
 		attrs["labels"] = res.Labels

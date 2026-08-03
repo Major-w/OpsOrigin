@@ -26,7 +26,7 @@ type RegistryConfig struct {
 type ImageScanner struct {
 	runner    AgentRunner
 	reg       RegistryConfig
-	enumerate bool  // true=经 trivy registry 自动枚举仓库内全部 repos/tags
+	enumerate bool   // true=经 trivy registry 自动枚举仓库内全部 repos/tags
 	agentID   string // enumerate 模式下执行 trivy registry 的受管主机
 }
 

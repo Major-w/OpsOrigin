@@ -1,7 +1,7 @@
 'use client'
 
 import { create } from 'zustand'
-import { apiFetch } from '@/lib/utils'
+import { apiFetch, apiList } from '@/lib/utils'
 import { toast } from '@/stores/toast'
 
 export interface AgentHost {
@@ -68,7 +68,7 @@ export const useAgentStore = create<AgentState>((set, get) => ({
     set({ loading: true })
     try {
       const qs = type ? `?type=${type}` : ''
-      const agents = await apiFetch<AgentHost[]>(`/agents${qs}`)
+      const agents = await apiList<AgentHost>(`/agents${qs}`)
       set({ agents, loading: false })
     } catch (e: any) {
       set({ loading: false })
@@ -153,7 +153,7 @@ export const useAgentStore = create<AgentState>((set, get) => ({
   fetchProxies: async () => {
     set({ loading: true })
     try {
-      const proxies = await apiFetch<ProxyInfo[]>('/proxies')
+      const proxies = await apiList<ProxyInfo>('/proxies')
       set({ proxies, loading: false })
     } catch (e: any) {
       set({ loading: false })
@@ -244,7 +244,7 @@ export const useAgentStore = create<AgentState>((set, get) => ({
   },
   fetchTasks: async (id) => {
     try {
-      return await apiFetch<TaskInfo[]>(`/agents/${id}/tasks`)
+      return await apiList<TaskInfo>(`/agents/${id}/tasks`)
     } catch (e: any) {
       toast.error(`加载任务列表失败: ${e.message}`)
       return []

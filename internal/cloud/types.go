@@ -26,11 +26,11 @@ const (
 	TypeNAT          ResourceType = "nat_gateway"   // NAT 网关
 	TypeCDN          ResourceType = "cdn"           // CDN 加速
 	TypeDNS          ResourceType = "dns"           // DNS 域名解析
-	TypeK8sCluster   ResourceType = "k8s_cluster"    // 托管 K8s 集群（经 Agent 通道发现，非 Provider）
-	TypeK8sNamespace ResourceType = "k8s_namespace"  // K8s 命名空间
-	TypeK8sWorkload  ResourceType = "k8s_workload"   // K8s 工作负载
-	TypeK8sPod       ResourceType = "k8s_pod"        // K8s Pod
-	TypeK8sContainer ResourceType = "k8s_container"  // K8s 容器
+	TypeK8sCluster   ResourceType = "k8s_cluster"   // 托管 K8s 集群（经 Agent 通道发现，非 Provider）
+	TypeK8sNamespace ResourceType = "k8s_namespace" // K8s 命名空间
+	TypeK8sWorkload  ResourceType = "k8s_workload"  // K8s 工作负载
+	TypeK8sPod       ResourceType = "k8s_pod"       // K8s Pod
+	TypeK8sContainer ResourceType = "k8s_container" // K8s 容器
 )
 
 // K8sResourceTypes 返回经 Agent 通道纳管的五类 K8s 资源类型。
@@ -51,36 +51,36 @@ func AllResourceTypes() []ResourceType {
 
 // Resource 是多云资源的统一表示，直接可映射为 CMDB CI。
 type Resource struct {
-	Provider   string            `json:"provider"`              // 厂商名（与 Provider.Name 一致）
-	Type       ResourceType     `json:"type"`                  // 资源类型
-	ID         string            `json:"id"`                    // 云侧资源 ID
-	Name       string            `json:"name"`                  // 展示名
-	Region     string            `json:"region"`                // 地域
-	Zone       string            `json:"zone,omitempty"`       // 可用区
-	Status     string            `json:"status"`                // 运行状态（running/available/...）
-	PublicIP   string            `json:"public_ip,omitempty"`  // 公网 IP
-	PrivateIP  string            `json:"private_ip,omitempty"` // 私网 IP
-	Labels     map[string]string `json:"labels,omitempty"`    // 标签
-	Extra      map[string]any   `json:"extra,omitempty"`     // 厂商特有字段
-	DiscoveredAt time.Time       `json:"discovered_at"`        // 采集时间
+	Provider     string            `json:"provider"`             // 厂商名（与 Provider.Name 一致）
+	Type         ResourceType      `json:"type"`                 // 资源类型
+	ID           string            `json:"id"`                   // 云侧资源 ID
+	Name         string            `json:"name"`                 // 展示名
+	Region       string            `json:"region"`               // 地域
+	Zone         string            `json:"zone,omitempty"`       // 可用区
+	Status       string            `json:"status"`               // 运行状态（running/available/...）
+	PublicIP     string            `json:"public_ip,omitempty"`  // 公网 IP
+	PrivateIP    string            `json:"private_ip,omitempty"` // 私网 IP
+	Labels       map[string]string `json:"labels,omitempty"`     // 标签
+	Extra        map[string]any    `json:"extra,omitempty"`      // 厂商特有字段
+	DiscoveredAt time.Time         `json:"discovered_at"`        // 采集时间
 }
 
 // Metric 是一条资源指标（如 CPU/内存/连接数）。
 type Metric struct {
-	Provider  string    `json:"provider"`
-	ResourceID string    `json:"resource_id"`
-	Type      ResourceType `json:"type"`
-	Name      string    `json:"name"`
-	Value     float64   `json:"value"`
-	Unit      string    `json:"unit,omitempty"`
-	Timestamp time.Time `json:"timestamp"`
+	Provider   string       `json:"provider"`
+	ResourceID string       `json:"resource_id"`
+	Type       ResourceType `json:"type"`
+	Name       string       `json:"name"`
+	Value      float64      `json:"value"`
+	Unit       string       `json:"unit,omitempty"`
+	Timestamp  time.Time    `json:"timestamp"`
 }
 
 // Credential 描述访问某云的凭证。凭证内容仅在内存保存，
 // 生产环境应替换为加密存储（见优化报告 2.4）。
 type Credential struct {
-	Provider string            `json:"provider"`
-	Region   string            `json:"region,omitempty"`
+	Provider string `json:"provider"`
+	Region   string `json:"region,omitempty"`
 	// 通用字段（兼容多数云）
 	AccessKey string `json:"access_key,omitempty"`
 	SecretKey string `json:"secret_key,omitempty"`

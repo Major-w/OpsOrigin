@@ -7,13 +7,14 @@
 //   - 网络：Neutron 网络（/v2.0/networks）→ TypeVPC
 //
 // 凭证约定（复用 cloud.Credential）：
-//   AccessKey = OpenStack 用户名
-//   SecretKey = OpenStack 密码
-//   Extra["auth_url"]   = Keystone 基址，如 http://keystone:5000/v3（缺省自动补 /v3）
-//   Extra["project_id"]  = 项目名（scope，缺省回退到 username）
-//   Extra["domain_name"] = 域（缺省 Default）
-//   Extra["compute_url"] = Nova 基址（可选；缺省由 auth_url 路径 /v3 → /v2.1 推导）
-//   Extra["network_url"] = Neutron 基址（可选；缺省由 auth_url 路径 /v3 → /v2.0 推导）
+//
+//	AccessKey = OpenStack 用户名
+//	SecretKey = OpenStack 密码
+//	Extra["auth_url"]   = Keystone 基址，如 http://keystone:5000/v3（缺省自动补 /v3）
+//	Extra["project_id"]  = 项目名（scope，缺省回退到 username）
+//	Extra["domain_name"] = 域（缺省 Default）
+//	Extra["compute_url"] = Nova 基址（可选；缺省由 auth_url 路径 /v3 → /v2.1 推导）
+//	Extra["network_url"] = Neutron 基址（可选；缺省由 auth_url 路径 /v3 → /v2.0 推导）
 package openstack
 
 import (
@@ -232,11 +233,11 @@ type novaAddr struct {
 
 // novaServer 对应 Nova server 摘要 / 详情中的 server 对象。
 type novaServer struct {
-	ID        string                  `json:"id"`
-	Name      string                  `json:"name"`
-	Status    string                  `json:"status"`
-	TenantID  string                  `json:"tenant_id"`
-	Addresses map[string][]novaAddr   `json:"addresses"`
+	ID        string                `json:"id"`
+	Name      string                `json:"name"`
+	Status    string                `json:"status"`
+	TenantID  string                `json:"tenant_id"`
+	Addresses map[string][]novaAddr `json:"addresses"`
 }
 
 type novaServerList struct {
@@ -271,9 +272,9 @@ func (p *provider) listServers(ctx context.Context, base, token, region string) 
 }
 
 type neutronNet struct {
-	ID     string   `json:"id"`
-	Name   string   `json:"name"`
-	Status string   `json:"status"`
+	ID      string   `json:"id"`
+	Name    string   `json:"name"`
+	Status  string   `json:"status"`
 	Subnets []string `json:"subnets"`
 }
 

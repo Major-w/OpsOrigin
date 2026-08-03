@@ -95,7 +95,9 @@ func countNodes(t *testing.T, c *Client, pred, val string) int {
 		t.Fatalf("count query: %v", err)
 	}
 	var out struct {
-		All []struct{ UID string `json:"uid"` } `json:"all"`
+		All []struct {
+			UID string `json:"uid"`
+		} `json:"all"`
 	}
 	if err := json.Unmarshal(resp.GetJson(), &out); err != nil {
 		t.Fatalf("count unmarshal: %v", err)

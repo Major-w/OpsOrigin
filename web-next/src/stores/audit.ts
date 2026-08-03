@@ -1,7 +1,7 @@
 'use client'
 
 import { create } from 'zustand'
-import { apiFetch } from '@/lib/utils'
+import { apiFetch, apiList } from '@/lib/utils'
 import { toast } from '@/stores/toast'
 
 export interface AuditActor {
@@ -96,7 +96,7 @@ export const useAuditStore = create<AuditState>((set) => ({
 
   fetchEventTypes: async () => {
     try {
-      const data = await apiFetch<AuditEvent[]>('/audit/events?limit=200')
+      const data = await apiList<AuditEvent>('/audit/events?limit=200')
       const types = Array.from(new Set((data || []).map(e => e.event_type).filter(Boolean)))
       return types.sort()
     } catch {

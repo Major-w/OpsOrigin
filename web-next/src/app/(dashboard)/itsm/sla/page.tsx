@@ -6,7 +6,7 @@ import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { Input } from '@/components/ui/input'
 import { Clock, Save } from 'lucide-react'
-import { apiFetch } from '@/lib/utils'
+import { apiFetch, apiList } from '@/lib/utils'
 import { toast } from '@/stores/toast'
 
 interface SLAPolicy {
@@ -24,7 +24,7 @@ export default function ITSMSLAPage() {
   const [form, setForm] = useState<Partial<SLAPolicy>>({})
 
   useEffect(() => {
-    apiFetch<SLAPolicy[]>('/itsm/sla/policies').then(setPolicies).catch(() => toast.error('加载SLA失败'))
+    apiList<SLAPolicy>('/itsm/sla/policies').then(setPolicies).catch(() => toast.error('加载SLA失败'))
   }, [])
 
   const startEdit = (p: SLAPolicy) => { setEditing(p.id); setForm({ ...p }) }

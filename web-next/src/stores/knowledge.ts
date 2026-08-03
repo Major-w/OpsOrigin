@@ -1,7 +1,7 @@
 'use client'
 
 import { create } from 'zustand'
-import { apiFetch } from '@/lib/utils'
+import { apiFetch, apiList } from '@/lib/utils'
 import { toast } from '@/stores/toast'
 
 export interface Article {
@@ -47,7 +47,7 @@ export const useKnowledgeStore = create<KnowledgeState>((set, get) => ({
     set({ loading: true })
     try {
       const qs = category ? `?category=${encodeURIComponent(category)}` : ''
-      const articles = await apiFetch<Article[]>(`/knowledge${qs}`)
+      const articles = await apiList<Article>(`/knowledge${qs}`)
       set({ articles, loading: false })
     } catch (e: any) {
       set({ loading: false })
@@ -91,7 +91,7 @@ export const useKnowledgeStore = create<KnowledgeState>((set, get) => ({
   // —— P1 内容管理 ——
   fetchCategories: async () => {
     try {
-      const cats = await apiFetch<Category[]>('/knowledge/categories')
+      const cats = await apiList<Category>('/knowledge/categories')
       const names = cats.map(c => c.name).filter(Boolean)
       set({ categoryList: cats, categories: names.length > 0 ? names : FALLBACK_CATEGORIES })
     } catch {
@@ -133,7 +133,7 @@ export const useKnowledgeStore = create<KnowledgeState>((set, get) => ({
   },
   fetchVersions: async (id) => {
     try {
-      return await apiFetch<ArticleVersion[]>(`/knowledge/${id}/versions`)
+      return await apiList<ArticleVersion>(`/knowledge/${id}/versions`)
     } catch {
       return []
     }

@@ -22,6 +22,7 @@ const (
 //   - 标题之间的正文独立成块(去掉首尾空行, 压缩连续空行);
 //   - 单个块超过 chunkMaxLen 时按段落/固定窗口二次切分并带重叠;
 //   - 代码块(``` 包裹)整体保留, 内部不按标题切, 防止把代码拦腰截断。
+//
 // 纯文本(无任何标题)整体切分, 超长按窗口切。
 func chunkMarkdown(content string) []Chunk {
 	lines := strings.Split(content, "\n")

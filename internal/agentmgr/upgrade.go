@@ -32,20 +32,20 @@ type UpgradeManager struct {
 
 // RolloutStrategy 滚动升级策略。
 type RolloutStrategy struct {
-	BatchSize    int           `json:"batch_size"`    // 每批升级数量
+	BatchSize     int           `json:"batch_size"`     // 每批升级数量
 	BatchInterval time.Duration `json:"batch_interval"` // 批次间隔
-	StartedAt    time.Time     `json:"started_at"`
+	StartedAt     time.Time     `json:"started_at"`
 }
 
 // UpgradeProgress 单个 Agent 的升级进度。
 type UpgradeProgress struct {
-	AgentID     string    `json:"agent_id"`
-	UpgradeID   string    `json:"upgrade_id"`
-	Status      string    `json:"status"` // pending, downloading, completed, failed
-	Version     string    `json:"version"`
-	StartedAt   time.Time `json:"started_at"`
+	AgentID     string     `json:"agent_id"`
+	UpgradeID   string     `json:"upgrade_id"`
+	Status      string     `json:"status"` // pending, downloading, completed, failed
+	Version     string     `json:"version"`
+	StartedAt   time.Time  `json:"started_at"`
 	CompletedAt *time.Time `json:"completed_at,omitempty"`
-	Error       string    `json:"error,omitempty"`
+	Error       string     `json:"error,omitempty"`
 }
 
 // UpgradeInfo 心跳响应中的升级信息。
@@ -152,9 +152,9 @@ func (um *UpgradeManager) StartRollout(version string, batchSize int, batchInter
 	}
 
 	um.strategy = RolloutStrategy{
-		BatchSize:    batchSize,
+		BatchSize:     batchSize,
 		BatchInterval: batchInterval,
-		StartedAt:    time.Now(),
+		StartedAt:     time.Now(),
 	}
 
 	slog.Info("upgrade rollout started", "version", version, "batch_size", batchSize, "batch_interval", batchInterval)

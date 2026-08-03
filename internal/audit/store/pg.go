@@ -45,6 +45,28 @@ func (s *PGStore) Init(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("init audit_events table: %w", err)
 	}
+	// 兼容迁移:早期版本建的 audit_events 缺少后续新增的列,
+	// CREATE TABLE IF NOT EXISTS 不会为既有表补列,必须显式 ALTER,
+	// 否则查询会报 42703 undefined_column 导致审计日志页 500。
+	for _, col := range []string{
+		`actor_display_name TEXT`,
+		`actor_ticket_id TEXT`,
+		`target_type TEXT`,
+		`target_id TEXT`,
+		`target_name TEXT`,
+		`action TEXT`,
+		`request TEXT`,
+		`response TEXT`,
+		`success BOOLEAN DEFAULT TRUE`,
+		`error TEXT`,
+		`ip_address TEXT`,
+		`user_agent TEXT`,
+	} {
+		if _, aerr := s.db.ExecContext(ctx,
+			`ALTER TABLE audit_events ADD COLUMN IF NOT EXISTS `+col); aerr != nil {
+			return fmt.Errorf("migrate audit_events column %q: %w", col, aerr)
+		}
+	}
 	_, err = s.db.ExecContext(ctx, `
 		CREATE INDEX IF NOT EXISTS idx_audit_events_tenant ON audit_events(tenant_id, event_type)`)
 	if err != nil {

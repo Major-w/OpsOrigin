@@ -39,9 +39,9 @@ type Store interface {
 
 // Service 低代码服务
 type Service struct {
-	store    Store
-	market   *component.MarketService
-	version  *version.VersionService
+	store   Store
+	market  *component.MarketService
+	version *version.VersionService
 }
 
 // NewService 创建低代码服务

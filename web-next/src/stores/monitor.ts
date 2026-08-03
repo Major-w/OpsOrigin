@@ -1,7 +1,7 @@
 'use client'
 
 import { create } from 'zustand'
-import { apiFetch } from '@/lib/utils'
+import { apiFetch, apiList } from '@/lib/utils'
 import { toast } from '@/stores/toast'
 
 export interface ProbeResult {
@@ -82,7 +82,7 @@ export const useMonitorStore = create<MonitorState>((set, get) => ({
   fetchTargets: async () => {
     set({ loading: true })
     try {
-      const targets = await apiFetch<MonitorTarget[]>('/monitor/targets')
+      const targets = await apiList<MonitorTarget>('/monitor/targets')
       set({ targets, loading: false })
     } catch (e: any) {
       set({ loading: false })
@@ -114,7 +114,7 @@ export const useMonitorStore = create<MonitorState>((set, get) => ({
   fetchAlerts: async () => {
     set({ loading: true })
     try {
-      const alerts = await apiFetch<AlertEvent[]>('/monitor/alerts')
+      const alerts = await apiList<AlertEvent>('/monitor/alerts')
       set({ alerts, loading: false })
     } catch (e: any) {
       set({ loading: false })
@@ -123,7 +123,7 @@ export const useMonitorStore = create<MonitorState>((set, get) => ({
   },
   fetchAlertHistory: async () => {
     try {
-      const history = await apiFetch<AlertEvent[]>('/monitor/alerts?status=history')
+      const history = await apiList<AlertEvent>('/monitor/alerts?status=history')
       set({ alertHistory: history })
     } catch (e: any) {
       toast.error(`加载告警历史失败: ${e.message}`)
@@ -164,7 +164,7 @@ export const useMonitorStore = create<MonitorState>((set, get) => ({
   fetchRules: async () => {
     set({ loading: true })
     try {
-      const rules = await apiFetch<AlertRule[]>('/monitor/rules')
+      const rules = await apiList<AlertRule>('/monitor/rules')
       set({ rules, loading: false })
     } catch (e: any) {
       set({ loading: false })
@@ -208,7 +208,7 @@ export const useMonitorStore = create<MonitorState>((set, get) => ({
   fetchMetrics: async () => {
     set({ loading: true })
     try {
-      const results = await apiFetch<any[]>('/monitor/metrics')
+      const results = await apiList<any>('/monitor/metrics')
       set({ probeResults: results, loading: false })
     } catch (e: any) {
       set({ loading: false })

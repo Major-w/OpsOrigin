@@ -22,6 +22,8 @@ import (
 	"github.com/opsorigin/core/internal/itsm/store"
 	"github.com/opsorigin/core/internal/itsm/webhook"
 	"github.com/opsorigin/core/pkg/config"
+
+	"github.com/opsorigin/core/pkg/httputil"
 )
 
 // ProcessEngine — itsm 消费的流程引擎能力：加载流程定义 + 驱动流程实例。
@@ -873,12 +875,12 @@ func (s *Service) handleTicketSLA(w http.ResponseWriter, r *http.Request) {
 	}
 	now := time.Now()
 	result := map[string]any{
-		"ticket_id":          ticket.ID,
-		"deadline_at":        ticket.DeadlineAt,
-		"sla_breached":       ticket.SLABreached,
-		"sla_breached_at":    ticket.SLABreachedAt,
-		"sla_warning":        ticket.SLAWarningNotified,
-		"escalation_level":   ticket.SLAEscalationLevel,
+		"ticket_id":        ticket.ID,
+		"deadline_at":      ticket.DeadlineAt,
+		"sla_breached":     ticket.SLABreached,
+		"sla_breached_at":  ticket.SLABreachedAt,
+		"sla_warning":      ticket.SLAWarningNotified,
+		"escalation_level": ticket.SLAEscalationLevel,
 	}
 	if ticket.DeadlineAt != nil {
 		remaining := time.Until(*ticket.DeadlineAt)
@@ -1292,6 +1294,7 @@ func traceIDFromCtx(ctx context.Context) string {
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {
+	v = httputil.EmptySliceIfNil(v)
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	json.NewEncoder(w).Encode(v)

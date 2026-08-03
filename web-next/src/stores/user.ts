@@ -1,7 +1,7 @@
 'use client'
 
 import { create } from 'zustand'
-import { apiFetch } from '@/lib/utils'
+import { apiFetch, apiList } from '@/lib/utils'
 import { toast } from '@/stores/toast'
 
 export interface User {
@@ -32,7 +32,7 @@ export const useUserStore = create<UserState>((set, get) => ({
   fetch: async () => {
     set({ loading: true })
     try {
-      const users = await apiFetch<User[]>('/users')
+      const users = await apiList<User>('/users')
       set({ users, loading: false })
     } catch (e: any) {
       set({ loading: false })

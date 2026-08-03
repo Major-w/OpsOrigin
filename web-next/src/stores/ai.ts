@@ -1,7 +1,7 @@
 'use client'
 
 import { create } from 'zustand'
-import { apiFetch } from '@/lib/utils'
+import { apiFetch, apiList } from '@/lib/utils'
 import { toast } from '@/stores/toast'
 
 // ============================================================================
@@ -249,7 +249,7 @@ export const useAIStore = create<AIState>((set, get) => ({
   fetchAgents: async () => {
     set({ loading: true })
     try {
-      const agents = await apiFetch<any[]>('/ai/agents')
+      const agents = await apiList<any>('/ai/agents')
       set({ agents, loading: false })
     } catch (e: any) {
       set({ loading: false })
@@ -259,7 +259,7 @@ export const useAIStore = create<AIState>((set, get) => ({
   fetchTools: async () => {
     set({ loading: true })
     try {
-      const tools = await apiFetch<any[]>('/ai/tools')
+      const tools = await apiList<any>('/ai/tools')
       set({ tools, loading: false })
     } catch (e: any) {
       set({ loading: false })
@@ -269,7 +269,7 @@ export const useAIStore = create<AIState>((set, get) => ({
   fetchPlans: async () => {
     set({ loading: true })
     try {
-      const plans = await apiFetch<any[]>('/ai/plans')
+      const plans = await apiList<any>('/ai/plans')
       set({ plans, loading: false })
     } catch (e: any) {
       set({ loading: false })
@@ -401,7 +401,7 @@ export const useAIStore = create<AIState>((set, get) => ({
   loadConversations: async (agentId) => {
     try {
       const params = agentId ? `?agent_id=${encodeURIComponent(agentId)}` : ''
-      return await apiFetch<any[]>(`/ai/conversations${params}`)
+      return await apiList<any>(`/ai/conversations${params}`)
     } catch {
       return []
     }
@@ -436,7 +436,7 @@ export const useAIStore = create<AIState>((set, get) => ({
   loadTeams: async () => {
     set({ teamsLoading: true, teamsError: null })
     try {
-      const teams = await apiFetch<AgentTeam[]>('/ai/teams')
+      const teams = await apiList<AgentTeam>('/ai/teams')
       set({ teams: teams || [], teamsLoading: false })
     } catch (e: any) {
       set({ teamsLoading: false, teamsError: e.message || '加载团队失败' })
@@ -590,7 +590,7 @@ export const useAIStore = create<AIState>((set, get) => ({
 
   listPendingApprovals: async () => {
     try {
-      return await apiFetch<PendingApproval[]>('/ai/approvals/pending')
+      return await apiList<PendingApproval>('/ai/approvals/pending')
     } catch {
       return []
     }

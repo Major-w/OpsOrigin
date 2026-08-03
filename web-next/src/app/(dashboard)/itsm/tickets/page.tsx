@@ -9,7 +9,7 @@ import { Badge } from '@/components/ui/badge'
 import { Input } from '@/components/ui/input'
 import { Dialog, DialogFooter } from '@/components/ui/dialog'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
-import { formatTime, apiFetch } from '@/lib/utils'
+import { formatTime, apiFetch, apiList } from '@/lib/utils'
 import { useCan, useCanAny } from '@/stores/permissions'
 import { Plus, Check, X, Play, RotateCcw, Clock, FileText, Activity, ChevronRight, Paperclip, MessageSquare, Upload, Download, Trash2, FileUp, FileDown, BookOpen } from 'lucide-react'
 
@@ -96,14 +96,14 @@ export default function ITSMPage() {
 
   const fetchComments = useCallback(async (ticketId: string) => {
     try {
-      const data = await apiFetch<Comment[]>(`/itsm/tickets/${ticketId}/comments`)
+      const data = await apiList<Comment>(`/itsm/tickets/${ticketId}/comments`)
       setComments(data || [])
     } catch { setComments([]) }
   }, [])
 
   const fetchAttachments = useCallback(async (ticketId: string) => {
     try {
-      const data = await apiFetch<Attachment[]>(`/itsm/tickets/${ticketId}/attachments`)
+      const data = await apiList<Attachment>(`/itsm/tickets/${ticketId}/attachments`)
       setAttachments(data || [])
     } catch { setAttachments([]) }
   }, [])
@@ -115,7 +115,7 @@ export default function ITSMPage() {
     if (!form.title || form.title.length < 2) { setKnowledgeRecs([]); return }
     const t = setTimeout(async () => {
       try {
-        const data = await apiFetch<any[]>('/knowledge?search=' + encodeURIComponent(form.title))
+        const data = await apiList<any>('/knowledge?search=' + encodeURIComponent(form.title))
         setKnowledgeRecs((data || []).slice(0, 3))
       } catch { setKnowledgeRecs([]) }
     }, 300)

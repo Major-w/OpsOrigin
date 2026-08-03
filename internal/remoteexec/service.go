@@ -22,40 +22,40 @@ const (
 
 // BatchExecRequest is a request to execute a command on multiple hosts.
 type BatchExecRequest struct {
-	Command    string            `json:"command"`
-	Hosts      []HostExecInfo    `json:"hosts"`
-	Timeout    int               `json:"timeout,omitempty"`    // seconds
-	Concurrency int             `json:"concurrency,omitempty"` // max parallel executions
+	Command     string         `json:"command"`
+	Hosts       []HostExecInfo `json:"hosts"`
+	Timeout     int            `json:"timeout,omitempty"`     // seconds
+	Concurrency int            `json:"concurrency,omitempty"` // max parallel executions
 }
 
 // HostExecInfo contains host connection details for execution.
 type HostExecInfo struct {
-	Host       string `json:"host"`
-	Port       int    `json:"port,omitempty"`
-	Username   string `json:"username"`
-	Password   string `json:"password,omitempty"`
-	SSHKey     string `json:"ssh_key,omitempty"`
+	Host         string `json:"host"`
+	Port         int    `json:"port,omitempty"`
+	Username     string `json:"username"`
+	Password     string `json:"password,omitempty"`
+	SSHKey       string `json:"ssh_key,omitempty"`
 	CredentialID string `json:"credential_id,omitempty"`
 }
 
 // BatchExecResult is the result of a batch execution.
 type BatchExecResult struct {
-	TaskID    string              `json:"task_id"`
-	Status    TaskStatus          `json:"status"`
-	Results   []HostExecResult    `json:"results"`
-	StartedAt time.Time           `json:"started_at"`
-	EndedAt   *time.Time          `json:"ended_at,omitempty"`
-	Duration  time.Duration       `json:"duration"`
+	TaskID    string           `json:"task_id"`
+	Status    TaskStatus       `json:"status"`
+	Results   []HostExecResult `json:"results"`
+	StartedAt time.Time        `json:"started_at"`
+	EndedAt   *time.Time       `json:"ended_at,omitempty"`
+	Duration  time.Duration    `json:"duration"`
 }
 
 // HostExecResult is the result for a single host.
 type HostExecResult struct {
-	Host       string        `json:"host"`
-	Port       int           `json:"port"`
-	Output     string        `json:"output"`
-	ExitCode   int           `json:"exit_code"`
-	Error      string        `json:"error,omitempty"`
-	Duration   time.Duration `json:"duration"`
+	Host     string        `json:"host"`
+	Port     int           `json:"port"`
+	Output   string        `json:"output"`
+	ExitCode int           `json:"exit_code"`
+	Error    string        `json:"error,omitempty"`
+	Duration time.Duration `json:"duration"`
 }
 
 // StreamEvent is a streaming output event.

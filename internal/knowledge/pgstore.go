@@ -26,9 +26,9 @@ type pgStore struct {
 	vectorEnabled bool
 
 	// —— P3-1 增量索引自愈:embedding 失败的文章进入重试队列,后台循环带退避重试 ——
-	mu       sync.Mutex
-	pending  []reindexTask // 待(重)计算 embedding 的文章队列
-	stopCh   chan struct{}  // 关闭后台循环的信号(由 StartReindexLoop 创建)
+	mu      sync.Mutex
+	pending []reindexTask // 待(重)计算 embedding 的文章队列
+	stopCh  chan struct{} // 关闭后台循环的信号(由 StartReindexLoop 创建)
 }
 
 // reindexTask 是待补算 embedding 的文章任务,带重试次数与下次尝试时间(退避)。

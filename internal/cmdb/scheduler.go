@@ -12,12 +12,12 @@ import (
 // Scheduler 是 CMDB 统一采集调度器：进程内 ticker 扫描到期且启用的采集任务，
 // 按 (kind × resourceType) 查注册表执行采集，结果按 kind 路由落库。
 type Scheduler struct {
-	svc    *Service
-	check  time.Duration
-	mu     sync.Mutex
+	svc     *Service
+	check   time.Duration
+	mu      sync.Mutex
 	running map[string]bool
-	stop   chan struct{}
-	wg     sync.WaitGroup
+	stop    chan struct{}
+	wg      sync.WaitGroup
 }
 
 // NewScheduler 构造调度器。check 为扫描间隔，<=0 时默认 30s。
@@ -104,18 +104,7 @@ func (s *Scheduler) runOne(ctx context.Context, t *model.CollectionTask, interva
 		s.svc.markTaskDelegated(ctx, t)
 		return
 	}
-	c, ok := s.svc.registry.Lookup(t.Kind, t.ResourceType)
-	if !ok {
-		// 采集器尚未实现（如 monitor / host / container 在后续 Phase）：标记为 pending，不刷红失败。
-		s.svc.markTaskPending(ctx, t, "no collector registered for "+collectorKey(t.Kind, t.ResourceType))
-		return
-	}
-	out, err := c.Run(ctx, t)
-	if err != nil {
-		s.svc.markTaskFailed(ctx, t, err.Error())
-		return
-	}
-	if err := s.svc.ingestCollectionOutput(ctx, t, out); err != nil {
+	if _, _, _, err := s.svc.runCollectionTaskResolved(ctx, t, t.TenantID); err != nil {
 		s.svc.markTaskFailed(ctx, t, err.Error())
 		return
 	}

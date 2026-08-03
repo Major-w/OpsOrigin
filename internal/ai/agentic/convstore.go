@@ -109,4 +109,3 @@ func (s *pgConvStore) Get(ctx context.Context, id string) (*Conversation, error)
 	_ = json.Unmarshal(msgs, &c.Messages)
 	return c, nil
 }
-

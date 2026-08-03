@@ -8,7 +8,7 @@ import { Badge } from '@/components/ui/badge'
 import { Input } from '@/components/ui/input'
 import { Dialog, DialogFooter } from '@/components/ui/dialog'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
-import { apiFetch } from '@/lib/utils'
+import { apiFetch, apiList } from '@/lib/utils'
 import { Database, Layout, Table2, Plus, Pencil, Trash2, Box, ArrowRight } from 'lucide-react'
 
 interface Model { id: string; name: string; description: string; fields?: any[] }
@@ -25,11 +25,11 @@ export default function LowcodeIndexPage() {
   const [formValues, setFormValues] = useState<Record<string, string>>({})
 
   const fetchModels = useCallback(() => {
-    apiFetch<Model[]>('/lowcode/models').then(setModels).catch(() => setModels([]))
+    apiList<Model>('/lowcode/models').then(setModels).catch(() => setModels([]))
   }, [])
 
   const fetchInstances = useCallback(() => {
-    apiFetch<Instance[]>('/lowcode/instances').then(setInstances).catch(() => setInstances([]))
+    apiList<Instance>('/lowcode/instances').then(setInstances).catch(() => setInstances([]))
   }, [])
 
   useEffect(() => { fetchModels(); fetchInstances() }, [fetchModels, fetchInstances])

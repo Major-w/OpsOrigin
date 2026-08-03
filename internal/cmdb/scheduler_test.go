@@ -38,8 +38,8 @@ func TestResolveSwitch(t *testing.T) {
 	}{
 		{nil, true, true},
 		{nil, false, false},
-		{&def, false, true},  // 显式覆盖默认
-		{&off, true, false},  // 显式关闭
+		{&def, false, true}, // 显式覆盖默认
+		{&off, true, false}, // 显式关闭
 	}
 	for i, c := range cases {
 		if got := resolveSwitch(c.v, c.def); got != c.want {

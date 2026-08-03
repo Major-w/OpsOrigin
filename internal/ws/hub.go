@@ -14,13 +14,13 @@ import (
 type EventType string
 
 const (
-	EventAlert      EventType = "alert"
-	EventAudit      EventType = "audit"
-	EventMonitor    EventType = "monitor"
-	EventCMDB       EventType = "cmdb"
-	EventITSM       EventType = "itsm"
-	EventHeartbeat  EventType = "heartbeat"
-	EventTopology   EventType = "topology"
+	EventAlert     EventType = "alert"
+	EventAudit     EventType = "audit"
+	EventMonitor   EventType = "monitor"
+	EventCMDB      EventType = "cmdb"
+	EventITSM      EventType = "itsm"
+	EventHeartbeat EventType = "heartbeat"
+	EventTopology  EventType = "topology"
 )
 
 type Event struct {
@@ -38,8 +38,8 @@ type client struct {
 }
 
 type Hub struct {
-	mu       sync.RWMutex
-	clients  map[*client]bool
+	mu        sync.RWMutex
+	clients   map[*client]bool
 	broadcast chan []byte
 }
 

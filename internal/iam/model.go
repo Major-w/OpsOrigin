@@ -6,9 +6,9 @@ import "time"
 // 与 pkg/auth/rbac.go 中的 Permission 常量保持一致，便于 RBAC 中间件统一校验。
 type Permission struct {
 	ID          string `json:"id"`
-	Name        string `json:"name"`         // 如 cmdb:write
-	Description string `json:"description"`  // 人类可读说明
-	Category    string `json:"category"`     // 分组:cmdb / monitor / itsm / user / agent / audit / system
+	Name        string `json:"name"`        // 如 cmdb:write
+	Description string `json:"description"` // 人类可读说明
+	Category    string `json:"category"`    // 分组:cmdb / monitor / itsm / user / agent / audit / system
 }
 
 // Role 表示一个角色，聚合若干权限。IsBuiltIn=true 的角色由系统预置，
@@ -16,10 +16,10 @@ type Permission struct {
 type Role struct {
 	ID          string    `json:"id"`
 	TenantID    string    `json:"tenant_id"`
-	Name        string    `json:"name"`          // 唯一角色名(如 admin/ops-developer)
-	DisplayName string    `json:"display_name"`  // 展示名
+	Name        string    `json:"name"`         // 唯一角色名(如 admin/ops-developer)
+	DisplayName string    `json:"display_name"` // 展示名
 	Description string    `json:"description,omitempty"`
-	Permissions []string  `json:"permissions"`   // permission name 列表
+	Permissions []string  `json:"permissions"` // permission name 列表
 	IsBuiltIn   bool      `json:"is_built_in"`
 	CreatedAt   time.Time `json:"created_at"`
 	UpdatedAt   time.Time `json:"updated_at"`

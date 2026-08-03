@@ -9,6 +9,8 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+
+	"github.com/opsorigin/core/pkg/httputil"
 )
 
 type Store interface {
@@ -93,7 +95,9 @@ type Service struct {
 
 func NewService(db *sql.DB) *Service {
 	var st Store = NewMemoryStore()
-	if db != nil { st = newPGStore(db) }
+	if db != nil {
+		st = newPGStore(db)
+	}
 	return &Service{store: st}
 }
 
@@ -153,6 +157,7 @@ func (s *Service) handleDeleteRotation(w http.ResponseWriter, r *http.Request) {
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {
+	v = httputil.EmptySliceIfNil(v)
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	json.NewEncoder(w).Encode(v)

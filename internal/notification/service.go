@@ -12,6 +12,8 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+
+	"github.com/opsorigin/core/pkg/httputil"
 )
 
 // Store 定义通知模块的持久化接口。
@@ -418,12 +420,12 @@ func (s *Service) handleTestChannel(w http.ResponseWriter, r *http.Request) {
 	err = sender.Send(ch, req.Title, req.Content)
 	// 无论成功失败都记录历史
 	n := &Notification{
-		TenantID:   tenantID,
-		ChannelID:  ch.ID,
-		Event:      "",
-		Title:      req.Title,
-		Content:    req.Content,
-		Status:     "sent",
+		TenantID:  tenantID,
+		ChannelID: ch.ID,
+		Event:     "",
+		Title:     req.Title,
+		Content:   req.Content,
+		Status:    "sent",
 	}
 	if err != nil {
 		n.Status = "failed"
@@ -550,7 +552,7 @@ func (s *Service) handleListChannelTypes(w http.ResponseWriter, r *http.Request)
 			continue
 		}
 		result = append(result, map[string]any{
-			"type":           t,
+			"type":            t,
 			"required_fields": sender.RequiredFields(),
 		})
 	}
@@ -629,12 +631,12 @@ func (s *Service) dispatchEvent(ctx context.Context, tenantID string, event Even
 				continue
 			}
 			n := &Notification{
-				TenantID:   tenantID,
-				ChannelID:  ch.ID,
-				Event:      event,
-				Title:      t,
-				Content:    c,
-				Status:     "sent",
+				TenantID:  tenantID,
+				ChannelID: ch.ID,
+				Event:     event,
+				Title:     t,
+				Content:   c,
+				Status:    "sent",
 			}
 			if err := sender.Send(ch, t, c); err != nil {
 				n.Status = "failed"
@@ -736,6 +738,7 @@ func maskString(s string) string {
 // ---------- 辅助 HTTP 函数 ----------
 
 func writeJSON(w http.ResponseWriter, status int, v any) {
+	v = httputil.EmptySliceIfNil(v)
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	json.NewEncoder(w).Encode(v)

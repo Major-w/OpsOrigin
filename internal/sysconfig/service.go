@@ -14,19 +14,21 @@ import (
 	"github.com/opsorigin/core/internal/ai"
 	"github.com/opsorigin/core/pkg/config"
 	"github.com/opsorigin/core/pkg/llm"
+
+	"github.com/opsorigin/core/pkg/httputil"
 )
 
 // ConfigItem 描述一个可配置项的元数据。
 type ConfigItem struct {
-	Key          string `json:"key"`           // 环境变量名,如 OPSNEXUS_CORE_PORT
-	Category     string `json:"category"`      // 分组: core/agent_ws/tls/database/...
-	Label        string `json:"label"`         // 中文标签
-	Description  string `json:"description"`   // 说明文字
-	Type         string `json:"type"`          // string/int/bool/duration/secret
-	CurrentValue string `json:"current_value"` // 当前值(敏感字段脱敏)
-	DefaultValue string `json:"default_value"` // 默认值
-	RequiresRestart bool  `json:"requires_restart"` // 修改后是否需要重启
-	Sensitive    bool   `json:"sensitive"`     // 是否为敏感字段(密码/密钥)
+	Key             string `json:"key"`              // 环境变量名,如 OPSNEXUS_CORE_PORT
+	Category        string `json:"category"`         // 分组: core/agent_ws/tls/database/...
+	Label           string `json:"label"`            // 中文标签
+	Description     string `json:"description"`      // 说明文字
+	Type            string `json:"type"`             // string/int/bool/duration/secret
+	CurrentValue    string `json:"current_value"`    // 当前值(敏感字段脱敏)
+	DefaultValue    string `json:"default_value"`    // 默认值
+	RequiresRestart bool   `json:"requires_restart"` // 修改后是否需要重启
+	Sensitive       bool   `json:"sensitive"`        // 是否为敏感字段(密码/密钥)
 }
 
 // ConfigGroup 配置分组。
@@ -43,9 +45,9 @@ type UpdateRequest struct {
 
 // Service 是系统配置管理服务。
 type Service struct {
-	mu       sync.RWMutex
-	cfg      *config.Config
-	envPath  string // .env 文件路径
+	mu      sync.RWMutex
+	cfg     *config.Config
+	envPath string // .env 文件路径
 }
 
 // NewService 创建系统配置服务。
@@ -403,6 +405,7 @@ func parseDurationSafe(s string) time.Duration {
 
 // writeJSON 写入 JSON 响应。
 func writeJSON(w http.ResponseWriter, status int, v any) {
+	v = httputil.EmptySliceIfNil(v)
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	json.NewEncoder(w).Encode(v)

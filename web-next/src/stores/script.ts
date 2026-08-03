@@ -1,7 +1,7 @@
 'use client'
 
 import { create } from 'zustand'
-import { apiFetch } from '@/lib/utils'
+import { apiFetch, apiList } from '@/lib/utils'
 import { toast } from '@/stores/toast'
 
 export interface Script {
@@ -53,7 +53,7 @@ export const useScriptStore = create<ScriptState>((set, get) => ({
   fetch: async () => {
     set({ loading: true })
     try {
-      const scripts = await apiFetch<Script[]>('/scripts')
+      const scripts = await apiList<Script>('/scripts')
       set({ scripts, loading: false })
     } catch (e: any) {
       set({ loading: false })
@@ -95,7 +95,7 @@ export const useScriptStore = create<ScriptState>((set, get) => ({
   },
   duplicate: async (id) => {
     try {
-      const scripts = await apiFetch<Script[]>('/scripts')
+      const scripts = await apiList<Script>('/scripts')
       const source = scripts.find(s => s.id === id)
       if (!source) throw new Error('源脚本不存在')
       await apiFetch('/scripts', { method: 'POST', body: JSON.stringify({ ...source, name: `${source.name} (副本)`, id: undefined }) })
@@ -119,7 +119,7 @@ export const useScriptStore = create<ScriptState>((set, get) => ({
   },
   fetchExecutions: async (id) => {
     try {
-      return await apiFetch<ExecutionResult[]>(`/scripts/${id}/executions`)
+      return await apiList<ExecutionResult>(`/scripts/${id}/executions`)
     } catch (e: any) {
       toast.error(`加载执行历史失败: ${e.message}`)
       return []
@@ -127,7 +127,7 @@ export const useScriptStore = create<ScriptState>((set, get) => ({
   },
   fetchVersions: async (id) => {
     try {
-      return await apiFetch<ScriptVersion[]>(`/scripts/${id}/versions`)
+      return await apiList<ScriptVersion>(`/scripts/${id}/versions`)
     } catch (e: any) {
       toast.error(`加载版本历史失败: ${e.message}`)
       return []

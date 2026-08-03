@@ -1,7 +1,7 @@
 'use client'
 
 import { create } from 'zustand'
-import { apiFetch } from '@/lib/utils'
+import { apiFetch, apiList } from '@/lib/utils'
 import { toast } from '@/stores/toast'
 
 export interface ConfigItem {
@@ -37,7 +37,7 @@ export const useSysConfigStore = create<SysConfigState>((set, get) => ({
   fetch: async () => {
     set({ loading: true })
     try {
-      const groups = await apiFetch<ConfigGroup[]>('/system/config')
+      const groups = await apiList<ConfigGroup>('/system/config')
       set({ groups, loading: false })
     } catch (e: any) {
       set({ loading: false })

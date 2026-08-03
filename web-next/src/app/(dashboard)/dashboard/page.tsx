@@ -11,7 +11,7 @@ import {
   Layers, Search, BarChart3, Zap, CheckCircle, XCircle, Timer, Users, Workflow
 } from 'lucide-react'
 import { useWebSocket } from '@/lib/useWebSocket'
-import { apiFetch } from '@/lib/utils'
+import { apiFetch, apiList } from '@/lib/utils'
 
 function AnimatedCounter({ value, label }: { value: number; label: string }) {
   const [display, setDisplay] = useState(0)
@@ -139,14 +139,14 @@ export default function DashboardPage() {
 
   useEffect(() => {
     Promise.allSettled([
-      apiFetch<any[]>('/cmdb/ci').then(d => setMetrics(m => ({ ...m, cmdb: d.length }))).catch(() => {}),
-      apiFetch<any[]>('/monitor/targets').then(d => setMetrics(m => ({ ...m, targets: d.length }))).catch(() => {}),
-      apiFetch<any[]>('/monitor/alerts').then(d => {
+      apiList<any>('/cmdb/ci').then(d => setMetrics(m => ({ ...m, cmdb: d.length }))).catch(() => {}),
+      apiList<any>('/monitor/targets').then(d => setMetrics(m => ({ ...m, targets: d.length }))).catch(() => {}),
+      apiList<any>('/monitor/alerts').then(d => {
         setMetrics(m => ({ ...m, alerts: d.length }))
         setAlerts(d.slice(0, 5).map((a: any) => ({ id: a.id, ci: a.ci, severity: a.severity || 'info', message: a.message, time: 'now' })))
       }).catch(() => {}),
-      apiFetch<any[]>('/ai/agents').then(d => setMetrics(m => ({ ...m, agents: d.length }))).catch(() => {}),
-      apiFetch<any[]>('/itsm/tickets').then(d => setMetrics(m => ({ ...m, tickets: d.length, openTickets: d.filter((t: any) => t.status === 'open').length }))).catch(() => {}),
+      apiList<any>('/ai/agents').then(d => setMetrics(m => ({ ...m, agents: d.length }))).catch(() => {}),
+      apiList<any>('/itsm/tickets').then(d => setMetrics(m => ({ ...m, tickets: d.length, openTickets: d.filter((t: any) => t.status === 'open').length }))).catch(() => {}),
     ])
   }, [])
 

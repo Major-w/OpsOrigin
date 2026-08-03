@@ -194,18 +194,18 @@ func (s *PGStore) Update(ctx context.Context, sc *Script) error {
 	}
 	// 保存版本快照（与 MemoryStore 行为一致）
 	sn := ScriptVersion{
-		ScriptID:    sc.ID,
-		TenantID:    sc.TenantID,
-		Version:     sc.Version,
-		Name:        sc.Name,
-		Type:        sc.Type,
-		Content:     sc.Content,
-		InputParams:  sc.InputParams,
-		OutputParams: sc.OutputParams,
-		Timeout:     sc.Timeout,
-		RunAs:       sc.RunAs,
-		CreatedAt:   time.Now(),
-		Public:      sc.Public,
+		ScriptID:       sc.ID,
+		TenantID:       sc.TenantID,
+		Version:        sc.Version,
+		Name:           sc.Name,
+		Type:           sc.Type,
+		Content:        sc.Content,
+		InputParams:    sc.InputParams,
+		OutputParams:   sc.OutputParams,
+		Timeout:        sc.Timeout,
+		RunAs:          sc.RunAs,
+		CreatedAt:      time.Now(),
+		Public:         sc.Public,
 		ApprovalStatus: sc.ApprovalStatus,
 	}
 	if n, ok := ctx.Value(changeNoteCtxKey).(string); ok {

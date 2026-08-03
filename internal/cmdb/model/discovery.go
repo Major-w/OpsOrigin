@@ -7,18 +7,18 @@ import (
 
 // CIVersion represents a full snapshot of a CI at a point in time.
 type CIVersion struct {
-	ID         string         `json:"id"`
-	CIID       string         `json:"ci_id"`
-	TenantID   string         `json:"tenant_id"`
-	Version    int            `json:"version"`
-	Name       string         `json:"name"`
-	TypeID     string         `json:"type_id"`
-	Status     string         `json:"status"`
-	Attributes map[string]any `json:"attributes"`
+	ID         string            `json:"id"`
+	CIID       string            `json:"ci_id"`
+	TenantID   string            `json:"tenant_id"`
+	Version    int               `json:"version"`
+	Name       string            `json:"name"`
+	TypeID     string            `json:"type_id"`
+	Status     string            `json:"status"`
+	Attributes map[string]any    `json:"attributes"`
 	Labels     map[string]string `json:"labels"`
-	Operator   string         `json:"operator"`
-	ChangeType string         `json:"change_type"`
-	CreatedAt  time.Time      `json:"created_at"`
+	Operator   string            `json:"operator"`
+	ChangeType string            `json:"change_type"`
+	CreatedAt  time.Time         `json:"created_at"`
 }
 
 func (v *CIVersion) MarshalAttributes() ([]byte, error) {
@@ -62,17 +62,17 @@ func (t *DiscoveryTask) UnmarshalConfig(data []byte) error {
 
 // DiscoveryResult represents a single CI discovered by a task.
 type DiscoveryResult struct {
-	ID            string         `json:"id"`
-	TaskID        string         `json:"task_id"`
-	TenantID      string         `json:"tenant_id"`
-	CIName        string         `json:"ci_name"`
-	CIType        string         `json:"ci_type"`
-	IPAddress     string         `json:"ip_address,omitempty"`
-	Attributes    map[string]any `json:"attributes"`
-	Source        string         `json:"source"`
-	Synced        bool           `json:"synced"`
-	SyncedCIID    string         `json:"synced_ci_id,omitempty"`
-	DiscoveredAt  time.Time      `json:"discovered_at"`
+	ID           string         `json:"id"`
+	TaskID       string         `json:"task_id"`
+	TenantID     string         `json:"tenant_id"`
+	CIName       string         `json:"ci_name"`
+	CIType       string         `json:"ci_type"`
+	IPAddress    string         `json:"ip_address,omitempty"`
+	Attributes   map[string]any `json:"attributes"`
+	Source       string         `json:"source"`
+	Synced       bool           `json:"synced"`
+	SyncedCIID   string         `json:"synced_ci_id,omitempty"`
+	DiscoveredAt time.Time      `json:"discovered_at"`
 }
 
 func (r *DiscoveryResult) MarshalAttributes() ([]byte, error) {

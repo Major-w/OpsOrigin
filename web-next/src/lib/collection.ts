@@ -27,6 +27,10 @@ export interface CollectionTask {
   channel: CollectionChannel
   frequency: string
   enabled: boolean
+  /** 动态执行目标模式：static=静态资源 ID（默认），query=按保存查询实时解析（P1-4）。 */
+  target_mode?: 'static' | 'query'
+  /** target_mode=query 时引用的保存查询 ID（"我想查"）。 */
+  target_query?: string
   last_run_at?: string
   status: CollectionStatus
   error?: string
@@ -60,6 +64,8 @@ export interface CreateCollectionTaskRequest {
   kind: CollectionKind
   frequency?: string
   enabled: boolean
+  target_mode?: 'static' | 'query'
+  target_query?: string
 }
 
 export const DEFAULT_PLATFORM_POLICY: PlatformPolicy = {

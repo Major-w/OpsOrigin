@@ -20,13 +20,14 @@ type EventType string
 
 const (
 	EventAlertTriggered  EventType = "alert.triggered"  // 告警触发
-	EventAlertRecovered   EventType = "alert.recovered"  // 告警恢复
-	EventTicketCreated    EventType = "ticket.created"   // 工单创建
-	EventTicketAssigned   EventType = "ticket.assigned" // 工单指派
-	EventTicketApproved   EventType = "ticket.approved"  // 工单审批通过
-	EventAgentOffline     EventType = "agent.offline"    // Agent 离线
-	EventWorkflowWaiting  EventType = "workflow.waiting" // 工作流等待审批
-	EventWorkflowFailed   EventType = "workflow.failed"  // 工作流执行失败
+	EventAlertRecovered  EventType = "alert.recovered"  // 告警恢复
+	EventTicketCreated   EventType = "ticket.created"   // 工单创建
+	EventTicketAssigned  EventType = "ticket.assigned"  // 工单指派
+	EventTicketApproved  EventType = "ticket.approved"  // 工单审批通过
+	EventAgentOffline    EventType = "agent.offline"    // Agent 离线
+	EventWorkflowWaiting EventType = "workflow.waiting" // 工作流等待审批
+	EventWorkflowFailed  EventType = "workflow.failed"  // 工作流执行失败
+	EventCMDBChanged     EventType = "cmdb.ci_changed"  // CMDB CI 变更（P2-5 消息订阅通知渠道）
 )
 
 // AllEventTypes 返回所有支持的事件类型,供前端展示与 Policy 配置使用。
@@ -36,6 +37,7 @@ func AllEventTypes() []EventType {
 		EventTicketCreated, EventTicketAssigned, EventTicketApproved,
 		EventAgentOffline,
 		EventWorkflowWaiting, EventWorkflowFailed,
+		EventCMDBChanged,
 	}
 }
 
@@ -68,7 +70,7 @@ type Policy struct {
 	Name       string    `json:"name"`
 	Event      EventType `json:"event"`
 	ChannelIDs []string  `json:"channel_ids"`
-	Template   string    `json:"template,omitempty"`   // 消息模板,支持 ${title} ${content} 变量
+	Template   string    `json:"template,omitempty"`    // 消息模板,支持 ${title} ${content} 变量
 	QuietHours string    `json:"quiet_hours,omitempty"` // 免打扰时段 "HH:MM-HH:MM"
 	Enabled    bool      `json:"enabled"`
 	CreatedAt  time.Time `json:"created_at"`

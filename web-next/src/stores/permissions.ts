@@ -18,7 +18,10 @@ export const usePermissions = create<PermissionsState>((set) => ({
   fetchMyPermissions: async () => {
     try {
       const data = await apiFetch<{ permissions: string[] }>('/iam/me/permissions')
-      set({ permissions: data.permissions || [], loaded: true })
+      const perms = data.permissions || []
+      set({ permissions: perms, loaded: true })
+      // 持久化供 apiFetch 随请求注入 X-Permissions（后端 CMDB 字段级规则权限 P2-4 依赖）
+      try { localStorage.setItem('opsnexus_permissions', JSON.stringify(perms)) } catch {}
     } catch {
       // 取数失败:不置 loaded,useCan 继续乐观放行(避免误隐藏全员按钮)
     }

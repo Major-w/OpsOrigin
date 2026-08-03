@@ -8,6 +8,8 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+
+	"github.com/opsorigin/core/pkg/httputil"
 )
 
 // Policy SLA 策略定义
@@ -48,7 +50,9 @@ func (s *Store) migrate() {
 func (s *Store) seed() {
 	var count int
 	s.db.QueryRow(`SELECT COUNT(*) FROM itsm_sla_policies`).Scan(&count)
-	if count > 0 { return }
+	if count > 0 {
+		return
+	}
 	policies := []Policy{
 		{RiskLevel: "low", ResponseHours: 72, ResolutionHours: 168, EscalationHours: 96, Name: "低风险 SLA"},
 		{RiskLevel: "medium", ResponseHours: 48, ResolutionHours: 96, EscalationHours: 72, Name: "中风险 SLA"},
@@ -68,7 +72,9 @@ func (s *Store) seed() {
 
 func (s *Store) List(ctx context.Context, tenantID string) ([]Policy, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT id,tenant_id,name,risk_level,response_hours,resolution_hours,escalation_hours,escalation_to,enabled,created_at,updated_at FROM itsm_sla_policies WHERE tenant_id=$1 ORDER BY risk_level`, tenantID)
-	if err != nil { return nil, err }
+	if err != nil {
+		return nil, err
+	}
 	defer rows.Close()
 	var out []Policy
 	for rows.Next() {
@@ -92,7 +98,9 @@ func (s *Store) GetByRisk(ctx context.Context, tenantID, riskLevel string) (*Pol
 	var p Policy
 	err := s.db.QueryRowContext(ctx, `SELECT id,tenant_id,name,risk_level,response_hours,resolution_hours,escalation_hours,escalation_to,enabled,created_at,updated_at FROM itsm_sla_policies WHERE tenant_id=$1 AND risk_level=$2 AND enabled=true`, tenantID, riskLevel).
 		Scan(&p.ID, &p.TenantID, &p.Name, &p.RiskLevel, &p.ResponseHours, &p.ResolutionHours, &p.EscalationHours, &p.EscalationTo, &p.Enabled, &p.CreatedAt, &p.UpdatedAt)
-	if err == sql.ErrNoRows { return nil, nil }
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
 	return &p, err
 }
 
@@ -104,29 +112,39 @@ func (s *Store) RegisterRoutes(mux *http.ServeMux) {
 
 func (s *Store) handleList(w http.ResponseWriter, r *http.Request) {
 	tenant := r.Header.Get("X-Tenant-ID")
-	if tenant == "" { tenant = "default" }
+	if tenant == "" {
+		tenant = "default"
+	}
 	policies, err := s.List(r.Context(), tenant)
-	if err != nil { writeJSON(w, 500, map[string]string{"error": err.Error()}); return }
+	if err != nil {
+		writeJSON(w, 500, map[string]string{"error": err.Error()})
+		return
+	}
 	writeJSON(w, 200, policies)
 }
 
 func (s *Store) handleUpdate(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	tenant := r.Header.Get("X-Tenant-ID")
-	if tenant == "" { tenant = "default" }
+	if tenant == "" {
+		tenant = "default"
+	}
 	var p Policy
 	if err := json.NewDecoder(r.Body).Decode(&p); err != nil {
-		writeJSON(w, 400, map[string]string{"error": "invalid body"}); return
+		writeJSON(w, 400, map[string]string{"error": "invalid body"})
+		return
 	}
 	p.ID = id
 	p.TenantID = tenant
 	if err := s.Update(r.Context(), &p); err != nil {
-		writeJSON(w, 500, map[string]string{"error": err.Error()}); return
+		writeJSON(w, 500, map[string]string{"error": err.Error()})
+		return
 	}
 	writeJSON(w, 200, p)
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {
+	v = httputil.EmptySliceIfNil(v)
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	json.NewEncoder(w).Encode(v)

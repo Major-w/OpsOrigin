@@ -1,7 +1,7 @@
 'use client'
 
 import { create } from 'zustand'
-import { apiFetch } from '@/lib/utils'
+import { apiFetch, apiList } from '@/lib/utils'
 import { toast } from '@/stores/toast'
 
 export interface Shift { id: string; user_name: string; role: string; start_time: string; end_time: string; phone?: string; email?: string }
@@ -21,7 +21,7 @@ export const useOnCallStore = create<OnCallState>((set, get) => ({
   fetchShifts: async () => {
     set({ loading: true })
     try {
-      const shifts = await apiFetch<Shift[]>('/oncall')
+      const shifts = await apiList<Shift>('/oncall')
       set({ shifts, loading: false })
     } catch (e: any) {
       set({ loading: false })
@@ -42,7 +42,7 @@ export const useOnCallStore = create<OnCallState>((set, get) => ({
   fetchRotations: async () => {
     set({ loading: true })
     try {
-      const rotations = await apiFetch<Rotation[]>('/oncall/rotations')
+      const rotations = await apiList<Rotation>('/oncall/rotations')
       set({ rotations, loading: false })
     } catch (e: any) {
       set({ loading: false })

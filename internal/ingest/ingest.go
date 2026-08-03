@@ -40,8 +40,8 @@ func init() {
 
 // Ingestor 异步批量落库器。
 type Ingestor struct {
-	ch           chan Item
-	flushFn      func(ctx context.Context, items []Item)
+	ch            chan Item
+	flushFn       func(ctx context.Context, items []Item)
 	flushInterval time.Duration
 
 	mu      sync.Mutex
@@ -62,7 +62,7 @@ func New(bufferSize int, flushInterval time.Duration, flushFn func(ctx context.C
 	return &Ingestor{
 		ch:            make(chan Item, bufferSize),
 		flushFn:       flushFn,
-		flushInterval:  flushInterval,
+		flushInterval: flushInterval,
 		stopCh:        make(chan struct{}),
 	}
 }

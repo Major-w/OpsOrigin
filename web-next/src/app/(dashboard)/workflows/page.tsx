@@ -11,7 +11,7 @@ import { Plus, Trash2, GitBranch, Code, CheckSquare, Split, Clock, Workflow as W
 import { cn, formatTime } from '@/lib/utils'
 import { toast } from '@/stores/toast'
 
-const NODE_META: Record<StepType, { label: string; icon: any; color: string }> = {
+const NODE_META: Record<string, { label: string; icon: any; color: string }> = {
   script:    { label: '脚本节点',  icon: Code,      color: 'text-blue-500' },
   approval:  { label: '人工审批',  icon: CheckSquare, color: 'text-amber-500' },
   condition: { label: '分支网关',  icon: GitBranch, color: 'text-purple-500' },

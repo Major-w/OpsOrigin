@@ -8,7 +8,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { useScriptStore, type ExecutionResult } from '@/stores/script'
 import { useSchedulerStore } from '@/stores/scheduler'
 import { Play, Clock, CheckCircle, XCircle, AlertCircle, Loader2, RefreshCw } from 'lucide-react'
-import { formatTime } from '@/lib/utils'
+import { formatTime, apiList } from '@/lib/utils'
 import { apiFetch } from '@/lib/utils'
 
 export default function JobCenterPage() {
@@ -20,7 +20,7 @@ export default function JobCenterPage() {
   useEffect(() => {
     fetchScripts(); fetchSchedules()
     // 拉取所有脚本的执行历史
-    apiFetch<any[]>('/scripts/executions').then(data => {
+    apiList<any>('/scripts/executions').then(data => {
       setExecHistory(data || [])
       setLoading(false)
     }).catch(() => setLoading(false))

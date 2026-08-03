@@ -51,8 +51,12 @@ func (s *PGStore) Create(ctx context.Context, p *Process) error {
 	p.ID = uuid.New().String()
 	p.CreatedAt = time.Now()
 	p.UpdatedAt = p.CreatedAt
-	if p.TenantID == "" { p.TenantID = "default" }
-	if p.Version == 0 { p.Version = 1 }
+	if p.TenantID == "" {
+		p.TenantID = "default"
+	}
+	if p.Version == 0 {
+		p.Version = 1
+	}
 	stepsJSON, _ := json.Marshal(p.Steps)
 	labelsJSON, _ := json.Marshal(p.Labels)
 	_, err := s.db.ExecContext(ctx,
@@ -69,8 +73,12 @@ func (s *PGStore) Get(ctx context.Context, id, tenantID string) (*Process, error
 		`SELECT id,tenant_id,name,description,category,steps,labels,enabled,version,created_at,updated_at
 		 FROM itsm_processes WHERE id=$1 AND tenant_id=$2`, id, tenantID).
 		Scan(&p.ID, &p.TenantID, &p.Name, &p.Description, &p.Category, &stepsJSON, &labelsJSON, &p.Enabled, &p.Version, &p.CreatedAt, &p.UpdatedAt)
-	if err == sql.ErrNoRows { return nil, nil }
-	if err != nil { return nil, err }
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
 	json.Unmarshal(stepsJSON, &p.Steps)
 	json.Unmarshal(labelsJSON, &p.Labels)
 	return p, nil
@@ -80,7 +88,9 @@ func (s *PGStore) List(ctx context.Context, tenantID string) ([]*Process, error)
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT id,tenant_id,name,description,category,steps,labels,enabled,version,created_at,updated_at
 		 FROM itsm_processes WHERE tenant_id=$1 ORDER BY updated_at DESC`, tenantID)
-	if err != nil { return nil, err }
+	if err != nil {
+		return nil, err
+	}
 	defer rows.Close()
 	var out []*Process
 	for rows.Next() {
@@ -104,9 +114,13 @@ func (s *PGStore) Update(ctx context.Context, p *Process) error {
 		`UPDATE itsm_processes SET name=$1,description=$2,category=$3,steps=$4,labels=$5,enabled=$6,version=$7,updated_at=$8
 		 WHERE id=$9 AND tenant_id=$10`,
 		p.Name, p.Description, p.Category, stepsJSON, labelsJSON, p.Enabled, p.Version, p.UpdatedAt, p.ID, p.TenantID)
-	if err != nil { return err }
+	if err != nil {
+		return err
+	}
 	n, _ := res.RowsAffected()
-	if n == 0 { return fmt.Errorf("process not found") }
+	if n == 0 {
+		return fmt.Errorf("process not found")
+	}
 	return nil
 }
 

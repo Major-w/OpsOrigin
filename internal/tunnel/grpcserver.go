@@ -491,9 +491,10 @@ func extractPayload(msg *pb.TunnelMessage, out interface{}) error {
 }
 
 // verifyToken 校验 gRPC 流身份。优先级:
-//   1) mTLS 已启用且客户端证书有效(CN 非空) => 直接通过(证书即凭证,§3.1)。
-//   2) Insecure 模式 => 通过(仅本地测试)。
-//   3) 共享密钥(metadata: x-tunnel-token)匹配 => 通过。
+//  1. mTLS 已启用且客户端证书有效(CN 非空) => 直接通过(证书即凭证,§3.1)。
+//  2. Insecure 模式 => 通过(仅本地测试)。
+//  3. 共享密钥(metadata: x-tunnel-token)匹配 => 通过。
+//
 // 安全默认(fail-closed): 未配置密钥且非 mTLS/Insecure 时拒绝所有注册。
 func (s *GRPCServer) verifyToken(ctx context.Context) bool {
 	if s.tlsConfig != nil {

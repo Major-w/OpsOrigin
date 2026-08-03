@@ -27,13 +27,13 @@ func (s *SocialStore) migrate() {
 }
 
 type ArticleStats struct {
-	Likes    int     `json:"likes"`
-	Bookmarks int    `json:"bookmarks"`
-	AvgRating float64 `json:"avg_rating"`
-	RatingCount int   `json:"rating_count"`
-	Liked    bool    `json:"liked"`
-	Bookmarked bool  `json:"bookmarked"`
-	UserRating *int   `json:"user_rating,omitempty"`
+	Likes       int     `json:"likes"`
+	Bookmarks   int     `json:"bookmarks"`
+	AvgRating   float64 `json:"avg_rating"`
+	RatingCount int     `json:"rating_count"`
+	Liked       bool    `json:"liked"`
+	Bookmarked  bool    `json:"bookmarked"`
+	UserRating  *int    `json:"user_rating,omitempty"`
 }
 
 type Comment struct {
@@ -107,7 +107,9 @@ func (s *SocialStore) AddComment(ctx context.Context, articleID, userID, content
 
 func (s *SocialStore) ListComments(ctx context.Context, articleID string) ([]Comment, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT id,article_id,user_id,content,COALESCE(parent_id,''),created_at FROM knowledge_comments WHERE article_id=$1 ORDER BY created_at ASC`, articleID)
-	if err != nil { return nil, err }
+	if err != nil {
+		return nil, err
+	}
 	defer rows.Close()
 	var out []Comment
 	for rows.Next() {
@@ -132,26 +134,44 @@ func (s *SocialStore) handleStats(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, st)
 }
 func (s *SocialStore) handleLike(w http.ResponseWriter, r *http.Request) {
-	user := r.URL.Query().Get("user"); if user == "" { user = "admin" }
+	user := r.URL.Query().Get("user")
+	if user == "" {
+		user = "admin"
+	}
 	liked, _ := s.ToggleLike(r.Context(), r.PathValue("id"), user)
 	writeJSON(w, 200, map[string]bool{"liked": liked})
 }
 func (s *SocialStore) handleBookmark(w http.ResponseWriter, r *http.Request) {
-	user := r.URL.Query().Get("user"); if user == "" { user = "admin" }
+	user := r.URL.Query().Get("user")
+	if user == "" {
+		user = "admin"
+	}
 	bookmarked, _ := s.ToggleBookmark(r.Context(), r.PathValue("id"), user)
 	writeJSON(w, 200, map[string]bool{"bookmarked": bookmarked})
 }
 func (s *SocialStore) handleRate(w http.ResponseWriter, r *http.Request) {
-	var body struct { Rating int `json:"rating"`; Comment string `json:"comment"` }
+	var body struct {
+		Rating  int    `json:"rating"`
+		Comment string `json:"comment"`
+	}
 	json.NewDecoder(r.Body).Decode(&body)
-	user := r.URL.Query().Get("user"); if user == "" { user = "admin" }
+	user := r.URL.Query().Get("user")
+	if user == "" {
+		user = "admin"
+	}
 	s.Rate(r.Context(), r.PathValue("id"), user, body.Rating, body.Comment)
 	writeJSON(w, 200, map[string]string{"ok": "rated"})
 }
 func (s *SocialStore) handleAddComment(w http.ResponseWriter, r *http.Request) {
-	var body struct { Content string `json:"content"`; ParentID string `json:"parent_id"` }
+	var body struct {
+		Content  string `json:"content"`
+		ParentID string `json:"parent_id"`
+	}
 	json.NewDecoder(r.Body).Decode(&body)
-	user := r.URL.Query().Get("user"); if user == "" { user = "admin" }
+	user := r.URL.Query().Get("user")
+	if user == "" {
+		user = "admin"
+	}
 	c, _ := s.AddComment(r.Context(), r.PathValue("id"), user, body.Content, body.ParentID)
 	writeJSON(w, 201, c)
 }

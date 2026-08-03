@@ -23,7 +23,8 @@ type Scanner interface {
 // InventoryEntry 一条资产清单条目。
 // 主机软件清单形态: Host + Package + Version(AgentID 可选,供 AgentScanner 下发)。
 // 容器镜像清单形态: ImageRef(镜像全引用) + AgentID(必填,运行 trivy image 的目标 agent)
-//   + Registry/RegistryUser/RegistryPass(镜像仓库凭据,供 ImageScanner)。
+//   - Registry/RegistryUser/RegistryPass(镜像仓库凭据,供 ImageScanner)。
+//
 // RuleScanner/AgentScanner 忽略镜像字段; ImageScanner 忽略主机软件字段。
 type InventoryEntry struct {
 	Host         string
@@ -95,7 +96,9 @@ func rules() []cveRule {
 
 // Scan 执行一次扫描。
 // inventory 为外部注入的资产清单(经 CMDB 拉取或 Agent 下发结果);为空时:
-//   demo 模式注入样例清单;非 demo 返回 nil(不造假)。
+//
+//	demo 模式注入样例清单;非 demo 返回 nil(不造假)。
+//
 // 按 scanType 过滤(critical/high 或全量)。
 func (s *RuleScanner) Scan(ctx context.Context, tenantID, scanID, scanType string, demoMode bool, inventory []InventoryEntry) ([]*model.Finding, error) {
 	if len(inventory) == 0 {

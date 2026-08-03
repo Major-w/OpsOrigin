@@ -16,10 +16,10 @@ import (
 // —— 编排增强默认值（均可在 AgentTeam 上覆盖）——
 
 const (
-	defaultMemberTimeoutSec = 90  // 单成员作答硬超时
-	defaultMemberRetries    = 1   // 单成员失败重试次数
-	defaultDebateRounds     = 2   // 辩论模式默认往返轮数
-	supervisorVerifyRounds  = 1   // 主管审核最多触发的修订轮数(防止无限循环)
+	defaultMemberTimeoutSec = 90 // 单成员作答硬超时
+	defaultMemberRetries    = 1  // 单成员失败重试次数
+	defaultDebateRounds     = 2  // 辩论模式默认往返轮数
+	supervisorVerifyRounds  = 1  // 主管审核最多触发的修订轮数(防止无限循环)
 )
 
 // RunTeamChat 执行一次多智能体团队对话。

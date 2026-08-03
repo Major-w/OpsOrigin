@@ -1,7 +1,7 @@
 'use client'
 
 import { create } from 'zustand'
-import { apiFetch } from '@/lib/utils'
+import { apiFetch, apiList } from '@/lib/utils'
 import { toast } from '@/stores/toast'
 
 // ============ Types (matching Go backend) ============
@@ -77,7 +77,7 @@ export const useDeployStore = create<DeployState>((set, get) => ({
 
   fetchApps: async () => {
     set({ loading: true })
-    try { set({ apps: await apiFetch<DeployApp[]>('/deploy/apps'), loading: false }) }
+    try { set({ apps: await apiList<DeployApp>('/deploy/apps'), loading: false }) }
     catch (e: any) { set({ loading: false }); toast.error('加载应用失败: ' + e.message) }
   },
   createApp: async (d) => {
@@ -95,7 +95,7 @@ export const useDeployStore = create<DeployState>((set, get) => ({
 
   fetchReleases: async () => {
     set({ loading: true })
-    try { set({ releases: await apiFetch<ReleaseTicket[]>('/deploy/releases'), loading: false }) }
+    try { set({ releases: await apiList<ReleaseTicket>('/deploy/releases'), loading: false }) }
     catch (e: any) { set({ loading: false }); toast.error('加载发布单失败: ' + e.message) }
   },
   createRelease: async (d) => {
@@ -128,7 +128,7 @@ export const useDeployStore = create<DeployState>((set, get) => ({
   },
 
   fetchEnvs: async () => {
-    try { set({ environments: await apiFetch<DeployEnvironment[]>('/deploy/environments') }) }
+    try { set({ environments: await apiList<DeployEnvironment>('/deploy/environments') }) }
     catch (e: any) { toast.error('加载环境失败: ' + e.message) }
   },
   createEnv: async (d) => {
@@ -145,7 +145,7 @@ export const useDeployStore = create<DeployState>((set, get) => ({
   },
 
   fetchHistory: async () => {
-    try { set({ history: await apiFetch<ReleaseHistory[]>('/deploy/history') }) }
+    try { set({ history: await apiList<ReleaseHistory>('/deploy/history') }) }
     catch (e: any) { toast.error('加载历史失败: ' + e.message) }
   },
 }))

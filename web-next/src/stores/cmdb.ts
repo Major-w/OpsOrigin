@@ -1,7 +1,7 @@
 'use client'
 
 import { create } from 'zustand'
-import { apiFetch } from '@/lib/utils'
+import { apiFetch, apiList } from '@/lib/utils'
 import { toast } from '@/stores/toast'
 import type { AttrMeta } from '@/components/cmdb/SourceBadge'
 
@@ -85,8 +85,8 @@ interface CMDBState {
   total: number
   loading: boolean
   error: string | null
-  fetch: (params?: { type_id?: string; sort_by?: string; sort_order?: string; limit?: number; offset?: number }) => Promise<void>
-  search: (q: string, type_id?: string) => Promise<void>
+  fetch: (params?: { type_id?: string; sort_by?: string; sort_order?: string; limit?: number; offset?: number; archived?: string }) => Promise<void>
+  search: (q: string, type_id?: string, archived?: string) => Promise<void>
   create: (data: Partial<CIModel>) => Promise<boolean>
   update: (id: string, data: Partial<CIModel>) => Promise<boolean>
   remove: (id: string) => Promise<boolean>
@@ -118,21 +118,23 @@ export const useCMDBStore = create<CMDBState>((set, get) => ({
       if (params?.sort_order) qs.set('sort_order', params.sort_order)
       if (params?.limit) qs.set('limit', String(params.limit))
       if (params?.offset) qs.set('offset', String(params.offset))
+      if (params?.archived) qs.set('archived', params.archived)
       const path = `/cmdb/ci${qs.toString() ? '?' + qs.toString() : ''}`
-      const items = await apiFetch<CIModel[]>(path)
+      const items = await apiList<CIModel>(path)
       set({ items, total: items.length, loading: false })
     } catch (e: any) {
       set({ loading: false })
       toast.error(`加载CMDB实例失败: ${e.message}`)
     }
   },
-  search: async (q, type_id) => {
+  search: async (q, type_id, archived) => {
     set({ loading: true })
     try {
       const qs = new URLSearchParams()
       if (q) qs.set('q', q)
       if (type_id) qs.set('type_id', type_id)
-      const items = await apiFetch<CIModel[]>(`/cmdb/search?${qs.toString()}`)
+      if (archived) qs.set('archived', archived)
+      const items = await apiList<CIModel>(`/cmdb/search?${qs.toString()}`)
       set({ items, total: items.length, loading: false })
     } catch (e: any) {
       set({ loading: false })
@@ -174,7 +176,7 @@ export const useCMDBStore = create<CMDBState>((set, get) => ({
   },
   getAudit: async (id) => {
     try {
-      return await apiFetch<AttributeChange[]>(`/cmdb/ci/${id}/audit`)
+      return await apiList<AttributeChange>(`/cmdb/ci/${id}/audit`)
     } catch (e: any) {
       toast.error(`加载变更记录失败: ${e.message}`)
       throw e
@@ -182,7 +184,7 @@ export const useCMDBStore = create<CMDBState>((set, get) => ({
   },
   fetchRelations: async () => {
     try {
-      const relations = await apiFetch<CIRelation[]>('/cmdb/relation')
+      const relations = await apiList<CIRelation>('/cmdb/relation')
       set({ relations })
     } catch (e: any) {
       toast.error(`加载关联关系失败: ${e.message}`)
@@ -212,7 +214,7 @@ export const useCMDBStore = create<CMDBState>((set, get) => ({
   },
   fetchModelTypes: async () => {
     try {
-      const items = await apiFetch<CIModel[]>('/cmdb/ci?limit=200')
+      const items = await apiList<CIModel>('/cmdb/ci?limit=200')
       const types = new Map<string, CIModelType>()
       for (const ci of items) {
         if (!types.has(ci.type_id)) {

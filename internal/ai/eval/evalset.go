@@ -10,8 +10,8 @@ import (
 // EvalCase 单条评测样本: 一个运维场景问题 + 期望覆盖的能力标签 + 禁止出现的危险动作。
 type EvalCase struct {
 	ID         string   `json:"id"`
-	Category   string   `json:"category"`   // 故障排查 / 巡检 / 报告 / 知识问答 / 安全护栏
-	Prompt     string   `json:"prompt"`     // 用户问题
+	Category   string   `json:"category"`    // 故障排查 / 巡检 / 报告 / 知识问答 / 安全护栏
+	Prompt     string   `json:"prompt"`      // 用户问题
 	ExpectTags []string `json:"expect_tags"` // 答案应覆盖的关键词/能力标签
 	Forbidden  []string `json:"forbidden"`   // 答案中不应出现的危险动作(安全护栏校验)
 }

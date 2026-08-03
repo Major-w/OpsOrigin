@@ -20,8 +20,6 @@ import (
 
 	"github.com/google/uuid"
 	pb "github.com/opsorigin/core/api/proto"
-	"github.com/redis/go-redis/v9"
-	"slices"
 	"github.com/opsorigin/core/internal/command"
 	"github.com/opsorigin/core/internal/ent"
 	entFile "github.com/opsorigin/core/internal/ent/file"
@@ -30,7 +28,11 @@ import (
 	"github.com/opsorigin/core/internal/token"
 	"github.com/opsorigin/core/internal/tunnel"
 	"github.com/opsorigin/core/pkg/validate"
+	"github.com/redis/go-redis/v9"
 	"golang.org/x/crypto/ssh"
+	"slices"
+
+	"github.com/opsorigin/core/pkg/httputil"
 )
 
 // Store 定义 agent 管理服务的数据持久化接口。
@@ -86,10 +88,16 @@ func (s *MemoryStore) Register(ctx context.Context, host *AgentHost) error {
 		host.ID = existing.ID
 		host.FirstSeen = existing.FirstSeen
 		host.CreatedAt = existing.CreatedAt
-		if ch != "" { host.Channels = mergeChannels(existing.Channels, ch) }
+		if ch != "" {
+			host.Channels = mergeChannels(existing.Channels, ch)
+		}
 	}
-	if host.ID == "" { host.ID = uuid.New().String() }
-	if len(host.Channels) == 0 { host.Channels = []string{ch} }
+	if host.ID == "" {
+		host.ID = uuid.New().String()
+	}
+	if len(host.Channels) == 0 {
+		host.Channels = []string{ch}
+	}
 	now := time.Now()
 	host.FirstSeen = &now
 	host.CreatedAt = now
@@ -108,29 +116,39 @@ func (s *MemoryStore) Register(ctx context.Context, host *AgentHost) error {
 func (s *MemoryStore) GetByFingerprint(ctx context.Context, fp, tenantID string) (*AgentHost, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	if h := s.lookupByFingerprint(fp); h != nil && h.TenantID == tenantID { return h, nil }
+	if h := s.lookupByFingerprint(fp); h != nil && h.TenantID == tenantID {
+		return h, nil
+	}
 	return nil, nil
 }
 
 func (s *MemoryStore) lookupByFingerprint(fp string) *AgentHost {
 	for _, h := range s.hosts {
-		if h.Fingerprint == fp { return h }
+		if h.Fingerprint == fp {
+			return h
+		}
 	}
 	return nil
 }
 
 func channelFromType(t AgentType) string {
 	switch t {
-	case AgentTypeAgent: return "agent"
-	case AgentTypeAgentless: return "ssh"
-	case AgentTypeSandbox: return "sandbox"
-	default: return string(t)
+	case AgentTypeAgent:
+		return "agent"
+	case AgentTypeAgentless:
+		return "ssh"
+	case AgentTypeSandbox:
+		return "sandbox"
+	default:
+		return string(t)
 	}
 }
 
 func mergeChannels(existing []string, new string) []string {
 	for _, c := range existing {
-		if c == new { return existing }
+		if c == new {
+			return existing
+		}
 	}
 	return append(existing, new)
 }
@@ -381,18 +399,18 @@ type bootSeen struct {
 type Service struct {
 	store           Store
 	entClient       *ent.Client
-	hbWriter        *HeartbeatWriter    // Redis heartbeat writer (nil if Redis unavailable)
+	hbWriter        *HeartbeatWriter // Redis heartbeat writer (nil if Redis unavailable)
 	circuitBreakers map[string]*CircuitBreakerConfig
 	cbMu            sync.Mutex
 	// boot_id 追踪:按 host_id 记录最近一次上报的 boot_id 与时间,
 	// 用于检测镜像克隆冲突(同一 host_id 在短时间窗口内来自两个不同的 boot_id)。
-	hostBootID map[string]bootSeen
-	bootIDMu   sync.Mutex
-	stopCh          chan struct{}
-	tlsEnabled      bool                // 是否全局启用 HTTPS(影响安装脚本中的 scheme)
-	tunnelServer    *tunnel.Server      // Proxy 隧道服务(TCP,可选)
-	grpcTunnel     *tunnel.GRPCServer  // gRPC 直连隧道服务(可选,启用后支持直连 Agent 下发命令)
-	remoteExec      *remoteexec.Service // SSH 远程执行服务(agentless 主机命令执行)
+	hostBootID   map[string]bootSeen
+	bootIDMu     sync.Mutex
+	stopCh       chan struct{}
+	tlsEnabled   bool                // 是否全局启用 HTTPS(影响安装脚本中的 scheme)
+	tunnelServer *tunnel.Server      // Proxy 隧道服务(TCP,可选)
+	grpcTunnel   *tunnel.GRPCServer  // gRPC 直连隧道服务(可选,启用后支持直连 Agent 下发命令)
+	remoteExec   *remoteexec.Service // SSH 远程执行服务(agentless 主机命令执行)
 
 	// T11: 任务下发队列
 	taskQueue *TaskQueue
@@ -419,10 +437,10 @@ type Service struct {
 	// 执行前均须命中白名单,否则拒绝。由上层从 command_whitelist 表加载后通过 SetWhitelist 注入。
 	whitelist       *command.Whitelist
 	whitelistMu     sync.RWMutex
-	fileTokenSecret string              // §6 文件下载短期令牌密钥(P1 文件代理启用)
-	fileStoreDir    string              // §5 文件分发中心存储目录(以 file_id 为文件名)
+	fileTokenSecret string             // §6 文件下载短期令牌密钥(P1 文件代理启用)
+	fileStoreDir    string             // §5 文件分发中心存储目录(以 file_id 为文件名)
 	fileLimiter     *filelimit.Limiter // §5 文件下载限流/熔断器
-	serverBaseURL   string              // Server 对外基址(如 http://host:8080),用于拓扑感知下发直连下载地址
+	serverBaseURL   string             // Server 对外基址(如 http://host:8080),用于拓扑感知下发直连下载地址
 }
 
 func NewService(db *sql.DB, rdb *redis.Client, entClient *ent.Client) *Service {
@@ -973,6 +991,7 @@ func (s *Service) handleSetSandboxLabel(w http.ResponseWriter, r *http.Request) 
 // 匹配规则:
 //   - 主机名(hostname)等于本机主机名的 Agent;
 //   - Agent ID 命中环境变量 OPSNEXUS_SANDBOX_AGENTS(逗号分隔)列表。
+//
 // 可通过 OPSNEXUS_SANDBOX_AUTO=0 关闭自动标记。
 func (s *Service) ApplySandboxPool(ctx context.Context) {
 	if os.Getenv("OPSNEXUS_SANDBOX_AUTO") == "0" {
@@ -1192,6 +1211,7 @@ func (s *Service) handleSSHExecute(w http.ResponseWriter, r *http.Request) {
 // 约定：proxy 侧收到 CommandRequest 后，按 action 执行：
 //   - "ssh_exec"：以 payload 中的 host/port/user/key 做 SSH 并在目标上运行 command。
 //   - "ssh_test"：仅做连通性探测。
+//
 // 返回结构化结果经 CommandResponse.Output（JSON：{output,exit_code,error}）回传。
 func (s *Service) execViaProxy(proxyID, action string, payload any, timeoutSec int32) (output string, exitCode int, err error) {
 	body, mErr := json.Marshal(payload)
@@ -1916,11 +1936,11 @@ func (s *Service) handleBatchInstall(w http.ResponseWriter, r *http.Request) {
 				InstallMethod: InstallManual,
 				ProxyID:       req.ProxyID,
 			}
-		s.store.Register(r.Context(), host)
-		onboard(host.ID)
-		results = append(results, map[string]any{"address": addr, "status": "failed", "error": runErr.Error(), "agent_id": host.ID, "output": output})
-		continue
-	}
+			s.store.Register(r.Context(), host)
+			onboard(host.ID)
+			results = append(results, map[string]any{"address": addr, "status": "failed", "error": runErr.Error(), "agent_id": host.ID, "output": output})
+			continue
+		}
 
 		host := &AgentHost{
 			TenantID:      tenantID,
@@ -3283,11 +3303,11 @@ func buildFileURL(base, fileID, tok string) string {
 
 // downloadTaskRequest 创建下载任务的请求体。
 type downloadTaskRequest struct {
-	FileID          string `json:"file_id"`
-	FilePath        string `json:"file_path"`
+	FileID           string `json:"file_id"`
+	FilePath         string `json:"file_path"`
 	ExpectedChecksum string `json:"expected_checksum,omitempty"`
-	ChecksumAlgo   string `json:"checksum_algo,omitempty"`
-	TTLSec          int    `json:"ttl_sec,omitempty"` // 令牌有效期(秒),0 ⇒ 上限 10 分钟
+	ChecksumAlgo     string `json:"checksum_algo,omitempty"`
+	TTLSec           int    `json:"ttl_sec,omitempty"` // 令牌有效期(秒),0 ⇒ 上限 10 分钟
 }
 
 // handleCreateDownloadTask 创建文件分发任务(§5):
@@ -3349,12 +3369,12 @@ func (s *Service) handleCreateDownloadTask(w http.ResponseWriter, r *http.Reques
 	}
 
 	task := &TaskRequest{
-		TaskID:          uuid.New().String(),
-		FileID:          req.FileID,
-		FileURL:         buildFileURL(base, req.FileID, tok),
-		FilePath:        req.FilePath,
+		TaskID:           uuid.New().String(),
+		FileID:           req.FileID,
+		FileURL:          buildFileURL(base, req.FileID, tok),
+		FilePath:         req.FilePath,
 		ExpectedChecksum: req.ExpectedChecksum,
-		ChecksumAlgo:   req.ChecksumAlgo,
+		ChecksumAlgo:     req.ChecksumAlgo,
 	}
 	if err := s.store.CreateTask(r.Context(), agentID, task); err != nil {
 		slog.Warn("create download task failed", "error", err, "agent_id", agentID)
@@ -3368,10 +3388,10 @@ func (s *Service) handleCreateDownloadTask(w http.ResponseWriter, r *http.Reques
 }
 
 // handleServeFile 中心存储文件拉取端点(§5):
-//  - 校验短期令牌(file_id 绑定 + 未过期);
-//  - 限流/熔断(按 agent_id);
-//  - 以 http.ServeContent 支持 Range 断点续传;
-//  - 失败计入熔断,成功清零。
+//   - 校验短期令牌(file_id 绑定 + 未过期);
+//   - 限流/熔断(按 agent_id);
+//   - 以 http.ServeContent 支持 Range 断点续传;
+//   - 失败计入熔断,成功清零。
 func (s *Service) handleServeFile(w http.ResponseWriter, r *http.Request) {
 	fileID := r.PathValue("file_id")
 	tok := r.URL.Query().Get("token")
@@ -3432,6 +3452,7 @@ func (s *Service) handleServeFile(w http.ResponseWriter, r *http.Request) {
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {
+	v = httputil.EmptySliceIfNil(v)
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	json.NewEncoder(w).Encode(v)
@@ -3559,10 +3580,10 @@ func (s *Service) handleBatchUpgrade(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{
-		"status":          "ok",
-		"target_version":  target,
+		"status":         "ok",
+		"target_version": target,
 		"upgrade_queued": upgraded,
-		"skipped":         skipped,
+		"skipped":        skipped,
 	})
 }
 
@@ -3609,7 +3630,9 @@ func (s *Service) handleUploadFile(w http.ResponseWriter, r *http.Request) {
 	}
 	checksum := fmt.Sprintf("%x", h.Sum(nil))
 	tenantID := r.Header.Get("X-Tenant-ID")
-	if tenantID == "" { tenantID = "default" }
+	if tenantID == "" {
+		tenantID = "default"
+	}
 	meta := fileMeta{
 		ID: fid, OriginalName: header.Filename, StoredPath: storedPath,
 		SizeBytes: size, Checksum: checksum, ChecksumAlgo: "sha256",
@@ -3623,7 +3646,9 @@ func (s *Service) handleUploadFile(w http.ResponseWriter, r *http.Request) {
 			SetSizeBytes(size).SetChecksum(checksum).SetChecksumAlgo("sha256").
 			SetCreatedAt(time.Now()).SetUpdatedAt(time.Now()).
 			Save(r.Context())
-		if err != nil { slog.Warn("file meta save failed", "error", err) }
+		if err != nil {
+			slog.Warn("file meta save failed", "error", err)
+		}
 	}
 	writeJSON(w, http.StatusCreated, meta)
 }
@@ -3634,9 +3659,14 @@ func (s *Service) handleListFiles(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	tenantID := r.Header.Get("X-Tenant-ID")
-	if tenantID == "" { tenantID = "default" }
+	if tenantID == "" {
+		tenantID = "default"
+	}
 	files, err := s.entClient.File.Query().Where(entFile.TenantIDEQ(tenantID)).Order(ent.Desc(entFile.FieldCreatedAt)).All(r.Context())
-	if err != nil { writeError(w, http.StatusInternalServerError, err.Error()); return }
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
 	result := make([]fileMeta, 0, len(files))
 	for _, f := range files {
 		result = append(result, fileMeta{
@@ -3645,7 +3675,9 @@ func (s *Service) handleListFiles(w http.ResponseWriter, r *http.Request) {
 			TenantID: f.TenantID, CreatedAt: f.CreatedAt.Format(time.RFC3339),
 		})
 	}
-	if result == nil { result = []fileMeta{} }
+	if result == nil {
+		result = []fileMeta{}
+	}
 	writeJSON(w, http.StatusOK, result)
 }
 
@@ -3667,7 +3699,10 @@ func (s *Service) handleFileMeta(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	f, err := s.entClient.File.Get(r.Context(), fid)
-	if err != nil { writeError(w, http.StatusNotFound, "file not found"); return }
+	if err != nil {
+		writeError(w, http.StatusNotFound, "file not found")
+		return
+	}
 	writeJSON(w, http.StatusOK, fileMeta{
 		ID: f.ID, OriginalName: f.OriginalName, SizeBytes: f.SizeBytes,
 		Checksum: f.Checksum, ChecksumAlgo: f.ChecksumAlgo,

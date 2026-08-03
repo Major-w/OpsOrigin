@@ -23,10 +23,10 @@ type Server struct {
 }
 
 type ProxySession struct {
-	ID         string
-	ProxyID    string
-	Conn       *Conn
-	Hostname   string
+	ID           string
+	ProxyID      string
+	Conn         *Conn
+	Hostname     string
 	Capabilities []string
 }
 

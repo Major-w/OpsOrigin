@@ -29,14 +29,14 @@ type DAGDependency struct {
 }
 
 type WorkflowStep struct {
-	ID            string         `json:"id"`
-	Name          string         `json:"name"`
-	Type          StepType       `json:"type"`
-	ScriptID      string         `json:"script_id,omitempty"`
-	Inputs        map[string]any `json:"inputs,omitempty"`
-	Condition     string         `json:"condition,omitempty"`
-	OnSuccess     string         `json:"on_success,omitempty"`
-	OnFailure     string         `json:"on_failure,omitempty"`
+	ID        string         `json:"id"`
+	Name      string         `json:"name"`
+	Type      StepType       `json:"type"`
+	ScriptID  string         `json:"script_id,omitempty"`
+	Inputs    map[string]any `json:"inputs,omitempty"`
+	Condition string         `json:"condition,omitempty"`
+	OnSuccess string         `json:"on_success,omitempty"`
+	OnFailure string         `json:"on_failure,omitempty"`
 	// DAG 依赖边（前端画布用 depends_on 表达连线，替代 on_success/on_failure）。
 	// 保存时保留原样，执行前经 compileDAG 编译为 on_success/on_failure 供执行器消费。
 	DependsOn     []DAGDependency `json:"depends_on,omitempty"`

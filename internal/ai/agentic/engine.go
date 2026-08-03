@@ -85,15 +85,15 @@ type Engine struct {
 // 此处仅注册与引擎强耦合的、安全的内建工具。
 func NewEngine(reg *mcp.Registry, lim ratelimit.RateLimiter, llmClient *llm.Client, store ConversationStore) *Engine {
 	e := &Engine{
-		agents:    make(map[string]*model.AgentInstance),
-		plans:     make(map[string]*model.ExecutionPlan),
-		convStore: store,
-		convs:     make(map[string]*Conversation),
-		teams:     make(map[string]*model.AgentTeam),
-		reg:       reg,
-		lim:       lim,
-		semMu:     sync.Mutex{},
-		llmSem:    make(chan struct{}, 32),
+		agents:              make(map[string]*model.AgentInstance),
+		plans:               make(map[string]*model.ExecutionPlan),
+		convStore:           store,
+		convs:               make(map[string]*Conversation),
+		teams:               make(map[string]*model.AgentTeam),
+		reg:                 reg,
+		lim:                 lim,
+		semMu:               sync.Mutex{},
+		llmSem:              make(chan struct{}, 32),
 		defaultSystemPrompt: DefaultSystemPrompt,
 		toolCache:           newTTLCache(toolCacheTTL, 2048),
 	}
@@ -536,9 +536,9 @@ func (e *Engine) defaultSummarize(ctx context.Context, msgs []llm.Message) (stri
 
 // ——— 历史清洗(防御提示注入, P0-1) ———
 const (
-	maxHistoryMessages = 20    // SanitizeHistory 的总条数上限(防御注入 + 兜底)
+	maxHistoryMessages = 20   // SanitizeHistory 的总条数上限(防御注入 + 兜底)
 	maxHistoryMsgLen   = 8000 // 单条历史消息最大长度, 防止超长内容撑爆上下文
-	historyKeepRecent  = 16    // 超过该窗口时较早历史被压缩(保留该窗口 + 原始意图锚点/摘要)
+	historyKeepRecent  = 16   // 超过该窗口时较早历史被压缩(保留该窗口 + 原始意图锚点/摘要)
 )
 
 // SanitizeHistory 清洗客户端提交的对话历史, 防止提示注入:
@@ -876,7 +876,6 @@ func suffixComment(comment string) string {
 	return ": " + comment
 }
 
-
 // privilegedTools 需要 ai:tool:exec 权限的高风险/写操作工具。
 // 仅 script_run(在受管主机执行脚本) 与 ticket_create(创建工单) 受此约束;
 // 只读工具(cmdb_query / knowledge_search) 任何已认证用户均可经 AI 调用。
@@ -904,7 +903,7 @@ func (e *Engine) execToolChecked(ctx context.Context, tc llm.ToolCall) (any, boo
 			return map[string]any{"error": fmt.Sprintf("permission denied: tool %q requires permission %s", name, auth.PermissionAIToolExec)}, false
 		}
 	}
-	if e.lim != nil && !e.lim.Allow("tool:" + name) {
+	if e.lim != nil && !e.lim.Allow("tool:"+name) {
 		AIToolExecDenied.Inc()
 		slog.Warn("ai tool exec rate limited", "tool", name)
 		return map[string]any{"error": "rate limit exceeded for tool execution: " + name}, false
@@ -927,7 +926,7 @@ func (e *Engine) execToolChecked(ctx context.Context, tc llm.ToolCall) (any, boo
 		}
 	}
 
-	if e.lim != nil && !e.lim.Allow("tool:" + name) {
+	if e.lim != nil && !e.lim.Allow("tool:"+name) {
 		AIToolExecDenied.Inc()
 		slog.Warn("ai tool exec rate limited", "tool", name)
 		return map[string]any{"error": "rate limit exceeded for tool execution: " + name}, false

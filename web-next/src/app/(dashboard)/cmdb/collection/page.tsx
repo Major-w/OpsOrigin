@@ -6,13 +6,12 @@ import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { Input } from '@/components/ui/input'
 import { Select } from '@/components/ui/select'
-import { Switch, SwitchField } from '@/components/ui/switch'
+import { Switch } from '@/components/ui/switch'
 import { Dialog, DialogFooter } from '@/components/ui/dialog'
 import { useCollectionStore } from '@/stores/collection'
 import { useCan } from '@/stores/permissions'
 import {
   CHANNEL_LABELS,
-  DEFAULT_PLATFORM_POLICY,
   FREQUENCY_PRESETS,
   KIND_LABELS,
   RESOURCE_TYPE_LABELS,
@@ -21,12 +20,12 @@ import {
   type CollectionKind,
   type CollectionResourceType,
   type CollectionTask,
-  type PlatformPolicy,
+  type CreateCollectionTaskRequest,
 } from '@/lib/collection'
-import { cn } from '@/lib/utils'
+import { cn, apiList } from '@/lib/utils'
 import {
-  Database, Activity, Save, RefreshCw, Play, Trash2, Plus, Server, Cloud, Box,
-  Loader2, CheckCircle2, XCircle, Radio, Settings2,
+  Database, Activity, RefreshCw, Play, Trash2, Plus, Server, Cloud, Box,
+  Loader2, CheckCircle2, XCircle, Radio, Settings2, Bookmark,
 } from 'lucide-react'
 
 const FREQ_OPTIONS = FREQUENCY_PRESETS.map(f => ({ value: f.value, label: f.label }))
@@ -38,33 +37,25 @@ const RESOURCE_ICONS: Record<CollectionResourceType, typeof Cloud> = {
 }
 
 export default function CollectionPolicyPage() {
-  const { policy, tasks, loading, saving, fetchPolicy, savePolicy, fetchTasks, updateTask, deleteTask, runTask, createTask } =
+  const { tasks, loading, fetchTasks, updateTask, deleteTask, runTask, createTask } =
     useCollectionStore()
 
-  const [draft, setDraft] = useState<PlatformPolicy>(DEFAULT_PLATFORM_POLICY)
   const canDelete = useCan('cmdb:delete')
   const [kindFilter, setKindFilter] = useState<'all' | CollectionKind>('all')
   const [dialogOpen, setDialogOpen] = useState(false)
+  const [savedQueries, setSavedQueries] = useState<{ id: string; name: string }[]>([])
   const [form, setForm] = useState<{
-    name: string; resource_type: CollectionResourceType; target: string; kind: CollectionKind; frequency: string; enabled: boolean
-  }>({ name: '', resource_type: 'cloud', target: '', kind: 'cmdb', frequency: '1h', enabled: true })
+    name: string; resource_type: CollectionResourceType; target: string; kind: CollectionKind; frequency: string; enabled: boolean; target_mode: 'static' | 'query'; target_query: string
+  }>({ name: '', resource_type: 'cloud', target: '', kind: 'cmdb', frequency: '1h', enabled: true, target_mode: 'static', target_query: '' })
 
   useEffect(() => {
-    fetchPolicy(true)
     fetchTasks()
-  }, [fetchPolicy, fetchTasks])
+    loadSavedQueries()
+  }, [fetchTasks])
 
-  useEffect(() => { setDraft(policy) }, [policy])
-
-  const dirty = useMemo(() =>
-    draft.default_cmdb_enabled !== policy.default_cmdb_enabled ||
-    draft.default_monitor_enabled !== policy.default_monitor_enabled ||
-    draft.cmdb_default_frequency !== policy.cmdb_default_frequency ||
-    draft.monitor_default_frequency !== policy.monitor_default_frequency,
-  [draft, policy])
-
-  const cmdbFreqErr = validateFrequency(draft.cmdb_default_frequency)
-  const monitorFreqErr = validateFrequency(draft.monitor_default_frequency)
+  const loadSavedQueries = async () => {
+    try { setSavedQueries(await apiList<{ id: string; name: string }>('/cmdb/saved-queries')) } catch { setSavedQueries([]) }
+  }
 
   const filtered = kindFilter === 'all' ? tasks : tasks.filter(t => t.kind === kindFilter)
   const stats = useMemo(() => ({
@@ -75,23 +66,23 @@ export default function CollectionPolicyPage() {
     failed: tasks.filter(t => t.status === 'failed').length,
   }), [tasks])
 
-  const handleSave = async () => {
-    if (cmdbFreqErr || monitorFreqErr) return
-    await savePolicy(draft)
-  }
-
   const handleCreate = async () => {
-    const ok = await createTask({
+    const req: CreateCollectionTaskRequest = {
       name: form.name || undefined,
       resource_type: form.resource_type,
       target: form.target.trim(),
       kind: form.kind,
       frequency: form.frequency,
       enabled: form.enabled,
-    })
+    }
+    if (form.target_mode === 'query') {
+      req.target_mode = 'query'
+      req.target_query = form.target_query
+    }
+    const ok = await createTask(req)
     if (ok) {
       setDialogOpen(false)
-      setForm({ name: '', resource_type: 'cloud', target: '', kind: 'cmdb', frequency: '1h', enabled: true })
+      setForm({ name: '', resource_type: 'cloud', target: '', kind: 'cmdb', frequency: '1h', enabled: true, target_mode: 'static', target_query: '' })
     }
   }
 
@@ -117,13 +108,13 @@ export default function CollectionPolicyPage() {
     <div className="p-6 space-y-4">
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-2xl font-bold">采集策略</h1>
+          <h1 className="text-2xl font-bold">采集任务</h1>
           <p className="text-sm text-muted-foreground">
-            平台全局默认采集行为 + 全量采集任务调度总览。CMDB 是唯一调度者，纳管时可逐资源覆盖默认值。
+            全量采集任务调度总览。CMDB 是唯一调度者；全局默认采集策略（资源接入默认值）在「资源纳管」页配置，纳管时可逐资源覆盖。
           </p>
         </div>
         <div className="flex gap-2">
-          <Button variant="outline" onClick={() => { fetchPolicy(true); fetchTasks() }} disabled={loading}>
+          <Button variant="outline" onClick={() => fetchTasks()} disabled={loading}>
             <RefreshCw className={cn('h-4 w-4', loading && 'animate-spin')} />刷新
           </Button>
           <Button onClick={() => setDialogOpen(true)}><Plus className="h-4 w-4" />新建采集任务</Button>
@@ -154,86 +145,6 @@ export default function CollectionPolicyPage() {
           </CardContent></Card>
         ))}
       </div>
-
-      {/* 全局默认策略 */}
-      <Card>
-        <CardHeader>
-          <CardTitle className="text-sm flex items-center gap-2"><Settings2 className="h-4 w-4" />全局默认策略</CardTitle>
-          <CardDescription>
-            新纳管资源的默认采集行为。资源纳管表单的勾选框会预填这里的值，可针对单个资源覆盖。
-          </CardDescription>
-        </CardHeader>
-        <CardContent className="space-y-4">
-          <div className="grid gap-4 md:grid-cols-2">
-            <div className="space-y-3">
-              <SwitchField
-                label="默认开启 CMDB 采集"
-                description="CMDB 是平台基石，建议保持开启：新资源纳管后自动创建 cmdb 类采集任务，周期性写入配置项。"
-                checked={draft.default_cmdb_enabled}
-                onCheckedChange={v => setDraft(d => ({ ...d, default_cmdb_enabled: v }))}
-              />
-              <div>
-                <label className="text-xs font-medium text-muted-foreground">CMDB 采集默认频率</label>
-                <div className="flex gap-2 mt-1">
-                  <Input
-                    value={draft.cmdb_default_frequency}
-                    onChange={e => setDraft(d => ({ ...d, cmdb_default_frequency: e.target.value }))}
-                    placeholder="1h"
-                    className={cn('font-mono', cmdbFreqErr && 'border-red-500')}
-                  />
-                  <Select
-                    className="w-32"
-                    value=""
-                    options={[{ value: '', label: '预设' }, ...FREQ_OPTIONS]}
-                    onChange={e => e.target.value && setDraft(d => ({ ...d, cmdb_default_frequency: e.target.value }))}
-                  />
-                </div>
-                {cmdbFreqErr && <p className="text-xs text-red-500 mt-1">{cmdbFreqErr}</p>}
-              </div>
-            </div>
-
-            <div className="space-y-3">
-              <SwitchField
-                label="默认开启监控采集"
-                description="默认关闭：监控采集频率高、资源开销大，建议按需为关键资源单独开启。"
-                checked={draft.default_monitor_enabled}
-                onCheckedChange={v => setDraft(d => ({ ...d, default_monitor_enabled: v }))}
-              />
-              <div>
-                <label className="text-xs font-medium text-muted-foreground">监控采集默认频率</label>
-                <div className="flex gap-2 mt-1">
-                  <Input
-                    value={draft.monitor_default_frequency}
-                    onChange={e => setDraft(d => ({ ...d, monitor_default_frequency: e.target.value }))}
-                    placeholder="5m"
-                    className={cn('font-mono', monitorFreqErr && 'border-red-500')}
-                  />
-                  <Select
-                    className="w-32"
-                    value=""
-                    options={[{ value: '', label: '预设' }, ...FREQ_OPTIONS]}
-                    onChange={e => e.target.value && setDraft(d => ({ ...d, monitor_default_frequency: e.target.value }))}
-                  />
-                </div>
-                {monitorFreqErr && <p className="text-xs text-red-500 mt-1">{monitorFreqErr}</p>}
-              </div>
-            </div>
-          </div>
-
-          <div className="flex items-center justify-between pt-1 border-t border-gray-100 dark:border-gray-800">
-            <p className="text-xs text-muted-foreground pt-3">
-              {dirty ? '有未保存的更改' : '策略已是最新'}
-              {policy.updated_at && !dirty && ` · 更新于 ${policy.updated_at.slice(0, 19).replace('T', ' ')}`}
-            </p>
-            <div className="flex gap-2 pt-3">
-              {dirty && <Button variant="outline" onClick={() => setDraft(policy)}>撤销</Button>}
-              <Button onClick={handleSave} disabled={!dirty || saving || !!cmdbFreqErr || !!monitorFreqErr}>
-                {saving ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}保存策略
-              </Button>
-            </div>
-          </div>
-        </CardContent>
-      </Card>
 
       {/* 采集任务总览 */}
       <Card>
@@ -294,7 +205,16 @@ export default function CollectionPolicyPage() {
                             <Icon className="h-3.5 w-3.5" />{RESOURCE_TYPE_LABELS[t.resource_type] || t.resource_type}
                           </span>
                         </td>
-                        <td className="px-4 py-3 text-xs font-mono text-muted-foreground">{t.target}</td>
+                        <td className="px-4 py-3 text-xs">
+                          {t.target_mode === 'query' ? (
+                            <span className="inline-flex items-center gap-1 text-violet-600 dark:text-violet-400">
+                              <Bookmark className="h-3 w-3" />
+                              {savedQueries.find(s => s.id === t.target_query)?.name || '查询策略(已删除)'}
+                            </span>
+                          ) : (
+                            <span className="font-mono text-muted-foreground">{t.target}</span>
+                          )}
+                        </td>
                         <td className="px-4 py-3">
                           <Badge variant={t.kind === 'cmdb' ? 'info' : 'warning'}>
                             {t.kind === 'cmdb' ? <Database className="h-3 w-3" /> : <Activity className="h-3 w-3" />}
@@ -370,21 +290,65 @@ export default function CollectionPolicyPage() {
                 onChange={e => setForm(f => ({
                   ...f,
                   kind: e.target.value as CollectionKind,
-                  frequency: e.target.value === 'monitor' ? policy.monitor_default_frequency : policy.cmdb_default_frequency,
+                  frequency: e.target.value === 'monitor' ? '5m' : '1h',
                 }))}
               />
             </div>
           </div>
           <div>
-            <label className="text-sm font-medium">采集目标 *</label>
-            <Input
-              value={form.target}
-              onChange={e => setForm(f => ({ ...f, target: e.target.value }))}
-              placeholder="cloud:aliyun / host:&lt;agent-id&gt;"
-              className="font-mono"
-            />
-            <p className="text-xs text-muted-foreground mt-1">指向某个已纳管资源，格式 <code>&lt;类型&gt;:&lt;标识&gt;</code></p>
+            <label className="text-sm font-medium">执行目标模式</label>
+            <div className="flex gap-2 mt-1">
+              <button
+                type="button"
+                onClick={() => setForm(f => ({ ...f, target_mode: 'static', target_query: '' }))}
+                className={cn('flex-1 px-3 py-2 text-xs rounded-md border transition-colors',
+                  form.target_mode === 'static'
+                    ? 'border-emerald-500 bg-emerald-50 text-emerald-700 dark:bg-emerald-500/10 dark:text-emerald-400'
+                    : 'border-gray-200 dark:border-gray-700 text-muted-foreground hover:border-gray-300')}
+              >
+                静态目标
+              </button>
+              <button
+                type="button"
+                onClick={() => setForm(f => ({ ...f, target_mode: 'query' }))}
+                className={cn('flex-1 px-3 py-2 text-xs rounded-md border transition-colors',
+                  form.target_mode === 'query'
+                    ? 'border-violet-500 bg-violet-50 text-violet-700 dark:bg-violet-500/10 dark:text-violet-400'
+                    : 'border-gray-200 dark:border-gray-700 text-muted-foreground hover:border-gray-300')}
+              >
+                查询策略（动态目标）
+              </button>
+            </div>
+            <p className="text-xs text-muted-foreground mt-1">
+              {form.target_mode === 'query'
+                ? '按保存的查询（"我想查"）实时解析命中的资产集合，调度时自动对每个命中资产下发采集。'
+                : '指向某个已纳管资源，格式 <code>&lt;类型&gt;:&lt;标识&gt;</code>，如 cloud:aliyun / host:&lt;agent-id&gt;。'}
+            </p>
           </div>
+          {form.target_mode === 'query' ? (
+            <div>
+              <label className="text-sm font-medium">选择查询策略 *</label>
+              <Select
+                className="mt-1"
+                value={form.target_query}
+                options={savedQueries.map(s => ({ value: s.id, label: s.name }))}
+                onChange={e => setForm(f => ({ ...f, target_query: e.target.value }))}
+              />
+              {savedQueries.length === 0 && (
+                <p className="text-xs text-amber-600 mt-1">暂无保存的查询策略，请先在「CMDB 资产」页保存查询后回来刷新。</p>
+              )}
+            </div>
+          ) : (
+            <div>
+              <label className="text-sm font-medium">采集目标 *</label>
+              <Input
+                value={form.target}
+                onChange={e => setForm(f => ({ ...f, target: e.target.value }))}
+                placeholder="cloud:aliyun / host:&lt;agent-id&gt;"
+                className="font-mono"
+              />
+            </div>
+          )}
           <div>
             <label className="text-sm font-medium">采集频率 *</label>
             <div className="flex gap-2 mt-1">
@@ -396,15 +360,20 @@ export default function CollectionPolicyPage() {
               />
             </div>
           </div>
-          <SwitchField
-            label="创建后立即启用"
-            checked={form.enabled}
-            onCheckedChange={v => setForm(f => ({ ...f, enabled: v }))}
-          />
+          <label className="text-sm font-medium flex items-center gap-2">
+            <input type="checkbox" checked={form.enabled} onChange={e => setForm(f => ({ ...f, enabled: e.target.checked }))} className="rounded" />
+            创建后立即启用
+          </label>
         </div>
         <DialogFooter>
           <Button variant="outline" onClick={() => setDialogOpen(false)}>取消</Button>
-          <Button onClick={handleCreate} disabled={!form.target.trim() || !!validateFrequency(form.frequency)}>创建</Button>
+          <Button
+            onClick={handleCreate}
+            disabled={
+              !!validateFrequency(form.frequency) ||
+              (form.target_mode === 'query' ? !form.target_query : !form.target.trim())
+            }
+          >创建</Button>
         </DialogFooter>
       </Dialog>
     </div>

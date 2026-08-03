@@ -613,15 +613,33 @@ func (s *PGStore) ListActiveTicketsWithDeadline(ctx context.Context, tenantID st
 		if err != nil {
 			return nil, err
 		}
-		if scheduledAt.Valid { t.ScheduledAt = &scheduledAt.Time }
-		if deadlineAt.Valid { t.DeadlineAt = &deadlineAt.Time }
-		if approvedAt.Valid { t.ApprovedAt = &approvedAt.Time }
-		if executedAt.Valid { t.ExecutedAt = &executedAt.Time }
-		if completedAt.Valid { t.CompletedAt = &completedAt.Time }
-		if rolledBackAt.Valid { t.RolledBackAt = &rolledBackAt.Time }
-		if slaBreachedAt.Valid { t.SLABreachedAt = &slaBreachedAt.Time }
-		if ciIDsJSON != nil { json.Unmarshal(ciIDsJSON, &t.CIIDs) }
-		if labelsJSON != nil { json.Unmarshal(labelsJSON, &t.Labels) }
+		if scheduledAt.Valid {
+			t.ScheduledAt = &scheduledAt.Time
+		}
+		if deadlineAt.Valid {
+			t.DeadlineAt = &deadlineAt.Time
+		}
+		if approvedAt.Valid {
+			t.ApprovedAt = &approvedAt.Time
+		}
+		if executedAt.Valid {
+			t.ExecutedAt = &executedAt.Time
+		}
+		if completedAt.Valid {
+			t.CompletedAt = &completedAt.Time
+		}
+		if rolledBackAt.Valid {
+			t.RolledBackAt = &rolledBackAt.Time
+		}
+		if slaBreachedAt.Valid {
+			t.SLABreachedAt = &slaBreachedAt.Time
+		}
+		if ciIDsJSON != nil {
+			json.Unmarshal(ciIDsJSON, &t.CIIDs)
+		}
+		if labelsJSON != nil {
+			json.Unmarshal(labelsJSON, &t.Labels)
+		}
 		result = append(result, t)
 	}
 	return result, nil

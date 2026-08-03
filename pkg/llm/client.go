@@ -174,7 +174,7 @@ func (c *Client) doChatOnce(ctx context.Context, req ChatRequest) (*ChatResponse
 type StreamChunk struct {
 	Content      string     `json:"content"`       // 当前增量文本
 	Reasoning    string     `json:"reasoning"`     // 当前增量推理文本(原生思维链)
-	ToolCalls    []ToolCall `json:"tool_calls"`     // 本片携带的(已聚合)工具调用
+	ToolCalls    []ToolCall `json:"tool_calls"`    // 本片携带的(已聚合)工具调用
 	FinishReason string     `json:"finish_reason"` // 发送完成后非空,如 "stop"
 }
 

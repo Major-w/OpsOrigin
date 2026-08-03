@@ -168,7 +168,7 @@ func (s *WeComSender) Send(ch *Channel, title, content string) error {
 	// 企业微信 markdown 格式,标题加粗
 	text := fmt.Sprintf("**%s**\n%s", title, content)
 	body, _ := json.Marshal(map[string]any{
-		"msgtype": "markdown",
+		"msgtype":  "markdown",
 		"markdown": map[string]string{"content": text},
 	})
 	return postJSON(url, body)
@@ -243,7 +243,7 @@ func (s *WebhookSender) Send(ch *Channel, title, content string) error {
 		"title":   title,
 		"content": content,
 		"source":  "OpsOrigin",
-		"time":     time.Now().Format(time.RFC3339),
+		"time":    time.Now().Format(time.RFC3339),
 	}
 	body, _ := json.Marshal(payload)
 	req, err := http.NewRequest("POST", url, bytes.NewReader(body))

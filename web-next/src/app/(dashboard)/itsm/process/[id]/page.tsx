@@ -16,6 +16,7 @@ import { useNotificationStore } from '@/stores/notification'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
+import { Badge } from '@/components/ui/badge'
 import { formatTime } from '@/lib/utils'
 import {
   Plus, Trash2, Save, X, ChevronLeft, Loader2,
@@ -78,8 +79,12 @@ function detectCycle(steps: ProcessStep[]): boolean {
   return false
 }
 
+// 画布节点 data 为展示用途,字段松散;用宽松类型规避 @xyflow/react v12 严格的 NodeProps 默认类型
+type FlowNodeData = Record<string, any>
+type FlowNodeProps = NodeProps<Node<FlowNodeData>>
+
 // ---- custom nodes ----
-function BPMNStart({ data }: NodeProps) {
+function BPMNStart({ data }: FlowNodeProps) {
   return <div className="flex flex-col items-center">
     <div className="w-[100px] h-[52px] rounded-full border-2 flex items-center justify-center bg-white dark:bg-gray-800 shadow-sm" style={{ borderColor: META.start.color }}>
       <PlayCircle className="h-5 w-5 mr-1.5" style={{ color: META.start.color }}/>
@@ -88,7 +93,7 @@ function BPMNStart({ data }: NodeProps) {
     <Handle type="source" position={Position.Bottom} style={{ background: META.start.color, width: 10, height: 10 }}/>
   </div>
 }
-function BPMNEnd({ data }: NodeProps) {
+function BPMNEnd({ data }: FlowNodeProps) {
   return <div className="flex flex-col items-center">
     <Handle type="target" position={Position.Top} style={{ background: '#ef4444', width: 10, height: 10 }}/>
     <div className="w-[100px] h-[52px] rounded-full border-2 flex items-center justify-center bg-white dark:bg-gray-800 shadow-sm mt-1" style={{ borderColor: '#ef4444' }}>
@@ -97,12 +102,12 @@ function BPMNEnd({ data }: NodeProps) {
     </div>
   </div>
 }
-function BPMNUser({ data }: NodeProps) {
+function BPMNUser({ data }: FlowNodeProps) {
   return <BPMNBox color={META.user.color} icon={<UserCheck className="h-3.5 w-3.5"/>} data={data}>
     {data.approvers?.length > 0 && <p className="text-[10px]">👥 {data.approvers.length} 审批人</p>}
   </BPMNBox>
 }
-function BPMNGateway({ data }: NodeProps) {
+function BPMNGateway({ data }: FlowNodeProps) {
   return <div className="flex flex-col items-center">
     <Handle type="target" position={Position.Top} style={{ background: META.gateway.color, width: 8, height: 8 }}/>
     <div className="w-[60px] h-[60px] rotate-45 border-2 flex items-center justify-center bg-white dark:bg-gray-800 shadow-sm mt-1" style={{ borderColor: META.gateway.color }}>
@@ -114,7 +119,7 @@ function BPMNGateway({ data }: NodeProps) {
     </div>
   </div>
 }
-function BPMNTimer({ data }: NodeProps) {
+function BPMNTimer({ data }: FlowNodeProps) {
   return <div className="flex flex-col items-center">
     <Handle type="target" position={Position.Top} style={{ background: META.timer.color, width: 10, height: 10 }}/>
     <div className="w-[100px] h-[52px] rounded-full border-2 flex items-center justify-center bg-white dark:bg-gray-800 shadow-sm mt-1 gap-2" style={{ borderColor: META.timer.color }}>
@@ -134,22 +139,22 @@ function BPMNBox({ color, icon, data, children }: { color: string; icon: React.R
     <Handle type="source" position={Position.Bottom} style={{ background: color, width: 10, height: 10 }}/>
   </div>
 }
-function BPMNService({ data }: NodeProps) {
+function BPMNService({ data }: FlowNodeProps) {
   return <BPMNBox color={META.service.color} icon={<Server className="h-3.5 w-3.5"/>} data={data}>
     {data.scriptName && <p className="text-[10px] truncate">{data.scriptName}</p>}
   </BPMNBox>
 }
-function BPMNNotify({ data }: NodeProps) {
+function BPMNNotify({ data }: FlowNodeProps) {
   return <BPMNBox color={META.notify.color} icon={<Bell className="h-3.5 w-3.5"/>} data={data}>
     {data.notifyChannel && <p className="text-[10px] truncate">{data.notifyChannel}</p>}
   </BPMNBox>
 }
-function BPMNParallel({ data }: NodeProps) {
+function BPMNParallel({ data }: FlowNodeProps) {
   return <BPMNBox color={META.parallel.color} icon={<FolderTree className="h-3.5 w-3.5"/>} data={data}>
     <p className="text-[10px]">并行节点</p>
   </BPMNBox>
 }
-function BPMNSubflow({ data }: NodeProps) {
+function BPMNSubflow({ data }: FlowNodeProps) {
   return <BPMNBox color={META.subflow.color} icon={<FolderTree className="h-3.5 w-3.5"/>} data={data}>
     {data.subflowName && <p className="text-[10px] truncate">{data.subflowName}</p>}
   </BPMNBox>
@@ -203,7 +208,7 @@ function StepPanel({ step, steps, scripts, channels, onChange }: {
 
 // ---- BPMN canvas ----
 function BPMNCanvas({ process: proc, scripts, channels, onSave }: {
-  proc: Process; scripts: any[]; channels: any[]
+  process: Process; scripts: any[]; channels: any[]
   onSave: (steps: ProcessStep[]) => Promise<void>
 }) {
   const [steps, setSteps] = useState<ProcessStep[]>(() => {

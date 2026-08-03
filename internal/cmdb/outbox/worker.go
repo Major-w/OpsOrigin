@@ -71,14 +71,20 @@ func (w *Worker) processBatch(ctx context.Context) error {
 }
 
 func (w *Worker) syncRecord(ctx context.Context, rec *model.OutboxRecord) error {
+	// dgraph 不可用时(stub 模式)跳过图同步: 不阻塞主流程, Postgres 仍是源真相。
+	if w.dg == nil {
+		slog.Warn("dgraph client unavailable, skipping outbox graph sync",
+			"event", rec.EventType, "entity", rec.EntityID)
+		return nil
+	}
 	switch rec.EventType {
 	case model.EventCICreated, model.EventCIUpdated:
 		var payload struct {
-			CIID       string                   `json:"ci_id"`
-			TypeID     string                   `json:"type_id"`
-			Name       string                   `json:"name"`
-			ChangeLog  []model.AttributeChange  `json:"change_log,omitempty"`
-			Attributes map[string]any           `json:"attributes,omitempty"`
+			CIID       string                  `json:"ci_id"`
+			TypeID     string                  `json:"type_id"`
+			Name       string                  `json:"name"`
+			ChangeLog  []model.AttributeChange `json:"change_log,omitempty"`
+			Attributes map[string]any          `json:"attributes,omitempty"`
 		}
 		if err := json.Unmarshal([]byte(rec.Payload), &payload); err != nil {
 			return fmt.Errorf("unmarshal ci payload: %w", err)

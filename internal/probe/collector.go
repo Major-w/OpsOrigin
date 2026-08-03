@@ -68,12 +68,12 @@ func (c *Collector) Collect(ctx context.Context) (*K8sReport, error) {
 			readyNodes++
 		}
 		rep.Nodes = append(rep.Nodes, K8sNode{
-			Name:       n.Name,
-			Ready:      ready,
-			Roles:      nodeRoles(n),
-			Kubelet:    n.Status.NodeInfo.KubeletVersion,
-			OSImage:   n.Status.NodeInfo.OSImage,
-			CPUCapacity:  q(n.Status.Capacity.Cpu().String()),
+			Name:        n.Name,
+			Ready:       ready,
+			Roles:       nodeRoles(n),
+			Kubelet:     n.Status.NodeInfo.KubeletVersion,
+			OSImage:     n.Status.NodeInfo.OSImage,
+			CPUCapacity: q(n.Status.Capacity.Cpu().String()),
 			MemCapacity: q(n.Status.Capacity.Memory().String()),
 		})
 	}
@@ -124,10 +124,10 @@ func (c *Collector) Collect(ctx context.Context) (*K8sReport, error) {
 	var notReadyDeps int
 	for i := range deps.Items {
 		d := &deps.Items[i]
-			rep.Workloads = append(rep.Workloads, K8sWorkload{
-				Kind: "Deployment", Name: d.Name, Namespace: d.Namespace,
-				Replicas: derefInt32(d.Spec.Replicas), Ready: d.Status.ReadyReplicas, Available: d.Status.AvailableReplicas,
-			})
+		rep.Workloads = append(rep.Workloads, K8sWorkload{
+			Kind: "Deployment", Name: d.Name, Namespace: d.Namespace,
+			Replicas: derefInt32(d.Spec.Replicas), Ready: d.Status.ReadyReplicas, Available: d.Status.AvailableReplicas,
+		})
 		if d.Status.ReadyReplicas < derefInt32(d.Spec.Replicas) {
 			notReadyDeps++
 		}
@@ -136,10 +136,10 @@ func (c *Collector) Collect(ctx context.Context) (*K8sReport, error) {
 	if err == nil {
 		for i := range sts.Items {
 			s := &sts.Items[i]
-				rep.Workloads = append(rep.Workloads, K8sWorkload{
-					Kind: "StatefulSet", Name: s.Name, Namespace: s.Namespace,
-					Replicas: derefInt32(s.Spec.Replicas), Ready: s.Status.ReadyReplicas, Available: s.Status.CurrentReplicas,
-				})
+			rep.Workloads = append(rep.Workloads, K8sWorkload{
+				Kind: "StatefulSet", Name: s.Name, Namespace: s.Namespace,
+				Replicas: derefInt32(s.Spec.Replicas), Ready: s.Status.ReadyReplicas, Available: s.Status.CurrentReplicas,
+			})
 		}
 	}
 	ds, err := c.cs.AppsV1().DaemonSets("").List(ctx, metav1.ListOptions{})

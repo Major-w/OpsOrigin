@@ -79,9 +79,9 @@ func TestGRPCMetricsReport(t *testing.T) {
 	// 2) 上报监控指标批次
 	batch := &pb.TunnelMessage_Metrics{
 		Metrics: &pb.MetricBatch{
-			TaskId:     "t-monitor-1",
-			TaskType:   "monitor",
-			Timestamp:  time.Now().Unix(),
+			TaskId:      "t-monitor-1",
+			TaskType:    "monitor",
+			Timestamp:   time.Now().Unix(),
 			IntervalSec: 5,
 			Points: []*pb.MetricPoint{
 				{Name: "cpu.usage", Value: 0.62, Labels: map[string]string{"core": "0"}},

@@ -37,6 +37,10 @@ import {
   Globe, MessageSquare, FileDown, PlayCircle, StopCircle,
 } from 'lucide-react'
 
+// 画布节点 data 为展示用途,字段松散;用宽松类型规避 @xyflow/react v12 严格的 NodeProps 默认类型
+type FlowNodeData = Record<string, any>
+type FlowNodeProps = NodeProps<Node<FlowNodeData>>
+
 // ---------- helpers ----------
 
 type DepCondition = 'success' | 'failure' | 'always'
@@ -141,7 +145,7 @@ function BaseNode({ color, icon: Icon, label, children, showSource, showTarget }
   )
 }
 
-function StartNode({ data }: NodeProps) {
+function StartNode({ data }: FlowNodeProps) {
   return (
     <div className="shadow-md rounded-full border-2 bg-white dark:bg-gray-800 min-w-[120px] w-[120px] h-[60px] flex items-center justify-center" style={{ borderColor: NODE_META.start.color }}>
       <PlayCircle className="h-5 w-5 mr-1.5" style={{ color: NODE_META.start.color }} />
@@ -151,7 +155,7 @@ function StartNode({ data }: NodeProps) {
   )
 }
 
-function EndNode({ data }: NodeProps) {
+function EndNode({ data }: FlowNodeProps) {
   const statusColor = data.endStatus === 'failure' ? '#ef4444' : data.endStatus === 'timeout' ? '#f59e0b' : '#10b981'
   return (
     <div className="shadow-md rounded-full border-2 bg-white dark:bg-gray-800 min-w-[120px] w-[120px] h-[60px] flex items-center justify-center" style={{ borderColor: statusColor }}>
@@ -162,7 +166,7 @@ function EndNode({ data }: NodeProps) {
   )
 }
 
-function ScriptNode({ data }: NodeProps) {
+function ScriptNode({ data }: FlowNodeProps) {
   const color = NODE_META.script.color
   return (
     <div className={BASE_NODE} style={{ borderColor: color }}>
@@ -188,7 +192,7 @@ function ScriptNode({ data }: NodeProps) {
   )
 }
 
-function ConditionNode({ data }: NodeProps) {
+function ConditionNode({ data }: FlowNodeProps) {
   const color = NODE_META.condition.color
   return (
     <div className={BASE_NODE} style={{ borderColor: color }}>
@@ -208,45 +212,45 @@ function ConditionNode({ data }: NodeProps) {
 }
 
 // ---- shorthand nodes via BaseNode ----
-function ApprovalNode({ data }: NodeProps) {
+function ApprovalNode({ data }: FlowNodeProps) {
   const m = NODE_META.approval
   return <BaseNode color={m.color} icon={m.icon} label={data.label}>
     <p>👥 {data.approvers?.length || 0} 人审批</p>{data.approvalMsg && <p className="truncate">💬 {data.approvalMsg}</p>}
   </BaseNode>
 }
-function WaitNode({ data }: NodeProps) {
+function WaitNode({ data }: FlowNodeProps) {
   const m = NODE_META.wait
   return <BaseNode color={m.color} icon={m.icon} label={data.label}><p>⏳ 等待 {data.waitSeconds || 0}s</p></BaseNode>
 }
-function NotifyNode({ data }: NodeProps) {
+function NotifyNode({ data }: FlowNodeProps) {
   const m = NODE_META.notify
   return <BaseNode color={m.color} icon={m.icon} label={data.label}>
     <p>📡 {data.notifyChannelName || data.notifyChannel || '未选择渠道'}</p>{data.notifyTitle && <p className="truncate">📝 {data.notifyTitle}</p>}
   </BaseNode>
 }
-function SubflowNode({ data }: NodeProps) {
+function SubflowNode({ data }: FlowNodeProps) {
   return <BaseNode color={NODE_META.subflow.color} icon={NODE_META.subflow.icon} label={data.label}>
     <p>🔗 {data.subflowName || data.subflowId?.slice(0, 12) || '未选择'}</p>
   </BaseNode>
 }
-function LoopNode({ data }: NodeProps) {
+function LoopNode({ data }: FlowNodeProps) {
   return <BaseNode color={NODE_META.loop.color} icon={NODE_META.loop.icon} label={data.label}>
     <p>🔁 {data.loopOver || '$items'}</p><p>🔢 最大 {data.loopMax || 100} 次</p>
   </BaseNode>
 }
-function WebhookNode({ data }: NodeProps) {
+function WebhookNode({ data }: FlowNodeProps) {
   return <BaseNode color={NODE_META.webhook.color} icon={NODE_META.webhook.icon} label={data.label}>
     <p className="truncate">{data.webhookMethod || 'POST'} {data.webhookUrl ? '✔' : '未配置'}</p>
   </BaseNode>
 }
-function CommentNode({ data }: NodeProps) {
+function CommentNode({ data }: FlowNodeProps) {
   return (
     <div className="border-2 border-dashed rounded-lg bg-yellow-50/50 dark:bg-yellow-950/20 min-w-[180px]" style={{ borderColor: NODE_META.comment.color }}>
       <div className="px-3 py-2 text-[11px] text-muted-foreground italic whitespace-pre-wrap">💬 {data.commentText || '(双击编辑)'}</div>
     </div>
   )
 }
-function FiledistNode({ data }: NodeProps) {
+function FiledistNode({ data }: FlowNodeProps) {
   return <BaseNode color={NODE_META.filedist.color} icon={NODE_META.filedist.icon} label={data.label}>
     <p>📦 {data.filedistFileName || '未选择文件'}</p><p>🎯 {data.filedistTargets?.length || 0} 台主机</p>
     {data.filedistDownloadDir && <p>📁 {data.filedistDownloadDir}</p>}

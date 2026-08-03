@@ -204,10 +204,10 @@ func TestTeamMemberRetry(t *testing.T) {
 		return 200, ansResp("succeed after retries")
 	})
 	team := &model.AgentTeam{
-		ID:             "t3",
-		Name:           "T",
-		Mode:           model.TeamModeParallel,
-		MemberRetries:  2,
+		ID:            "t3",
+		Name:          "T",
+		Mode:          model.TeamModeParallel,
+		MemberRetries: 2,
 		Members: []model.TeamMember{
 			{AgentID: "m1", AgentName: "M1", Role: model.TeamRoleMember},
 			{AgentID: "f", AgentName: "F", Role: model.TeamRoleFinalizer, CanFinalize: true},

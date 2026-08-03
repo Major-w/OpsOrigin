@@ -207,9 +207,9 @@ type ec2DescribeInstancesResponse struct {
 			State        struct {
 				Name string `xml:"name"`
 			} `xml:"instanceState"`
-			PrivateIP string `xml:"privateIpAddress"`
-			PublicIP  string `xml:"ipAddress"`
-			AZ        string `xml:"placement>availabilityZone"`
+			PrivateIP  string `xml:"privateIpAddress"`
+			PublicIP   string `xml:"ipAddress"`
+			AZ         string `xml:"placement>availabilityZone"`
 			LaunchTime string `xml:"launchTime"`
 		} `xml:"instancesSet>item"`
 	} `xml:"reservationSet>item"`
@@ -283,11 +283,11 @@ func (p *Provider) listRDS(ctx context.Context, cred cloud.Credential, region st
 			Provider: "aws", Type: cloud.TypeDatabase, ID: db.DBInstanceIdentifier,
 			Name: db.DBInstanceIdentifier, Region: region, Status: db.DBInstanceStatus,
 			Extra: map[string]any{
-				"engine":        db.Engine,
+				"engine":         db.Engine,
 				"engine_version": db.EngineVersion,
-				"address":       db.Endpoint.Address,
-				"port":          db.Endpoint.Port,
-				"allocated_gb":  db.AllocatedStorage,
+				"address":        db.Endpoint.Address,
+				"port":           db.Endpoint.Port,
+				"allocated_gb":   db.AllocatedStorage,
 			},
 		})
 	}

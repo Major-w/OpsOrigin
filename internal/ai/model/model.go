@@ -175,8 +175,8 @@ type TeamStreamEvent struct {
 	Error     string `json:"error,omitempty"`
 
 	// —— 增强事件附加上下文 ——
-	Round     int    `json:"round,omitempty"`      // 辩论/多轮中的轮次(从 1 开始)
-	ToolName  string `json:"tool_name,omitempty"`  // tool_call / tool_result 事件: 工具名
-	ToolArgs  string `json:"tool_args,omitempty"`  // tool_call 事件: 入参 JSON
+	Round      int    `json:"round,omitempty"`       // 辩论/多轮中的轮次(从 1 开始)
+	ToolName   string `json:"tool_name,omitempty"`   // tool_call / tool_result 事件: 工具名
+	ToolArgs   string `json:"tool_args,omitempty"`   // tool_call 事件: 入参 JSON
 	ToolResult string `json:"tool_result,omitempty"` // tool_result 事件: 出参 JSON(已截断)
 }
