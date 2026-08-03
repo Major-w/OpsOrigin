@@ -99,6 +99,7 @@ const navGroups: (NavItem | NavGroup)[] = [
   {
     label: 'AI 助手', icon: Bot, items: [
       { to: '/ai', label: 'AI 对话', icon: MessagesSquare },
+      { to: '/ai/scenes', label: '场景包', icon: Package },
       { to: '/ai/digital-employees', label: '数字员工', icon: Sparkles },
       { to: '/ai/inspections', label: '主动巡检', icon: Radar },
       { to: '/ai/teams', label: '智能体团队', icon: Users },

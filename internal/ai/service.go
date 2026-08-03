@@ -141,6 +141,11 @@ func (s *Service) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/v1/ai/inspections/{id}/runs", s.handleListInspectionRuns)
 	mux.HandleFunc("POST /api/v1/ai/inspections/{id}/runs/{runID}/escalate", s.handleEscalateInspectionRun)
 
+	// —— 场景包 (AI 场景层封装: 岗位 + 巡检 + 推荐工单一键启用) ——
+	mux.HandleFunc("GET /api/v1/ai/scene-templates", s.handleListSceneTemplates)
+	mux.HandleFunc("GET /api/v1/ai/scene-templates/{id}", s.handleGetSceneTemplate)
+	mux.HandleFunc("POST /api/v1/ai/scene-templates/{id}/instantiate", s.handleInstantiateScene)
+
 	// —— 敏感操作审批策略 (PRD 5.2.5) ——
 	mux.HandleFunc("GET /api/v1/ai/approval-policy", s.handleGetApprovalPolicy)
 	mux.HandleFunc("PUT /api/v1/ai/approval-policy", s.handlePutApprovalPolicy)

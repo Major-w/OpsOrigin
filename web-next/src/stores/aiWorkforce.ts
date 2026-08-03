@@ -42,6 +42,27 @@ export interface AgentTemplate {
 /** 巡检周期 */
 export type InspectionSchedule = '@hourly' | '@every_6h' | '@daily' | '@weekly'
 
+/** 场景包推荐的标准化工单类型(仅展示, 不自动落库) */
+export interface SceneCatalogItem {
+  name: string
+  description?: string
+  category?: string
+}
+
+/** 业务场景包(岗位 + 巡检 + 推荐工单一键组合) */
+export interface SceneTemplate {
+  id: string
+  name: string
+  category: string
+  description: string
+  icon: string
+  agent_template_id: string
+  inspection_template_ids?: string[]
+  knowledge_categories?: string[]
+  suggested_catalog?: SceneCatalogItem[]
+  tags?: string[]
+}
+
 /** 巡检模板 */
 export interface InspectionTemplate {
   id: string
@@ -122,8 +143,16 @@ interface WorkforceState {
   /** 正在转工单的运行记录 ID 集合(用于按钮 loading) */
   escalating: string[]
 
+  /** 场景包目录 */
+  sceneTemplates: SceneTemplate[]
+  /** 正在启用的场景 ID 集合(用于按钮 loading) */
+  sceneLaunching: string[]
+
   loadTemplates: () => Promise<void>
   instantiateTemplate: (id: string, name?: string, withInspection?: boolean) => Promise<boolean>
+
+  loadSceneTemplates: () => Promise<void>
+  instantiateScene: (id: string, name?: string) => Promise<boolean>
 
   loadInspectionTemplates: () => Promise<void>
   loadInspections: () => Promise<void>
@@ -145,6 +174,8 @@ export const useWorkforceStore = create<WorkforceState>((set, get) => ({
   runs: {},
   running: [],
   escalating: [],
+  sceneTemplates: [],
+  sceneLaunching: [],
 
   // ------------------------- 岗位数字员工 -------------------------
 
@@ -174,6 +205,44 @@ export const useWorkforceStore = create<WorkforceState>((set, get) => ({
     } catch (e: unknown) {
       toast.error(`上岗失败: ${(e as Error).message}`)
       return false
+    }
+  },
+
+  // ------------------------- 业务场景包 -------------------------
+
+  loadSceneTemplates: async () => {
+    try {
+      const sceneTemplates = await apiList<SceneTemplate>('/ai/scene-templates')
+      set({ sceneTemplates })
+    } catch (e: unknown) {
+      toast.error(`加载场景包失败: ${(e as Error).message}`)
+    }
+  },
+
+  instantiateScene: async (id, name) => {
+    set(s => ({ sceneLaunching: [...s.sceneLaunching, id] }))
+    try {
+      const resp = await apiFetch<{
+        agent: { id: string; name: string } | null
+        inspection: { name: string } | null
+        inspections: { name: string }[]
+        catalog: SceneCatalogItem[]
+      }>(`/ai/scene-templates/${id}/instantiate`, {
+        method: 'POST',
+        body: JSON.stringify({ name: name || '' }),
+      })
+      const inspCount = (resp.inspections?.length || 0) + (resp.inspection ? 1 : 0)
+      toast.success(
+        resp.agent
+          ? `场景已启用: 数字员工「${resp.agent.name}」+ ${inspCount} 项巡检`
+          : '场景已启用',
+      )
+      return true
+    } catch (e: unknown) {
+      toast.error(`启用场景失败: ${(e as Error).message}`)
+      return false
+    } finally {
+      set(s => ({ sceneLaunching: s.sceneLaunching.filter(x => x !== id) }))
     }
   },
 
@@ -295,6 +364,15 @@ export function useAgentTemplates() {
   const loadTemplates = useWorkforceStore(s => s.loadTemplates)
   const instantiateTemplate = useWorkforceStore(s => s.instantiateTemplate)
   return { templates, loading, loadTemplates, instantiateTemplate }
+}
+
+/** 业务场景包(岗位+巡检+推荐工单一键组合) */
+export function useSceneTemplates() {
+  const sceneTemplates = useWorkforceStore(s => s.sceneTemplates)
+  const sceneLaunching = useWorkforceStore(s => s.sceneLaunching)
+  const loadSceneTemplates = useWorkforceStore(s => s.loadSceneTemplates)
+  const instantiateScene = useWorkforceStore(s => s.instantiateScene)
+  return { sceneTemplates, sceneLaunching, loadSceneTemplates, instantiateScene }
 }
 
 /** 主动巡检 */
