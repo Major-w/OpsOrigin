@@ -161,6 +161,11 @@ func (s *Service) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/v1/ai/faultsim/injections", s.handleListFaultInjections)
 	mux.HandleFunc("POST /api/v1/ai/faultsim/injections/{id}/recover", s.handleRecoverFaultInjection)
 
+	// —— 自动修复执行 (L1: 巡检发现 -> 分级处置 blocked/auto/review) ——
+	mux.HandleFunc("POST /api/v1/ai/inspections/{id}/runs/{runID}/remediate/generate", s.handleGenerateRemediations)
+	mux.HandleFunc("GET /api/v1/ai/inspections/{id}/runs/{runID}/remediate", s.handleListRemediations)
+	mux.HandleFunc("POST /api/v1/ai/remediate/{actionID}/execute", s.handleExecuteRemediation)
+
 	// —— 训练数据集导出 (P3-1 反馈驱动微调) ——
 	mux.HandleFunc("GET /api/v1/ai/dataset", s.handleExportDataset)
 

@@ -63,6 +63,11 @@ type Engine struct {
 	// faultInjections 故障仿真演练记录(L3-2 仿真验证飞轮): 进程内存储。
 	faultInjections map[string]*FaultInjectionRun
 
+	// remediations 自动修复动作(L1 分级处置闭环): 进程内存储。
+	// RemediationRunnerFunc 由 cmd/core 注入真实 Agent/脚本执行; nil=内置演示执行器。
+	remediations        map[string]*RemediationAction
+	RemediationRunnerFunc RemediationRunnerFunc
+
 	// defaultSystemPrompt 是未配置 Agent 级 system_prompt 时的全局默认提示词(外置化,见 SetDefaultSystemPrompt)。
 	defaultSystemPrompt string
 
@@ -122,6 +127,7 @@ func NewEngine(reg *mcp.Registry, lim ratelimit.RateLimiter, llmClient *llm.Clie
 		teams:               make(map[string]*model.AgentTeam),
 		inspections:         make(map[string]*Inspection),
 		inspectionRuns:      make(map[string][]*InspectionRun),
+		remediations:        make(map[string]*RemediationAction),
 		reg:                 reg,
 		lim:                 lim,
 		semMu:               sync.Mutex{},

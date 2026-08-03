@@ -9,7 +9,8 @@ import { Input } from '@/components/ui/input'
 import { Select } from '@/components/ui/select'
 import { Switch } from '@/components/ui/switch'
 import { Dialog, DialogFooter } from '@/components/ui/dialog'
-import { cn } from '@/lib/utils'
+import { cn, apiFetch } from '@/lib/utils'
+import { toast } from '@/stores/toast'
 import {
   useInspections,
   type Inspection,
@@ -20,7 +21,7 @@ import {
 import { useAIStore } from '@/stores/ai'
 import {
   RadarIcon, Plus, RefreshCw, Play, Trash2, Edit, History,
-  AlertTriangle, CheckCircle2, XCircle, Clock, FileText, ArrowUpRight, FlaskConical,
+  AlertTriangle, CheckCircle2, XCircle, Clock, FileText, ArrowUpRight, FlaskConical, Wrench,
 } from 'lucide-react'
 
 // ----------------------------- 常量与工具 -----------------------------
@@ -48,6 +49,19 @@ const LEVEL_META: Record<string, { label: string; cls: string }> = {
 }
 
 interface Finding { level?: string; title?: string; detail?: string; suggestion?: string }
+
+// L1 自动修复动作(分级处置: blocked 拦截 / auto 自动 / review 审批)
+interface RemediationAction {
+  id: string
+  finding_idx: number
+  level: string
+  title: string
+  suggestion: string
+  risk: 'blocked' | 'auto' | 'review'
+  status: 'pending' | 'awaiting_approval' | 'approved' | 'rejected' | 'executing' | 'succeeded' | 'failed'
+  result?: string
+  error?: string
+}
 
 /** 解析运行记录中的结构化发现（模型输出的 JSON 代码块，可能不合规，需容错） */
 function parseFindings(raw?: string): Finding[] {
@@ -250,6 +264,56 @@ export default function InspectionsPage() {
     const updated = await escalateRun(report.inspection_id, report.id, severity)
     if (updated) setReport(updated)
   }
+
+  // —— L1 自动修复执行: 分级处置 (blocked/auto/review) ——
+  const [remediations, setRemediations] = useState<RemediationAction[]>([])
+  const [remediating, setRemediating] = useState<string[]>([])
+  const [remedLoading, setRemedLoading] = useState(false)
+
+  const loadRemediations = async (runId: string) => {
+    setRemedLoading(true)
+    try {
+      const rs = await apiFetch<RemediationAction[]>(`/ai/inspections/${report?.inspection_id || ''}/runs/${runId}/remediate`)
+      setRemediations(rs)
+    } catch { /* 首次打开未生成, 忽略 */ }
+    setRemedLoading(false)
+  }
+
+  const generateRemediations = async () => {
+    if (!report) return
+    setRemedLoading(true)
+    try {
+      const rs = await apiFetch<RemediationAction[]>(`/ai/inspections/${report.inspection_id}/runs/${report.id}/remediate/generate`, { method: 'POST' })
+      setRemediations(rs)
+      toast.success(`已生成 ${rs.length} 条修复动作`)
+    } catch (e: unknown) {
+      toast.error(`生成失败: ${(e as Error).message}`)
+    } finally {
+      setRemedLoading(false)
+    }
+  }
+
+  const executeRemediation = async (actionId: string) => {
+    setRemediating(ids => [...ids, actionId])
+    try {
+      const updated = await apiFetch<RemediationAction>(`/ai/remediate/${actionId}/execute`, { method: 'POST' })
+      setRemediations(list => list.map(a => a.id === actionId ? updated : a))
+      if (updated.status === 'succeeded') toast.success('修复执行成功')
+      else if (updated.status === 'awaiting_approval') toast.success('已发起审批，等待人工确认')
+      else if (updated.status === 'rejected') toast.error('审批未通过')
+      else if (updated.status === 'failed') toast.error(`执行失败: ${updated.error || ''}`)
+    } catch (e: unknown) {
+      toast.error(`执行失败: ${(e as Error).message}`)
+    } finally {
+      setRemediating(ids => ids.filter(id => id !== actionId))
+    }
+  }
+
+  // 打开报告时加载修复动作
+  useEffect(() => {
+    if (report) loadRemediations(report.id)
+    else setRemediations([])
+  }, [report?.id])
 
   const openExperiment = (i: Inspection) => {
     setExpTarget(i)
@@ -528,18 +592,26 @@ export default function InspectionsPage() {
                 <div className="space-y-2">
                   <div className="flex items-center justify-between gap-2 flex-wrap">
                     <div className="text-sm font-medium">发现清单</div>
-                    {pendingCount > 0 && (
-                      <Button
-                        size="sm"
-                        variant="outline"
-                        className="gap-1 h-7 text-xs"
-                        disabled={isEscalating}
-                        onClick={() => doEscalate('medium')}
-                      >
-                        <ArrowUpRight className="h-3 w-3" />
-                        {isEscalating ? '转单中…' : `转 ${pendingCount} 条高危/中危为工单`}
-                      </Button>
-                    )}
+                    <div className="flex items-center gap-2">
+                      {pendingCount > 0 && (
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          className="gap-1 h-7 text-xs"
+                          disabled={isEscalating}
+                          onClick={() => doEscalate('medium')}
+                        >
+                          <ArrowUpRight className="h-3 w-3" />
+                          {isEscalating ? '转单中…' : `转 ${pendingCount} 条高危/中危为工单`}
+                        </Button>
+                      )}
+                      {remediations.length === 0 && (
+                        <Button size="sm" variant="outline" className="gap-1 h-7 text-xs" disabled={remedLoading} onClick={generateRemediations}>
+                          <Wrench className="h-3 w-3" />
+                          {remedLoading ? '生成中…' : '生成修复动作'}
+                        </Button>
+                      )}
+                    </div>
                   </div>
                   {findings.map((f, idx) => {
                     const lv = LEVEL_META[f.level || 'low'] || LEVEL_META.low
@@ -554,6 +626,30 @@ export default function InspectionsPage() {
                               <ArrowUpRight className="h-3 w-3" />工单 {escalated.ticket_id.slice(0, 8)}
                             </Badge>
                           )}
+                          {/* L1 自动修复: 修复动作状态/操作 */}
+                          {(() => {
+                            const rem = remediations.find(r => r.finding_idx === idx)
+                            if (!rem) return null
+                            const busy = remediating.includes(rem.id)
+                            return (
+                              <span className="inline-flex items-center gap-1.5 ml-auto">
+                                {rem.status === 'succeeded' && <Badge variant="success" className="text-[10px]"><CheckCircle2 className="h-3 w-3" />已修复</Badge>}
+                                {rem.status === 'failed' && <Badge variant="destructive" className="text-[10px]">已拦截/失败</Badge>}
+                                {rem.status === 'rejected' && <Badge variant="destructive" className="text-[10px]">已拒绝</Badge>}
+                                {rem.status === 'awaiting_approval' && <Badge variant="warning" className="text-[10px]">待审批</Badge>}
+                                {(rem.status === 'pending' || rem.status === 'approved') && (
+                                  <Button size="sm" variant="outline" className="gap-1 h-6 text-xs" disabled={busy}
+                                    onClick={() => executeRemediation(rem.id)}>
+                                    <Wrench className={cn('h-3 w-3', busy && 'animate-spin')} />
+                                    {rem.risk === 'auto' ? '自动修复' : rem.risk === 'review' ? '发起审批' : '拦截'}
+                                  </Button>
+                                )}
+                                {rem.risk === 'blocked' && rem.status === 'failed' && (
+                                  <span className="text-[10px] text-red-500" title={rem.error}>{rem.error}</span>
+                                )}
+                              </span>
+                            )
+                          })()}
                           {(f.level === 'high' || f.level === 'medium') && !escalated && (
                             <Button
                               size="sm"
