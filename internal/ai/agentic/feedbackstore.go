@@ -29,6 +29,8 @@ type FeedbackStore interface {
 	Save(ctx context.Context, f *Feedback) error
 	List(ctx context.Context, tenantID, conversationID string) ([]*Feedback, error)
 	Stats(ctx context.Context, tenantID string) (up, down int, err error)
+	// ListAll 返回该租户全部反馈(跨会话, 供训练数据集导出/分析)。
+	ListAll(ctx context.Context, tenantID string) ([]*Feedback, error)
 }
 
 // feedbackTargetKey 计算 upsert 唯一键: 优先 message_id, 退化 conversation_id, 最后 anon。
@@ -135,6 +137,10 @@ func (s *pgFeedbackStore) List(ctx context.Context, tenantID, conversationID str
 	return out, rows.Err()
 }
 
+func (s *pgFeedbackStore) ListAll(ctx context.Context, tenantID string) ([]*Feedback, error) {
+	return s.List(ctx, tenantID, "")
+}
+
 func (s *pgFeedbackStore) Stats(ctx context.Context, tenantID string) (up, down int, err error) {
 	row := s.db.QueryRowContext(ctx, `
 		SELECT COALESCE(SUM(CASE WHEN rating='up' THEN 1 ELSE 0 END),0),
@@ -195,6 +201,10 @@ func (m *memFeedbackStore) List(ctx context.Context, tenantID, conversationID st
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].CreatedAt.After(out[j].CreatedAt) })
 	return out, nil
+}
+
+func (m *memFeedbackStore) ListAll(ctx context.Context, tenantID string) ([]*Feedback, error) {
+	return m.List(ctx, tenantID, "")
 }
 
 func (m *memFeedbackStore) Stats(ctx context.Context, tenantID string) (up, down int, err error) {

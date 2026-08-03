@@ -252,5 +252,66 @@ func (r *ModelRouter) Models() []ModelStatus {
 	return out
 }
 
+// UpdateProviders 运行时热更新模型池(P3-2): 整体替换 provider 集合。
+// 供配置热更新通道(如 SysConfig 变更 / 运维调用)在不停机的情况下增减/调整 provider。
+// 替换是原子的(持有写锁); 已存在的同名 provider 保留健康状态(避免热更新把故障中的
+// provider 恢复成健康, 造成瞬时错误路由), 新 provider 默认健康。
+func (r *ModelRouter) UpdateProviders(primary llm.Config, extra []ProviderConfig) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	build := func(cfg llm.Config, name string, weight int, healthy bool, failedAt time.Time) *ModelProvider {
+		if cfg.Model == "" {
+			cfg.Model = "deepseek-chat"
+		}
+		return &ModelProvider{
+			Name:     name,
+			Weight:   weight,
+			Client:   llm.NewClient(cfg),
+			cfg:      cfg,
+			healthy:  healthy,
+			failedAt: failedAt,
+		}
+	}
+
+	primaryCfg := primary
+	next := []*ModelProvider{build(primaryCfg, "default", 100, true, time.Time{})}
+
+	// 保留既有健康状态: name -> provider(含 failedAt, 避免热更新把故障中的 provider 恢复健康)
+	prev := map[string]*ModelProvider{}
+	for _, p := range r.providers {
+		prev[p.Name] = p
+	}
+
+	for _, pc := range extra {
+		if pc.Name == "" || pc.Model == "" || pc.BaseURL == "" {
+			slog.Warn("skip invalid llm provider config (hot update)", "name", pc.Name)
+			continue
+		}
+		pcfg := llm.Config{
+			APIKey:     pc.APIKey,
+			Model:      pc.Model,
+			BaseURL:    pc.BaseURL,
+			Timeout:    primary.Timeout,
+			MaxRetries: primary.MaxRetries,
+		}
+		healthy := true
+		var failedAt time.Time
+		if old, ok := prev[pc.Name]; ok {
+			old.mu.Lock()
+			healthy = old.healthy
+			failedAt = old.failedAt
+			old.mu.Unlock()
+		}
+		next = append(next, build(pcfg, pc.Name, pc.Weight, healthy, failedAt))
+	}
+
+	sort.SliceStable(next, func(i, j int) bool {
+		return next[i].Weight > next[j].Weight
+	})
+	r.providers = next
+	slog.Info("llm model pool hot-updated", "providers", len(next))
+}
+
 // errNoHealthyModel 全池不可用错误。
 var errNoHealthyModel = errors.New("no healthy llm provider available")

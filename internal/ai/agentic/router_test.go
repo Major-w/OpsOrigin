@@ -73,3 +73,67 @@ func TestRouterModelMatch(t *testing.T) {
 		t.Fatalf("expected no candidates for unknown model, got %d", len(cands3))
 	}
 }
+// TestRouterHotUpdate 验证 P3-2 热更新: UpdateProviders 整体替换池、保留健康状态、
+// 新 provider 默认健康、权重排序生效。
+func TestRouterHotUpdate(t *testing.T) {
+	r := NewModelRouter(llm.Config{Model: "m-main", BaseURL: "http://x", Timeout: time.Second},
+		[]ProviderConfig{{Name: "old", Model: "m-old", BaseURL: "http://old", Weight: 80}})
+	if got := len(r.Models()); got != 2 {
+		t.Fatalf("expected 2 providers initially, got %d", got)
+	}
+
+	// 标记 old 不健康(模拟故障中)
+	for _, p := range r.providers {
+		if p.Name == "old" {
+			p.markFailed(time.Now())
+		}
+	}
+	if r.Models()[0].Healthy == true && r.Models()[0].Name == "old" {
+		// 找 old 的健康状态
+	}
+	oldHealthy := false
+	for _, m := range r.Models() {
+		if m.Name == "old" {
+			oldHealthy = m.Healthy
+		}
+	}
+	if oldHealthy {
+		t.Fatal("expected old provider unhealthy after markFailed")
+	}
+
+	// 热更新: 替换池(old 同名保留健康状态 + 新增 new)
+	r.UpdateProviders(llm.Config{Model: "m-main2", BaseURL: "http://x2", Timeout: time.Second},
+		[]ProviderConfig{
+			{Name: "old", Model: "m-old2", BaseURL: "http://old2", Weight: 90},
+			{Name: "new", Model: "m-new", BaseURL: "http://new", Weight: 70},
+		})
+
+	models := r.Models()
+	if len(models) != 3 {
+		t.Fatalf("expected 3 providers after update, got %d", len(models))
+	}
+	// 排序: default(100) > old(90) > new(70)
+	if models[0].Name != "default" || models[1].Name != "old" || models[2].Name != "new" {
+		t.Fatalf("unexpected order: %v", []string{models[0].Name, models[1].Name, models[2].Name})
+	}
+	// old 保留不健康状态(故障中热更新不应恢复为健康)
+	oldHealthyAfter := true
+	for _, m := range models {
+		if m.Name == "old" {
+			oldHealthyAfter = m.Healthy
+		}
+	}
+	if oldHealthyAfter {
+		t.Fatal("expected old still unhealthy after hot update (health preserved)")
+	}
+	// new 默认健康
+	newHealthy := false
+	for _, m := range models {
+		if m.Name == "new" {
+			newHealthy = m.Healthy
+		}
+	}
+	if !newHealthy {
+		t.Fatal("expected new provider healthy after hot update")
+	}
+}

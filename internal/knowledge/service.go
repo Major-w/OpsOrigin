@@ -178,8 +178,43 @@ func NewService(db *sql.DB) *Service {
 
 // CreateArticle 创建一篇知识库文章(供内部模块如 ITSM 工单案例沉淀复用)。
 // 未指定 ID/Status/Author 时自动补全, 默认直接发布。
-func (s *Service) CreateArticle(ctx context.Context, a *Article) error {
-	if a == nil {
+// ListDisposalCases 返回该租户 tags 含 disposal-case 的文章(处置案例, 供 AI 训练集导出)。
+// 供 cmd/core 注入到 AI 引擎的 DisposalCaseProvider 回调。
+func (s *Service) ListDisposalCases(ctx context.Context, tenantID string) ([]struct {
+	ID      string `json:"id"`
+	Title   string `json:"title"`
+	Content string `json:"content"`
+}, error) {
+	articles, err := s.store.List(ctx, tenantID, "")
+	if err != nil {
+		return nil, err
+	}
+	out := make([]struct {
+		ID      string `json:"id"`
+		Title   string `json:"title"`
+		Content string `json:"content"`
+	}, 0, len(articles))
+	for _, a := range articles {
+		hasTag := false
+		for _, t := range a.Tags {
+			if t == "disposal-case" {
+				hasTag = true
+				break
+			}
+		}
+		if !hasTag {
+			continue
+		}
+		out = append(out, struct {
+			ID      string `json:"id"`
+			Title   string `json:"title"`
+			Content string `json:"content"`
+		}{ID: a.ID, Title: a.Title, Content: a.Content})
+	}
+	return out, nil
+}
+
+func (s *Service) CreateArticle(ctx context.Context, a *Article) error {	if a == nil {
 		return fmt.Errorf("article is nil")
 	}
 	if a.Title == "" {

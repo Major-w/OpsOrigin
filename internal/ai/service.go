@@ -150,6 +150,9 @@ func (s *Service) RegisterRoutes(mux *http.ServeMux) {
 	// —— 数字员工运营效果 (巡检健康 + 发现/转单/处置漏斗) ——
 	mux.HandleFunc("GET /api/v1/ai/workforce-metrics", s.handleWorkforceMetrics)
 
+	// —— 训练数据集导出 (P3-1 反馈驱动微调) ——
+	mux.HandleFunc("GET /api/v1/ai/dataset", s.handleExportDataset)
+
 	// —— 多模型路由池 (P3: provider 状态) ——
 	mux.HandleFunc("GET /api/v1/ai/models", s.handleListModels)
 
@@ -317,8 +320,21 @@ func (s *Service) handleChatStream(w http.ResponseWriter, r *http.Request, req *
 }
 
 // UpdateLLMConfig 热更新 LLM 配置(sysconfig 修改 LLM 设置后调用)。
+// 同时热更新多模型路由池(附加 provider 取自 cfg.LLM.Providers), 不停机生效。
 func (s *Service) UpdateLLMConfig(cfg llm.Config) {
-	s.Engine.UpdateClient(llm.NewClient(cfg))
+	var extra []agentic.ProviderConfig
+	if s.cfg != nil {
+		for _, p := range s.cfg.LLM.Providers {
+			extra = append(extra, agentic.ProviderConfig{
+				Name:    p.Name,
+				APIKey:  p.APIKey,
+				Model:   p.Model,
+				BaseURL: p.BaseURL,
+				Weight:  p.Weight,
+			})
+		}
+	}
+	s.Engine.HotUpdateRouter(cfg, extra)
 }
 
 // ——— 对话持久 ———

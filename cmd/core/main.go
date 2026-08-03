@@ -612,6 +612,18 @@ func main() {
 			Enabled:     true,
 		})
 	})
+	// 训练数据集导出(P3-1): 处置案例(知识库 disposal-case)经回调注入 AI 引擎。
+	aiSvc.Engine.SetDisposalCaseProvider(func(ctx context.Context, tenantID string) ([]agentic.DisposalCase, error) {
+		items, err := knowledgeSvc.ListDisposalCases(ctx, tenantID)
+		if err != nil {
+			return nil, err
+		}
+		out := make([]agentic.DisposalCase, 0, len(items))
+		for _, it := range items {
+			out = append(out, agentic.DisposalCase{ID: it.ID, Title: it.Title, Content: it.Content})
+		}
+		return out, nil
+	})
 	server.RegisterService(aiSvc)
 	aiSvc.Start(ctx)
 

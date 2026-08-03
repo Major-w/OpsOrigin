@@ -185,6 +185,41 @@ func (s *Service) handleWorkforceMetrics(w http.ResponseWriter, r *http.Request)
 	writeJSON(w, http.StatusOK, m)
 }
 
+// handleExportDataset 导出训练数据集(P3-1 反馈驱动微调):
+// 聚合用户反馈(点赞/点踩 + 对话上下文)与处置案例(知识库), 返回 JSONL 文本。
+// query 参数 format=jsonl(默认)/json。需 ai:tool:exec 权限。
+func (s *Service) handleExportDataset(w http.ResponseWriter, r *http.Request) {
+	if !s.authorize(w, r, auth.PermissionAIToolExec) {
+		return
+	}
+	tenantID := tenantFromCtx(r.Context())
+
+	feedbacks := []*agentic.Feedback{}
+	if s.feedbackStore != nil {
+		if fbs, err := s.feedbackStore.ListAll(r.Context(), tenantID); err == nil && fbs != nil {
+			feedbacks = fbs
+		}
+	}
+
+	jsonl, summary, err := s.Engine.ExportDataset(r.Context(), tenantID, feedbacks)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	if r.URL.Query().Get("format") == "json" {
+		writeJSON(w, http.StatusOK, map[string]any{
+			"summary": summary,
+			"entries": jsonl,
+		})
+		return
+	}
+	w.Header().Set("Content-Type", "application/x-ndjson")
+	w.Header().Set("Content-Disposition", `attachment; filename="ai-dataset.ndjson"`)
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write([]byte(jsonl))
+}
+
 // handleListModels 返回模型池状态(多模型路由 P3): provider 名/默认模型/健康状态/权重。
 // 只读, 普通鉴权即可。
 func (s *Service) handleListModels(w http.ResponseWriter, r *http.Request) {

@@ -7,7 +7,7 @@ import { Input } from '@/components/ui/input'
 import { Badge } from '@/components/ui/badge'
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs'
 import { toast } from '@/stores/toast'
-import { Bot, Plus, Trash2, Save, Wrench, Brain, Settings2, Terminal, Wand2, AlertCircle, CheckCircle2, Loader2, ChevronRight, ShieldCheck } from 'lucide-react'
+import { Bot, Plus, Trash2, Save, Wrench, Brain, Settings2, Terminal, Wand2, AlertCircle, CheckCircle2, Loader2, ChevronRight, ShieldCheck, Database, Download, RefreshCw } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { useThemeStore } from '@/stores/theme'
 import { useAIStore, type ApprovalMode } from '@/stores/ai'
@@ -70,6 +70,8 @@ export default function AISettingsPage() {
   const [sysConfig, setSysConfig] = useState<any>(null)
   const [llmForm, setLlmForm] = useState({ api_key: '', model: '', base_url: '', timeout: 60 })
   const [modelPool, setModelPool] = useState<{ name: string; model: string; base_url: string; weight: number; healthy: boolean }[]>([])
+  const [datasetStats, setDatasetStats] = useState<{ total: number; preference_up: number; preference_down: number; disposal_cases: number } | null>(null)
+  const [datasetLoading, setDatasetLoading] = useState(false)
   const [editing, setEditing] = useState<string | null>(null)
   const [saving, setSaving] = useState(false)
   const [editForm, setEditForm] = useState<{ name: string; model_name: string; system_prompt: string; knowledge_categories: string[]; tools: string[]; skills: SkillFormItem[] }>({ name: '', model_name: '', system_prompt: '', knowledge_categories: [], tools: [], skills: [] })
@@ -106,6 +108,40 @@ export default function AISettingsPage() {
       const r = await fetch('/api/v1/ai/models')
       if (r.ok) setModelPool(await r.json())
     } catch {}
+  }
+
+  const loadDatasetStats = async () => {
+    setDatasetLoading(true)
+    try {
+      const r = await fetch('/api/v1/ai/dataset?format=json')
+      if (!r.ok) throw new Error(`导出失败: ${r.status}`)
+      const d = await r.json()
+      setDatasetStats(d.summary)
+    } catch (e: any) {
+      toast.error(`获取数据集统计失败: ${e.message}`)
+    } finally {
+      setDatasetLoading(false)
+    }
+  }
+
+  const downloadDataset = async () => {
+    setDatasetLoading(true)
+    try {
+      const r = await fetch('/api/v1/ai/dataset?format=jsonl')
+      if (!r.ok) throw new Error(`导出失败: ${r.status}`)
+      const blob = await r.blob()
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = 'ai-dataset.ndjson'
+      a.click()
+      URL.revokeObjectURL(url)
+      toast.success('数据集已导出')
+    } catch (e: any) {
+      toast.error(`导出失败: ${e.message}`)
+    } finally {
+      setDatasetLoading(false)
+    }
   }
   
   const loadCustomTools = async () => {
@@ -554,6 +590,38 @@ export default function AISettingsPage() {
                       </div>
                     </div>
                   ))}
+                </div>
+              )}
+              <p className="text-[11px] text-muted-foreground pt-2">修改下方 LLM 配置后热生效：模型池随之热更新，故障中的 provider 保留降级状态，不会因配置刷新而误恢复。</p>
+            </CardContent>
+          </Card>
+
+          {/* 训练数据集导出(P3-1 反馈驱动微调): 人机反馈 + 处置案例 → JSONL */}
+          <Card>
+            <CardHeader className="pb-2">
+              <CardTitle className="text-base flex items-center gap-2"><Database className="h-4 w-4" />训练数据集（反馈驱动微调）</CardTitle>
+              <CardDescription>将用户反馈（点赞/点踩 + 对话上下文）与处置案例（知识库）导出为标准 JSONL 微调数据集，用于持续改进模型。</CardDescription>
+            </CardHeader>
+            <CardContent>
+              <div className="flex items-center justify-between gap-3">
+                <div className="text-xs text-muted-foreground">
+                  样本构成：点赞偏好（preference_up）· 点踩偏好（preference_down）· 处置案例（disposal_case）
+                </div>
+                <div className="flex gap-2 shrink-0">
+                  <Button size="sm" variant="outline" className="gap-1" onClick={loadDatasetStats} disabled={datasetLoading}>
+                    <RefreshCw className={cn('h-3.5 w-3.5', datasetLoading && 'animate-spin')} />查看统计
+                  </Button>
+                  <Button size="sm" className="gap-1" onClick={downloadDataset} disabled={datasetLoading || !datasetStats?.total}>
+                    <Download className="h-3.5 w-3.5" />导出 JSONL
+                  </Button>
+                </div>
+              </div>
+              {datasetStats && datasetStats.total > 0 && (
+                <div className="mt-3 grid grid-cols-4 gap-2">
+                  <div className="rounded-lg bg-muted/50 px-3 py-2"><div className="text-[11px] text-muted-foreground">总样本</div><div className="text-lg font-semibold">{datasetStats.total}</div></div>
+                  <div className="rounded-lg bg-muted/50 px-3 py-2"><div className="text-[11px] text-muted-foreground">点赞偏好</div><div className="text-lg font-semibold text-emerald-500">{datasetStats.preference_up}</div></div>
+                  <div className="rounded-lg bg-muted/50 px-3 py-2"><div className="text-[11px] text-muted-foreground">点踩偏好</div><div className="text-lg font-semibold text-red-500">{datasetStats.preference_down}</div></div>
+                  <div className="rounded-lg bg-muted/50 px-3 py-2"><div className="text-[11px] text-muted-foreground">处置案例</div><div className="text-lg font-semibold text-blue-500">{datasetStats.disposal_cases}</div></div>
                 </div>
               )}
             </CardContent>
