@@ -34,6 +34,7 @@ import (
 	"github.com/opsorigin/core/internal/itsm"
 	"github.com/opsorigin/core/internal/itsm/catalog"
 	itsmmodel "github.com/opsorigin/core/internal/itsm/model"
+	monitormodel "github.com/opsorigin/core/internal/monitor/model"
 	"github.com/opsorigin/core/internal/itsm/oncall"
 	"github.com/opsorigin/core/internal/itsm/process"
 	"github.com/opsorigin/core/internal/itsm/sla"
@@ -248,7 +249,8 @@ func main() {
 	slaStore := sla.NewStore(db)
 	server.RegisterService(slaStore)
 	itsmSvc.SetSLAStore(slaStore)
-	server.RegisterService(catalog.NewStore(db))
+	catalogStore := catalog.NewStore(db)
+	server.RegisterService(catalogStore)
 
 	// 创建 tunnel server,监听 Proxy 连接(用于通过 Proxy 下发命令给 Agent)
 	tunnelServer := tunnel.NewServer(cfg.Proxy.Listen, cfg.Tunnel.AuthSecret, cfg.Tunnel.Insecure)
@@ -588,11 +590,62 @@ func main() {
 		},
 	)
 	// 数字员工运营效果: ITSM 工单统计(来源=ai_inspection 的工单)。
-	aiSvc.Engine.SetTicketMetricsProvider(func(ctx context.Context, tenantID string) (int, map[string]int, float64, error) {
+	aiSvc.Engine.SetTicketMetricsProvider(func(ctx context.Context, tenantID string) (int, map[string]int, float64, map[string]int, error) {
 		return itsmSvc.TicketMetricsBySource(ctx, tenantID, "ai_inspection")
+	})
+	// 场景包自动落库: 启用场景时可将推荐的标准化工单类型真实建到 itsm_catalog(幂等同名跳过)。
+	aiSvc.Engine.SetSceneCatalogCreator(func(ctx context.Context, tenantID, name, description, category string) error {
+		items, err := catalogStore.List(ctx, tenantID)
+		if err != nil {
+			return err
+		}
+		for _, it := range items {
+			if it.Name == name {
+				return agentic.ErrCatalogItemExists // 同名已存在, 幂等跳过(引擎不计入 created_catalog)
+			}
+		}
+		return catalogStore.Create(ctx, &catalog.ServiceItem{
+			TenantID:    tenantID,
+			Name:        name,
+			Description: description,
+			Category:    category,
+			Enabled:     true,
+		})
 	})
 	server.RegisterService(aiSvc)
 	aiSvc.Start(ctx)
+
+	// —— 智能值班(P1): 告警路由到当班 Agent + AI 自动接管 ——
+	// oncall(itsm 子包) 不依赖 monitor/ai: 告警经 monitor.AddAlertNotifier 注入路由,
+	// AI 接管经 SetAgentHandler 注入(复用 ITSM 建单 + 通知中心, 与巡检闭环同模式)。
+	oncallSvc.SetAgentHandler(func(ctx context.Context, tenantID, agentID, alertTitle, alertDesc string) error {
+		tctx := context.WithValue(ctx, "tenant_id", tenantID)
+		_, err := itsmSvc.CreateTicket(tctx, itsmmodel.CreateTicketRequest{
+			Title:         "[AI接管] " + alertTitle,
+			Description:   alertDesc + "\n\n值班 Agent: " + agentID + "\n来源: 智能值班告警自动接管",
+			CreatedBy:     "oncall-agent",
+			CreatedByType: "system",
+			Labels:        map[string]string{"source": "ai_oncall", "agent_id": agentID, "kind": "alert_takeover"},
+		})
+		if err != nil {
+			return err
+		}
+		return notifySvc.NotifyEvent(ctx, tenantID, "ai.oncall_takeover", "值班Agent已接管告警: "+alertTitle, alertDesc)
+	})
+	monitorSvc.AddAlertNotifier(func(ae *monitormodel.AlertEvent) {
+		if ae == nil || ae.IsSuppressed {
+			return
+		}
+		oncallSvc.HandleAlert(context.Background(), &oncall.Alert{
+			ID:          ae.ID,
+			TenantID:    ae.TenantID,
+			Title:       ae.Title,
+			Description: ae.Description,
+			Severity:    string(ae.Severity),
+			Labels:      ae.Labels,
+			TriggeredAt: ae.TriggeredAt,
+		})
+	})
 
 	opsSvc := ops.NewService(cfg, db)
 	server.RegisterService(opsSvc)

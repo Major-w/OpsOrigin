@@ -9,14 +9,14 @@ import { Input } from '@/components/ui/input'
 import { Dialog, DialogFooter } from '@/components/ui/dialog'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { formatTime } from '@/lib/utils'
-import { Plus, Trash2, Calendar, Users } from 'lucide-react'
+import { Plus, Trash2, Calendar, Users, Bot } from 'lucide-react'
 
 export default function OnCallPage() {
-  const { shifts, rotations, fetchShifts, addShift, fetchRotations, createRotation, deleteRotation } = useOnCallStore()
+  const { shifts, rotations, currentOncall, fetchShifts, addShift, fetchRotations, createRotation, deleteRotation } = useOnCallStore()
   const [shiftDialog, setShiftDialog] = useState(false)
   const [shiftForm, setShiftForm] = useState({ user_name: '', role: 'primary', start_time: '', end_time: '', phone: '', email: '' })
   const [rotDialog, setRotDialog] = useState(false)
-  const [rotForm, setRotForm] = useState({ name: '', members: '', cycle_days: 7 })
+  const [rotForm, setRotForm] = useState({ name: '', members: '', cycle_days: 7, labels: '' })
 
   useEffect(() => { fetchShifts(); fetchRotations() }, [])
 
@@ -26,12 +26,17 @@ export default function OnCallPage() {
   }
 
   const handleCreateRotation = async () => {
-    await createRotation({ ...rotForm, members: rotForm.members.split(',').map(s => s.trim()).filter(Boolean) })
-    setRotDialog(false); setRotForm({ name: '', members: '', cycle_days: 7 })
+    const labels: Record<string, string> = {}
+    rotForm.labels.split(',').map(s => s.trim()).filter(Boolean).forEach(pair => {
+      const [k, v] = pair.split('='); if (k && v) labels[k] = v
+    })
+    await createRotation({ ...rotForm, labels: Object.keys(labels).length ? labels : undefined, members: rotForm.members.split(',').map(s => s.trim()).filter(Boolean) })
+    setRotDialog(false); setRotForm({ name: '', members: '', cycle_days: 7, labels: '' })
   }
 
   const now = new Date()
   const currentShifts = shifts.filter(s => new Date(s.end_time) >= now && new Date(s.start_time) <= now)
+  const displayName = (m: string) => m.startsWith('agent:') ? m.slice(6) : m
 
   return (
     <div className="p-6 space-y-4">
@@ -79,13 +84,27 @@ export default function OnCallPage() {
           <Card><CardContent className="p-0">
             {rotations.length === 0 ? <p className="px-4 py-8 text-sm text-muted-foreground text-center">暂无轮值组。</p> : (
               <table className="w-full text-sm"><thead><tr className="border-b text-left text-muted-foreground">
-                <th className="pb-2 px-4">名称</th><th className="pb-2 px-4">成员</th><th className="pb-2 px-4">周期(天)</th><th className="pb-2 px-4 w-16"></th>
+                <th className="pb-2 px-4">名称</th><th className="pb-2 px-4">成员</th><th className="pb-2 px-4">周期(天)</th><th className="pb-2 px-4">当前当班</th><th className="pb-2 px-4">告警匹配</th><th className="pb-2 px-4 w-16"></th>
               </tr></thead><tbody>
                 {rotations.map(r => (
                   <tr key={r.id} className="border-b last:border-0">
                     <td className="py-2 px-4 font-medium">{r.name}</td>
-                    <td className="py-2 px-4"><div className="flex gap-1 flex-wrap">{r.members.map(m => <Badge key={m} variant="outline" className="text-xs">{m}</Badge>)}</div></td>
+                    <td className="py-2 px-4"><div className="flex gap-1 flex-wrap">{r.members.map(m => (
+                      <Badge key={m} variant={m.startsWith('agent:') ? 'secondary' : 'outline'} className="text-xs">
+                        {m.startsWith('agent:') ? <><Bot className="h-3 w-3 mr-1" />{displayName(m)}</> : m}
+                      </Badge>
+                    ))}</div></td>
                     <td className="py-2 px-4 text-muted-foreground">{r.cycle_days}</td>
+                    <td className="py-2 px-4">
+                      {currentOncall[r.id]
+                        ? <Badge variant="success" className="text-xs gap-1">{currentOncall[r.id].startsWith('agent:') ? <Bot className="h-3 w-3" /> : null}{displayName(currentOncall[r.id])}</Badge>
+                        : <span className="text-xs text-muted-foreground">-</span>}
+                    </td>
+                    <td className="py-2 px-4">
+                      {r.labels && Object.keys(r.labels).length
+                        ? <div className="flex gap-1 flex-wrap">{Object.entries(r.labels).map(([k, v]) => <Badge key={k} variant="outline" className="text-xs text-muted-foreground">{k}={v}</Badge>)}</div>
+                        : <span className="text-xs text-muted-foreground">全部告警</span>}
+                    </td>
                     <td className="py-2 px-4"><Button variant="ghost" size="icon" className="h-6 w-6" onClick={() => deleteRotation(r.id)}><Trash2 className="h-3 w-3" /></Button></td>
                   </tr>
                 ))}</tbody>
@@ -110,8 +129,12 @@ export default function OnCallPage() {
       <Dialog open={rotDialog} onClose={() => setRotDialog(false)} title="创建轮值组">
         <div className="space-y-3">
           <div><label className="text-sm font-medium">名称 *</label><Input value={rotForm.name} onChange={e => setRotForm(f => ({ ...f, name: e.target.value }))} /></div>
-          <div><label className="text-sm font-medium">成员 (逗号分隔)</label><Input value={rotForm.members} onChange={e => setRotForm(f => ({ ...f, members: e.target.value }))} placeholder="张三,李四,王五" /></div>
-          <div><label className="text-sm font-medium">轮换周期(天)</label><Input type="number" value={rotForm.cycle_days} onChange={e => setRotForm(f => ({ ...f, cycle_days: parseInt(e.target.value) || 7 }))} /></div>
+          <div><label className="text-sm font-medium">成员 (逗号分隔, 数字员工用 agent:ID)</label><Input value={rotForm.members} onChange={e => setRotForm(f => ({ ...f, members: e.target.value }))} placeholder="张三,李四,agent:值班巡检员" /></div>
+          <div className="grid grid-cols-2 gap-3">
+            <div><label className="text-sm font-medium">轮换周期(天)</label><Input type="number" value={rotForm.cycle_days} onChange={e => setRotForm(f => ({ ...f, cycle_days: parseInt(e.target.value) || 7 }))} /></div>
+            <div><label className="text-sm font-medium">告警匹配 (key=value,逗号分隔)</label><Input value={rotForm.labels} onChange={e => setRotForm(f => ({ ...f, labels: e.target.value }))} placeholder="component=database" /></div>
+          </div>
+          <p className="text-xs text-muted-foreground">告警按 labels 路由到当班成员；数字员工(agent:)当班时将自动接管告警并创建工单。</p>
         </div>
         <DialogFooter><Button variant="outline" onClick={() => setRotDialog(false)}>取消</Button><Button onClick={handleCreateRotation} disabled={!rotForm.name}>创建</Button></DialogFooter>
       </Dialog>

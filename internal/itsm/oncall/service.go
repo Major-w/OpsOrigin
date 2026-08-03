@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"log/slog"
 	"net/http"
 	"sync"
 	"time"
@@ -91,6 +92,75 @@ func (s *MemoryStore) DeleteRotation(ctx context.Context, id, tenantID string) e
 
 type Service struct {
 	store Store
+	// agentHandler 当班成员为数字员工(agent:<id>)时的 AI 接管回调(cmd/core 注入)。
+	// 回调在告警路由命中时触发, 用于创建 ITSM 工单/通知当班 Agent 自动处置。
+	agentHandler func(ctx context.Context, tenantID, agentID, alertTitle, alertDesc string) error
+}
+
+// SetAgentHandler 注入值班 Agent 的 AI 接管回调(nil=关闭 AI 接管, 告警仅路由不触发)。
+func (s *Service) SetAgentHandler(fn func(ctx context.Context, tenantID, agentID, alertTitle, alertDesc string) error) {
+	s.agentHandler = fn
+}
+
+// Alert 告警最小结构(本包自持, 不依赖 monitor): 由 cmd/core 在 monitor 告警回调中转换。
+type Alert struct {
+	ID          string            `json:"id"`
+	TenantID    string            `json:"tenant_id"`
+	Title       string            `json:"title"`
+	Description string            `json:"description,omitempty"`
+	Severity    string            `json:"severity"` // warning | critical
+	Labels      map[string]string `json:"labels,omitempty"`
+	TriggeredAt time.Time         `json:"triggered_at"`
+}
+
+// HandleAlert 告警路由入口(由 monitor 告警回调调用):
+// 遍历该租户全部轮转组, 命中(labels 匹配)的组取当前当班成员,
+// 当班成员为 agent:<id> 时触发 AI 接管回调(创建工单 + 通知)。
+func (s *Service) HandleAlert(ctx context.Context, alert *Alert) {
+	if alert == nil || alert.TenantID == "" {
+		return
+	}
+	rotations, err := s.store.ListRotations(ctx, alert.TenantID)
+	if err != nil || len(rotations) == 0 {
+		return
+	}
+	now := time.Now()
+	for _, r := range rotations {
+		if !labelsMatch(r.Labels, alert.Labels) {
+			continue
+		}
+		member := r.CurrentOncall(now)
+		if member == "" {
+			continue
+		}
+		slog.Info("oncall alert routed", "rotation", r.ID, "name", r.Name, "member", member, "alert", alert.ID, "title", alert.Title)
+		if isAgentMember(member) && s.agentHandler != nil {
+			agentID := member[len("agent:"):]
+			if err := s.agentHandler(ctx, alert.TenantID, agentID, alert.Title, alert.Description); err != nil {
+				slog.Warn("oncall agent takeover failed", "rotation", r.ID, "agent", agentID, "error", err)
+				return
+			}
+			slog.Info("oncall agent takeover dispatched", "rotation", r.ID, "agent", agentID, "alert", alert.ID)
+		}
+		return // 命中第一个匹配的轮转组即路由(优先级=创建顺序)
+	}
+	slog.Debug("oncall: no rotation matched alert", "alert", alert.ID, "title", alert.Title)
+}
+
+func isAgentMember(member string) bool {
+	return len(member) > len("agent:") && member[:len("agent:")] == "agent:"
+}
+
+func labelsMatch(required, actual map[string]string) bool {
+	if len(required) == 0 {
+		return true
+	}
+	for k, v := range required {
+		if actual[k] != v {
+			return false
+		}
+	}
+	return true
 }
 
 func NewService(db *sql.DB) *Service {
@@ -114,6 +184,7 @@ func (s *Service) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/v1/oncall/rotations", s.handleListRotations)
 	mux.HandleFunc("POST /api/v1/oncall/rotations", s.handleCreateRotation)
 	mux.HandleFunc("DELETE /api/v1/oncall/rotations/{id}", s.handleDeleteRotation)
+	mux.HandleFunc("GET /api/v1/oncall/rotations/{id}/oncall", s.handleCurrentOncall)
 }
 
 func (s *Service) handleListShifts(w http.ResponseWriter, r *http.Request) {
@@ -154,6 +225,28 @@ func (s *Service) handleDeleteRotation(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	s.store.DeleteRotation(r.Context(), id, tenantFromCtx(r.Context()))
 	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
+}
+
+func (s *Service) handleCurrentOncall(w http.ResponseWriter, r *http.Request) {
+	tenantID := tenantFromCtx(r.Context())
+	id := r.PathValue("id")
+	rotations, _ := s.store.ListRotations(r.Context(), tenantID)
+	for _, rot := range rotations {
+		if rot.ID != id {
+			continue
+		}
+		member := rot.CurrentOncall(time.Now())
+		writeJSON(w, http.StatusOK, map[string]any{
+			"rotation_id": rot.ID,
+			"name":        rot.Name,
+			"member":      member,
+			"members":     rot.Members,
+			"cycle_days":  rot.CycleDays,
+			"labels":      rot.Labels,
+		})
+		return
+	}
+	writeError(w, http.StatusNotFound, "rotation not found")
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {

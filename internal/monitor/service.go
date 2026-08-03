@@ -30,6 +30,11 @@ type Service struct {
 	wsHub        interface{ BroadcastToTenant(interface{}, string) }
 	probeMu      sync.Mutex
 	probeResults []*model.ProbeResult
+
+	// alertNotifiers 告警触发时的附加回调(可多个, 由 cmd/core 注入如值班路由/AI 接管)。
+	// 与 aggregator.OnNotify(WS 广播) 并存, 避免覆盖既有行为。
+	alertNotifiers []func(*model.AlertEvent)
+	alertMu        sync.Mutex
 }
 
 func NewService(cfg *config.Config, rdb *redis.Client) *Service {
@@ -43,6 +48,17 @@ func NewService(cfg *config.Config, rdb *redis.Client) *Service {
 		topology:     topo,
 		probeResults: make([]*model.ProbeResult, 0),
 	}
+}
+
+// AddAlertNotifier 注册告警触发回调(每次新告警触发时调用, 异步安全)。
+// 供 cmd/core 装配智能值班路由等扩展能力; 与内置 WS 广播互不干扰。
+func (s *Service) AddAlertNotifier(fn func(*model.AlertEvent)) {
+	if fn == nil {
+		return
+	}
+	s.alertMu.Lock()
+	s.alertNotifiers = append(s.alertNotifiers, fn)
+	s.alertMu.Unlock()
 }
 
 func (s *Service) Topology() *SimpleTopology {
@@ -132,6 +148,12 @@ func (s *Service) Start(ctx context.Context) error {
 				"payload": alert,
 				"time":    time.Now().UnixMilli(),
 			}, alert.TenantID)
+		}
+		s.alertMu.Lock()
+		fns := append([]func(*model.AlertEvent){}, s.alertNotifiers...)
+		s.alertMu.Unlock()
+		for _, fn := range fns {
+			fn(alert)
 		}
 	})
 

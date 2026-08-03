@@ -29,6 +29,7 @@ const (
 	EventWorkflowFailed  EventType = "workflow.failed"        // 工作流执行失败
 	EventCMDBChanged     EventType = "cmdb.ci_changed"        // CMDB CI 变更（P2-5 消息订阅通知渠道）
 	EventAIInspection    EventType = "ai.inspection_finished" // 主动巡检完成/失败（AI 巡检闭环通知）
+	EventAIOncall        EventType = "ai.oncall_takeover"     // 智能值班 Agent 接管告警（P1 智能值班通知）
 )
 
 // AllEventTypes 返回所有支持的事件类型,供前端展示与 Policy 配置使用。
@@ -39,7 +40,7 @@ func AllEventTypes() []EventType {
 		EventAgentOffline,
 		EventWorkflowWaiting, EventWorkflowFailed,
 		EventCMDBChanged,
-		EventAIInspection,
+		EventAIInspection, EventAIOncall,
 	}
 }
 

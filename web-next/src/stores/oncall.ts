@@ -5,19 +5,23 @@ import { apiFetch, apiList } from '@/lib/utils'
 import { toast } from '@/stores/toast'
 
 export interface Shift { id: string; user_name: string; role: string; start_time: string; end_time: string; phone?: string; email?: string }
-export interface Rotation { id: string; name: string; members: string[]; cycle_days: number }
+export interface Rotation { id: string; name: string; members: string[]; cycle_days: number; labels?: Record<string, string> }
 
 interface OnCallState {
   shifts: Shift[]; rotations: Rotation[]; loading: boolean
+  /** rotation_id -> 当前当班成员(轮转解析) */
+  currentOncall: Record<string, string>
   fetchShifts: () => Promise<void>
   addShift: (data: any) => Promise<boolean>
   fetchRotations: () => Promise<void>
   createRotation: (data: any) => Promise<boolean>
   deleteRotation: (id: string) => Promise<boolean>
+  /** 查询轮值组当前当班成员并缓存 */
+  fetchCurrentOncall: (id: string) => Promise<void>
 }
 
 export const useOnCallStore = create<OnCallState>((set, get) => ({
-  shifts: [], rotations: [], loading: false,
+  shifts: [], rotations: [], loading: false, currentOncall: {},
   fetchShifts: async () => {
     set({ loading: true })
     try {
@@ -44,6 +48,8 @@ export const useOnCallStore = create<OnCallState>((set, get) => ({
     try {
       const rotations = await apiList<Rotation>('/oncall/rotations')
       set({ rotations, loading: false })
+      // 顺带解析各轮值组当前当班成员
+      rotations.forEach(r => get().fetchCurrentOncall(r.id))
     } catch (e: any) {
       set({ loading: false })
       toast.error(`加载轮值列表失败: ${e.message}`)
@@ -70,5 +76,11 @@ export const useOnCallStore = create<OnCallState>((set, get) => ({
       toast.error(`删除轮值失败: ${e.message}`)
       return false
     }
+  },
+  fetchCurrentOncall: async (id) => {
+    try {
+      const d = await apiFetch<{ member: string }>(`/oncall/rotations/${id}/oncall`)
+      if (d.member) set(s => ({ currentOncall: { ...s.currentOncall, [id]: d.member } }))
+    } catch { /* 静默: 单成员组等边界无需提示 */ }
   },
 }))
