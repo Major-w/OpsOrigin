@@ -51,6 +51,9 @@ type Step struct {
 	// 画布位置
 	PositionX *float64 `json:"position_x,omitempty"`
 	PositionY *float64 `json:"position_y,omitempty"`
+	// 表单作用域：工单流转到本步骤时渲染的自定义表单 scope（如 process:<pid>:step:<step_id>）。
+	// 空表示本步骤不挂动态表单。
+	FormScope string `json:"form_scope,omitempty"`
 }
 
 // Process — ITSM 流程定义

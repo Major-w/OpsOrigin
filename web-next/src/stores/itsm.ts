@@ -68,6 +68,8 @@ export interface ProcessStep {
   subflow_id?: string
   depends_on?: { nodeId: string; condition: string }[]
   position_x?: number; position_y?: number
+  // 表单作用域：工单流转到本步骤时渲染的自定义表单 scope（如 process:<pid>:step:<step_id>）
+  form_scope?: string
 }
 
 type StepType = 'start' | 'end' | 'user' | 'service' | 'gateway' | 'timer' | 'notify' | 'parallel' | 'subflow'
@@ -77,6 +79,19 @@ export interface Process {
   steps: ProcessStep[]; labels?: Record<string,string>
   enabled: boolean; version: number
   created_at: string; updated_at: string
+}
+
+export interface ProcessInstance {
+  id: string
+  process_id: string
+  ticket_id: string
+  current_step: string
+  status: string
+  step_results?: Record<string, any>
+  started_at?: string
+  finished_at?: string | null
+  created_at?: string
+  updated_at?: string
 }
 
 interface ITSMState {
@@ -105,6 +120,9 @@ interface ITSMState {
   createProcess: (data: Partial<Process>) => Promise<string | null>
   updateProcess: (id: string, data: Partial<Process>) => Promise<boolean>
   deleteProcess: (id: string) => Promise<boolean>
+  // 流程实例与步骤级自定义字段
+  getTicketProcess: (ticketId: string) => Promise<ProcessInstance | null>
+  updateTicketCustomFields: (ticketId: string, scope: string, fields: Record<string, any>) => Promise<boolean>
 }
 
 export const useITSMStore = create<ITSMState>((set, get) => ({
@@ -278,5 +296,20 @@ export const useITSMStore = create<ITSMState>((set, get) => ({
       toast.success('删除流程成功')
       return true
     } catch (e: any) { toast.error(`删除失败: ${e.message}`); return false }
+  },
+  getTicketProcess: async (ticketId) => {
+    try {
+      return await apiFetch<ProcessInstance>(`/itsm/tickets/${ticketId}/process`)
+    } catch { return null }
+  },
+  updateTicketCustomFields: async (ticketId, scope, fields) => {
+    try {
+      await apiFetch(`/itsm/tickets/${ticketId}/custom-fields`, {
+        method: 'PATCH',
+        body: JSON.stringify({ scope, fields }),
+      })
+      toast.success('步骤表单已保存')
+      return true
+    } catch (e: any) { toast.error(`保存失败: ${e.message}`); return false }
   },
 }))

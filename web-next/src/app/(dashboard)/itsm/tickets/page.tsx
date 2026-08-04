@@ -57,7 +57,7 @@ function formatFileSize(bytes: number): string {
 
 export default function ITSMPage() {
   const router = useRouter()
-  const { tickets, stats, loading, fetch, create, approve, reject, execute, complete, rollback, getTicket, getEvents, fetchStats, processes, fetchProcesses, getFormSchema, upsertFormSchema } = useITSMStore()
+  const { tickets, stats, loading, fetch, create, approve, reject, execute, complete, rollback, getTicket, getEvents, fetchStats, processes, fetchProcesses, getFormSchema, upsertFormSchema, getTicketProcess, updateTicketCustomFields } = useITSMStore()
   const canWrite = useCan('itsm:write')
   const canApprove = useCanAny(['itsm:approve', 'itsm:write'])
   const [dialogOpen, setDialogOpen] = useState(false)
@@ -68,6 +68,10 @@ export default function ITSMPage() {
   const [knowledgeRecs, setKnowledgeRecs] = useState<any[]>([])
   const [selectedTicket, setSelectedTicket] = useState<Ticket | null>(null)
   const [selectedSchema, setSelectedSchema] = useState<FormSchema | null>(null)
+  // 流程步骤级表单：当前步骤的 form_scope（非空时详情页渲染可编辑步骤表单）+ 编辑中字段值 + 保存态
+  const [stepScope, setStepScope] = useState('')
+  const [stepFields, setStepFields] = useState<Record<string, any>>({})
+  const [stepSaving, setStepSaving] = useState(false)
   const [ticketEvents, setTicketEvents] = useState<TicketEvent[]>([])
   const [detailTab, setDetailTab] = useState('detail')
   const [approveDialog, setApproveDialog] = useState(false)
@@ -106,9 +110,10 @@ export default function ITSMPage() {
   // 当前创建用作用域（catalog:<id> / process:<pid> / ticket:default），由来源或所选流程决定
   const [createScope, setCreateScope] = useState('ticket:default')
   const initialScopeRef = useRef('ticket:default')
-  // 配置 Dialog 的 scope 选择（ticket 默认 / catalog 目录项 / process 流程）
-  const [configScopeType, setConfigScopeType] = useState<'ticket' | 'catalog' | 'process'>('ticket')
+  // 配置 Dialog 的 scope 选择（ticket 默认 / catalog 目录项 / process 流程 / process_step 流程步骤）
+  const [configScopeType, setConfigScopeType] = useState<'ticket' | 'catalog' | 'process' | 'process_step'>('ticket')
   const [configScopeId, setConfigScopeId] = useState('')
+  const [configStepId, setConfigStepId] = useState('')
 
   const fetchComments = useCallback(async (ticketId: string) => {
     try {
@@ -178,22 +183,53 @@ export default function ITSMPage() {
   const handleSelectTicket = async (ticket: Ticket) => {
     setSelectedTicket(ticket)
     setDetailTab('detail')
+    setStepScope(''); setStepFields({}); setStepSaving(false)
     try {
       const events = await getEvents(ticket.id)
       setTicketEvents(events || [])
     } catch { setTicketEvents([]) }
     fetchComments(ticket.id)
     fetchAttachments(ticket.id)
-    // 拉取该工单的表单 schema（默认 ticket:default）用于详情渲染标签
+    // 解析表单作用域：优先流程实例当前步骤的 form_scope，否则 ticket.form_scope / ticket:default
+    let scope = ticket.form_scope || 'ticket:default'
+    if (ticket.process_id) {
+      try {
+        const inst = await getTicketProcess(ticket.id)
+        if (inst && inst.current_step) {
+          const proc = processes.find(p => p.id === ticket.process_id)
+          const step = proc?.steps?.find(s => s.id === inst.current_step)
+          if (step?.form_scope) {
+            scope = step.form_scope
+            setStepScope(step.form_scope)
+          }
+        }
+      } catch { /* 流程实例不可用时回退默认作用域 */ }
+    }
     try {
-      const schema = await getFormSchema(ticket.form_scope || 'ticket:default')
+      const schema = await getFormSchema(scope)
       setSelectedSchema(schema)
+      setStepFields({ ...(ticket.custom_fields || {}) })
     } catch { setSelectedSchema(null) }
+  }
+
+  const handleSaveStepForm = async () => {
+    if (!selectedTicket || !stepScope) return
+    setStepSaving(true)
+    const ok = await updateTicketCustomFields(selectedTicket.id, stepScope, stepFields)
+    setStepSaving(false)
+    if (ok) {
+      try {
+        const t = await getTicket(selectedTicket.id)
+        setSelectedTicket(t)
+        setStepFields({ ...(t.custom_fields || {}) })
+      } catch { /* 忽略刷新失败 */ }
+    }
   }
 
   const resolveConfigScope = () => {
     if (configScopeType === 'catalog') return `catalog:${configScopeId.trim()}`
     if (configScopeType === 'process') return `process:${configScopeId.trim()}`
+    if (configScopeType === 'process_step') return `process:${configScopeId.trim()}:step:${configStepId.trim()}`
     return 'ticket:default'
   }
 
@@ -539,7 +575,22 @@ export default function ITSMPage() {
                         </div>
                       </div>
                     )}
-                    {(selectedTicket.custom_fields && Object.keys(selectedTicket.custom_fields).length > 0) && (
+                    {stepScope ? (
+                      <div>
+                        <h4 className="text-sm font-medium mb-1">当前步骤表单 <span className="text-xs font-normal text-muted-foreground">（{stepScope}）</span></h4>
+                        <DynamicForm
+                          schema={selectedSchema}
+                          values={stepFields}
+                          context={selectedTicket as unknown as Record<string, unknown>}
+                          onChange={(k, v) => setStepFields(f => ({ ...f, [k]: v }))}
+                        />
+                        <div className="pt-1">
+                          <Button size="sm" onClick={handleSaveStepForm} disabled={stepSaving}>
+                            {stepSaving ? '保存中…' : '保存步骤表单'}
+                          </Button>
+                        </div>
+                      </div>
+                    ) : (selectedTicket.custom_fields && Object.keys(selectedTicket.custom_fields).length > 0) && (
                       <div>
                         <h4 className="text-sm font-medium mb-1">自定义字段</h4>
                         <DynamicForm
@@ -803,16 +854,26 @@ export default function ITSMPage() {
         <DialogFooter><Button onClick={() => setImportDialog(false)}>关闭</Button></DialogFooter>
       </Dialog>
 
-      <Dialog open={configDialog} onClose={() => setConfigDialog(false)} title={`表单配置（${configScopeType === 'ticket' ? 'ticket:default' : configScopeType + ':' + (configScopeId.trim() || '...')}）`}>
+      <Dialog open={configDialog} onClose={() => setConfigDialog(false)} title={`表单配置（${resolveConfigScope()}）`}>
         <div className="space-y-3">
-          <div className="flex gap-2">
-            <select className="flex h-9 rounded-md border border-input bg-background px-2 text-xs" value={configScopeType} onChange={e => setConfigScopeType(e.target.value as 'ticket' | 'catalog' | 'process')}>
+          <div className="flex gap-2 flex-wrap">
+            <select className="flex h-9 rounded-md border border-input bg-background px-2 text-xs" value={configScopeType} onChange={e => setConfigScopeType(e.target.value as 'ticket' | 'catalog' | 'process' | 'process_step')}>
               <option value="ticket">默认 (ticket:default)</option>
               <option value="catalog">{`服务目录项 (catalog:<id>)`}</option>
               <option value="process">{`流程 (process:<id>)`}</option>
+              <option value="process_step">{`流程步骤 (process:<id>:step:<step>)`}</option>
             </select>
-            {configScopeType !== 'ticket' && (
-              <Input className="text-xs" value={configScopeId} onChange={e => setConfigScopeId(e.target.value)} placeholder={configScopeType === 'catalog' ? '目录项 ID' : '流程 ID'} />
+            {configScopeType === 'catalog' && (
+              <Input className="text-xs" value={configScopeId} onChange={e => setConfigScopeId(e.target.value)} placeholder="目录项 ID" />
+            )}
+            {configScopeType === 'process' && (
+              <Input className="text-xs" value={configScopeId} onChange={e => setConfigScopeId(e.target.value)} placeholder="流程 ID" />
+            )}
+            {configScopeType === 'process_step' && (
+              <>
+                <Input className="text-xs" value={configScopeId} onChange={e => setConfigScopeId(e.target.value)} placeholder="流程 ID" />
+                <Input className="text-xs" value={configStepId} onChange={e => setConfigStepId(e.target.value)} placeholder="步骤 ID" />
+              </>
             )}
             <Button size="sm" variant="outline" onClick={openConfigDialog}>载入</Button>
           </div>

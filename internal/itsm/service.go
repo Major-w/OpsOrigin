@@ -129,6 +129,7 @@ func (s *Service) RegisterRoutes(mux *http.ServeMux) {
 	// Form schemas (dynamic forms)
 	mux.HandleFunc("GET /api/v1/itsm/forms", s.handleListFormScopes)
 	mux.HandleFunc("PUT /api/v1/itsm/forms", s.handleUpsertFormSchema)
+	mux.HandleFunc("PATCH /api/v1/itsm/tickets/{id}/custom-fields", s.handleUpdateCustomFields)
 	// Change Management
 	mux.HandleFunc("POST /api/v1/itsm/changes", s.handleCreateChange)
 	mux.HandleFunc("GET /api/v1/itsm/changes", s.handleListChanges)
@@ -1121,6 +1122,49 @@ func (s *Service) handleUpsertFormSchema(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"status": "ok", "scope": req.Scope})
+}
+
+// handleUpdateCustomFields 按作用域更新工单自定义字段（流程步骤级表单回写）。
+// 若给定 scope 存在 schema，则先注入默认值并校验，再合并进 ticket.custom_fields；无 schema 直接合并（向后兼容）。
+func (s *Service) handleUpdateCustomFields(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	tenantID := tenantFromCtx(r.Context())
+	var req struct {
+		Scope  string         `json:"scope"`
+		Fields map[string]any `json:"fields"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	ticket, err := s.store.Get(r.Context(), id, tenantID)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "ticket not found")
+		return
+	}
+	if ticket.CustomFields == nil {
+		ticket.CustomFields = map[string]any{}
+	}
+	if req.Fields == nil {
+		req.Fields = map[string]any{}
+	}
+	if req.Scope != "" && s.formEngine != nil {
+		if schema, serr := s.formEngine.ResolveSchema(r.Context(), tenantID, req.Scope); serr == nil && schema != nil {
+			form.MergeDefaults(schema, req.Fields)
+			if verr := form.ValidateSchema(schema, req.Fields); verr != nil {
+				writeError(w, http.StatusBadRequest, fmt.Sprintf("表单校验失败: %v", verr))
+				return
+			}
+		}
+	}
+	for k, v := range req.Fields {
+		ticket.CustomFields[k] = v
+	}
+	if err := s.store.Update(r.Context(), ticket); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"status": "ok", "custom_fields": ticket.CustomFields})
 }
 
 func formatDuration(d time.Duration) string {

@@ -184,6 +184,8 @@ function StepPanel({ step, steps, scripts, channels, onChange }: {
       {step.type === 'user' && <>
         <div><label className="text-xs font-medium">审批人 (逗号分隔)</label><Input value={(step.approvers||[]).join(',')} onChange={e=>onChange({approvers:e.target.value.split(',').map(s=>s.trim()).filter(Boolean)})} className="h-8 mt-1" placeholder="admin,manager"/></div>
         <div><label className="text-xs font-medium">审批消息</label><Input value={step.approval_msg||''} onChange={e=>onChange({approval_msg:e.target.value})} className="h-8 mt-1" placeholder="请审批此变更"/></div>
+        <div><label className="text-xs font-medium">表单作用域</label><Input value={step.form_scope||''} onChange={e=>onChange({form_scope:e.target.value})} className="h-8 mt-1" placeholder="process:流程ID:step:步骤ID"/></div>
+        <p className="text-[10px] text-muted-foreground">工单流转到本步骤时渲染的自定义表单 scope，留空则不挂表单。格式：process:流程ID:step:步骤ID</p>
       </>}
       {step.type === 'gateway' && <div><label className="text-xs font-medium">条件表达式</label><Input value={step.condition||''} onChange={e=>onChange({condition:e.target.value})} className="h-8 mt-1" placeholder='risk == "high"'/></div>}
       {step.type === 'timer' && <div><label className="text-xs font-medium">超时时长</label><Input value={step.duration||''} onChange={e=>onChange({duration:e.target.value})} className="h-8 mt-1" placeholder="4h / 30m / 1d"/></div>}
