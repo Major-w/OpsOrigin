@@ -60,6 +60,7 @@ func (s *PGStore) Init(ctx context.Context) error {
 		return fmt.Errorf("init itsm_tickets table: %w", err)
 	}
 	s.migrate(ctx)
+	s.initDictTable(ctx)
 	_, err = s.db.ExecContext(ctx, `
 		CREATE INDEX IF NOT EXISTS idx_itsm_tickets_tenant ON itsm_tickets(tenant_id, status)`)
 	if err != nil {
@@ -97,8 +98,10 @@ func (s *PGStore) Init(ctx context.Context) error {
 			created_by  TEXT,
 			created_at  TIMESTAMPTZ NOT NULL,
 			updated_at  TIMESTAMPTZ NOT NULL,
-			completed_at TIMESTAMPTZ
+			completed_at TIMESTAMPTZ,
+			meta        TEXT DEFAULT '{}'
 		)`)
+	s.db.Exec(`ALTER TABLE itsm_subtasks ADD COLUMN IF NOT EXISTS meta TEXT DEFAULT '{}'`)
 	if err != nil {
 		return fmt.Errorf("init itsm_subtasks table: %w", err)
 	}
@@ -147,8 +150,14 @@ func (s *PGStore) Init(ctx context.Context) error {
 			rollback_plan TEXT,
 			created_by    TEXT,
 			created_at    TIMESTAMPTZ NOT NULL,
-			updated_at    TIMESTAMPTZ NOT NULL
+			updated_at    TIMESTAMPTZ NOT NULL,
+			scheduled_at  TIMESTAMPTZ,
+			window_start  TIMESTAMPTZ,
+			window_end    TIMESTAMPTZ
 		)`)
+	s.db.Exec(`ALTER TABLE itsm_changes ADD COLUMN IF NOT EXISTS scheduled_at TIMESTAMPTZ`)
+	s.db.Exec(`ALTER TABLE itsm_changes ADD COLUMN IF NOT EXISTS window_start TIMESTAMPTZ`)
+	s.db.Exec(`ALTER TABLE itsm_changes ADD COLUMN IF NOT EXISTS window_end TIMESTAMPTZ`)
 	if err != nil {
 		return fmt.Errorf("init itsm_changes table: %w", err)
 	}
@@ -195,6 +204,10 @@ func (s *PGStore) migrate(ctx context.Context) {
 		`ALTER TABLE itsm_tickets ADD COLUMN IF NOT EXISTS assignee TEXT`,
 		`ALTER TABLE itsm_tickets ADD COLUMN IF NOT EXISTS assigned_at TIMESTAMPTZ`,
 		`ALTER TABLE itsm_tickets ADD COLUMN IF NOT EXISTS satisfaction INTEGER DEFAULT 0`,
+		`ALTER TABLE itsm_tickets ADD COLUMN IF NOT EXISTS on_hold BOOLEAN DEFAULT FALSE`,
+		`ALTER TABLE itsm_tickets ADD COLUMN IF NOT EXISTS hold_reason TEXT`,
+		`ALTER TABLE itsm_tickets ADD COLUMN IF NOT EXISTS hold_until_at TIMESTAMPTZ`,
+		`ALTER TABLE itsm_tickets ADD COLUMN IF NOT EXISTS related_ticket_ids TEXT DEFAULT '[]'`,
 	}
 	for _, m := range migrations {
 		s.db.ExecContext(ctx, m)
@@ -210,6 +223,7 @@ func (s *PGStore) Create(ctx context.Context, ticket *model.Ticket) error {
 	labelsJSON, _ := json.Marshal(ticket.Labels)
 	ciIDsJSON, _ := json.Marshal(ticket.CIIDs)
 	customFieldsJSON, _ := json.Marshal(ticket.CustomFields)
+	relatedJSON, _ := json.Marshal(ticket.RelatedTicketIDs)
 
 	_, err := s.db.ExecContext(ctx, `
 		INSERT INTO itsm_tickets
@@ -218,8 +232,9 @@ func (s *PGStore) Create(ctx context.Context, ticket *model.Ticket) error {
 			 completed_by, rolled_back_by, rollback_reason, ci_ids, webhook_url,
 			 labels, trace_id, scheduled_at, deadline_at, created_at, updated_at,
 			 approved_at, executed_at, completed_at, rolled_back_at, process_id, custom_fields,
-			 assignee, assigned_at, satisfaction)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32)`,
+			 assignee, assigned_at, satisfaction,
+			 on_hold, hold_reason, hold_until_at, related_ticket_ids)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35,$36)`,
 		ticket.ID, ticket.TenantID, ticket.Title, nullable(ticket.Description),
 		string(ticket.RiskLevel), string(ticket.Status), nullable(ticket.ChangePlan),
 		nullable(ticket.RollbackPlan), ticket.CreatedBy, ticket.CreatedByType,
@@ -232,7 +247,8 @@ func (s *PGStore) Create(ctx context.Context, ticket *model.Ticket) error {
 		nullableTime(ticket.ApprovedAt), nullableTime(ticket.ExecutedAt),
 		nullableTime(ticket.CompletedAt), nullableTime(ticket.RolledBackAt),
 		nullable(ticket.ProcessID), string(customFieldsJSON),
-		nullable(ticket.Assignee), nullableTime(ticket.AssignedAt), ticket.Satisfaction)
+		nullable(ticket.Assignee), nullableTime(ticket.AssignedAt), ticket.Satisfaction,
+		ticket.OnHold, nullable(ticket.HoldReason), nullableTime(ticket.HoldUntilAt), string(relatedJSON))
 	if err != nil {
 		return fmt.Errorf("insert ticket: %w", err)
 	}
@@ -251,6 +267,9 @@ func (s *PGStore) Get(ctx context.Context, id, tenantID string) (*model.Ticket, 
 	var satisfaction sql.NullInt32
 	var approvedAt, executedAt, completedAt, rolledBackAt sql.NullTime
 	var scheduledAt, deadlineAt sql.NullTime
+	var holdReason sql.NullString
+	var holdUntilAt sql.NullTime
+	var relatedJSON sql.NullString
 
 	err := s.db.QueryRowContext(ctx, `
 		SELECT id, tenant_id, title, description, risk_level, status, change_plan,
@@ -258,7 +277,8 @@ func (s *PGStore) Get(ctx context.Context, id, tenantID string) (*model.Ticket, 
 		       completed_by, rolled_back_by, rollback_reason, ci_ids, webhook_url,
 		       labels, trace_id, scheduled_at, deadline_at, created_at, updated_at,
 		       approved_at, executed_at, completed_at, rolled_back_at, process_id, custom_fields,
-		       assignee, assigned_at, satisfaction
+		       assignee, assigned_at, satisfaction,
+		       on_hold, hold_reason, hold_until_at, related_ticket_ids
 		FROM itsm_tickets WHERE id = $1 AND tenant_id = $2`, id, tenantID).Scan(
 		&t.ID, &t.TenantID, &t.Title, &desc, &t.RiskLevel, &t.Status,
 		&changePlan, &rollbackPlan, &t.CreatedBy, &t.CreatedByType,
@@ -266,7 +286,8 @@ func (s *PGStore) Get(ctx context.Context, id, tenantID string) (*model.Ticket, 
 		&ciIDsJSON, &webhookURL, &labelsJSON, &t.TraceID,
 		&scheduledAt, &deadlineAt, &t.CreatedAt, &t.UpdatedAt,
 		&approvedAt, &executedAt, &completedAt, &rolledBackAt, &processID, &customFieldsJSON,
-		&assignee, &assignedAt, &satisfaction)
+		&assignee, &assignedAt, &satisfaction,
+		&t.OnHold, &holdReason, &holdUntilAt, &relatedJSON)
 	if err != nil {
 		if err == sql.ErrNoRows {
 			return nil, ErrNotFound
@@ -278,6 +299,11 @@ func (s *PGStore) Get(ctx context.Context, id, tenantID string) (*model.Ticket, 
 	t.Description = nullableStr(desc)
 	t.ChangePlan = nullableStr(changePlan)
 	t.RollbackPlan = nullableStr(rollbackPlan)
+	t.HoldReason = nullableStr(holdReason)
+	setTimePtr(&t.HoldUntilAt, holdUntilAt)
+	if len(relatedJSON.String) > 0 && relatedJSON.String != "[]" {
+		json.Unmarshal([]byte(relatedJSON.String), &t.RelatedTicketIDs)
+	}
 	t.ApprovedBy = nullableStr(approvedBy)
 	t.RejectReason = nullableStr(rejectReason)
 	t.CompletedBy = nullableStr(completedBy)
@@ -319,6 +345,7 @@ func (s *PGStore) Update(ctx context.Context, ticket *model.Ticket) error {
 	labelsJSON, _ := json.Marshal(ticket.Labels)
 	ciIDsJSON, _ := json.Marshal(ticket.CIIDs)
 	customFieldsJSON, _ := json.Marshal(ticket.CustomFields)
+	relatedJSON, _ := json.Marshal(ticket.RelatedTicketIDs)
 
 	result, err := s.db.ExecContext(ctx, `
 		UPDATE itsm_tickets SET
@@ -328,8 +355,9 @@ func (s *PGStore) Update(ctx context.Context, ticket *model.Ticket) error {
 			rollback_reason=$13, ci_ids=$14, webhook_url=$15, labels=$16,
 			trace_id=$17, updated_at=$18, approved_at=$19, executed_at=$20,
 			completed_at=$21, rolled_back_at=$22, scheduled_at=$23, deadline_at=$24,
-			process_id=$25, custom_fields=$26, assignee=$27, assigned_at=$28, satisfaction=$29
-		WHERE id=$30 AND tenant_id=$31`,
+			process_id=$25, custom_fields=$26, assignee=$27, assigned_at=$28, satisfaction=$29,
+			on_hold=$30, hold_reason=$31, hold_until_at=$32, related_ticket_ids=$33
+		WHERE id=$34 AND tenant_id=$35`,
 		ticket.Title, nullable(ticket.Description), string(ticket.RiskLevel),
 		string(ticket.Status), nullable(ticket.ChangePlan),
 		nullable(ticket.RollbackPlan), ticket.CreatedBy, ticket.CreatedByType,
@@ -342,6 +370,7 @@ func (s *PGStore) Update(ctx context.Context, ticket *model.Ticket) error {
 		nullableTime(ticket.ScheduledAt), nullableTime(ticket.DeadlineAt),
 		nullable(ticket.ProcessID), string(customFieldsJSON),
 		nullable(ticket.Assignee), nullableTime(ticket.AssignedAt), ticket.Satisfaction,
+		ticket.OnHold, nullable(ticket.HoldReason), nullableTime(ticket.HoldUntilAt), string(relatedJSON),
 		ticket.ID, ticket.TenantID)
 	if err != nil {
 		return fmt.Errorf("update ticket: %w", err)
@@ -359,7 +388,8 @@ func (s *PGStore) List(ctx context.Context, tenantID string, status model.Ticket
 	                  completed_by, rolled_back_by, rollback_reason, ci_ids, webhook_url,
 	                  labels, trace_id, scheduled_at, deadline_at, created_at, updated_at,
 	                  approved_at, executed_at, completed_at, rolled_back_at, process_id, custom_fields,
-	                  assignee, assigned_at, satisfaction
+	                  assignee, assigned_at, satisfaction,
+	                  on_hold, hold_reason, hold_until_at, related_ticket_ids
 	           FROM itsm_tickets WHERE tenant_id = $1`
 	args := []any{tenantID}
 
@@ -388,6 +418,9 @@ func (s *PGStore) List(ctx context.Context, tenantID string, status model.Ticket
 		var satisfaction sql.NullInt32
 		var approvedAt, executedAt, completedAt, rolledBackAt sql.NullTime
 		var scheduledAt, deadlineAt sql.NullTime
+		var holdReason sql.NullString
+		var holdUntilAt sql.NullTime
+		var relatedJSON sql.NullString
 
 		if err := rows.Scan(
 			&t.ID, &t.TenantID, &t.Title, &desc, &t.RiskLevel, &t.Status,
@@ -396,7 +429,8 @@ func (s *PGStore) List(ctx context.Context, tenantID string, status model.Ticket
 			&ciIDsJSON, &webhookURL, &labelsJSON, &t.TraceID,
 			&scheduledAt, &deadlineAt, &t.CreatedAt, &t.UpdatedAt,
 			&approvedAt, &executedAt, &completedAt, &rolledBackAt, &processID, &customFieldsJSON,
-			&assignee, &assignedAt, &satisfaction); err != nil {
+			&assignee, &assignedAt, &satisfaction,
+			&t.OnHold, &holdReason, &holdUntilAt, &relatedJSON); err != nil {
 			return nil, fmt.Errorf("scan ticket: %w", err)
 		}
 
@@ -429,6 +463,11 @@ func (s *PGStore) List(ctx context.Context, tenantID string, status model.Ticket
 		}
 		if customFieldsJSON.Valid && customFieldsJSON.String != "" && customFieldsJSON.String != "{}" {
 			json.Unmarshal([]byte(customFieldsJSON.String), &t.CustomFields)
+		}
+		t.HoldReason = nullableStr(holdReason)
+		setTimePtr(&t.HoldUntilAt, holdUntilAt)
+		if len(relatedJSON.String) > 0 && relatedJSON.String != "[]" {
+			json.Unmarshal([]byte(relatedJSON.String), &t.RelatedTicketIDs)
 		}
 		tickets = append(tickets, t)
 	}
@@ -612,17 +651,18 @@ func (s *PGStore) CreateSubtask(ctx context.Context, st *model.Subtask) error {
 	if st.Status == model.SubtaskDone {
 		st.CompletedAt = &now
 	}
+	metaJSON, _ := json.Marshal(st.Meta)
 	err := s.db.QueryRowContext(ctx, `
-		INSERT INTO itsm_subtasks (ticket_id, tenant_id, title, description, assignee, status, due_at, created_by, created_at, updated_at, completed_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) RETURNING id`,
+		INSERT INTO itsm_subtasks (ticket_id, tenant_id, title, description, assignee, status, due_at, created_by, created_at, updated_at, completed_at, meta)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12) RETURNING id`,
 		st.TicketID, st.TenantID, st.Title, nullable(st.Description), nullable(st.Assignee),
-		string(st.Status), nullableTime(st.DueAt), st.CreatedBy, st.CreatedAt, st.UpdatedAt, nullableTime(st.CompletedAt)).Scan(&st.ID)
+		string(st.Status), nullableTime(st.DueAt), st.CreatedBy, st.CreatedAt, st.UpdatedAt, nullableTime(st.CompletedAt), string(metaJSON)).Scan(&st.ID)
 	return err
 }
 
 func (s *PGStore) ListSubtasks(ctx context.Context, ticketID, tenantID string) ([]*model.Subtask, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT id, ticket_id, tenant_id, title, description, assignee, status, due_at, created_by, created_at, updated_at, completed_at
+		SELECT id, ticket_id, tenant_id, title, description, assignee, status, due_at, created_by, created_at, updated_at, completed_at, meta
 		FROM itsm_subtasks WHERE ticket_id = $1 AND tenant_id = $2
 		ORDER BY created_at ASC`, ticketID, tenantID)
 	if err != nil {
@@ -634,9 +674,10 @@ func (s *PGStore) ListSubtasks(ctx context.Context, ticketID, tenantID string) (
 		st := &model.Subtask{}
 		var description, assignee, createdBy sql.NullString
 		var dueAt, completedAt sql.NullTime
+		var metaJSON sql.NullString
 		if err := rows.Scan(&st.ID, &st.TicketID, &st.TenantID, &st.Title,
 			&description, &assignee, &st.Status, &dueAt, &createdBy,
-			&st.CreatedAt, &st.UpdatedAt, &completedAt); err != nil {
+			&st.CreatedAt, &st.UpdatedAt, &completedAt, &metaJSON); err != nil {
 			return nil, err
 		}
 		st.Description = nullableStr(description)
@@ -644,6 +685,9 @@ func (s *PGStore) ListSubtasks(ctx context.Context, ticketID, tenantID string) (
 		st.CreatedBy = nullableStr(createdBy)
 		setTimePtr(&st.DueAt, dueAt)
 		setTimePtr(&st.CompletedAt, completedAt)
+		if metaJSON.Valid && metaJSON.String != "" && metaJSON.String != "{}" {
+			json.Unmarshal([]byte(metaJSON.String), &st.Meta)
+		}
 		out = append(out, st)
 	}
 	return out, rows.Err()
@@ -753,7 +797,8 @@ func (s *PGStore) ListActiveTicketsWithDeadline(ctx context.Context, tenantID st
 			sla_warning_notified, sla_breached, sla_breached_at, sla_escalation_level, custom_fields,
 			process_id, assignee
 		FROM itsm_tickets
-		WHERE tenant_id = $1 AND status IN ('draft','pending_review','approved','executing') AND deadline_at IS NOT NULL`,
+		WHERE tenant_id = $1 AND status IN ('draft','pending_review','approved','executing')
+		  AND deadline_at IS NOT NULL AND COALESCE(on_hold, false) = false`,
 		tenantID)
 	if err != nil {
 		return nil, err
@@ -881,15 +926,17 @@ func (s *PGStore) CreateChange(ctx context.Context, change *model.ChangeRequest)
 		INSERT INTO itsm_changes
 			(id, tenant_id, ticket_id, title, description, risk_level, status,
 			 change_type, impact, urgency, cab_members, approvals, plan,
-			 rollback_plan, created_by, created_at, updated_at)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)`,
+			 rollback_plan, created_by, created_at, updated_at,
+			 scheduled_at, window_start, window_end)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20)`,
 		change.ID, change.TenantID, nullable(change.TicketID),
 		change.Title, nullable(change.Description), string(change.RiskLevel),
 		string(change.Status), nullable(change.ChangeType),
 		nullable(change.Impact), nullable(change.Urgency),
 		string(cabMembersJSON), string(approvalsJSON),
 		nullable(change.Plan), nullable(change.RollbackPlan),
-		nullable(change.CreatedBy), change.CreatedAt, change.UpdatedAt)
+		nullable(change.CreatedBy), change.CreatedAt, change.UpdatedAt,
+		nullableTime(change.ScheduledAt), nullableTime(change.WindowStart), nullableTime(change.WindowEnd))
 	if err != nil {
 		return fmt.Errorf("insert change: %w", err)
 	}
@@ -900,14 +947,17 @@ func (s *PGStore) GetChange(ctx context.Context, id, tenantID string) (*model.Ch
 	c := &model.ChangeRequest{}
 	var desc, changeType, impact, urgency, plan, rollbackPlan, createdBy, ticketID sql.NullString
 	var cabMembersJSON, approvalsJSON []byte
+	var scheduledAt, windowStart, windowEnd sql.NullTime
 	err := s.db.QueryRowContext(ctx, `
 		SELECT id, tenant_id, ticket_id, title, description, risk_level, status,
 		       change_type, impact, urgency, cab_members, approvals, plan,
-		       rollback_plan, created_by, created_at, updated_at
+		       rollback_plan, created_by, created_at, updated_at,
+		       scheduled_at, window_start, window_end
 		FROM itsm_changes WHERE id = $1 AND tenant_id = $2`, id, tenantID).Scan(
 		&c.ID, &c.TenantID, &ticketID, &c.Title, &desc, &c.RiskLevel, &c.Status,
 		&changeType, &impact, &urgency, &cabMembersJSON, &approvalsJSON,
-		&plan, &rollbackPlan, &createdBy, &c.CreatedAt, &c.UpdatedAt)
+		&plan, &rollbackPlan, &createdBy, &c.CreatedAt, &c.UpdatedAt,
+		&scheduledAt, &windowStart, &windowEnd)
 	if err != nil {
 		if err == sql.ErrNoRows {
 			return nil, ErrNotFound
@@ -922,6 +972,9 @@ func (s *PGStore) GetChange(ctx context.Context, id, tenantID string) (*model.Ch
 	c.Plan = nullableStr(plan)
 	c.RollbackPlan = nullableStr(rollbackPlan)
 	c.CreatedBy = nullableStr(createdBy)
+	setTimePtr(&c.ScheduledAt, scheduledAt)
+	setTimePtr(&c.WindowStart, windowStart)
+	setTimePtr(&c.WindowEnd, windowEnd)
 	if cabMembersJSON != nil {
 		json.Unmarshal(cabMembersJSON, &c.CABMembers)
 	}
@@ -935,7 +988,8 @@ func (s *PGStore) ListChanges(ctx context.Context, tenantID string) ([]*model.Ch
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT id, tenant_id, ticket_id, title, description, risk_level, status,
 		       change_type, impact, urgency, cab_members, approvals, plan,
-		       rollback_plan, created_by, created_at, updated_at
+		       rollback_plan, created_by, created_at, updated_at,
+		       scheduled_at, window_start, window_end
 		FROM itsm_changes WHERE tenant_id = $1 ORDER BY created_at DESC`, tenantID)
 	if err != nil {
 		return nil, fmt.Errorf("list changes: %w", err)
@@ -946,10 +1000,12 @@ func (s *PGStore) ListChanges(ctx context.Context, tenantID string) ([]*model.Ch
 		c := &model.ChangeRequest{}
 		var desc, changeType, impact, urgency, plan, rollbackPlan, createdBy, ticketID sql.NullString
 		var cabMembersJSON, approvalsJSON []byte
+		var scheduledAt, windowStart, windowEnd sql.NullTime
 		if err := rows.Scan(
 			&c.ID, &c.TenantID, &ticketID, &c.Title, &desc, &c.RiskLevel, &c.Status,
 			&changeType, &impact, &urgency, &cabMembersJSON, &approvalsJSON,
-			&plan, &rollbackPlan, &createdBy, &c.CreatedAt, &c.UpdatedAt); err != nil {
+			&plan, &rollbackPlan, &createdBy, &c.CreatedAt, &c.UpdatedAt,
+			&scheduledAt, &windowStart, &windowEnd); err != nil {
 			return nil, fmt.Errorf("scan change: %w", err)
 		}
 		c.TicketID = nullableStr(ticketID)
@@ -960,6 +1016,9 @@ func (s *PGStore) ListChanges(ctx context.Context, tenantID string) ([]*model.Ch
 		c.Plan = nullableStr(plan)
 		c.RollbackPlan = nullableStr(rollbackPlan)
 		c.CreatedBy = nullableStr(createdBy)
+		setTimePtr(&c.ScheduledAt, scheduledAt)
+		setTimePtr(&c.WindowStart, windowStart)
+		setTimePtr(&c.WindowEnd, windowEnd)
 		if cabMembersJSON != nil {
 			json.Unmarshal(cabMembersJSON, &c.CABMembers)
 		}
@@ -979,14 +1038,16 @@ func (s *PGStore) UpdateChange(ctx context.Context, change *model.ChangeRequest)
 		UPDATE itsm_changes SET
 			ticket_id=$1, title=$2, description=$3, risk_level=$4, status=$5,
 			change_type=$6, impact=$7, urgency=$8, cab_members=$9, approvals=$10,
-			plan=$11, rollback_plan=$12, created_by=$13, updated_at=$14
-		WHERE id=$15 AND tenant_id=$16`,
+			plan=$11, rollback_plan=$12, created_by=$13, updated_at=$14,
+			scheduled_at=$15, window_start=$16, window_end=$17
+		WHERE id=$18 AND tenant_id=$19`,
 		nullable(change.TicketID), change.Title, nullable(change.Description),
 		string(change.RiskLevel), string(change.Status),
 		nullable(change.ChangeType), nullable(change.Impact), nullable(change.Urgency),
 		string(cabMembersJSON), string(approvalsJSON),
 		nullable(change.Plan), nullable(change.RollbackPlan),
 		nullable(change.CreatedBy), change.UpdatedAt,
+		nullableTime(change.ScheduledAt), nullableTime(change.WindowStart), nullableTime(change.WindowEnd),
 		change.ID, change.TenantID)
 	if err != nil {
 		return fmt.Errorf("update change: %w", err)
@@ -1054,4 +1115,83 @@ func (s *PGStore) ListFormScopes(ctx context.Context, tenantID string) ([]string
 		out = append(out, sc)
 	}
 	return out, rows.Err()
+}
+
+// --- 数据字典(PG) ---
+
+func (s *PGStore) initDictTable(ctx context.Context) error {
+	_, err := s.db.ExecContext(ctx, `
+		CREATE TABLE IF NOT EXISTS itsm_form_dicts (
+			id TEXT PRIMARY KEY,
+			tenant_id TEXT NOT NULL DEFAULT 'default',
+			name TEXT NOT NULL,
+			description TEXT DEFAULT '',
+			fields TEXT DEFAULT '[]',
+			created_at TIMESTAMPTZ DEFAULT NOW(),
+			updated_at TIMESTAMPTZ DEFAULT NOW()
+		)`)
+	return err
+}
+
+func (s *PGStore) GetFieldDict(ctx context.Context, tenantID, id string) (*form.FieldDict, error) {
+	var d form.FieldDict
+	var fieldsJSON string
+	err := s.db.QueryRowContext(ctx, `
+		SELECT id, tenant_id, name, description, fields FROM itsm_form_dicts WHERE id = $1 AND tenant_id = $2`,
+		id, tenantID).Scan(&d.ID, &d.TenantID, &d.Name, &d.Description, &fieldsJSON)
+	if err == sql.ErrNoRows {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+	json.Unmarshal([]byte(fieldsJSON), &d.Fields)
+	return &d, nil
+}
+
+func (s *PGStore) ListFieldDicts(ctx context.Context, tenantID string) ([]*form.FieldDict, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT id, tenant_id, name, description, fields FROM itsm_form_dicts WHERE tenant_id = $1 ORDER BY name`, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []*form.FieldDict
+	for rows.Next() {
+		var d form.FieldDict
+		var fieldsJSON string
+		if err := rows.Scan(&d.ID, &d.TenantID, &d.Name, &d.Description, &fieldsJSON); err != nil {
+			return nil, err
+		}
+		json.Unmarshal([]byte(fieldsJSON), &d.Fields)
+		out = append(out, &d)
+	}
+	return out, rows.Err()
+}
+
+func (s *PGStore) UpsertFieldDict(ctx context.Context, tenantID string, dict *form.FieldDict) error {
+	if dict.ID == "" {
+		dict.ID = uuid.New().String()
+	}
+	dict.TenantID = tenantID
+	fieldsJSON, _ := json.Marshal(dict.Fields)
+	_, err := s.db.ExecContext(ctx, `
+		INSERT INTO itsm_form_dicts (id, tenant_id, name, description, fields, updated_at)
+		VALUES ($1, $2, $3, $4, $5, NOW())
+		ON CONFLICT (id) DO UPDATE SET name = EXCLUDED.name, description = EXCLUDED.description,
+			fields = EXCLUDED.fields, updated_at = NOW()`,
+		dict.ID, tenantID, dict.Name, dict.Description, string(fieldsJSON))
+	return err
+}
+
+func (s *PGStore) DeleteFieldDict(ctx context.Context, tenantID, id string) error {
+	res, err := s.db.ExecContext(ctx, `DELETE FROM itsm_form_dicts WHERE id = $1 AND tenant_id = $2`, id, tenantID)
+	if err != nil {
+		return err
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return ErrNotFound
+	}
+	return nil
 }

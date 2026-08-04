@@ -212,6 +212,28 @@ func validateFieldWith(f FieldDef, v any, opts []FieldOption) error {
 				return fmt.Errorf("字段 %s(%s) 附件 ID 应为数字或字符串", f.Label, f.Key)
 			}
 		}
+	case TypeRichText:
+		if _, ok := v.(string); !ok {
+			return fmt.Errorf("字段 %s(%s) 应为富文本", f.Label, f.Key)
+		}
+	case TypeTable:
+		rows, ok := v.([]any)
+		if !ok {
+			return fmt.Errorf("字段 %s(%s) 应为表格(二维数组)", f.Label, f.Key)
+		}
+		for i, row := range rows {
+			cols, ok := row.([]any)
+			if !ok {
+				return fmt.Errorf("字段 %s(%s) 第 %d 行应为数组", f.Label, f.Key, i+1)
+			}
+			for _, c := range cols {
+				if _, ok := c.(string); !ok {
+					if _, err := toFloat(c); err != nil {
+						return fmt.Errorf("字段 %s(%s) 表格单元格应为文本或数字", f.Label, f.Key)
+					}
+				}
+			}
+		}
 	default:
 		return fmt.Errorf("字段 %s(%s) 类型 %s 不支持", f.Label, f.Key, f.Type)
 	}

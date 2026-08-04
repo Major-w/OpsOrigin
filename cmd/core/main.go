@@ -19,6 +19,7 @@ import (
 	"github.com/opsorigin/core/internal/ai/agentic"
 	"github.com/opsorigin/core/internal/audit"
 	"github.com/opsorigin/core/internal/automation/actions"
+	"github.com/opsorigin/core/internal/automation/inboundmail"
 	"github.com/opsorigin/core/internal/automation/scheduler"
 	"github.com/opsorigin/core/internal/automation/script"
 	"github.com/opsorigin/core/internal/automation/workflow"
@@ -548,10 +549,13 @@ func main() {
 	schedulerSvc.SetNotifier(notifySvc)
 	itsmSvc.SetNotifier(notifySvc)
 
-	// 流程引擎动作库: service 步骤除脚本外可执行 http / notify / create_ticket 预置动作。
+	// 流程引擎动作库: service 步骤除脚本外可执行 http / notify / create_ticket / cmdb_update 预置动作。
 	actionExec := actions.New()
 	actionExec.SetScriptExecutor(scriptSvc)
 	actionExec.SetNotifier(notifySvc.NotifyEvent)
+	actionExec.SetUpdateCI(func(ctx context.Context, tenantID, ciID string, attrs map[string]any) error {
+		return cmdbSvc.UpdateCIAttributes(ctx, ciID, tenantID, attrs)
+	})
 	actionExec.SetCreateTicket(func(ctx context.Context, tenantID string, params map[string]any) (string, error) {
 		req := itsmmodel.CreateTicketRequest{
 			Title:        strAny(params["title"]),
@@ -575,6 +579,43 @@ func main() {
 		return t.ID, nil
 	})
 	processSvc.SetActionExecutor(actionExec)
+
+	// 邮件入站: 环境变量驱动(ITSM_MAIL_IMAP_HOST 等), 未配置则服务不启动。
+	// 主题/正文命中工单 ID → 回复追加评论; 未命中 → 创建新工单。
+	if imapHost := os.Getenv("ITSM_MAIL_IMAP_HOST"); imapHost != "" {
+		mailSvc := inboundmail.New(inboundmail.Config{
+			Enable:   true,
+			Host:     imapHost,
+			Port:     os.Getenv("ITSM_MAIL_IMAP_PORT"),
+			Username: os.Getenv("ITSM_MAIL_USERNAME"),
+			Password: os.Getenv("ITSM_MAIL_PASSWORD"),
+			Mailbox:  os.Getenv("ITSM_MAIL_MAILBOX"),
+			TenantID: os.Getenv("ITSM_MAIL_TENANT"),
+		})
+		mailSvc.SetHandlers(inboundmail.Handlers{
+			ReplyToTicket: func(ctx context.Context, tenantID, ticketID, author, body string) error {
+				return itsmSvc.AddTicketComment(ctx, tenantID, ticketID, "mail:"+author, body)
+			},
+			CreateTicket: func(ctx context.Context, tenantID, from, subject, body string) (string, error) {
+				req := itsmmodel.CreateTicketRequest{
+					Title:         subject,
+					Description:   body,
+					RiskLevel:     itsmmodel.RiskLow,
+					CreatedBy:     "mail:" + from,
+					CreatedByType: "mail",
+				}
+				tctx := context.WithValue(ctx, "tenant_id", tenantID)
+				tk, err := itsmSvc.CreateTicket(tctx, req)
+				if err != nil {
+					return "", err
+				}
+				return tk.ID, nil
+			},
+		})
+		mailSvc.Start(rootCtx)
+	} else {
+		slog.Info("inbound mail: ITSM_MAIL_IMAP_HOST not set, disabled")
+	}
 
 	// P2-5 CMDB 消息订阅：通知渠道经平台通知中心分发（避免 cmdb↔notification 循环依赖）
 	cmdbSvc.SetNotifyCallback(func(ctx context.Context, tenantID, title, content string) error {

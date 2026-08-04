@@ -42,6 +42,11 @@ func callPost(t *testing.T, s *Service, path, body string) *httptest.ResponseRec
 	return doMethod(t, s, http.MethodPost, path, body)
 }
 
+func callPut(t *testing.T, s *Service, path, body string) *httptest.ResponseRecorder {
+	t.Helper()
+	return doMethod(t, s, http.MethodPut, path, body)
+}
+
 func doMethod(t *testing.T, s *Service, method, path, body string) *httptest.ResponseRecorder {
 	t.Helper()
 	mux := http.NewServeMux()
@@ -319,5 +324,137 @@ func TestSubtaskLifecycle(t *testing.T) {
 		if len(list) != 1 {
 			t.Fatalf("after delete want 1 subtask, got %d", len(list))
 		}
+	}
+}
+
+// --- SN 补全: 撤回/重开/挂起恢复/催办/关联/通用更新 ---
+
+func TestTicketWithdrawAndReopenLifecycle(t *testing.T) {
+	s := newTestService()
+	tk := createTicket(t, s, model.RiskLow)
+
+	// 撤回: draft → withdrawn(终态)
+	w := callPost(t, s, "/api/v1/itsm/tickets/"+tk.ID+"/withdraw", `{"withdrawn_by":"admin","reason":"不需要了"}`)
+	if w.Code != http.StatusOK {
+		t.Fatalf("withdraw: %d %s", w.Code, w.Body.String())
+	}
+	var wd model.Ticket
+	json.Unmarshal(w.Body.Bytes(), &wd)
+	if wd.Status != model.StatusWithdrawn {
+		t.Fatalf("withdraw status = %s", wd.Status)
+	}
+	// 终态不能再撤回
+	w = callPost(t, s, "/api/v1/itsm/tickets/"+tk.ID+"/withdraw", `{"withdrawn_by":"admin"}`)
+	if w.Code != http.StatusConflict {
+		t.Fatalf("withdraw terminal should 409, got %d", w.Code)
+	}
+
+	// 另一张: submit → complete → close → reopen → execute
+	tk2 := createTicket(t, s, model.RiskLow)
+	callPost(t, s, "/api/v1/itsm/tickets/"+tk2.ID+"/submit", `{"submitted_by":"admin"}`)
+	callPost(t, s, "/api/v1/itsm/tickets/"+tk2.ID+"/execute", `{"executed_by":"admin"}`)
+	callPost(t, s, "/api/v1/itsm/tickets/"+tk2.ID+"/complete", `{"completed_by":"admin"}`)
+	callPost(t, s, "/api/v1/itsm/tickets/"+tk2.ID+"/close", `{"closed_by":"admin","satisfaction":5}`)
+
+	w = callPost(t, s, "/api/v1/itsm/tickets/"+tk2.ID+"/reopen", `{"reopened_by":"admin","reason":"用户反馈未解决"}`)
+	if w.Code != http.StatusOK {
+		t.Fatalf("reopen: %d %s", w.Code, w.Body.String())
+	}
+	var ro model.Ticket
+	json.Unmarshal(w.Body.Bytes(), &ro)
+	if ro.Status != model.StatusReopened {
+		t.Fatalf("reopen status = %s", ro.Status)
+	}
+	// reopened → executing 可继续
+	w = callPost(t, s, "/api/v1/itsm/tickets/"+tk2.ID+"/execute", `{"executed_by":"admin"}`)
+	if w.Code != http.StatusOK {
+		t.Fatalf("execute after reopen: %d %s", w.Code, w.Body.String())
+	}
+}
+
+func TestTicketHoldResumeRemindRelateUpdate(t *testing.T) {
+	s := newTestService()
+	tk := createTicket(t, s, model.RiskLow)
+
+	// 挂起(标记, 状态不变)
+	w := callPost(t, s, "/api/v1/itsm/tickets/"+tk.ID+"/hold", `{"hold_by":"admin","reason":"等依赖系统恢复","hold_until_at":"2026-08-10T00:00:00Z"}`)
+	if w.Code != http.StatusOK {
+		t.Fatalf("hold: %d %s", w.Code, w.Body.String())
+	}
+	var held model.Ticket
+	json.Unmarshal(w.Body.Bytes(), &held)
+	if !held.OnHold || held.HoldReason == "" {
+		t.Fatalf("hold not set: %+v", held)
+	}
+	if held.Status != model.StatusDraft {
+		t.Fatalf("hold should not change status: %s", held.Status)
+	}
+	// 恢复
+	w = callPost(t, s, "/api/v1/itsm/tickets/"+tk.ID+"/resume", `{"resumed_by":"admin"}`)
+	if w.Code != http.StatusOK {
+		t.Fatalf("resume: %d %s", w.Code, w.Body.String())
+	}
+	var resumed model.Ticket
+	json.Unmarshal(w.Body.Bytes(), &resumed)
+	if resumed.OnHold {
+		t.Fatal("resume should clear on_hold")
+	}
+
+	// 催办(200)
+	w = callPost(t, s, "/api/v1/itsm/tickets/"+tk.ID+"/remind", `{"reminded_by":"admin","message":"请尽快处理"}`)
+	if w.Code != http.StatusOK {
+		t.Fatalf("remind: %d %s", w.Code, w.Body.String())
+	}
+
+	// 关联(双向)
+	tk2 := createTicket(t, s, model.RiskMedium)
+	w = callPost(t, s, "/api/v1/itsm/tickets/"+tk.ID+"/relate", `{"related_id":"`+tk2.ID+`","relate_by":"admin"}`)
+	if w.Code != http.StatusOK {
+		t.Fatalf("relate: %d %s", w.Code, w.Body.String())
+	}
+	var rel model.Ticket
+	json.Unmarshal(w.Body.Bytes(), &rel)
+	if len(rel.RelatedTicketIDs) != 1 || rel.RelatedTicketIDs[0] != tk2.ID {
+		t.Fatalf("relate not bidirectional: %+v", rel.RelatedTicketIDs)
+	}
+	tk2b, _ := s.store.Get(context.Background(), tk2.ID, "default")
+	if len(tk2b.RelatedTicketIDs) != 1 || tk2b.RelatedTicketIDs[0] != tk.ID {
+		t.Fatalf("reverse relate missing: %+v", tk2b.RelatedTicketIDs)
+	}
+
+	// 通用更新(PUT)
+	w = callPut(t, s, "/api/v1/itsm/tickets/"+tk.ID, `{"title":"更新后的标题","assignee":"ops"}`)
+	if w.Code != http.StatusOK {
+		t.Fatalf("update ticket: %d %s", w.Code, w.Body.String())
+	}
+	var upd model.Ticket
+	json.Unmarshal(w.Body.Bytes(), &upd)
+	if upd.Title != "更新后的标题" || upd.Assignee != "ops" {
+		t.Fatalf("update not applied: %+v", upd)
+	}
+}
+
+// --- SN 补全: 主单关闭级联关闭子任务 ---
+
+func TestSubtaskCascadeOnClose(t *testing.T) {
+	s := newTestService()
+	tk := createTicket(t, s, model.RiskLow)
+	callPost(t, s, "/api/v1/itsm/tickets/"+tk.ID+"/submit", `{"submitted_by":"admin"}`)
+	callPost(t, s, "/api/v1/itsm/tickets/"+tk.ID+"/execute", `{"executed_by":"admin"}`)
+	callPost(t, s, "/api/v1/itsm/tickets/"+tk.ID+"/complete", `{"completed_by":"admin"}`)
+	callPost(t, s, "/api/v1/itsm/tickets/"+tk.ID+"/subtasks", `{"title":"子任务1","created_by":"admin","sync_fields":["risk_level"]}`)
+
+	// 关闭主单 → 子任务级联 done
+	w := callPost(t, s, "/api/v1/itsm/tickets/"+tk.ID+"/close", `{"closed_by":"admin"}`)
+	if w.Code != http.StatusOK {
+		t.Fatalf("close: %d %s", w.Code, w.Body.String())
+	}
+	subs, _ := s.store.ListSubtasks(context.Background(), tk.ID, "default")
+	if len(subs) != 1 || subs[0].Status != model.SubtaskDone {
+		t.Fatalf("subtask not cascaded: %+v", subs)
+	}
+	// 字段同步: meta 含 risk_level
+	if subs[0].Meta == nil || subs[0].Meta["risk_level"] != "low" {
+		t.Fatalf("sync_fields not copied: %+v", subs[0].Meta)
 	}
 }

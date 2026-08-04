@@ -20,6 +20,8 @@ const (
 	TypeDatetime    FieldType = "datetime" // 日期时间(如 2026-08-05T18:30:00+08:00 / 2026-08-05 18:30)
 	TypeDuration    FieldType = "duration" // 时长(如 1h / 30m / 3d / 1h30m)
 	TypeAttachment  FieldType = "attachment" // 附件(值为附件 ID 字符串数组)
+	TypeRichText    FieldType = "richtext" // 富文本(值为 HTML/纯文本字符串)
+	TypeTable       FieldType = "table"    // 表格(值为二维字符串数组 [][]string)
 	TypeBool        FieldType = "bool"
 	TypeUser        FieldType = "user"     // 选人（source=iam:user，前端下拉搜索）
 	TypeCI          FieldType = "ci"       // 选配置项（source=cmdb:<typeName>，前端下拉搜索）
@@ -101,6 +103,11 @@ type FieldDef struct {
 	// 约定：cmdb:<typeName>（如 cmdb:host）、iam:user、iam:role、iam:group、
 	// cmdb:types（CMDB 模型类型层级树，供 cascader 级联逐级展开）
 	Source string `json:"source,omitempty"`
+
+	// DictRef 引用数据字典 ID: 非空时本字段定义从字典展开(见 ExpandDictRefs)。
+	DictRef string `json:"dict_ref,omitempty"`
+	// Roles 可编辑角色白名单: 非空表示仅这些角色的用户可编辑, 空=所有人可编辑。
+	Roles []string `json:"roles,omitempty"`
 }
 
 // FormSchema 一张可配置表单，按作用域定位
@@ -130,4 +137,51 @@ type SourceResolver interface {
 type TreeSourceResolver interface {
 	SourceResolver
 	ResolveTree(ctx context.Context, tenantID, source, parent string) ([]FieldOption, error)
+}
+
+// FieldDict 数据字典: 可跨表单复用的字段定义集合。
+// 表单字段通过 FieldDef.DictRef 引用字典, 展开后获得完整的字段定义(免复制粘贴)。
+type FieldDict struct {
+	ID          string     `json:"id"`
+	TenantID    string     `json:"tenant_id"`
+	Name        string     `json:"name"`        // 字典名(唯一)
+	Description string     `json:"description,omitempty"`
+	Fields      []FieldDef `json:"fields"`      // 字段定义集(供 dict_ref 展开)
+}
+
+// DictStore 数据字典持久化能力(由 internal/itsm/store 的 PGStore / MemoryStore 实现)。
+type DictStore interface {
+	GetFieldDict(ctx context.Context, tenantID, id string) (*FieldDict, error)
+	ListFieldDicts(ctx context.Context, tenantID string) ([]*FieldDict, error)
+	UpsertFieldDict(ctx context.Context, tenantID string, dict *FieldDict) error
+	DeleteFieldDict(ctx context.Context, tenantID, id string) error
+}
+
+// ExpandDictRefs 将 schema 中带 DictRef 的字段展开为字典里的字段定义。
+// 找不到字典或字段 key 时保留原字段(容错, 不阻断表单)。
+func ExpandDictRefs(schema *FormSchema, dicts map[string]*FieldDict) {
+	if schema == nil {
+		return
+	}
+	var expanded []FieldDef
+	for _, f := range schema.Fields {
+		if f.DictRef != "" {
+			if d, ok := dicts[f.DictRef]; ok {
+				for _, df := range d.Fields {
+					// 保留原字段的分组/排序/必填覆盖, 其余以字典定义为准
+					df.Section = f.Section
+					if df.Order == 0 {
+						df.Order = f.Order
+					}
+					if !f.Required {
+						df.Required = f.Required
+					}
+					expanded = append(expanded, df)
+				}
+				continue
+			}
+		}
+		expanded = append(expanded, f)
+	}
+	schema.Fields = expanded
 }

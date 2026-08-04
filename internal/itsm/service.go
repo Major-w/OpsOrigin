@@ -51,6 +51,8 @@ const (
 	evTicketSubmit   = "ticket.submitted"
 	evSLABreached    = "ticket.sla_breached"
 	evSLAWarning     = "ticket.sla_warning"
+	evTicketReopened = "ticket.reopened"
+	evTicketReminded = "ticket.reminded"
 )
 
 type Service struct {
@@ -155,6 +157,14 @@ func (s *Service) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/v1/itsm/tickets/{id}/assign", s.handleAssign)
 	mux.HandleFunc("POST /api/v1/itsm/tickets/{id}/close", s.handleClose)
 	mux.HandleFunc("POST /api/v1/itsm/tickets/{id}/rollback", s.handleRollback)
+	// 工单操作补齐: 撤回/重开/挂起恢复/催办/关联/通用更新
+	mux.HandleFunc("POST /api/v1/itsm/tickets/{id}/withdraw", s.handleWithdraw)
+	mux.HandleFunc("POST /api/v1/itsm/tickets/{id}/reopen", s.handleReopen)
+	mux.HandleFunc("POST /api/v1/itsm/tickets/{id}/hold", s.handleHold)
+	mux.HandleFunc("POST /api/v1/itsm/tickets/{id}/resume", s.handleResume)
+	mux.HandleFunc("POST /api/v1/itsm/tickets/{id}/remind", s.handleRemind)
+	mux.HandleFunc("POST /api/v1/itsm/tickets/{id}/relate", s.handleRelate)
+	mux.HandleFunc("PUT /api/v1/itsm/tickets/{id}", s.handleUpdateTicket)
 	mux.HandleFunc("GET /api/v1/itsm/tickets/{id}/events", s.handleGetEvents)
 	mux.HandleFunc("GET /api/v1/itsm/stats", s.handleStats)
 	// Comments
@@ -178,6 +188,10 @@ func (s *Service) RegisterRoutes(mux *http.ServeMux) {
 	// Form schemas (dynamic forms)
 	mux.HandleFunc("GET /api/v1/itsm/forms", s.handleListFormScopes)
 	mux.HandleFunc("PUT /api/v1/itsm/forms", s.handleUpsertFormSchema)
+	// 数据字典
+	mux.HandleFunc("GET /api/v1/itsm/form-dicts", s.handleListFieldDicts)
+	mux.HandleFunc("POST /api/v1/itsm/form-dicts", s.handleUpsertFieldDict)
+	mux.HandleFunc("DELETE /api/v1/itsm/form-dicts/{id}", s.handleDeleteFieldDict)
 	mux.HandleFunc("GET /api/v1/itsm/form-options", s.handleFormOptions)
 	mux.HandleFunc("PATCH /api/v1/itsm/tickets/{id}/custom-fields", s.handleUpdateCustomFields)
 	// Change Management
@@ -263,7 +277,15 @@ func (s *Service) CreateTicket(ctx context.Context, req model.CreateTicketReques
 	}
 	if ticket.DeadlineAt == nil {
 		if s.slaStore != nil {
-			if pol, perr := s.slaStore.GetByRisk(ctx, tenantID, string(req.RiskLevel)); perr == nil && pol != nil && pol.ResolutionHours > 0 {
+			// 流程级 SLA 优先(process_id 绑定), 否则回退风险级
+			var pol *sla.Policy
+			if req.ProcessID != "" {
+				pol, _ = s.slaStore.GetByProcessID(ctx, tenantID, req.ProcessID)
+			}
+			if pol == nil {
+				pol, _ = s.slaStore.GetByRisk(ctx, tenantID, string(req.RiskLevel))
+			}
+			if pol != nil && pol.ResolutionHours > 0 {
 				deadline := now.Add(time.Duration(pol.ResolutionHours) * time.Hour)
 				ticket.DeadlineAt = &deadline
 			} else if d := s.slaForRisk(req.RiskLevel); d > 0 {
@@ -855,11 +877,263 @@ func (s *Service) handleClose(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// 子任务联动: 主工单关闭时级联关闭所有未完成子任务(记完成时间)。
+	if subs, serr := s.store.ListSubtasks(r.Context(), id, tenantID); serr == nil {
+		now := time.Now()
+		for _, sub := range subs {
+			if sub.Status == model.SubtaskDone {
+				continue
+			}
+			sub.Status = model.SubtaskDone
+			sub.CompletedAt = &now
+			_ = s.store.UpdateSubtask(r.Context(), sub)
+		}
+	}
+
 	s.recordEvent(r.Context(), ticket, previousStatus, model.StatusClosed, req.ClosedBy, req.Comment)
 	s.fireWebhook(r.Context(), "ticket.closed", ticket, req.ClosedBy)
 	s.notifyTicket(r.Context(), tenantID, evTicketClosed, "工单已关闭: "+ticket.Title, req.Comment)
 	s.broadcastTicketUpdate(ticket)
 	writeJSON(w, http.StatusOK, ticket)
+}
+
+func (s *Service) handleWithdraw(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	tenantID := tenantFromCtx(r.Context())
+	var req model.WithdrawRequest
+	json.NewDecoder(r.Body).Decode(&req)
+	if req.WithdrawnBy == "" {
+		req.WithdrawnBy = "system"
+	}
+	ticket, err := s.store.Get(r.Context(), id, tenantID)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "ticket not found")
+		return
+	}
+	if err := model.CanTransition(ticket.Status, model.StatusWithdrawn); err != nil {
+		writeError(w, http.StatusConflict, err.Error())
+		return
+	}
+	prev := ticket.Status
+	ticket.Status = model.StatusWithdrawn
+	if err := s.store.Update(r.Context(), ticket); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to update ticket")
+		return
+	}
+	s.recordEvent(r.Context(), ticket, prev, model.StatusWithdrawn, req.WithdrawnBy, req.Reason)
+	s.fireWebhook(r.Context(), "ticket.withdrawn", ticket, req.WithdrawnBy)
+	s.broadcastTicketUpdate(ticket)
+	writeJSON(w, http.StatusOK, ticket)
+}
+
+func (s *Service) handleReopen(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	tenantID := tenantFromCtx(r.Context())
+	var req model.ReopenRequest
+	json.NewDecoder(r.Body).Decode(&req)
+	if req.ReopenedBy == "" {
+		req.ReopenedBy = "system"
+	}
+	ticket, err := s.store.Get(r.Context(), id, tenantID)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "ticket not found")
+		return
+	}
+	if err := model.CanTransition(ticket.Status, model.StatusReopened); err != nil {
+		writeError(w, http.StatusConflict, err.Error())
+		return
+	}
+	prev := ticket.Status
+	ticket.Status = model.StatusReopened
+	if err := s.store.Update(r.Context(), ticket); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to update ticket")
+		return
+	}
+	s.recordEvent(r.Context(), ticket, prev, model.StatusReopened, req.ReopenedBy, req.Reason)
+	s.fireWebhook(r.Context(), "ticket.reopened", ticket, req.ReopenedBy)
+	s.notifyTicket(r.Context(), tenantID, evTicketReopened, "工单重开: "+ticket.Title, req.Reason)
+	s.broadcastTicketUpdate(ticket)
+	writeJSON(w, http.StatusOK, ticket)
+}
+
+func (s *Service) handleHold(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	tenantID := tenantFromCtx(r.Context())
+	var req model.HoldRequest
+	json.NewDecoder(r.Body).Decode(&req)
+	if req.HoldBy == "" {
+		req.HoldBy = "system"
+	}
+	ticket, err := s.store.Get(r.Context(), id, tenantID)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "ticket not found")
+		return
+	}
+	if model.IsTerminal(ticket.Status) {
+		writeError(w, http.StatusConflict, "terminal ticket cannot be held")
+		return
+	}
+	ticket.OnHold = true
+	ticket.HoldReason = req.Reason
+	ticket.HoldUntilAt = req.HoldUntilAt
+	if err := s.store.Update(r.Context(), ticket); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to update ticket")
+		return
+	}
+	s.recordEvent(r.Context(), ticket, ticket.Status, ticket.Status, req.HoldBy, "挂起: "+req.Reason)
+	s.broadcastTicketUpdate(ticket)
+	writeJSON(w, http.StatusOK, ticket)
+}
+
+func (s *Service) handleResume(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	tenantID := tenantFromCtx(r.Context())
+	var req struct {
+		ResumedBy string `json:"resumed_by"`
+		Reason    string `json:"reason,omitempty"`
+	}
+	json.NewDecoder(r.Body).Decode(&req)
+	if req.ResumedBy == "" {
+		req.ResumedBy = "system"
+	}
+	ticket, err := s.store.Get(r.Context(), id, tenantID)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "ticket not found")
+		return
+	}
+	if !ticket.OnHold {
+		writeError(w, http.StatusConflict, "ticket is not on hold")
+		return
+	}
+	ticket.OnHold = false
+	ticket.HoldReason = ""
+	ticket.HoldUntilAt = nil
+	if err := s.store.Update(r.Context(), ticket); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to update ticket")
+		return
+	}
+	s.recordEvent(r.Context(), ticket, ticket.Status, ticket.Status, req.ResumedBy, "恢复: "+req.Reason)
+	s.broadcastTicketUpdate(ticket)
+	writeJSON(w, http.StatusOK, ticket)
+}
+
+func (s *Service) handleRemind(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	tenantID := tenantFromCtx(r.Context())
+	var req model.RemindRequest
+	json.NewDecoder(r.Body).Decode(&req)
+	if req.RemindedBy == "" {
+		req.RemindedBy = "system"
+	}
+	ticket, err := s.store.Get(r.Context(), id, tenantID)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "ticket not found")
+		return
+	}
+	content := fmt.Sprintf("负责人: %s\n催办人: %s", ticket.Assignee, req.RemindedBy)
+	if req.Message != "" {
+		content += "\n" + req.Message
+	}
+	s.notifyTicket(r.Context(), tenantID, evTicketReminded, "工单催办: "+ticket.Title, content)
+	s.recordEvent(r.Context(), ticket, ticket.Status, ticket.Status, req.RemindedBy, "催办: "+req.Message)
+	writeJSON(w, http.StatusOK, map[string]string{"status": "reminded"})
+}
+
+func (s *Service) handleRelate(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	tenantID := tenantFromCtx(r.Context())
+	var req model.RelateRequest
+	json.NewDecoder(r.Body).Decode(&req)
+	if req.RelatedID == "" {
+		writeError(w, http.StatusBadRequest, "related_id is required")
+		return
+	}
+	if req.RelatedID == id {
+		writeError(w, http.StatusBadRequest, "cannot relate to itself")
+		return
+	}
+	a, err := s.store.Get(r.Context(), id, tenantID)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "ticket not found")
+		return
+	}
+	b, err := s.store.Get(r.Context(), req.RelatedID, tenantID)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "related ticket not found")
+		return
+	}
+	if !containsStr(a.RelatedTicketIDs, b.ID) {
+		a.RelatedTicketIDs = append(a.RelatedTicketIDs, b.ID)
+	}
+	if !containsStr(b.RelatedTicketIDs, a.ID) {
+		b.RelatedTicketIDs = append(b.RelatedTicketIDs, a.ID)
+	}
+	if err := s.store.Update(r.Context(), a); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to update ticket")
+		return
+	}
+	_ = s.store.Update(r.Context(), b)
+	s.recordEvent(r.Context(), a, a.Status, a.Status, req.RelateBy, "关联工单: "+b.ID)
+	s.broadcastTicketUpdate(a)
+	writeJSON(w, http.StatusOK, a)
+}
+
+func (s *Service) handleUpdateTicket(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	tenantID := tenantFromCtx(r.Context())
+	var req model.UpdateTicketRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	ticket, err := s.store.Get(r.Context(), id, tenantID)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "ticket not found")
+		return
+	}
+	prev := ticket.Status
+	if req.Title != "" {
+		ticket.Title = req.Title
+	}
+	if req.Description != "" {
+		ticket.Description = req.Description
+	}
+	if req.RiskLevel != "" && req.RiskLevel.Valid() {
+		ticket.RiskLevel = req.RiskLevel
+	}
+	if req.Assignee != "" {
+		ticket.Assignee = req.Assignee
+		now := time.Now()
+		ticket.AssignedAt = &now
+	}
+	if req.Labels != nil {
+		ticket.Labels = req.Labels
+	}
+	if req.CIIDs != nil {
+		ticket.CIIDs = req.CIIDs
+	}
+	if req.ChangePlan != "" {
+		ticket.ChangePlan = req.ChangePlan
+	}
+	if req.RollbackPlan != "" {
+		ticket.RollbackPlan = req.RollbackPlan
+	}
+	if err := s.store.Update(r.Context(), ticket); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to update ticket")
+		return
+	}
+	s.recordEvent(r.Context(), ticket, prev, ticket.Status, req.Assignee, "更新工单信息")
+	s.broadcastTicketUpdate(ticket)
+	writeJSON(w, http.StatusOK, ticket)
+}
+
+func containsStr(list []string, s string) bool {
+	for _, v := range list {
+		if v == s {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *Service) transition(ctx context.Context, ticket *model.Ticket, to model.TicketStatus, changedBy string) error {
@@ -995,8 +1269,21 @@ func (s *Service) handleAddComment(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, comment)
 }
 
-func (s *Service) handleListComments(w http.ResponseWriter, r *http.Request) {
-	id := r.PathValue("id")
+// AddTicketComment 以指定作者追加评论(供邮件入站等外部通道调用)。
+func (s *Service) AddTicketComment(ctx context.Context, tenantID, ticketID, author, body string) error {
+	tk, err := s.store.Get(ctx, ticketID, tenantID)
+	if err != nil {
+		return err
+	}
+	c := &model.Comment{TicketID: ticketID, TenantID: tenantID, Author: author, Content: body}
+	if err := s.store.AddComment(ctx, c); err != nil {
+		return err
+	}
+	s.broadcastTicketUpdate(tk)
+	return nil
+}
+
+func (s *Service) handleListComments(w http.ResponseWriter, r *http.Request) {	id := r.PathValue("id")
 	tenantID := tenantFromCtx(r.Context())
 
 	comments, err := s.store.ListComments(r.Context(), id, tenantID)
@@ -1060,6 +1347,41 @@ func (s *Service) handleAddSubtask(w http.ResponseWriter, r *http.Request) {
 		Status:      model.SubtaskPending,
 		DueAt:       req.DueAt,
 		CreatedBy:   req.CreatedBy,
+	}
+	// 主单字段同步: 按 sync_fields 从主工单拷贝字段值到子任务 meta(系统字段/自定义字段均可)。
+	if len(req.SyncFields) > 0 {
+		parent, err := s.store.Get(r.Context(), id, tenantID)
+		if err == nil && parent != nil {
+			meta := map[string]any{}
+			for _, key := range req.SyncFields {
+				fieldKey := strings.TrimPrefix(key, "custom_fields.")
+				if v, ok := parent.CustomFields[fieldKey]; ok {
+					meta[key] = v
+					continue
+				}
+				switch fieldKey {
+				case "risk_level":
+					meta[key] = string(parent.RiskLevel)
+				case "title":
+					meta[key] = parent.Title
+				case "description":
+					meta[key] = parent.Description
+				case "assignee":
+					meta[key] = parent.Assignee
+				case "status":
+					meta[key] = string(parent.Status)
+				case "deadline_at":
+					if parent.DeadlineAt != nil {
+						meta[key] = parent.DeadlineAt.Format(time.RFC3339)
+					}
+				default:
+					if v, ok := parent.CustomFields[fieldKey]; ok {
+						meta[key] = v
+					}
+				}
+			}
+			st.Meta = meta
+		}
 	}
 	if err := s.store.CreateSubtask(r.Context(), st); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to create subtask")
@@ -1392,6 +1714,14 @@ func (s *Service) checkSLATenant(ctx context.Context, tenantID string) {
 			t.SLABreached = true
 			t.SLABreachedAt = &now
 			t.SLAEscalationLevel = 2
+			// 升级策略落地: 命中策略且配置 EscalationTo 时自动转派(当前无负责人或负责人非升级角色)。
+			if pol := s.slaPolicyForTicket(ctx, tenantID, t); pol != nil && pol.EscalationTo != "" && t.Assignee != pol.EscalationTo {
+				prev := t.Assignee
+				at := time.Now()
+				t.Assignee = pol.EscalationTo
+				t.AssignedAt = &at
+				s.recordEvent(ctx, t, t.Status, t.Status, "sla_escalation", fmt.Sprintf("SLA 违约升级转派: %s → %s", prev, pol.EscalationTo))
+			}
 			if err := s.store.Update(ctx, t); err != nil {
 				slog.Error("itsm: failed to mark SLA breached", "ticket_id", t.ID, "error", err)
 				continue
@@ -1417,13 +1747,25 @@ func (s *Service) checkSLATenant(ctx context.Context, tenantID string) {
 	}
 }
 
+// slaPolicyForTicket 取工单命中的 SLA 策略: 流程绑定优先(GetByProcessID), 否则按风险等级。
+func (s *Service) slaPolicyForTicket(ctx context.Context, tenantID string, t *model.Ticket) *sla.Policy {
+	if s.slaStore == nil {
+		return nil
+	}
+	if t.ProcessID != "" {
+		if p, _ := s.slaStore.GetByProcessID(ctx, tenantID, t.ProcessID); p != nil {
+			return p
+		}
+	}
+	p, _ := s.slaStore.GetByRisk(ctx, tenantID, string(t.RiskLevel))
+	return p
+}
+
 // notifySLA 在 SLA 预警/违约时经通知中心分发, 并带上策略配置的升级角色(EscalationTo)。
 func (s *Service) notifySLA(ctx context.Context, tenantID string, t *model.Ticket, breached bool) {
 	escalation := ""
-	if s.slaStore != nil {
-		if pol, perr := s.slaStore.GetByRisk(ctx, tenantID, string(t.RiskLevel)); perr == nil && pol != nil {
-			escalation = pol.EscalationTo
-		}
+	if pol := s.slaPolicyForTicket(ctx, tenantID, t); pol != nil {
+		escalation = pol.EscalationTo
 	}
 	if breached {
 		content := fmt.Sprintf("工单已超出 SLA 截止时间\n负责人: %s\n升级至: %s", t.Assignee, escalation)
@@ -1505,6 +1847,7 @@ func (s *Service) handleListFormScopes(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
+		s.expandSchemaDicts(r.Context(), tenantID, schema)
 		writeJSON(w, http.StatusOK, map[string]any{"scope": scope, "schema": schema})
 		return
 	}
@@ -1546,6 +1889,77 @@ func (s *Service) handleUpsertFormSchema(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"status": "ok", "scope": req.Scope})
+}
+
+// expandSchemaDicts 展开 schema 中的 dict_ref 引用: 从数据字典拉取字段定义替换引用字段。
+func (s *Service) expandSchemaDicts(ctx context.Context, tenantID string, schema *form.FormSchema) {
+	if schema == nil {
+		return
+	}
+	needExpand := false
+	for _, f := range schema.Fields {
+		if f.DictRef != "" {
+			needExpand = true
+			break
+		}
+	}
+	if !needExpand {
+		return
+	}
+	dicts := map[string]*form.FieldDict{}
+	if list, err := s.store.ListFieldDicts(ctx, tenantID); err == nil {
+		for _, d := range list {
+			dicts[d.ID] = d
+		}
+	}
+	form.ExpandDictRefs(schema, dicts)
+}
+
+// --- 数据字典 handlers ---
+
+func (s *Service) handleListFieldDicts(w http.ResponseWriter, r *http.Request) {
+	tenantID := tenantFromCtx(r.Context())
+	dicts, err := s.store.ListFieldDicts(r.Context(), tenantID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if dicts == nil {
+		dicts = []*form.FieldDict{}
+	}
+	writeJSON(w, http.StatusOK, dicts)
+}
+
+func (s *Service) handleUpsertFieldDict(w http.ResponseWriter, r *http.Request) {
+	var dict form.FieldDict
+	if err := json.NewDecoder(r.Body).Decode(&dict); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if dict.Name == "" {
+		writeError(w, http.StatusBadRequest, "name is required")
+		return
+	}
+	tenantID := tenantFromCtx(r.Context())
+	if err := s.store.UpsertFieldDict(r.Context(), tenantID, &dict); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, dict)
+}
+
+func (s *Service) handleDeleteFieldDict(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	tenantID := tenantFromCtx(r.Context())
+	if err := s.store.DeleteFieldDict(r.Context(), tenantID, id); err != nil {
+		if err == store.ErrNotFound {
+			writeError(w, http.StatusNotFound, "dict not found")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
 }
 
 // handleFormOptions 解析表单字段的动态选项来源（cmdb:<type> / iam:user|role|group / cmdb:types）。
@@ -1709,6 +2123,9 @@ func (s *Service) handleCreateChange(w http.ResponseWriter, r *http.Request) {
 		Plan:         req.Plan,
 		RollbackPlan: req.RollbackPlan,
 		CreatedBy:    req.CreatedBy,
+		ScheduledAt:  req.ScheduledAt,
+		WindowStart:  req.WindowStart,
+		WindowEnd:    req.WindowEnd,
 	}
 	if err := s.store.CreateChange(r.Context(), change); err != nil {
 		slog.Error("create change failed", "error", err)
@@ -1824,6 +2241,22 @@ func (s *Service) handleVoteChange(w http.ResponseWriter, r *http.Request) {
 	}
 	if allApproved && len(change.CABMembers) > 0 {
 		change.Status = model.ChangeStatusApproved
+		// 变更联动: CAB 全票通过后自动创建执行工单(变更日历闭环)。
+		if change.TicketID == "" {
+			tctx := context.WithValue(r.Context(), "tenant_id", tenantID)
+			tk, terr := s.CreateTicket(tctx, model.CreateTicketRequest{
+				Title:        "执行变更: " + change.Title,
+				Description:  change.Plan,
+				RiskLevel:    change.RiskLevel,
+				ChangePlan:   change.Plan,
+				RollbackPlan: change.RollbackPlan,
+				CreatedBy:    change.CreatedBy,
+				CreatedByType: "system",
+			})
+			if terr == nil && tk != nil {
+				change.TicketID = tk.ID
+			}
+		}
 	}
 
 	if err := s.store.UpdateChange(r.Context(), change); err != nil {

@@ -21,6 +21,7 @@ var validTransitions = map[TicketStatus][]TicketStatus{
 		StatusPendingReview,
 		StatusRejected,
 		StatusExecuting,
+		StatusWithdrawn,
 	},
 	StatusPendingReview: {
 		StatusApproved,
@@ -44,20 +45,29 @@ var validTransitions = map[TicketStatus][]TicketStatus{
 		StatusPendingReview,
 	},
 	StatusRolledBack: {},
-	StatusClosed:     {},
+	StatusClosed: {
+		StatusReopened,
+	},
+	StatusWithdrawn: {},
+	StatusReopened: {
+		StatusExecuting,
+		StatusClosed,
+	},
 }
 
 func IsTerminal(status TicketStatus) bool {
-	return status == StatusRejected || status == StatusRolledBack || status == StatusClosed
+	return status == StatusRejected || status == StatusRolledBack || status == StatusClosed || status == StatusWithdrawn
 }
 
 func CanTransition(from, to TicketStatus) error {
-	if IsTerminal(from) {
-		return ErrTicketClosed
-	}
 	allowed, ok := validTransitions[from]
 	if !ok {
 		return fmt.Errorf("%w: %s has no defined transitions", ErrInvalidTransition, from)
+	}
+	// 终态且无任何出边(如 rejected/rolled_back/withdrawn)才拦截;
+	// 终态但定义了出边(如 closed → reopened)允许重开。
+	if len(allowed) == 0 && IsTerminal(from) {
+		return ErrTicketClosed
 	}
 	for _, s := range allowed {
 		if s == to {

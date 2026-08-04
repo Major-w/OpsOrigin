@@ -6,6 +6,7 @@ require (
 	entgo.io/ent v0.14.6
 	github.com/coder/websocket v1.8.15
 	github.com/dgraph-io/dgo/v250 v250.0.0
+	github.com/emersion/go-imap v1.2.1
 	github.com/go-ldap/ldap/v3 v3.4.13
 	github.com/google/uuid v1.6.0
 	github.com/lib/pq v1.12.3
@@ -25,6 +26,7 @@ require (
 	github.com/clipperhouse/displaywidth v0.6.2 // indirect
 	github.com/clipperhouse/stringish v0.1.1 // indirect
 	github.com/clipperhouse/uax29/v2 v2.7.0 // indirect
+	github.com/emersion/go-sasl v0.0.0-20241020182733-b788ff22d5a6 // indirect
 	github.com/fatih/color v1.18.0 // indirect
 	github.com/hhrutter/lzw v1.0.0 // indirect
 	github.com/hhrutter/pkcs7 v0.2.2 // indirect

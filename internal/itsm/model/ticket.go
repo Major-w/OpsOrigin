@@ -35,12 +35,15 @@ const (
 	StatusFailed        TicketStatus = "failed"
 	StatusRolledBack    TicketStatus = "rolled_back"
 	StatusClosed        TicketStatus = "closed"
+	StatusWithdrawn     TicketStatus = "withdrawn" // 撤回(草稿废弃)
+	StatusReopened      TicketStatus = "reopened"  // 重开(closed 后重新激活)
 )
 
 func (s TicketStatus) Valid() bool {
 	switch s {
 	case StatusDraft, StatusPendingReview, StatusApproved, StatusRejected,
-		StatusExecuting, StatusSucceeded, StatusFailed, StatusRolledBack, StatusClosed:
+		StatusExecuting, StatusSucceeded, StatusFailed, StatusRolledBack, StatusClosed,
+		StatusWithdrawn, StatusReopened:
 		return true
 	}
 	return false
@@ -85,6 +88,12 @@ type Ticket struct {
 	SLABreachedAt      *time.Time     `json:"sla_breached_at,omitempty"`
 	SLAEscalationLevel int            `json:"sla_escalation_level,omitempty"`
 	Satisfaction       int            `json:"satisfaction,omitempty"`
+	// 挂起/恢复: OnHold 置位时 SLA 计时暂停(标记而非状态, 状态机零侵入)。
+	OnHold      bool       `json:"on_hold,omitempty"`
+	HoldReason  string     `json:"hold_reason,omitempty"`
+	HoldUntilAt *time.Time `json:"hold_until_at,omitempty"`
+	// 关联工单: 与其它工单的双向关联(互相持有对方 ID)。
+	RelatedTicketIDs []string `json:"related_ticket_ids,omitempty"`
 }
 
 type CreateTicketRequest struct {
@@ -141,6 +150,49 @@ type RollbackRequest struct {
 	RolledBackBy   string `json:"rolled_back_by"`
 	RollbackReason string `json:"rollback_reason,omitempty"`
 	Comment        string `json:"comment,omitempty"`
+}
+
+// WithdrawRequest 撤回(草稿废弃)。
+type WithdrawRequest struct {
+	WithdrawnBy string `json:"withdrawn_by"`
+	Reason      string `json:"reason,omitempty"`
+}
+
+// ReopenRequest 重开(closed 后重新激活)。
+type ReopenRequest struct {
+	ReopenedBy string `json:"reopened_by"`
+	Reason     string `json:"reason,omitempty"`
+}
+
+// HoldRequest 挂起(暂停 SLA 计时)。
+type HoldRequest struct {
+	HoldBy      string     `json:"hold_by"`
+	Reason      string     `json:"reason,omitempty"`
+	HoldUntilAt *time.Time `json:"hold_until_at,omitempty"`
+}
+
+// RemindRequest 催办。
+type RemindRequest struct {
+	RemindedBy string `json:"reminded_by"`
+	Message    string `json:"message,omitempty"`
+}
+
+// RelateRequest 工单关联(双向)。
+type RelateRequest struct {
+	RelatedID string `json:"related_id"`
+	RelateBy  string `json:"relate_by,omitempty"`
+}
+
+// UpdateTicketRequest 通用更新基础信息(非状态)。
+type UpdateTicketRequest struct {
+	Title       string            `json:"title,omitempty"`
+	Description string            `json:"description,omitempty"`
+	RiskLevel   RiskLevel         `json:"risk_level,omitempty"`
+	Assignee    string            `json:"assignee,omitempty"`
+	Labels      map[string]string `json:"labels,omitempty"`
+	CIIDs       []string          `json:"ci_ids,omitempty"`
+	ChangePlan  string            `json:"change_plan,omitempty"`
+	RollbackPlan string           `json:"rollback_plan,omitempty"`
 }
 
 // SubmitRequest 提交工单(离开 draft): 高风险进待审批, 低/中风险直接进执行。

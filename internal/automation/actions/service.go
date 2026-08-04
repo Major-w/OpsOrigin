@@ -23,10 +23,11 @@ import (
 
 // 动作类型常量(与前端流程建模器 action_type 下拉对齐)。
 const (
-	ActionHTTP        = "http"
-	ActionNotify      = "notify"
+	ActionHTTP         = "http"
+	ActionNotify       = "notify"
 	ActionCreateTicket = "create_ticket"
-	ActionScript      = "script"
+	ActionScript       = "script"
+	ActionCMDBUpdate   = "cmdb_update"
 )
 
 // ScriptExecutor 执行脚本(与 automation/script.Service.Execute 签名一致)。
@@ -41,6 +42,8 @@ type Executor struct {
 	notifier func(ctx context.Context, tenantID, event, title, content string) error
 	// createTicket 创建 ITSM 工单, 返回工单 ID。params 为动作参数(title/description/risk_level 等)。
 	createTicket func(ctx context.Context, tenantID string, params map[string]any) (string, error)
+	// updateCI 更新 CMDB CI 属性: ciID 为 CI ID, attrs 为要合并的属性 map。
+	updateCI func(ctx context.Context, tenantID, ciID string, attrs map[string]any) error
 	// httpClient 外发 HTTP 请求客户端(可注入测试桩)。
 	httpClient *http.Client
 }
@@ -65,6 +68,11 @@ func (e *Executor) SetCreateTicket(f func(ctx context.Context, tenantID string, 
 	e.createTicket = f
 }
 
+// SetUpdateCI 注入 CMDB CI 更新回调(cmdb_update 动作)。
+func (e *Executor) SetUpdateCI(f func(ctx context.Context, tenantID, ciID string, attrs map[string]any) error) {
+	e.updateCI = f
+}
+
 // SetHTTPClient 注入自定义 HTTP 客户端(测试用)。
 func (e *Executor) SetHTTPClient(c *http.Client) { e.httpClient = c }
 
@@ -82,9 +90,33 @@ func (e *Executor) ExecuteAction(ctx context.Context, actionType string, params 
 		return e.doCreateTicket(ctx, tenantID, params, exprCtx)
 	case ActionScript:
 		return e.doScript(ctx, tenantID, params, exprCtx)
+	case ActionCMDBUpdate:
+		return e.doCMDBUpdate(ctx, tenantID, params, exprCtx)
 	default:
 		return nil, fmt.Errorf("unknown action type %q", actionType)
 	}
+}
+
+// --- cmdb_update ---
+
+func (e *Executor) doCMDBUpdate(ctx context.Context, tenantID string, params map[string]any, exprCtx map[string]any) (map[string]any, error) {
+	if e.updateCI == nil {
+		return nil, fmt.Errorf("cmdb_update action: cmdb updater not configured")
+	}
+	ciID := tplOr(params, "ci_id", exprCtx)
+	if ciID == "" {
+		return nil, fmt.Errorf("cmdb_update action requires ci_id")
+	}
+	attrs := map[string]any{}
+	if fields, ok := params["fields"].(map[string]any); ok {
+		for k, v := range fields {
+			attrs[k] = tpl(fmt.Sprint(v), exprCtx)
+		}
+	}
+	if err := e.updateCI(ctx, tenantID, ciID, attrs); err != nil {
+		return nil, fmt.Errorf("cmdb_update action: %w", err)
+	}
+	return map[string]any{"ci_id": ciID, "updated": true}, nil
 }
 
 // --- http ---

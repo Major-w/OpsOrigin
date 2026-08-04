@@ -43,6 +43,8 @@ type Step struct {
 	// 定时器
 	Duration string `json:"duration,omitempty"` // 1h / 30m / 3d
 	Deadline string `json:"deadline,omitempty"` // SLA 截止描述
+	// OLA 节点时限升级对象: 定时器步骤到期(超时)时先发升级通知再自动推进, 空则不升级。
+	OlaEscalateTo string `json:"ola_escalate_to,omitempty"`
 	// 通知
 	NotifyChannel string `json:"notify_channel,omitempty"`
 	NotifyTitle   string `json:"notify_title,omitempty"`

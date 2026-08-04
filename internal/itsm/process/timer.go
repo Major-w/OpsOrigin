@@ -49,6 +49,13 @@ func (s *Service) checkTimers(ctx context.Context) {
 		if due == nil || now.Before(*due) {
 			continue
 		}
+		// OLA 节点时限: 步骤配置了 OlaEscalateTo 时, 超时先发升级通知(未推进前), 再自动推进。
+		if step.OlaEscalateTo != "" && s.notifier != nil {
+			s.notifier(ctx, inst.TenantID, "workflow.ola_escalated",
+				"流程节点超时: "+step.Name,
+				"流程 "+proc.Name+" 节点 ["+step.Name+"] 已超时(时限 "+step.Duration+"), 升级至: "+step.OlaEscalateTo)
+			slog.Info("itsm process: OLA escalated", "ticket_id", inst.TicketID, "step", step.ID, "to", step.OlaEscalateTo)
+		}
 		if _, _, err := s.Advance(ctx, inst.TenantID, inst.TicketID, "success", nil); err != nil {
 			slog.Warn("itsm process: timer advance failed", "ticket_id", inst.TicketID, "step", step.ID, "error", err)
 		} else {

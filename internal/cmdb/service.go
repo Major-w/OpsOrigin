@@ -2021,3 +2021,27 @@ func (s *Service) UpdateCI(ctx context.Context, ci *model.CIModel, ch model.Chan
 	}
 	return nil
 }
+
+// UpdateCIAttributes 按 ID 读取 CI 并合并更新其 Attributes 字段(供流程动作库 cmdb_update 调用)。
+func (s *Service) UpdateCIAttributes(ctx context.Context, id, tenantID string, attrs map[string]any) error {
+	var existing *model.CIModel
+	if s.pg != nil {
+		var err error
+		existing, err = s.pg.GetCI(ctx, id, tenantID)
+		if err != nil {
+			return err
+		}
+	} else {
+		existing = s.mem.getCI(id, tenantID)
+	}
+	if existing == nil {
+		return fmt.Errorf("ci %s not found", id)
+	}
+	if existing.Attributes == nil {
+		existing.Attributes = map[string]any{}
+	}
+	for k, v := range attrs {
+		existing.Attributes[k] = v
+	}
+	return s.UpdateCI(ctx, existing, model.WeightITSM, "")
+}

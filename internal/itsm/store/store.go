@@ -49,6 +49,11 @@ type Store interface {
 	GetFormSchema(ctx context.Context, tenantID, scope string) (*form.FormSchema, error)
 	UpsertFormSchema(ctx context.Context, tenantID, scope string, schema form.FormSchema) error
 	ListFormScopes(ctx context.Context, tenantID string) ([]string, error)
+	// Data dictionary (field dicts)
+	GetFieldDict(ctx context.Context, tenantID, id string) (*form.FieldDict, error)
+	ListFieldDicts(ctx context.Context, tenantID string) ([]*form.FieldDict, error)
+	UpsertFieldDict(ctx context.Context, tenantID string, dict *form.FieldDict) error
+	DeleteFieldDict(ctx context.Context, tenantID, id string) error
 }
 
 type MemoryStore struct {
@@ -60,6 +65,7 @@ type MemoryStore struct {
 	attachments []*model.Attachment
 	changes     map[string]*model.ChangeRequest
 	schemas     map[string]map[string]*form.FormSchema // tenantID -> scope -> schema
+	dicts       map[string]map[string]*form.FieldDict  // tenantID -> dictID -> dict
 	nextID      int64
 }
 
@@ -69,6 +75,7 @@ func NewMemoryStore() *MemoryStore {
 		events:  make(map[string][]*model.TicketEvent),
 		changes: make(map[string]*model.ChangeRequest),
 		schemas: make(map[string]map[string]*form.FormSchema),
+		dicts:   make(map[string]map[string]*form.FieldDict),
 	}
 }
 
@@ -363,6 +370,9 @@ func (s *MemoryStore) ListActiveTicketsWithDeadline(ctx context.Context, tenantI
 		if t.DeadlineAt == nil {
 			continue
 		}
+		if t.OnHold {
+			continue // 挂起工单 SLA 停表
+		}
 		result = append(result, t)
 	}
 	return result, nil
@@ -532,4 +542,53 @@ func (s *MemoryStore) ListFormScopes(ctx context.Context, tenantID string) ([]st
 		out = append(out, sc)
 	}
 	return out, nil
+}
+
+// --- 数据字典(Memory) ---
+
+func (s *MemoryStore) GetFieldDict(ctx context.Context, tenantID, id string) (*form.FieldDict, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if m, ok := s.dicts[tenantID]; ok {
+		if d, ok := m[id]; ok {
+			return d, nil
+		}
+	}
+	return nil, ErrNotFound
+}
+
+func (s *MemoryStore) ListFieldDicts(ctx context.Context, tenantID string) ([]*form.FieldDict, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	var out []*form.FieldDict
+	for _, d := range s.dicts[tenantID] {
+		out = append(out, d)
+	}
+	return out, nil
+}
+
+func (s *MemoryStore) UpsertFieldDict(ctx context.Context, tenantID string, dict *form.FieldDict) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if dict.ID == "" {
+		dict.ID = uuid.New().String()
+	}
+	dict.TenantID = tenantID
+	if s.dicts[tenantID] == nil {
+		s.dicts[tenantID] = map[string]*form.FieldDict{}
+	}
+	s.dicts[tenantID][dict.ID] = dict
+	return nil
+}
+
+func (s *MemoryStore) DeleteFieldDict(ctx context.Context, tenantID, id string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if m, ok := s.dicts[tenantID]; ok {
+		if _, ok := m[id]; ok {
+			delete(m, id)
+			return nil
+		}
+	}
+	return ErrNotFound
 }

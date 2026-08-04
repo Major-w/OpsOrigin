@@ -18,8 +18,12 @@ type ChangeRequest struct {
 	Plan         string        `json:"plan"`
 	RollbackPlan string        `json:"rollback_plan"`
 	CreatedBy    string        `json:"created_by"`
-	CreatedAt    time.Time     `json:"created_at"`
-	UpdatedAt    time.Time     `json:"updated_at"`
+	// 变更排期窗口(变更日历数据基础)
+	ScheduledAt *time.Time `json:"scheduled_at,omitempty"` // 计划开始
+	WindowStart *time.Time `json:"window_start,omitempty"` // 变更窗口开始
+	WindowEnd   *time.Time `json:"window_end,omitempty"`   // 变更窗口结束
+	CreatedAt   time.Time  `json:"created_at"`
+	UpdatedAt   time.Time  `json:"updated_at"`
 }
 
 type ChangeStatus string
@@ -50,6 +54,9 @@ type CreateChangeRequest struct {
 	RollbackPlan string    `json:"rollback_plan"`
 	CreatedBy    string    `json:"created_by"`
 	TicketID     string    `json:"ticket_id,omitempty"`
+	ScheduledAt  *time.Time `json:"scheduled_at,omitempty"`
+	WindowStart  *time.Time `json:"window_start,omitempty"`
+	WindowEnd    *time.Time `json:"window_end,omitempty"`
 }
 
 type VoteChangeRequest struct {
