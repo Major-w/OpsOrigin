@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"time"
 
@@ -37,9 +38,20 @@ type Store interface {
 	// ——— 技能市场 (L4: MCP 打包共享, 数字员工 + 依赖工具可移植) ———
 	CreateSkillPackage(ctx context.Context, p *SkillPackage) error
 	GetSkillPackage(ctx context.Context, tenantID, id string) (*SkillPackage, error)
+	GetSkillPackageByNameVersion(ctx context.Context, tenantID, name, version string) (*SkillPackage, error)
 	ListSkillPackages(ctx context.Context, tenantID string) ([]*SkillPackage, error)
+	ListSkillPackageVersions(ctx context.Context, tenantID, name string) ([]*SkillPackage, error)
 	DeleteSkillPackage(ctx context.Context, tenantID, id string) error
 	IncrSkillDownloads(ctx context.Context, tenantID, id string) error
+
+	// ——— 技能市场: 评分(1~5 星, 按用户去重, 同租户聚合) ———
+	RateSkill(ctx context.Context, tenantID, pkgID, user string, score int) error
+	GetSkillRating(ctx context.Context, tenantID, pkgID, user string) (avg float64, count int, myScore int, err error)
+
+	// ——— 技能市场: 收藏(按用户去重, 切换式) ———
+	ToggleFavorite(ctx context.Context, tenantID, pkgID, user string) (favorited bool, err error)
+	IsFavorite(ctx context.Context, tenantID, pkgID, user string) (bool, error)
+	ListFavoriteIDs(ctx context.Context, tenantID, user string) ([]string, error)
 
 	// ——— 主动巡检 Agent (P0) ———
 	CreateInspection(ctx context.Context, in *Inspection) error
@@ -191,9 +203,25 @@ func (s *PGStore) migrate() {
 		id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL DEFAULT 'default',
 		name TEXT NOT NULL, version TEXT DEFAULT '1.0.0',
 		data JSONB NOT NULL DEFAULT '{}', downloads INT DEFAULT 0,
+		rating_avg DOUBLE PRECISION NOT NULL DEFAULT 0, rating_count INT NOT NULL DEFAULT 0,
 		created_at TIMESTAMPTZ DEFAULT NOW(), updated_at TIMESTAMPTZ DEFAULT NOW()
 	)`)
 	s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_ai_skill_packages_tenant ON ai_skill_packages(tenant_id)`)
+	// 评分: 同租户同包同用户唯一, 1~5 星; 聚合进 ai_skill_packages.rating_avg/count。
+	s.db.Exec(`CREATE TABLE IF NOT EXISTS ai_skill_ratings (
+		id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL DEFAULT 'default',
+		package_id TEXT NOT NULL, user_id TEXT NOT NULL, score INT NOT NULL CHECK (score BETWEEN 1 AND 5),
+		created_at TIMESTAMPTZ DEFAULT NOW(),
+		UNIQUE(tenant_id, package_id, user_id)
+	)`)
+	s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_ai_skill_ratings_pkg ON ai_skill_ratings(tenant_id, package_id)`)
+	// 收藏: 同租户同包同用户唯一, 切换式(存在=已收藏)。
+	s.db.Exec(`CREATE TABLE IF NOT EXISTS ai_skill_favorites (
+		tenant_id TEXT NOT NULL DEFAULT 'default', package_id TEXT NOT NULL,
+		user_id TEXT NOT NULL, created_at TIMESTAMPTZ DEFAULT NOW(),
+		UNIQUE(tenant_id, package_id, user_id)
+	)`)
+	s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_ai_skill_favorites_user ON ai_skill_favorites(tenant_id, user_id)`)
 }
 
 // ——— 自定义 MCP 工具持久化 (PRD 5.2.2) ———
@@ -263,21 +291,23 @@ func (s *PGStore) CreateSkillPackage(ctx context.Context, p *SkillPackage) error
 	}
 	data, _ := json.Marshal(p)
 	_, err := s.db.ExecContext(ctx,
-		`INSERT INTO ai_skill_packages(id,tenant_id,name,version,data,downloads,created_at,updated_at)
-		 VALUES($1,$2,$3,$4,$5,$6,$7,$8)
+		`INSERT INTO ai_skill_packages(id,tenant_id,name,version,data,downloads,rating_avg,rating_count,created_at,updated_at)
+		 VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
 		 ON CONFLICT (id) DO UPDATE SET name=EXCLUDED.name, version=EXCLUDED.version, data=EXCLUDED.data, updated_at=EXCLUDED.updated_at`,
-		p.ID, p.TenantID, p.Name, p.Version, data, p.Downloads, p.CreatedAt, p.UpdatedAt)
+		p.ID, p.TenantID, p.Name, p.Version, data, p.Downloads, p.RatingAvg, p.RatingCount, p.CreatedAt, p.UpdatedAt)
 	return err
 }
 
 func (s *PGStore) GetSkillPackage(ctx context.Context, tenantID, id string) (*SkillPackage, error) {
 	var (
-		data     []byte
-		downloads int
+		data       []byte
+		downloads  int
+		ratingAvg  float64
+		ratingCnt  int
 	)
 	err := s.db.QueryRowContext(ctx,
-		`SELECT data, downloads FROM ai_skill_packages WHERE id=$1 AND tenant_id=$2`, id, tenantID).
-		Scan(&data, &downloads)
+		`SELECT data, downloads, rating_avg, rating_count FROM ai_skill_packages WHERE id=$1 AND tenant_id=$2`, id, tenantID).
+		Scan(&data, &downloads, &ratingAvg, &ratingCnt)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -289,12 +319,36 @@ func (s *PGStore) GetSkillPackage(ctx context.Context, tenantID, id string) (*Sk
 		return nil, err
 	}
 	p.Downloads = downloads
+	p.RatingAvg = ratingAvg
+	p.RatingCount = ratingCnt
+	return p, nil
+}
+
+func (s *PGStore) GetSkillPackageByNameVersion(ctx context.Context, tenantID, name, version string) (*SkillPackage, error) {
+	var (
+		data      []byte
+		downloads int
+	)
+	err := s.db.QueryRowContext(ctx,
+		`SELECT data, downloads FROM ai_skill_packages WHERE tenant_id=$1 AND name=$2 AND version=$3 ORDER BY updated_at DESC LIMIT 1`,
+		tenantID, name, version).Scan(&data, &downloads)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	p := &SkillPackage{}
+	if json.Unmarshal(data, p) != nil {
+		return nil, nil
+	}
+	p.Downloads = downloads
 	return p, nil
 }
 
 func (s *PGStore) ListSkillPackages(ctx context.Context, tenantID string) ([]*SkillPackage, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT data, downloads FROM ai_skill_packages WHERE tenant_id=$1 ORDER BY updated_at DESC`, tenantID)
+		`SELECT data, downloads, rating_avg, rating_count FROM ai_skill_packages WHERE tenant_id=$1 ORDER BY updated_at DESC`, tenantID)
 	if err != nil {
 		return nil, err
 	}
@@ -304,8 +358,10 @@ func (s *PGStore) ListSkillPackages(ctx context.Context, tenantID string) ([]*Sk
 		var (
 			data      []byte
 			downloads int
+			ratingAvg float64
+			ratingCnt int
 		)
-		if err := rows.Scan(&data, &downloads); err != nil {
+		if err := rows.Scan(&data, &downloads, &ratingAvg, &ratingCnt); err != nil {
 			return nil, err
 		}
 		p := &SkillPackage{}
@@ -313,12 +369,53 @@ func (s *PGStore) ListSkillPackages(ctx context.Context, tenantID string) ([]*Sk
 			continue
 		}
 		p.Downloads = downloads
+		p.RatingAvg = ratingAvg
+		p.RatingCount = ratingCnt
+		out = append(out, p)
+	}
+	return out, rows.Err()
+}
+
+// ListSkillPackageVersions 返回同名技能包的全部版本(按更新时间倒序, 最新在前)。
+func (s *PGStore) ListSkillPackageVersions(ctx context.Context, tenantID, name string) ([]*SkillPackage, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT data, downloads, rating_avg, rating_count FROM ai_skill_packages WHERE tenant_id=$1 AND name=$2 ORDER BY updated_at DESC`,
+		tenantID, name)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []*SkillPackage
+	for rows.Next() {
+		var (
+			data      []byte
+			downloads int
+			ratingAvg float64
+			ratingCnt int
+		)
+		if err := rows.Scan(&data, &downloads, &ratingAvg, &ratingCnt); err != nil {
+			return nil, err
+		}
+		p := &SkillPackage{}
+		if json.Unmarshal(data, p) != nil {
+			continue
+		}
+		p.Downloads = downloads
+		p.RatingAvg = ratingAvg
+		p.RatingCount = ratingCnt
 		out = append(out, p)
 	}
 	return out, rows.Err()
 }
 
 func (s *PGStore) DeleteSkillPackage(ctx context.Context, tenantID, id string) error {
+	// 级联清理评分与收藏, 避免孤儿数据。
+	if _, err := s.db.ExecContext(ctx, `DELETE FROM ai_skill_ratings WHERE tenant_id=$1 AND package_id=$2`, tenantID, id); err != nil {
+		return err
+	}
+	if _, err := s.db.ExecContext(ctx, `DELETE FROM ai_skill_favorites WHERE tenant_id=$1 AND package_id=$2`, tenantID, id); err != nil {
+		return err
+	}
 	_, err := s.db.ExecContext(ctx, `DELETE FROM ai_skill_packages WHERE id=$1 AND tenant_id=$2`, id, tenantID)
 	return err
 }
@@ -327,6 +424,118 @@ func (s *PGStore) IncrSkillDownloads(ctx context.Context, tenantID, id string) e
 	_, err := s.db.ExecContext(ctx,
 		`UPDATE ai_skill_packages SET downloads = downloads + 1 WHERE id=$1 AND tenant_id=$2`, id, tenantID)
 	return err
+}
+
+// ——— 评分: 同用户去重(upsert), 聚合回写 ai_skill_packages.rating_avg/count ———
+func (s *PGStore) RateSkill(ctx context.Context, tenantID, pkgID, user string, score int) error {
+	if score < 1 || score > 5 {
+		return fmt.Errorf("score must be between 1 and 5")
+	}
+	if tenantID == "" {
+		tenantID = "default"
+	}
+	rowID := tenantID + ":" + pkgID + ":" + user
+	_, err := s.db.ExecContext(ctx,
+		`INSERT INTO ai_skill_ratings(id,tenant_id,package_id,user_id,score,created_at)
+		 VALUES($1,$2,$3,$4,$5,$6)
+		 ON CONFLICT (tenant_id, package_id, user_id) DO UPDATE SET score=EXCLUDED.score`,
+		rowID, tenantID, pkgID, user, score, time.Now())
+	if err != nil {
+		return err
+	}
+	// 重算聚合并写回技能包行(避免读取时实时聚合, 列表性能友好)
+	var avg float64
+	var cnt int
+	if err := s.db.QueryRowContext(ctx,
+		`SELECT COALESCE(AVG(score),0), COUNT(*) FROM ai_skill_ratings WHERE tenant_id=$1 AND package_id=$2`,
+		tenantID, pkgID).Scan(&avg, &cnt); err != nil {
+		return err
+	}
+	_, err = s.db.ExecContext(ctx,
+		`UPDATE ai_skill_packages SET rating_avg=$1, rating_count=$2 WHERE id=$3 AND tenant_id=$4`,
+		avg, cnt, pkgID, tenantID)
+	return err
+}
+
+func (s *PGStore) GetSkillRating(ctx context.Context, tenantID, pkgID, user string) (float64, int, int, error) {
+	if tenantID == "" {
+		tenantID = "default"
+	}
+	var avg float64
+	var cnt int
+	if err := s.db.QueryRowContext(ctx,
+		`SELECT COALESCE(AVG(score),0), COUNT(*) FROM ai_skill_ratings WHERE tenant_id=$1 AND package_id=$2`,
+		tenantID, pkgID).Scan(&avg, &cnt); err != nil {
+		return 0, 0, 0, err
+	}
+	var my int
+	_ = s.db.QueryRowContext(ctx,
+		`SELECT score FROM ai_skill_ratings WHERE tenant_id=$1 AND package_id=$2 AND user_id=$3`,
+		tenantID, pkgID, user).Scan(&my)
+	return avg, cnt, my, nil
+}
+
+// ——— 收藏: 切换式(存在则删除并返回 false, 否则插入并返回 true) ———
+func (s *PGStore) ToggleFavorite(ctx context.Context, tenantID, pkgID, user string) (bool, error) {
+	if tenantID == "" {
+		tenantID = "default"
+	}
+	var exists bool
+	err := s.db.QueryRowContext(ctx,
+		`SELECT EXISTS(SELECT 1 FROM ai_skill_favorites WHERE tenant_id=$1 AND package_id=$2 AND user_id=$3)`,
+		tenantID, pkgID, user).Scan(&exists)
+	if err != nil {
+		return false, err
+	}
+	if exists {
+		if _, err := s.db.ExecContext(ctx,
+			`DELETE FROM ai_skill_favorites WHERE tenant_id=$1 AND package_id=$2 AND user_id=$3`,
+			tenantID, pkgID, user); err != nil {
+			return false, err
+		}
+		return false, nil
+	}
+	_, err = s.db.ExecContext(ctx,
+		`INSERT INTO ai_skill_favorites(tenant_id,package_id,user_id,created_at) VALUES($1,$2,$3,$4)
+		 ON CONFLICT (tenant_id, package_id, user_id) DO NOTHING`,
+		tenantID, pkgID, user, time.Now())
+	if err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+func (s *PGStore) IsFavorite(ctx context.Context, tenantID, pkgID, user string) (bool, error) {
+	if tenantID == "" {
+		tenantID = "default"
+	}
+	var exists bool
+	err := s.db.QueryRowContext(ctx,
+		`SELECT EXISTS(SELECT 1 FROM ai_skill_favorites WHERE tenant_id=$1 AND package_id=$2 AND user_id=$3)`,
+		tenantID, pkgID, user).Scan(&exists)
+	return exists, err
+}
+
+func (s *PGStore) ListFavoriteIDs(ctx context.Context, tenantID, user string) ([]string, error) {
+	if tenantID == "" {
+		tenantID = "default"
+	}
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT package_id FROM ai_skill_favorites WHERE tenant_id=$1 AND user_id=$2 ORDER BY created_at DESC`,
+		tenantID, user)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var pid string
+		if err := rows.Scan(&pid); err != nil {
+			return nil, err
+		}
+		out = append(out, pid)
+	}
+	return out, rows.Err()
 }
 
 // ——— 主动巡检持久化 (P0) ———

@@ -37,6 +37,8 @@ type SkillPackage struct {
 	Agent       AgentPayload        `json:"agent"`             // 数字员工配置
 	Tools       []CustomToolPayload `json:"tools,omitempty"`   // 依赖的自定义 MCP 工具(安装时按需重建)
 	Downloads   int                 `json:"downloads"`
+	RatingAvg   float64             `json:"rating_avg"` // 同租户评分均值(1~5)
+	RatingCount int                 `json:"rating_count"`
 	Checksum    string              `json:"checksum"` // 对 (agent+tools) 的完整性校验
 	CreatedAt   time.Time           `json:"created_at"`
 	UpdatedAt   time.Time           `json:"updated_at"`
@@ -136,6 +138,14 @@ func (e *Engine) PublishSkill(ctx context.Context, tenantID, agentID string, met
 
 	pkg.Checksum = pkg.checksum()
 	if e.store != nil {
+		// 同名同版本视为覆盖更新(复用既有行 ID), 避免重复行污染版本列表。
+		if prev, gerr := e.store.GetSkillPackageByNameVersion(ctx, tenantID, pkg.Name, pkg.Version); gerr == nil && prev != nil {
+			pkg.ID = prev.ID
+			pkg.Downloads = prev.Downloads
+			pkg.RatingAvg = prev.RatingAvg
+			pkg.RatingCount = prev.RatingCount
+			pkg.CreatedAt = prev.CreatedAt
+		}
 		if err := e.store.CreateSkillPackage(ctx, pkg); err != nil {
 			return nil, err
 		}
@@ -289,6 +299,88 @@ func (e *Engine) ImportSkill(ctx context.Context, tenantID string, data []byte) 
 	}
 	slog.Info("skill package imported", "id", p.ID, "name", p.Name, "version", p.Version)
 	return &p, nil
+}
+
+// ============================================================================
+// 评分 / 收藏 / 版本列表 (技能市场增强)
+// 评分与收藏均以「同租户 + 包 + 用户」去重, 用户身份由 handler 从请求上下文注入。
+// ============================================================================
+
+// RateSkill 对技能包打分(1~5 星, 同用户去重重算均值)。
+func (e *Engine) RateSkill(ctx context.Context, tenantID, pkgID, user string, score int) error {
+	if e.store == nil {
+		return fmt.Errorf("store not configured")
+	}
+	if score < 1 || score > 5 {
+		return fmt.Errorf("score must be between 1 and 5")
+	}
+	if _, err := e.GetSkillPackage(ctx, tenantID, pkgID); err != nil {
+		return err
+	}
+	return e.store.RateSkill(ctx, tenantID, pkgID, user, score)
+}
+
+// GetSkillRating 返回技能包的评分均值 / 次数 / 当前用户的打分。
+func (e *Engine) GetSkillRating(ctx context.Context, tenantID, pkgID, user string) (avg float64, count, myScore int, err error) {
+	if e.store == nil {
+		return 0, 0, 0, fmt.Errorf("store not configured")
+	}
+	return e.store.GetSkillRating(ctx, tenantID, pkgID, user)
+}
+
+// ToggleFavorite 切换当前用户对技能包的收藏状态, 返回切换后的收藏态。
+func (e *Engine) ToggleFavorite(ctx context.Context, tenantID, pkgID, user string) (bool, error) {
+	if e.store == nil {
+		return false, fmt.Errorf("store not configured")
+	}
+	if _, err := e.GetSkillPackage(ctx, tenantID, pkgID); err != nil {
+		return false, err
+	}
+	return e.store.ToggleFavorite(ctx, tenantID, pkgID, user)
+}
+
+// IsFavorite 返回当前用户是否已收藏该技能包。
+func (e *Engine) IsFavorite(ctx context.Context, tenantID, pkgID, user string) (bool, error) {
+	if e.store == nil {
+		return false, fmt.Errorf("store not configured")
+	}
+	return e.store.IsFavorite(ctx, tenantID, pkgID, user)
+}
+
+// ListFavorites 返回当前用户收藏的技能包列表(含评分与下载数)。
+func (e *Engine) ListFavorites(ctx context.Context, tenantID, user string) []*SkillPackage {
+	if e.store == nil {
+		return []*SkillPackage{}
+	}
+	ids, err := e.store.ListFavoriteIDs(ctx, tenantID, user)
+	if err != nil {
+		slog.Error("list favorites failed", "err", err)
+		return []*SkillPackage{}
+	}
+	out := make([]*SkillPackage, 0, len(ids))
+	for _, id := range ids {
+		if p, err := e.GetSkillPackage(ctx, tenantID, id); err == nil && p != nil {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+// ListVersions 返回与指定技能包同名的全部版本(按更新时间倒序)。
+func (e *Engine) ListVersions(ctx context.Context, tenantID, pkgID string) []*SkillPackage {
+	p, err := e.GetSkillPackage(ctx, tenantID, pkgID)
+	if err != nil || p == nil {
+		return []*SkillPackage{}
+	}
+	if e.store == nil {
+		return []*SkillPackage{p}
+	}
+	vs, err := e.store.ListSkillPackageVersions(ctx, tenantID, p.Name)
+	if err != nil {
+		slog.Error("list versions failed", "err", err)
+		return []*SkillPackage{p}
+	}
+	return vs
 }
 
 // —— 自定义工具 payload 互转辅助 ——

@@ -3,6 +3,8 @@ package agentic
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -16,6 +18,8 @@ type memStore struct {
 	teams    map[string]*TeamRecord
 	customs  map[string]*CustomTool
 	skills   map[string]*SkillPackage
+	ratings  map[string]int // key: tenant|pkgID|user -> score
+	favs     map[string]bool
 	tokens   []model.TokenRecord
 	insps    map[string]*Inspection
 	inspRuns map[string][]*InspectionRun
@@ -27,6 +31,8 @@ func newMemStore() *memStore {
 		teams:    map[string]*TeamRecord{},
 		customs:  map[string]*CustomTool{},
 		skills:   map[string]*SkillPackage{},
+		ratings:  map[string]int{},
+		favs:     map[string]bool{},
 		insps:    map[string]*Inspection{},
 		inspRuns: map[string][]*InspectionRun{},
 	}
@@ -143,6 +149,86 @@ func (m *memStore) IncrSkillDownloads(_ context.Context, _, id string) error {
 		p.Downloads++
 	}
 	return nil
+}
+func (m *memStore) GetSkillPackageByNameVersion(_ context.Context, _, name, version string) (*SkillPackage, error) {
+	for _, p := range m.skills {
+		if p.Name == name && p.Version == version {
+			cp := *p
+			return &cp, nil
+		}
+	}
+	return nil, nil
+}
+func (m *memStore) ListSkillPackageVersions(_ context.Context, _, name string) ([]*SkillPackage, error) {
+	out := make([]*SkillPackage, 0)
+	for _, p := range m.skills {
+		if p.Name == name {
+			cp := *p
+			out = append(out, &cp)
+		}
+	}
+	return out, nil
+}
+func (m *memStore) RateSkill(_ context.Context, tenantID, pkgID, user string, score int) error {
+	if _, ok := m.skills[pkgID]; !ok {
+		return fmt.Errorf("package not found: %s", pkgID)
+	}
+	m.ratings[tenantID+"|"+pkgID+"|"+user] = score
+	// 重算均值写回
+	var sum, cnt int
+	for k, sc := range m.ratings {
+		if strings.HasPrefix(k, tenantID+"|"+pkgID+"|") {
+			sum += sc
+			cnt++
+		}
+	}
+	if p, ok := m.skills[pkgID]; ok && cnt > 0 {
+		p.RatingAvg = float64(sum) / float64(cnt)
+		p.RatingCount = cnt
+	}
+	return nil
+}
+func (m *memStore) GetSkillRating(_ context.Context, tenantID, pkgID, user string) (float64, int, int, error) {
+	var sum, cnt, my int
+	for k, sc := range m.ratings {
+		if strings.HasPrefix(k, tenantID+"|"+pkgID+"|") {
+			sum += sc
+			cnt++
+		}
+	}
+	if sc, ok := m.ratings[tenantID+"|"+pkgID+"|"+user]; ok {
+		my = sc
+	}
+	avg := 0.0
+	if cnt > 0 {
+		avg = float64(sum) / float64(cnt)
+	}
+	return avg, cnt, my, nil
+}
+func (m *memStore) ToggleFavorite(_ context.Context, tenantID, pkgID, user string) (bool, error) {
+	key := tenantID + "|" + pkgID + "|" + user
+	if m.favs[key] {
+		delete(m.favs, key)
+		return false, nil
+	}
+	m.favs[key] = true
+	return true, nil
+}
+func (m *memStore) IsFavorite(_ context.Context, tenantID, pkgID, user string) (bool, error) {
+	return m.favs[tenantID+"|"+pkgID+"|"+user], nil
+}
+func (m *memStore) ListFavoriteIDs(_ context.Context, tenantID, user string) ([]string, error) {
+	prefix := tenantID + "|"
+	suffix := "|" + user
+	var out []string
+	for k := range m.favs {
+		if strings.HasPrefix(k, prefix) && strings.HasSuffix(k, suffix) {
+			// 去掉 tenant| 前缀与 |user 后缀得到 pkgID
+			mid := k[len(prefix) : len(k)-len(suffix)]
+			out = append(out, mid)
+		}
+	}
+	return out, nil
 }
 
 func (m *memStore) CreateInspection(_ context.Context, in *Inspection) error {
@@ -335,5 +421,93 @@ func TestSkillMarketImportBadData(t *testing.T) {
 	}
 	if _, err := e.ImportSkill(ctx, "default", []byte(`{"version":"1.0.0"}`)); err == nil {
 		t.Fatalf("expected error for missing agent name")
+	}
+}
+
+// TestSkillMarketRatingFavoriteVersions 验证评分聚合 / 收藏切换 / 同名版本列表。
+func TestSkillMarketRatingFavoriteVersions(t *testing.T) {
+	ctx := context.Background()
+	tenant := "default"
+	e := newTestEngine(t)
+	e.SetStore(newMemStore())
+
+	// 预置并发布一个技能包 v1.0.0
+	depTool := &CustomTool{TenantID: tenant, Name: "ops_ping", Type: "http", Enabled: true, HTTPURL: "https://e/p"}
+	_ = e.CreateCustomTool(ctx, depTool)
+	ag := &model.AgentInstance{Name: "巡检工", TenantID: tenant, Tools: []string{"ops_ping"}}
+	_ = e.CreateAgent(ctx, ag)
+	pkg, err := e.PublishSkill(ctx, tenant, ag.ID, SkillPackageMeta{Version: "1.0.0"})
+	if err != nil {
+		t.Fatalf("publish: %v", err)
+	}
+
+	// 评分: 三个用户打分 5/3/4 → 均值 4, 计数 3
+	for u, s := range map[string]int{"alice": 5, "bob": 3, "carol": 4} {
+		if err := e.RateSkill(ctx, tenant, pkg.ID, u, s); err != nil {
+			t.Fatalf("rate %s: %v", u, err)
+		}
+	}
+	avg, cnt, my, err := e.GetSkillRating(ctx, tenant, pkg.ID, "alice")
+	if err != nil {
+		t.Fatalf("get rating: %v", err)
+	}
+	if cnt != 3 || my != 5 {
+		t.Fatalf("rating aggregate wrong: cnt=%d my=%d", cnt, my)
+	}
+	if avg < 3.9 || avg > 4.1 {
+		t.Fatalf("rating avg should be ~4, got %v", avg)
+	}
+	got, _ := e.GetSkillPackage(ctx, tenant, pkg.ID)
+	if got.RatingAvg != avg || got.RatingCount != 3 {
+		t.Fatalf("rating fields not persisted on package: avg=%v cnt=%d", got.RatingAvg, got.RatingCount)
+	}
+
+	// 非法评分应报错
+	if err := e.RateSkill(ctx, tenant, pkg.ID, "dave", 9); err == nil {
+		t.Fatalf("expected error for out-of-range score")
+	}
+
+	// 收藏: 切换两次 → 先 true 后 false
+	f1, _ := e.ToggleFavorite(ctx, tenant, pkg.ID, "alice")
+	if !f1 {
+		t.Fatalf("first favorite should be true")
+	}
+	// 同用户再次打分应更新而非新增(计数仍为 3)
+	_ = e.RateSkill(ctx, tenant, pkg.ID, "alice", 2)
+	_, cnt2, my2, _ := e.GetSkillRating(ctx, tenant, pkg.ID, "alice")
+	if cnt2 != 3 || my2 != 2 {
+		t.Fatalf("re-rate should update not append: cnt=%d my=%d", cnt2, my2)
+	}
+	f2, _ := e.ToggleFavorite(ctx, tenant, pkg.ID, "alice")
+	if f2 {
+		t.Fatalf("second favorite should be false (toggled off)")
+	}
+	// alice 取消后列表应为空
+	favs := e.ListFavorites(ctx, tenant, "alice")
+	if len(favs) != 0 {
+		t.Fatalf("alice should have 0 favorites after toggle off, got %d", len(favs))
+	}
+	// bob 收藏后列表含 1
+	_, _ = e.ToggleFavorite(ctx, tenant, pkg.ID, "bob")
+	favs2 := e.ListFavorites(ctx, tenant, "bob")
+	if len(favs2) != 1 {
+		t.Fatalf("bob should have 1 favorite, got %d", len(favs2))
+	}
+
+	// 版本列表: 发布同名 v2.0.0, 应列出 2 个版本
+	v2, err := e.PublishSkill(ctx, tenant, ag.ID, SkillPackageMeta{Version: "2.0.0"})
+	if err != nil {
+		t.Fatalf("publish v2: %v", err)
+	}
+	vs := e.ListVersions(ctx, tenant, pkg.ID)
+	if len(vs) != 2 {
+		t.Fatalf("expected 2 versions, got %d", len(vs))
+	}
+	// 再发同名同版本 v2.0.0 应覆盖而非新增(仍为 2 个)
+	if _, err := e.PublishSkill(ctx, tenant, ag.ID, SkillPackageMeta{Version: "2.0.0"}); err != nil {
+		t.Fatalf("republish v2: %v", err)
+	}
+	if vs2 := e.ListVersions(ctx, tenant, v2.ID); len(vs2) != 2 {
+		t.Fatalf("republish same version should not add row, got %d", len(vs2))
 	}
 }

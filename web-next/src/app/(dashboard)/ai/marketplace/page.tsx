@@ -11,6 +11,7 @@ import { apiFetch, cn } from '@/lib/utils'
 import { toast } from '@/stores/toast'
 import {
   Store, RefreshCw, Download, Upload, Trash2, Package, User, Tag, Search,
+  Heart, Star, GitBranch,
 } from 'lucide-react'
 
 // 技能市场 (L4: MCP 打包共享, 数字员工 + 依赖工具打包成可分享的市场形态)
@@ -40,6 +41,8 @@ interface SkillPackage {
   agent: AgentPayload
   tools?: CustomToolPayload[]
   downloads: number
+  rating_avg?: number
+  rating_count?: number
   checksum: string
   created_at: string
   updated_at: string
@@ -50,6 +53,9 @@ export default function MarketplacePage() {
   const [loading, setLoading] = useState(false)
   const [category, setCategory] = useState('')
   const [keyword, setKeyword] = useState('')
+  const [sort, setSort] = useState<'updated' | 'rating' | 'downloads'>('updated')
+  const [favOnly, setFavOnly] = useState(false)
+  const [favIds, setFavIds] = useState<Set<string>>(new Set())
 
   // 导入对话框
   const [importOpen, setImportOpen] = useState(false)
@@ -60,6 +66,17 @@ export default function MarketplacePage() {
   const [installTarget, setInstallTarget] = useState<SkillPackage | null>(null)
   const [installName, setInstallName] = useState('')
   const [installing, setInstalling] = useState(false)
+
+  // 评分对话框
+  const [rateTarget, setRateTarget] = useState<SkillPackage | null>(null)
+  const [rateHover, setRateHover] = useState(0)
+  const [myScore, setMyScore] = useState(0)
+  const [rateSubmitting, setRateSubmitting] = useState(false)
+
+  // 版本列表对话框
+  const [versionsTarget, setVersionsTarget] = useState<SkillPackage | null>(null)
+  const [versions, setVersions] = useState<SkillPackage[]>([])
+  const [versionsLoading, setVersionsLoading] = useState(false)
 
   const loadAll = async () => {
     setLoading(true)
@@ -73,7 +90,17 @@ export default function MarketplacePage() {
     }
   }
 
+  const loadFavorites = async () => {
+    try {
+      const list = await apiFetch<SkillPackage[]>('/ai/skills/favorites')
+      setFavIds(new Set(list.map(p => p.id)))
+    } catch (e: any) {
+      // 收藏接口依赖用户上下文, 失败不影响主列表
+    }
+  }
+
   useEffect(() => { loadAll() }, [category])
+  useEffect(() => { loadFavorites() }, [])
 
   // 类别下拉选项(含全部 + 已加载包中的去重类别)
   const categoryOptions = useMemo(() => {
@@ -84,17 +111,32 @@ export default function MarketplacePage() {
     return opts
   }, [packages])
 
-  // 关键词过滤(前端二次过滤: 名称/作者/描述/标签)
+  const sortOptions = [
+    { value: 'updated', label: '最近更新' },
+    { value: 'rating', label: '评分最高' },
+    { value: 'downloads', label: '安装最多' },
+  ]
+
+  // 关键词 + 收藏过滤 + 排序
   const visible = useMemo(() => {
     const kw = keyword.trim().toLowerCase()
-    if (!kw) return packages
-    return packages.filter(p =>
-      p.name.toLowerCase().includes(kw) ||
-      (p.author || '').toLowerCase().includes(kw) ||
-      (p.description || '').toLowerCase().includes(kw) ||
-      (p.tags || []).some(t => t.toLowerCase().includes(kw)),
-    )
-  }, [packages, keyword])
+    let list = packages.filter(p => {
+      if (favOnly && !favIds.has(p.id)) return false
+      if (!kw) return true
+      return (
+        p.name.toLowerCase().includes(kw) ||
+        (p.author || '').toLowerCase().includes(kw) ||
+        (p.description || '').toLowerCase().includes(kw) ||
+        (p.tags || []).some(t => t.toLowerCase().includes(kw))
+      )
+    })
+    list = [...list].sort((a, b) => {
+      if (sort === 'rating') return (b.rating_avg || 0) - (a.rating_avg || 0)
+      if (sort === 'downloads') return b.downloads - a.downloads
+      return new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime()
+    })
+    return list
+  }, [packages, keyword, favOnly, favIds, sort])
 
   const install = async () => {
     if (!installTarget) return
@@ -135,9 +177,75 @@ export default function MarketplacePage() {
     try {
       await apiFetch(`/ai/skills/${p.id}`, { method: 'DELETE' })
       toast.success('已下架')
+      setFavIds(prev => {
+        const n = new Set(prev); n.delete(p.id); return n
+      })
       loadAll()
     } catch (e: any) {
       toast.error(`下架失败: ${e.message}`)
+    }
+  }
+
+  // 收藏切换(乐观更新)
+  const toggleFav = async (p: SkillPackage) => {
+    const prev = favIds.has(p.id)
+    setFavIds(prevIds => {
+      const n = new Set(prevIds)
+      if (prev) n.delete(p.id); else n.add(p.id)
+      return n
+    })
+    try {
+      await apiFetch<{ favorited: boolean }>(`/ai/skills/${p.id}/favorite`, { method: 'POST' })
+    } catch (e: any) {
+      // 失败回滚
+      setFavIds(prevIds => {
+        const n = new Set(prevIds)
+        if (prev) n.add(p.id); else n.delete(p.id)
+        return n
+      })
+      toast.error(`收藏操作失败: ${e.message}`)
+    }
+  }
+
+  // 打开评分对话框并预取当前用户的评分
+  const openRate = async (p: SkillPackage) => {
+    setRateTarget(p)
+    setMyScore(0)
+    try {
+      const r = await apiFetch<{ avg: number; count: number; my_score: number }>(`/ai/skills/${p.id}/rating`)
+      setMyScore(r.my_score)
+    } catch { /* 忽略, 用默认 */ }
+  }
+
+  const submitRate = async (score: number) => {
+    if (!rateTarget) return
+    setRateSubmitting(true)
+    try {
+      await apiFetch(`/ai/skills/${rateTarget.id}/rate`, {
+        method: 'POST',
+        body: JSON.stringify({ score }),
+      })
+      setMyScore(score)
+      toast.success(`已评 ${score} 星`)
+      loadAll()
+    } catch (e: any) {
+      toast.error(`评分失败: ${e.message}`)
+    } finally {
+      setRateSubmitting(false)
+    }
+  }
+
+  // 打开版本列表
+  const openVersions = async (p: SkillPackage) => {
+    setVersionsTarget(p)
+    setVersionsLoading(true)
+    setVersions([])
+    try {
+      setVersions(await apiFetch<SkillPackage[]>(`/ai/skills/${p.id}/versions`))
+    } catch (e: any) {
+      toast.error(`加载版本失败: ${e.message}`)
+    } finally {
+      setVersionsLoading(false)
     }
   }
 
@@ -195,6 +303,16 @@ export default function MarketplacePage() {
           />
         </div>
         <Select options={categoryOptions} value={category} onChange={e => setCategory(e.target.value)} className="w-44" />
+        <Select options={sortOptions} value={sort} onChange={e => setSort(e.target.value as any)} className="w-36" />
+        <Button
+          variant={favOnly ? 'primary' : 'outline'}
+          size="sm"
+          onClick={() => setFavOnly(v => !v)}
+          className={cn(favOnly && 'bg-rose-500 hover:bg-rose-600 border-rose-500')}
+        >
+          <Heart className={cn('w-4 h-4', favOnly && 'fill-current')} />
+          {favOnly ? '仅看收藏' : '收藏'}
+        </Button>
         <span className="text-sm text-muted-foreground">共 {visible.length} 个技能包</span>
       </div>
 
@@ -247,10 +365,32 @@ export default function MarketplacePage() {
                   )}
                 </div>
 
+                {/* 评分 + 安装数 */}
                 <div className="flex items-center justify-between pt-1">
+                  <Stars value={p.rating_avg || 0} count={p.rating_count || 0} />
                   <span className="text-xs text-muted-foreground flex items-center gap-1">
                     <Download className="w-3 h-3" /> {p.downloads} 次安装
                   </span>
+                </div>
+
+                <div className="flex items-center justify-between gap-1.5">
+                  <div className="flex items-center gap-1.5">
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      className={cn('text-rose-500', favIds.has(p.id) && 'bg-rose-500/10')}
+                      onClick={() => toggleFav(p)}
+                      title={favIds.has(p.id) ? '取消收藏' : '收藏'}
+                    >
+                      <Heart className={cn('w-3.5 h-3.5', favIds.has(p.id) && 'fill-current')} />
+                    </Button>
+                    <Button variant="ghost" size="sm" className="text-amber-500" onClick={() => openRate(p)} title="评分">
+                      <Star className="w-3.5 h-3.5" />
+                    </Button>
+                    <Button variant="ghost" size="sm" onClick={() => openVersions(p)} title="版本列表">
+                      <GitBranch className="w-3.5 h-3.5" />
+                    </Button>
+                  </div>
                   <div className="flex items-center gap-1.5">
                     <Button variant="outline" size="sm" onClick={() => exportPkg(p)} title="导出 JSON">
                       <Download className="w-3.5 h-3.5" />
@@ -258,11 +398,7 @@ export default function MarketplacePage() {
                     <Button variant="ghost" size="sm" className="text-red-500" onClick={() => removePkg(p)} title="下架">
                       <Trash2 className="w-3.5 h-3.5" />
                     </Button>
-                    <Button
-                      variant="primary"
-                      size="sm"
-                      onClick={() => { setInstallTarget(p); setInstallName('') }}
-                    >
+                    <Button variant="primary" size="sm" onClick={() => { setInstallTarget(p); setInstallName('') }}>
                       安装
                     </Button>
                   </div>
@@ -319,7 +455,132 @@ export default function MarketplacePage() {
           </>
         )}
       </Dialog>
+
+      {/* 评分对话框 */}
+      <Dialog open={!!rateTarget} onClose={() => setRateTarget(null)} title="为技能包评分">
+        {rateTarget && (
+          <>
+            <p className="text-sm text-muted-foreground mb-1">
+              为「<span className="text-foreground font-medium">{rateTarget.name}</span>」打分（1~5 星）
+            </p>
+            <div className="flex items-center gap-3 py-3">
+              <Stars
+                value={myScore || rateTarget.rating_avg || 0}
+                count={rateTarget.rating_count || 0}
+                onRate={(s) => { setRateHover(s); submitRate(s) }}
+                hover={rateHover}
+                onHover={setRateHover}
+                interactive
+              />
+            </div>
+            <p className="text-xs text-muted-foreground">
+              {myScore > 0 ? `你已评 ${myScore} 星` : '点击星星提交评分'} · 当前均值 {rateTarget.rating_avg?.toFixed(1) || '—'}（{rateTarget.rating_count || 0} 人）
+            </p>
+            <DialogFooter>
+              <Button variant="outline" onClick={() => setRateTarget(null)}>关闭</Button>
+            </DialogFooter>
+          </>
+        )}
+      </Dialog>
+
+      {/* 版本列表对话框 */}
+      <Dialog open={!!versionsTarget} onClose={() => setVersionsTarget(null)} title="版本列表">
+        {versionsTarget && (
+          <>
+            <p className="text-sm text-muted-foreground mb-3">
+              「<span className="text-foreground font-medium">{versionsTarget.name}</span>」的全部版本，可选择历史版本安装。
+            </p>
+            {versionsLoading ? (
+              <p className="text-sm text-muted-foreground py-6 text-center">加载中…</p>
+            ) : versions.length === 0 ? (
+              <p className="text-sm text-muted-foreground py-6 text-center">暂无版本</p>
+            ) : (
+              <div className="space-y-2 max-h-80 overflow-auto">
+                {versions.map(v => (
+                  <div key={v.id} className="flex items-center justify-between gap-2 rounded-lg border p-3">
+                    <div className="min-w-0">
+                      <div className="flex items-center gap-2">
+                        <span className="font-medium">v{v.version}</span>
+                        <Badge variant="outline" className="text-[10px]">{(v.rating_avg || 0).toFixed(1)} ★</Badge>
+                      </div>
+                      <p className="text-xs text-muted-foreground mt-0.5">
+                        {v.downloads} 次安装 · {new Date(v.updated_at).toLocaleDateString()}
+                        {v.id === versionsTarget.id && ' · 当前'}
+                      </p>
+                    </div>
+                    <div className="flex items-center gap-1.5 shrink-0">
+                      <Button variant="outline" size="sm" onClick={() => exportPkg(v)} title="导出该版本">
+                        <Download className="w-3.5 h-3.5" />
+                      </Button>
+                      <Button
+                        variant="primary"
+                        size="sm"
+                        onClick={() => {
+                          setVersionsTarget(null)
+                          setInstallTarget(v)
+                          setInstallName('')
+                        }}
+                      >
+                        安装此版本
+                      </Button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+            <DialogFooter>
+              <Button variant="outline" onClick={() => setVersionsTarget(null)}>关闭</Button>
+            </DialogFooter>
+          </>
+        )}
+      </Dialog>
     </div>
+  )
+}
+
+// 星级显示 / 交互组件。
+// value: 当前均值(展示) 或 待提交分(交互); count: 评分人数; interactive: 可点击打分。
+function Stars({
+  value, count, onRate, hover, onHover, interactive,
+}: {
+  value: number
+  count?: number
+  onRate?: (s: number) => void
+  hover?: number
+  onHover?: (s: number) => void
+  interactive?: boolean
+}) {
+  const display = (hover && onHover) ? hover : Math.round(value)
+  return (
+    <span className="inline-flex items-center gap-1">
+      <span className="inline-flex">
+        {[1, 2, 3, 4, 5].map(i => {
+          const lit = i <= display
+          return (
+            <button
+              key={i}
+              type="button"
+              disabled={!interactive}
+              className={cn(
+                'text-base leading-none transition-transform',
+                lit ? 'text-amber-400' : 'text-muted-foreground/30',
+                interactive && 'cursor-pointer hover:scale-125',
+              )}
+              onClick={() => interactive && onRate?.(i)}
+              onMouseEnter={() => onHover?.(i)}
+              onMouseLeave={() => onHover?.(0)}
+            >
+              ★
+            </button>
+          )
+        })}
+      </span>
+      {count !== undefined && (
+        <span className="text-xs text-muted-foreground">
+          {value ? value.toFixed(1) : '—'}({count})
+        </span>
+      )}
+    </span>
   )
 }
 

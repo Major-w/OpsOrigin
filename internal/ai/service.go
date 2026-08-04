@@ -179,6 +179,13 @@ func (s *Service) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/v1/ai/skills/{id}/install", s.handleInstallSkill)
 	mux.HandleFunc("GET /api/v1/ai/skills/{id}/export", s.handleExportSkill)
 	mux.HandleFunc("POST /api/v1/ai/skills/import", s.handleImportSkill)
+	// 评分 / 收藏 / 版本列表(用户维度, 复用 user_id 上下文, 无需特殊权限)
+	mux.HandleFunc("POST /api/v1/ai/skills/{id}/rate", s.handleRateSkill)
+	mux.HandleFunc("GET /api/v1/ai/skills/{id}/rating", s.handleGetSkillRating)
+	mux.HandleFunc("POST /api/v1/ai/skills/{id}/favorite", s.handleToggleFavorite)
+	mux.HandleFunc("GET /api/v1/ai/skills/{id}/favorite", s.handleIsFavorite)
+	mux.HandleFunc("GET /api/v1/ai/skills/favorites", s.handleListFavorites)
+	mux.HandleFunc("GET /api/v1/ai/skills/{id}/versions", s.handleListVersions)
 
 	// —— 训练数据集导出 (P3-1 反馈驱动微调) ——
 	mux.HandleFunc("GET /api/v1/ai/dataset", s.handleExportDataset)
@@ -767,6 +774,15 @@ func tenantFromCtx(ctx context.Context) string {
 		return t
 	}
 	return "default"
+}
+
+// userFromCtx 从请求上下文解析当前用户标识(供评分/收藏等按用户维度去重的操作)。
+// 与 finetune_handlers.go 的取值约定保持一致(鉴权中间件注入 user_id)。
+func userFromCtx(r *http.Request) string {
+	if u, ok := r.Context().Value("user_id").(string); ok && u != "" {
+		return u
+	}
+	return "anonymous"
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {

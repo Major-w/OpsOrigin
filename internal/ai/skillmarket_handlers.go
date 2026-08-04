@@ -151,6 +151,75 @@ func (s *Service) handleImportSkill(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, pkg)
 }
 
+// handleRateSkill 对技能包打分(1~5 星)。用户身份从请求上下文注入, 无需特殊权限。
+// body: {score}
+func (s *Service) handleRateSkill(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Score int `json:"score"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if req.Score < 1 || req.Score > 5 {
+		writeError(w, http.StatusBadRequest, "score must be between 1 and 5")
+		return
+	}
+	if err := s.Engine.RateSkill(r.Context(), tenantFromCtx(r.Context()), r.PathValue("id"), userFromCtx(r), req.Score); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "rated"})
+}
+
+// handleGetSkillRating 返回技能包评分均值 / 次数 / 当前用户打分。
+func (s *Service) handleGetSkillRating(w http.ResponseWriter, r *http.Request) {
+	avg, count, my, err := s.Engine.GetSkillRating(r.Context(), tenantFromCtx(r.Context()), r.PathValue("id"), userFromCtx(r))
+	if err != nil {
+		writeError(w, http.StatusNotFound, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"avg": avg, "count": count, "my_score": my})
+}
+
+// handleToggleFavorite 切换当前用户对技能包的收藏状态。
+func (s *Service) handleToggleFavorite(w http.ResponseWriter, r *http.Request) {
+	fav, err := s.Engine.ToggleFavorite(r.Context(), tenantFromCtx(r.Context()), r.PathValue("id"), userFromCtx(r))
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"favorited": fav})
+}
+
+// handleIsFavorite 返回当前用户是否已收藏该技能包。
+func (s *Service) handleIsFavorite(w http.ResponseWriter, r *http.Request) {
+	fav, err := s.Engine.IsFavorite(r.Context(), tenantFromCtx(r.Context()), r.PathValue("id"), userFromCtx(r))
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"favorited": fav})
+}
+
+// handleListFavorites 返回当前用户收藏的技能包列表。
+func (s *Service) handleListFavorites(w http.ResponseWriter, r *http.Request) {
+	pkgs := s.Engine.ListFavorites(r.Context(), tenantFromCtx(r.Context()), userFromCtx(r))
+	if pkgs == nil {
+		pkgs = []*agentic.SkillPackage{}
+	}
+	writeJSON(w, http.StatusOK, pkgs)
+}
+
+// handleListVersions 返回与指定技能包同名的全部版本。
+func (s *Service) handleListVersions(w http.ResponseWriter, r *http.Request) {
+	vs := s.Engine.ListVersions(r.Context(), tenantFromCtx(r.Context()), r.PathValue("id"))
+	if vs == nil {
+		vs = []*agentic.SkillPackage{}
+	}
+	writeJSON(w, http.StatusOK, vs)
+}
+
 // slugify 将名称转为安全的下载文件名(空格→-, 去除非常规字符)。
 func slugify(name string) string {
 	s := strings.ToLower(strings.TrimSpace(name))
