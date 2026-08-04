@@ -2,6 +2,7 @@ package process
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 )
@@ -426,5 +427,169 @@ func TestRunSubflowPauseAndResume(t *testing.T) {
 		if _, still := rec2["subflow_next"]; still {
 			t.Fatal("subflow_next should be cleared after completion")
 		}
+	}
+}
+
+// --- 测试用内存 store(VoteStep/快照测试需要) ---
+
+type memStore struct {
+	procs map[string]*Process
+	insts map[string]*ProcessInstance
+}
+
+func (m *memStore) Create(ctx context.Context, p *Process) error {
+	m.procs[p.ID] = p
+	return nil
+}
+func (m *memStore) Get(ctx context.Context, id, tenantID string) (*Process, error) { return m.procs[id], nil }
+func (m *memStore) List(ctx context.Context, tenantID string) ([]*Process, error) {
+	var out []*Process
+	for _, p := range m.procs {
+		out = append(out, p)
+	}
+	return out, nil
+}
+func (m *memStore) Update(ctx context.Context, p *Process) error {
+	m.procs[p.ID] = p
+	return nil
+}
+func (m *memStore) Delete(ctx context.Context, id, tenantID string) error {
+	delete(m.procs, id)
+	return nil
+}
+func (m *memStore) CreateInstance(ctx context.Context, inst *ProcessInstance) error {
+	m.insts[inst.TicketID] = inst
+	return nil
+}
+func (m *memStore) GetInstanceByTicket(ctx context.Context, ticketID, tenantID string) (*ProcessInstance, error) {
+	return m.insts[ticketID], nil
+}
+func (m *memStore) UpdateInstance(ctx context.Context, inst *ProcessInstance) error {
+	m.insts[inst.TicketID] = inst
+	return nil
+}
+func (m *memStore) ListRunningInstances(ctx context.Context) ([]*ProcessInstance, error) {
+	var out []*ProcessInstance
+	for _, inst := range m.insts {
+		out = append(out, inst)
+	}
+	return out, nil
+}
+
+// --- 会签投票 ---
+
+func TestVoteStep(t *testing.T) {
+	m := &memStore{procs: map[string]*Process{
+		"p1": {ID: "p1", Steps: []Step{{ID: "approve", Type: StepUser, Approvers: []string{"alice", "bob"}}}},
+	}, insts: map[string]*ProcessInstance{}}
+	s := &Service{store: m}
+	ctx := context.Background()
+	m.CreateInstance(ctx, &ProcessInstance{ID: "i1", ProcessID: "p1", TicketID: "t1", TenantID: "default", Status: "running", StepResults: map[string]any{}})
+
+	all, err := s.VoteStep(ctx, "default", "t1", "approve", "alice", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if all {
+		t.Fatal("first vote should not be all-approved yet")
+	}
+	all, err = s.VoteStep(ctx, "default", "t1", "approve", "bob", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !all {
+		t.Fatal("second vote should be all-approved")
+	}
+	rec := m.insts["t1"].StepResults["approve"].(map[string]any)
+	approvals := rec["approvals"].(map[string]any)
+	if approvals["alice"] != true || approvals["bob"] != true {
+		t.Fatalf("approvals not recorded: %+v", approvals)
+	}
+}
+
+// --- 版本快照隔离: 在途实例按创建时定义推进 ---
+
+func TestProcessSnapshotIsolation(t *testing.T) {
+	m := &memStore{procs: map[string]*Process{
+		"p1": {ID: "p1", Steps: []Step{
+			{ID: "start", Type: StepStart},
+			{ID: "approve", Type: StepUser, DependsOn: []Dependency{{NodeID: "start", Condition: "success"}}},
+			{ID: "end", Type: StepEnd, DependsOn: []Dependency{{NodeID: "approve", Condition: "success"}}},
+		}},
+	}, insts: map[string]*ProcessInstance{}}
+	s := &Service{store: m}
+	ctx := context.Background()
+	m.CreateInstance(ctx, &ProcessInstance{
+		ID: "i1", ProcessID: "p1", TicketID: "t1", TenantID: "default", Status: "running", CurrentStep: "start",
+		StepResults:     map[string]any{},
+		ProcessSnapshot: []Step{
+			{ID: "start", Type: StepStart},
+			{ID: "svc", Type: StepService, DependsOn: []Dependency{{NodeID: "start", Condition: "success"}}},
+			{ID: "end", Type: StepEnd, DependsOn: []Dependency{{NodeID: "svc", Condition: "success"}}},
+		},
+	})
+	_, next, err := s.Advance(ctx, "default", "t1", "success", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 若用快照: svc(无脚本)直通 → end; 若误用当前定义: 落 approve
+	if next == nil || next.ID != "end" {
+		t.Fatalf("snapshot isolation broken: should advance to end(via snapshot svc), got %+v", next)
+	}
+}
+
+// --- BPMN 2.0 round-trip ---
+
+func TestBPMNRoundTrip(t *testing.T) {
+	orig := &Process{ID: "p1", Name: "发布流程", Steps: []Step{
+		{ID: "start", Type: StepStart, Name: "开始"},
+		{ID: "gw", Type: StepGateway, Name: "风险判断", DependsOn: []Dependency{{NodeID: "start", Condition: "success"}}},
+		{ID: "approve", Type: StepUser, Name: "审批", Approvers: []string{"alice", "bob"}, FormScope: "process:p1:step:approve",
+			DependsOn: []Dependency{{NodeID: "gw", Condition: `risk_level == "high"`}}},
+		{ID: "svc", Type: StepService, Name: "执行", ScriptID: "sc1", DependsOn: []Dependency{{NodeID: "gw", Condition: "always"}}},
+		{ID: "timer", Type: StepTimer, Name: "等待", Duration: "30m", DependsOn: []Dependency{{NodeID: "approve", Condition: "success"}}},
+		{ID: "end", Type: StepEnd, Name: "结束", DependsOn: []Dependency{{NodeID: "timer", Condition: "success"}, {NodeID: "svc", Condition: "success"}}},
+	}}
+	xmlData, err := ToBPMNXML(orig)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(xmlData, "bpmn:process") {
+		t.Fatal("export should contain bpmn:process")
+	}
+	back, err := FromBPMNXML(xmlData)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(back.Steps) != len(orig.Steps) {
+		t.Fatalf("step count %d != %d", len(back.Steps), len(orig.Steps))
+	}
+	byID := map[string]*Step{}
+	for i := range back.Steps {
+		byID[back.Steps[i].ID] = &back.Steps[i]
+	}
+	app := byID["approve"]
+	if app == nil || len(app.Approvers) != 2 || app.Approvers[0] != "alice" {
+		t.Fatalf("approvers lost: %+v", app)
+	}
+	if app.FormScope != "process:p1:step:approve" {
+		t.Fatalf("form_scope lost: %q", app.FormScope)
+	}
+	sc := byID["svc"]
+	if sc == nil || sc.ScriptID != "sc1" {
+		t.Fatalf("script_id lost: %+v", sc)
+	}
+	tm := byID["timer"]
+	if tm == nil || tm.Duration != "30m" {
+		t.Fatalf("duration lost: %+v", tm)
+	}
+	foundExpr := false
+	for _, d := range app.DependsOn {
+		if d.NodeID == "gw" && d.Condition == `risk_level == "high"` {
+			foundExpr = true
+		}
+	}
+	if !foundExpr {
+		t.Fatalf("expression condition lost: %+v", app.DependsOn)
 	}
 }

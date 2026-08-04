@@ -4,6 +4,8 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 
@@ -46,6 +48,62 @@ func (s *Service) loadSubflow(ctx context.Context, id, tenantID string) (*Proces
 	return s.store.Get(ctx, id, tenantID)
 }
 
+// VoteStep 记录人工步骤(会签)的审批投票, 返回当前是否已全部 Approvers 投票且全通过。
+// 非会签步骤(Approvers 为空)直接返回 allApproved=true(不影响原单审批路径)。
+// 投票存于 StepResults[stepID].approvals = {approver: bool}。
+func (s *Service) VoteStep(ctx context.Context, tenantID, ticketID, stepID, approver string, approved bool) (bool, error) {
+	if tenantID == "" {
+		tenantID = "default"
+	}
+	inst, err := s.store.GetInstanceByTicket(ctx, ticketID, tenantID)
+	if err != nil {
+		return false, err
+	}
+	if inst == nil {
+		return false, fmt.Errorf("process instance not found for ticket %s", ticketID)
+	}
+	proc, err := s.store.Get(ctx, inst.ProcessID, tenantID)
+	if err != nil {
+		return false, err
+	}
+	if proc == nil {
+		return false, fmt.Errorf("process %s not found", inst.ProcessID)
+	}
+	step := proc.StepByID(stepID)
+	if step == nil {
+		return false, fmt.Errorf("step %s not found", stepID)
+	}
+	if len(step.Approvers) == 0 {
+		return true, nil // 非会签步骤
+	}
+	if inst.StepResults == nil {
+		inst.StepResults = map[string]any{}
+	}
+	rec, _ := inst.StepResults[stepID].(map[string]any)
+	if rec == nil {
+		rec = map[string]any{}
+	}
+	approvals, _ := rec["approvals"].(map[string]any)
+	if approvals == nil {
+		approvals = map[string]any{}
+	}
+	approvals[approver] = approved
+	rec["approvals"] = approvals
+	inst.StepResults[stepID] = rec
+	if err := s.store.UpdateInstance(ctx, inst); err != nil {
+		return false, err
+	}
+	allApproved := true
+	for _, a := range step.Approvers {
+		v, ok := approvals[a].(bool)
+		if !ok || !v {
+			allApproved = false
+			break
+		}
+	}
+	return allApproved, nil
+}
+
 func (s *Service) Get(ctx context.Context, id, tenantID string) (*Process, error) {
 	return s.store.Get(ctx, id, tenantID)
 }
@@ -60,6 +118,57 @@ func (s *Service) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/v1/itsm/processes/{id}", s.handleGet)
 	mux.HandleFunc("PUT /api/v1/itsm/processes/{id}", s.handleUpdate)
 	mux.HandleFunc("DELETE /api/v1/itsm/processes/{id}", s.handleDelete)
+	mux.HandleFunc("GET /api/v1/itsm/processes/{id}/bpmn", s.handleExportBPMN)
+	mux.HandleFunc("POST /api/v1/itsm/processes/import-bpmn", s.handleImportBPMN)
+}
+
+// handleExportBPMN 导出流程为 BPMN 2.0 XML(兼容 Camunda/Flowable/bpmn-js 建模器)。
+func (s *Service) handleExportBPMN(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	tenant := r.Header.Get("X-Tenant-ID")
+	if tenant == "" {
+		tenant = "default"
+	}
+	p, err := s.store.Get(r.Context(), id, tenant)
+	if err != nil || p == nil {
+		writeError(w, 404, "not found")
+		return
+	}
+	xmlData, err := ToBPMNXML(p)
+	if err != nil {
+		writeError(w, 500, err.Error())
+		return
+	}
+	w.Header().Set("Content-Type", "text/xml; charset=utf-8")
+	w.WriteHeader(200)
+	w.Write([]byte(xmlData))
+}
+
+// handleImportBPMN 从 BPMN 2.0 XML 导入并创建流程定义。
+func (s *Service) handleImportBPMN(w http.ResponseWriter, r *http.Request) {
+	body, err := io.ReadAll(io.LimitReader(r.Body, 4<<20))
+	if err != nil {
+		writeError(w, 400, "invalid body")
+		return
+	}
+	p, err := FromBPMNXML(string(body))
+	if err != nil {
+		writeError(w, 400, err.Error())
+		return
+	}
+	p.TenantID = r.Header.Get("X-Tenant-ID")
+	if p.TenantID == "" {
+		p.TenantID = "default"
+	}
+	if p.Name == "" {
+		p.Name = "导入流程"
+	}
+	if err := s.store.Create(context.Background(), p); err != nil {
+		writeError(w, 500, err.Error())
+		return
+	}
+	slog.Info("itsm process imported from bpmn", "id", p.ID, "name", p.Name, "steps", len(p.Steps))
+	writeJSON(w, 201, p)
 }
 
 func (s *Service) handleList(w http.ResponseWriter, r *http.Request) {

@@ -80,8 +80,11 @@ type ProcessInstance struct {
 	CurrentStep string         `json:"current_step"`           // 当前步骤 ID
 	Status      string         `json:"status"`                 // running / waiting / completed / terminated
 	StepResults map[string]any `json:"step_results,omitempty"` // step_id → {status, output}
-	StartedAt   time.Time      `json:"started_at"`
-	FinishedAt  *time.Time     `json:"finished_at,omitempty"`
-	CreatedAt   time.Time      `json:"created_at"`
-	UpdatedAt   time.Time      `json:"updated_at"`
+	// ProcessSnapshot 实例启动时的流程定义快照: 流程版本演进(更新定义)后,
+	// 在途实例仍按创建时的定义推进(版本隔离)。空表示使用当前定义。
+	ProcessSnapshot []Step     `json:"process_snapshot,omitempty"`
+	StartedAt       time.Time  `json:"started_at"`
+	FinishedAt      *time.Time `json:"finished_at,omitempty"`
+	CreatedAt       time.Time  `json:"created_at"`
+	UpdatedAt       time.Time  `json:"updated_at"`
 }

@@ -460,6 +460,34 @@ func (s *Service) handleList(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, tickets)
 }
 
+// stepVoter 是可选的会签投票能力接口(由 process.Service 实现, 可选能力不破坏既有 ProcessEngine)。
+type stepVoter interface {
+	ProcessEngine
+	VoteStep(ctx context.Context, tenantID, ticketID, stepID, approver string, approved bool) (allApproved bool, err error)
+}
+
+// currentVoteStep 返回工单当前步骤中需要会签的 user 步骤(Approvers 非空), 否则 nil。
+func (s *Service) currentVoteStep(ctx context.Context, ticket *model.Ticket) *process.Step {
+	if s.processStore == nil || ticket.ProcessID == "" {
+		return nil
+	}
+	inst, err := s.processStore.GetInstance(ctx, ticket.ID, ticket.TenantID)
+	if err != nil || inst == nil || inst.CurrentStep == "" {
+		return nil
+	}
+	proc, err := s.processStore.Get(ctx, inst.ProcessID, ticket.TenantID)
+	if err != nil || proc == nil {
+		return nil
+	}
+	for i := range proc.Steps {
+		st := &proc.Steps[i]
+		if st.ID == inst.CurrentStep && st.Type == process.StepUser && len(st.Approvers) > 0 {
+			return st
+		}
+	}
+	return nil
+}
+
 func (s *Service) handleApprove(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	tenantID := tenantFromCtx(r.Context())
@@ -483,6 +511,21 @@ func (s *Service) handleApprove(w http.ResponseWriter, r *http.Request) {
 	if err := model.CanTransition(ticket.Status, model.StatusApproved); err != nil {
 		writeError(w, http.StatusConflict, err.Error())
 		return
+	}
+
+	// 会签: 当前步骤多审批人时先记录投票, 未全票通过则保持待审批(不推进状态/流程)。
+	if voter, ok := s.processStore.(stepVoter); ok {
+		if step := s.currentVoteStep(r.Context(), ticket); step != nil {
+			all, err := voter.VoteStep(r.Context(), ticket.TenantID, ticket.ID, step.ID, req.ApprovedBy, true)
+			if err == nil && !all {
+				writeJSON(w, http.StatusOK, map[string]any{
+					"status":  "waiting",
+					"message": "已记录审批意见, 等待其余审批人",
+					"ticket":  ticket,
+				})
+				return
+			}
+		}
 	}
 
 	previousStatus := ticket.Status

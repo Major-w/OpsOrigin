@@ -21,11 +21,13 @@ func (s *PGStore) migrateInstances() {
 		current_step TEXT DEFAULT '',
 		status TEXT DEFAULT 'running',
 		step_results JSONB DEFAULT '{}',
+		process_snapshot JSONB DEFAULT '[]',
 		started_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 		finished_at TIMESTAMPTZ,
 		created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 		updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 	)`)
+	s.db.Exec(`ALTER TABLE itsm_process_instances ADD COLUMN IF NOT EXISTS process_snapshot JSONB DEFAULT '[]'`)
 	s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_process_instances_ticket ON itsm_process_instances(ticket_id)`)
 	s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_process_instances_tenant ON itsm_process_instances(tenant_id)`)
 }
@@ -47,17 +49,18 @@ func (s *PGStore) CreateInstance(ctx context.Context, inst *ProcessInstance) err
 		inst.Status = "running"
 	}
 	resultsJSON, _ := json.Marshal(inst.StepResults)
+	snapshotJSON, _ := json.Marshal(inst.ProcessSnapshot)
 	_, err := s.db.ExecContext(ctx,
-		`INSERT INTO itsm_process_instances(id,process_id,ticket_id,tenant_id,current_step,status,step_results,started_at,finished_at,created_at,updated_at)
-		 VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
+		`INSERT INTO itsm_process_instances(id,process_id,ticket_id,tenant_id,current_step,status,step_results,process_snapshot,started_at,finished_at,created_at,updated_at)
+		 VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`,
 		inst.ID, inst.ProcessID, inst.TicketID, inst.TenantID, inst.CurrentStep, inst.Status,
-		resultsJSON, inst.StartedAt, inst.FinishedAt, inst.CreatedAt, inst.UpdatedAt)
+		resultsJSON, snapshotJSON, inst.StartedAt, inst.FinishedAt, inst.CreatedAt, inst.UpdatedAt)
 	return err
 }
 
 func (s *PGStore) ListRunningInstances(ctx context.Context) ([]*ProcessInstance, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT id,process_id,ticket_id,tenant_id,current_step,status,step_results,started_at,finished_at,created_at,updated_at
+		`SELECT id,process_id,ticket_id,tenant_id,current_step,status,step_results,process_snapshot,started_at,finished_at,created_at,updated_at
 		 FROM itsm_process_instances WHERE status='running'`)
 	if err != nil {
 		return nil, err
@@ -65,28 +68,32 @@ func (s *PGStore) ListRunningInstances(ctx context.Context) ([]*ProcessInstance,
 	defer rows.Close()
 	var out []*ProcessInstance
 	for rows.Next() {
-		var resultsJSON []byte
+		var resultsJSON, snapshotJSON []byte
 		inst := &ProcessInstance{}
 		if err := rows.Scan(&inst.ID, &inst.ProcessID, &inst.TicketID, &inst.TenantID, &inst.CurrentStep, &inst.Status,
-			&resultsJSON, &inst.StartedAt, &inst.FinishedAt, &inst.CreatedAt, &inst.UpdatedAt); err != nil {
+			&resultsJSON, &snapshotJSON, &inst.StartedAt, &inst.FinishedAt, &inst.CreatedAt, &inst.UpdatedAt); err != nil {
 			return nil, err
 		}
 		if len(resultsJSON) > 0 {
 			json.Unmarshal(resultsJSON, &inst.StepResults)
+		}
+		if len(snapshotJSON) > 0 {
+			json.Unmarshal(snapshotJSON, &inst.ProcessSnapshot)
 		}
 		out = append(out, inst)
 	}
 	return out, rows.Err()
 }
 
-func (s *PGStore) GetInstanceByTicket(ctx context.Context, ticketID, tenantID string) (*ProcessInstance, error) {	var resultsJSON []byte
+func (s *PGStore) GetInstanceByTicket(ctx context.Context, ticketID, tenantID string) (*ProcessInstance, error) {
+	var resultsJSON, snapshotJSON []byte
 	inst := &ProcessInstance{}
 	err := s.db.QueryRowContext(ctx,
-		`SELECT id,process_id,ticket_id,tenant_id,current_step,status,step_results,started_at,finished_at,created_at,updated_at
+		`SELECT id,process_id,ticket_id,tenant_id,current_step,status,step_results,process_snapshot,started_at,finished_at,created_at,updated_at
 		 FROM itsm_process_instances WHERE ticket_id=$1 AND tenant_id=$2 ORDER BY created_at DESC LIMIT 1`,
 		ticketID, tenantID).
 		Scan(&inst.ID, &inst.ProcessID, &inst.TicketID, &inst.TenantID, &inst.CurrentStep, &inst.Status,
-			&resultsJSON, &inst.StartedAt, &inst.FinishedAt, &inst.CreatedAt, &inst.UpdatedAt)
+			&resultsJSON, &snapshotJSON, &inst.StartedAt, &inst.FinishedAt, &inst.CreatedAt, &inst.UpdatedAt)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -96,16 +103,20 @@ func (s *PGStore) GetInstanceByTicket(ctx context.Context, ticketID, tenantID st
 	if len(resultsJSON) > 0 {
 		json.Unmarshal(resultsJSON, &inst.StepResults)
 	}
+	if len(snapshotJSON) > 0 {
+		json.Unmarshal(snapshotJSON, &inst.ProcessSnapshot)
+	}
 	return inst, nil
 }
 
 func (s *PGStore) UpdateInstance(ctx context.Context, inst *ProcessInstance) error {
 	inst.UpdatedAt = time.Now()
 	resultsJSON, _ := json.Marshal(inst.StepResults)
+	snapshotJSON, _ := json.Marshal(inst.ProcessSnapshot)
 	res, err := s.db.ExecContext(ctx,
-		`UPDATE itsm_process_instances SET current_step=$1,status=$2,step_results=$3,finished_at=$4,updated_at=$5
-		 WHERE id=$6 AND tenant_id=$7`,
-		inst.CurrentStep, inst.Status, resultsJSON, inst.FinishedAt, inst.UpdatedAt, inst.ID, inst.TenantID)
+		`UPDATE itsm_process_instances SET current_step=$1,status=$2,step_results=$3,process_snapshot=$4,finished_at=$5,updated_at=$6
+		 WHERE id=$7 AND tenant_id=$8`,
+		inst.CurrentStep, inst.Status, resultsJSON, snapshotJSON, inst.FinishedAt, inst.UpdatedAt, inst.ID, inst.TenantID)
 	if err != nil {
 		return err
 	}
@@ -133,12 +144,13 @@ func (s *Service) StartInstance(ctx context.Context, tenantID, processID, ticket
 		return nil, nil, fmt.Errorf("process %s is disabled", processID)
 	}
 	inst := &ProcessInstance{
-		ProcessID:   processID,
-		TicketID:    ticketID,
-		TenantID:    tenantID,
-		Status:      "running",
-		StepResults: map[string]any{},
-		StartedAt:   time.Now(),
+		ProcessID:       processID,
+		TicketID:        ticketID,
+		TenantID:        tenantID,
+		Status:          "running",
+		StepResults:     map[string]any{},
+		ProcessSnapshot: append([]Step(nil), proc.Steps...), // 版本快照: 在途实例按创建时定义推进
+		StartedAt:       time.Now(),
 	}
 	var landing *Step
 	if start := proc.StartStep(); start != nil {
@@ -183,7 +195,8 @@ func (s *Service) Advance(ctx context.Context, tenantID, ticketID, condition str
 	if inst.Status == "completed" || inst.Status == "terminated" {
 		return inst, nil, nil
 	}
-	proc, err := s.store.Get(ctx, inst.ProcessID, tenantID)
+	// 版本隔离: 实例存在定义快照时用快照(在途实例按创建时定义推进), 否则用当前定义。
+	proc, err := resolveInstanceProcess(ctx, s.store, inst, tenantID)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -237,6 +250,14 @@ func (s *Service) Advance(ctx context.Context, tenantID, ticketID, condition str
 		return nil, nil, err
 	}
 	return inst, next, nil
+}
+
+// resolveInstanceProcess 返回实例应使用的流程定义: 有快照(版本隔离)用快照, 否则取当前定义。
+func resolveInstanceProcess(ctx context.Context, store Store, inst *ProcessInstance, tenantID string) (*Process, error) {
+	if len(inst.ProcessSnapshot) > 0 {
+		return &Process{ID: inst.ProcessID, TenantID: inst.TenantID, Steps: inst.ProcessSnapshot}, nil
+	}
+	return store.Get(ctx, inst.ProcessID, tenantID)
 }
 
 // exprCtxFromOutput 从 itsm 侧传入的 output(map) 中提取表达式求值上下文。
