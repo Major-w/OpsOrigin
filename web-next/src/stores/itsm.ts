@@ -36,6 +36,11 @@ export interface Ticket {
   custom_fields?: Record<string, any>
   // 本工单套用的表单作用域（默认 ticket:default）；用于目录/流程按场景套不同字段
   form_scope?: string
+  // 负责人与指派时间（闭环：指派端点）
+  assignee?: string
+  assigned_at?: string
+  // 关单满意度评分（1-5，close 端点写入）
+  satisfaction?: number
 }
 
 export interface TicketEvent {
@@ -116,6 +121,9 @@ interface ITSMState {
   execute: (id: string) => Promise<boolean>
   complete: (id: string, comment?: string, assessment?: 'confirmed' | 'false_positive') => Promise<boolean>
   rollback: (id: string, reason?: string) => Promise<boolean>
+  submit: (id: string) => Promise<boolean>
+  assign: (id: string, assignee: string) => Promise<boolean>
+  close: (id: string, comment?: string, satisfaction?: number) => Promise<boolean>
   fetchStats: () => Promise<void>
   // process
   fetchProcesses: () => Promise<void>
@@ -228,6 +236,39 @@ export const useITSMStore = create<ITSMState>((set, get) => ({
       return true
     } catch (e: any) {
       toast.error(`回滚失败: ${e.message}`)
+      return false
+    }
+  },
+  submit: async (id) => {
+    try {
+      await apiFetch(`/itsm/tickets/${id}/submit`, { method: 'POST', body: JSON.stringify({ submitted_by: 'admin' }) })
+      toast.success('提交成功')
+      await get().fetch()
+      return true
+    } catch (e: any) {
+      toast.error(`提交失败: ${e.message}`)
+      return false
+    }
+  },
+  assign: async (id, assignee) => {
+    try {
+      await apiFetch(`/itsm/tickets/${id}/assign`, { method: 'POST', body: JSON.stringify({ assignee, assigned_by: 'admin' }) })
+      toast.success('指派成功')
+      await get().fetch()
+      return true
+    } catch (e: any) {
+      toast.error(`指派失败: ${e.message}`)
+      return false
+    }
+  },
+  close: async (id, comment?, satisfaction?) => {
+    try {
+      await apiFetch(`/itsm/tickets/${id}/close`, { method: 'POST', body: JSON.stringify({ closed_by: 'admin', comment: comment || '', satisfaction: satisfaction || 0 }) })
+      toast.success('关闭成功')
+      await get().fetch()
+      return true
+    } catch (e: any) {
+      toast.error(`关闭失败: ${e.message}`)
       return false
     }
   },

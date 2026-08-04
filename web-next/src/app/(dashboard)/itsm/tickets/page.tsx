@@ -13,13 +13,14 @@ import { Dialog, DialogFooter } from '@/components/ui/dialog'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { formatTime, apiFetch, apiList } from '@/lib/utils'
 import { useCan, useCanAny } from '@/stores/permissions'
-import { Plus, Check, X, Play, RotateCcw, Clock, FileText, Activity, ChevronRight, Paperclip, MessageSquare, Upload, Download, Trash2, FileUp, FileDown, BookOpen, BookOpenCheck } from 'lucide-react'
+import { Plus, Check, X, Play, RotateCcw, Clock, FileText, Activity, ChevronRight, Paperclip, MessageSquare, Upload, Download, Trash2, FileUp, FileDown, BookOpen, BookOpenCheck, Send, UserPlus, CheckCircle2 } from 'lucide-react'
 
 const riskBadge: Record<string, 'destructive' | 'warning' | 'secondary' | 'success'> = { critical: 'destructive', high: 'warning', medium: 'secondary', low: 'success' }
 const riskLabels: Record<string, string> = { critical: '致命', high: '高危', medium: '中危', low: '低危' }
 const statusLabels: Record<string, string> = {
   draft: '草稿', pending_review: '待审批', approved: '已审批', rejected: '已驳回',
   executing: '执行中', succeeded: '已完成', failed: '已失败', rolled_back: '已回滚',
+  closed: '已关闭',
 }
 const SLA_BY_RISK: Record<string, string> = { critical: '4小时', high: '24小时', medium: '48小时', low: '72小时' }
 
@@ -58,7 +59,7 @@ function formatFileSize(bytes: number): string {
 
 export default function ITSMPage() {
   const router = useRouter()
-  const { tickets, stats, loading, fetch, create, approve, reject, execute, complete, rollback, getTicket, getEvents, fetchStats, processes, fetchProcesses, getFormSchema, upsertFormSchema, getFormOptions, getFormOptionSources, getTicketProcess, updateTicketCustomFields } = useITSMStore()
+  const { tickets, stats, loading, fetch, create, approve, reject, execute, complete, rollback, submit, assign, close, getTicket, getEvents, fetchStats, processes, fetchProcesses, getFormSchema, upsertFormSchema, getFormOptions, getFormOptionSources, getTicketProcess, updateTicketCustomFields } = useITSMStore()
   const canWrite = useCan('itsm:write')
   const canApprove = useCanAny(['itsm:approve', 'itsm:write'])
   const [dialogOpen, setDialogOpen] = useState(false)
@@ -84,6 +85,12 @@ export default function ITSMPage() {
   const [completeAssessment, setCompleteAssessment] = useState<'confirmed' | 'false_positive' | undefined>(undefined)
   const [rollbackDialog, setRollbackDialog] = useState(false)
   const [rollbackReason, setRollbackReason] = useState('')
+  // 闭环操作: 送审(draft) / 指派(非终态) / 关闭(succeeded)
+  const [assignDialog, setAssignDialog] = useState(false)
+  const [assigneeInput, setAssigneeInput] = useState('')
+  const [closeDialog, setCloseDialog] = useState(false)
+  const [closeComment, setCloseComment] = useState('')
+  const [closeSatisfaction, setCloseSatisfaction] = useState(0)
   const [ciIdInput, setCiIdInput] = useState('')
   const [ciIds, setCiIds] = useState<string[]>([])
 
@@ -344,6 +351,32 @@ export default function ITSMPage() {
     fetchStats()
   }
 
+  // 闭环: 草稿送审(低/中风险直通执行, 高风险进审批)
+  const handleSubmitTicket = async () => {
+    if (!selectedTicket) return
+    await submit(selectedTicket.id)
+    await handleSelectTicket(await getTicket(selectedTicket.id))
+    fetchStats()
+  }
+
+  // 闭环: 指派负责人(不改变状态)
+  const handleAssignTicket = async () => {
+    if (!selectedTicket || !assigneeInput.trim()) return
+    await assign(selectedTicket.id, assigneeInput.trim())
+    setAssignDialog(false); setAssigneeInput('')
+    await handleSelectTicket(await getTicket(selectedTicket.id))
+    fetchStats()
+  }
+
+  // 闭环: 关单(succeeded → closed, 终态)
+  const handleCloseTicket = async () => {
+    if (!selectedTicket) return
+    await close(selectedTicket.id, closeComment, closeSatisfaction)
+    setCloseDialog(false); setCloseComment(''); setCloseSatisfaction(0)
+    await handleSelectTicket(await getTicket(selectedTicket.id))
+    fetchStats()
+  }
+
   const handleConvertToKnowledge = async (ticket: Ticket) => {
     const content = [
       '## 问题描述', ticket.description || '',
@@ -445,7 +478,7 @@ export default function ITSMPage() {
   }
 
   const isOverdue = (ticket: Ticket) => {
-    if (!ticket.deadline_at || ticket.status === 'succeeded' || ticket.status === 'rejected' || ticket.status === 'rolled_back') return false
+    if (!ticket.deadline_at || ticket.status === 'succeeded' || ticket.status === 'rejected' || ticket.status === 'rolled_back' || ticket.status === 'closed') return false
     return new Date(ticket.deadline_at) < new Date()
   }
 
@@ -532,6 +565,12 @@ export default function ITSMPage() {
                     <CardDescription className="text-xs">ID: {selectedTicket.id.slice(0, 12)}... · {selectedTicket.created_by} · {formatTime(selectedTicket.created_at)}</CardDescription>
                   </div>
                   <div className="flex gap-1">
+                    {!['rejected', 'rolled_back', 'closed'].includes(selectedTicket.status) && (
+                      <Button variant="outline" size="sm" onClick={() => { setAssignDialog(true); setAssigneeInput(selectedTicket.assignee || '') }} disabled={!canWrite}><UserPlus className="h-3 w-3" />指派</Button>
+                    )}
+                    {selectedTicket.status === 'draft' && (
+                      <Button variant="outline" size="sm" onClick={handleSubmitTicket} disabled={!canWrite}><Send className="h-3 w-3" />提交</Button>
+                    )}
                     {selectedTicket.status === 'pending_review' && (
                       <><Button variant="outline" size="sm" onClick={() => { setApproveDialog(true); setApproveComment('') }} disabled={!canApprove}><Check className="h-3 w-3" />通过</Button>
                         <Button variant="outline" size="sm" onClick={() => { setRejectDialog(true); setRejectReason('') }} disabled={!canApprove}><X className="h-3 w-3" />驳回</Button></>
@@ -544,6 +583,9 @@ export default function ITSMPage() {
                     )}
                     {(selectedTicket.status === 'failed' || selectedTicket.status === 'succeeded') && (
                       <Button variant="outline" size="sm" onClick={() => { setRollbackDialog(true); setRollbackReason('') }} disabled={!canWrite}><RotateCcw className="h-3 w-3" />回滚</Button>
+                    )}
+                    {selectedTicket.status === 'succeeded' && (
+                      <Button variant="outline" size="sm" onClick={() => { setCloseDialog(true); setCloseComment(''); setCloseSatisfaction(0) }} disabled={!canWrite}><CheckCircle2 className="h-3 w-3" />关闭</Button>
                     )}
                     {selectedTicket.status === 'succeeded' && (
                       <Button variant="outline" size="sm" onClick={() => handleConvertToKnowledge(selectedTicket)} disabled={!canWrite}><BookOpen className="h-3 w-3 mr-1"/>转知识</Button>
@@ -559,6 +601,7 @@ export default function ITSMPage() {
                   <div><span className="text-muted-foreground">SLA:</span> <span className={isOverdue(selectedTicket) ? 'text-destructive font-medium' : ''}>{SLA_BY_RISK[selectedTicket.risk_level] || '72小时'}{isOverdue(selectedTicket) && ' 已逾期'}</span></div>
                   {selectedTicket.deadline_at && <div className="col-span-3"><span className="text-muted-foreground">截止:</span> <Clock className="h-3 w-3 inline mr-1" />{formatTime(selectedTicket.deadline_at)}</div>}
                   {selectedTicket.scheduled_at && <div className="col-span-3"><span className="text-muted-foreground">计划执行:</span> {formatTime(selectedTicket.scheduled_at)}</div>}
+                  {selectedTicket.assignee && <div><span className="text-muted-foreground">负责人:</span> {selectedTicket.assignee}</div>}
                   {selectedTicket.approved_by && <div><span className="text-muted-foreground">审批人:</span> {selectedTicket.approved_by}</div>}
                   {selectedTicket.approved_at && <div><span className="text-muted-foreground">审批时间:</span> {formatTime(selectedTicket.approved_at)}</div>}
                   {selectedTicket.reject_reason && <div className="col-span-3"><span className="text-muted-foreground">驳回原因:</span> <span className="text-destructive">{selectedTicket.reject_reason}</span></div>}
@@ -566,6 +609,9 @@ export default function ITSMPage() {
                   {selectedTicket.completed_at && <div><span className="text-muted-foreground">完成时间:</span> {formatTime(selectedTicket.completed_at)}</div>}
                   {selectedTicket.rolled_back_by && <div><span className="text-muted-foreground">回滚人:</span> {selectedTicket.rolled_back_by}</div>}
                   {selectedTicket.rollback_reason && <div className="col-span-3"><span className="text-muted-foreground">回滚原因:</span> <span className="text-amber-400">{selectedTicket.rollback_reason}</span></div>}
+                  {selectedTicket.status === 'closed' && (selectedTicket.satisfaction ?? 0) > 0 && (
+                    <div><span className="text-muted-foreground">满意度:</span> <span className="text-amber-400">{'★'.repeat(selectedTicket.satisfaction ?? 0)}<span className="text-muted-foreground/50">{'★'.repeat(5 - (selectedTicket.satisfaction ?? 0))}</span></span></div>
+                  )}
                   {selectedTicket.labels?.source === 'ai_inspection' && (
                     <div className="col-span-3">
                       <span className="text-muted-foreground">AI 巡检:</span>{' '}
@@ -872,6 +918,31 @@ export default function ITSMPage() {
           <div><label className="text-sm font-medium">回滚原因</label><textarea className="flex h-20 w-full rounded-md border border-input bg-background px-3 py-2 text-sm" value={rollbackReason} onChange={e => setRollbackReason(e.target.value)} placeholder="请填写回滚原因（可选）" /></div>
         </div>
         <DialogFooter><Button variant="outline" onClick={() => setRollbackDialog(false)}>取消</Button><Button onClick={handleRollback} disabled={!canWrite}>确认回滚</Button></DialogFooter>
+      </Dialog>
+
+      <Dialog open={assignDialog} onClose={() => setAssignDialog(false)} title="指派负责人">
+        <div className="space-y-3">
+          <div><label className="text-sm font-medium">负责人</label><Input className="mt-1" value={assigneeInput} onChange={e => setAssigneeInput(e.target.value)} placeholder="输入负责人用户名" onKeyDown={e => e.key === 'Enter' && handleAssignTicket()} /></div>
+          <p className="text-xs text-muted-foreground">指派后 SLA 预警/违约通知会带上负责人信息。</p>
+        </div>
+        <DialogFooter><Button variant="outline" onClick={() => setAssignDialog(false)}>取消</Button><Button onClick={handleAssignTicket} disabled={!canWrite || !assigneeInput.trim()}>确认指派</Button></DialogFooter>
+      </Dialog>
+
+      <Dialog open={closeDialog} onClose={() => setCloseDialog(false)} title="关闭工单">
+        <div className="space-y-3">
+          <div><label className="text-sm font-medium">关单备注</label><textarea className="flex h-20 w-full rounded-md border border-input bg-background px-3 py-2 text-sm mt-1" value={closeComment} onChange={e => setCloseComment(e.target.value)} placeholder="关单备注（可选）" /></div>
+          <div>
+            <label className="text-sm font-medium">满意度评分</label>
+            <div className="flex gap-1 mt-1">
+              {[1, 2, 3, 4, 5].map(n => (
+                <Button key={n} size="sm" variant={closeSatisfaction === n ? 'default' : 'outline'} className="px-2.5" onClick={() => setCloseSatisfaction(closeSatisfaction === n ? 0 : n)}>
+                  {'★'.repeat(n)}
+                </Button>
+              ))}
+            </div>
+          </div>
+        </div>
+        <DialogFooter><Button variant="outline" onClick={() => setCloseDialog(false)}>取消</Button><Button onClick={handleCloseTicket} disabled={!canWrite}>确认关闭</Button></DialogFooter>
       </Dialog>
 
       <Dialog open={importDialog} onClose={() => setImportDialog(false)} title="导入结果">
