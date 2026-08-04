@@ -225,6 +225,13 @@ type TicketEvent struct {
 	CreatedAt  time.Time    `json:"created_at"`
 }
 
+// TrendPoint 工单趋势单日数据点。
+type TrendPoint struct {
+	Date    string `json:"date"` // YYYY-MM-DD
+	Created int    `json:"created"`
+	Closed  int    `json:"closed"`
+}
+
 type ITSMStats struct {
 	Total          int            `json:"total"`
 	ByStatus       map[string]int `json:"by_status"`
@@ -232,6 +239,10 @@ type ITSMStats struct {
 	ApprovalRate   float64        `json:"approval_rate"`
 	AvgApprovalMs  int64          `json:"avg_approval_ms"`
 	AvgExecutionMs int64          `json:"avg_execution_ms"`
+	// 报表看板: 按天趋势(近 N 天)/按创建人效能/按来源渠道分布
+	Trends    []TrendPoint   `json:"trends,omitempty"`
+	ByCreator map[string]int `json:"by_creator,omitempty"`
+	ByChannel map[string]int `json:"by_channel,omitempty"`
 }
 
 type SLAStats struct {

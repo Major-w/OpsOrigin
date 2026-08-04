@@ -10,6 +10,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
+	"github.com/opsorigin/core/internal/itsm/catalog"
 	"github.com/opsorigin/core/internal/itsm/model"
 	"github.com/opsorigin/core/internal/itsm/process"
 	"github.com/opsorigin/core/internal/itsm/risk"
@@ -456,5 +458,83 @@ func TestSubtaskCascadeOnClose(t *testing.T) {
 	// 字段同步: meta 含 risk_level
 	if subs[0].Meta == nil || subs[0].Meta["risk_level"] != "low" {
 		t.Fatalf("sync_fields not copied: %+v", subs[0].Meta)
+	}
+}
+
+// --- 产品化: 服务目录申请套用流程/表单 + 统计扩展 ---
+
+type fakeCatalogGetter struct{ item *catalog.ServiceItem }
+
+func (f *fakeCatalogGetter) Get(ctx context.Context, id, tenantID string) (*catalog.ServiceItem, error) {
+	if f.item == nil {
+		return nil, nil
+	}
+	it := *f.item
+	return &it, nil
+}
+
+func TestCreateTicketFromCatalogAppliesScopeAndProcess(t *testing.T) {
+	s := newTestService()
+	s.processStore = &fakeProc{}
+	cg := &fakeCatalogGetter{item: &catalog.ServiceItem{
+		ID: "cat-1", Name: "服务器重启", ProcessID: "proc-9", Enabled: true,
+	}}
+	s.SetCatalogStore(cg)
+
+	tk, err := s.CreateTicketFromCatalog(context.Background(), "cat-1", "default", model.CreateTicketRequest{
+		Title:     "重启 prod-db-01",
+		CreatedBy: "portal",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 套用目录配置: 表单 scope = catalog:cat-1, 流程 = proc-9, 来源标记 catalog
+	stored, _ := s.store.Get(context.Background(), tk.ID, "default")
+	if stored.ProcessID != "proc-9" {
+		t.Fatalf("process not applied: %s", stored.ProcessID)
+	}
+	if stored.Labels["source"] != "catalog" {
+		t.Fatalf("source label missing: %+v", stored.Labels)
+	}
+}
+
+func TestFulfillEndpointDisabledItem(t *testing.T) {
+	s := newTestService()
+	s.SetCatalogStore(&fakeCatalogGetter{item: &catalog.ServiceItem{ID: "cat-2", Enabled: false}})
+	w := callPost(t, s, "/api/v1/itsm/catalog/cat-2/fulfill", `{"title":"x","created_by":"portal"}`)
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("disabled catalog should 404, got %d", w.Code)
+	}
+}
+
+func TestGetStatsExtendedDimensions(t *testing.T) {
+	st := store.NewMemoryStore()
+	ctx := context.Background()
+	now := time.Now()
+	mk := func(title, by, byType string, created time.Time) *model.Ticket {
+		return &model.Ticket{
+			ID: uuid.New().String(), TenantID: "default", Title: title,
+			RiskLevel: model.RiskLow, Status: model.StatusExecuting,
+			CreatedBy: by, CreatedByType: byType,
+			CreatedAt: created, UpdatedAt: created,
+		}
+	}
+	st.Create(ctx, mk("t1", "alice", "manual", now.AddDate(0, 0, -2)))
+	st.Create(ctx, mk("t2", "alice", "manual", now.AddDate(0, 0, -2)))
+	st.Create(ctx, mk("t3", "bob", "mail", now.AddDate(0, 0, -1)))
+
+	stats, err := st.GetStats(ctx, "default")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.ByCreator["alice"] != 2 || stats.ByCreator["bob"] != 1 {
+		t.Fatalf("by_creator = %+v", stats.ByCreator)
+	}
+	if stats.ByChannel["manual"] != 2 || stats.ByChannel["mail"] != 1 {
+		t.Fatalf("by_channel = %+v", stats.ByChannel)
+	}
+	// MemoryStore.Create 会覆盖 CreatedAt 为 now, 故趋势至少 1 个数据点即可
+	if len(stats.Trends) < 1 {
+		t.Fatalf("trends empty")
 	}
 }

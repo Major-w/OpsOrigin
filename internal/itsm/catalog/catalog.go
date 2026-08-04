@@ -19,7 +19,8 @@ type ServiceItem struct {
 	Name        string    `json:"name"`
 	Description string    `json:"description,omitempty"`
 	Category    string    `json:"category,omitempty"`   // change/incident/problem/request
-	ProcessID   string    `json:"process_id,omitempty"` // 关联流程
+	ProcessID   string    `json:"process_id,omitempty"` // 关联流程(申请时自动套用)
+	FormScope   string    `json:"form_scope,omitempty"` // 关联表单作用域(如 ticket:default / catalog:<id> 自定义)
 	Enabled     bool      `json:"enabled"`
 	CreatedAt   time.Time `json:"created_at"`
 	UpdatedAt   time.Time `json:"updated_at"`
@@ -39,10 +40,14 @@ func (s *Store) migrate() {
 		id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL DEFAULT 'default',
 		name TEXT NOT NULL, description TEXT DEFAULT '',
 		category TEXT DEFAULT '', process_id TEXT DEFAULT '',
+		form_scope TEXT DEFAULT '',
 		enabled BOOLEAN DEFAULT TRUE,
 		created_at TIMESTAMPTZ DEFAULT NOW(), updated_at TIMESTAMPTZ DEFAULT NOW()
 	)`)
+	s.db.Exec(`ALTER TABLE itsm_catalog ADD COLUMN IF NOT EXISTS form_scope TEXT DEFAULT ''`)
 }
+
+const catalogCols = `id,tenant_id,name,description,category,process_id,form_scope,enabled,created_at,updated_at`
 
 func (s *Store) seed() {
 	var count int
@@ -64,13 +69,13 @@ func (s *Store) seed() {
 		it.Enabled = true
 		it.CreatedAt = time.Now()
 		it.UpdatedAt = it.CreatedAt
-		s.db.Exec(`INSERT INTO itsm_catalog(id,tenant_id,name,description,category,process_id,enabled,created_at,updated_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
-			it.ID, it.TenantID, it.Name, it.Description, it.Category, it.ProcessID, it.Enabled, it.CreatedAt, it.UpdatedAt)
+		s.db.Exec(`INSERT INTO itsm_catalog(id,tenant_id,name,description,category,process_id,form_scope,enabled,created_at,updated_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
+			it.ID, it.TenantID, it.Name, it.Description, it.Category, it.ProcessID, it.FormScope, it.Enabled, it.CreatedAt, it.UpdatedAt)
 	}
 }
 
 func (s *Store) List(ctx context.Context, tenantID string) ([]ServiceItem, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT id,tenant_id,name,description,category,process_id,enabled,created_at,updated_at FROM itsm_catalog WHERE tenant_id=$1 ORDER BY name`, tenantID)
+	rows, err := s.db.QueryContext(ctx, `SELECT `+catalogCols+` FROM itsm_catalog WHERE tenant_id=$1 ORDER BY name`, tenantID)
 	if err != nil {
 		return nil, err
 	}
@@ -78,12 +83,26 @@ func (s *Store) List(ctx context.Context, tenantID string) ([]ServiceItem, error
 	var out []ServiceItem
 	for rows.Next() {
 		var it ServiceItem
-		if err := rows.Scan(&it.ID, &it.TenantID, &it.Name, &it.Description, &it.Category, &it.ProcessID, &it.Enabled, &it.CreatedAt, &it.UpdatedAt); err != nil {
+		if err := rows.Scan(&it.ID, &it.TenantID, &it.Name, &it.Description, &it.Category, &it.ProcessID, &it.FormScope, &it.Enabled, &it.CreatedAt, &it.UpdatedAt); err != nil {
 			return nil, err
 		}
 		out = append(out, it)
 	}
 	return out, rows.Err()
+}
+
+// Get 按 ID 读取单个目录项(供"从目录发起申请"套用流程/表单)。
+func (s *Store) Get(ctx context.Context, id, tenantID string) (*ServiceItem, error) {
+	var it ServiceItem
+	err := s.db.QueryRowContext(ctx, `SELECT `+catalogCols+` FROM itsm_catalog WHERE id=$1 AND tenant_id=$2`, id, tenantID).
+		Scan(&it.ID, &it.TenantID, &it.Name, &it.Description, &it.Category, &it.ProcessID, &it.FormScope, &it.Enabled, &it.CreatedAt, &it.UpdatedAt)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &it, nil
 }
 
 func (s *Store) Create(ctx context.Context, it *ServiceItem) error {
@@ -93,15 +112,15 @@ func (s *Store) Create(ctx context.Context, it *ServiceItem) error {
 	if it.TenantID == "" {
 		it.TenantID = "default"
 	}
-	_, err := s.db.ExecContext(ctx, `INSERT INTO itsm_catalog(id,tenant_id,name,description,category,process_id,enabled,created_at,updated_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
-		it.ID, it.TenantID, it.Name, it.Description, it.Category, it.ProcessID, it.Enabled, it.CreatedAt, it.UpdatedAt)
+	_, err := s.db.ExecContext(ctx, `INSERT INTO itsm_catalog(`+catalogCols+`) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
+		it.ID, it.TenantID, it.Name, it.Description, it.Category, it.ProcessID, it.FormScope, it.Enabled, it.CreatedAt, it.UpdatedAt)
 	return err
 }
 
 func (s *Store) Update(ctx context.Context, it *ServiceItem) error {
 	it.UpdatedAt = time.Now()
-	_, err := s.db.ExecContext(ctx, `UPDATE itsm_catalog SET name=$1,description=$2,category=$3,process_id=$4,enabled=$5,updated_at=$6 WHERE id=$7 AND tenant_id=$8`,
-		it.Name, it.Description, it.Category, it.ProcessID, it.Enabled, it.UpdatedAt, it.ID, it.TenantID)
+	_, err := s.db.ExecContext(ctx, `UPDATE itsm_catalog SET name=$1,description=$2,category=$3,process_id=$4,form_scope=$5,enabled=$6,updated_at=$7 WHERE id=$8 AND tenant_id=$9`,
+		it.Name, it.Description, it.Category, it.ProcessID, it.FormScope, it.Enabled, it.UpdatedAt, it.ID, it.TenantID)
 	return err
 }
 

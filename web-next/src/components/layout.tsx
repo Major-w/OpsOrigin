@@ -78,7 +78,9 @@ const navGroups: (NavItem | NavGroup)[] = [
   {
     label: 'ITSM', icon: TicketCheck, items: [
       { to: '/itsm/overview', label: '总览', icon: LayoutDashboard },
+      { to: '/itsm/portal', label: '自助服务', icon: Store },
       { to: '/itsm/tickets', label: '工单列表', icon: TicketCheck },
+      { to: '/itsm/reports', label: '报表看板', icon: BarChart3 },
       {
         label: '服务管理', items: [
           { to: '/itsm/process', label: '流程定义', icon: GitBranch },

@@ -256,6 +256,7 @@ func main() {
 	itsmSvc.SetSLAStore(slaStore)
 	catalogStore := catalog.NewStore(db)
 	server.RegisterService(catalogStore)
+	itsmSvc.SetCatalogStore(catalogStore)
 
 	// 创建 tunnel server,监听 Proxy 连接(用于通过 Proxy 下发命令给 Agent)
 	tunnelServer := tunnel.NewServer(cfg.Proxy.Listen, cfg.Tunnel.AuthSecret, cfg.Tunnel.Insecure)

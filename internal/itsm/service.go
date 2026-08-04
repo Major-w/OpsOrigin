@@ -15,6 +15,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/opsorigin/core/internal/itsm/catalog"
 	"github.com/opsorigin/core/internal/itsm/form"
 	"github.com/opsorigin/core/internal/itsm/model"
 	"github.com/opsorigin/core/internal/itsm/process"
@@ -73,6 +74,13 @@ type Service struct {
 	experienceSink func(ctx context.Context, tenantID, agentID, problem, resolution string, outcome bool) error
 	// notify 对接通知中心(解耦接口, 避免 import 环): 工单关键事件触发 Policy 分发。
 	notify Notifier
+	// catalogStore 由 cmd/core 注入: 从服务目录发起申请时套用目录项配置的流程/表单。
+	catalogStore catalogGetter
+}
+
+// catalogGetter 服务目录项读取能力(由 catalog.Store 实现; 接口化便于测试注入)。
+type catalogGetter interface {
+	Get(ctx context.Context, id, tenantID string) (*catalog.ServiceItem, error)
 }
 
 func NewService(cfg *config.Config, db *sql.DB) *Service {
@@ -134,6 +142,45 @@ func (s *Service) SetNotifier(n Notifier) {
 	s.notify = n
 }
 
+// SetCatalogStore 注入服务目录存储(从目录发起申请时套用流程/表单作用域)。
+func (s *Service) SetCatalogStore(c catalogGetter) {
+	s.catalogStore = c
+}
+
+// CreateTicketFromCatalog 从服务目录发起申请: 读取目录项, 自动套用其配置的
+// 表单作用域(catalog:<id> 或自定义 form_scope)与流程(process_id), 再走 CreateTicket
+// 完整链路(风险/SLA/表单校验/流程实例)。返回创建的工单。
+func (s *Service) CreateTicketFromCatalog(ctx context.Context, catalogID, tenantID string, req model.CreateTicketRequest) (*model.Ticket, error) {
+	if s.catalogStore == nil {
+		return nil, fmt.Errorf("catalog store not configured")
+	}
+	item, err := s.catalogStore.Get(ctx, catalogID, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	if item == nil {
+		return nil, fmt.Errorf("catalog item %s not found", catalogID)
+	}
+	if !item.Enabled {
+		return nil, fmt.Errorf("catalog item %s is disabled", catalogID)
+	}
+	// 套用目录项配置: 表单作用域优先用项自定义值, 否则默认 catalog:<id>; 流程同理。
+	if req.FormScope == "" {
+		req.FormScope = item.FormScope
+		if req.FormScope == "" {
+			req.FormScope = "catalog:" + catalogID
+		}
+	}
+	if req.ProcessID == "" {
+		req.ProcessID = item.ProcessID
+	}
+	if req.Labels == nil {
+		req.Labels = map[string]string{}
+	}
+	req.Labels["source"] = "catalog"
+	return s.CreateTicket(ctx, req)
+}
+
 // notifyTicket 经通知中心分发工单事件(无 notify 注入时静默跳过)。
 func (s *Service) notifyTicket(ctx context.Context, tenantID, event, title, content string) {
 	if s.notify == nil {
@@ -165,6 +212,8 @@ func (s *Service) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/v1/itsm/tickets/{id}/remind", s.handleRemind)
 	mux.HandleFunc("POST /api/v1/itsm/tickets/{id}/relate", s.handleRelate)
 	mux.HandleFunc("PUT /api/v1/itsm/tickets/{id}", s.handleUpdateTicket)
+	// 服务目录: 从目录发起申请(自动套用目录项配置的流程/表单)
+	mux.HandleFunc("POST /api/v1/itsm/catalog/{id}/fulfill", s.handleFulfillCatalog)
 	mux.HandleFunc("GET /api/v1/itsm/tickets/{id}/events", s.handleGetEvents)
 	mux.HandleFunc("GET /api/v1/itsm/stats", s.handleStats)
 	// Comments
@@ -1836,6 +1885,34 @@ func (s *Service) handleTicketSLA(w http.ResponseWriter, r *http.Request) {
 }
 
 // --- Form schema handlers (dynamic forms) ---
+
+// handleFulfillCatalog 从服务目录发起申请: 套用目录项配置的流程与表单作用域创建工单。
+func (s *Service) handleFulfillCatalog(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	tenantID := tenantFromCtx(r.Context())
+	var req model.CreateTicketRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if req.Title == "" {
+		writeError(w, http.StatusBadRequest, "title is required")
+		return
+	}
+	if req.CreatedBy == "" {
+		req.CreatedBy = "portal"
+	}
+	tk, err := s.CreateTicketFromCatalog(r.Context(), id, tenantID, req)
+	if err != nil {
+		if strings.Contains(err.Error(), "not found") || strings.Contains(err.Error(), "disabled") {
+			writeError(w, http.StatusNotFound, err.Error())
+			return
+		}
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusCreated, tk)
+}
 
 // handleListFormScopes 列出已配置的作用域；若带 scope 查询参数则返回该作用域的 schema（无则 schema 为 null）。
 func (s *Service) handleListFormScopes(w http.ResponseWriter, r *http.Request) {

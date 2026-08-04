@@ -66,6 +66,19 @@ export interface ITSMStats {
   approval_rate: number
   avg_approval_ms: number
   avg_execution_ms: number
+  trends?: { date: string; created: number; closed: number }[]
+  by_creator?: Record<string, number>
+  by_channel?: Record<string, number>
+}
+
+export interface SLAStats {
+  total_active: number
+  sla_met: number
+  sla_breached: number
+  sla_warning: number
+  compliance_rate: number
+  avg_response_ms: number
+  avg_resolution_ms: number
 }
 
 export interface ProcessStep {

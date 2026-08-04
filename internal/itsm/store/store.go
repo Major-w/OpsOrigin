@@ -167,14 +167,18 @@ func (s *MemoryStore) GetStats(ctx context.Context, tenantID string) (*model.ITS
 	defer s.mu.RUnlock()
 
 	stats := &model.ITSMStats{
-		ByStatus: make(map[string]int),
-		ByRisk:   make(map[string]int),
+		ByStatus:  make(map[string]int),
+		ByRisk:    make(map[string]int),
+		ByCreator: make(map[string]int),
+		ByChannel: make(map[string]int),
 	}
 	var approvedCount int
 	var totalApprovalMs int64
 	var approvedWithAt int
 	var totalExecutionMs int64
 	var executedWithAt int
+	days := map[string]*struct{ created, closed int }{}
+	var dayOrder []string
 
 	for _, t := range s.tickets {
 		if t.TenantID != tenantID {
@@ -183,8 +187,30 @@ func (s *MemoryStore) GetStats(ctx context.Context, tenantID string) (*model.ITS
 		stats.Total++
 		stats.ByStatus[string(t.Status)]++
 		stats.ByRisk[string(t.RiskLevel)]++
+		if t.CreatedBy != "" {
+			stats.ByCreator[t.CreatedBy]++
+		}
+		ch := t.CreatedByType
+		if ch == "" {
+			ch = "manual"
+		}
+		stats.ByChannel[ch]++
 		if t.Status == model.StatusApproved {
 			approvedCount++
+		}
+		day := t.CreatedAt.Format("2006-01-02")
+		if _, ok := days[day]; !ok {
+			days[day] = &struct{ created, closed int }{}
+			dayOrder = append(dayOrder, day)
+		}
+		days[day].created++
+		if t.CompletedAt != nil {
+			cd := t.CompletedAt.Format("2006-01-02")
+			if _, ok := days[cd]; !ok {
+				days[cd] = &struct{ created, closed int }{}
+				dayOrder = append(dayOrder, cd)
+			}
+			days[cd].closed++
 		}
 		if t.ApprovedAt != nil && t.CreatedAt.Before(*t.ApprovedAt) {
 			totalApprovalMs += t.ApprovedAt.Sub(t.CreatedAt).Milliseconds()
@@ -204,6 +230,13 @@ func (s *MemoryStore) GetStats(ctx context.Context, tenantID string) (*model.ITS
 	}
 	if executedWithAt > 0 {
 		stats.AvgExecutionMs = totalExecutionMs / int64(executedWithAt)
+	}
+	stats.Trends = make([]model.TrendPoint, 0, len(dayOrder))
+	for _, d := range dayOrder {
+		stats.Trends = append(stats.Trends, model.TrendPoint{Date: d, Created: days[d].created, Closed: days[d].closed})
+	}
+	if len(stats.Trends) > 30 {
+		stats.Trends = stats.Trends[len(stats.Trends)-30:]
 	}
 	return stats, nil
 }

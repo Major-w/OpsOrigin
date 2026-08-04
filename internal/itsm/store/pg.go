@@ -527,12 +527,14 @@ func (s *PGStore) GetEvents(ctx context.Context, ticketID, tenantID string) ([]*
 
 func (s *PGStore) GetStats(ctx context.Context, tenantID string) (*model.ITSMStats, error) {
 	stats := &model.ITSMStats{
-		ByStatus: make(map[string]int),
-		ByRisk:   make(map[string]int),
+		ByStatus:  make(map[string]int),
+		ByRisk:    make(map[string]int),
+		ByCreator: make(map[string]int),
+		ByChannel: make(map[string]int),
 	}
 
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT status, risk_level, approved_at, created_at, executed_at
+		SELECT status, risk_level, created_by, created_by_type, approved_at, created_at, executed_at, completed_at
 		FROM itsm_tickets WHERE tenant_id = $1`, tenantID)
 	if err != nil {
 		return nil, fmt.Errorf("query stats: %w", err)
@@ -544,19 +546,48 @@ func (s *PGStore) GetStats(ctx context.Context, tenantID string) (*model.ITSMSta
 	var approvedWithAt int
 	var totalExecutionMs int64
 	var executedWithAt int
+	type dayAgg struct {
+		created int
+		closed  int
+	}
+	days := map[string]*dayAgg{}
+	var dayOrder []string
 
 	for rows.Next() {
-		var status, risk string
+		var status, risk, createdBy, createdByType string
 		var approvedAt, createdAt time.Time
-		var executedAt sql.NullTime
-		if err := rows.Scan(&status, &risk, &approvedAt, &createdAt, &executedAt); err != nil {
+		var executedAt, completedAt sql.NullTime
+		if err := rows.Scan(&status, &risk, &createdBy, &createdByType, &approvedAt, &createdAt, &executedAt, &completedAt); err != nil {
 			return nil, fmt.Errorf("scan stats row: %w", err)
 		}
 		stats.Total++
 		stats.ByStatus[status]++
 		stats.ByRisk[risk]++
+		if createdBy != "" {
+			stats.ByCreator[createdBy]++
+		}
+		ch := createdByType
+		if ch == "" {
+			ch = "manual"
+		}
+		stats.ByChannel[ch]++
 		if status == "approved" {
 			approvedCount++
+		}
+		// 趋势: 创建按 created_at, 关闭按 completed_at(仅终态且有关闭时间)
+		day := createdAt.Format("2006-01-02")
+		if _, ok := days[day]; !ok {
+			days[day] = &dayAgg{}
+			dayOrder = append(dayOrder, day)
+		}
+		days[day].created++
+		if completedAt.Valid {
+			cd := completedAt.Time.Format("2006-01-02")
+			if _, ok := days[cd]; !ok {
+				days[cd] = &dayAgg{}
+				dayOrder = append(dayOrder, cd)
+			}
+			days[cd].closed++
 		}
 		var zero time.Time
 		if approvedAt != zero && createdAt.Before(approvedAt) {
@@ -577,6 +608,14 @@ func (s *PGStore) GetStats(ctx context.Context, tenantID string) (*model.ITSMSta
 	}
 	if executedWithAt > 0 {
 		stats.AvgExecutionMs = totalExecutionMs / int64(executedWithAt)
+	}
+	// 趋势排序(按日期升序, 最多取最近 30 天)
+	stats.Trends = make([]model.TrendPoint, 0, len(dayOrder))
+	for _, d := range dayOrder {
+		stats.Trends = append(stats.Trends, model.TrendPoint{Date: d, Created: days[d].created, Closed: days[d].closed})
+	}
+	if len(stats.Trends) > 30 {
+		stats.Trends = stats.Trends[len(stats.Trends)-30:]
 	}
 	return stats, rows.Err()
 }
@@ -908,6 +947,20 @@ func (s *PGStore) GetSLAStats(ctx context.Context, tenantID string) (*model.SLAS
 	total := stats.SLAMet + stats.SLABreached
 	if total > 0 {
 		stats.ComplianceRate = float64(stats.SLAMet) / float64(total)
+	}
+	// 平均响应/解决耗时(此前恒 0, 顺手补齐): 已批准工单的批准耗时 / 已完成工单的完成耗时
+	var respMs, resMs sql.NullFloat64
+	s.db.QueryRowContext(ctx, `
+		SELECT AVG(EXTRACT(EPOCH FROM (approved_at - created_at)) * 1000) FROM itsm_tickets
+		WHERE tenant_id = $1 AND approved_at IS NOT NULL`, tenantID).Scan(&respMs)
+	s.db.QueryRowContext(ctx, `
+		SELECT AVG(EXTRACT(EPOCH FROM (completed_at - created_at)) * 1000) FROM itsm_tickets
+		WHERE tenant_id = $1 AND completed_at IS NOT NULL`, tenantID).Scan(&resMs)
+	if respMs.Valid {
+		stats.AvgResponseMs = int64(respMs.Float64)
+	}
+	if resMs.Valid {
+		stats.AvgResolutionMs = int64(resMs.Float64)
 	}
 	return stats, nil
 }
