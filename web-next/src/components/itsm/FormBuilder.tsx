@@ -31,6 +31,8 @@ const FIELD_TYPES: { value: FormFieldType; label: string }[] = [
   { value: 'datetime', label: '日期时间' },
   { value: 'duration', label: '时长' },
   { value: 'attachment', label: '附件' },
+  { value: 'richtext', label: '富文本' },
+  { value: 'table', label: '表格' },
   { value: 'bool', label: '开关' },
   { value: 'user', label: '选人' },
   { value: 'ci', label: '选配置项' },
@@ -378,6 +380,29 @@ function FieldPropertyPanel({
                 placeholder={isCascader ? 'cmdb:types' : 'cmdb:host / iam:user'}
               />
             </div>
+          </Labeled>
+          <Labeled label="引用数据字典（填字典 ID 后字段定义从字典展开，可跨表单复用）">
+            <input
+              className="flex h-8 w-full rounded-md border border-input bg-background px-2.5 text-xs"
+              value={field.dict_ref || ''}
+              onChange={e => onChange({ dict_ref: e.target.value.trim() || undefined })}
+              placeholder="dict_id（如变更通用字段字典）"
+            />
+          </Labeled>
+          <Labeled label="可编辑角色（逗号分隔的角色名白名单，留空=所有人可编辑）">
+            <input
+              className="flex h-8 w-full rounded-md border border-input bg-background px-2.5 text-xs"
+              value={(field.roles || []).join(',')}
+              onChange={e =>
+                onChange({
+                  roles: e.target.value
+                    .split(',')
+                    .map(s => s.trim())
+                    .filter(Boolean),
+                })
+              }
+              placeholder="admin,ops"
+            />
           </Labeled>
           {!field.source &&
             (isCascader ? (

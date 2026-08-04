@@ -41,6 +41,12 @@ export interface Ticket {
   assigned_at?: string
   // 关单满意度评分（1-5，close 端点写入）
   satisfaction?: number
+  /** 挂起标记: 置位时 SLA 计时暂停 */
+  on_hold?: boolean
+  hold_reason?: string
+  hold_until_at?: string
+  /** 关联工单 ID 列表 */
+  related_ticket_ids?: string[]
 }
 
 export interface TicketEvent {
@@ -124,6 +130,12 @@ interface ITSMState {
   submit: (id: string) => Promise<boolean>
   assign: (id: string, assignee: string) => Promise<boolean>
   close: (id: string, comment?: string, satisfaction?: number) => Promise<boolean>
+  withdraw: (id: string, reason?: string) => Promise<boolean>
+  reopen: (id: string, reason?: string) => Promise<boolean>
+  hold: (id: string, reason?: string) => Promise<boolean>
+  resume: (id: string) => Promise<boolean>
+  remind: (id: string, message?: string) => Promise<boolean>
+  relate: (id: string, relatedId: string) => Promise<boolean>
   fetchStats: () => Promise<void>
   // process
   fetchProcesses: () => Promise<void>
@@ -247,6 +259,71 @@ export const useITSMStore = create<ITSMState>((set, get) => ({
       return true
     } catch (e: any) {
       toast.error(`提交失败: ${e.message}`)
+      return false
+    }
+  },
+  withdraw: async (id, reason?) => {
+    try {
+      await apiFetch(`/itsm/tickets/${id}/withdraw`, { method: 'POST', body: JSON.stringify({ withdrawn_by: 'admin', reason: reason || '' }) })
+      toast.success('已撤回')
+      await get().fetch()
+      return true
+    } catch (e: any) {
+      toast.error(`撤回失败: ${e.message}`)
+      return false
+    }
+  },
+  reopen: async (id, reason?) => {
+    try {
+      await apiFetch(`/itsm/tickets/${id}/reopen`, { method: 'POST', body: JSON.stringify({ reopened_by: 'admin', reason: reason || '' }) })
+      toast.success('已重开')
+      await get().fetch()
+      return true
+    } catch (e: any) {
+      toast.error(`重开失败: ${e.message}`)
+      return false
+    }
+  },
+  hold: async (id, reason?) => {
+    try {
+      await apiFetch(`/itsm/tickets/${id}/hold`, { method: 'POST', body: JSON.stringify({ hold_by: 'admin', reason: reason || '' }) })
+      toast.success('已挂起（SLA 计时暂停）')
+      await get().fetch()
+      return true
+    } catch (e: any) {
+      toast.error(`挂起失败: ${e.message}`)
+      return false
+    }
+  },
+  resume: async (id) => {
+    try {
+      await apiFetch(`/itsm/tickets/${id}/resume`, { method: 'POST', body: JSON.stringify({ resumed_by: 'admin' }) })
+      toast.success('已恢复')
+      await get().fetch()
+      return true
+    } catch (e: any) {
+      toast.error(`恢复失败: ${e.message}`)
+      return false
+    }
+  },
+  remind: async (id, message?) => {
+    try {
+      await apiFetch(`/itsm/tickets/${id}/remind`, { method: 'POST', body: JSON.stringify({ reminded_by: 'admin', message: message || '' }) })
+      toast.success('已催办')
+      return true
+    } catch (e: any) {
+      toast.error(`催办失败: ${e.message}`)
+      return false
+    }
+  },
+  relate: async (id, relatedId) => {
+    try {
+      await apiFetch(`/itsm/tickets/${id}/relate`, { method: 'POST', body: JSON.stringify({ related_id: relatedId, relate_by: 'admin' }) })
+      toast.success('已关联')
+      await get().fetch()
+      return true
+    } catch (e: any) {
+      toast.error(`关联失败: ${e.message}`)
       return false
     }
   },

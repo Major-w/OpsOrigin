@@ -7,7 +7,7 @@
 // 该组件只渲染「业务自定义字段」，系统字段(title/risk/...)仍由页面负责。
 
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { Upload, X } from 'lucide-react'
+import { Upload, X, Plus } from 'lucide-react'
 
 export type FormFieldType =
   | 'text'
@@ -19,6 +19,8 @@ export type FormFieldType =
   | 'datetime'
   | 'duration'
   | 'attachment'
+  | 'richtext'
+  | 'table'
   | 'bool'
   | 'user'
   | 'ci'
@@ -98,6 +100,10 @@ export interface FormFieldDef {
   visible_logic?: 'and' | 'or'
   /** 动态选项来源：cmdb:<typeName> / iam:user / iam:role / iam:group / cmdb:types（级联层级树） */
   source?: string
+  /** 引用数据字典 ID：非空时字段定义从字典展开 */
+  dict_ref?: string
+  /** 可编辑角色白名单：非空时仅这些角色的用户可编辑（空=所有人） */
+  roles?: string[]
 }
 
 export interface FormSchema {
@@ -487,6 +493,24 @@ function FieldControl({
           value={value}
           disabled={disabled}
           ticketId={ticketId}
+          onChange={onChange}
+        />
+      )
+    case 'richtext':
+      return (
+        <textarea
+          className="flex w-full rounded-md border border-input bg-background px-3 py-2 text-sm min-h-[96px] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          value={(value as string) ?? ''}
+          placeholder={field.placeholder || '富文本内容（支持 HTML）'}
+          disabled={disabled}
+          onChange={e => onChange(e.target.value)}
+        />
+      )
+    case 'table':
+      return (
+        <TableControl
+          value={value}
+          disabled={disabled}
           onChange={onChange}
         />
       )
@@ -972,6 +996,77 @@ function AttachmentControl({
         </div>
       )}
       {error && <p className="text-xs text-destructive">{error}</p>}
+    </div>
+  )
+}
+
+// TableControl —— table 字段控件: 二维网格编辑, 值 = string[][]。
+function TableControl({
+  value,
+  disabled,
+  onChange,
+}: {
+  value: unknown
+  disabled: boolean
+  onChange: (v: unknown) => void
+}) {
+  const grid: string[][] = Array.isArray(value)
+    ? (value as unknown[][]).map(row => Array.isArray(row) ? row.map(c => String(c ?? '')) : [])
+    : [['', ''], ['', '']]
+
+  const setCell = (r: number, c: number, v: string) => {
+    const next = grid.map((row, ri) => row.map((cell, ci) => (ri === r && ci === c ? v : cell)))
+    onChange(next)
+  }
+  const addRow = () => onChange([...grid, Array(grid[0]?.length || 2).fill('')])
+  const addCol = () => onChange(grid.map(row => [...row, '']))
+  const removeRow = (r: number) => onChange(grid.filter((_, i) => i !== r))
+  const removeCol = (c: number) => onChange(grid.map(row => row.filter((_, i) => i !== c)))
+
+  return (
+    <div className="space-y-2">
+      <div className="overflow-x-auto border rounded-md">
+        <table className="w-full text-sm">
+          <tbody>
+            {grid.map((row, ri) => (
+              <tr key={ri} className="border-b last:border-b-0">
+                {row.map((cell, ci) => (
+                  <td key={ci} className="border-r last:border-r-0 p-0">
+                    <input
+                      className="w-full min-w-[80px] bg-transparent px-2 py-1.5 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                      value={cell}
+                      disabled={disabled}
+                      onChange={e => setCell(ri, ci, e.target.value)}
+                    />
+                  </td>
+                ))}
+                {!disabled && (
+                  <td className="w-8 p-0">
+                    <button type="button" className="h-full w-full text-muted-foreground hover:text-destructive" onClick={() => removeRow(ri)}>
+                      <X className="h-3 w-3 mx-auto" />
+                    </button>
+                  </td>
+                )}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      {!disabled && (
+        <div className="flex gap-2">
+          <button type="button" onClick={addRow} className="inline-flex items-center gap-1 h-7 px-2.5 rounded-md border border-input text-xs hover:bg-accent">
+            <Plus className="h-3 w-3" />加行
+          </button>
+          <button type="button" onClick={addCol} className="inline-flex items-center gap-1 h-7 px-2.5 rounded-md border border-input text-xs hover:bg-accent">
+            <Plus className="h-3 w-3" />加列
+          </button>
+          {grid[0]?.length > 1 && (
+            <button type="button" onClick={() => removeCol(grid[0].length - 1)} className="inline-flex items-center gap-1 h-7 px-2.5 rounded-md border border-input text-xs text-muted-foreground hover:text-destructive">
+              <X className="h-3 w-3" />删末列
+            </button>
+          )}
+        </div>
+      )}
     </div>
   )
 }

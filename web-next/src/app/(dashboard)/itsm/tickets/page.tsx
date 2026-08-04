@@ -14,7 +14,7 @@ import { Dialog, DialogFooter } from '@/components/ui/dialog'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { formatTime, apiFetch, apiList } from '@/lib/utils'
 import { useCan, useCanAny } from '@/stores/permissions'
-import { Plus, Check, X, Play, RotateCcw, Clock, FileText, Activity, ChevronRight, Paperclip, MessageSquare, Upload, Download, Trash2, FileUp, FileDown, BookOpen, BookOpenCheck, Send, UserPlus, CheckCircle2, ListChecks } from 'lucide-react'
+import { Plus, Check, X, Play, RotateCcw, Clock, FileText, Activity, ChevronRight, Paperclip, MessageSquare, Upload, Download, Trash2, FileUp, FileDown, BookOpen, BookOpenCheck, Send, UserPlus, CheckCircle2, ListChecks, Bell, Link2 } from 'lucide-react'
 
 const riskBadge: Record<string, 'destructive' | 'warning' | 'secondary' | 'success'> = { critical: 'destructive', high: 'warning', medium: 'secondary', low: 'success' }
 const riskLabels: Record<string, string> = { critical: '致命', high: '高危', medium: '中危', low: '低危' }
@@ -82,7 +82,7 @@ function formatFileSize(bytes: number): string {
 
 export default function ITSMPage() {
   const router = useRouter()
-  const { tickets, stats, loading, fetch, create, approve, reject, execute, complete, rollback, submit, assign, close, getTicket, getEvents, fetchStats, processes, fetchProcesses, getFormSchema, upsertFormSchema, getFormOptions, getFormOptionSources, getTicketProcess, updateTicketCustomFields } = useITSMStore()
+  const { tickets, stats, loading, fetch, create, approve, reject, execute, complete, rollback, submit, assign, close, withdraw, reopen, hold, resume, remind, relate, getTicket, getEvents, fetchStats, processes, fetchProcesses, getFormSchema, upsertFormSchema, getFormOptions, getFormOptionSources, getTicketProcess, updateTicketCustomFields } = useITSMStore()
   const canWrite = useCan('itsm:write')
   const canApprove = useCanAny(['itsm:approve', 'itsm:write'])
   const [dialogOpen, setDialogOpen] = useState(false)
@@ -393,6 +393,45 @@ export default function ITSMPage() {
     fetchStats()
   }
 
+  // SN 补全操作: 撤回/重开/挂起恢复/催办/关联(无对话框, 直接调用 + toast 由 store 处理)
+  const [confirmDialog, setConfirmDialog] = useState<{ title: string; action: () => Promise<void> } | null>(null)
+  const [remindDialog, setRemindDialog] = useState(false)
+  const [remindMsg, setRemindMsg] = useState('')
+  const [relateDialog, setRelateDialog] = useState(false)
+  const [relateId, setRelateId] = useState('')
+
+  const handleWithdraw = async () => {
+    if (!selectedTicket) return
+    await withdraw(selectedTicket.id, '操作人撤回')
+    await handleSelectTicket(await getTicket(selectedTicket.id)); fetchStats()
+  }
+  const handleReopen = async () => {
+    if (!selectedTicket) return
+    await reopen(selectedTicket.id, '重新激活')
+    await handleSelectTicket(await getTicket(selectedTicket.id)); fetchStats()
+  }
+  const handleHold = async () => {
+    if (!selectedTicket) return
+    await hold(selectedTicket.id, '人工挂起')
+    await handleSelectTicket(await getTicket(selectedTicket.id)); fetchStats()
+  }
+  const handleResume = async () => {
+    if (!selectedTicket) return
+    await resume(selectedTicket.id)
+    await handleSelectTicket(await getTicket(selectedTicket.id)); fetchStats()
+  }
+  const handleRemind = async () => {
+    if (!selectedTicket) return
+    await remind(selectedTicket.id, remindMsg)
+    setRemindDialog(false); setRemindMsg('')
+  }
+  const handleRelate = async () => {
+    if (!selectedTicket || !relateId) return
+    await relate(selectedTicket.id, relateId.trim())
+    setRelateDialog(false); setRelateId('')
+    await handleSelectTicket(await getTicket(selectedTicket.id))
+  }
+
   // 闭环: 草稿送审(低/中风险直通执行, 高风险进审批)
   const handleSubmitTicket = async () => {
     if (!selectedTicket) return
@@ -659,11 +698,17 @@ export default function ITSMPage() {
                     <CardDescription className="text-xs">ID: {selectedTicket.id.slice(0, 12)}... · {selectedTicket.created_by} · {formatTime(selectedTicket.created_at)}</CardDescription>
                   </div>
                   <div className="flex gap-1">
-                    {!['rejected', 'rolled_back', 'closed'].includes(selectedTicket.status) && (
+                    {!['rejected', 'rolled_back', 'closed', 'withdrawn'].includes(selectedTicket.status) && (
                       <Button variant="outline" size="sm" onClick={() => { setAssignDialog(true); setAssigneeInput(selectedTicket.assignee || '') }} disabled={!canWrite}><UserPlus className="h-3 w-3" />指派</Button>
                     )}
                     {selectedTicket.status === 'draft' && (
                       <Button variant="outline" size="sm" onClick={handleSubmitTicket} disabled={!canWrite}><Send className="h-3 w-3" />提交</Button>
+                    )}
+                    {selectedTicket.status === 'draft' && (
+                      <Button variant="outline" size="sm" onClick={handleWithdraw} disabled={!canWrite}><X className="h-3 w-3" />撤回</Button>
+                    )}
+                    {selectedTicket.status === 'closed' && (
+                      <Button variant="outline" size="sm" onClick={handleReopen} disabled={!canWrite}><RotateCcw className="h-3 w-3" />重开</Button>
                     )}
                     {selectedTicket.status === 'pending_review' && (
                       <><Button variant="outline" size="sm" onClick={() => { setApproveDialog(true); setApproveComment('') }} disabled={!canApprove}><Check className="h-3 w-3" />通过</Button>
@@ -683,6 +728,17 @@ export default function ITSMPage() {
                     )}
                     {selectedTicket.status === 'succeeded' && (
                       <Button variant="outline" size="sm" onClick={() => handleConvertToKnowledge(selectedTicket)} disabled={!canWrite}><BookOpen className="h-3 w-3 mr-1"/>转知识</Button>
+                    )}
+                    {!['rejected', 'rolled_back', 'closed', 'withdrawn'].includes(selectedTicket.status) && (
+                      <>
+                        {selectedTicket.on_hold ? (
+                          <Button variant="outline" size="sm" onClick={handleResume} disabled={!canWrite}><Play className="h-3 w-3" />恢复</Button>
+                        ) : (
+                          <Button variant="outline" size="sm" onClick={handleHold} disabled={!canWrite}><Clock className="h-3 w-3" />挂起</Button>
+                        )}
+                        <Button variant="outline" size="sm" onClick={() => setRemindDialog(true)} disabled={!canWrite}><Bell className="h-3 w-3" />催办</Button>
+                        <Button variant="outline" size="sm" onClick={() => setRelateDialog(true)} disabled={!canWrite}><Link2 className="h-3 w-3" />关联</Button>
+                      </>
                     )}
                   </div>
                 </div>
@@ -1094,6 +1150,22 @@ export default function ITSMPage() {
           <p className="text-xs text-muted-foreground">指派后 SLA 预警/违约通知会带上负责人信息。</p>
         </div>
         <DialogFooter><Button variant="outline" onClick={() => setAssignDialog(false)}>取消</Button><Button onClick={handleAssignTicket} disabled={!canWrite || !assigneeInput.trim()}>确认指派</Button></DialogFooter>
+      </Dialog>
+
+      <Dialog open={remindDialog} onClose={() => setRemindDialog(false)} title="催办工单">
+        <div className="space-y-3">
+          <div><label className="text-sm font-medium">催办留言</label><textarea className="flex h-20 w-full rounded-md border border-input bg-background px-3 py-2 text-sm mt-1" value={remindMsg} onChange={e => setRemindMsg(e.target.value)} placeholder="催办留言（可选）" /></div>
+          <p className="text-xs text-muted-foreground">催办通知将发给负责人（{selectedTicket?.assignee || '未指派'}）。</p>
+        </div>
+        <DialogFooter><Button variant="outline" onClick={() => setRemindDialog(false)}>取消</Button><Button onClick={handleRemind} disabled={!canWrite}>发送催办</Button></DialogFooter>
+      </Dialog>
+
+      <Dialog open={relateDialog} onClose={() => setRelateDialog(false)} title="关联工单">
+        <div className="space-y-3">
+          <div><label className="text-sm font-medium">目标工单 ID</label><Input className="mt-1" value={relateId} onChange={e => setRelateId(e.target.value)} placeholder="输入要关联的工单 ID" onKeyDown={e => e.key === 'Enter' && handleRelate()} /></div>
+          <p className="text-xs text-muted-foreground">关联是双向的：目标工单也会显示与本工单的关联。</p>
+        </div>
+        <DialogFooter><Button variant="outline" onClick={() => setRelateDialog(false)}>取消</Button><Button onClick={handleRelate} disabled={!canWrite || !relateId.trim()}>确认关联</Button></DialogFooter>
       </Dialog>
 
       <Dialog open={closeDialog} onClose={() => setCloseDialog(false)} title="关闭工单">

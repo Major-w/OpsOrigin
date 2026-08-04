@@ -7,7 +7,7 @@ import { Badge } from '@/components/ui/badge'
 import { Input } from '@/components/ui/input'
 import { Dialog, DialogFooter } from '@/components/ui/dialog'
 import { formatTime, apiFetch, apiList } from '@/lib/utils'
-import { Plus, Check, X, Play, ChevronRight, Shield } from 'lucide-react'
+import { Plus, Check, X, Play, ChevronRight, Shield, ChevronLeft, CalendarDays } from 'lucide-react'
 
 interface CABApproval {
   member: string
@@ -32,6 +32,9 @@ interface ChangeRequest {
   plan: string
   rollback_plan: string
   created_by: string
+  scheduled_at?: string
+  window_start?: string
+  window_end?: string
   created_at: string
   updated_at: string
 }
@@ -55,10 +58,13 @@ export default function ChangeManagementPage() {
   const [form, setForm] = useState({
     title: '', description: '', risk_level: 'medium', change_type: 'normal',
     impact: '', urgency: '', cab_members: '', plan: '', rollback_plan: '', created_by: 'admin', ticket_id: '',
+    scheduled_at: '', window_start: '', window_end: '',
   })
   const [voteDialog, setVoteDialog] = useState(false)
   const [voteMember, setVoteMember] = useState('admin')
   const [voteComment, setVoteComment] = useState('')
+  const [calYear, setCalYear] = useState(() => new Date().getFullYear())
+  const [calMonth, setCalMonth] = useState(() => new Date().getMonth())
 
   const fetchChanges = useCallback(async () => {
     setLoading(true)
@@ -78,7 +84,7 @@ export default function ChangeManagementPage() {
       body: JSON.stringify({ ...form, cab_members: cabMembers }),
     })
     setCreateOpen(false)
-    setForm({ title: '', description: '', risk_level: 'medium', change_type: 'normal', impact: '', urgency: '', cab_members: '', plan: '', rollback_plan: '', created_by: 'admin', ticket_id: '' })
+    setForm({ title: '', description: '', risk_level: 'medium', change_type: 'normal', impact: '', urgency: '', cab_members: '', plan: '', rollback_plan: '', created_by: 'admin', ticket_id: '', scheduled_at: '', window_start: '', window_end: '' })
     fetchChanges()
   }
 
@@ -115,6 +121,21 @@ export default function ChangeManagementPage() {
         </div>
         <Button onClick={() => setCreateOpen(true)}><Plus className="h-4 w-4" />新建变更</Button>
       </div>
+
+      <Card>
+        <CardHeader className="py-3">
+          <div className="flex items-center justify-between">
+            <CardTitle className="text-sm flex items-center gap-1.5"><CalendarDays className="h-3.5 w-3.5" />变更日历（{calYear} 年 {calMonth + 1} 月）</CardTitle>
+            <div className="flex gap-1">
+              <Button variant="outline" size="sm" className="h-7 w-7 p-0" onClick={() => { if (calMonth === 0) { setCalMonth(11); setCalYear(y => y - 1) } else setCalMonth(m => m - 1) }}><ChevronLeft className="h-3 w-3" /></Button>
+              <Button variant="outline" size="sm" className="h-7 w-7 p-0" onClick={() => { if (calMonth === 11) { setCalMonth(0); setCalYear(y => y + 1) } else setCalMonth(m => m + 1) }}><ChevronRight className="h-3 w-3" /></Button>
+            </div>
+          </div>
+        </CardHeader>
+        <CardContent>
+          <CalendarGrid year={calYear} month={calMonth} changes={changes} onSelect={setSelected} />
+        </CardContent>
+      </Card>
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
         <div className="lg:col-span-1">
@@ -269,6 +290,11 @@ export default function ChangeManagementPage() {
             <div><label className="text-sm font-medium">创建人</label><Input value={form.created_by} onChange={e => setForm(f => ({ ...f, created_by: e.target.value }))} /></div>
             <div><label className="text-sm font-medium">关联工单 ID (可选)</label><Input value={form.ticket_id} onChange={e => setForm(f => ({ ...f, ticket_id: e.target.value }))} placeholder="留空则不关联" /></div>
           </div>
+          <div className="grid grid-cols-2 gap-3">
+            <div><label className="text-sm font-medium">计划开始时间</label><input type="datetime-local" className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm" value={form.scheduled_at} onChange={e => setForm(f => ({ ...f, scheduled_at: e.target.value }))} /></div>
+            <div><label className="text-sm font-medium">变更窗口</label><input type="datetime-local" className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm" value={form.window_start} onChange={e => setForm(f => ({ ...f, window_start: e.target.value }))} placeholder="窗口开始" /></div>
+          </div>
+          <div><label className="text-sm font-medium">窗口结束</label><input type="datetime-local" className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm" value={form.window_end} onChange={e => setForm(f => ({ ...f, window_end: e.target.value }))} /></div>
         </div>
         <DialogFooter><Button variant="outline" onClick={() => setCreateOpen(false)}>取消</Button><Button onClick={handleCreate} disabled={!form.title}>提交</Button></DialogFooter>
       </Dialog>
@@ -284,6 +310,82 @@ export default function ChangeManagementPage() {
           <Button onClick={() => handleVote(true)}>批准</Button>
         </DialogFooter>
       </Dialog>
+    </div>
+  )
+}
+
+// CalendarGrid —— 变更日历: 按月的 7 列网格, 把带排期(scheduled_at/window_start)的变更块渲染到对应日期。
+function CalendarGrid({
+  year,
+  month,
+  changes,
+  onSelect,
+}: {
+  year: number
+  month: number
+  changes: ChangeRequest[]
+  onSelect: (c: ChangeRequest) => void
+}) {
+  const today = new Date()
+  const firstDay = new Date(year, month, 1).getDay()
+  const daysInMonth = new Date(year, month + 1, 0).getDate()
+  const weekdays = ['日', '一', '二', '三', '四', '五', '六']
+
+  const dayOf = (iso?: string) => {
+    if (!iso) return null
+    const d = new Date(iso)
+    if (isNaN(d.getTime())) return null
+    return { date: d.getDate(), month: d.getMonth(), year: d.getFullYear(), label: `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}` }
+  }
+
+  const cells: (number | null)[] = [
+    ...Array.from({ length: firstDay }, () => null),
+    ...Array.from({ length: daysInMonth }, (_, i) => i + 1),
+  ]
+  const riskColor: Record<string, string> = { critical: 'bg-red-500', high: 'bg-amber-500', medium: 'bg-blue-500', low: 'bg-emerald-500' }
+
+  return (
+    <div>
+      <div className="grid grid-cols-7 gap-1 mb-1">
+        {weekdays.map(w => <div key={w} className="text-center text-[11px] text-muted-foreground py-1">{w}</div>)}
+      </div>
+      <div className="grid grid-cols-7 gap-1">
+        {cells.map((d, i) => {
+          const dayChanges = d === null ? [] : changes.filter(c => {
+            const dt = dayOf(c.scheduled_at) || dayOf(c.window_start)
+            return dt !== null && dt.date === d && dt.month === month && dt.year === year
+          })
+          const isToday = d === today.getDate() && month === today.getMonth() && year === today.getFullYear()
+          return (
+            <div key={i} className={`min-h-[64px] rounded-md border p-1 text-xs ${isToday ? 'border-primary' : 'border-border'} ${d === null ? 'bg-muted/30' : ''}`}>
+              {d !== null && (
+                <>
+                  <div className="text-right text-muted-foreground">{d}</div>
+                  <div className="space-y-0.5">
+                    {dayChanges.slice(0, 3).map(c => {
+                      const dt = dayOf(c.scheduled_at) || dayOf(c.window_start)
+                      return (
+                        <button
+                          key={c.id}
+                          type="button"
+                          onClick={() => onSelect(c)}
+                          className={`block w-full text-left truncate rounded px-1 py-0.5 text-[10px] text-white ${riskColor[c.risk_level] || 'bg-gray-500'}`}
+                        >
+                          {dt ? dt.label : ''} {c.title}
+                        </button>
+                      )
+                    })}
+                    {dayChanges.length > 3 && <div className="text-[10px] text-muted-foreground">+{dayChanges.length - 3} 项</div>}
+                  </div>
+                </>
+              )}
+            </div>
+          )
+        })}
+      </div>
+      {changes.filter(c => c.scheduled_at || c.window_start).length === 0 && (
+        <p className="text-xs text-muted-foreground mt-2">暂无排期变更，可在新建变更时填写计划开始时间/变更窗口。</p>
+      )}
     </div>
   )
 }
