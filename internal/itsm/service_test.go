@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -38,9 +39,14 @@ func createTicket(t *testing.T, s *Service, riskLevel model.RiskLevel) model.Tic
 
 func callPost(t *testing.T, s *Service, path, body string) *httptest.ResponseRecorder {
 	t.Helper()
+	return doMethod(t, s, http.MethodPost, path, body)
+}
+
+func doMethod(t *testing.T, s *Service, method, path, body string) *httptest.ResponseRecorder {
+	t.Helper()
 	mux := http.NewServeMux()
 	s.RegisterRoutes(mux)
-	req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(body))
+	req := httptest.NewRequest(method, path, strings.NewReader(body))
 	w := httptest.NewRecorder()
 	mux.ServeHTTP(w, req)
 	return w
@@ -251,4 +257,67 @@ func (f *fakeProc) Advance(ctx context.Context, tenantID, ticketID, condition st
 }
 func (f *fakeProc) GetInstance(ctx context.Context, ticketID, tenantID string) (*process.ProcessInstance, error) {
 	return &process.ProcessInstance{}, nil
+}
+
+// 子任务: 创建/列表/状态流转(完成时间戳)/删除
+func TestSubtaskLifecycle(t *testing.T) {
+	s := newTestService()
+	tk := createTicket(t, s, model.RiskLow)
+
+	// 创建两个子任务
+	w := callPost(t, s, "/api/v1/itsm/tickets/"+tk.ID+"/subtasks", `{"title":"备份数据库","assignee":"alice","created_by":"u1"}`)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("create subtask: status %d body=%s", w.Code, w.Body.String())
+	}
+	var st1 model.Subtask
+	if err := json.Unmarshal(w.Body.Bytes(), &st1); err != nil {
+		t.Fatal(err)
+	}
+	if st1.Status != model.SubtaskPending {
+		t.Fatalf("new subtask should be pending, got %s", st1.Status)
+	}
+	callPost(t, s, "/api/v1/itsm/tickets/"+tk.ID+"/subtasks", `{"title":"重启应用","assignee":"bob","created_by":"u1"}`)
+
+	// 列表
+	{
+		rw := doMethod(t, s, http.MethodGet, "/api/v1/itsm/tickets/"+tk.ID+"/subtasks", "")
+		if rw.Code != http.StatusOK {
+			t.Fatalf("list subtasks: status %d", rw.Code)
+		}
+		var list []*model.Subtask
+		if err := json.Unmarshal(rw.Body.Bytes(), &list); err != nil {
+			t.Fatal(err)
+		}
+		if len(list) != 2 {
+			t.Fatalf("want 2 subtasks, got %d", len(list))
+		}
+	}
+
+	// 状态流转 done → 记录完成时间戳
+	rw := doMethod(t, s, http.MethodPut, "/api/v1/itsm/tickets/"+tk.ID+"/subtasks/"+strconv.FormatInt(st1.ID, 10), `{"status":"done"}`)
+	if rw.Code != http.StatusOK {
+		t.Fatalf("update subtask: status %d body=%s", rw.Code, rw.Body.String())
+	}
+	var stUpdated model.Subtask
+	if err := json.Unmarshal(rw.Body.Bytes(), &stUpdated); err != nil {
+		t.Fatal(err)
+	}
+	if stUpdated.Status != model.SubtaskDone || stUpdated.CompletedAt == nil {
+		t.Fatalf("done subtask should record completed_at, got %+v", stUpdated)
+	}
+
+	// 删除
+	rw = doMethod(t, s, http.MethodDelete, "/api/v1/itsm/tickets/"+tk.ID+"/subtasks/"+strconv.FormatInt(st1.ID, 10), "")
+	if rw.Code != http.StatusOK {
+		t.Fatalf("delete subtask: status %d body=%s", rw.Code, rw.Body.String())
+	}
+	// 删除后只剩 1 条
+	{
+		rw := doMethod(t, s, http.MethodGet, "/api/v1/itsm/tickets/"+tk.ID+"/subtasks", "")
+		var list []*model.Subtask
+		json.Unmarshal(rw.Body.Bytes(), &list)
+		if len(list) != 1 {
+			t.Fatalf("after delete want 1 subtask, got %d", len(list))
+		}
+	}
 }

@@ -25,6 +25,11 @@ type Store interface {
 	AddComment(ctx context.Context, comment *model.Comment) error
 	ListComments(ctx context.Context, ticketID, tenantID string) ([]*model.Comment, error)
 	DeleteComment(ctx context.Context, id int64, ticketID, tenantID string) error
+	// Subtasks
+	CreateSubtask(ctx context.Context, st *model.Subtask) error
+	ListSubtasks(ctx context.Context, ticketID, tenantID string) ([]*model.Subtask, error)
+	UpdateSubtask(ctx context.Context, st *model.Subtask) error
+	DeleteSubtask(ctx context.Context, id int64, ticketID, tenantID string) error
 	// Attachments
 	AddAttachment(ctx context.Context, att *model.Attachment) error
 	ListAttachments(ctx context.Context, ticketID, tenantID string) ([]*model.Attachment, error)
@@ -51,6 +56,7 @@ type MemoryStore struct {
 	tickets     map[string]*model.Ticket
 	events      map[string][]*model.TicketEvent
 	comments    []*model.Comment
+	subtasks    []*model.Subtask
 	attachments []*model.Attachment
 	changes     map[string]*model.ChangeRequest
 	schemas     map[string]map[string]*form.FormSchema // tenantID -> scope -> schema
@@ -65,6 +71,8 @@ func NewMemoryStore() *MemoryStore {
 		schemas: make(map[string]map[string]*form.FormSchema),
 	}
 }
+
+var _ Store = (*MemoryStore)(nil)
 
 func (s *MemoryStore) Create(ctx context.Context, ticket *model.Ticket) error {
 	s.mu.Lock()
@@ -221,6 +229,69 @@ func (s *MemoryStore) DeleteComment(ctx context.Context, id int64, ticketID, ten
 	for i, c := range s.comments {
 		if c.ID == id && c.TicketID == ticketID && c.TenantID == tenantID {
 			s.comments = append(s.comments[:i], s.comments[i+1:]...)
+			return nil
+		}
+	}
+	return ErrNotFound
+}
+
+// --- Subtasks (in-memory) ---
+
+func (s *MemoryStore) CreateSubtask(ctx context.Context, st *model.Subtask) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.nextID++
+	st.ID = s.nextID
+	now := time.Now()
+	st.CreatedAt = now
+	st.UpdatedAt = now
+	if st.Status == "" {
+		st.Status = model.SubtaskPending
+	}
+	if st.Status == model.SubtaskDone {
+		st.CompletedAt = &now
+	}
+	s.subtasks = append(s.subtasks, st)
+	return nil
+}
+
+func (s *MemoryStore) ListSubtasks(ctx context.Context, ticketID, tenantID string) ([]*model.Subtask, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	var result []*model.Subtask
+	for _, st := range s.subtasks {
+		if st.TicketID == ticketID && st.TenantID == tenantID {
+			result = append(result, st)
+		}
+	}
+	return result, nil
+}
+
+func (s *MemoryStore) UpdateSubtask(ctx context.Context, st *model.Subtask) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i, cur := range s.subtasks {
+		if cur.ID == st.ID && cur.TicketID == st.TicketID && cur.TenantID == st.TenantID {
+			st.UpdatedAt = time.Now()
+			if st.Status == model.SubtaskDone && cur.Status != model.SubtaskDone {
+				now := st.UpdatedAt
+				st.CompletedAt = &now
+			} else if st.Status != model.SubtaskDone {
+				st.CompletedAt = nil
+			}
+			s.subtasks[i] = st
+			return nil
+		}
+	}
+	return ErrNotFound
+}
+
+func (s *MemoryStore) DeleteSubtask(ctx context.Context, id int64, ticketID, tenantID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i, st := range s.subtasks {
+		if st.ID == id && st.TicketID == ticketID && st.TenantID == tenantID {
+			s.subtasks = append(s.subtasks[:i], s.subtasks[i+1:]...)
 			return nil
 		}
 	}

@@ -161,6 +161,11 @@ func (s *Service) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/v1/itsm/tickets/{id}/comments", s.handleAddComment)
 	mux.HandleFunc("GET /api/v1/itsm/tickets/{id}/comments", s.handleListComments)
 	mux.HandleFunc("DELETE /api/v1/itsm/tickets/{id}/comments/{cid}", s.handleDeleteComment)
+	// Subtasks
+	mux.HandleFunc("POST /api/v1/itsm/tickets/{id}/subtasks", s.handleAddSubtask)
+	mux.HandleFunc("GET /api/v1/itsm/tickets/{id}/subtasks", s.handleListSubtasks)
+	mux.HandleFunc("PUT /api/v1/itsm/tickets/{id}/subtasks/{sid}", s.handleUpdateSubtask)
+	mux.HandleFunc("DELETE /api/v1/itsm/tickets/{id}/subtasks/{sid}", s.handleDeleteSubtask)
 	// Attachments
 	mux.HandleFunc("POST /api/v1/itsm/tickets/{id}/attachments", s.handleUploadAttachment)
 	mux.HandleFunc("GET /api/v1/itsm/tickets/{id}/attachments", s.handleListAttachments)
@@ -976,6 +981,149 @@ func (s *Service) handleDeleteComment(w http.ResponseWriter, r *http.Request) {
 	if err := s.store.DeleteComment(r.Context(), cid, id, tenantID); err != nil {
 		if err == store.ErrNotFound {
 			writeError(w, http.StatusNotFound, "comment not found")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
+}
+
+// --- Subtasks ---
+
+func (s *Service) handleAddSubtask(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	tenantID := tenantFromCtx(r.Context())
+
+	var req model.CreateSubtaskRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if req.Title == "" {
+		writeError(w, http.StatusBadRequest, "title is required")
+		return
+	}
+	if req.CreatedBy == "" {
+		req.CreatedBy = "admin"
+	}
+
+	st := &model.Subtask{
+		TicketID:    id,
+		TenantID:    tenantID,
+		Title:       req.Title,
+		Description: req.Description,
+		Assignee:    req.Assignee,
+		Status:      model.SubtaskPending,
+		DueAt:       req.DueAt,
+		CreatedBy:   req.CreatedBy,
+	}
+	if err := s.store.CreateSubtask(r.Context(), st); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to create subtask")
+		return
+	}
+	writeJSON(w, http.StatusCreated, st)
+}
+
+func (s *Service) handleListSubtasks(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	tenantID := tenantFromCtx(r.Context())
+
+	subtasks, err := s.store.ListSubtasks(r.Context(), id, tenantID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if subtasks == nil {
+		subtasks = []*model.Subtask{}
+	}
+	writeJSON(w, http.StatusOK, subtasks)
+}
+
+func (s *Service) handleUpdateSubtask(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	sidStr := r.PathValue("sid")
+	tenantID := tenantFromCtx(r.Context())
+
+	sid, err := strconv.ParseInt(sidStr, 10, 64)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid subtask id")
+		return
+	}
+
+	var req model.UpdateSubtaskRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+
+	// 先取原记录, 未传字段保持原值
+	subtasks, err := s.store.ListSubtasks(r.Context(), id, tenantID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	var cur *model.Subtask
+	for _, st := range subtasks {
+		if st.ID == sid {
+			cur = st
+			break
+		}
+	}
+	if cur == nil {
+		writeError(w, http.StatusNotFound, "subtask not found")
+		return
+	}
+
+	// 值拷贝后再更新: 避免直接改 store 返回的内部引用, 使 store 能判断"从非 done 变 done"以记录完成时间
+	updated := *cur
+	if req.Title != "" {
+		updated.Title = req.Title
+	}
+	if req.Description != "" {
+		updated.Description = req.Description
+	}
+	if req.Assignee != "" {
+		updated.Assignee = req.Assignee
+	}
+	if req.Status != "" {
+		switch req.Status {
+		case model.SubtaskPending, model.SubtaskInProgress, model.SubtaskDone, model.SubtaskBlocked:
+			updated.Status = req.Status
+		default:
+			writeError(w, http.StatusBadRequest, "invalid status")
+			return
+		}
+	}
+	if req.DueAt != nil {
+		updated.DueAt = req.DueAt
+	}
+
+	if err := s.store.UpdateSubtask(r.Context(), &updated); err != nil {
+		if err == store.ErrNotFound {
+			writeError(w, http.StatusNotFound, "subtask not found")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, &updated)
+}
+
+func (s *Service) handleDeleteSubtask(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	sidStr := r.PathValue("sid")
+	tenantID := tenantFromCtx(r.Context())
+
+	sid, err := strconv.ParseInt(sidStr, 10, 64)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid subtask id")
+		return
+	}
+
+	if err := s.store.DeleteSubtask(r.Context(), sid, id, tenantID); err != nil {
+		if err == store.ErrNotFound {
+			writeError(w, http.StatusNotFound, "subtask not found")
 			return
 		}
 		writeError(w, http.StatusInternalServerError, err.Error())

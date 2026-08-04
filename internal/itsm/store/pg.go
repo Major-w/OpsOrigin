@@ -85,6 +85,30 @@ func (s *PGStore) Init(ctx context.Context) error {
 	}
 
 	_, err = s.db.ExecContext(ctx, `
+		CREATE TABLE IF NOT EXISTS itsm_subtasks (
+			id          BIGSERIAL PRIMARY KEY,
+			ticket_id   TEXT NOT NULL,
+			tenant_id   TEXT NOT NULL,
+			title       TEXT NOT NULL,
+			description TEXT,
+			assignee    TEXT,
+			status      TEXT NOT NULL DEFAULT 'pending',
+			due_at      TIMESTAMPTZ,
+			created_by  TEXT,
+			created_at  TIMESTAMPTZ NOT NULL,
+			updated_at  TIMESTAMPTZ NOT NULL,
+			completed_at TIMESTAMPTZ
+		)`)
+	if err != nil {
+		return fmt.Errorf("init itsm_subtasks table: %w", err)
+	}
+	_, err = s.db.ExecContext(ctx, `
+		CREATE INDEX IF NOT EXISTS idx_itsm_subtasks_ticket ON itsm_subtasks(ticket_id, tenant_id)`)
+	if err != nil {
+		return fmt.Errorf("init itsm_subtasks index: %w", err)
+	}
+
+	_, err = s.db.ExecContext(ctx, `
 		CREATE TABLE IF NOT EXISTS itsm_attachments (
 			id          BIGSERIAL PRIMARY KEY,
 			ticket_id   TEXT NOT NULL,
@@ -568,6 +592,91 @@ func (s *PGStore) ListComments(ctx context.Context, ticketID, tenantID string) (
 func (s *PGStore) DeleteComment(ctx context.Context, id int64, ticketID, tenantID string) error {
 	result, err := s.db.ExecContext(ctx, `
 		DELETE FROM itsm_comments WHERE id = $1 AND ticket_id = $2 AND tenant_id = $3`, id, ticketID, tenantID)
+	if err != nil {
+		return err
+	}
+	rows, _ := result.RowsAffected()
+	if rows == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+func (s *PGStore) CreateSubtask(ctx context.Context, st *model.Subtask) error {
+	now := time.Now()
+	st.CreatedAt = now
+	st.UpdatedAt = now
+	if st.Status == "" {
+		st.Status = model.SubtaskPending
+	}
+	if st.Status == model.SubtaskDone {
+		st.CompletedAt = &now
+	}
+	err := s.db.QueryRowContext(ctx, `
+		INSERT INTO itsm_subtasks (ticket_id, tenant_id, title, description, assignee, status, due_at, created_by, created_at, updated_at, completed_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) RETURNING id`,
+		st.TicketID, st.TenantID, st.Title, nullable(st.Description), nullable(st.Assignee),
+		string(st.Status), nullableTime(st.DueAt), st.CreatedBy, st.CreatedAt, st.UpdatedAt, nullableTime(st.CompletedAt)).Scan(&st.ID)
+	return err
+}
+
+func (s *PGStore) ListSubtasks(ctx context.Context, ticketID, tenantID string) ([]*model.Subtask, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT id, ticket_id, tenant_id, title, description, assignee, status, due_at, created_by, created_at, updated_at, completed_at
+		FROM itsm_subtasks WHERE ticket_id = $1 AND tenant_id = $2
+		ORDER BY created_at ASC`, ticketID, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []*model.Subtask
+	for rows.Next() {
+		st := &model.Subtask{}
+		var description, assignee, createdBy sql.NullString
+		var dueAt, completedAt sql.NullTime
+		if err := rows.Scan(&st.ID, &st.TicketID, &st.TenantID, &st.Title,
+			&description, &assignee, &st.Status, &dueAt, &createdBy,
+			&st.CreatedAt, &st.UpdatedAt, &completedAt); err != nil {
+			return nil, err
+		}
+		st.Description = nullableStr(description)
+		st.Assignee = nullableStr(assignee)
+		st.CreatedBy = nullableStr(createdBy)
+		setTimePtr(&st.DueAt, dueAt)
+		setTimePtr(&st.CompletedAt, completedAt)
+		out = append(out, st)
+	}
+	return out, rows.Err()
+}
+
+func (s *PGStore) UpdateSubtask(ctx context.Context, st *model.Subtask) error {
+	st.UpdatedAt = time.Now()
+	if st.Status == model.SubtaskDone && st.CompletedAt == nil {
+		now := st.UpdatedAt
+		st.CompletedAt = &now
+	} else if st.Status != model.SubtaskDone {
+		st.CompletedAt = nil
+	}
+	result, err := s.db.ExecContext(ctx, `
+		UPDATE itsm_subtasks SET title=$1, description=$2, assignee=$3, status=$4,
+			due_at=$5, updated_at=$6, completed_at=$7
+		WHERE id=$8 AND ticket_id=$9 AND tenant_id=$10`,
+		st.Title, nullable(st.Description), nullable(st.Assignee), string(st.Status),
+		nullableTime(st.DueAt), st.UpdatedAt, nullableTime(st.CompletedAt),
+		st.ID, st.TicketID, st.TenantID)
+	if err != nil {
+		return err
+	}
+	rows, _ := result.RowsAffected()
+	if rows == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+func (s *PGStore) DeleteSubtask(ctx context.Context, id int64, ticketID, tenantID string) error {
+	result, err := s.db.ExecContext(ctx, `
+		DELETE FROM itsm_subtasks WHERE id = $1 AND ticket_id = $2 AND tenant_id = $3`, id, ticketID, tenantID)
 	if err != nil {
 		return err
 	}

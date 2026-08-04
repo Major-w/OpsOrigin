@@ -14,7 +14,7 @@ import { Dialog, DialogFooter } from '@/components/ui/dialog'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { formatTime, apiFetch, apiList } from '@/lib/utils'
 import { useCan, useCanAny } from '@/stores/permissions'
-import { Plus, Check, X, Play, RotateCcw, Clock, FileText, Activity, ChevronRight, Paperclip, MessageSquare, Upload, Download, Trash2, FileUp, FileDown, BookOpen, BookOpenCheck, Send, UserPlus, CheckCircle2 } from 'lucide-react'
+import { Plus, Check, X, Play, RotateCcw, Clock, FileText, Activity, ChevronRight, Paperclip, MessageSquare, Upload, Download, Trash2, FileUp, FileDown, BookOpen, BookOpenCheck, Send, UserPlus, CheckCircle2, ListChecks } from 'lucide-react'
 
 const riskBadge: Record<string, 'destructive' | 'warning' | 'secondary' | 'success'> = { critical: 'destructive', high: 'warning', medium: 'secondary', low: 'success' }
 const riskLabels: Record<string, string> = { critical: '致命', high: '高危', medium: '中危', low: '低危' }
@@ -43,6 +43,28 @@ interface Attachment {
   file_type: string
   uploaded_by: string
   created_at: string
+}
+
+interface Subtask {
+  id: number
+  ticket_id: string
+  tenant_id: string
+  title: string
+  description?: string
+  assignee?: string
+  status: 'pending' | 'in_progress' | 'done' | 'blocked'
+  due_at?: string
+  created_by?: string
+  created_at: string
+  updated_at?: string
+  completed_at?: string | null
+}
+
+const subtaskLabels: Record<string, string> = {
+  pending: '待处理', in_progress: '处理中', done: '已完成', blocked: '受阻',
+}
+const subtaskVariants: Record<string, 'secondary' | 'default' | 'success' | 'destructive'> = {
+  pending: 'secondary', in_progress: 'default', done: 'success', blocked: 'destructive',
 }
 
 function statusVariant(s: string): 'success' | 'destructive' | 'secondary' | 'outline' {
@@ -107,6 +129,15 @@ export default function ITSMPage() {
   const [uploading, setUploading] = useState(false)
   const fileInputRef = useRef<HTMLInputElement>(null)
 
+  // Subtasks
+  const [subtasks, setSubtasks] = useState<Subtask[]>([])
+  const [subtaskDialog, setSubtaskDialog] = useState(false)
+  const [subtaskTitle, setSubtaskTitle] = useState('')
+  const [subtaskAssignee, setSubtaskAssignee] = useState('')
+  const [subtaskDesc, setSubtaskDesc] = useState('')
+  const [subtaskDue, setSubtaskDue] = useState('')
+  const [subtaskSaving, setSubtaskSaving] = useState(false)
+
   // Import
   const [importing, setImporting] = useState(false)
   const [importResult, setImportResult] = useState<{ total: number; success: number; errors: { row: number; message: string }[] } | null>(null)
@@ -142,6 +173,13 @@ export default function ITSMPage() {
       const data = await apiList<Attachment>(`/itsm/tickets/${ticketId}/attachments`)
       setAttachments(data || [])
     } catch { setAttachments([]) }
+  }, [])
+
+  const fetchSubtasks = useCallback(async (ticketId: string) => {
+    try {
+      const data = await apiList<Subtask>(`/itsm/tickets/${ticketId}/subtasks`)
+      setSubtasks(data || [])
+    } catch { setSubtasks([]) }
   }, [])
 
   useEffect(() => { fetch(); fetchStats(); fetchProcesses() }, [])
@@ -213,6 +251,7 @@ export default function ITSMPage() {
     } catch { setTicketEvents([]) }
     fetchComments(ticket.id)
     fetchAttachments(ticket.id)
+    fetchSubtasks(ticket.id)
     // 解析表单作用域：优先流程实例当前步骤的 form_scope，否则 ticket.form_scope / ticket:default
     let scope = ticket.form_scope || 'ticket:default'
     if (ticket.process_id) {
@@ -415,6 +454,58 @@ export default function ITSMPage() {
     try {
       await apiFetch(`/itsm/tickets/${selectedTicket.id}/comments/${cid}`, { method: 'DELETE' })
       fetchComments(selectedTicket.id)
+    } catch { /* ignore */ }
+  }
+
+  // --- Subtasks ---
+  const handleCreateSubtask = async () => {
+    if (!selectedTicket || !subtaskTitle.trim()) return
+    setSubtaskSaving(true)
+    try {
+      await apiFetch(`/itsm/tickets/${selectedTicket.id}/subtasks`, {
+        method: 'POST',
+        body: JSON.stringify({
+          title: subtaskTitle.trim(),
+          description: subtaskDesc.trim(),
+          assignee: subtaskAssignee.trim(),
+          due_at: subtaskDue ? new Date(subtaskDue).toISOString() : null,
+          created_by: 'admin',
+        }),
+      })
+      setSubtaskDialog(false); setSubtaskTitle(''); setSubtaskDesc(''); setSubtaskAssignee(''); setSubtaskDue('')
+      fetchSubtasks(selectedTicket.id)
+    } catch { /* ignore */ }
+    setSubtaskSaving(false)
+  }
+
+  const handleToggleSubtask = async (st: Subtask) => {
+    if (!selectedTicket) return
+    const next = st.status === 'done' ? 'pending' : 'done'
+    try {
+      await apiFetch(`/itsm/tickets/${selectedTicket.id}/subtasks/${st.id}`, {
+        method: 'PUT',
+        body: JSON.stringify({ status: next }),
+      })
+      fetchSubtasks(selectedTicket.id)
+    } catch { /* ignore */ }
+  }
+
+  const handleSetSubtaskStatus = async (st: Subtask, status: string) => {
+    if (!selectedTicket || status === st.status) return
+    try {
+      await apiFetch(`/itsm/tickets/${selectedTicket.id}/subtasks/${st.id}`, {
+        method: 'PUT',
+        body: JSON.stringify({ status }),
+      })
+      fetchSubtasks(selectedTicket.id)
+    } catch { /* ignore */ }
+  }
+
+  const handleDeleteSubtask = async (sid: number) => {
+    if (!selectedTicket) return
+    try {
+      await apiFetch(`/itsm/tickets/${selectedTicket.id}/subtasks/${sid}`, { method: 'DELETE' })
+      fetchSubtasks(selectedTicket.id)
     } catch { /* ignore */ }
   }
 
@@ -635,6 +726,7 @@ export default function ITSMPage() {
                     {selectedTicket.process_id && <TabsTrigger value="process"><Activity className="w-3 h-3 mr-1" />流程</TabsTrigger>}
                     <TabsTrigger value="events"><Activity className="w-3 h-3 mr-1" />事件 ({ticketEvents.length})</TabsTrigger>
                     <TabsTrigger value="comments"><MessageSquare className="w-3 h-3 mr-1" />评论 ({comments.length})</TabsTrigger>
+                    <TabsTrigger value="subtasks"><ListChecks className="w-3 h-3 mr-1" />子任务 ({subtasks.length})</TabsTrigger>
                     <TabsTrigger value="attachments"><Paperclip className="w-3 h-3 mr-1" />附件 ({attachments.length})</TabsTrigger>
                   </TabsList>
                   <TabsContent value="detail" className="mt-3 space-y-3">
@@ -774,6 +866,62 @@ export default function ITSMPage() {
                                 </Button>
                               </div>
                               <p className="mt-1 text-sm whitespace-pre-wrap">{c.content}</p>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  </TabsContent>
+                  <TabsContent value="subtasks" className="mt-3">
+                    <div className="space-y-3">
+                      <div className="flex items-center justify-between">
+                        <span className="text-xs text-muted-foreground">
+                          {subtasks.filter(s => s.status === 'done').length} / {subtasks.length} 已完成
+                        </span>
+                        <Button variant="outline" size="sm" onClick={() => { setSubtaskDialog(true); setSubtaskTitle(''); setSubtaskDesc(''); setSubtaskAssignee(''); setSubtaskDue('') }} disabled={!canWrite}>
+                          <Plus className="h-3 w-3 mr-1" />新增子任务
+                        </Button>
+                      </div>
+                      {subtasks.length === 0 ? (
+                        <p className="text-sm text-muted-foreground text-center py-4">暂无子任务</p>
+                      ) : (
+                        <div className="space-y-2">
+                          {subtasks.map(st => (
+                            <div key={st.id} className={`border rounded-md p-3 text-sm group ${st.status === 'done' ? 'opacity-60' : ''}`}>
+                              <div className="flex items-start gap-2">
+                                <button onClick={() => handleToggleSubtask(st)} disabled={!canWrite} className="mt-0.5 shrink-0" aria-label={st.status === 'done' ? '标记未完成' : '标记完成'}>
+                                  <CheckCircle2 className={`h-4 w-4 ${st.status === 'done' ? 'text-green-600' : 'text-muted-foreground/40'}`} />
+                                </button>
+                                <div className="flex-1 min-w-0">
+                                  <div className="flex items-center gap-2 flex-wrap">
+                                    <span className={`text-sm font-medium ${st.status === 'done' ? 'line-through' : ''}`}>{st.title}</span>
+                                    <select
+                                      value={st.status}
+                                      onChange={e => handleSetSubtaskStatus(st, e.target.value)}
+                                      disabled={!canWrite}
+                                      className="h-6 text-[11px] rounded border border-input bg-background px-1"
+                                    >
+                                      {Object.entries(subtaskLabels).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
+                                    </select>
+                                    {st.due_at && <span className="text-[11px] text-muted-foreground">截止 {formatTime(st.due_at)}</span>}
+                                  </div>
+                                  {st.description && <p className="text-xs text-muted-foreground mt-1 whitespace-pre-wrap">{st.description}</p>}
+                                  <div className="flex items-center gap-2 mt-1 text-[11px] text-muted-foreground">
+                                    {st.assignee && <Badge variant="secondary" className="text-[10px]">{st.assignee}</Badge>}
+                                    <span>{formatTime(st.created_at)}</span>
+                                    {st.completed_at && <span className="text-green-600">完成于 {formatTime(st.completed_at)}</span>}
+                                  </div>
+                                </div>
+                                <Button
+                                  variant="ghost"
+                                  size="sm"
+                                  className="h-6 w-6 p-0 opacity-0 group-hover:opacity-100 transition-opacity"
+                                  onClick={() => handleDeleteSubtask(st.id)}
+                                  disabled={!canWrite}
+                                >
+                                  <Trash2 className="h-3 w-3" />
+                                </Button>
+                              </div>
                             </div>
                           ))}
                         </div>
@@ -961,6 +1109,18 @@ export default function ITSMPage() {
           </div>
         </div>
         <DialogFooter><Button variant="outline" onClick={() => setCloseDialog(false)}>取消</Button><Button onClick={handleCloseTicket} disabled={!canWrite}>确认关闭</Button></DialogFooter>
+      </Dialog>
+
+      <Dialog open={subtaskDialog} onClose={() => setSubtaskDialog(false)} title="新增子任务">
+        <div className="space-y-3">
+          <div><label className="text-sm font-medium">标题</label><Input className="mt-1" value={subtaskTitle} onChange={e => setSubtaskTitle(e.target.value)} placeholder="子任务标题" onKeyDown={e => e.key === 'Enter' && handleCreateSubtask()} /></div>
+          <div className="grid grid-cols-2 gap-3">
+            <div><label className="text-sm font-medium">负责人</label><Input className="mt-1" value={subtaskAssignee} onChange={e => setSubtaskAssignee(e.target.value)} placeholder="负责人用户名" /></div>
+            <div><label className="text-sm font-medium">截止日期</label><Input type="date" className="mt-1" value={subtaskDue} onChange={e => setSubtaskDue(e.target.value)} /></div>
+          </div>
+          <div><label className="text-sm font-medium">描述</label><textarea className="flex h-20 w-full rounded-md border border-input bg-background px-3 py-2 text-sm mt-1 resize-none" value={subtaskDesc} onChange={e => setSubtaskDesc(e.target.value)} placeholder="描述（可选）" /></div>
+        </div>
+        <DialogFooter><Button variant="outline" onClick={() => setSubtaskDialog(false)}>取消</Button><Button onClick={handleCreateSubtask} disabled={!canWrite || !subtaskTitle.trim() || subtaskSaving}>{subtaskSaving ? '创建中...' : '创建'}</Button></DialogFooter>
       </Dialog>
 
       <Dialog open={importDialog} onClose={() => setImportDialog(false)} title="导入结果">
