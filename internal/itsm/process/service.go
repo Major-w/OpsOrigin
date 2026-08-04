@@ -22,11 +22,22 @@ type ScriptExecutor interface {
 	Execute(scriptID string, params map[string]string, timeout int, runAs string, agentID string, tenantID string) (output string, exitCode int, err error)
 }
 
+// ActionExecutor 执行预置动作(动作库)。与 ScriptExecutor 并列: StepService 步骤携带
+// ActionType 时优先走动作执行器(如 http / notify / create_ticket), 由 cmd/core 注入实现,
+// 避免 process 包反向依赖自动化/通知/ITSM 具体实现。
+type ActionExecutor interface {
+	// ExecuteAction 执行一个动作。params 为动作参数(action_params), exprCtx 为表达式上下文
+	// (含 custom_fields 等表单字段), 供参数模板替换。返回结构化结果供 StepResults 记录。
+	ExecuteAction(ctx context.Context, actionType string, params map[string]any, tenantID, ticketID string, exprCtx map[string]any) (map[string]any, error)
+}
+
 type Service struct {
 	store Store
 	Name  string
 	// scriptExec 由 cmd/core 注入: StepService 步骤执行脚本(nil=跳过脚本, 服务步骤按 success 直通)。
 	scriptExec ScriptExecutor
+	// actionExec 由 cmd/core 注入: StepService 步骤执行预置动作(nil=未配置动作库, 动作步骤按 success 直通)。
+	actionExec ActionExecutor
 	// subflowLoader 加载子流程定义(默认走 store.Get; 测试可注入 fake 避免依赖 DB)。
 	subflowLoader func(ctx context.Context, id, tenantID string) (*Process, error)
 }
@@ -34,6 +45,11 @@ type Service struct {
 // SetScriptExecutor 注入脚本执行器, 使流程的 service 步骤真正驱动自动化脚本执行。
 func (s *Service) SetScriptExecutor(e ScriptExecutor) {
 	s.scriptExec = e
+}
+
+// SetActionExecutor 注入动作执行器, 使流程的 service 步骤能执行预置动作(http/notify/create_ticket 等)。
+func (s *Service) SetActionExecutor(e ActionExecutor) {
+	s.actionExec = e
 }
 
 // SetSubflowLoader 注入子流程定义加载器(默认 s.store.Get; 测试用)。

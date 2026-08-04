@@ -297,6 +297,32 @@ func (s *Service) runAutomatedDepth(ctx context.Context, proc *Process, inst *Pr
 			recordTimerStarted(inst, cur, time.Now())
 			return cur, nil // 等待定时器到期(由 StartTimerChecker 推进)
 		}
+		if cur.Type == StepService && cur.ActionType != "" && s.actionExec != nil {
+			// 动作库: 执行预置动作(http/notify/create_ticket 等), 结果写 StepResults, 失败走 failure 分支。
+			params := cur.Inputs
+			if params == nil {
+				params = map[string]any{}
+			}
+			result, execErr := s.actionExec.ExecuteAction(ctx, cur.ActionType, params, inst.TenantID, inst.TicketID, exprCtx)
+			rec := map[string]any{"action": cur.ActionType, "at": time.Now()}
+			if execErr != nil {
+				rec["error"] = execErr.Error()
+				slog.Warn("itsm process action failed", "action", cur.ActionType, "ticket_id", inst.TicketID, "error", execErr)
+			} else {
+				rec["result"] = result
+			}
+			inst.StepResults[cur.ID] = rec
+			cond := "success"
+			if execErr != nil {
+				cond = "failure"
+			}
+			nxt := proc.AdvancerExpr(cur.ID, cond, exprCtx)
+			if nxt == nil {
+				return cur, nil
+			}
+			cur = nxt
+			continue
+		}
 		if cur.Type == StepService && cur.ScriptID != "" && s.scriptExec != nil {
 			params := condStringMap(cur.Inputs)
 			runAs, _ := cur.Inputs["run_as"].(string)

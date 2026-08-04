@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // EvaluateCondition 对网关步骤的简单条件表达式求值, 使流程能根据工单表单字段内容决定走向。
@@ -198,17 +199,56 @@ func condEq(a, b condValue) bool {
 }
 
 func condCompare(a, b condValue, op string) bool {
-	switch op {
-	case ">":
-		return a.num > b.num
-	case "<":
-		return a.num < b.num
-	case ">=":
-		return a.num >= b.num
-	case "<=":
-		return a.num <= b.num
+	// 数值比较优先(数字字段)
+	if a.kind == 1 && b.kind == 1 {
+		return numCompare(a.num, b.num, op)
+	}
+	// 时间比较: 两侧均可解析为时间(如 datetime 字段, "2026-08-05 18:30")
+	if ta, aok := parseCondTime(a.str); aok {
+		if tb, bok := parseCondTime(b.str); bok {
+			fa := float64(ta.UnixNano())
+			fb := float64(tb.UnixNano())
+			return numCompare(fa, fb, op)
+		}
+	}
+	// 时长比较: 两侧均可解析为时长(如 duration 字段, "1h" / "90m")
+	if da, aok := parseStepDuration(a.str); aok {
+		if db, bok := parseStepDuration(b.str); bok {
+			return numCompare(float64(da), float64(db), op)
+		}
 	}
 	return false
+}
+
+func numCompare(a, b float64, op string) bool {
+	switch op {
+	case ">":
+		return a > b
+	case "<":
+		return a < b
+	case ">=":
+		return a >= b
+	case "<=":
+		return a <= b
+	}
+	return false
+}
+
+// parseCondTime 宽松解析日期时间(与 form 包语义一致, 不依赖 form 避免环)。
+func parseCondTime(s string) (time.Time, bool) {
+	layouts := []string{
+		time.RFC3339,
+		"2006-01-02T15:04:05",
+		"2006-01-02 15:04:05",
+		"2006-01-02 15:04",
+		"2006-01-02",
+	}
+	for _, l := range layouts {
+		if t, err := time.Parse(l, s); err == nil {
+			return t, true
+		}
+	}
+	return time.Time{}, false
 }
 
 func stringInSet(s string, set []string) bool {

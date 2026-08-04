@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"log"
 	"log/slog"
 	"net/http"
@@ -17,6 +18,7 @@ import (
 	"github.com/opsorigin/core/internal/ai"
 	"github.com/opsorigin/core/internal/ai/agentic"
 	"github.com/opsorigin/core/internal/audit"
+	"github.com/opsorigin/core/internal/automation/actions"
 	"github.com/opsorigin/core/internal/automation/scheduler"
 	"github.com/opsorigin/core/internal/automation/script"
 	"github.com/opsorigin/core/internal/automation/workflow"
@@ -546,6 +548,34 @@ func main() {
 	schedulerSvc.SetNotifier(notifySvc)
 	itsmSvc.SetNotifier(notifySvc)
 
+	// 流程引擎动作库: service 步骤除脚本外可执行 http / notify / create_ticket 预置动作。
+	actionExec := actions.New()
+	actionExec.SetScriptExecutor(scriptSvc)
+	actionExec.SetNotifier(notifySvc.NotifyEvent)
+	actionExec.SetCreateTicket(func(ctx context.Context, tenantID string, params map[string]any) (string, error) {
+		req := itsmmodel.CreateTicketRequest{
+			Title:        strAny(params["title"]),
+			Description:  strAny(params["description"]),
+			RiskLevel:    itsmmodel.RiskLevel(strAny(params["risk_level"])),
+			ChangePlan:   strAny(params["change_plan"]),
+			CreatedBy:    strAny(params["created_by"]),
+			CustomFields: params,
+		}
+		if req.Title == "" {
+			return "", fmt.Errorf("create_ticket action: title is required")
+		}
+		if req.CreatedBy == "" {
+			req.CreatedBy = "action"
+		}
+		tctx := context.WithValue(ctx, "tenant_id", tenantID)
+		t, err := itsmSvc.CreateTicket(tctx, req)
+		if err != nil {
+			return "", err
+		}
+		return t.ID, nil
+	})
+	processSvc.SetActionExecutor(actionExec)
+
 	// P2-5 CMDB 消息订阅：通知渠道经平台通知中心分发（避免 cmdb↔notification 循环依赖）
 	cmdbSvc.SetNotifyCallback(func(ctx context.Context, tenantID, title, content string) error {
 		return notifySvc.NotifyEvent(ctx, tenantID, string(notification.EventCMDBChanged), title, content)
@@ -845,4 +875,12 @@ func (a cmdbInventoryAdapter) ListHostInventory(ctx context.Context, tenantID st
 		}
 	}
 	return inv, nil
+}
+
+// strAny 将任意值转为字符串(动作参数取值辅助)。
+func strAny(v any) string {
+	if v == nil {
+		return ""
+	}
+	return fmt.Sprint(v)
 }

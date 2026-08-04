@@ -17,6 +17,9 @@ const (
 	TypeMultiSelect FieldType = "multiselect" // 多选（options）
 	TypeNumber      FieldType = "number"
 	TypeDate        FieldType = "date"
+	TypeDatetime    FieldType = "datetime" // 日期时间(如 2026-08-05T18:30:00+08:00 / 2026-08-05 18:30)
+	TypeDuration    FieldType = "duration" // 时长(如 1h / 30m / 3d / 1h30m)
+	TypeAttachment  FieldType = "attachment" // 附件(值为附件 ID 字符串数组)
 	TypeBool        FieldType = "bool"
 	TypeUser        FieldType = "user"     // 选人（source=iam:user，前端下拉搜索）
 	TypeCI          FieldType = "ci"       // 选配置项（source=cmdb:<typeName>，前端下拉搜索）

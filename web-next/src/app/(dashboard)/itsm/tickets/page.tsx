@@ -767,6 +767,7 @@ export default function ITSMPage() {
                           context={selectedTicket as unknown as Record<string, unknown>}
                           onChange={(k, v) => setStepFields(f => ({ ...f, [k]: v }))}
                           loadOptions={loadOptions}
+                          ticketId={selectedTicket.id}
                         />
                         <div className="pt-1">
                           <Button size="sm" onClick={handleSaveStepForm} disabled={stepSaving}>
@@ -784,6 +785,7 @@ export default function ITSMPage() {
                           onChange={() => {}}
                           loadOptions={loadOptions}
                           readOnly
+                          ticketId={selectedTicket.id}
                         />
                       </div>
                     )}

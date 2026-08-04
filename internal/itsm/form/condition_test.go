@@ -386,3 +386,53 @@ func TestResolveTreeThroughEngineResolver(t *testing.T) {
 		t.Fatalf("ResolveTree 调用次数应为 3，实际 %d", res.treeCalls)
 	}
 }
+
+// --- 新字段类型: datetime / duration / attachment ---
+
+func TestDatetimeFieldValidation(t *testing.T) {
+	f := FieldDef{Key: "window", Label: "变更窗口", Type: TypeDatetime}
+	valid := []any{"2026-08-05 20:00", "2026-08-05T20:00:00Z", "2026-08-05T20:00:00+08:00", "2026-08-05", "2026-08-05 20:00:00"}
+	for _, v := range valid {
+		if err := validateFieldWith(f, v, nil); err != nil {
+			t.Fatalf("valid value %v rejected: %v", v, err)
+		}
+	}
+	invalid := []any{"2026/08/05", "20:00", "not-a-date", 123}
+	for _, v := range invalid {
+		if err := validateFieldWith(f, v, nil); err == nil {
+			t.Fatalf("invalid value %v accepted", v)
+		}
+	}
+}
+
+func TestDurationFieldValidation(t *testing.T) {
+	f := FieldDef{Key: "est", Label: "预估时长", Type: TypeDuration}
+	valid := []any{"1h", "30m", "3d", "1h30m", "90s"}
+	for _, v := range valid {
+		if err := validateFieldWith(f, v, nil); err != nil {
+			t.Fatalf("valid duration %v rejected: %v", v, err)
+		}
+	}
+	invalid := []any{"h", "1x", "", "90", 30}
+	for _, v := range invalid {
+		if err := validateFieldWith(f, v, nil); err == nil {
+			t.Fatalf("invalid duration %v accepted", v)
+		}
+	}
+}
+
+func TestAttachmentFieldValidation(t *testing.T) {
+	f := FieldDef{Key: "files", Label: "附件", Type: TypeAttachment}
+	if err := validateFieldWith(f, []any{"12", "13"}, nil); err != nil {
+		t.Fatalf("valid attachment ids rejected: %v", err)
+	}
+	if err := validateFieldWith(f, []any{12, 13}, nil); err != nil {
+		t.Fatalf("numeric ids rejected: %v", err)
+	}
+	if err := validateFieldWith(f, "12", nil); err == nil {
+		t.Fatal("plain string accepted, want array")
+	}
+	if err := validateFieldWith(f, []any{map[string]any{"id": 1}}, nil); err == nil {
+		t.Fatal("map element accepted, want scalar id")
+	}
+}

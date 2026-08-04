@@ -2,6 +2,7 @@ package process
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -591,5 +592,103 @@ func TestBPMNRoundTrip(t *testing.T) {
 	}
 	if !foundExpr {
 		t.Fatalf("expression condition lost: %+v", app.DependsOn)
+	}
+}
+
+// --- 动作库分发: service 步骤带 ActionType 时走 ActionExecutor ---
+
+type fakeActionExec struct {
+	calls int
+	fail  bool
+	last  map[string]any
+}
+
+func (f *fakeActionExec) ExecuteAction(ctx context.Context, actionType string, params map[string]any, tenantID, ticketID string, exprCtx map[string]any) (map[string]any, error) {
+	f.calls++
+	f.last = params
+	if f.fail {
+		return nil, fmt.Errorf("boom")
+	}
+	return map[string]any{"status_code": 200}, nil
+}
+
+func TestRunAutomatedActionDispatch(t *testing.T) {
+	ae := &fakeActionExec{}
+	s := &Service{actionExec: ae}
+	proc := &Process{ID: "p1", Steps: []Step{
+		{ID: "act", Type: StepService, ActionType: "http", Inputs: map[string]any{"url": "http://x"}, DependsOn: []Dependency{{NodeID: "start", Condition: "success"}}},
+		{ID: "end", Type: StepEnd, DependsOn: []Dependency{{NodeID: "act", Condition: "success"}}},
+	}}
+	inst := &ProcessInstance{TicketID: "t1", TenantID: "default", StepResults: map[string]any{}}
+	landing, err := s.runAutomated(context.Background(), proc, inst, proc.StepByID("act"), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ae.calls != 1 {
+		t.Fatalf("action executor calls = %d", ae.calls)
+	}
+	if landing == nil || landing.ID != "end" {
+		t.Fatalf("should land on end, got %+v", landing)
+	}
+	rec := inst.StepResults["act"].(map[string]any)
+	if rec["action"] != "http" {
+		t.Fatalf("step result missing action: %+v", rec)
+	}
+}
+
+func TestRunAutomatedActionFailureBranch(t *testing.T) {
+	ae := &fakeActionExec{fail: true}
+	s := &Service{actionExec: ae}
+	proc := &Process{ID: "p1", Steps: []Step{
+		{ID: "act", Type: StepService, ActionType: "http", DependsOn: []Dependency{{NodeID: "start", Condition: "success"}}},
+		{ID: "rollback", Type: StepUser, DependsOn: []Dependency{{NodeID: "act", Condition: "failure"}}},
+	}}
+	inst := &ProcessInstance{TicketID: "t1", TenantID: "default", StepResults: map[string]any{}}
+	landing, err := s.runAutomated(context.Background(), proc, inst, proc.StepByID("act"), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 动作失败走 failure 分支 → 落在人工回滚步骤(等待人工)
+	if landing == nil || landing.ID != "rollback" {
+		t.Fatalf("failure should route to rollback, got %+v", landing)
+	}
+	if _, hasErr := inst.StepResults["act"].(map[string]any)["error"]; !hasErr {
+		t.Fatalf("step result missing error: %+v", inst.StepResults["act"])
+	}
+}
+
+// --- 表达式条件: 时间 / 时长比较 ---
+
+func TestEvaluateConditionTimeCompare(t *testing.T) {
+	ctx := map[string]any{
+		"custom_fields": map[string]any{
+			"window_start": "2026-08-05 20:00",
+			"window_end":   "2026-08-05 22:30",
+			"est_duration": "90m",
+		},
+	}
+	cases := []struct {
+		expr string
+		want bool
+	}{
+		// 时间比较(右侧为字面量; 字段间比较不在表达式语法内)
+		{`window_end > "2026-08-05 20:00"`, true},
+		{`window_start < "2026-08-06 00:00"`, true},
+		{`window_end <= "2026-08-05 22:30"`, true},
+		{`window_start > "2026-08-05 23:00"`, false},
+		// 时长比较
+		{`est_duration > "1h"`, true},
+		{`est_duration <= "2h"`, true},
+		{`est_duration < "1h"`, false},
+		{`est_duration == "90m"`, true},
+	}
+	for _, c := range cases {
+		got, err := EvaluateCondition(c.expr, ctx)
+		if err != nil {
+			t.Fatalf("%s: %v", c.expr, err)
+		}
+		if got != c.want {
+			t.Fatalf("%s = %v, want %v", c.expr, got, c.want)
+		}
 	}
 }

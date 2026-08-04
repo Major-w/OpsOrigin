@@ -35,6 +35,9 @@ type Step struct {
 	// 服务任务
 	ScriptID string         `json:"script_id,omitempty"`
 	Inputs   map[string]any `json:"inputs,omitempty"`
+	// 动作库: 非空时 service 步骤优先执行预置动作(action_params 为动作参数, 复用 Inputs 亦可)。
+	// 支持动作: http(请求外发) / notify(通知分发) / create_ticket(创建 ITSM 工单) / script(脚本, 等价 ScriptID)。
+	ActionType string `json:"action_type,omitempty"`
 	// 网关
 	Condition string `json:"condition,omitempty"`
 	// 定时器

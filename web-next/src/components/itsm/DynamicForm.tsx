@@ -7,6 +7,7 @@
 // 该组件只渲染「业务自定义字段」，系统字段(title/risk/...)仍由页面负责。
 
 import { useEffect, useMemo, useRef, useState } from 'react'
+import { Upload, X } from 'lucide-react'
 
 export type FormFieldType =
   | 'text'
@@ -15,6 +16,9 @@ export type FormFieldType =
   | 'multiselect'
   | 'number'
   | 'date'
+  | 'datetime'
+  | 'duration'
+  | 'attachment'
   | 'bool'
   | 'user'
   | 'ci'
@@ -252,12 +256,14 @@ interface DynamicFormProps {
   readOnly?: boolean
   // loadOptions: 带 source 的字段用它拉取选项；不传则退化为纯文本/静态 options
   loadOptions?: LoadOptionsFn
+  // ticketId: 附件字段上传目标工单。传入后 attachment 字段可上传；未传（如创建表单）显示提示。
+  ticketId?: string
 }
 
 const fieldBaseCls =
   'flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring'
 
-export function DynamicForm({ schema, values, context, onChange, readOnly, loadOptions }: DynamicFormProps) {
+export function DynamicForm({ schema, values, context, onChange, readOnly, loadOptions, ticketId }: DynamicFormProps) {
   if (!schema || !schema.fields || schema.fields.length === 0) {
     return (
       <p className="text-xs text-muted-foreground italic">
@@ -300,6 +306,7 @@ export function DynamicForm({ schema, values, context, onChange, readOnly, loadO
                   disabled={readOnly || !!f.readonly}
                   onChange={v => onChange(f.key, v)}
                   loadOptions={loadOptions}
+                  ticketId={ticketId}
                 />
               </div>
               {f.help && <p className="text-xs text-muted-foreground mt-1">{f.help}</p>}
@@ -363,12 +370,14 @@ function FieldControl({
   disabled,
   onChange,
   loadOptions,
+  ticketId,
 }: {
   field: FormFieldDef
   value: unknown
   disabled: boolean
   onChange: (v: unknown) => void
   loadOptions?: LoadOptionsFn
+  ticketId?: string
 }) {
   const { options, loading, error, remote } = useFieldOptions(field, loadOptions)
 
@@ -449,6 +458,36 @@ function FieldControl({
           value={(value as string) ?? ''}
           disabled={disabled}
           onChange={e => onChange(e.target.value)}
+        />
+      )
+    case 'datetime':
+      return (
+        <input
+          type="datetime-local"
+          className={fieldBaseCls}
+          value={toDatetimeLocal((value as string) ?? '')}
+          disabled={disabled}
+          onChange={e => onChange(e.target.value)}
+        />
+      )
+    case 'duration':
+      return (
+        <input
+          type="text"
+          className={fieldBaseCls}
+          value={(value as string) ?? ''}
+          placeholder={field.placeholder || '如 1h / 30m / 3d'}
+          disabled={disabled}
+          onChange={e => onChange(e.target.value)}
+        />
+      )
+    case 'attachment':
+      return (
+        <AttachmentControl
+          value={value}
+          disabled={disabled}
+          ticketId={ticketId}
+          onChange={onChange}
         />
       )
     case 'bool':
@@ -836,6 +875,103 @@ function SearchableSelect({
           </div>
         </div>
       )}
+    </div>
+  )
+}
+
+// toDatetimeLocal 将 RFC3339/ISO 值转成 <input type="datetime-local"> 需要的 "YYYY-MM-DDTHH:mm"。
+// 无法解析时原样返回(空值也原样), 保证受控组件不回填乱码。
+function toDatetimeLocal(v: string): string {
+  if (!v) return ''
+  if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/.test(v)) return v
+  const d = new Date(v)
+  if (isNaN(d.getTime())) return v
+  const pad = (n: number) => String(n).padStart(2, '0')
+  return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate()) + 'T' + pad(d.getHours()) + ':' + pad(d.getMinutes())
+}
+
+// AttachmentControl —— attachment 字段控件：上传文件到工单附件区, 值 = 附件 ID 字符串数组。
+// 需要 ticketId 才能上传(创建表单无工单 ID 时提示创建后补充)。
+function AttachmentControl({
+  value,
+  disabled,
+  ticketId,
+  onChange,
+}: {
+  value: unknown
+  disabled: boolean
+  ticketId?: string
+  onChange: (v: unknown) => void
+}) {
+  const inputRef = useRef<HTMLInputElement>(null)
+  const [uploading, setUploading] = useState(false)
+  const [error, setError] = useState('')
+  const ids = Array.isArray(value) ? (value as (string | number)[]).map(String) : []
+
+  const handleUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0]
+    if (!file || !ticketId) return
+    setUploading(true)
+    setError('')
+    try {
+      const fd = new FormData()
+      fd.append('file', file)
+      fd.append('uploaded_by', 'form')
+      const res = await fetch(`/api/v1/itsm/tickets/${ticketId}/attachments`, {
+        method: 'POST',
+        headers: {},
+        body: fd,
+      })
+      if (!res.ok) throw new Error(`上传失败(${res.status})`)
+      const att = await res.json()
+      onChange([...ids, String(att.id)])
+    } catch (err: any) {
+      setError(err?.message || '上传失败')
+    }
+    setUploading(false)
+    if (inputRef.current) inputRef.current.value = ''
+  }
+
+  const remove = (id: string) => onChange(ids.filter(x => x !== id))
+
+  if (!ticketId) {
+    return <p className="text-xs text-muted-foreground">附件需在工单创建后关联，可稍后在工单附件区补充。</p>
+  }
+
+  return (
+    <div className="space-y-2">
+      <input ref={inputRef} type="file" className="hidden" onChange={handleUpload} />
+      <button
+        type="button"
+        disabled={disabled || uploading}
+        onClick={() => inputRef.current?.click()}
+        className="inline-flex items-center gap-1 h-8 px-3 rounded-md border border-input text-xs hover:bg-accent disabled:opacity-50"
+      >
+        <Upload className="h-3 w-3" />
+        {uploading ? '上传中…' : '上传附件'}
+      </button>
+      {ids.length > 0 && (
+        <div className="space-y-1">
+          {ids.map(id => (
+            <div key={id} className="flex items-center justify-between border rounded-md px-2.5 py-1.5 text-xs">
+              <a
+                className="text-primary underline underline-offset-2 truncate"
+                href={`/api/v1/itsm/tickets/${ticketId}/attachments/${id}`}
+                target="_blank"
+                rel="noreferrer"
+              >
+                附件 #{id}
+              </a>
+              {!disabled && (
+                <button type="button" className="text-muted-foreground hover:text-destructive" onClick={() => remove(id)}>
+                  <X className="h-3 w-3" />
+                </button>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+      {error && <p className="text-xs text-destructive">{error}</p>}
     </div>
   )
 }

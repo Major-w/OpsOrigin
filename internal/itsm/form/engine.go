@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"regexp"
+	"strconv"
 	"strings"
+	"time"
 )
 
 // Engine 表单校验引擎：持有 SchemaStore，按作用域取 schema 并校验值。
@@ -182,10 +184,82 @@ func validateFieldWith(f FieldDef, v any, opts []FieldOption) error {
 		if _, ok := v.(bool); !ok {
 			return fmt.Errorf("字段 %s(%s) 应为布尔", f.Label, f.Key)
 		}
+	case TypeDatetime:
+		s, ok := v.(string)
+		if !ok {
+			return fmt.Errorf("字段 %s(%s) 应为日期时间", f.Label, f.Key)
+		}
+		if _, err := parseDatetime(s); err != nil {
+			return fmt.Errorf("字段 %s(%s) 日期时间格式不正确", f.Label, f.Key)
+		}
+	case TypeDuration:
+		s, ok := v.(string)
+		if !ok {
+			return fmt.Errorf("字段 %s(%s) 应为时长", f.Label, f.Key)
+		}
+		if _, err := parseDuration(s); err != nil {
+			return fmt.Errorf("字段 %s(%s) 时长格式不正确(如 1h / 30m / 3d)", f.Label, f.Key)
+		}
+	case TypeAttachment:
+		arr, ok := v.([]any)
+		if !ok {
+			return fmt.Errorf("字段 %s(%s) 应为附件 ID 数组", f.Label, f.Key)
+		}
+		for _, item := range arr {
+			switch item.(type) {
+			case string, float64, int, int64, json.Number:
+			default:
+				return fmt.Errorf("字段 %s(%s) 附件 ID 应为数字或字符串", f.Label, f.Key)
+			}
+		}
 	default:
 		return fmt.Errorf("字段 %s(%s) 类型 %s 不支持", f.Label, f.Key, f.Type)
 	}
 	return nil
+}
+
+// parseDatetime 宽松解析日期时间: 兼容 RFC3339 与 "2006-01-02 15:04:05" 及纯日期。
+func parseDatetime(s string) (time.Time, error) {
+	layouts := []string{
+		time.RFC3339,
+		"2006-01-02T15:04:05",
+		"2006-01-02 15:04:05",
+		"2006-01-02 15:04",
+		"2006-01-02",
+	}
+	for _, l := range layouts {
+		if t, err := time.Parse(l, s); err == nil {
+			return t, nil
+		}
+	}
+	return time.Time{}, fmt.Errorf("invalid datetime %q", s)
+}
+
+// parseDuration 解析时长(1h / 30m / 3d / 1h30m), 返回秒数。与 process 包语义一致。
+func parseDuration(s string) (float64, error) {
+	re := regexp.MustCompile(`^(\d+(?:\.\d+)?[smhd])+$`)
+	if !re.MatchString(s) {
+		return 0, fmt.Errorf("invalid duration %q", s)
+	}
+	var total float64
+	unitRe := regexp.MustCompile(`(\d+(?:\.\d+)?)([smhd])`)
+	for _, m := range unitRe.FindAllStringSubmatch(s, -1) {
+		v, err := strconv.ParseFloat(m[1], 64)
+		if err != nil {
+			return 0, err
+		}
+		switch m[2] {
+		case "s":
+			total += v
+		case "m":
+			total += v * 60
+		case "h":
+			total += v * 3600
+		case "d":
+			total += v * 86400
+		}
+	}
+	return total, nil
 }
 
 func toFloat(v any) (float64, error) {
