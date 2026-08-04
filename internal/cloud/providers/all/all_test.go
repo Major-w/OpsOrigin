@@ -51,7 +51,13 @@ func TestProviderSupportedVersions(t *testing.T) {
 		"sangfor": cloud.VersionUntested,
 		"zstack":  cloud.VersionUntested,
 		"proxmox": cloud.VersionVerified,
+		"openstack": cloud.VersionVerified,
 		"aliyun":  cloud.VersionVerified,
+		"tencent": cloud.VersionVerified,
+		"huawei":  cloud.VersionVerified,
+		"aws":     cloud.VersionVerified,
+		"volcano": cloud.VersionUntested,
+		"azure":   cloud.VersionUntested,
 	}
 	for name, wantStatus := range cases {
 		p, err := cloud.Get(name)

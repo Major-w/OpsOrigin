@@ -9,11 +9,13 @@ package all
 import (
 	_ "github.com/opsorigin/core/internal/cloud/providers/aliyun"
 	_ "github.com/opsorigin/core/internal/cloud/providers/aws"
+	_ "github.com/opsorigin/core/internal/cloud/providers/azure"
 	_ "github.com/opsorigin/core/internal/cloud/providers/huawei"
 	_ "github.com/opsorigin/core/internal/cloud/providers/openstack"
 	_ "github.com/opsorigin/core/internal/cloud/providers/proxmox"
 	_ "github.com/opsorigin/core/internal/cloud/providers/sangfor"
 	_ "github.com/opsorigin/core/internal/cloud/providers/tencent"
+	_ "github.com/opsorigin/core/internal/cloud/providers/volcano"
 	_ "github.com/opsorigin/core/internal/cloud/providers/vmware"
 	_ "github.com/opsorigin/core/internal/cloud/providers/zstack"
 )
