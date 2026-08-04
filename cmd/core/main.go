@@ -401,6 +401,8 @@ func main() {
 
 	workflowSvc := workflow.NewService(db)
 	workflowSvc.SetScriptExecutor(scriptSvc)
+	// 让 ITSM 流程的服务任务(StepService)也能驱动同一套自动化脚本执行器。
+	processSvc.SetScriptExecutor(scriptSvc)
 	// 让脚本/工作流在指定 AgentID 时，通过 Tunnel 派发到被管主机执行
 	// （而非 Core 本机 os/exec），并复用 Agent 端命令白名单校验。
 	scriptSvc.SetAgentRunner(agentSvc)

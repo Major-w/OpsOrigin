@@ -829,7 +829,13 @@ func (s *Service) advanceProcess(ctx context.Context, ticket *model.Ticket, cond
 	if s.processStore == nil || ticket == nil || ticket.ProcessID == "" {
 		return
 	}
-	_, next, err := s.processStore.Advance(ctx, ticket.TenantID, ticket.ID, condition, string(ticket.Status))
+	_, next, err := s.processStore.Advance(ctx, ticket.TenantID, ticket.ID, condition, map[string]any{
+		"status":          string(ticket.Status),
+		"risk_level":      string(ticket.RiskLevel),
+		"created_by_type": ticket.CreatedByType,
+		"assignee":        ticket.Assignee,
+		"custom_fields":   ticket.CustomFields,
+	})
 	if err != nil {
 		slog.Warn("advance process instance failed", "ticket_id", ticket.ID, "condition", condition, "error", err)
 		return
@@ -1456,6 +1462,11 @@ func (s *Service) handleUpdateCustomFields(w http.ResponseWriter, r *http.Reques
 	if err := s.store.Update(r.Context(), ticket); err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
+	}
+	// 步骤表单保存后推进流程: 若当前步骤下游是网关(表达式条件), 基于刚填写的表单字段选路;
+	// 下游若是 service 步骤则自动执行脚本。无流程绑定时静默跳过。
+	if ticket.ProcessID != "" && s.processStore != nil {
+		s.advanceProcess(r.Context(), ticket, "success")
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"status": "ok", "custom_fields": ticket.CustomFields})
 }

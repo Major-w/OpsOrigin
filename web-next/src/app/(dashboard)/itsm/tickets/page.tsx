@@ -2,9 +2,10 @@
 
 import { useEffect, useState, useRef, useCallback } from 'react'
 import { useRouter } from 'next/navigation'
-import { useITSMStore, type Ticket, type TicketEvent, type ITSMStats } from '@/stores/itsm'
+import { useITSMStore, type Ticket, type TicketEvent, type ITSMStats, type ProcessInstance } from '@/stores/itsm'
 import { DynamicForm, type FormSchema } from '@/components/itsm/DynamicForm'
 import { FormBuilder } from '@/components/itsm/FormBuilder'
+import ProcessFlowView from '@/components/itsm/ProcessFlowView'
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
@@ -75,6 +76,7 @@ export default function ITSMPage() {
   const [stepFields, setStepFields] = useState<Record<string, any>>({})
   const [stepSaving, setStepSaving] = useState(false)
   const [ticketEvents, setTicketEvents] = useState<TicketEvent[]>([])
+  const [processInst, setProcessInst] = useState<ProcessInstance | null>(null)
   const [detailTab, setDetailTab] = useState('detail')
   const [approveDialog, setApproveDialog] = useState(false)
   const [approveComment, setApproveComment] = useState('')
@@ -216,6 +218,7 @@ export default function ITSMPage() {
     if (ticket.process_id) {
       try {
         const inst = await getTicketProcess(ticket.id)
+        setProcessInst(inst || null)
         if (inst && inst.current_step) {
           const proc = processes.find(p => p.id === ticket.process_id)
           const step = proc?.steps?.find(s => s.id === inst.current_step)
@@ -629,6 +632,7 @@ export default function ITSMPage() {
                 <Tabs value={detailTab} onValueChange={setDetailTab}>
                   <TabsList>
                     <TabsTrigger value="detail"><FileText className="w-3 h-3 mr-1" />详情</TabsTrigger>
+                    {selectedTicket.process_id && <TabsTrigger value="process"><Activity className="w-3 h-3 mr-1" />流程</TabsTrigger>}
                     <TabsTrigger value="events"><Activity className="w-3 h-3 mr-1" />事件 ({ticketEvents.length})</TabsTrigger>
                     <TabsTrigger value="comments"><MessageSquare className="w-3 h-3 mr-1" />评论 ({comments.length})</TabsTrigger>
                     <TabsTrigger value="attachments"><Paperclip className="w-3 h-3 mr-1" />附件 ({attachments.length})</TabsTrigger>
@@ -691,6 +695,20 @@ export default function ITSMPage() {
                         />
                       </div>
                     )}
+                  </TabsContent>
+                  <TabsContent value="process" className="mt-3">
+                    {(() => {
+                      const proc = processes.find(p => p.id === selectedTicket.process_id)
+                      if (!proc) return <p className="text-sm text-muted-foreground">未找到流程定义。</p>
+                      return (
+                        <ProcessFlowView
+                          steps={proc.steps}
+                          currentStep={processInst?.current_step}
+                          stepResults={processInst?.step_results}
+                          processName={proc.name}
+                        />
+                      )
+                    })()}
                   </TabsContent>
                   <TabsContent value="events" className="mt-3">
                     {ticketEvents.length === 0 ? <p className="text-sm text-muted-foreground">无变更事件。</p> : (

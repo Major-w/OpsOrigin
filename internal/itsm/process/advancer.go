@@ -39,6 +39,52 @@ func (p *Process) Advancer(currentStepID, condition string) *Step {
 	return candidates[0]
 }
 
+// isLiteralCondition 判断依赖条件是否为固定字面量(success/failure/always)。
+// 非字面量的条件视为表达式, 由 AdvancerExpr 基于表单字段上下文求值。
+func isLiteralCondition(c string) bool {
+	return c == "success" || c == "failure" || c == "always"
+}
+
+// AdvancerLiteral 只按指定字面量条件匹配下游步骤, 不含 always 兜底
+// (Advancer 自带 always 兜底, AdvancerExpr 需要可控的分支顺序)。
+func (p *Process) AdvancerLiteral(currentStepID, condition string) *Step {
+	for i := range p.Steps {
+		step := &p.Steps[i]
+		for _, dep := range step.DependsOn {
+			if dep.NodeID == currentStepID && dep.Condition == condition {
+				return step
+			}
+		}
+	}
+	return nil
+}
+
+// AdvancerExpr 在字面量匹配的基础上增加表达式条件分支:
+// 1. 按字面量 condition(success/failure) 匹配
+// 2. 无匹配时, 对下游依赖中非字面量的条件用 EvaluateCondition 求值(ctx 提供表单字段/系统字段)
+// 3. 仍无匹配时回退 always 兜底
+// 使流程网关能根据工单表单字段内容决定走向。
+func (p *Process) AdvancerExpr(currentStepID, condition string, ctx map[string]any) *Step {
+	if s := p.AdvancerLiteral(currentStepID, condition); s != nil {
+		return s
+	}
+	for i := range p.Steps {
+		step := &p.Steps[i]
+		for _, dep := range step.DependsOn {
+			if dep.NodeID != currentStepID || isLiteralCondition(dep.Condition) {
+				continue
+			}
+			if ok, err := EvaluateCondition(dep.Condition, ctx); err == nil && ok {
+				return step
+			}
+		}
+	}
+	if s := p.AdvancerLiteral(currentStepID, "always"); s != nil {
+		return s
+	}
+	return nil
+}
+
 // StartStep 返回流程的起始步骤
 func (p *Process) StartStep() *Step {
 	for i := range p.Steps {
