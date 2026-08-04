@@ -1,11 +1,12 @@
 'use client'
 
 import { useEffect, useState } from 'react'
+import { useRouter } from 'next/navigation'
 import { Card, CardContent } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { Input } from '@/components/ui/input'
-import { Package, Plus, Trash2 } from 'lucide-react'
+import { Package, Plus, Trash2, Send } from 'lucide-react'
 import { apiFetch, apiList } from '@/lib/utils'
 import { toast } from '@/stores/toast'
 import { useITSMStore } from '@/stores/itsm'
@@ -13,6 +14,7 @@ import { useITSMStore } from '@/stores/itsm'
 interface ServiceItem { id: string; name: string; description: string; category: string; process_id?: string; enabled: boolean }
 
 export default function ITSMCatalogPage() {
+  const router = useRouter()
   const { processes, fetchProcesses } = useITSMStore()
   const [items, setItems] = useState<ServiceItem[]>([])
   const [showAdd, setShowAdd] = useState(false)
@@ -43,7 +45,7 @@ export default function ITSMCatalogPage() {
 
     <div className="grid gap-3 md:grid-cols-2">
       {items.length === 0 ? <Card className="col-span-2"><CardContent className="py-10 text-center text-muted-foreground"><Package className="h-10 w-10 mx-auto mb-2 opacity-30"/><p>暂无服务项</p></CardContent></Card> :
-      items.map(it => <Card key={it.id}><CardContent className="p-4 flex items-start gap-3"><Package className="h-5 w-5 text-blue-500 shrink-0 mt-0.5"/><div className="flex-1 min-w-0"><p className="font-medium text-sm">{it.name}</p><p className="text-xs text-muted-foreground truncate">{it.description||'无描述'}</p><div className="flex gap-2 mt-1"><Badge variant="outline" className="text-[10px]">{it.category}</Badge>{it.process_id && <Badge variant="secondary" className="text-[10px]">有流程</Badge>}</div></div><Button variant="ghost" size="icon" className="h-7 w-7 shrink-0" onClick={()=>remove(it.id)}><Trash2 className="h-3.5 w-3.5 text-red-400"/></Button></CardContent></Card>)}
+      items.map(it => <Card key={it.id}><CardContent className="p-4 flex items-start gap-3"><Package className="h-5 w-5 text-blue-500 shrink-0 mt-0.5"/><div className="flex-1 min-w-0"><p className="font-medium text-sm">{it.name}</p><p className="text-xs text-muted-foreground truncate">{it.description||'无描述'}</p><div className="flex gap-2 mt-1"><Badge variant="outline" className="text-[10px]">{it.category}</Badge>{it.process_id && <Badge variant="secondary" className="text-[10px]">有流程</Badge>}</div></div><div className="flex flex-col gap-1 shrink-0"><Button variant="ghost" size="icon" className="h-7 w-7" onClick={()=>router.push(`/itsm/tickets?catalog=${it.id}`)} title="申请此服务"><Send className="h-3.5 w-3.5 text-blue-500"/></Button><Button variant="ghost" size="icon" className="h-7 w-7" onClick={()=>remove(it.id)}><Trash2 className="h-3.5 w-3.5 text-red-400"/></Button></div></CardContent></Card>)}
     </div>
   </div>
 }

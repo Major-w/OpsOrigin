@@ -103,6 +103,12 @@ export default function ITSMPage() {
   const [configDialog, setConfigDialog] = useState(false)
   const [configJson, setConfigJson] = useState('')
   const [configSaving, setConfigSaving] = useState(false)
+  // 当前创建用作用域（catalog:<id> / process:<pid> / ticket:default），由来源或所选流程决定
+  const [createScope, setCreateScope] = useState('ticket:default')
+  const initialScopeRef = useRef('ticket:default')
+  // 配置 Dialog 的 scope 选择（ticket 默认 / catalog 目录项 / process 流程）
+  const [configScopeType, setConfigScopeType] = useState<'ticket' | 'catalog' | 'process'>('ticket')
+  const [configScopeId, setConfigScopeId] = useState('')
 
   const fetchComments = useCallback(async (ticketId: string) => {
     try {
@@ -120,6 +126,15 @@ export default function ITSMPage() {
 
   useEffect(() => { fetch(); fetchStats(); fetchProcesses() }, [])
 
+  // 从服务目录「申请」跳转过来时，自动按 catalog:<id> 作用域打开创建 Dialog
+  useEffect(() => {
+    try {
+      const params = new URLSearchParams(window.location.search)
+      const cat = params.get('catalog')
+      if (cat) openCreateDialog(`catalog:${cat}`)
+    } catch { /* ignore */ }
+  }, [])
+
   // 知识推荐：监听标题变化, 匹配知识库文章
   useEffect(() => {
     if (!form.title || form.title.length < 2) { setKnowledgeRecs([]); return }
@@ -132,20 +147,25 @@ export default function ITSMPage() {
     return () => clearTimeout(t)
   }, [form.title])
 
-  const openCreateDialog = async () => {
-    setForm({ title: '', description: '', risk_level: 'low', change_plan: '', rollback_plan: '', created_by: 'admin', process_id: '' })
-    setCustomFields({})
-    setCiIds([])
-    setDialogOpen(true)
-    // 拉取创建用表单 schema（ticket:default 作用域）
+  const loadCreateSchema = async (scope: string) => {
     try {
-      const schema = await getFormSchema('ticket:default')
+      const schema = await getFormSchema(scope)
       setCreateSchema(schema)
     } catch { setCreateSchema(null) }
   }
 
+  const openCreateDialog = async (scope = 'ticket:default') => {
+    initialScopeRef.current = scope
+    setCreateScope(scope)
+    setForm({ title: '', description: '', risk_level: 'low', change_plan: '', rollback_plan: '', created_by: 'admin', process_id: '' })
+    setCustomFields({})
+    setCiIds([])
+    setDialogOpen(true)
+    await loadCreateSchema(scope)
+  }
+
   const handleCreate = async () => {
-    const ok = await create({ ...form, ci_ids: ciIds, custom_fields: customFields, form_scope: 'ticket:default' })
+    const ok = await create({ ...form, ci_ids: ciIds, custom_fields: customFields, form_scope: createScope })
     if (!ok) return
     setDialogOpen(false)
     setCiIds([])
@@ -171,13 +191,20 @@ export default function ITSMPage() {
     } catch { setSelectedSchema(null) }
   }
 
+  const resolveConfigScope = () => {
+    if (configScopeType === 'catalog') return `catalog:${configScopeId.trim()}`
+    if (configScopeType === 'process') return `process:${configScopeId.trim()}`
+    return 'ticket:default'
+  }
+
   const openConfigDialog = async () => {
+    const scope = resolveConfigScope()
     try {
-      const schema = await getFormSchema('ticket:default')
-      const seed: FormSchema = schema || { version: 1, scope: 'ticket:default', fields: [] }
+      const schema = await getFormSchema(scope)
+      const seed: FormSchema = schema || { version: 1, scope, fields: [] }
       setConfigJson(JSON.stringify(seed, null, 2))
     } catch {
-      setConfigJson(JSON.stringify({ version: 1, scope: 'ticket:default', fields: [] }, null, 2))
+      setConfigJson(JSON.stringify({ version: 1, scope, fields: [] }, null, 2))
     }
     setConfigDialog(true)
   }
@@ -190,10 +217,11 @@ export default function ITSMPage() {
       alert('JSON 格式错误，请检查')
       return
     }
+    const scope = resolveConfigScope()
     setConfigSaving(true)
-    const ok = await upsertFormSchema('ticket:default', {
+    const ok = await upsertFormSchema(scope, {
       version: parsed.version || 1,
-      scope: 'ticket:default',
+      scope,
       fields: parsed.fields || [],
     })
     setConfigSaving(false)
@@ -354,7 +382,7 @@ export default function ITSMPage() {
           <Button variant="outline" onClick={handleExportTickets}><FileDown className="h-4 w-4" />导出工单</Button>
           <Button variant="outline" onClick={handleExportStats}><FileDown className="h-4 w-4" />导出统计</Button>
           <Button variant="outline" onClick={openConfigDialog} disabled={!canWrite}><FileText className="h-4 w-4" />表单配置</Button>
-          <Button onClick={openCreateDialog} disabled={!canWrite}><Plus className="h-4 w-4" />新建工单</Button>
+          <Button onClick={() => openCreateDialog()} disabled={!canWrite}><Plus className="h-4 w-4" />新建工单</Button>
         </div>
       </div>
 
@@ -662,7 +690,7 @@ export default function ITSMPage() {
         </div>
       </div>
 
-      <Dialog open={dialogOpen} onClose={() => setDialogOpen(false)} title="新建工单">
+      <Dialog open={dialogOpen} onClose={() => setDialogOpen(false)} title={`新建工单${createScope !== 'ticket:default' ? ' · ' + createScope : ''}`}>
         <div className="space-y-3 max-h-[60vh] overflow-y-auto">
           <div><label className="text-sm font-medium">标题 *</label><Input value={form.title} onChange={e => setForm(f => ({ ...f, title: e.target.value }))} placeholder="变更描述" /></div>
           <div><label className="text-sm font-medium">描述</label><textarea className="flex h-20 w-full rounded-md border border-input bg-background px-3 py-2 text-sm" value={form.description} onChange={e => setForm(f => ({ ...f, description: e.target.value }))} /></div>
@@ -673,7 +701,14 @@ export default function ITSMPage() {
               </select>
             </div>
             <div><label className="text-sm font-medium">流程模板</label>
-              <select className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm" value={form.process_id} onChange={e => setForm(f => ({ ...f, process_id: e.target.value }))}>
+              <select className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm" value={form.process_id} onChange={e => {
+                const pid = e.target.value
+                setForm(f => ({ ...f, process_id: pid }))
+                // 选流程时作用域升级为 process:<pid>，否则回退到打开时的来源（catalog 或默认）
+                const ns = pid ? `process:${pid}` : initialScopeRef.current
+                setCreateScope(ns)
+                loadCreateSchema(ns)
+              }}>
                 <option value="">无流程模板</option>
                 {processes.filter(p => p.enabled).map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
               </select>
@@ -768,11 +803,23 @@ export default function ITSMPage() {
         <DialogFooter><Button onClick={() => setImportDialog(false)}>关闭</Button></DialogFooter>
       </Dialog>
 
-      <Dialog open={configDialog} onClose={() => setConfigDialog(false)} title="表单配置（ticket:default）">
+      <Dialog open={configDialog} onClose={() => setConfigDialog(false)} title={`表单配置（${configScopeType === 'ticket' ? 'ticket:default' : configScopeType + ':' + (configScopeId.trim() || '...')}）`}>
         <div className="space-y-3">
+          <div className="flex gap-2">
+            <select className="flex h-9 rounded-md border border-input bg-background px-2 text-xs" value={configScopeType} onChange={e => setConfigScopeType(e.target.value as 'ticket' | 'catalog' | 'process')}>
+              <option value="ticket">默认 (ticket:default)</option>
+              <option value="catalog">{`服务目录项 (catalog:<id>)`}</option>
+              <option value="process">{`流程 (process:<id>)`}</option>
+            </select>
+            {configScopeType !== 'ticket' && (
+              <Input className="text-xs" value={configScopeId} onChange={e => setConfigScopeId(e.target.value)} placeholder={configScopeType === 'catalog' ? '目录项 ID' : '流程 ID'} />
+            )}
+            <Button size="sm" variant="outline" onClick={openConfigDialog}>载入</Button>
+          </div>
           <p className="text-xs text-muted-foreground">
             定义工单的自定义字段（Form Schema）。字段类型支持 text / textarea / select / multiselect / number / date / bool / user / ci / cascader；
             可用 <code className="px-1 rounded bg-muted">visible_when</code> 做条件显隐（如 <code className="px-1 rounded bg-muted">risk_level==critical</code>）。
+            修改上方作用域并点「载入」可切换编辑对象。
           </p>
           <textarea
             className="flex h-72 w-full rounded-md border border-input bg-background px-3 py-2 text-xs font-mono resize-none focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
