@@ -3,6 +3,7 @@
 import { useEffect, useState, useRef, useCallback } from 'react'
 import { useRouter } from 'next/navigation'
 import { useITSMStore, type Ticket, type TicketEvent, type ITSMStats } from '@/stores/itsm'
+import { DynamicForm, type FormSchema } from '@/components/itsm/DynamicForm'
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
@@ -56,13 +57,17 @@ function formatFileSize(bytes: number): string {
 
 export default function ITSMPage() {
   const router = useRouter()
-  const { tickets, stats, loading, fetch, create, approve, reject, execute, complete, rollback, getTicket, getEvents, fetchStats, processes, fetchProcesses } = useITSMStore()
+  const { tickets, stats, loading, fetch, create, approve, reject, execute, complete, rollback, getTicket, getEvents, fetchStats, processes, fetchProcesses, getFormSchema, upsertFormSchema } = useITSMStore()
   const canWrite = useCan('itsm:write')
   const canApprove = useCanAny(['itsm:approve', 'itsm:write'])
   const [dialogOpen, setDialogOpen] = useState(false)
   const [form, setForm] = useState({ title: '', description: '', risk_level: 'low', change_plan: '', rollback_plan: '', created_by: 'admin', process_id: '' })
+  // 可配置表单：自定义字段值与创建用 schema
+  const [customFields, setCustomFields] = useState<Record<string, any>>({})
+  const [createSchema, setCreateSchema] = useState<FormSchema | null>(null)
   const [knowledgeRecs, setKnowledgeRecs] = useState<any[]>([])
   const [selectedTicket, setSelectedTicket] = useState<Ticket | null>(null)
+  const [selectedSchema, setSelectedSchema] = useState<FormSchema | null>(null)
   const [ticketEvents, setTicketEvents] = useState<TicketEvent[]>([])
   const [detailTab, setDetailTab] = useState('detail')
   const [approveDialog, setApproveDialog] = useState(false)
@@ -76,7 +81,6 @@ export default function ITSMPage() {
   const [rollbackReason, setRollbackReason] = useState('')
   const [ciIdInput, setCiIdInput] = useState('')
   const [ciIds, setCiIds] = useState<string[]>([])
-  const [ticketFormOpen, setTicketFormOpen] = useState(false)
 
   // Comments
   const [comments, setComments] = useState<Comment[]>([])
@@ -94,6 +98,11 @@ export default function ITSMPage() {
   const [importResult, setImportResult] = useState<{ total: number; success: number; errors: { row: number; message: string }[] } | null>(null)
   const [importDialog, setImportDialog] = useState(false)
   const importFileRef = useRef<HTMLInputElement>(null)
+
+  // 表单配置（管理端可配自定义字段 schema）
+  const [configDialog, setConfigDialog] = useState(false)
+  const [configJson, setConfigJson] = useState('')
+  const [configSaving, setConfigSaving] = useState(false)
 
   const fetchComments = useCallback(async (ticketId: string) => {
     try {
@@ -123,9 +132,25 @@ export default function ITSMPage() {
     return () => clearTimeout(t)
   }, [form.title])
 
+  const openCreateDialog = async () => {
+    setForm({ title: '', description: '', risk_level: 'low', change_plan: '', rollback_plan: '', created_by: 'admin', process_id: '' })
+    setCustomFields({})
+    setCiIds([])
+    setDialogOpen(true)
+    // 拉取创建用表单 schema（ticket:default 作用域）
+    try {
+      const schema = await getFormSchema('ticket:default')
+      setCreateSchema(schema)
+    } catch { setCreateSchema(null) }
+  }
+
   const handleCreate = async () => {
-    await create({ ...form, ci_ids: ciIds })
-    setDialogOpen(false); setCiIds([])
+    const ok = await create({ ...form, ci_ids: ciIds, custom_fields: customFields, form_scope: 'ticket:default' })
+    if (!ok) return
+    setDialogOpen(false)
+    setCiIds([])
+    setCustomFields({})
+    setCreateSchema(null)
     setForm({ title: '', description: '', risk_level: 'low', change_plan: '', rollback_plan: '', created_by: 'admin', process_id: '' })
     fetchStats()
   }
@@ -139,6 +164,40 @@ export default function ITSMPage() {
     } catch { setTicketEvents([]) }
     fetchComments(ticket.id)
     fetchAttachments(ticket.id)
+    // 拉取该工单的表单 schema（默认 ticket:default）用于详情渲染标签
+    try {
+      const schema = await getFormSchema(ticket.form_scope || 'ticket:default')
+      setSelectedSchema(schema)
+    } catch { setSelectedSchema(null) }
+  }
+
+  const openConfigDialog = async () => {
+    try {
+      const schema = await getFormSchema('ticket:default')
+      const seed: FormSchema = schema || { version: 1, scope: 'ticket:default', fields: [] }
+      setConfigJson(JSON.stringify(seed, null, 2))
+    } catch {
+      setConfigJson(JSON.stringify({ version: 1, scope: 'ticket:default', fields: [] }, null, 2))
+    }
+    setConfigDialog(true)
+  }
+
+  const handleSaveConfig = async () => {
+    let parsed: FormSchema
+    try {
+      parsed = JSON.parse(configJson)
+    } catch {
+      alert('JSON 格式错误，请检查')
+      return
+    }
+    setConfigSaving(true)
+    const ok = await upsertFormSchema('ticket:default', {
+      version: parsed.version || 1,
+      scope: 'ticket:default',
+      fields: parsed.fields || [],
+    })
+    setConfigSaving(false)
+    if (ok) setConfigDialog(false)
   }
 
   const handleApprove = async () => {
@@ -294,7 +353,8 @@ export default function ITSMPage() {
           <Button variant="outline" onClick={() => importFileRef.current?.click()} disabled={importing || !canWrite}><FileUp className="h-4 w-4" />{importing ? '导入中...' : '批量导入'}</Button>
           <Button variant="outline" onClick={handleExportTickets}><FileDown className="h-4 w-4" />导出工单</Button>
           <Button variant="outline" onClick={handleExportStats}><FileDown className="h-4 w-4" />导出统计</Button>
-          <Button onClick={() => setDialogOpen(true)} disabled={!canWrite}><Plus className="h-4 w-4" />新建工单</Button>
+          <Button variant="outline" onClick={openConfigDialog} disabled={!canWrite}><FileText className="h-4 w-4" />表单配置</Button>
+          <Button onClick={openCreateDialog} disabled={!canWrite}><Plus className="h-4 w-4" />新建工单</Button>
         </div>
       </div>
 
@@ -449,6 +509,18 @@ export default function ITSMPage() {
                             <Badge key={ciId} variant="outline" className="text-xs">{ciId.slice(0, 12)}...</Badge>
                           ))}
                         </div>
+                      </div>
+                    )}
+                    {(selectedTicket.custom_fields && Object.keys(selectedTicket.custom_fields).length > 0) && (
+                      <div>
+                        <h4 className="text-sm font-medium mb-1">自定义字段</h4>
+                        <DynamicForm
+                          schema={selectedSchema}
+                          values={selectedTicket.custom_fields}
+                          context={selectedTicket as unknown as Record<string, unknown>}
+                          onChange={() => {}}
+                          readOnly
+                        />
                       </div>
                     )}
                   </TabsContent>
@@ -619,6 +691,15 @@ export default function ITSMPage() {
               <Button variant="outline" size="sm" onClick={addCiId}>添加</Button>
             </div>
           </div>
+          <div className="border-t pt-3">
+            <h4 className="text-sm font-medium mb-2">自定义字段</h4>
+            <DynamicForm
+              schema={createSchema}
+              values={customFields}
+              context={{ risk_level: form.risk_level }}
+              onChange={(key, value) => setCustomFields(c => ({ ...c, [key]: value }))}
+            />
+          </div>
           {knowledgeRecs.length > 0 && <div className="mt-2 p-2 bg-amber-50 dark:bg-amber-950/20 rounded-md">
             <p className="text-xs font-medium text-amber-700 dark:text-amber-400 mb-1">相关文章推荐</p>
             {knowledgeRecs.map(a => <div key={a.id} className="text-[11px] text-muted-foreground hover:text-foreground cursor-pointer truncate" onClick={e => { e.stopPropagation(); window.open('/knowledge/' + a.id, '_blank') }}>· {a.title}</div>)}
@@ -685,6 +766,25 @@ export default function ITSMPage() {
           </div>
         )}
         <DialogFooter><Button onClick={() => setImportDialog(false)}>关闭</Button></DialogFooter>
+      </Dialog>
+
+      <Dialog open={configDialog} onClose={() => setConfigDialog(false)} title="表单配置（ticket:default）">
+        <div className="space-y-3">
+          <p className="text-xs text-muted-foreground">
+            定义工单的自定义字段（Form Schema）。字段类型支持 text / textarea / select / multiselect / number / date / bool / user / ci / cascader；
+            可用 <code className="px-1 rounded bg-muted">visible_when</code> 做条件显隐（如 <code className="px-1 rounded bg-muted">risk_level==critical</code>）。
+          </p>
+          <textarea
+            className="flex h-72 w-full rounded-md border border-input bg-background px-3 py-2 text-xs font-mono resize-none focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            value={configJson}
+            onChange={e => setConfigJson(e.target.value)}
+            spellCheck={false}
+          />
+        </div>
+        <DialogFooter>
+          <Button variant="outline" onClick={() => setConfigDialog(false)}>取消</Button>
+          <Button onClick={handleSaveConfig} disabled={configSaving || !canWrite}>{configSaving ? '保存中...' : '保存配置'}</Button>
+        </DialogFooter>
       </Dialog>
     </div>
   )

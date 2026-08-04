@@ -15,6 +15,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/opsorigin/core/internal/itsm/form"
 	"github.com/opsorigin/core/internal/itsm/model"
 	"github.com/opsorigin/core/internal/itsm/process"
 	"github.com/opsorigin/core/internal/itsm/risk"
@@ -43,6 +44,7 @@ type Service struct {
 	webhook      *webhook.Callback
 	processStore ProcessEngine
 	slaStore     *sla.Store
+	formEngine   *form.Engine
 	wsHub        interface{ BroadcastToTenant(interface{}, string) }
 	stopCh       chan struct{}
 	stopOnce     sync.Once
@@ -70,13 +72,19 @@ func NewService(cfg *config.Config, db *sql.DB) *Service {
 	}
 
 	return &Service{
-		cfg:     cfg,
-		db:      db,
-		store:   s,
-		risk:    risk.New(),
-		webhook: webhook.New(),
-		stopCh:  make(chan struct{}),
+		cfg:        cfg,
+		db:         db,
+		store:      s,
+		risk:       risk.New(),
+		webhook:    webhook.New(),
+		formEngine: form.NewEngine(s),
+		stopCh:     make(chan struct{}),
 	}
+}
+
+// SetFormEngine 注入可配置表单校验引擎（由 NewService 内部基于 store 构造时可选）。
+func (s *Service) SetFormEngine(e *form.Engine) {
+	s.formEngine = e
 }
 
 func (s *Service) SetWebSocketHub(hub interface{ BroadcastToTenant(interface{}, string) }) {
@@ -118,6 +126,9 @@ func (s *Service) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/v1/itsm/sla/stats", s.handleSLAStats)
 	mux.HandleFunc("GET /api/v1/itsm/sla/breached", s.handleSLABreached)
 	mux.HandleFunc("GET /api/v1/itsm/tickets/{id}/sla", s.handleTicketSLA)
+	// Form schemas (dynamic forms)
+	mux.HandleFunc("GET /api/v1/itsm/forms", s.handleListFormScopes)
+	mux.HandleFunc("PUT /api/v1/itsm/forms", s.handleUpsertFormSchema)
 	// Change Management
 	mux.HandleFunc("POST /api/v1/itsm/changes", s.handleCreateChange)
 	mux.HandleFunc("GET /api/v1/itsm/changes", s.handleListChanges)
@@ -163,6 +174,23 @@ func (s *Service) CreateTicket(ctx context.Context, req model.CreateTicketReques
 		req.RiskLevel = s.risk.Classify(req.Title, req.Description, req.ChangePlan)
 	}
 
+	// 可配置表单：按作用域注入默认值并校验自定义字段（无 schema 时跳过，向后兼容）
+	scope := req.FormScope
+	if scope == "" {
+		scope = "ticket:default"
+	}
+	if req.CustomFields == nil {
+		req.CustomFields = map[string]any{}
+	}
+	if s.formEngine != nil {
+		if schema, serr := s.formEngine.ResolveSchema(ctx, tenantID, scope); serr == nil && schema != nil {
+			form.MergeDefaults(schema, req.CustomFields)
+			if verr := form.ValidateSchema(schema, req.CustomFields); verr != nil {
+				return nil, fmt.Errorf("表单校验失败: %w", verr)
+			}
+		}
+	}
+
 	now := time.Now()
 	ticket := &model.Ticket{
 		TenantID:      tenantID,
@@ -177,6 +205,7 @@ func (s *Service) CreateTicket(ctx context.Context, req model.CreateTicketReques
 		WebhookURL:    req.WebhookURL,
 		Labels:        req.Labels,
 		CIIDs:         req.CIIDs,
+		CustomFields:  req.CustomFields,
 		TraceID:       traceIDFromCtx(ctx),
 		ScheduledAt:   req.ScheduledAt,
 		DeadlineAt:    req.DeadlineAt,
@@ -1037,6 +1066,61 @@ func (s *Service) handleTicketSLA(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	writeJSON(w, http.StatusOK, result)
+}
+
+// --- Form schema handlers (dynamic forms) ---
+
+// handleListFormScopes 列出已配置的作用域；若带 scope 查询参数则返回该作用域的 schema（无则 schema 为 null）。
+func (s *Service) handleListFormScopes(w http.ResponseWriter, r *http.Request) {
+	tenantID := tenantFromCtx(r.Context())
+	scope := r.URL.Query().Get("scope")
+	if scope != "" {
+		schema, err := s.store.GetFormSchema(r.Context(), tenantID, scope)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"scope": scope, "schema": schema})
+		return
+	}
+	scopes, err := s.store.ListFormScopes(r.Context(), tenantID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if scopes == nil {
+		scopes = []string{}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"scopes": scopes})
+}
+
+// handleUpsertFormSchema 按 scope 写入/更新一张表单 schema（管理端可配）。
+func (s *Service) handleUpsertFormSchema(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Scope  string          `json:"scope"`
+		Schema form.FormSchema `json:"schema"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if req.Scope == "" {
+		req.Scope = req.Schema.Scope
+	}
+	if req.Scope == "" {
+		writeError(w, http.StatusBadRequest, "scope is required")
+		return
+	}
+	req.Schema.Scope = req.Scope
+	if req.Schema.Version < 1 {
+		req.Schema.Version = 1
+	}
+	tenantID := tenantFromCtx(r.Context())
+	if err := s.store.UpsertFormSchema(r.Context(), tenantID, req.Scope, req.Schema); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"status": "ok", "scope": req.Scope})
 }
 
 func formatDuration(d time.Duration) string {

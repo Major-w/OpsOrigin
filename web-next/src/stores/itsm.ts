@@ -3,6 +3,7 @@
 import { create } from 'zustand'
 import { apiFetch, apiList } from '@/lib/utils'
 import { toast } from '@/stores/toast'
+import type { FormSchema } from '@/components/itsm/DynamicForm'
 
 export interface Ticket {
   id: string
@@ -31,6 +32,10 @@ export interface Ticket {
   deadline_at?: string
   labels?: Record<string, string>
   webhook_url?: string
+  // 可配置表单采集的业务自定义字段（由 form.FormSchema 驱动，无 schema 时为空）
+  custom_fields?: Record<string, any>
+  // 本工单套用的表单作用域（默认 ticket:default）；用于目录/流程按场景套不同字段
+  form_scope?: string
 }
 
 export interface TicketEvent {
@@ -84,6 +89,10 @@ interface ITSMState {
   getTicket: (id: string) => Promise<Ticket>
   getEvents: (id: string) => Promise<TicketEvent[]>
   create: (data: Partial<Ticket>) => Promise<boolean>
+  // 可配置表单 schema
+  getFormSchema: (scope: string) => Promise<FormSchema | null>
+  getFormScopes: () => Promise<string[]>
+  upsertFormSchema: (scope: string, schema: FormSchema) => Promise<boolean>
   approve: (id: string, comment?: string) => Promise<boolean>
   reject: (id: string, reason: string) => Promise<boolean>
   execute: (id: string) => Promise<boolean>
@@ -210,6 +219,35 @@ export const useITSMStore = create<ITSMState>((set, get) => ({
       set({ processes })
     } catch (e: any) {
       toast.error(`加载流程列表失败: ${e.message}`)
+    }
+  },
+  getFormSchema: async (scope) => {
+    try {
+      const data = await apiFetch<{ scope: string; schema: FormSchema | null }>(`/itsm/forms?scope=${encodeURIComponent(scope)}`)
+      return data.schema || null
+    } catch {
+      return null
+    }
+  },
+  getFormScopes: async () => {
+    try {
+      const data = await apiFetch<{ scopes: string[] }>('/itsm/forms')
+      return data.scopes || []
+    } catch {
+      return []
+    }
+  },
+  upsertFormSchema: async (scope, schema) => {
+    try {
+      await apiFetch('/itsm/forms', {
+        method: 'PUT',
+        body: JSON.stringify({ scope, schema: { ...schema, scope } }),
+      })
+      toast.success('表单配置已保存')
+      return true
+    } catch (e: any) {
+      toast.error(`保存表单配置失败: ${e.message}`)
+      return false
     }
   },
   getProcess: async (id) => {

@@ -46,38 +46,41 @@ func (s TicketStatus) Valid() bool {
 }
 
 type Ticket struct {
-	ID                 string            `json:"id"`
-	TenantID           string            `json:"tenant_id"`
-	Title              string            `json:"title"`
-	Description        string            `json:"description,omitempty"`
-	RiskLevel          RiskLevel         `json:"risk_level"`
-	Status             TicketStatus      `json:"status"`
-	ChangePlan         string            `json:"change_plan,omitempty"`
-	RollbackPlan       string            `json:"rollback_plan,omitempty"`
-	CreatedBy          string            `json:"created_by"`
-	CreatedByType      string            `json:"created_by_type"`
-	ApprovedBy         string            `json:"approved_by,omitempty"`
-	RejectReason       string            `json:"reject_reason,omitempty"`
-	CompletedBy        string            `json:"completed_by,omitempty"`
-	RolledBackBy       string            `json:"rolled_back_by,omitempty"`
-	RollbackReason     string            `json:"rollback_reason,omitempty"`
-	CIIDs              []string          `json:"ci_ids,omitempty"`
-	WebhookURL         string            `json:"webhook_url,omitempty"`
-	Labels             map[string]string `json:"labels,omitempty"`
-	ProcessID          string            `json:"process_id,omitempty"` // 绑定的流程模板 ID
-	TraceID            string            `json:"trace_id"`
-	ScheduledAt        *time.Time        `json:"scheduled_at,omitempty"`
-	DeadlineAt         *time.Time        `json:"deadline_at,omitempty"`
-	CreatedAt          time.Time         `json:"created_at"`
-	UpdatedAt          time.Time         `json:"updated_at"`
-	ApprovedAt         *time.Time        `json:"approved_at,omitempty"`
-	ExecutedAt         *time.Time        `json:"executed_at,omitempty"`
-	CompletedAt        *time.Time        `json:"completed_at,omitempty"`
-	RolledBackAt       *time.Time        `json:"rolled_back_at,omitempty"`
-	SLAWarningNotified bool              `json:"sla_warning_notified,omitempty"`
-	SLABreached        bool              `json:"sla_breached,omitempty"`
-	SLABreachedAt      *time.Time        `json:"sla_breached_at,omitempty"`
-	SLAEscalationLevel int               `json:"sla_escalation_level,omitempty"`
+	ID             string            `json:"id"`
+	TenantID       string            `json:"tenant_id"`
+	Title          string            `json:"title"`
+	Description    string            `json:"description,omitempty"`
+	RiskLevel      RiskLevel         `json:"risk_level"`
+	Status         TicketStatus      `json:"status"`
+	ChangePlan     string            `json:"change_plan,omitempty"`
+	RollbackPlan   string            `json:"rollback_plan,omitempty"`
+	CreatedBy      string            `json:"created_by"`
+	CreatedByType  string            `json:"created_by_type"`
+	ApprovedBy     string            `json:"approved_by,omitempty"`
+	RejectReason   string            `json:"reject_reason,omitempty"`
+	CompletedBy    string            `json:"completed_by,omitempty"`
+	RolledBackBy   string            `json:"rolled_back_by,omitempty"`
+	RollbackReason string            `json:"rollback_reason,omitempty"`
+	CIIDs          []string          `json:"ci_ids,omitempty"`
+	WebhookURL     string            `json:"webhook_url,omitempty"`
+	Labels         map[string]string `json:"labels,omitempty"`
+	// CustomFields 可配置表单采集的业务自定义字段（JSONB），与系统字段并存。
+	// 由 form.FormSchema 驱动（internal/itsm/form），无 schema 时为空。
+	CustomFields       map[string]any `json:"custom_fields,omitempty"`
+	ProcessID          string         `json:"process_id,omitempty"` // 绑定的流程模板 ID
+	TraceID            string         `json:"trace_id"`
+	ScheduledAt        *time.Time     `json:"scheduled_at,omitempty"`
+	DeadlineAt         *time.Time     `json:"deadline_at,omitempty"`
+	CreatedAt          time.Time      `json:"created_at"`
+	UpdatedAt          time.Time      `json:"updated_at"`
+	ApprovedAt         *time.Time     `json:"approved_at,omitempty"`
+	ExecutedAt         *time.Time     `json:"executed_at,omitempty"`
+	CompletedAt        *time.Time     `json:"completed_at,omitempty"`
+	RolledBackAt       *time.Time     `json:"rolled_back_at,omitempty"`
+	SLAWarningNotified bool           `json:"sla_warning_notified,omitempty"`
+	SLABreached        bool           `json:"sla_breached,omitempty"`
+	SLABreachedAt      *time.Time     `json:"sla_breached_at,omitempty"`
+	SLAEscalationLevel int            `json:"sla_escalation_level,omitempty"`
 }
 
 type CreateTicketRequest struct {
@@ -91,10 +94,14 @@ type CreateTicketRequest struct {
 	WebhookURL    string            `json:"webhook_url,omitempty"`
 	Labels        map[string]string `json:"labels,omitempty"`
 	CIIDs         []string          `json:"ci_ids,omitempty"`
-	ProcessID     string            `json:"process_id,omitempty"` // 绑定的流程模板 ID（触发流程引擎驱动）
-	ScheduledAt   *time.Time        `json:"scheduled_at,omitempty"`
-	DeadlineAt    *time.Time        `json:"deadline_at,omitempty"`
-	TraceID       string            `json:"trace_id,omitempty"`
+	// CustomFields 可配置表单采集的业务自定义字段（JSONB）。
+	CustomFields map[string]any `json:"custom_fields,omitempty"`
+	// FormScope 指定本工单套用的表单作用域（默认 ticket:default）；用于目录/流程按场景套不同字段。
+	FormScope   string     `json:"form_scope,omitempty"`
+	ProcessID   string     `json:"process_id,omitempty"` // 绑定的流程模板 ID（触发流程引擎驱动）
+	ScheduledAt *time.Time `json:"scheduled_at,omitempty"`
+	DeadlineAt  *time.Time `json:"deadline_at,omitempty"`
+	TraceID     string     `json:"trace_id,omitempty"`
 }
 
 type ApproveRequest struct {

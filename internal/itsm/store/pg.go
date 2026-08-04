@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/opsorigin/core/internal/itsm/form"
 	"github.com/opsorigin/core/internal/itsm/model"
 )
 
@@ -52,7 +53,8 @@ func (s *PGStore) Init(ctx context.Context) error {
 			sla_warning_notified BOOLEAN DEFAULT FALSE,
 			sla_breached        BOOLEAN DEFAULT FALSE,
 			sla_breached_at     TIMESTAMPTZ,
-			sla_escalation_level INTEGER DEFAULT 0
+			sla_escalation_level INTEGER DEFAULT 0,
+			custom_fields       TEXT DEFAULT '{}'
 		)`)
 	if err != nil {
 		return fmt.Errorf("init itsm_tickets table: %w", err)
@@ -132,6 +134,20 @@ func (s *PGStore) Init(ctx context.Context) error {
 		return fmt.Errorf("init itsm_changes index: %w", err)
 	}
 
+	// 可配置表单 schema 表（动态表单定义）
+	_, err = s.db.ExecContext(ctx, `
+		CREATE TABLE IF NOT EXISTS itsm_form_schemas (
+			tenant_id TEXT NOT NULL,
+			scope     TEXT NOT NULL,
+			version   INTEGER NOT NULL DEFAULT 1,
+			fields    JSONB NOT NULL DEFAULT '[]',
+			updated_at TIMESTAMPTZ NOT NULL,
+			PRIMARY KEY (tenant_id, scope)
+		)`)
+	if err != nil {
+		return fmt.Errorf("init itsm_form_schemas table: %w", err)
+	}
+
 	return nil
 }
 
@@ -151,6 +167,7 @@ func (s *PGStore) migrate(ctx context.Context) {
 		`ALTER TABLE itsm_tickets ADD COLUMN IF NOT EXISTS sla_breached_at TIMESTAMPTZ`,
 		`ALTER TABLE itsm_tickets ADD COLUMN IF NOT EXISTS sla_escalation_level INTEGER DEFAULT 0`,
 		`ALTER TABLE itsm_tickets ADD COLUMN IF NOT EXISTS process_id TEXT`,
+		`ALTER TABLE itsm_tickets ADD COLUMN IF NOT EXISTS custom_fields TEXT DEFAULT '{}'`,
 	}
 	for _, m := range migrations {
 		s.db.ExecContext(ctx, m)
@@ -165,6 +182,7 @@ func (s *PGStore) Create(ctx context.Context, ticket *model.Ticket) error {
 
 	labelsJSON, _ := json.Marshal(ticket.Labels)
 	ciIDsJSON, _ := json.Marshal(ticket.CIIDs)
+	customFieldsJSON, _ := json.Marshal(ticket.CustomFields)
 
 	_, err := s.db.ExecContext(ctx, `
 		INSERT INTO itsm_tickets
@@ -172,8 +190,8 @@ func (s *PGStore) Create(ctx context.Context, ticket *model.Ticket) error {
 			 rollback_plan, created_by, created_by_type, approved_by, reject_reason,
 			 completed_by, rolled_back_by, rollback_reason, ci_ids, webhook_url,
 			 labels, trace_id, scheduled_at, deadline_at, created_at, updated_at,
-			 approved_at, executed_at, completed_at, rolled_back_at, process_id)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28)`,
+			 approved_at, executed_at, completed_at, rolled_back_at, process_id, custom_fields)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29)`,
 		ticket.ID, ticket.TenantID, ticket.Title, nullable(ticket.Description),
 		string(ticket.RiskLevel), string(ticket.Status), nullable(ticket.ChangePlan),
 		nullable(ticket.RollbackPlan), ticket.CreatedBy, ticket.CreatedByType,
@@ -185,7 +203,7 @@ func (s *PGStore) Create(ctx context.Context, ticket *model.Ticket) error {
 		ticket.CreatedAt, ticket.UpdatedAt,
 		nullableTime(ticket.ApprovedAt), nullableTime(ticket.ExecutedAt),
 		nullableTime(ticket.CompletedAt), nullableTime(ticket.RolledBackAt),
-		nullable(ticket.ProcessID))
+		nullable(ticket.ProcessID), string(customFieldsJSON))
 	if err != nil {
 		return fmt.Errorf("insert ticket: %w", err)
 	}
@@ -197,6 +215,7 @@ func (s *PGStore) Get(ctx context.Context, id, tenantID string) (*model.Ticket, 
 	var desc, changePlan, rollbackPlan, approvedBy, rejectReason, webhookURL sql.NullString
 	var completedBy, rolledBackBy, rollbackReason sql.NullString
 	var labelsJSON, ciIDsJSON sql.NullString
+	var customFieldsJSON sql.NullString
 	var processID sql.NullString
 	var approvedAt, executedAt, completedAt, rolledBackAt sql.NullTime
 	var scheduledAt, deadlineAt sql.NullTime
@@ -206,14 +225,14 @@ func (s *PGStore) Get(ctx context.Context, id, tenantID string) (*model.Ticket, 
 		       rollback_plan, created_by, created_by_type, approved_by, reject_reason,
 		       completed_by, rolled_back_by, rollback_reason, ci_ids, webhook_url,
 		       labels, trace_id, scheduled_at, deadline_at, created_at, updated_at,
-		       approved_at, executed_at, completed_at, rolled_back_at, process_id
+		       approved_at, executed_at, completed_at, rolled_back_at, process_id, custom_fields
 		FROM itsm_tickets WHERE id = $1 AND tenant_id = $2`, id, tenantID).Scan(
 		&t.ID, &t.TenantID, &t.Title, &desc, &t.RiskLevel, &t.Status,
 		&changePlan, &rollbackPlan, &t.CreatedBy, &t.CreatedByType,
 		&approvedBy, &rejectReason, &completedBy, &rolledBackBy, &rollbackReason,
 		&ciIDsJSON, &webhookURL, &labelsJSON, &t.TraceID,
 		&scheduledAt, &deadlineAt, &t.CreatedAt, &t.UpdatedAt,
-		&approvedAt, &executedAt, &completedAt, &rolledBackAt, &processID)
+		&approvedAt, &executedAt, &completedAt, &rolledBackAt, &processID, &customFieldsJSON)
 	if err != nil {
 		if err == sql.ErrNoRows {
 			return nil, ErrNotFound
@@ -243,6 +262,9 @@ func (s *PGStore) Get(ctx context.Context, id, tenantID string) (*model.Ticket, 
 	if ciIDsJSON.Valid && ciIDsJSON.String != "" {
 		json.Unmarshal([]byte(ciIDsJSON.String), &t.CIIDs)
 	}
+	if customFieldsJSON.Valid && customFieldsJSON.String != "" && customFieldsJSON.String != "{}" {
+		json.Unmarshal([]byte(customFieldsJSON.String), &t.CustomFields)
+	}
 	return t, nil
 }
 
@@ -257,6 +279,7 @@ func (s *PGStore) Update(ctx context.Context, ticket *model.Ticket) error {
 
 	labelsJSON, _ := json.Marshal(ticket.Labels)
 	ciIDsJSON, _ := json.Marshal(ticket.CIIDs)
+	customFieldsJSON, _ := json.Marshal(ticket.CustomFields)
 
 	result, err := s.db.ExecContext(ctx, `
 		UPDATE itsm_tickets SET
@@ -266,8 +289,8 @@ func (s *PGStore) Update(ctx context.Context, ticket *model.Ticket) error {
 			rollback_reason=$13, ci_ids=$14, webhook_url=$15, labels=$16,
 			trace_id=$17, updated_at=$18, approved_at=$19, executed_at=$20,
 			completed_at=$21, rolled_back_at=$22, scheduled_at=$23, deadline_at=$24,
-			process_id=$25
-		WHERE id=$26 AND tenant_id=$27`,
+			process_id=$25, custom_fields=$26
+		WHERE id=$27 AND tenant_id=$28`,
 		ticket.Title, nullable(ticket.Description), string(ticket.RiskLevel),
 		string(ticket.Status), nullable(ticket.ChangePlan),
 		nullable(ticket.RollbackPlan), ticket.CreatedBy, ticket.CreatedByType,
@@ -278,7 +301,7 @@ func (s *PGStore) Update(ctx context.Context, ticket *model.Ticket) error {
 		ticket.UpdatedAt, nullableTime(ticket.ApprovedAt), nullableTime(ticket.ExecutedAt),
 		nullableTime(ticket.CompletedAt), nullableTime(ticket.RolledBackAt),
 		nullableTime(ticket.ScheduledAt), nullableTime(ticket.DeadlineAt),
-		nullable(ticket.ProcessID),
+		nullable(ticket.ProcessID), string(customFieldsJSON),
 		ticket.ID, ticket.TenantID)
 	if err != nil {
 		return fmt.Errorf("update ticket: %w", err)
@@ -295,7 +318,7 @@ func (s *PGStore) List(ctx context.Context, tenantID string, status model.Ticket
 	                  rollback_plan, created_by, created_by_type, approved_by, reject_reason,
 	                  completed_by, rolled_back_by, rollback_reason, ci_ids, webhook_url,
 	                  labels, trace_id, scheduled_at, deadline_at, created_at, updated_at,
-	                  approved_at, executed_at, completed_at, rolled_back_at, process_id
+	                  approved_at, executed_at, completed_at, rolled_back_at, process_id, custom_fields
 	           FROM itsm_tickets WHERE tenant_id = $1`
 	args := []any{tenantID}
 
@@ -317,6 +340,7 @@ func (s *PGStore) List(ctx context.Context, tenantID string, status model.Ticket
 		var desc, changePlan, rollbackPlan, approvedBy, rejectReason, webhookURL sql.NullString
 		var completedBy, rolledBackBy, rollbackReason sql.NullString
 		var labelsJSON, ciIDsJSON sql.NullString
+		var customFieldsJSON sql.NullString
 		var processID sql.NullString
 		var approvedAt, executedAt, completedAt, rolledBackAt sql.NullTime
 		var scheduledAt, deadlineAt sql.NullTime
@@ -327,7 +351,7 @@ func (s *PGStore) List(ctx context.Context, tenantID string, status model.Ticket
 			&approvedBy, &rejectReason, &completedBy, &rolledBackBy, &rollbackReason,
 			&ciIDsJSON, &webhookURL, &labelsJSON, &t.TraceID,
 			&scheduledAt, &deadlineAt, &t.CreatedAt, &t.UpdatedAt,
-			&approvedAt, &executedAt, &completedAt, &rolledBackAt, &processID); err != nil {
+			&approvedAt, &executedAt, &completedAt, &rolledBackAt, &processID, &customFieldsJSON); err != nil {
 			return nil, fmt.Errorf("scan ticket: %w", err)
 		}
 
@@ -352,6 +376,9 @@ func (s *PGStore) List(ctx context.Context, tenantID string, status model.Ticket
 		}
 		if ciIDsJSON.Valid && ciIDsJSON.String != "" {
 			json.Unmarshal([]byte(ciIDsJSON.String), &t.CIIDs)
+		}
+		if customFieldsJSON.Valid && customFieldsJSON.String != "" && customFieldsJSON.String != "{}" {
+			json.Unmarshal([]byte(customFieldsJSON.String), &t.CustomFields)
 		}
 		tickets = append(tickets, t)
 	}
@@ -588,7 +615,7 @@ func (s *PGStore) ListActiveTicketsWithDeadline(ctx context.Context, tenantID st
 			created_by, created_by_type, approved_by, reject_reason, completed_by, rolled_back_by,
 			rollback_reason, ci_ids, webhook_url, labels, trace_id, scheduled_at, deadline_at,
 			created_at, updated_at, approved_at, executed_at, completed_at, rolled_back_at,
-			sla_warning_notified, sla_breached, sla_breached_at, sla_escalation_level
+			sla_warning_notified, sla_breached, sla_breached_at, sla_escalation_level, custom_fields
 		FROM itsm_tickets
 		WHERE tenant_id = $1 AND status IN ('draft','pending_review','approved','executing') AND deadline_at IS NOT NULL`,
 		tenantID)
@@ -599,7 +626,7 @@ func (s *PGStore) ListActiveTicketsWithDeadline(ctx context.Context, tenantID st
 	var result []*model.Ticket
 	for rows.Next() {
 		t := &model.Ticket{}
-		var ciIDsJSON, labelsJSON []byte
+		var ciIDsJSON, labelsJSON, customFieldsJSON []byte
 		var scheduledAt, deadlineAt, approvedAt, executedAt, completedAt, rolledBackAt, slaBreachedAt sql.NullTime
 		err := rows.Scan(
 			&t.ID, &t.TenantID, &t.Title, &t.Description, &t.RiskLevel, &t.Status,
@@ -609,6 +636,7 @@ func (s *PGStore) ListActiveTicketsWithDeadline(ctx context.Context, tenantID st
 			&scheduledAt, &deadlineAt, &t.CreatedAt, &t.UpdatedAt,
 			&approvedAt, &executedAt, &completedAt, &rolledBackAt,
 			&t.SLAWarningNotified, &t.SLABreached, &slaBreachedAt, &t.SLAEscalationLevel,
+			&customFieldsJSON,
 		)
 		if err != nil {
 			return nil, err
@@ -639,6 +667,9 @@ func (s *PGStore) ListActiveTicketsWithDeadline(ctx context.Context, tenantID st
 		}
 		if labelsJSON != nil {
 			json.Unmarshal(labelsJSON, &t.Labels)
+		}
+		if len(customFieldsJSON) > 0 && string(customFieldsJSON) != "{}" {
+			json.Unmarshal(customFieldsJSON, &t.CustomFields)
 		}
 		result = append(result, t)
 	}
@@ -805,4 +836,62 @@ func (s *PGStore) UpdateChange(ctx context.Context, change *model.ChangeRequest)
 		return ErrNotFound
 	}
 	return nil
+}
+
+// --- Form schema methods (postgres) ---
+
+func (s *PGStore) GetFormSchema(ctx context.Context, tenantID, scope string) (*form.FormSchema, error) {
+	var fieldsJSON []byte
+	var version int
+	err := s.db.QueryRowContext(ctx, `
+		SELECT version, fields FROM itsm_form_schemas WHERE tenant_id = $1 AND scope = $2`,
+		tenantID, scope).Scan(&version, &fieldsJSON)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("query form schema: %w", err)
+	}
+	schema := &form.FormSchema{Scope: scope, Version: version}
+	if len(fieldsJSON) > 0 {
+		if err := json.Unmarshal(fieldsJSON, &schema.Fields); err != nil {
+			return nil, fmt.Errorf("unmarshal form schema fields: %w", err)
+		}
+	}
+	return schema, nil
+}
+
+func (s *PGStore) UpsertFormSchema(ctx context.Context, tenantID, scope string, schema form.FormSchema) error {
+	fieldsJSON, err := json.Marshal(schema.Fields)
+	if err != nil {
+		return fmt.Errorf("marshal form schema fields: %w", err)
+	}
+	_, err = s.db.ExecContext(ctx, `
+		INSERT INTO itsm_form_schemas (tenant_id, scope, version, fields, updated_at)
+		VALUES ($1, $2, $3, $4, NOW())
+		ON CONFLICT (tenant_id, scope)
+		DO UPDATE SET version = EXCLUDED.version, fields = EXCLUDED.fields, updated_at = NOW()`,
+		tenantID, scope, schema.Version, string(fieldsJSON))
+	if err != nil {
+		return fmt.Errorf("upsert form schema: %w", err)
+	}
+	return nil
+}
+
+func (s *PGStore) ListFormScopes(ctx context.Context, tenantID string) ([]string, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT scope FROM itsm_form_schemas WHERE tenant_id = $1 ORDER BY scope`, tenantID)
+	if err != nil {
+		return nil, fmt.Errorf("list form scopes: %w", err)
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var sc string
+		if err := rows.Scan(&sc); err != nil {
+			return nil, err
+		}
+		out = append(out, sc)
+	}
+	return out, rows.Err()
 }

@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/opsorigin/core/internal/itsm/form"
 	"github.com/opsorigin/core/internal/itsm/model"
 )
 
@@ -37,6 +38,10 @@ type Store interface {
 	GetChange(ctx context.Context, id, tenantID string) (*model.ChangeRequest, error)
 	ListChanges(ctx context.Context, tenantID string) ([]*model.ChangeRequest, error)
 	UpdateChange(ctx context.Context, change *model.ChangeRequest) error
+	// Form schemas (dynamic form definitions)
+	GetFormSchema(ctx context.Context, tenantID, scope string) (*form.FormSchema, error)
+	UpsertFormSchema(ctx context.Context, tenantID, scope string, schema form.FormSchema) error
+	ListFormScopes(ctx context.Context, tenantID string) ([]string, error)
 }
 
 type MemoryStore struct {
@@ -46,6 +51,7 @@ type MemoryStore struct {
 	comments    []*model.Comment
 	attachments []*model.Attachment
 	changes     map[string]*model.ChangeRequest
+	schemas     map[string]map[string]*form.FormSchema // tenantID -> scope -> schema
 	nextID      int64
 }
 
@@ -54,6 +60,7 @@ func NewMemoryStore() *MemoryStore {
 		tickets: make(map[string]*model.Ticket),
 		events:  make(map[string][]*model.TicketEvent),
 		changes: make(map[string]*model.ChangeRequest),
+		schemas: make(map[string]map[string]*form.FormSchema),
 	}
 }
 
@@ -398,4 +405,41 @@ func (s *MemoryStore) UpdateChange(ctx context.Context, change *model.ChangeRequ
 	change.UpdatedAt = time.Now()
 	s.changes[change.ID] = change
 	return nil
+}
+
+// --- Form schema methods (in-memory) ---
+
+func (s *MemoryStore) GetFormSchema(ctx context.Context, tenantID, scope string) (*form.FormSchema, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	scopes, ok := s.schemas[tenantID]
+	if !ok {
+		return nil, nil
+	}
+	return scopes[scope], nil
+}
+
+func (s *MemoryStore) UpsertFormSchema(ctx context.Context, tenantID, scope string, schema form.FormSchema) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.schemas[tenantID] == nil {
+		s.schemas[tenantID] = make(map[string]*form.FormSchema)
+	}
+	schema.Scope = scope
+	s.schemas[tenantID][scope] = &schema
+	return nil
+}
+
+func (s *MemoryStore) ListFormScopes(ctx context.Context, tenantID string) ([]string, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	scopes, ok := s.schemas[tenantID]
+	if !ok {
+		return []string{}, nil
+	}
+	out := make([]string, 0, len(scopes))
+	for sc := range scopes {
+		out = append(out, sc)
+	}
+	return out, nil
 }
