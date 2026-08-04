@@ -171,6 +171,15 @@ func (s *Service) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/v1/ai/memory", s.handleAddMemory)
 	mux.HandleFunc("DELETE /api/v1/ai/memory/{id}", s.handleDeleteMemory)
 
+	// —— 技能市场 (L4: MCP 打包共享, 数字员工 + 依赖工具打包成市场形态) ——
+	mux.HandleFunc("POST /api/v1/ai/skills/publish", s.handlePublishSkill)
+	mux.HandleFunc("GET /api/v1/ai/skills", s.handleListSkills)
+	mux.HandleFunc("GET /api/v1/ai/skills/{id}", s.handleGetSkill)
+	mux.HandleFunc("DELETE /api/v1/ai/skills/{id}", s.handleDeleteSkill)
+	mux.HandleFunc("POST /api/v1/ai/skills/{id}/install", s.handleInstallSkill)
+	mux.HandleFunc("GET /api/v1/ai/skills/{id}/export", s.handleExportSkill)
+	mux.HandleFunc("POST /api/v1/ai/skills/import", s.handleImportSkill)
+
 	// —— 训练数据集导出 (P3-1 反馈驱动微调) ——
 	mux.HandleFunc("GET /api/v1/ai/dataset", s.handleExportDataset)
 

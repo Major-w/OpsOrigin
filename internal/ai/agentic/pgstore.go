@@ -34,6 +34,13 @@ type Store interface {
 	DeleteCustomTool(ctx context.Context, id, tenantID string) error
 	ListCustomTools(ctx context.Context, tenantID string) ([]*CustomTool, error)
 
+	// ——— 技能市场 (L4: MCP 打包共享, 数字员工 + 依赖工具可移植) ———
+	CreateSkillPackage(ctx context.Context, p *SkillPackage) error
+	GetSkillPackage(ctx context.Context, tenantID, id string) (*SkillPackage, error)
+	ListSkillPackages(ctx context.Context, tenantID string) ([]*SkillPackage, error)
+	DeleteSkillPackage(ctx context.Context, tenantID, id string) error
+	IncrSkillDownloads(ctx context.Context, tenantID, id string) error
+
 	// ——— 主动巡检 Agent (P0) ———
 	CreateInspection(ctx context.Context, in *Inspection) error
 	GetInspection(ctx context.Context, id, tenantID string) (*Inspection, error)
@@ -179,6 +186,14 @@ func (s *PGStore) migrate() {
 	)`)
 	s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_ai_inspections_tenant ON ai_inspections(tenant_id)`)
 	s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_ai_inspection_runs_insp ON ai_inspection_runs(inspection_id)`)
+	// 技能市场(L4): 技能包目录(整对象 JSONB 持久化, 与巡检同构)。
+	s.db.Exec(`CREATE TABLE IF NOT EXISTS ai_skill_packages (
+		id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL DEFAULT 'default',
+		name TEXT NOT NULL, version TEXT DEFAULT '1.0.0',
+		data JSONB NOT NULL DEFAULT '{}', downloads INT DEFAULT 0,
+		created_at TIMESTAMPTZ DEFAULT NOW(), updated_at TIMESTAMPTZ DEFAULT NOW()
+	)`)
+	s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_ai_skill_packages_tenant ON ai_skill_packages(tenant_id)`)
 }
 
 // ——— 自定义 MCP 工具持久化 (PRD 5.2.2) ———
@@ -236,6 +251,82 @@ func (s *PGStore) ListCustomTools(ctx context.Context, tenantID string) ([]*Cust
 		out = append(out, t)
 	}
 	return out, rows.Err()
+}
+
+// ——— 技能市场持久化 (L4: MCP 打包共享) ———
+// 采用 data JSONB 整对象存储(与巡检同构): 技能包结构演进频繁(含 agent payload + 工具),
+// 避免每次加字段改表; 检索维度仅 tenant, 已建索引; downloads 单列便于原子自增。
+
+func (s *PGStore) CreateSkillPackage(ctx context.Context, p *SkillPackage) error {
+	if p.TenantID == "" {
+		p.TenantID = "default"
+	}
+	data, _ := json.Marshal(p)
+	_, err := s.db.ExecContext(ctx,
+		`INSERT INTO ai_skill_packages(id,tenant_id,name,version,data,downloads,created_at,updated_at)
+		 VALUES($1,$2,$3,$4,$5,$6,$7,$8)
+		 ON CONFLICT (id) DO UPDATE SET name=EXCLUDED.name, version=EXCLUDED.version, data=EXCLUDED.data, updated_at=EXCLUDED.updated_at`,
+		p.ID, p.TenantID, p.Name, p.Version, data, p.Downloads, p.CreatedAt, p.UpdatedAt)
+	return err
+}
+
+func (s *PGStore) GetSkillPackage(ctx context.Context, tenantID, id string) (*SkillPackage, error) {
+	var (
+		data     []byte
+		downloads int
+	)
+	err := s.db.QueryRowContext(ctx,
+		`SELECT data, downloads FROM ai_skill_packages WHERE id=$1 AND tenant_id=$2`, id, tenantID).
+		Scan(&data, &downloads)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	p := &SkillPackage{}
+	if err := json.Unmarshal(data, p); err != nil {
+		return nil, err
+	}
+	p.Downloads = downloads
+	return p, nil
+}
+
+func (s *PGStore) ListSkillPackages(ctx context.Context, tenantID string) ([]*SkillPackage, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT data, downloads FROM ai_skill_packages WHERE tenant_id=$1 ORDER BY updated_at DESC`, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []*SkillPackage
+	for rows.Next() {
+		var (
+			data      []byte
+			downloads int
+		)
+		if err := rows.Scan(&data, &downloads); err != nil {
+			return nil, err
+		}
+		p := &SkillPackage{}
+		if json.Unmarshal(data, p) != nil {
+			continue
+		}
+		p.Downloads = downloads
+		out = append(out, p)
+	}
+	return out, rows.Err()
+}
+
+func (s *PGStore) DeleteSkillPackage(ctx context.Context, tenantID, id string) error {
+	_, err := s.db.ExecContext(ctx, `DELETE FROM ai_skill_packages WHERE id=$1 AND tenant_id=$2`, id, tenantID)
+	return err
+}
+
+func (s *PGStore) IncrSkillDownloads(ctx context.Context, tenantID, id string) error {
+	_, err := s.db.ExecContext(ctx,
+		`UPDATE ai_skill_packages SET downloads = downloads + 1 WHERE id=$1 AND tenant_id=$2`, id, tenantID)
+	return err
 }
 
 // ——— 主动巡检持久化 (P0) ———

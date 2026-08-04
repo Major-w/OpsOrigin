@@ -6,6 +6,7 @@ import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { Input } from '@/components/ui/input'
 import { Switch } from '@/components/ui/switch'
+import { Select } from '@/components/ui/select'
 import { Dialog, DialogFooter } from '@/components/ui/dialog'
 import { cn, apiFetch } from '@/lib/utils'
 import { toast } from '@/stores/toast'
@@ -13,7 +14,7 @@ import { useAgentTemplates, useWorkforceStore, type AgentTemplate } from '@/stor
 import { useAIStore } from '@/stores/ai'
 import {
   Database, Network, Shield, GitBranch, Siren, TrendingDown, Clock,
-  Bot, RefreshCw, UserPlus, Sparkles, Wrench, BookOpen, CheckCircle2, Brain, Trash2,
+  Bot, RefreshCw, UserPlus, Sparkles, Wrench, BookOpen, CheckCircle2, Brain, Trash2, Store,
 } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
 
@@ -90,6 +91,39 @@ export default function DigitalEmployeesPage() {
   const [hiring, setHiring] = useState(false)
   const [roleFilter, setRoleFilter] = useState<string>('')
 
+  // —— 发布到技能市场 (L4: MCP 打包共享, 数字员工 + 依赖工具打包成市场形态) ——
+  const [publishOpen, setPublishOpen] = useState(false)
+  const [publishAgent, setPublishAgent] = useState('')
+  const [publishMeta, setPublishMeta] = useState({ name: '', version: '1.0.0', author: '', description: '', category: '', tags: '' })
+  const [publishing, setPublishing] = useState(false)
+
+  const doPublish = async () => {
+    if (!publishAgent) return toast.error('请选择要发布的数字员工')
+    setPublishing(true)
+    try {
+      await apiFetch('/ai/skills/publish', {
+        method: 'POST',
+        body: JSON.stringify({
+          agent_id: publishAgent,
+          name: publishMeta.name || undefined,
+          version: publishMeta.version || '1.0.0',
+          author: publishMeta.author || undefined,
+          description: publishMeta.description || undefined,
+          category: publishMeta.category || undefined,
+          tags: publishMeta.tags ? publishMeta.tags.split(/[,\s]+/).filter(Boolean) : undefined,
+        }),
+      })
+      toast.success('已发布到技能市场，可在「技能市场」页浏览与安装')
+      setPublishOpen(false)
+      setPublishAgent('')
+      setPublishMeta({ name: '', version: '1.0.0', author: '', description: '', category: '', tags: '' })
+    } catch (e: any) {
+      toast.error(`发布失败: ${e.message}`)
+    } finally {
+      setPublishing(false)
+    }
+  }
+
   useEffect(() => {
     loadTemplates()
     loadInspectionTemplates()
@@ -148,12 +182,17 @@ export default function DigitalEmployeesPage() {
             预置岗位 Agent 矩阵，一键上岗即可在对话与团队编排中使用，无需从空白开始搭建
           </p>
         </div>
-        <button
-          onClick={() => { loadTemplates(); fetchAgents() }}
-          className="inline-flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground transition-colors"
-        >
-          <RefreshCw className={cn('h-4 w-4', loading && 'animate-spin')} />刷新
-        </button>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={() => { loadTemplates(); fetchAgents() }}
+            className="inline-flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground transition-colors"
+          >
+            <RefreshCw className={cn('h-4 w-4', loading && 'animate-spin')} />刷新
+          </button>
+          <Button size="sm" variant="outline" className="gap-1" onClick={() => setPublishOpen(true)}>
+            <Store className="h-3.5 w-3.5" />发布到市场
+          </Button>
+        </div>
       </div>
 
       {/* 岗位类别筛选 */}
@@ -409,6 +448,61 @@ export default function DigitalEmployeesPage() {
           <Button variant="outline" onClick={() => setHireTarget(null)}>取消</Button>
           <Button onClick={confirmHire} disabled={hiring}>
             {hiring ? '创建中…' : '确认上岗'}
+          </Button>
+        </DialogFooter>
+      </Dialog>
+
+      {/* 发布到技能市场 (L4: MCP 打包共享, 数字员工 + 依赖工具打包成市场形态) */}
+      <Dialog open={publishOpen} onClose={() => setPublishOpen(false)} title="发布到技能市场">
+        <div className="space-y-3">
+          <p className="text-sm text-muted-foreground">
+            把一个数字员工（提示词 / 技能 / 工具）打包成技能包上架，团队可在「技能市场」一键安装复用。
+          </p>
+          <div>
+            <label className="text-xs text-muted-foreground">数字员工</label>
+            <Select
+              className="mt-1"
+              options={[
+                { value: '', label: '请选择…' },
+                ...agents.map((a: { id: string; name: string }) => ({ value: a.id, label: a.name })),
+              ]}
+              value={publishAgent}
+              onChange={e => setPublishAgent(e.target.value)}
+            />
+          </div>
+          <div className="grid grid-cols-2 gap-2">
+            <div>
+              <label className="text-xs text-muted-foreground">技能包名称（可选，留空用员工名）</label>
+              <Input className="mt-1" value={publishMeta.name} onChange={e => setPublishMeta(m => ({ ...m, name: e.target.value }))} placeholder="如 MySQL 慢查询巡检员" />
+            </div>
+            <div>
+              <label className="text-xs text-muted-foreground">版本</label>
+              <Input className="mt-1" value={publishMeta.version} onChange={e => setPublishMeta(m => ({ ...m, version: e.target.value }))} placeholder="1.0.0" />
+            </div>
+          </div>
+          <div className="grid grid-cols-2 gap-2">
+            <div>
+              <label className="text-xs text-muted-foreground">作者</label>
+              <Input className="mt-1" value={publishMeta.author} onChange={e => setPublishMeta(m => ({ ...m, author: e.target.value }))} placeholder="运维团队" />
+            </div>
+            <div>
+              <label className="text-xs text-muted-foreground">类别</label>
+              <Input className="mt-1" value={publishMeta.category} onChange={e => setPublishMeta(m => ({ ...m, category: e.target.value }))} placeholder="数据库 / 中间件 / 通用" />
+            </div>
+          </div>
+          <div>
+            <label className="text-xs text-muted-foreground">简介</label>
+            <Input className="mt-1" value={publishMeta.description} onChange={e => setPublishMeta(m => ({ ...m, description: e.target.value }))} placeholder="一句话说明这个技能包解决什么" />
+          </div>
+          <div>
+            <label className="text-xs text-muted-foreground">标签（空格或逗号分隔）</label>
+            <Input className="mt-1" value={publishMeta.tags} onChange={e => setPublishMeta(m => ({ ...m, tags: e.target.value }))} placeholder="mysql 巡检 慢查询" />
+          </div>
+        </div>
+        <DialogFooter>
+          <Button variant="outline" onClick={() => setPublishOpen(false)}>取消</Button>
+          <Button variant="primary" onClick={doPublish} disabled={publishing}>
+            {publishing ? '发布中…' : '发布'}
           </Button>
         </DialogFooter>
       </Dialog>
