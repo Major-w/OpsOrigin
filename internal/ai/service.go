@@ -166,6 +166,11 @@ func (s *Service) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/v1/ai/inspections/{id}/runs/{runID}/remediate", s.handleListRemediations)
 	mux.HandleFunc("POST /api/v1/ai/remediate/{actionID}/execute", s.handleExecuteRemediation)
 
+	// —— Agent 长期记忆 (P0-1: 经验跨会话复用) ——
+	mux.HandleFunc("GET /api/v1/ai/memory", s.handleListMemories)
+	mux.HandleFunc("POST /api/v1/ai/memory", s.handleAddMemory)
+	mux.HandleFunc("DELETE /api/v1/ai/memory/{id}", s.handleDeleteMemory)
+
 	// —— 训练数据集导出 (P3-1 反馈驱动微调) ——
 	mux.HandleFunc("GET /api/v1/ai/dataset", s.handleExportDataset)
 

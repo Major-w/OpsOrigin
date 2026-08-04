@@ -48,6 +48,8 @@ type Service struct {
 	stopOnce     sync.Once
 	// knowledgeArchiver 由 cmd/core 注入: 工单完成后将处置案例沉淀到知识库(nil=关闭)。
 	knowledgeArchiver func(ctx context.Context, tenantID, title, content string, tags []string) (string, error)
+	// experienceSink 由 cmd/core 注入(P0-1 长期记忆): 工单完成后将处置经验沉淀到 AI 记忆库(nil=关闭)。
+	experienceSink func(ctx context.Context, tenantID, agentID, problem, resolution string, outcome bool) error
 }
 
 func NewService(cfg *config.Config, db *sql.DB) *Service {
@@ -240,6 +242,12 @@ func (s *Service) SetKnowledgeArchiver(f func(ctx context.Context, tenantID, tit
 	s.knowledgeArchiver = f
 }
 
+// SetExperienceSink 注入 AI 长期记忆回调(P0-1): 工单成功完成后, 若为 AI 巡检来源且未标记
+// memory_archived, 把"问题+处置结果"沉淀为 Agent 记忆(nil=关闭)。
+func (s *Service) SetExperienceSink(f func(ctx context.Context, tenantID, agentID, problem, resolution string, outcome bool) error) {
+	s.experienceSink = f
+}
+
 // archiveTicketToKnowledge 工单成功完成后, 将 AI 巡检产生的处置案例自动沉淀到知识库,
 // 供后续 AI 检索复用(持续改进闭环: 发现 → 处置 → 沉淀 → 复用)。
 func (s *Service) archiveTicketToKnowledge(ctx context.Context, ticket *model.Ticket, resultComment string) {
@@ -283,6 +291,7 @@ func (s *Service) archiveTicketToKnowledge(ctx context.Context, ticket *model.Ti
 		return
 	}
 	slog.Info("ticket archived to knowledge", "ticket_id", ticket.ID, "article_id", articleID)
+	s.rememberTicketExperience(ctx, ticket, resultComment)
 }
 
 func (s *Service) handleGet(w http.ResponseWriter, r *http.Request) {
@@ -1437,4 +1446,36 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 
 func writeError(w http.ResponseWriter, status int, msg string) {
 	writeJSON(w, status, map[string]string{"error": msg})
+}
+
+// rememberTicketExperience 工单处置成功后, 把处置经验沉淀到 AI 长期记忆库(P0-1)。
+// 幂等: 通过 labels.memory_archived 标记, 同一工单只沉淀一次。
+func (s *Service) rememberTicketExperience(ctx context.Context, ticket *model.Ticket, resultComment string) {
+	if s.experienceSink == nil {
+		return
+	}
+	if ticket.Labels == nil || ticket.Labels["source"] != "ai_inspection" {
+		return
+	}
+	if ticket.Labels["memory_archived"] == "true" {
+		return
+	}
+	agentID := ticket.Labels["agent_id"]
+	problem := ticket.Title
+	if ticket.Description != "" && len(ticket.Description) <= 200 {
+		problem = ticket.Title + ": " + ticket.Description
+	}
+	resolution := resultComment
+	if resolution == "" {
+		resolution = "已处置完成(见工单备注)"
+	}
+	if err := s.experienceSink(ctx, ticket.TenantID, agentID, problem, resolution, true); err != nil {
+		slog.Warn("remember ticket experience failed", "ticket_id", ticket.ID, "error", err)
+		return
+	}
+	ticket.Labels["memory_archived"] = "true"
+	if err := s.store.Update(ctx, ticket); err != nil {
+		slog.Warn("persist ticket memory_archived label failed", "ticket_id", ticket.ID, "error", err)
+	}
+	slog.Info("ticket experience remembered", "ticket_id", ticket.ID, "agent", agentID)
 }

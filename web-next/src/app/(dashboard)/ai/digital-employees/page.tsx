@@ -7,14 +7,27 @@ import { Badge } from '@/components/ui/badge'
 import { Input } from '@/components/ui/input'
 import { Switch } from '@/components/ui/switch'
 import { Dialog, DialogFooter } from '@/components/ui/dialog'
-import { cn } from '@/lib/utils'
+import { cn, apiFetch } from '@/lib/utils'
+import { toast } from '@/stores/toast'
 import { useAgentTemplates, useWorkforceStore, type AgentTemplate } from '@/stores/aiWorkforce'
 import { useAIStore } from '@/stores/ai'
 import {
   Database, Network, Shield, GitBranch, Siren, TrendingDown, Clock,
-  Bot, RefreshCw, UserPlus, Sparkles, Wrench, BookOpen, CheckCircle2,
+  Bot, RefreshCw, UserPlus, Sparkles, Wrench, BookOpen, CheckCircle2, Brain, Trash2,
 } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
+
+// P0-1 长期记忆条目
+interface ExperienceMemory {
+  id: string
+  agent_id?: string
+  category?: string
+  problem: string
+  resolution: string
+  outcome: 'succeeded' | 'false_positive'
+  source?: string
+  hit_count: number
+}
 
 // 模板 icon 名 → 组件映射（后端只下发名称，前端负责视觉呈现）
 const ICONS: Record<string, LucideIcon> = {
@@ -44,6 +57,33 @@ export default function DigitalEmployeesPage() {
   const loadInspectionTemplates = useWorkforceStore(s => s.loadInspectionTemplates)
 
   const [preview, setPreview] = useState<AgentTemplate | null>(null)
+  // —— P0-1 长期记忆 ——
+  const [memories, setMemories] = useState<ExperienceMemory[]>([])
+  const [memAgent, setMemAgent] = useState('')
+  const [memForm, setMemForm] = useState({ agent_id: '', problem: '', resolution: '' })
+  const [memSaving, setMemSaving] = useState(false)
+
+  const loadMemories = async (agentId?: string) => {
+    try {
+      const q = agentId ? `?agent_id=${encodeURIComponent(agentId)}` : ''
+      setMemories(await apiFetch<ExperienceMemory[]>(`/ai/memory${q}`))
+    } catch (e: any) { toast.error(`加载记忆失败: ${e.message}`) }
+  }
+  const addMemory = async () => {
+    if (!memForm.problem.trim() || !memForm.resolution.trim()) return toast.error('请填写问题与处置方案')
+    setMemSaving(true)
+    try {
+      await apiFetch('/ai/memory', { method: 'POST', body: JSON.stringify(memForm) })
+      toast.success('经验已记录，后续同类问题将自动复用')
+      setMemForm({ agent_id: '', problem: '', resolution: '' })
+      loadMemories(memAgent)
+    } catch (e: any) { toast.error(`记录失败: ${e.message}`) } finally { setMemSaving(false) }
+  }
+  const deleteMemory = async (id: string) => {
+    try { await apiFetch(`/ai/memory/${id}`, { method: 'DELETE' }); setMemories(ms => ms.filter(m => m.id !== id)) }
+    catch (e: any) { toast.error(`删除失败: ${e.message}`) }
+  }
+
   const [hireTarget, setHireTarget] = useState<AgentTemplate | null>(null)
   const [hireName, setHireName] = useState('')
   const [withInspection, setWithInspection] = useState(true)
@@ -54,6 +94,7 @@ export default function DigitalEmployeesPage() {
     loadTemplates()
     loadInspectionTemplates()
     fetchAgents()
+    loadMemories()
   }, [loadTemplates, loadInspectionTemplates, fetchAgents])
 
   const roles = useMemo(() => {
@@ -139,6 +180,65 @@ export default function DigitalEmployeesPage() {
           </button>
         ))}
       </div>
+
+      {/* P0-1 长期记忆: Agent 经验跨会话复用 */}
+      <Card>
+        <CardContent className="pt-4 space-y-3">
+          <div className="flex items-center justify-between gap-3 flex-wrap">
+            <div>
+              <div className="text-sm font-medium flex items-center gap-2"><Brain className="h-4 w-4 text-primary" />长期记忆</div>
+              <p className="text-xs text-muted-foreground mt-0.5">处置成功的问题自动沉淀为经验，下次同类巡检/对话直接复用（越用越聪明）。也可手动记录。</p>
+            </div>
+            <select className="h-9 rounded-md border border-input bg-background px-2 text-xs max-w-[200px]" value={memAgent} onChange={e => { setMemAgent(e.target.value); loadMemories(e.target.value) }}>
+              <option value="">全部 Agent</option>
+              {agents.map(a => <option key={a.id} value={a.id}>{a.name}</option>)}
+            </select>
+          </div>
+
+          <div className="flex gap-2 items-end flex-wrap">
+            <div className="flex-1 min-w-[160px]">
+              <label className="text-xs text-muted-foreground">问题（自动抽取关键词）</label>
+              <Input className="mt-1" value={memForm.problem} onChange={e => setMemForm(f => ({ ...f, problem: e.target.value }))} placeholder="如: 数据库连接数接近上限" />
+            </div>
+            <div className="flex-1 min-w-[160px]">
+              <label className="text-xs text-muted-foreground">处置方案</label>
+              <Input className="mt-1" value={memForm.resolution} onChange={e => setMemForm(f => ({ ...f, resolution: e.target.value }))} placeholder="如: 扩容连接池并排查慢查询" />
+            </div>
+            <div className="w-32">
+              <label className="text-xs text-muted-foreground">绑定 Agent（可选）</label>
+              <select className="mt-1 h-10 w-full rounded-md border border-input bg-background px-2 text-xs" value={memForm.agent_id} onChange={e => setMemForm(f => ({ ...f, agent_id: e.target.value }))}>
+                <option value="">通用经验</option>
+                {agents.map(a => <option key={a.id} value={a.id}>{a.name}</option>)}
+              </select>
+            </div>
+            <Button size="sm" className="gap-1" onClick={addMemory} disabled={memSaving}>
+              <Brain className="h-3.5 w-3.5" />记录经验
+            </Button>
+          </div>
+
+          {memories.length === 0 ? (
+            <p className="text-xs text-muted-foreground py-2">暂无记忆。巡检发现转工单处置成功后会自动沉淀到这里。</p>
+          ) : (
+            <div className="space-y-2">
+              {memories.map(m => (
+                <div key={m.id} className="flex items-center gap-3 rounded-lg border border-border p-2.5">
+                  <div className="flex-1 min-w-0">
+                    <div className="text-sm font-medium truncate">{m.problem}</div>
+                    <div className="text-[11px] text-muted-foreground truncate">
+                      处置: {m.resolution} · {m.agent_id ? `绑定 ${agents.find(a => a.id === m.agent_id)?.name || m.agent_id}` : '通用'} · {m.source === 'disposal_case' ? '工单沉淀' : '手动'}
+                    </div>
+                  </div>
+                  <Badge variant={m.outcome === 'false_positive' ? 'secondary' : 'success'} className="text-[10px] shrink-0">
+                    {m.outcome === 'false_positive' ? '误报' : '成功'}
+                  </Badge>
+                  <span className="text-[11px] text-muted-foreground shrink-0" title="被复用次数">复用 {m.hit_count}</span>
+                  <Button size="sm" variant="ghost" className="h-6 w-6 shrink-0" onClick={() => deleteMemory(m.id)}><Trash2 className="h-3 w-3" /></Button>
+                </div>
+              ))}
+            </div>
+          )}
+        </CardContent>
+      </Card>
 
       {/* 岗位卡片网格 */}
       {loading && templates.length === 0 ? (

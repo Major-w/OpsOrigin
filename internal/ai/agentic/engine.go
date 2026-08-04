@@ -68,6 +68,9 @@ type Engine struct {
 	remediations        map[string]*RemediationAction
 	RemediationRunnerFunc RemediationRunnerFunc
 
+	// memories Agent 长期记忆(P0-1): 进程内存储(与 agents/plans 同策略)。
+	memories map[string]*ExperienceMemory
+
 	// defaultSystemPrompt 是未配置 Agent 级 system_prompt 时的全局默认提示词(外置化,见 SetDefaultSystemPrompt)。
 	defaultSystemPrompt string
 
@@ -441,6 +444,13 @@ func (e *Engine) chatWithToolsConv(ctx context.Context, agentID, prompt string, 
 			}
 			sysExtra += m.Content
 		}
+	}
+	// P0-1 长期记忆: 检索该 Agent 的历史处置经验注入 system prompt(跨会话复用)
+	if mems := e.RetrieveMemories(tenantOf(ctx), agentID, prompt); len(mems) > 0 {
+		if sysExtra != "" {
+			sysExtra += "\n\n"
+		}
+		sysExtra += memoriesPrompt(mems)
 	}
 	msgs, roundStart := e.buildMessages(ctx, agentID, userPrompt, baseHistory, sysExtra)
 	tools := e.buildToolDefs(agentID)

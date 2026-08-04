@@ -593,6 +593,19 @@ func main() {
 	aiSvc.Engine.SetTicketMetricsProvider(func(ctx context.Context, tenantID string) (int, map[string]int, float64, map[string]int, error) {
 		return itsmSvc.TicketMetricsBySource(ctx, tenantID, "ai_inspection")
 	})
+	// P0-1 长期记忆: 工单处置成功后自动沉淀为 Agent 记忆(经验跨会话复用)
+	itsmSvc.SetExperienceSink(func(ctx context.Context, tenantID, agentID, problem, resolution string, outcome bool) error {
+		_, err := aiSvc.Engine.AddMemory(&agentic.ExperienceMemory{
+			TenantID:   tenantID,
+			AgentID:    agentID,
+			Category:   "处置经验",
+			Problem:    problem,
+			Resolution: resolution,
+			Outcome:    "succeeded",
+			Source:     "disposal_case",
+		})
+		return err
+	})
 	// 场景包自动落库: 启用场景时可将推荐的标准化工单类型真实建到 itsm_catalog(幂等同名跳过)。
 	aiSvc.Engine.SetSceneCatalogCreator(func(ctx context.Context, tenantID, name, description, category string) error {
 		items, err := catalogStore.List(ctx, tenantID)

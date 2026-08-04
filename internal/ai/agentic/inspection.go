@@ -396,6 +396,10 @@ func (e *Engine) runInspection(ctx context.Context, id, triggeredBy string, expe
 	if systemPrompt == "" {
 		systemPrompt = "你是一名主动巡检运维助手, 负责发现潜在风险并给出处置建议。"
 	}
+	// P0-1 长期记忆: 巡检时检索该 Agent 的历史处置经验注入 system prompt(同类问题参考复用)
+	if mems := e.RetrieveMemories(ins.TenantID, ins.AgentID, orDefault(scope, "巡检")); len(mems) > 0 {
+		systemPrompt += "\n\n" + memoriesPrompt(mems)
+	}
 	userPrompt := fmt.Sprintf("请对以下范围执行一次主动巡检, 并输出结构化报告:\n范围: %s\n\n要求:\n"+
 		"1. 使用 cmdb_query / knowledge_search 等工具获取真实数据, 引用你实际查到的内容;\n"+
 		"2. 明确指出发现的异常、风险及严重程度(高/中/低);\n"+
@@ -581,6 +585,7 @@ func (e *Engine) EscalateInspectionRun(ctx context.Context, tenantID, runID, sev
 			"source":        "ai_inspection",
 			"inspection_id": run.InspectionID,
 			"run_id":        run.ID,
+			"agent_id":      e.agentIDOfInspection(run.InspectionID), // P0-1: 记忆沉淀按巡检 Agent 绑定
 		})
 		if terr != nil {
 			slog.Warn("escalate finding failed", "run_id", run.ID, "finding_idx", i, "error", terr)
@@ -683,4 +688,14 @@ func orDefault(s, def string) string {
 		return def
 	}
 	return s
+}
+
+// agentIDOfInspection 返回巡检任务绑定的执行 Agent ID(供转单/记忆绑定)。
+func (e *Engine) agentIDOfInspection(inspectionID string) string {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	if in, ok := e.inspections[inspectionID]; ok {
+		return in.AgentID
+	}
+	return ""
 }
