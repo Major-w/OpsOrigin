@@ -33,6 +33,8 @@ type Store interface {
 	// SLA
 	ListActiveTicketsWithDeadline(ctx context.Context, tenantID string) ([]*model.Ticket, error)
 	GetSLAStats(ctx context.Context, tenantID string) (*model.SLAStats, error)
+	// ListTenantIDs 返回存在工单的所有租户, 供 SLA 检查器等跨租户任务遍历。
+	ListTenantIDs(ctx context.Context) ([]string, error)
 	// Change Requests
 	CreateChange(ctx context.Context, change *model.ChangeRequest) error
 	GetChange(ctx context.Context, id, tenantID string) (*model.ChangeRequest, error)
@@ -293,6 +295,23 @@ func (s *MemoryStore) ListActiveTicketsWithDeadline(ctx context.Context, tenantI
 		result = append(result, t)
 	}
 	return result, nil
+}
+
+func (s *MemoryStore) ListTenantIDs(ctx context.Context) ([]string, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	seen := map[string]bool{}
+	var out []string
+	for _, t := range s.tickets {
+		if t.TenantID != "" && !seen[t.TenantID] {
+			seen[t.TenantID] = true
+			out = append(out, t.TenantID)
+		}
+	}
+	if len(out) == 0 {
+		out = []string{"default"}
+	}
+	return out, nil
 }
 
 func (s *MemoryStore) GetSLAStats(ctx context.Context, tenantID string) (*model.SLAStats, error) {

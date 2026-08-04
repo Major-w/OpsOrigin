@@ -18,6 +18,8 @@ func TestCanTransition_Valid(t *testing.T) {
 		{StatusSucceeded, StatusRolledBack},
 		{StatusFailed, StatusRolledBack},
 		{StatusFailed, StatusPendingReview},
+		{StatusDraft, StatusExecuting},
+		{StatusSucceeded, StatusClosed},
 	}
 
 	for _, tc := range tests {
@@ -34,7 +36,6 @@ func TestCanTransition_Invalid(t *testing.T) {
 		to   TicketStatus
 	}{
 		{StatusDraft, StatusApproved},
-		{StatusDraft, StatusExecuting},
 		{StatusRejected, StatusApproved},
 		{StatusRolledBack, StatusSucceeded},
 		{StatusApproved, StatusDraft},
@@ -54,6 +55,9 @@ func TestIsTerminal(t *testing.T) {
 	}
 	if !IsTerminal(StatusRolledBack) {
 		t.Error("expected rolled_back to be terminal")
+	}
+	if !IsTerminal(StatusClosed) {
+		t.Error("expected closed to be terminal")
 	}
 	if IsTerminal(StatusApproved) {
 		t.Error("expected approved not to be terminal")

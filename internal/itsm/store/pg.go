@@ -168,6 +168,9 @@ func (s *PGStore) migrate(ctx context.Context) {
 		`ALTER TABLE itsm_tickets ADD COLUMN IF NOT EXISTS sla_escalation_level INTEGER DEFAULT 0`,
 		`ALTER TABLE itsm_tickets ADD COLUMN IF NOT EXISTS process_id TEXT`,
 		`ALTER TABLE itsm_tickets ADD COLUMN IF NOT EXISTS custom_fields TEXT DEFAULT '{}'`,
+		`ALTER TABLE itsm_tickets ADD COLUMN IF NOT EXISTS assignee TEXT`,
+		`ALTER TABLE itsm_tickets ADD COLUMN IF NOT EXISTS assigned_at TIMESTAMPTZ`,
+		`ALTER TABLE itsm_tickets ADD COLUMN IF NOT EXISTS satisfaction INTEGER DEFAULT 0`,
 	}
 	for _, m := range migrations {
 		s.db.ExecContext(ctx, m)
@@ -190,8 +193,9 @@ func (s *PGStore) Create(ctx context.Context, ticket *model.Ticket) error {
 			 rollback_plan, created_by, created_by_type, approved_by, reject_reason,
 			 completed_by, rolled_back_by, rollback_reason, ci_ids, webhook_url,
 			 labels, trace_id, scheduled_at, deadline_at, created_at, updated_at,
-			 approved_at, executed_at, completed_at, rolled_back_at, process_id, custom_fields)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29)`,
+			 approved_at, executed_at, completed_at, rolled_back_at, process_id, custom_fields,
+			 assignee, assigned_at, satisfaction)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32)`,
 		ticket.ID, ticket.TenantID, ticket.Title, nullable(ticket.Description),
 		string(ticket.RiskLevel), string(ticket.Status), nullable(ticket.ChangePlan),
 		nullable(ticket.RollbackPlan), ticket.CreatedBy, ticket.CreatedByType,
@@ -203,7 +207,8 @@ func (s *PGStore) Create(ctx context.Context, ticket *model.Ticket) error {
 		ticket.CreatedAt, ticket.UpdatedAt,
 		nullableTime(ticket.ApprovedAt), nullableTime(ticket.ExecutedAt),
 		nullableTime(ticket.CompletedAt), nullableTime(ticket.RolledBackAt),
-		nullable(ticket.ProcessID), string(customFieldsJSON))
+		nullable(ticket.ProcessID), string(customFieldsJSON),
+		nullable(ticket.Assignee), nullableTime(ticket.AssignedAt), ticket.Satisfaction)
 	if err != nil {
 		return fmt.Errorf("insert ticket: %w", err)
 	}
@@ -217,6 +222,9 @@ func (s *PGStore) Get(ctx context.Context, id, tenantID string) (*model.Ticket, 
 	var labelsJSON, ciIDsJSON sql.NullString
 	var customFieldsJSON sql.NullString
 	var processID sql.NullString
+	var assignee sql.NullString
+	var assignedAt sql.NullTime
+	var satisfaction sql.NullInt32
 	var approvedAt, executedAt, completedAt, rolledBackAt sql.NullTime
 	var scheduledAt, deadlineAt sql.NullTime
 
@@ -225,14 +233,16 @@ func (s *PGStore) Get(ctx context.Context, id, tenantID string) (*model.Ticket, 
 		       rollback_plan, created_by, created_by_type, approved_by, reject_reason,
 		       completed_by, rolled_back_by, rollback_reason, ci_ids, webhook_url,
 		       labels, trace_id, scheduled_at, deadline_at, created_at, updated_at,
-		       approved_at, executed_at, completed_at, rolled_back_at, process_id, custom_fields
+		       approved_at, executed_at, completed_at, rolled_back_at, process_id, custom_fields,
+		       assignee, assigned_at, satisfaction
 		FROM itsm_tickets WHERE id = $1 AND tenant_id = $2`, id, tenantID).Scan(
 		&t.ID, &t.TenantID, &t.Title, &desc, &t.RiskLevel, &t.Status,
 		&changePlan, &rollbackPlan, &t.CreatedBy, &t.CreatedByType,
 		&approvedBy, &rejectReason, &completedBy, &rolledBackBy, &rollbackReason,
 		&ciIDsJSON, &webhookURL, &labelsJSON, &t.TraceID,
 		&scheduledAt, &deadlineAt, &t.CreatedAt, &t.UpdatedAt,
-		&approvedAt, &executedAt, &completedAt, &rolledBackAt, &processID, &customFieldsJSON)
+		&approvedAt, &executedAt, &completedAt, &rolledBackAt, &processID, &customFieldsJSON,
+		&assignee, &assignedAt, &satisfaction)
 	if err != nil {
 		if err == sql.ErrNoRows {
 			return nil, ErrNotFound
@@ -250,6 +260,11 @@ func (s *PGStore) Get(ctx context.Context, id, tenantID string) (*model.Ticket, 
 	t.RolledBackBy = nullableStr(rolledBackBy)
 	t.RollbackReason = nullableStr(rollbackReason)
 	t.WebhookURL = nullableStr(webhookURL)
+	t.Assignee = nullableStr(assignee)
+	setTimePtr(&t.AssignedAt, assignedAt)
+	if satisfaction.Valid {
+		t.Satisfaction = int(satisfaction.Int32)
+	}
 	setTimePtr(&t.ApprovedAt, approvedAt)
 	setTimePtr(&t.ExecutedAt, executedAt)
 	setTimePtr(&t.CompletedAt, completedAt)
@@ -289,8 +304,8 @@ func (s *PGStore) Update(ctx context.Context, ticket *model.Ticket) error {
 			rollback_reason=$13, ci_ids=$14, webhook_url=$15, labels=$16,
 			trace_id=$17, updated_at=$18, approved_at=$19, executed_at=$20,
 			completed_at=$21, rolled_back_at=$22, scheduled_at=$23, deadline_at=$24,
-			process_id=$25, custom_fields=$26
-		WHERE id=$27 AND tenant_id=$28`,
+			process_id=$25, custom_fields=$26, assignee=$27, assigned_at=$28, satisfaction=$29
+		WHERE id=$30 AND tenant_id=$31`,
 		ticket.Title, nullable(ticket.Description), string(ticket.RiskLevel),
 		string(ticket.Status), nullable(ticket.ChangePlan),
 		nullable(ticket.RollbackPlan), ticket.CreatedBy, ticket.CreatedByType,
@@ -302,6 +317,7 @@ func (s *PGStore) Update(ctx context.Context, ticket *model.Ticket) error {
 		nullableTime(ticket.CompletedAt), nullableTime(ticket.RolledBackAt),
 		nullableTime(ticket.ScheduledAt), nullableTime(ticket.DeadlineAt),
 		nullable(ticket.ProcessID), string(customFieldsJSON),
+		nullable(ticket.Assignee), nullableTime(ticket.AssignedAt), ticket.Satisfaction,
 		ticket.ID, ticket.TenantID)
 	if err != nil {
 		return fmt.Errorf("update ticket: %w", err)
@@ -318,7 +334,8 @@ func (s *PGStore) List(ctx context.Context, tenantID string, status model.Ticket
 	                  rollback_plan, created_by, created_by_type, approved_by, reject_reason,
 	                  completed_by, rolled_back_by, rollback_reason, ci_ids, webhook_url,
 	                  labels, trace_id, scheduled_at, deadline_at, created_at, updated_at,
-	                  approved_at, executed_at, completed_at, rolled_back_at, process_id, custom_fields
+	                  approved_at, executed_at, completed_at, rolled_back_at, process_id, custom_fields,
+	                  assignee, assigned_at, satisfaction
 	           FROM itsm_tickets WHERE tenant_id = $1`
 	args := []any{tenantID}
 
@@ -342,6 +359,9 @@ func (s *PGStore) List(ctx context.Context, tenantID string, status model.Ticket
 		var labelsJSON, ciIDsJSON sql.NullString
 		var customFieldsJSON sql.NullString
 		var processID sql.NullString
+		var assignee sql.NullString
+		var assignedAt sql.NullTime
+		var satisfaction sql.NullInt32
 		var approvedAt, executedAt, completedAt, rolledBackAt sql.NullTime
 		var scheduledAt, deadlineAt sql.NullTime
 
@@ -351,7 +371,8 @@ func (s *PGStore) List(ctx context.Context, tenantID string, status model.Ticket
 			&approvedBy, &rejectReason, &completedBy, &rolledBackBy, &rollbackReason,
 			&ciIDsJSON, &webhookURL, &labelsJSON, &t.TraceID,
 			&scheduledAt, &deadlineAt, &t.CreatedAt, &t.UpdatedAt,
-			&approvedAt, &executedAt, &completedAt, &rolledBackAt, &processID, &customFieldsJSON); err != nil {
+			&approvedAt, &executedAt, &completedAt, &rolledBackAt, &processID, &customFieldsJSON,
+			&assignee, &assignedAt, &satisfaction); err != nil {
 			return nil, fmt.Errorf("scan ticket: %w", err)
 		}
 
@@ -365,6 +386,11 @@ func (s *PGStore) List(ctx context.Context, tenantID string, status model.Ticket
 		t.RolledBackBy = nullableStr(rolledBackBy)
 		t.RollbackReason = nullableStr(rollbackReason)
 		t.WebhookURL = nullableStr(webhookURL)
+		t.Assignee = nullableStr(assignee)
+		setTimePtr(&t.AssignedAt, assignedAt)
+		if satisfaction.Valid {
+			t.Satisfaction = int(satisfaction.Int32)
+		}
 		setTimePtr(&t.ApprovedAt, approvedAt)
 		setTimePtr(&t.ExecutedAt, executedAt)
 		setTimePtr(&t.CompletedAt, completedAt)
@@ -615,7 +641,8 @@ func (s *PGStore) ListActiveTicketsWithDeadline(ctx context.Context, tenantID st
 			created_by, created_by_type, approved_by, reject_reason, completed_by, rolled_back_by,
 			rollback_reason, ci_ids, webhook_url, labels, trace_id, scheduled_at, deadline_at,
 			created_at, updated_at, approved_at, executed_at, completed_at, rolled_back_at,
-			sla_warning_notified, sla_breached, sla_breached_at, sla_escalation_level, custom_fields
+			sla_warning_notified, sla_breached, sla_breached_at, sla_escalation_level, custom_fields,
+			process_id, assignee
 		FROM itsm_tickets
 		WHERE tenant_id = $1 AND status IN ('draft','pending_review','approved','executing') AND deadline_at IS NOT NULL`,
 		tenantID)
@@ -627,6 +654,7 @@ func (s *PGStore) ListActiveTicketsWithDeadline(ctx context.Context, tenantID st
 	for rows.Next() {
 		t := &model.Ticket{}
 		var ciIDsJSON, labelsJSON, customFieldsJSON []byte
+		var processID, assignee sql.NullString
 		var scheduledAt, deadlineAt, approvedAt, executedAt, completedAt, rolledBackAt, slaBreachedAt sql.NullTime
 		err := rows.Scan(
 			&t.ID, &t.TenantID, &t.Title, &t.Description, &t.RiskLevel, &t.Status,
@@ -636,7 +664,7 @@ func (s *PGStore) ListActiveTicketsWithDeadline(ctx context.Context, tenantID st
 			&scheduledAt, &deadlineAt, &t.CreatedAt, &t.UpdatedAt,
 			&approvedAt, &executedAt, &completedAt, &rolledBackAt,
 			&t.SLAWarningNotified, &t.SLABreached, &slaBreachedAt, &t.SLAEscalationLevel,
-			&customFieldsJSON,
+			&customFieldsJSON, &processID, &assignee,
 		)
 		if err != nil {
 			return nil, err
@@ -671,9 +699,32 @@ func (s *PGStore) ListActiveTicketsWithDeadline(ctx context.Context, tenantID st
 		if len(customFieldsJSON) > 0 && string(customFieldsJSON) != "{}" {
 			json.Unmarshal(customFieldsJSON, &t.CustomFields)
 		}
+		t.ProcessID = nullableStr(processID)
+		t.Assignee = nullableStr(assignee)
 		result = append(result, t)
 	}
 	return result, nil
+}
+
+// ListTenantIDs 返回存在工单的所有租户, 供 SLA 检查器等跨租户任务遍历。
+func (s *PGStore) ListTenantIDs(ctx context.Context) ([]string, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT DISTINCT tenant_id FROM itsm_tickets WHERE tenant_id <> ''`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var tid string
+		if err := rows.Scan(&tid); err != nil {
+			return nil, err
+		}
+		out = append(out, tid)
+	}
+	if len(out) == 0 {
+		out = []string{"default"}
+	}
+	return out, rows.Err()
 }
 
 func (s *PGStore) GetSLAStats(ctx context.Context, tenantID string) (*model.SLAStats, error) {

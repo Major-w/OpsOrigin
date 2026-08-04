@@ -36,6 +36,23 @@ type ProcessEngine interface {
 	GetInstance(ctx context.Context, ticketID, tenantID string) (*process.ProcessInstance, error)
 }
 
+// Notifier 是通知中心能力的极小接口(由 notification.Service 实现, 避免 import 环)。
+// ITSM 在工单关键事件(创建/指派/审批/关单/SLA)触发 Policy 分发。
+type Notifier interface {
+	NotifyEvent(ctx context.Context, tenantID, event, title, content string) error
+}
+
+// ITSM 内部事件名, 取值与 notification 包 EventType 对齐, 用于匹配通知 Policy。
+const (
+	evTicketCreated  = "ticket.created"
+	evTicketAssigned = "ticket.assigned"
+	evTicketApproved = "ticket.approved"
+	evTicketClosed   = "ticket.closed"
+	evTicketSubmit   = "ticket.submitted"
+	evSLABreached    = "ticket.sla_breached"
+	evSLAWarning     = "ticket.sla_warning"
+)
+
 type Service struct {
 	cfg          *config.Config
 	db           *sql.DB
@@ -52,6 +69,8 @@ type Service struct {
 	knowledgeArchiver func(ctx context.Context, tenantID, title, content string, tags []string) (string, error)
 	// experienceSink 由 cmd/core 注入(P0-1 长期记忆): 工单完成后将处置经验沉淀到 AI 记忆库(nil=关闭)。
 	experienceSink func(ctx context.Context, tenantID, agentID, problem, resolution string, outcome bool) error
+	// notify 对接通知中心(解耦接口, 避免 import 环): 工单关键事件触发 Policy 分发。
+	notify Notifier
 }
 
 func NewService(cfg *config.Config, db *sql.DB) *Service {
@@ -108,6 +127,21 @@ func (s *Service) SetSLAStore(st *sla.Store) {
 	s.slaStore = st
 }
 
+// SetNotifier 注入通知中心, 使工单关键事件能经 Policy 分发到各渠道(nil=关闭通知)。
+func (s *Service) SetNotifier(n Notifier) {
+	s.notify = n
+}
+
+// notifyTicket 经通知中心分发工单事件(无 notify 注入时静默跳过)。
+func (s *Service) notifyTicket(ctx context.Context, tenantID, event, title, content string) {
+	if s.notify == nil {
+		return
+	}
+	if err := s.notify.NotifyEvent(ctx, tenantID, event, title, content); err != nil {
+		slog.Warn("itsm: notify event failed", "event", event, "error", err)
+	}
+}
+
 func (s *Service) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/v1/itsm/tickets", s.handleCreate)
 	mux.HandleFunc("GET /api/v1/itsm/tickets/{id}", s.handleGet)
@@ -117,6 +151,9 @@ func (s *Service) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/v1/itsm/tickets/{id}/reject", s.handleReject)
 	mux.HandleFunc("POST /api/v1/itsm/tickets/{id}/execute", s.handleExecute)
 	mux.HandleFunc("POST /api/v1/itsm/tickets/{id}/complete", s.handleComplete)
+	mux.HandleFunc("POST /api/v1/itsm/tickets/{id}/submit", s.handleSubmit)
+	mux.HandleFunc("POST /api/v1/itsm/tickets/{id}/assign", s.handleAssign)
+	mux.HandleFunc("POST /api/v1/itsm/tickets/{id}/close", s.handleClose)
 	mux.HandleFunc("POST /api/v1/itsm/tickets/{id}/rollback", s.handleRollback)
 	mux.HandleFunc("GET /api/v1/itsm/tickets/{id}/events", s.handleGetEvents)
 	mux.HandleFunc("GET /api/v1/itsm/stats", s.handleStats)
@@ -239,6 +276,7 @@ func (s *Service) CreateTicket(ctx context.Context, req model.CreateTicketReques
 	}
 
 	s.fireWebhook(ctx, "ticket.created", ticket, req.CreatedBy)
+	s.notifyTicket(ctx, tenantID, evTicketCreated, "新工单: "+ticket.Title, fmt.Sprintf("风险: %s / 状态: %s", ticket.RiskLevel, ticket.Status))
 
 	// 流程引擎接入：绑定了流程模板则创建流程实例并推进到首个真实步骤，
 	// 由落点步骤类型映射工单初始状态（流程优先于基于风险的自动流转）。
@@ -442,6 +480,7 @@ func (s *Service) handleApprove(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	previousStatus := ticket.Status
 	ticket.Status = model.StatusApproved
 	ticket.ApprovedBy = req.ApprovedBy
 	now := time.Now()
@@ -452,8 +491,9 @@ func (s *Service) handleApprove(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	s.recordEvent(r.Context(), ticket, model.StatusPendingReview, model.StatusApproved, req.ApprovedBy, req.Comment)
+	s.recordEvent(r.Context(), ticket, previousStatus, model.StatusApproved, req.ApprovedBy, req.Comment)
 	s.fireWebhook(r.Context(), "ticket.approved", ticket, req.ApprovedBy)
+	s.notifyTicket(r.Context(), tenantID, evTicketApproved, "工单已审批通过: "+ticket.Title, fmt.Sprintf("审批人: %s", req.ApprovedBy))
 	s.advanceProcess(r.Context(), ticket, "success")
 	s.broadcastTicketUpdate(ticket)
 	writeJSON(w, http.StatusOK, ticket)
@@ -642,6 +682,138 @@ func (s *Service) handleRollback(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, ticket)
 }
 
+func (s *Service) handleSubmit(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	tenantID := tenantFromCtx(r.Context())
+
+	var req model.SubmitRequest
+	json.NewDecoder(r.Body).Decode(&req)
+
+	ticket, err := s.store.Get(r.Context(), id, tenantID)
+	if err != nil {
+		if err == store.ErrNotFound {
+			writeError(w, http.StatusNotFound, "ticket not found")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if model.IsTerminal(ticket.Status) {
+		writeError(w, http.StatusConflict, model.ErrTicketClosed.Error())
+		return
+	}
+
+	// 高风险走审批, 低/中风险直接进执行(避免 draft 死锁)。
+	target := model.StatusPendingReview
+	if !ticket.RiskLevel.RequiresApproval() {
+		target = model.StatusExecuting
+	}
+	if err := model.CanTransition(ticket.Status, target); err != nil {
+		writeError(w, http.StatusConflict, err.Error())
+		return
+	}
+
+	previousStatus := ticket.Status
+	ticket.Status = target
+
+	if err := s.store.Update(r.Context(), ticket); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to update ticket")
+		return
+	}
+
+	s.recordEvent(r.Context(), ticket, previousStatus, target, req.SubmittedBy, "提交工单")
+	s.fireWebhook(r.Context(), "ticket.submitted", ticket, req.SubmittedBy)
+	s.advanceProcess(r.Context(), ticket, "success")
+	s.broadcastTicketUpdate(ticket)
+	writeJSON(w, http.StatusOK, ticket)
+}
+
+func (s *Service) handleAssign(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	tenantID := tenantFromCtx(r.Context())
+
+	var req model.AssignRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if req.Assignee == "" {
+		writeError(w, http.StatusBadRequest, "assignee is required")
+		return
+	}
+
+	ticket, err := s.store.Get(r.Context(), id, tenantID)
+	if err != nil {
+		if err == store.ErrNotFound {
+			writeError(w, http.StatusNotFound, "ticket not found")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if model.IsTerminal(ticket.Status) {
+		writeError(w, http.StatusConflict, model.ErrTicketClosed.Error())
+		return
+	}
+
+	previousStatus := ticket.Status
+	now := time.Now()
+	ticket.Assignee = req.Assignee
+	ticket.AssignedAt = &now
+
+	if err := s.store.Update(r.Context(), ticket); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to update ticket")
+		return
+	}
+
+	s.recordEvent(r.Context(), ticket, previousStatus, ticket.Status, req.AssignedBy, "指派给 "+req.Assignee)
+	s.notifyTicket(r.Context(), tenantID, evTicketAssigned, "工单已指派: "+ticket.Title, fmt.Sprintf("负责人: %s", req.Assignee))
+	s.broadcastTicketUpdate(ticket)
+	writeJSON(w, http.StatusOK, ticket)
+}
+
+func (s *Service) handleClose(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	tenantID := tenantFromCtx(r.Context())
+
+	var req model.CloseRequest
+	json.NewDecoder(r.Body).Decode(&req)
+	if req.ClosedBy == "" {
+		req.ClosedBy = "system"
+	}
+
+	ticket, err := s.store.Get(r.Context(), id, tenantID)
+	if err != nil {
+		if err == store.ErrNotFound {
+			writeError(w, http.StatusNotFound, "ticket not found")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if err := model.CanTransition(ticket.Status, model.StatusClosed); err != nil {
+		writeError(w, http.StatusConflict, err.Error())
+		return
+	}
+
+	previousStatus := ticket.Status
+	ticket.Status = model.StatusClosed
+	if req.Satisfaction > 0 {
+		ticket.Satisfaction = req.Satisfaction
+	}
+
+	if err := s.store.Update(r.Context(), ticket); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to update ticket")
+		return
+	}
+
+	s.recordEvent(r.Context(), ticket, previousStatus, model.StatusClosed, req.ClosedBy, req.Comment)
+	s.fireWebhook(r.Context(), "ticket.closed", ticket, req.ClosedBy)
+	s.notifyTicket(r.Context(), tenantID, evTicketClosed, "工单已关闭: "+ticket.Title, req.Comment)
+	s.broadcastTicketUpdate(ticket)
+	writeJSON(w, http.StatusOK, ticket)
+}
+
 func (s *Service) transition(ctx context.Context, ticket *model.Ticket, to model.TicketStatus, changedBy string) error {
 	if err := model.CanTransition(ticket.Status, to); err != nil {
 		return err
@@ -651,14 +823,31 @@ func (s *Service) transition(ctx context.Context, ticket *model.Ticket, to model
 }
 
 // advanceProcess 若工单绑定了流程实例，则按 condition(success/failure) 推进流程引擎——
-// 记录当前步骤结果并落到下一步。无实例(未绑定流程)时静默跳过，不影响普通工单。
+// 记录当前步骤结果并落到下一步，并将落点步骤类型映射回工单状态(流程真正驱动工单)。
+// 无实例(未绑定流程)时静默跳过，不影响普通工单。
 func (s *Service) advanceProcess(ctx context.Context, ticket *model.Ticket, condition string) {
 	if s.processStore == nil || ticket == nil || ticket.ProcessID == "" {
 		return
 	}
-	if _, _, err := s.processStore.Advance(ctx, ticket.TenantID, ticket.ID, condition, string(ticket.Status)); err != nil {
+	_, next, err := s.processStore.Advance(ctx, ticket.TenantID, ticket.ID, condition, string(ticket.Status))
+	if err != nil {
 		slog.Warn("advance process instance failed", "ticket_id", ticket.ID, "condition", condition, "error", err)
+		return
 	}
+	if next == nil {
+		return // 流程结束, 工单状态由 handler 已设置(succeeded 等)
+	}
+	mapped := process.StepTypeToTicketStatus(next)
+	if mapped == "" || model.TicketStatus(mapped) == ticket.Status {
+		return
+	}
+	prev := ticket.Status
+	ticket.Status = model.TicketStatus(mapped)
+	if err := s.store.Update(ctx, ticket); err != nil {
+		slog.Error("itsm: persist process-driven status failed", "ticket_id", ticket.ID, "error", err)
+		return
+	}
+	s.recordEvent(ctx, ticket, prev, ticket.Status, "process", "流程推进: "+string(next.Type))
 }
 
 // handleGetProcessInstance 返回工单当前流程实例进度（当前步骤/状态/各步骤结果）。
@@ -976,9 +1165,20 @@ func (s *Service) Stop() {
 }
 
 func (s *Service) checkSLA(ctx context.Context) {
-	tickets, err := s.store.ListActiveTicketsWithDeadline(ctx, "default")
+	tenants, err := s.store.ListTenantIDs(ctx)
+	if err != nil || len(tenants) == 0 {
+		tenants = []string{"default"}
+	}
+	for _, t := range tenants {
+		s.checkSLATenant(ctx, t)
+	}
+}
+
+// checkSLATenant 检查单个租户下未关闭且带截止时间的工单, 触发 SLA 预警/违约标记与通知。
+func (s *Service) checkSLATenant(ctx context.Context, tenantID string) {
+	tickets, err := s.store.ListActiveTicketsWithDeadline(ctx, tenantID)
 	if err != nil {
-		slog.Error("itsm: SLA check failed", "error", err)
+		slog.Error("itsm: SLA check failed", "tenant", tenantID, "error", err)
 		return
 	}
 	now := time.Now()
@@ -1001,6 +1201,7 @@ func (s *Service) checkSLA(ctx context.Context) {
 			}
 			slog.Warn("itsm: SLA breached", "ticket_id", t.ID, "title", t.Title, "deadline", deadline)
 			s.broadcastTicketUpdate(t)
+			s.notifySLA(ctx, tenantID, t, true)
 			continue
 		}
 
@@ -1014,7 +1215,25 @@ func (s *Service) checkSLA(ctx context.Context) {
 			}
 			slog.Info("itsm: SLA warning (80%)", "ticket_id", t.ID, "title", t.Title, "deadline", deadline)
 			s.broadcastTicketUpdate(t)
+			s.notifySLA(ctx, tenantID, t, false)
 		}
+	}
+}
+
+// notifySLA 在 SLA 预警/违约时经通知中心分发, 并带上策略配置的升级角色(EscalationTo)。
+func (s *Service) notifySLA(ctx context.Context, tenantID string, t *model.Ticket, breached bool) {
+	escalation := ""
+	if s.slaStore != nil {
+		if pol, perr := s.slaStore.GetByRisk(ctx, tenantID, string(t.RiskLevel)); perr == nil && pol != nil {
+			escalation = pol.EscalationTo
+		}
+	}
+	if breached {
+		content := fmt.Sprintf("工单已超出 SLA 截止时间\n负责人: %s\n升级至: %s", t.Assignee, escalation)
+		s.notifyTicket(ctx, tenantID, evSLABreached, "SLA 违约: "+t.Title, content)
+	} else {
+		content := fmt.Sprintf("工单即将达到 SLA 截止时间(剩余<20%%)\n负责人: %s\n升级至: %s", t.Assignee, escalation)
+		s.notifyTicket(ctx, tenantID, evSLAWarning, "SLA 预警: "+t.Title, content)
 	}
 }
 

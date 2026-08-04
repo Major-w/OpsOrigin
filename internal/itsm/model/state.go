@@ -20,6 +20,7 @@ var validTransitions = map[TicketStatus][]TicketStatus{
 	StatusDraft: {
 		StatusPendingReview,
 		StatusRejected,
+		StatusExecuting,
 	},
 	StatusPendingReview: {
 		StatusApproved,
@@ -36,16 +37,18 @@ var validTransitions = map[TicketStatus][]TicketStatus{
 	},
 	StatusSucceeded: {
 		StatusRolledBack,
+		StatusClosed,
 	},
 	StatusFailed: {
 		StatusRolledBack,
 		StatusPendingReview,
 	},
 	StatusRolledBack: {},
+	StatusClosed:     {},
 }
 
 func IsTerminal(status TicketStatus) bool {
-	return status == StatusRejected || status == StatusRolledBack
+	return status == StatusRejected || status == StatusRolledBack || status == StatusClosed
 }
 
 func CanTransition(from, to TicketStatus) error {

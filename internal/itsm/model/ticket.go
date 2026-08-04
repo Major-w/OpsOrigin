@@ -34,12 +34,13 @@ const (
 	StatusSucceeded     TicketStatus = "succeeded"
 	StatusFailed        TicketStatus = "failed"
 	StatusRolledBack    TicketStatus = "rolled_back"
+	StatusClosed        TicketStatus = "closed"
 )
 
 func (s TicketStatus) Valid() bool {
 	switch s {
 	case StatusDraft, StatusPendingReview, StatusApproved, StatusRejected,
-		StatusExecuting, StatusSucceeded, StatusFailed, StatusRolledBack:
+		StatusExecuting, StatusSucceeded, StatusFailed, StatusRolledBack, StatusClosed:
 		return true
 	}
 	return false
@@ -77,10 +78,13 @@ type Ticket struct {
 	ExecutedAt         *time.Time     `json:"executed_at,omitempty"`
 	CompletedAt        *time.Time     `json:"completed_at,omitempty"`
 	RolledBackAt       *time.Time     `json:"rolled_back_at,omitempty"`
+	Assignee           string         `json:"assignee,omitempty"`
+	AssignedAt         *time.Time     `json:"assigned_at,omitempty"`
 	SLAWarningNotified bool           `json:"sla_warning_notified,omitempty"`
 	SLABreached        bool           `json:"sla_breached,omitempty"`
 	SLABreachedAt      *time.Time     `json:"sla_breached_at,omitempty"`
 	SLAEscalationLevel int            `json:"sla_escalation_level,omitempty"`
+	Satisfaction       int            `json:"satisfaction,omitempty"`
 }
 
 type CreateTicketRequest struct {
@@ -137,6 +141,26 @@ type RollbackRequest struct {
 	RolledBackBy   string `json:"rolled_back_by"`
 	RollbackReason string `json:"rollback_reason,omitempty"`
 	Comment        string `json:"comment,omitempty"`
+}
+
+// SubmitRequest 提交工单(离开 draft): 高风险进待审批, 低/中风险直接进执行。
+type SubmitRequest struct {
+	SubmittedBy string `json:"submitted_by"`
+	Comment     string `json:"comment,omitempty"`
+}
+
+// AssignRequest 指派工单负责人。
+type AssignRequest struct {
+	Assignee   string `json:"assignee"`
+	AssignedBy string `json:"assigned_by,omitempty"`
+	Comment    string `json:"comment,omitempty"`
+}
+
+// CloseRequest 关单(进入 closed 终态), 可附带满意度评分(1-5)。
+type CloseRequest struct {
+	ClosedBy     string `json:"closed_by"`
+	Comment      string `json:"comment,omitempty"`
+	Satisfaction int    `json:"satisfaction,omitempty"`
 }
 
 type TicketEvent struct {

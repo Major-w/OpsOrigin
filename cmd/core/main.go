@@ -541,6 +541,7 @@ func main() {
 	notifySvc := notification.NewService(db)
 	server.RegisterService(notifySvc)
 	schedulerSvc.SetNotifier(notifySvc)
+	itsmSvc.SetNotifier(notifySvc)
 
 	// P2-5 CMDB 消息订阅：通知渠道经平台通知中心分发（避免 cmdb↔notification 循环依赖）
 	cmdbSvc.SetNotifyCallback(func(ctx context.Context, tenantID, title, content string) error {

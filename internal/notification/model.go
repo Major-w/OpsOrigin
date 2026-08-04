@@ -24,6 +24,9 @@ const (
 	EventTicketCreated   EventType = "ticket.created"         // 工单创建
 	EventTicketAssigned  EventType = "ticket.assigned"        // 工单指派
 	EventTicketApproved  EventType = "ticket.approved"        // 工单审批通过
+	EventTicketClosed    EventType = "ticket.closed"          // 工单关闭
+	EventSLABreached     EventType = "ticket.sla_breached"    // 工单 SLA 违约
+	EventSLAWarning      EventType = "ticket.sla_warning"     // 工单 SLA 预警
 	EventAgentOffline    EventType = "agent.offline"          // Agent 离线
 	EventWorkflowWaiting EventType = "workflow.waiting"       // 工作流等待审批
 	EventWorkflowFailed  EventType = "workflow.failed"        // 工作流执行失败
@@ -36,7 +39,8 @@ const (
 func AllEventTypes() []EventType {
 	return []EventType{
 		EventAlertTriggered, EventAlertRecovered,
-		EventTicketCreated, EventTicketAssigned, EventTicketApproved,
+		EventTicketCreated, EventTicketAssigned, EventTicketApproved, EventTicketClosed,
+		EventSLABreached, EventSLAWarning,
 		EventAgentOffline,
 		EventWorkflowWaiting, EventWorkflowFailed,
 		EventCMDBChanged,
