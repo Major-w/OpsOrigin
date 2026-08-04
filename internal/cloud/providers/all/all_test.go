@@ -35,7 +35,7 @@ func TestPrivateCloudProvidersRegistered(t *testing.T) {
 		set[n] = true
 	}
 
-	want := []string{"openstack", "vmware", "sangfor", "zstack"}
+	want := []string{"openstack", "vmware", "sangfor", "zstack", "proxmox"}
 	for _, name := range want {
 		if !set[name] {
 			t.Errorf("expected private-cloud provider %q to be registered; got names=%v", name, names)
