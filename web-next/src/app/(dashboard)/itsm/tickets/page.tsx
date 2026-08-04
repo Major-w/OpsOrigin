@@ -4,6 +4,7 @@ import { useEffect, useState, useRef, useCallback } from 'react'
 import { useRouter } from 'next/navigation'
 import { useITSMStore, type Ticket, type TicketEvent, type ITSMStats } from '@/stores/itsm'
 import { DynamicForm, type FormSchema } from '@/components/itsm/DynamicForm'
+import { FormBuilder } from '@/components/itsm/FormBuilder'
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
@@ -57,7 +58,7 @@ function formatFileSize(bytes: number): string {
 
 export default function ITSMPage() {
   const router = useRouter()
-  const { tickets, stats, loading, fetch, create, approve, reject, execute, complete, rollback, getTicket, getEvents, fetchStats, processes, fetchProcesses, getFormSchema, upsertFormSchema, getTicketProcess, updateTicketCustomFields } = useITSMStore()
+  const { tickets, stats, loading, fetch, create, approve, reject, execute, complete, rollback, getTicket, getEvents, fetchStats, processes, fetchProcesses, getFormSchema, upsertFormSchema, getFormOptions, getFormOptionSources, getTicketProcess, updateTicketCustomFields } = useITSMStore()
   const canWrite = useCan('itsm:write')
   const canApprove = useCanAny(['itsm:approve', 'itsm:write'])
   const [dialogOpen, setDialogOpen] = useState(false)
@@ -107,6 +108,11 @@ export default function ITSMPage() {
   const [configDialog, setConfigDialog] = useState(false)
   const [configJson, setConfigJson] = useState('')
   const [configSaving, setConfigSaving] = useState(false)
+  // 可视化配置 / 专家 JSON 双模式
+  const [configMode, setConfigMode] = useState<'visual' | 'json'>('visual')
+  const [configSchema, setConfigSchema] = useState<FormSchema>({ version: 1, scope: 'ticket:default', fields: [] })
+  // 动态选项来源清单（cmdb:<type> / iam:user|role|group）
+  const [optionSources, setOptionSources] = useState<string[]>([])
   // 当前创建用作用域（catalog:<id> / process:<pid> / ticket:default），由来源或所选流程决定
   const [createScope, setCreateScope] = useState('ticket:default')
   const initialScopeRef = useRef('ticket:default')
@@ -151,6 +157,13 @@ export default function ITSMPage() {
     }, 300)
     return () => clearTimeout(t)
   }, [form.title])
+
+  // 动态选项加载器：带 source 的字段（cmdb:<type> / iam:user|role|group）用它拉取可选项。
+  // useCallback 保持引用稳定，避免 DynamicForm 内部 effect 反复触发请求。
+  const loadOptions = useCallback(
+    (source: string, keyword?: string) => getFormOptions(source, keyword),
+    [getFormOptions],
+  )
 
   const loadCreateSchema = async (scope: string) => {
     try {
@@ -235,31 +248,58 @@ export default function ITSMPage() {
 
   const openConfigDialog = async () => {
     const scope = resolveConfigScope()
+    let seed: FormSchema = { version: 1, scope, fields: [] }
     try {
       const schema = await getFormSchema(scope)
-      const seed: FormSchema = schema || { version: 1, scope, fields: [] }
-      setConfigJson(JSON.stringify(seed, null, 2))
-    } catch {
-      setConfigJson(JSON.stringify({ version: 1, scope, fields: [] }, null, 2))
-    }
+      if (schema) seed = { ...schema, scope }
+    } catch { /* 取不到就用空 schema 起步 */ }
+    setConfigSchema(seed)
+    setConfigJson(JSON.stringify(seed, null, 2))
     setConfigDialog(true)
+    // 拉取可用的动态选项来源，供字段属性面板下拉选择
+    getFormOptionSources().then(setOptionSources).catch(() => setOptionSources([]))
+  }
+
+  // 可视化 ↔ JSON 双向同步：切到 JSON 时序列化当前 schema，切回时解析回结构
+  const switchConfigMode = (mode: 'visual' | 'json') => {
+    if (mode === configMode) return
+    if (mode === 'json') {
+      setConfigJson(JSON.stringify(configSchema, null, 2))
+    } else {
+      try {
+        const parsed = JSON.parse(configJson) as FormSchema
+        setConfigSchema({ version: parsed.version || 1, scope: resolveConfigScope(), fields: parsed.fields || [] })
+      } catch {
+        alert('JSON 格式错误，无法切回可视化模式')
+        return
+      }
+    }
+    setConfigMode(mode)
   }
 
   const handleSaveConfig = async () => {
-    let parsed: FormSchema
-    try {
-      parsed = JSON.parse(configJson)
-    } catch {
-      alert('JSON 格式错误，请检查')
+    const scope = resolveConfigScope()
+    let next: FormSchema = configSchema
+    if (configMode === 'json') {
+      try {
+        const parsed = JSON.parse(configJson) as FormSchema
+        next = { version: parsed.version || 1, scope, fields: parsed.fields || [] }
+      } catch {
+        alert('JSON 格式错误，请检查')
+        return
+      }
+    }
+    const keys = (next.fields || []).map(f => (f.key || '').trim())
+    if (keys.some(k => !k)) {
+      alert('存在未填写字段标识 key 的字段')
       return
     }
-    const scope = resolveConfigScope()
+    if (new Set(keys).size !== keys.length) {
+      alert('字段标识 key 存在重复，请修正')
+      return
+    }
     setConfigSaving(true)
-    const ok = await upsertFormSchema(scope, {
-      version: parsed.version || 1,
-      scope,
-      fields: parsed.fields || [],
-    })
+    const ok = await upsertFormSchema(scope, { version: next.version || 1, scope, fields: next.fields || [] })
     setConfigSaving(false)
     if (ok) setConfigDialog(false)
   }
@@ -583,6 +623,7 @@ export default function ITSMPage() {
                           values={stepFields}
                           context={selectedTicket as unknown as Record<string, unknown>}
                           onChange={(k, v) => setStepFields(f => ({ ...f, [k]: v }))}
+                          loadOptions={loadOptions}
                         />
                         <div className="pt-1">
                           <Button size="sm" onClick={handleSaveStepForm} disabled={stepSaving}>
@@ -598,6 +639,7 @@ export default function ITSMPage() {
                           values={selectedTicket.custom_fields}
                           context={selectedTicket as unknown as Record<string, unknown>}
                           onChange={() => {}}
+                          loadOptions={loadOptions}
                           readOnly
                         />
                       </div>
@@ -784,6 +826,7 @@ export default function ITSMPage() {
               values={customFields}
               context={{ risk_level: form.risk_level }}
               onChange={(key, value) => setCustomFields(c => ({ ...c, [key]: value }))}
+              loadOptions={loadOptions}
             />
           </div>
           {knowledgeRecs.length > 0 && <div className="mt-2 p-2 bg-amber-50 dark:bg-amber-950/20 rounded-md">
@@ -876,18 +919,53 @@ export default function ITSMPage() {
               </>
             )}
             <Button size="sm" variant="outline" onClick={openConfigDialog}>载入</Button>
+            <div className="ml-auto flex rounded-md border border-input overflow-hidden">
+              <button
+                type="button"
+                className={`px-2.5 py-1 text-xs ${configMode === 'visual' ? 'bg-accent font-medium' : 'hover:bg-accent/50'}`}
+                onClick={() => switchConfigMode('visual')}
+              >
+                可视化
+              </button>
+              <button
+                type="button"
+                className={`px-2.5 py-1 text-xs border-l border-input ${configMode === 'json' ? 'bg-accent font-medium' : 'hover:bg-accent/50'}`}
+                onClick={() => switchConfigMode('json')}
+              >
+                JSON
+              </button>
+            </div>
           </div>
-          <p className="text-xs text-muted-foreground">
-            定义工单的自定义字段（Form Schema）。字段类型支持 text / textarea / select / multiselect / number / date / bool / user / ci / cascader；
-            可用 <code className="px-1 rounded bg-muted">visible_when</code> 做条件显隐（如 <code className="px-1 rounded bg-muted">risk_level==critical</code>）。
-            修改上方作用域并点「载入」可切换编辑对象。
-          </p>
-          <textarea
-            className="flex h-72 w-full rounded-md border border-input bg-background px-3 py-2 text-xs font-mono resize-none focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-            value={configJson}
-            onChange={e => setConfigJson(e.target.value)}
-            spellCheck={false}
-          />
+          {configMode === 'visual' ? (
+            <>
+              <p className="text-xs text-muted-foreground">
+                左侧管理字段、右侧编辑属性，下方实时预览。条件显隐支持多规则 AND/OR 组合；
+                选项来源可选 <code className="px-1 rounded bg-muted">cmdb:&lt;类型&gt;</code> 或{' '}
+                <code className="px-1 rounded bg-muted">iam:user|role|group</code> 实时拉取。
+              </p>
+              <FormBuilder
+                schema={configSchema}
+                onChange={setConfigSchema}
+                sources={optionSources}
+                loadOptions={loadOptions}
+                disabled={!canWrite}
+              />
+            </>
+          ) : (
+            <>
+              <p className="text-xs text-muted-foreground">
+                专家模式：直接编辑 Form Schema JSON。字段类型支持 text / textarea / select / multiselect / number / date / bool / user / ci / cascader；
+                条件显隐用 <code className="px-1 rounded bg-muted">visible_when_rules</code> +{' '}
+                <code className="px-1 rounded bg-muted">visible_logic</code>（旧版 <code className="px-1 rounded bg-muted">visible_when</code> 仍兼容）。
+              </p>
+              <textarea
+                className="flex h-72 w-full rounded-md border border-input bg-background px-3 py-2 text-xs font-mono resize-none focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                value={configJson}
+                onChange={e => setConfigJson(e.target.value)}
+                spellCheck={false}
+              />
+            </>
+          )}
         </div>
         <DialogFooter>
           <Button variant="outline" onClick={() => setConfigDialog(false)}>取消</Button>

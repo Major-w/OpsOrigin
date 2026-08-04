@@ -533,6 +533,10 @@ func main() {
 	iamSvc := iam.NewService(db)
 	server.RegisterService(iamSvc)
 
+	// ITSM 动态表单选项来源:cmdb:<type> 取配置项、iam:user/role/group 取人与角色。
+	// 解析器由 itsm 侧定义(form 包只认接口),此处在 cmdb/user/iam 就绪后装配,带 TTL 缓存。
+	itsmSvc.SetSourceResolver(itsm.NewCMDBIAMResolver(cmdbSvc, userSvc, iamSvc))
+
 	// 通知管理:邮件/钉钉/企业微信/飞书/Webhook 五种渠道 + 事件订阅策略
 	notifySvc := notification.NewService(db)
 	server.RegisterService(notifySvc)

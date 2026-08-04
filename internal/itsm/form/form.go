@@ -18,10 +18,40 @@ const (
 	TypeNumber      FieldType = "number"
 	TypeDate        FieldType = "date"
 	TypeBool        FieldType = "bool"
-	TypeUser        FieldType = "user"     // 选人（对接 IAM，P0 先用文本输入）
-	TypeCI          FieldType = "ci"       // 选配置项（对接 CMDB，P0 先用文本输入）
-	TypeCascader    FieldType = "cascader" // 级联（如 系统→环境，P0 先用文本输入）
+	TypeUser        FieldType = "user"     // 选人（source=iam:user，前端下拉搜索）
+	TypeCI          FieldType = "ci"       // 选配置项（source=cmdb:<typeName>，前端下拉搜索）
+	TypeCascader    FieldType = "cascader" // 级联（如 系统→环境）
 )
+
+// 条件运算符
+const (
+	OpEq       = "eq"        // 等于
+	OpNeq      = "neq"       // 不等于
+	OpIn       = "in"        // 属于（Value 用逗号分隔，或多选值命中其一）
+	OpNotIn    = "not_in"    // 不属于
+	OpContains = "contains"  // 包含（字符串子串 / 多选包含）
+	OpEmpty    = "empty"     // 为空
+	OpNotEmpty = "not_empty" // 非空
+	OpGt       = "gt"        // 大于（数值）
+	OpGte      = "gte"       // 大于等于
+	OpLt       = "lt"        // 小于
+	OpLte      = "lte"       // 小于等于
+	OpIsTrue   = "is_true"   // 布尔真
+	OpIsFalse  = "is_false"  // 布尔假
+)
+
+// 规则组合逻辑
+const (
+	LogicAnd = "and" // 规则间与（默认）
+	LogicOr  = "or"  // 规则间或
+)
+
+// Condition 单条显隐规则：<Field> <Op> <Value>
+type Condition struct {
+	Field string `json:"field"`
+	Op    string `json:"op"`
+	Value string `json:"value,omitempty"`
+}
 
 // FieldOption 选项（select / multiselect 用）
 type FieldOption struct {
@@ -51,9 +81,18 @@ type FieldDef struct {
 	Section     string           `json:"section,omitempty"` // 分组/分区
 	Order       int              `json:"order"`
 	Validation  *FieldValidation `json:"validation,omitempty"`
-	VisibleWhen string           `json:"visible_when,omitempty"` // 条件显隐，如 "risk_level==critical"
 	ReadOnly    bool             `json:"readonly,omitempty"`
-	Source      string           `json:"source,omitempty"` // 选项来源: static | cmdb:switch | iam:role
+
+	// 条件显隐（两种写法并存，以 VisibleWhenRules 优先）
+	// - VisibleWhen：旧版单条表达式，如 "risk_level==critical"，保留向后兼容
+	// - VisibleWhenRules + VisibleLogic：多规则组合，可视化配置产出
+	VisibleWhen      string      `json:"visible_when,omitempty"`
+	VisibleWhenRules []Condition `json:"visible_when_rules,omitempty"`
+	VisibleLogic     string      `json:"visible_logic,omitempty"` // and(默认) | or
+
+	// Source 动态选项来源，为空表示用静态 Options。
+	// 约定：cmdb:<typeName>（如 cmdb:host）、iam:user、iam:role、iam:group
+	Source string `json:"source,omitempty"`
 }
 
 // FormSchema 一张可配置表单，按作用域定位
@@ -68,4 +107,11 @@ type SchemaStore interface {
 	GetFormSchema(ctx context.Context, tenantID, scope string) (*FormSchema, error)
 	UpsertFormSchema(ctx context.Context, tenantID, scope string, schema FormSchema) error
 	ListFormScopes(ctx context.Context, tenantID string) ([]string, error)
+}
+
+// SourceResolver 动态选项解析器：把 FieldDef.Source 解析成可选项列表。
+// 由外层（internal/itsm）实现并注入，form 包不依赖 cmdb / iam，避免循环引用。
+// 实现方按前缀路由：cmdb:* 走 CMDB、iam:* 走 IAM/用户中心。
+type SourceResolver interface {
+	Resolve(ctx context.Context, tenantID, source string) ([]FieldOption, error)
 }

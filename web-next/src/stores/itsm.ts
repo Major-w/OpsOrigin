@@ -3,7 +3,7 @@
 import { create } from 'zustand'
 import { apiFetch, apiList } from '@/lib/utils'
 import { toast } from '@/stores/toast'
-import type { FormSchema } from '@/components/itsm/DynamicForm'
+import type { FormSchema, FormFieldOption } from '@/components/itsm/DynamicForm'
 
 export interface Ticket {
   id: string
@@ -108,6 +108,9 @@ interface ITSMState {
   getFormSchema: (scope: string) => Promise<FormSchema | null>
   getFormScopes: () => Promise<string[]>
   upsertFormSchema: (scope: string, schema: FormSchema) => Promise<boolean>
+  // 动态选项来源（cmdb:<type> / iam:user|role|group）
+  getFormOptions: (source: string, keyword?: string) => Promise<FormFieldOption[]>
+  getFormOptionSources: () => Promise<string[]>
   approve: (id: string, comment?: string) => Promise<boolean>
   reject: (id: string, reason: string) => Promise<boolean>
   execute: (id: string) => Promise<boolean>
@@ -124,6 +127,11 @@ interface ITSMState {
   getTicketProcess: (ticketId: string) => Promise<ProcessInstance | null>
   updateTicketCustomFields: (ticketId: string, scope: string, fields: Record<string, any>) => Promise<boolean>
 }
+
+// 动态选项进程内缓存：同一 source 在 TTL 内复用，避免每个字段挂载都打一次 CMDB/IAM。
+// 后端 resolver 侧另有一层 TTL 缓存，这里主要省掉网络往返。
+const FORM_OPTIONS_TTL_MS = 30_000
+const formOptionsCache = new Map<string, { options: FormFieldOption[]; expireAt: number }>()
 
 export const useITSMStore = create<ITSMState>((set, get) => ({
   tickets: [],
@@ -266,6 +274,26 @@ export const useITSMStore = create<ITSMState>((set, get) => ({
     } catch (e: any) {
       toast.error(`保存表单配置失败: ${e.message}`)
       return false
+    }
+  },
+  getFormOptions: async (source, keyword) => {
+    // 命中进程内缓存则直接返回，避免同一张表单多个字段重复打后端
+    const cacheKey = `${source}|${keyword || ''}`
+    const cached = formOptionsCache.get(cacheKey)
+    if (cached && Date.now() < cached.expireAt) return cached.options
+    const qs = new URLSearchParams({ source })
+    if (keyword) qs.set('keyword', keyword)
+    const data = await apiFetch<{ source: string; options: FormFieldOption[] }>(`/itsm/form-options?${qs.toString()}`)
+    const options = data.options || []
+    formOptionsCache.set(cacheKey, { options, expireAt: Date.now() + FORM_OPTIONS_TTL_MS })
+    return options
+  },
+  getFormOptionSources: async () => {
+    try {
+      const data = await apiFetch<{ sources: string[] }>('/itsm/form-options')
+      return data.sources || []
+    } catch {
+      return []
     }
   },
   getProcess: async (id) => {

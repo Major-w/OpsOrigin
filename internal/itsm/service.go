@@ -87,6 +87,13 @@ func (s *Service) SetFormEngine(e *form.Engine) {
 	s.formEngine = e
 }
 
+// SetSourceResolver 注入表单动态选项解析器（cmdb:* / iam:*），由 cmd/core 在各模块就绪后装配。
+func (s *Service) SetSourceResolver(r form.SourceResolver) {
+	if s.formEngine != nil {
+		s.formEngine.SetSourceResolver(r)
+	}
+}
+
 func (s *Service) SetWebSocketHub(hub interface{ BroadcastToTenant(interface{}, string) }) {
 	s.wsHub = hub
 }
@@ -129,6 +136,7 @@ func (s *Service) RegisterRoutes(mux *http.ServeMux) {
 	// Form schemas (dynamic forms)
 	mux.HandleFunc("GET /api/v1/itsm/forms", s.handleListFormScopes)
 	mux.HandleFunc("PUT /api/v1/itsm/forms", s.handleUpsertFormSchema)
+	mux.HandleFunc("GET /api/v1/itsm/form-options", s.handleFormOptions)
 	mux.HandleFunc("PATCH /api/v1/itsm/tickets/{id}/custom-fields", s.handleUpdateCustomFields)
 	// Change Management
 	mux.HandleFunc("POST /api/v1/itsm/changes", s.handleCreateChange)
@@ -186,7 +194,7 @@ func (s *Service) CreateTicket(ctx context.Context, req model.CreateTicketReques
 	if s.formEngine != nil {
 		if schema, serr := s.formEngine.ResolveSchema(ctx, tenantID, scope); serr == nil && schema != nil {
 			form.MergeDefaults(schema, req.CustomFields)
-			if verr := form.ValidateSchema(schema, req.CustomFields); verr != nil {
+			if verr := s.formEngine.ValidateValues(ctx, tenantID, schema, req.CustomFields); verr != nil {
 				return nil, fmt.Errorf("表单校验失败: %w", verr)
 			}
 		}
@@ -1124,6 +1132,52 @@ func (s *Service) handleUpsertFormSchema(w http.ResponseWriter, r *http.Request)
 	writeJSON(w, http.StatusOK, map[string]any{"status": "ok", "scope": req.Scope})
 }
 
+// handleFormOptions 解析表单字段的动态选项来源（cmdb:<type> / iam:user|role|group）。
+// 不带 source 参数时返回本租户可用的 source 清单，供表单配置界面下拉选择。
+// keyword 用于前端下拉搜索时做服务端过滤，limit 限制返回条数（默认 200）。
+func (s *Service) handleFormOptions(w http.ResponseWriter, r *http.Request) {
+	tenantID := tenantFromCtx(r.Context())
+	if s.formEngine == nil || s.formEngine.SourceResolver() == nil {
+		writeJSON(w, http.StatusOK, map[string]any{"options": []form.FieldOption{}, "sources": []string{}})
+		return
+	}
+	resolver := s.formEngine.SourceResolver()
+	source := strings.TrimSpace(r.URL.Query().Get("source"))
+	if source == "" {
+		sources := []string{}
+		if c, ok := resolver.(sourceCataloger); ok {
+			sources = c.SourceCatalog(r.Context(), tenantID)
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"sources": sources})
+		return
+	}
+	opts, err := resolver.Resolve(r.Context(), tenantID, source)
+	if err != nil {
+		writeError(w, http.StatusBadGateway, fmt.Sprintf("解析选项来源失败: %v", err))
+		return
+	}
+	if kw := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("keyword"))); kw != "" {
+		filtered := make([]form.FieldOption, 0, len(opts))
+		for _, o := range opts {
+			if strings.Contains(strings.ToLower(o.Label), kw) || strings.Contains(strings.ToLower(o.Value), kw) {
+				filtered = append(filtered, o)
+			}
+		}
+		opts = filtered
+	}
+	limit := 200
+	if n, err := strconv.Atoi(r.URL.Query().Get("limit")); err == nil && n > 0 {
+		limit = n
+	}
+	if len(opts) > limit {
+		opts = opts[:limit]
+	}
+	if opts == nil {
+		opts = []form.FieldOption{}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"source": source, "options": opts})
+}
+
 // handleUpdateCustomFields 按作用域更新工单自定义字段（流程步骤级表单回写）。
 // 若给定 scope 存在 schema，则先注入默认值并校验，再合并进 ticket.custom_fields；无 schema 直接合并（向后兼容）。
 func (s *Service) handleUpdateCustomFields(w http.ResponseWriter, r *http.Request) {
@@ -1151,7 +1205,7 @@ func (s *Service) handleUpdateCustomFields(w http.ResponseWriter, r *http.Reques
 	if req.Scope != "" && s.formEngine != nil {
 		if schema, serr := s.formEngine.ResolveSchema(r.Context(), tenantID, req.Scope); serr == nil && schema != nil {
 			form.MergeDefaults(schema, req.Fields)
-			if verr := form.ValidateSchema(schema, req.Fields); verr != nil {
+			if verr := s.formEngine.ValidateValues(r.Context(), tenantID, schema, req.Fields); verr != nil {
 				writeError(w, http.StatusBadRequest, fmt.Sprintf("表单校验失败: %v", verr))
 				return
 			}
