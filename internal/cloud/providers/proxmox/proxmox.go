@@ -11,6 +11,8 @@
 //   AccessKey = Proxmox 登录用户名（含域，如 root@pam 或 user@pve）
 //   SecretKey = 密码
 //   Extra["endpoint"] = Proxmox 管理基址，须含端口，如 https://10.0.0.1:8006
+//   Extra["insecure"] / Extra["skip_tls_verify"] = "true" 时跳过 TLS 证书校验
+//     （Proxmox VE 8.x 默认 HTTPS 自签证书，真机纳管常需开启）
 //
 // 认证：POST /api2/json/access/ticket 取得 PVEAuthCookie，后续请求携带该 Cookie。
 // 注：集群资源端点以 MVP 形态给出，联调时按实际版本校正；网络类依赖 SDN 插件。
@@ -18,6 +20,7 @@ package proxmox
 
 import (
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -50,7 +53,7 @@ func (p *provider) ListResources(ctx context.Context, cred cloud.Credential, reg
 	if endpoint == "" {
 		return nil, fmt.Errorf("proxmox: credential extra.endpoint is required (e.g. https://10.0.0.1:8006)")
 	}
-	ticket, err := p.login(ctx, endpoint, cred.AccessKey, cred.SecretKey)
+	ticket, err := p.login(ctx, cred, endpoint)
 	if err != nil {
 		return nil, err
 	}
@@ -62,11 +65,11 @@ func (p *provider) ListResources(ctx context.Context, cred cloud.Credential, reg
 		)
 		switch k {
 		case cloud.TypeVM:
-			res, e = p.listVMs(ctx, endpoint, ticket)
+			res, e = p.listVMs(ctx, cred, endpoint, ticket)
 		case cloud.TypeDisk:
-			res, e = p.listStorages(ctx, endpoint, ticket)
+			res, e = p.listStorages(ctx, cred, endpoint, ticket)
 		case cloud.TypeVPC:
-			res, e = p.listVNets(ctx, endpoint, ticket)
+			res, e = p.listVNets(ctx, cred, endpoint, ticket)
 		default:
 			continue
 		}
@@ -85,7 +88,7 @@ func (p *provider) GetResource(ctx context.Context, cred cloud.Credential, regio
 	if endpoint == "" {
 		return nil, fmt.Errorf("proxmox: credential extra.endpoint is required")
 	}
-	ticket, err := p.login(ctx, endpoint, cred.AccessKey, cred.SecretKey)
+	ticket, err := p.login(ctx, cred, endpoint)
 	if err != nil {
 		return nil, err
 	}
@@ -93,7 +96,7 @@ func (p *provider) GetResource(ctx context.Context, cred cloud.Credential, regio
 		return nil, &cloud.NoSuchResource{Provider: "proxmox", ID: id}
 	}
 	var cr clusterResources
-	if err := p.get(ctx, endpoint, ticket, "/api2/json/cluster/resources?type=vm", &cr); err != nil {
+	if err := p.get(ctx, cred, endpoint, ticket, "/api2/json/cluster/resources?type=vm", &cr); err != nil {
 		return nil, err
 	}
 	for _, r := range cr.Data {
@@ -112,17 +115,32 @@ func (p *provider) CollectMetrics(ctx context.Context, cred cloud.Credential, re
 
 // ——— Proxmox REST 辅助 ———
 
+// httpClient 按凭证返回 HTTP 客户端。
+// Extra["insecure"] 或 Extra["skip_tls_verify"] 为 "true" 时跳过 TLS 证书校验，
+// 用于 Proxmox VE 8.x 默认 HTTPS 自签证书的真机纳管场景。
+func (p *provider) httpClient(cred cloud.Credential) *http.Client {
+	if strings.EqualFold(cred.Extra["insecure"], "true") || strings.EqualFold(cred.Extra["skip_tls_verify"], "true") {
+		return &http.Client{
+			Timeout: 30 * time.Second,
+			Transport: &http.Transport{
+				TLSClientConfig: &tls.Config{InsecureSkipVerify: true}, // 允许自签证书
+			},
+		}
+	}
+	return p.http
+}
+
 // login 通过用户名密码获取 PVEAuthCookie(ticket)。
-func (p *provider) login(ctx context.Context, endpoint, user, pass string) (string, error) {
+func (p *provider) login(ctx context.Context, cred cloud.Credential, endpoint string) (string, error) {
 	form := url.Values{}
-	form.Set("username", user)
-	form.Set("password", pass)
+	form.Set("username", cred.AccessKey)
+	form.Set("password", cred.SecretKey)
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint+"/api2/json/access/ticket", strings.NewReader(form.Encode()))
 	if err != nil {
 		return "", err
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	resp, err := p.http.Do(req)
+	resp, err := p.httpClient(cred).Do(req)
 	if err != nil {
 		return "", fmt.Errorf("proxmox login: %w", err)
 	}
@@ -146,13 +164,13 @@ func (p *provider) login(ctx context.Context, endpoint, user, pass string) (stri
 }
 
 // get 携带 PVEAuthCookie 发起 GET 并解码 JSON（api2/json 返回 {data:...}）。
-func (p *provider) get(ctx context.Context, endpoint, ticket, path string, v any) error {
+func (p *provider) get(ctx context.Context, cred cloud.Credential, endpoint, ticket, path string, v any) error {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint+path, nil)
 	if err != nil {
 		return err
 	}
 	req.AddCookie(&http.Cookie{Name: "PVEAuthCookie", Value: ticket, Path: "/"})
-	resp, err := p.http.Do(req)
+	resp, err := p.httpClient(cred).Do(req)
 	if err != nil {
 		return err
 	}
@@ -211,9 +229,9 @@ func vmToResource(r pveResource, now time.Time) cloud.Resource {
 	}
 }
 
-func (p *provider) listVMs(ctx context.Context, endpoint, ticket string) ([]cloud.Resource, error) {
+func (p *provider) listVMs(ctx context.Context, cred cloud.Credential, endpoint, ticket string) ([]cloud.Resource, error) {
 	var cr clusterResources
-	if err := p.get(ctx, endpoint, ticket, "/api2/json/cluster/resources?type=vm", &cr); err != nil {
+	if err := p.get(ctx, cred, endpoint, ticket, "/api2/json/cluster/resources?type=vm", &cr); err != nil {
 		return nil, err
 	}
 	out := make([]cloud.Resource, 0, len(cr.Data))
@@ -238,9 +256,9 @@ type storageList struct {
 	Data []pveStorage `json:"data"`
 }
 
-func (p *provider) listStorages(ctx context.Context, endpoint, ticket string) ([]cloud.Resource, error) {
+func (p *provider) listStorages(ctx context.Context, cred cloud.Credential, endpoint, ticket string) ([]cloud.Resource, error) {
 	var sl storageList
-	if err := p.get(ctx, endpoint, ticket, "/api2/json/storage", &sl); err != nil {
+	if err := p.get(ctx, cred, endpoint, ticket, "/api2/json/storage", &sl); err != nil {
 		return nil, err
 	}
 	out := make([]cloud.Resource, 0, len(sl.Data))
@@ -278,9 +296,9 @@ type vnetList struct {
 	Data []pveVNet `json:"data"`
 }
 
-func (p *provider) listVNets(ctx context.Context, endpoint, ticket string) ([]cloud.Resource, error) {
+func (p *provider) listVNets(ctx context.Context, cred cloud.Credential, endpoint, ticket string) ([]cloud.Resource, error) {
 	var vl vnetList
-	if err := p.get(ctx, endpoint, ticket, "/api2/json/sdn/vnets", &vl); err != nil {
+	if err := p.get(ctx, cred, endpoint, ticket, "/api2/json/sdn/vnets", &vl); err != nil {
 		return nil, err
 	}
 	out := make([]cloud.Resource, 0, len(vl.Data))

@@ -99,6 +99,10 @@ func (p *provider) GetResource(ctx context.Context, cred cloud.Credential, regio
 		}
 		return nil, err
 	}
+	mem := d.MemoryMiB
+	if mem == 0 {
+		mem = d.MemoryMB // 6.5 老版本回退
+	}
 	res := &cloud.Resource{
 		Provider:  "vmware",
 		Type:      cloud.TypeVM,
@@ -109,7 +113,7 @@ func (p *provider) GetResource(ctx context.Context, cred cloud.Credential, regio
 		PrivateIP: firstIPv4(d.Nics),
 		Extra: map[string]any{
 			"cpu_count":    d.CPUCount,
-			"memory_MiB":   d.MemoryMiB,
+			"memory_MiB":   mem,
 			"guest_os":     d.GuestOS,
 			"num_networks": len(d.Nics),
 			"num_disks":    len(d.Disks),
@@ -181,7 +185,8 @@ type vmSummary struct {
 	Name       string `json:"name"`
 	PowerState string `json:"power_state"`
 	CPUCount   int    `json:"cpu_count"`
-	MemoryMiB  int    `json:"memory_size_MiB"`
+	MemoryMiB  int    `json:"memory_size_MiB"` // 6.7+ 字段名
+	MemoryMB   int    `json:"memory_size_MB"`  // 6.5 老版本字段名兼容
 	GuestOS    string `json:"guest_OS"`
 }
 
@@ -193,6 +198,10 @@ func (p *provider) listVMs(ctx context.Context, endpoint, token, region string) 
 	out := make([]cloud.Resource, 0, len(vms))
 	now := time.Now()
 	for _, v := range vms {
+		mem := v.MemoryMiB
+		if mem == 0 {
+			mem = v.MemoryMB // 6.5 老版本回退
+		}
 		out = append(out, cloud.Resource{
 			Provider: "vmware",
 			Type:     cloud.TypeVM,
@@ -202,7 +211,7 @@ func (p *provider) listVMs(ctx context.Context, endpoint, token, region string) 
 			Status:   strings.ToLower(v.PowerState),
 			Extra: map[string]any{
 				"cpu_count":  v.CPUCount,
-				"memory_MiB": v.MemoryMiB,
+				"memory_MiB": mem,
 				"guest_os":   v.GuestOS,
 			},
 			DiscoveredAt: now,
@@ -273,7 +282,8 @@ type vmDetail struct {
 	Name       string         `json:"name"`
 	PowerState string         `json:"power_state"`
 	CPUCount   int            `json:"cpu_count"`
-	MemoryMiB  int            `json:"memory_size_MiB"`
+	MemoryMiB  int            `json:"memory_size_MiB"` // 6.7+ 字段名
+	MemoryMB   int            `json:"memory_size_MB"`  // 6.5 老版本字段名兼容
 	GuestOS    string         `json:"guest_OS"`
 	Nics       []vmDetailNics `json:"nics"`
 	Disks      []struct {
