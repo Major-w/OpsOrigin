@@ -15,8 +15,10 @@ import (
 	"time"
 
 	"github.com/opsorigin/core/internal/cmdb/dgraph"
+	"github.com/opsorigin/core/internal/cmdb/discovery"
 	"github.com/opsorigin/core/internal/cmdb/model"
 	"github.com/opsorigin/core/internal/cmdb/pg"
+	"github.com/opsorigin/core/internal/cmdb/quality"
 	"github.com/opsorigin/core/internal/ingest"
 	"github.com/opsorigin/core/pkg/config"
 	"github.com/opsorigin/core/pkg/validate"
@@ -37,6 +39,9 @@ type Service struct {
 	sched     *Scheduler              // 采集调度器（StartScheduler 后非 nil）
 	agentChan AgentChannel            // 经 Agent 通道上报的任务下发接口（方案 X：投影到 agentmgr）
 	notifyCb  notifyFunc              // 平台通知中心回调（P2-5 消息订阅，cmd/core 注入）
+
+	discoveryReg    *discovery.Registry    // 自动发现插件注册表（cmd/core 注入，Type → Discoverer）
+	discoveryRunner discovery.ScriptRunner // 探针 Agent 脚本执行通道（cmd/core 注入 agentSvc）
 }
 
 func NewService(cfg *config.Config, pgRepo *pg.Repository, dgClient *dgraph.Client) *Service {
@@ -87,15 +92,15 @@ func (s *Service) OnCICreated(fn func(ctx context.Context, ciID, tenantID string
 
 func (s *Service) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/v1/cmdb/ci", s.handleListCI)
-	mux.HandleFunc("GET /api/v1/cmdb/ci/export", s.handleExportCI)   // P1-1 CSV 导出
-	mux.HandleFunc("POST /api/v1/cmdb/ci/import", s.handleImportCI)  // P1-1 CSV 导入
+	mux.HandleFunc("GET /api/v1/cmdb/ci/export", s.handleExportCI)  // P1-1 CSV 导出
+	mux.HandleFunc("POST /api/v1/cmdb/ci/import", s.handleImportCI) // P1-1 CSV 导入
 	mux.HandleFunc("POST /api/v1/cmdb/ci", s.handleCreateCI)
 	mux.HandleFunc("POST /api/v1/cmdb/ci/batch", s.handleBatchCreateCI) // F4-B 批量 + D2 修复
 	mux.HandleFunc("GET /api/v1/cmdb/ci/{id}", s.handleGetCI)
 	mux.HandleFunc("PUT /api/v1/cmdb/ci/{id}", s.handleUpdateCI)
 	mux.HandleFunc("DELETE /api/v1/cmdb/ci/{id}", s.handleDeleteCI)
-	mux.HandleFunc("POST /api/v1/cmdb/ci/{id}/archive", s.handleArchiveCI)   // P1-2 归档
-	mux.HandleFunc("POST /api/v1/cmdb/ci/{id}/restore", s.handleRestoreCI)   // P1-2 恢复
+	mux.HandleFunc("POST /api/v1/cmdb/ci/{id}/archive", s.handleArchiveCI) // P1-2 归档
+	mux.HandleFunc("POST /api/v1/cmdb/ci/{id}/restore", s.handleRestoreCI) // P1-2 恢复
 	mux.HandleFunc("GET /api/v1/cmdb/ci/{id}/audit", s.handleCIAudit)
 	mux.HandleFunc("GET /api/v1/cmdb/search", s.handleSearchCI)
 
@@ -164,6 +169,7 @@ func (s *Service) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/v1/cmdb/discovery", s.handleCreateDiscoveryTask)
 	mux.HandleFunc("PUT /api/v1/cmdb/discovery/{id}", s.handleUpdateDiscoveryTask)
 	mux.HandleFunc("DELETE /api/v1/cmdb/discovery/{id}", s.handleDeleteDiscoveryTask)
+	mux.HandleFunc("GET /api/v1/cmdb/discovery/types", s.handleListDiscoveryTypes)
 	mux.HandleFunc("POST /api/v1/cmdb/discovery/{id}/run", s.handleRunDiscoveryTask)
 	mux.HandleFunc("GET /api/v1/cmdb/discovery/{id}/results", s.handleListDiscoveryResults)
 	mux.HandleFunc("POST /api/v1/cmdb/discovery/{resultId}/sync", s.handleSyncDiscoveryResult)
@@ -178,6 +184,9 @@ func (s *Service) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("DELETE /api/v1/cmdb/collection-tasks/{id}", s.handleDeleteCollectionTask)
 	mux.HandleFunc("POST /api/v1/cmdb/collection-tasks/{id}/run", s.handleRunCollectionTask)
 	mux.HandleFunc("POST /api/v1/cmdb/onboard", s.handleOnboardResource)
+
+	// 数据质量中心
+	mux.HandleFunc("GET /api/v1/cmdb/quality", s.handleQualityScan)
 }
 
 func (s *Service) handleCreateCI(w http.ResponseWriter, r *http.Request) {
@@ -984,7 +993,7 @@ func (s *Service) handleImportModelTypes(w http.ResponseWriter, r *http.Request)
 		}
 	}
 	type item struct {
-		d     model.CIModelType
+		d           model.CIModelType
 		parentFirst bool
 	}
 	var seq []item
@@ -1559,20 +1568,30 @@ func (s *Service) handleRunDiscoveryTask(w http.ResponseWriter, r *http.Request)
 
 	// 架构边界：云/主机/容器属于「资源纳管」层（internal/cloud）职责，由纳管层
 	// 拉取后直接生成基础 CI（单一数据源）；CMDB 自动发现只负责在已纳管 CI 之上做
-	// 关系/拓扑推断(relation)及 agent/snmp 深度扫描，不得重复拉取资源。
+	// 关系/拓扑推断(relation)，以及在探针 Agent 上跑插件深度扫描网络/中间件/数据库/
+	// 应用/物理服务器（经 discovery.Registry 注册的插件），不得重复拉取资源。
 	switch task.Type {
 	case "cloud", "host", "container":
 		task.Status = "failed"
 		_ = s.pg.UpdateDiscoveryTask(r.Context(), task)
 		writeError(w, http.StatusBadRequest, "类型 "+task.Type+" 属于资源纳管层职责，请使用资源纳管（云/主机/容器）同步，而非 CMDB 自动发现")
 		return
-	case "relation", "agent", "snmp":
-		// 合法发现类型
+	case "relation":
+		// 内置关系发现（在已纳管 CI 之上推断）
 	default:
-		task.Status = "failed"
-		_ = s.pg.UpdateDiscoveryTask(r.Context(), task)
-		writeError(w, http.StatusBadRequest, "不支持的发现类型: "+task.Type)
-		return
+		// 其余类型经注册表路由到真实发现插件；引擎未初始化或类型未注册则拒绝。
+		if s.discoveryReg == nil || s.discoveryRunner == nil {
+			task.Status = "failed"
+			_ = s.pg.UpdateDiscoveryTask(r.Context(), task)
+			writeError(w, http.StatusInternalServerError, "自动发现引擎未初始化（discovery registry / runner 未注入）")
+			return
+		}
+		if _, ok := s.discoveryReg.Lookup(task.Type); !ok {
+			task.Status = "failed"
+			_ = s.pg.UpdateDiscoveryTask(r.Context(), task)
+			writeError(w, http.StatusBadRequest, "不支持的发现类型: "+task.Type+"（可用类型见 GET /api/v1/cmdb/discovery/types）")
+			return
+		}
 	}
 
 	// 更新状态为 running
@@ -1597,23 +1616,29 @@ func (s *Service) handleRunDiscoveryTask(w http.ResponseWriter, r *http.Request)
 			}
 			found = n
 		default:
-			// agent / snmp 仍为模拟实现（已知 P0 缺口），产出预览结果供确认
-			time.Sleep(2 * time.Second)
-			discoveredCIs := simulateDiscovery(task)
-			for _, ci := range discoveredCIs {
+			// 经注册表路由到真实发现插件（server/host/snmp/network/database/middleware/application/app），
+			// 在探针 Agent 上执行脚本并解析产出预览结果，供确认后落库为 CI。
+			got, derr := s.runDiscoveryPlugin(ctx, task)
+			if derr != nil {
+				slog.Error("discovery plugin failed", "type", task.Type, "err", derr)
+				task.Status = "failed"
+				_ = s.pg.UpdateDiscoveryTask(ctx, task)
+				return
+			}
+			for _, it := range got {
 				res := &model.DiscoveryResult{
 					TaskID:       task.ID,
 					TenantID:     tenantID,
-					CIName:       ci["name"].(string),
-					CIType:       ci["type"].(string),
-					IPAddress:    ci["ip"].(string),
-					Attributes:   ci["attributes"].(map[string]any),
+					CIName:       it.Name,
+					CIType:       it.CIType,
+					IPAddress:    it.IPAddress,
+					Attributes:   it.Attributes,
 					Source:       task.Name,
 					DiscoveredAt: now,
 				}
 				s.pg.CreateDiscoveryResult(ctx, res)
 			}
-			found = len(discoveredCIs)
+			found = len(got)
 		}
 
 		task.Status = "success"
@@ -1622,6 +1647,94 @@ func (s *Service) handleRunDiscoveryTask(w http.ResponseWriter, r *http.Request)
 	}()
 
 	writeJSON(w, 200, map[string]string{"status": "started"})
+}
+
+// runDiscoveryPlugin 按任务类型从注册表取出对应插件，在探针 Agent 上执行真实发现。
+func (s *Service) runDiscoveryPlugin(ctx context.Context, task *model.DiscoveryTask) ([]*discovery.Item, error) {
+	d, ok := s.discoveryReg.Lookup(task.Type)
+	if !ok {
+		return nil, fmt.Errorf("未注册的发现类型 %q", task.Type)
+	}
+	return d.Discover(ctx, task, s.discoveryRunner)
+}
+
+// handleListDiscoveryTypes 返回当前已注册的真实发现插件类型（含中文标签与映射的 CI 模型类型），供前端下拉。
+func (s *Service) handleListDiscoveryTypes(w http.ResponseWriter, r *http.Request) {
+	typeMeta := map[string]struct {
+		Label   string `json:"label"`
+		CIType  string `json:"ci_type"`
+		Channel string `json:"channel"` // snmp=网络协议直连 / agent=探针 Agent 脚本
+		Note    string `json:"note"`
+	}{
+		"server":      {Label: "物理服务器/裸金属", CIType: "server", Channel: "agent", Note: "探针 Agent 本地采集硬件/系统信息（dmidecode 需权限）"},
+		"host":        {Label: "物理服务器（别名）", CIType: "server", Channel: "agent", Note: "与 server 同实现"},
+		"snmp":        {Label: "网络设备（SNMP）", CIType: "switch", Channel: "snmp", Note: "交换机/路由器/防火墙，需 community"},
+		"network":     {Label: "网络设备（别名）", CIType: "switch", Channel: "snmp", Note: "与 snmp 同实现"},
+		"database":    {Label: "数据库实例", CIType: "database", Channel: "agent", Note: "MySQL/PostgreSQL/Oracle 探测（需客户端与账号）"},
+		"middleware":  {Label: "中间件实例", CIType: "middleware", Channel: "agent", Note: "Redis/Nginx/ES/Kafka/ZK/RabbitMQ 探测"},
+		"application": {Label: "应用程序/Web 服务", CIType: "app", Channel: "agent", Note: "端口+HTTP 指纹探测"},
+		"app":         {Label: "应用程序（别名）", CIType: "app", Channel: "agent", Note: "与 application 同实现"},
+		"relation":    {Label: "关系自动发现（内置）", CIType: "", Channel: "builtin", Note: "在已纳管 CI 之上推断外键关系"},
+	}
+	out := make([]map[string]any, 0, len(typeMeta))
+	for t, m := range typeMeta {
+		out = append(out, map[string]any{
+			"type":    t,
+			"label":   m.Label,
+			"ci_type": m.CIType,
+			"channel": m.Channel,
+			"note":    m.Note,
+		})
+	}
+	writeJSON(w, 200, map[string]any{"types": out})
+}
+
+// EnsureDiscoveryModelTypes 在启动时确保自动发现插件产出的 CI 模型类型存在
+// （middleware 等目前未内置种子；server/switch/database/app 已由内置种子覆盖）。
+// 缺失则创建为内置模型类型，供发现结果落库与前端展示使用。
+func (s *Service) EnsureDiscoveryModelTypes(ctx context.Context, tenantID string) error {
+	want := []model.CIModelType{
+		{
+			ID:          "middleware",
+			TenantID:    tenantID,
+			Name:        "中间件",
+			Description: "经自动发现探测的中间件实例（Redis/Nginx/ES/Kafka/ZK/RabbitMQ 等）",
+			Category:    model.ModelCategoryMiddleware,
+			Icon:        "layers",
+			ShowInMenu:  true,
+			Builtin:     true,
+			Author:      model.BuiltinAuthor,
+			Schema: map[string]model.AttrDef{
+				"middleware_type": {Type: "string", Description: "中间件类型（redis/nginx/elasticsearch/kafka/zookeeper/rabbitmq）"},
+				"version":         {Type: "string", Description: "版本"},
+				"port":            {Type: "int", Description: "监听端口"},
+				"role":            {Type: "string", Description: "角色（如 redis master/slave）"},
+			},
+		},
+	}
+	for _, mt := range want {
+		if _, err := s.pg.GetCIModelType(ctx, mt.ID, tenantID); err == nil {
+			continue // 已存在，跳过
+		}
+		if err := s.pg.CreateCIModelType(ctx, &mt); err != nil {
+			return fmt.Errorf("ensure model type %q: %w", mt.ID, err)
+		}
+		slog.Info("discovery model type ensured", "id", mt.ID, "tenant", tenantID)
+	}
+	return nil
+}
+
+// handleQualityScan 按需执行一次数据质量扫描（完整性/唯一性/一致性），返回质量报告。
+func (s *Service) handleQualityScan(w http.ResponseWriter, r *http.Request) {
+	tenantID := tenantFromCtx(r.Context())
+	eng := quality.NewEngine(s.pg)
+	report, err := eng.Scan(r.Context(), tenantID)
+	if err != nil {
+		slog.Error("quality scan failed", "err", err)
+		writeError(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+	writeJSON(w, 200, report)
 }
 
 func (s *Service) handleListDiscoveryResults(w http.ResponseWriter, r *http.Request) {
@@ -1871,34 +1984,6 @@ func (s *Service) persistRelation(ctx context.Context, rel *model.CIRelation) er
 		s.mem.createRelation(rel)
 	}
 	return nil
-}
-
-// simulateDiscovery 模拟发现过程
-func simulateDiscovery(task *model.DiscoveryTask) []map[string]any {
-	var results []map[string]any
-
-	switch task.Type {
-	case "agent":
-		results = []map[string]any{
-			{"name": "agent-host-01", "type": "server", "ip": "192.168.1.10", "attributes": map[string]any{"os": "linux", "cpu": 4, "memory": "8GB"}},
-			{"name": "agent-host-02", "type": "server", "ip": "192.168.1.11", "attributes": map[string]any{"os": "linux", "cpu": 8, "memory": "16GB"}},
-		}
-	case "snmp":
-		results = []map[string]any{
-			{"name": "switch-core-01", "type": "switch", "ip": "10.0.0.1", "attributes": map[string]any{"vendor": "cisco", "ports": 48, "firmware": "v4.2"}},
-			{"name": "router-01", "type": "switch", "ip": "10.0.0.254", "attributes": map[string]any{"vendor": "huawei", "ports": 24}},
-		}
-	case "cloud":
-		results = []map[string]any{
-			{"name": "cloud-ecs-01", "type": "server", "ip": "47.96.1.100", "attributes": map[string]any{"provider": "aliyun", "region": "cn-hangzhou", "instance_type": "ecs.g6.large"}},
-			{"name": "cloud-rds-01", "type": "database", "ip": "rm-xxx.mysql.rds.aliyuncs.com", "attributes": map[string]any{"provider": "aliyun", "engine": "mysql", "version": "8.0"}},
-		}
-	default:
-		results = []map[string]any{
-			{"name": "discovered-device-01", "type": "server", "ip": "192.168.0.10", "attributes": map[string]any{"source": "api"}},
-		}
-	}
-	return results
 }
 
 // CreateCI 创建一条 CI,复用与 HTTP handler 相同的落库与事件联动逻辑

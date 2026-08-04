@@ -25,6 +25,7 @@ import (
 	_ "github.com/opsorigin/core/internal/cloud/providers/all"
 	"github.com/opsorigin/core/internal/cmdb"
 	"github.com/opsorigin/core/internal/cmdb/dgraph"
+	"github.com/opsorigin/core/internal/cmdb/discovery/plugins"
 	"github.com/opsorigin/core/internal/cmdb/outbox"
 	"github.com/opsorigin/core/internal/cmdb/pg"
 	"github.com/opsorigin/core/internal/command"
@@ -34,7 +35,6 @@ import (
 	"github.com/opsorigin/core/internal/itsm"
 	"github.com/opsorigin/core/internal/itsm/catalog"
 	itsmmodel "github.com/opsorigin/core/internal/itsm/model"
-	monitormodel "github.com/opsorigin/core/internal/monitor/model"
 	"github.com/opsorigin/core/internal/itsm/oncall"
 	"github.com/opsorigin/core/internal/itsm/process"
 	"github.com/opsorigin/core/internal/itsm/sla"
@@ -45,6 +45,7 @@ import (
 	healthhandler "github.com/opsorigin/core/internal/monitor/health"
 	"github.com/opsorigin/core/internal/monitor/ingest"
 	metricsregistry "github.com/opsorigin/core/internal/monitor/metrics"
+	monitormodel "github.com/opsorigin/core/internal/monitor/model"
 	"github.com/opsorigin/core/internal/notification"
 	"github.com/opsorigin/core/internal/ops"
 	"github.com/opsorigin/core/internal/sysconfig"
@@ -376,6 +377,20 @@ func main() {
 
 	// K8s 容器资源纳管：注入经 Agent 通道的发现器（鸭子类型 *agentmgr.Service 满足 cloud.K8sAgentRunner）。
 	cloudSvc.SetK8sDiscoverer(k8s.NewDiscoverer(agentSvc))
+
+	// CMDB 自动发现插件：注册内置发现器（物理服务器/网络设备/数据库/中间件/应用），
+	// 注入探针 Agent 脚本通道（*agentmgr.Service 满足 discovery.ScriptRunner 鸭子接口），
+	// 并启动确保中间件等发现产出所需的模型类型存在。
+	discoveryReg := plugins.NewRegistry()
+	cmdbSvc.SetDiscoveryRegistry(discoveryReg)
+	cmdbSvc.SetDiscoveryScriptRunner(agentSvc)
+	go func() {
+		ensureCtx, ec := context.WithTimeout(context.Background(), 30*time.Second)
+		defer ec()
+		if err := cmdbSvc.EnsureDiscoveryModelTypes(ensureCtx, "default"); err != nil {
+			slog.Error("ensure discovery model types failed", "err", err)
+		}
+	}()
 
 	// 系统配置管理服务
 	sysconfigSvc := sysconfig.NewService(cfg)

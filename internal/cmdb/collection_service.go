@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/opsorigin/core/internal/cmdb/discovery"
 	"github.com/opsorigin/core/internal/cmdb/model"
 	"github.com/opsorigin/core/internal/cmdb/pg"
 )
@@ -40,6 +41,16 @@ type AgentCollectTaskSpec struct {
 // SetAgentChannel 注入 Agent 通道下发实现（由 cmd/core 用 agentmgr 适配器注入）。
 func (s *Service) SetAgentChannel(ch AgentChannel) {
 	s.agentChan = ch
+}
+
+// SetDiscoveryRegistry 注入自动发现插件注册表（cmd/core 启动时由 discovery/plugins.NewRegistry() 构建）。
+func (s *Service) SetDiscoveryRegistry(reg *discovery.Registry) {
+	s.discoveryReg = reg
+}
+
+// SetDiscoveryScriptRunner 注入探针 Agent 脚本执行通道（cmd/core 把 agentSvc 注入，鸭子实现 ScriptRunner 接口）。
+func (s *Service) SetDiscoveryScriptRunner(runner discovery.ScriptRunner) {
+	s.discoveryRunner = runner
 }
 
 // toAgentSpec 把 cmdb 采集任务转换为 Agent 通道同步描述。

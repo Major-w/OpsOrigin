@@ -7,13 +7,13 @@ import { Badge } from '@/components/ui/badge'
 import { Input } from '@/components/ui/input'
 import { Dialog, DialogFooter } from '@/components/ui/dialog'
 import { apiFetch, apiList } from '@/lib/utils'
-import { Plus, Play, RefreshCw, Server, Wifi, Cloud, Terminal, CheckCircle, Clock, Loader2 } from 'lucide-react'
+import { Plus, Play, RefreshCw, Server, Wifi, Database, Layers, Box as AppIcon, GitBranch, CheckCircle, Clock, Loader2, ShieldAlert } from 'lucide-react'
 import { cn } from '@/lib/utils'
 
 interface DiscoveryTask {
   id: string
   name: string
-  type: 'agent' | 'snmp' | 'api' | 'cloud'
+  type: string
   target: string
   status: 'idle' | 'running' | 'success' | 'failed'
   config: Record<string, any>
@@ -35,19 +35,58 @@ interface DiscoveryResult {
   discovered_at: string
 }
 
-const DISCOVERY_TYPES = [
-  { value: 'agent', label: 'Agent 发现', icon: Terminal, desc: '通过已部署的 Agent 扫描网络资产' },
-  { value: 'snmp', label: 'SNMP 发现', icon: Wifi, desc: '通过 SNMP 协议发现网络设备' },
-  { value: 'api', label: 'API 接入', icon: Cloud, desc: '通过第三方 API 接入资产数据' },
-  { value: 'cloud', label: '云厂商同步', icon: Cloud, desc: '从 AWS/阿里云/腾讯云同步资产' },
-]
+// 后端 GET /cmdb/discovery/types 返回的插件类型信息。
+interface DiscoveryTypeInfo {
+  type: string
+  label: string
+  ci_type: string
+  channel: string // agent / snmp / builtin
+  note: string
+}
+
+interface QualityIssue {
+  ci_id?: string
+  ci_name?: string
+  type_id?: string
+  dimension: string
+  severity: string
+  message: string
+}
+
+interface QualityReport {
+  tenant_id: string
+  scanned_at: string
+  score: number
+  by_type: { type_id: string; name: string; total: number; completeness: number; issue_count: number }[]
+  issues: QualityIssue[]
+}
+
+// 各类型对应的前端图标。
+const TYPE_ICON: Record<string, any> = {
+  server: Server, host: Server, snmp: Wifi, network: Wifi,
+  database: Database, middleware: Layers, application: AppIcon, app: AppIcon,
+  relation: GitBranch,
+}
+// 各类型的配置提示（JSON 示例）。
+const TYPE_CONFIG_HINT: Record<string, string> = {
+  snmp: '{"agent_id":"探针AgentID","community":"public","snmp_ver":"2c","role":"core"}',
+  network: '{"agent_id":"探针AgentID","community":"public"}',
+  database: '{"agent_id":"探针AgentID","engine":"mysql","port":"3306","db_user":"root","db_pass":"***"}',
+  middleware: '{"agent_id":"探针AgentID","mtype":"redis","port":"6379"}',
+  application: '{"agent_id":"探针AgentID","ports":"8080,443","mtype":"tomcat"}',
+  server: '{"agent_id":"探针AgentID"}',
+  host: '{"agent_id":"探针AgentID"}',
+  relation: '{}',
+}
 
 export default function CMDBDiscoveryPage() {
   const [tasks, setTasks] = useState<DiscoveryTask[]>([])
   const [results, setResults] = useState<DiscoveryResult[]>([])
+  const [typeInfos, setTypeInfos] = useState<DiscoveryTypeInfo[]>([])
+  const [quality, setQuality] = useState<QualityReport | null>(null)
   const [selectedTask, setSelectedTask] = useState<string | null>(null)
   const [dialogOpen, setDialogOpen] = useState(false)
-  const [form, setForm] = useState({ name: '', type: 'agent' as const, target: '', config: '{}' })
+  const [form, setForm] = useState({ name: '', type: 'server', target: '', config: '{"agent_id":"探针AgentID"}' })
   const [loading, setLoading] = useState(true)
 
   const fetchTasks = async () => {
@@ -66,7 +105,21 @@ export default function CMDBDiscoveryPage() {
     } catch { setResults([]) }
   }
 
-  useEffect(() => { fetchTasks() }, [])
+  const fetchTypeInfos = async () => {
+    try {
+      const data = await apiFetch<{ types: DiscoveryTypeInfo[] }>('/cmdb/discovery/types')
+      setTypeInfos(data?.types || [])
+    } catch { setTypeInfos([]) }
+  }
+
+  const fetchQuality = async () => {
+    try {
+      const data = await apiFetch<QualityReport>('/cmdb/quality')
+      setQuality(data)
+    } catch { setQuality(null) }
+  }
+
+  useEffect(() => { fetchTasks(); fetchTypeInfos(); fetchQuality() }, [])
 
   useEffect(() => {
     if (selectedTask) fetchResults(selectedTask)
@@ -81,14 +134,13 @@ export default function CMDBDiscoveryPage() {
       fetchTasks()
     } catch (e) { console.error(e) }
     setDialogOpen(false)
-    setForm({ name: '', type: 'agent', target: '', config: '{}' })
+    setForm({ name: '', type: 'server', target: '', config: '{"agent_id":"探针AgentID"}' })
   }
 
   const runTask = async (id: string) => {
     setTasks(prev => prev.map(t => t.id === id ? { ...t, status: 'running' } : t))
     try {
       await apiFetch(`/cmdb/discovery/${id}/run`, { method: 'POST' })
-      // 轮询等待完成
       setTimeout(() => { fetchTasks(); if (selectedTask === id) fetchResults(id) }, 3000)
     } catch { setTasks(prev => prev.map(t => t.id === id ? { ...t, status: 'failed' } : t)) }
   }
@@ -108,20 +160,29 @@ export default function CMDBDiscoveryPage() {
   }
 
   const typeIcon = (type: string) => {
-    const t = DISCOVERY_TYPES.find(d => d.value === type)
-    return t ? <t.icon className="h-4 w-4" /> : <Server className="h-4 w-4" />
+    const Icon = TYPE_ICON[type] || Server
+    return <Icon className="h-4 w-4" />
   }
 
   const unsyncedCount = results.filter(r => !r.synced).length
   const syncedCount = results.filter(r => r.synced).length
   const runningCount = tasks.filter(t => t.status === 'running').length
 
+  // 类型下拉：优先用后端返回的真实插件类型，回退到内置兜底。
+  const typeList = typeInfos.length > 0 ? typeInfos : [
+    { type: 'server', label: '物理服务器', ci_type: 'server', channel: 'agent', note: '探针 Agent 本地采集' },
+    { type: 'snmp', label: '网络设备(SNMP)', ci_type: 'switch', channel: 'snmp', note: '交换机/路由器/防火墙' },
+    { type: 'database', label: '数据库实例', ci_type: 'database', channel: 'agent', note: 'MySQL/PG/Oracle' },
+    { type: 'middleware', label: '中间件实例', ci_type: 'middleware', channel: 'agent', note: 'Redis/Nginx/ES/Kafka' },
+    { type: 'application', label: '应用程序', ci_type: 'app', channel: 'agent', note: '端口+HTTP 指纹' },
+  ]
+
   return (
     <div className="p-6 space-y-4">
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-2xl font-bold">自动发现与采集</h1>
-          <p className="text-sm text-muted-foreground">通过 Agent、SNMP、API、云厂商接口自动发现资产</p>
+          <p className="text-sm text-muted-foreground">通过探针 Agent / SNMP 自动发现网络设备、中间件、数据库、应用与物理服务器</p>
         </div>
         <div className="flex gap-2">
           {selectedTask && unsyncedCount > 0 && (
@@ -131,7 +192,42 @@ export default function CMDBDiscoveryPage() {
         </div>
       </div>
 
-      {/* 统计卡片 */}
+      {/* 数据质量中心 */}
+      <Card className="border-emerald-200 dark:border-emerald-800">
+        <CardHeader className="py-3 flex flex-row items-center justify-between">
+          <CardTitle className="text-sm flex items-center gap-2"><ShieldAlert className="h-4 w-4 text-emerald-600" />数据质量中心</CardTitle>
+          <Button variant="ghost" size="sm" className="h-7 text-xs" onClick={fetchQuality}><RefreshCw className="h-3.5 w-3.5" />重新扫描</Button>
+        </CardHeader>
+        <CardContent className="p-4">
+          {quality ? (
+            <div className="space-y-3">
+              <div className="flex items-center gap-4">
+                <div className="h-14 w-14 rounded-full flex items-center justify-center text-lg font-bold"
+                  style={{ background: quality.score >= 80 ? 'rgba(16,185,129,.15)' : quality.score >= 60 ? 'rgba(245,158,11,.15)' : 'rgba(239,68,68,.15)', color: quality.score >= 80 ? '#059669' : quality.score >= 60 ? '#d97706' : '#dc2626' }}>
+                  {quality.score.toFixed(0)}
+                </div>
+                <div className="text-xs text-muted-foreground">
+                  <p>综合质量分（完整性均值 − 问题惩罚）</p>
+                  <p className="mt-1">模型类型 {quality.by_type.length} 个 · 发现问题 {quality.issues.length} 条</p>
+                </div>
+              </div>
+              {quality.issues.length > 0 && (
+                <div className="space-y-1 max-h-40 overflow-y-auto">
+                  {quality.issues.slice(0, 8).map((iss, i) => (
+                    <div key={i} className="flex items-start gap-2 text-xs">
+                      <Badge variant={iss.severity === 'high' ? 'destructive' : iss.severity === 'medium' ? 'default' : 'outline'} className="text-[10px] shrink-0">{iss.severity}</Badge>
+                      <span className="text-muted-foreground">{iss.message}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          ) : (
+            <div className="text-center py-4 text-muted-foreground text-xs">点击「重新扫描」执行数据质量检查</div>
+          )}
+        </CardContent>
+      </Card>
+
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
         <Card><CardContent className="p-4 flex items-center gap-3">
           <div className="h-10 w-10 rounded-lg bg-emerald-100 dark:bg-emerald-500/20 flex items-center justify-center"><Server className="h-5 w-5 text-emerald-600 dark:text-emerald-400" /></div>
@@ -250,19 +346,20 @@ export default function CMDBDiscoveryPage() {
           <div>
             <label className="text-sm font-medium">发现方式 *</label>
             <div className="grid grid-cols-2 gap-2 mt-1">
-              {DISCOVERY_TYPES.map(dt => {
-                const Icon = dt.icon
+              {typeList.map(dt => {
+                const Icon = TYPE_ICON[dt.type] || Server
                 return (
-                  <button key={dt.value} className={cn("p-3 rounded-lg border text-left transition-all", form.type === dt.value ? "border-emerald-500 bg-emerald-50 dark:bg-emerald-500/10" : "border-gray-200 dark:border-gray-700 hover:border-gray-300")} onClick={() => setForm(f => ({ ...f, type: dt.value as any }))}>
+                  <button key={dt.type} className={cn("p-3 rounded-lg border text-left transition-all", form.type === dt.type ? "border-emerald-500 bg-emerald-50 dark:bg-emerald-500/10" : "border-gray-200 dark:border-gray-700 hover:border-gray-300")} onClick={() => setForm(f => ({ ...f, type: dt.type, config: TYPE_CONFIG_HINT[dt.type] || '{}' }))}>
                     <div className="flex items-center gap-2"><Icon className="h-4 w-4" /><span className="text-sm font-medium">{dt.label}</span></div>
-                    <p className="text-xs text-muted-foreground mt-1">{dt.desc}</p>
+                    <p className="text-xs text-muted-foreground mt-1">{dt.note}</p>
+                    {dt.ci_type && <p className="text-[10px] text-muted-foreground mt-0.5">落库类型: {dt.ci_type}</p>}
                   </button>
                 )
               })}
             </div>
           </div>
-          <div><label className="text-sm font-medium">扫描目标 *</label><Input value={form.target} onChange={e => setForm(f => ({ ...f, target: e.target.value }))} placeholder="192.168.1.0/24 或 region" /></div>
-          <div><label className="text-sm font-medium">配置 (JSON)</label><textarea className="flex h-20 w-full rounded-md border border-input bg-background px-3 py-2 text-sm font-mono" value={form.config} onChange={e => setForm(f => ({ ...f, config: e.target.value }))} placeholder='{"timeout": 30}' /></div>
+          <div><label className="text-sm font-medium">扫描目标 *</label><Input value={form.target} onChange={e => setForm(f => ({ ...f, target: e.target.value }))} placeholder="设备IP / 主机IP / 域名" /></div>
+          <div><label className="text-sm font-medium">配置 (JSON)</label><textarea className="flex h-20 w-full rounded-md border border-input bg-background px-3 py-2 text-sm font-mono" value={form.config} onChange={e => setForm(f => ({ ...f, config: e.target.value }))} placeholder='{"agent_id":"探针AgentID"}' /></div>
         </div>
         <DialogFooter><Button variant="outline" onClick={() => setDialogOpen(false)}>取消</Button><Button onClick={handleCreateTask} disabled={!form.name || !form.target}>创建</Button></DialogFooter>
       </Dialog>
