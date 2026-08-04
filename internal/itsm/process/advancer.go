@@ -95,6 +95,20 @@ func (p *Process) StartStep() *Step {
 	return nil
 }
 
+// FanOut 返回所有直接依赖 currentStepID 的步骤(并行网关的分支端点)。
+func (p *Process) FanOut(currentStepID string) []*Step {
+	var out []*Step
+	for i := range p.Steps {
+		for _, dep := range p.Steps[i].DependsOn {
+			if dep.NodeID == currentStepID {
+				out = append(out, &p.Steps[i])
+				break
+			}
+		}
+	}
+	return out
+}
+
 // StepByID 按 ID 查找步骤
 func (p *Process) StepByID(id string) *Step {
 	for i := range p.Steps {

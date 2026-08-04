@@ -55,8 +55,31 @@ func (s *PGStore) CreateInstance(ctx context.Context, inst *ProcessInstance) err
 	return err
 }
 
-func (s *PGStore) GetInstanceByTicket(ctx context.Context, ticketID, tenantID string) (*ProcessInstance, error) {
-	var resultsJSON []byte
+func (s *PGStore) ListRunningInstances(ctx context.Context) ([]*ProcessInstance, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT id,process_id,ticket_id,tenant_id,current_step,status,step_results,started_at,finished_at,created_at,updated_at
+		 FROM itsm_process_instances WHERE status='running'`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []*ProcessInstance
+	for rows.Next() {
+		var resultsJSON []byte
+		inst := &ProcessInstance{}
+		if err := rows.Scan(&inst.ID, &inst.ProcessID, &inst.TicketID, &inst.TenantID, &inst.CurrentStep, &inst.Status,
+			&resultsJSON, &inst.StartedAt, &inst.FinishedAt, &inst.CreatedAt, &inst.UpdatedAt); err != nil {
+			return nil, err
+		}
+		if len(resultsJSON) > 0 {
+			json.Unmarshal(resultsJSON, &inst.StepResults)
+		}
+		out = append(out, inst)
+	}
+	return out, rows.Err()
+}
+
+func (s *PGStore) GetInstanceByTicket(ctx context.Context, ticketID, tenantID string) (*ProcessInstance, error) {	var resultsJSON []byte
 	inst := &ProcessInstance{}
 	err := s.db.QueryRowContext(ctx,
 		`SELECT id,process_id,ticket_id,tenant_id,current_step,status,step_results,started_at,finished_at,created_at,updated_at
@@ -170,11 +193,21 @@ func (s *Service) Advance(ctx context.Context, tenantID, ticketID, condition str
 	if inst.StepResults == nil {
 		inst.StepResults = map[string]any{}
 	}
-	inst.StepResults[inst.CurrentStep] = map[string]any{
+	// 记录当前步骤结果; 保留 timer 的 started_at 与子流程暂停上下文(subflow_next/subflow_id),
+	// 避免被后续操作覆盖导致定时器/子流程无法恢复。
+	stepRec := map[string]any{
 		"condition": condition,
 		"output":    output,
 		"at":        time.Now(),
 	}
+	if existing, ok := inst.StepResults[inst.CurrentStep].(map[string]any); ok {
+		for _, keep := range []string{"started_at", "subflow_next", "subflow_id"} {
+			if v, ok := existing[keep]; ok {
+				stepRec[keep] = v
+			}
+		}
+	}
+	inst.StepResults[inst.CurrentStep] = stepRec
 	exprCtx := exprCtxFromOutput(output)
 	next := proc.AdvancerExpr(inst.CurrentStep, condition, exprCtx)
 	if next == nil {
@@ -218,17 +251,30 @@ func exprCtxFromOutput(output any) map[string]any {
 // maxAutoSteps 防止异常流程定义导致自动执行死循环。
 const maxAutoSteps = 20
 
-// runAutomated 从落点步骤开始自动执行 service 步骤(调用脚本), 直到停在需要人工/定时的步骤、
-// 流程结束或无可达下游。每个自动执行步骤的结果写入 inst.StepResults;
-// 脚本失败时按 failure 条件选路(走失败/回滚分支), 无 failure 分支则 always 兜底。
+// maxSubflowDepth 子流程递归深度上限(防环)。
+const maxSubflowDepth = 4
+
+// runAutomated 从落点步骤开始自动执行自动化步骤, 直到停在需要人工/定时的步骤、
+// 流程结束或无可达下游。支持: 脚本执行(service)、定时器记录(timer)、并行分支(parallel)、子流程(subflow)。
 func (s *Service) runAutomated(ctx context.Context, proc *Process, inst *ProcessInstance, first *Step, exprCtx map[string]any) (*Step, error) {
+	return s.runAutomatedDepth(ctx, proc, inst, first, exprCtx, 0)
+}
+
+func (s *Service) runAutomatedDepth(ctx context.Context, proc *Process, inst *ProcessInstance, first *Step, exprCtx map[string]any, depth int) (*Step, error) {
+	if depth > maxSubflowDepth {
+		return nil, fmt.Errorf("process %s: subflow nesting exceeds %d", proc.ID, maxSubflowDepth)
+	}
 	cur := first
 	for i := 0; i < maxAutoSteps; i++ {
 		if cur == nil || cur.Type == StepEnd {
 			return cur, nil
 		}
-		if cur.Type == StepUser || cur.Type == StepTimer {
-			return cur, nil // 等待人工审批 / 定时器
+		if cur.Type == StepUser {
+			return cur, nil // 等待人工审批
+		}
+		if cur.Type == StepTimer {
+			recordTimerStarted(inst, cur, time.Now())
+			return cur, nil // 等待定时器到期(由 StartTimerChecker 推进)
 		}
 		if cur.Type == StepService && cur.ScriptID != "" && s.scriptExec != nil {
 			params := condStringMap(cur.Inputs)
@@ -251,7 +297,35 @@ func (s *Service) runAutomated(ctx context.Context, proc *Process, inst *Process
 			cur = nxt
 			continue
 		}
-		// 无脚本的 service / notify / gateway / parallel / start 等: 按 success 直通
+		if cur.Type == StepParallel {
+			landing, err := s.runParallel(ctx, proc, inst, cur, exprCtx, depth)
+			if err != nil {
+				return nil, err
+			}
+			if landing == nil {
+				return nil, nil // 全部分支自动执行完, 流程结束
+			}
+			cur = landing
+			continue
+		}
+		if cur.Type == StepSubflow && cur.SubflowID != "" {
+			landing, err := s.runSubflow(ctx, proc, inst, cur, exprCtx, depth)
+			if err != nil {
+				return nil, err
+			}
+			if landing == nil {
+				// 子流程完成 → 父流程沿 success 继续
+				nxt := proc.AdvancerExpr(cur.ID, "success", exprCtx)
+				if nxt == nil {
+					return cur, nil
+				}
+				cur = nxt
+				continue
+			}
+			// 子流程暂停(停在人工/定时等待点): 返回父流程 subflow 步骤本身, 由下次 Advance 恢复
+			return cur, nil
+		}
+		// 无脚本的 service / notify / gateway / start 等: 按 success 直通
 		// (gateway 的下游若为表达式条件, AdvancerExpr 会基于表单字段上下文求值选路)
 		nxt := proc.AdvancerExpr(cur.ID, "success", exprCtx)
 		if nxt == nil {
@@ -260,6 +334,115 @@ func (s *Service) runAutomated(ctx context.Context, proc *Process, inst *Process
 		cur = nxt
 	}
 	return cur, fmt.Errorf("process %s: automated steps exceeded %d", proc.ID, maxAutoSteps)
+}
+
+// runParallel 执行并行网关: 枚举其所有下游分支端点, 顺序执行每个分支的自动步骤链。
+// 务实语义(文档标注): 自动分支按顺序执行; 分支内遇人工/定时等待点时整个并行暂停于该等待点,
+// 工单状态映射为等待点; 全部分支自动执行完(无等待点)则流程结束。
+// 返回 nil 表示并行完成, 否则返回等待点步骤。
+func (s *Service) runParallel(ctx context.Context, proc *Process, inst *ProcessInstance, par *Step, exprCtx map[string]any, depth int) (*Step, error) {
+	endpoints := proc.FanOut(par.ID)
+	if len(endpoints) == 0 {
+		nxt := proc.AdvancerExpr(par.ID, "success", exprCtx)
+		if nxt == nil {
+			return nil, nil
+		}
+		return nxt, nil
+	}
+	var firstWait *Step
+	for _, ep := range endpoints {
+		landing, err := s.runAutomatedDepth(ctx, proc, inst, ep, exprCtx, depth+1)
+		if err != nil {
+			return nil, err
+		}
+		if landing == nil {
+			continue // 分支到 end / 无下游
+		}
+		if firstWait == nil && (landing.Type == StepUser || landing.Type == StepTimer) {
+			firstWait = landing
+		}
+	}
+	if firstWait != nil {
+		return firstWait, nil
+	}
+	// 全部分支自动执行完且无等待点 → 并行完成
+	return nil, nil
+}
+
+// runSubflow 执行子流程步骤: 加载子流程定义并从其 start(或上次暂停点)开始自动执行。
+// 子流程停在人工/定时等待点时, 记录 subflow_next 到父流程该步骤的 StepResults 并返回暂停步骤;
+// 子流程完成(到 end)时返回 nil, 父流程继续。
+func (s *Service) runSubflow(ctx context.Context, proc *Process, inst *ProcessInstance, sf *Step, exprCtx map[string]any, depth int) (*Step, error) {
+	subID := sf.SubflowID
+	rec, _ := inst.StepResults[sf.ID].(map[string]any)
+
+	var sub *Process
+	var err error
+	// 先尝试恢复已暂停的子流程(存在 subflow_next 且能加载定义)
+	if rec != nil {
+		if nid, ok := rec["subflow_next"].(string); ok && nid != "" {
+			if sub, err = s.loadSubflow(ctx, subID, inst.TenantID); err != nil {
+				return nil, err
+			}
+			if sub != nil {
+				if startFrom := sub.StepByID(nid); startFrom != nil {
+					return s.resumeSubflow(ctx, sub, inst, sf, startFrom, exprCtx, depth)
+				}
+			}
+		}
+	}
+	if sub == nil {
+		if sub, err = s.loadSubflow(ctx, subID, inst.TenantID); err != nil {
+			return nil, err
+		}
+	}
+	if sub == nil {
+		return nil, fmt.Errorf("subflow %s not found", subID)
+	}
+	start := sub.StartStep()
+	if start == nil {
+		return nil, fmt.Errorf("subflow %s has no start step", subID)
+	}
+	return s.resumeSubflow(ctx, sub, inst, sf, start, exprCtx, depth)
+}
+
+// resumeSubflow 从子流程的指定步骤开始执行其自动链, 处理暂停/完成标记。
+// 若 startFrom 是等待点(user/timer), 表示上次暂停处已由本次工单操作推进, 沿 success 继续。
+func (s *Service) resumeSubflow(ctx context.Context, sub *Process, inst *ProcessInstance, sf *Step, startFrom *Step, exprCtx map[string]any, depth int) (*Step, error) {
+	if startFrom.Type == StepUser || startFrom.Type == StepTimer {
+		nxt := sub.AdvancerExpr(startFrom.ID, "success", exprCtx)
+		if nxt == nil {
+			// 子流程在此等待点后无下游 → 视为完成
+			if rec, ok := inst.StepResults[sf.ID].(map[string]any); ok {
+				delete(rec, "subflow_next")
+				inst.StepResults[sf.ID] = rec
+			}
+			return nil, nil
+		}
+		startFrom = nxt
+	}
+	landing, err := s.runAutomatedDepth(ctx, sub, inst, startFrom, exprCtx, depth+1)
+	if err != nil {
+		return nil, err
+	}
+	if landing == nil || landing.Type == StepEnd {
+		// 子流程完成: 清除暂停标记
+		if rec, ok := inst.StepResults[sf.ID].(map[string]any); ok {
+			delete(rec, "subflow_next")
+			inst.StepResults[sf.ID] = rec
+		}
+		return nil, nil
+	}
+	// 子流程停在等待点: 记录恢复点
+	rec, _ := inst.StepResults[sf.ID].(map[string]any)
+	if rec == nil {
+		rec = map[string]any{}
+	}
+	rec["subflow_id"] = sf.SubflowID
+	rec["subflow_next"] = landing.ID
+	rec["at"] = time.Now().Format(time.RFC3339)
+	inst.StepResults[sf.ID] = rec
+	return landing, nil
 }
 
 // condStringMap 将步骤 inputs(any 值) 转换为脚本执行器所需的字符串参数表。

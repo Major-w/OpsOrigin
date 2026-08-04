@@ -245,6 +245,7 @@ func main() {
 
 	processSvc := process.NewService(db)
 	server.RegisterService(processSvc)
+	processSvc.StartTimerChecker(ctx)
 
 	itsmSvc.SetProcessStore(processSvc)
 	slaStore := sla.NewStore(db)

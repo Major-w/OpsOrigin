@@ -20,6 +20,8 @@ type Store interface {
 	CreateInstance(ctx context.Context, inst *ProcessInstance) error
 	GetInstanceByTicket(ctx context.Context, ticketID, tenantID string) (*ProcessInstance, error)
 	UpdateInstance(ctx context.Context, inst *ProcessInstance) error
+	// ListRunningInstances 返回所有 running 状态的实例(供定时器/扫描器轮询)。
+	ListRunningInstances(ctx context.Context) ([]*ProcessInstance, error)
 }
 
 type PGStore struct{ db *sql.DB }

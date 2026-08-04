@@ -3,6 +3,7 @@ package process
 import (
 	"context"
 	"testing"
+	"time"
 )
 
 // --- EvaluateCondition ---
@@ -219,5 +220,211 @@ func TestRunAutomatedNoScriptPassthrough(t *testing.T) {
 	}
 	if landing == nil || landing.ID != "end" {
 		t.Fatalf("scriptless service should passthrough to end, got %+v", landing)
+	}
+}
+
+// --- duration 解析 ---
+
+func TestParseStepDuration(t *testing.T) {
+	cases := []struct {
+		in   string
+		want bool
+	}{
+		{"1h", true}, {"30m", true}, {"90s", true}, {"3d", true}, {"1h30m", true}, {"1.5h", true},
+		{"", false}, {"abc", false}, {"0h", false}, {"h", false}, {"-5m", false},
+	}
+	for _, tc := range cases {
+		d, ok := parseStepDuration(tc.in)
+		if ok != tc.want {
+			t.Errorf("parseStepDuration(%q) ok=%v want %v", tc.in, ok, tc.want)
+		}
+		if ok && d <= 0 {
+			t.Errorf("parseStepDuration(%q) should be > 0, got %v", tc.in, d)
+		}
+	}
+}
+
+// --- 定时器到期判定 ---
+
+func TestTimerDueAt(t *testing.T) {
+	now := time.Now()
+	inst := &ProcessInstance{StepResults: map[string]any{
+		"timer1": map[string]any{"started_at": now.Add(-2 * time.Hour).Format(time.RFC3339)},
+	}}
+	step := &Step{ID: "timer1", Type: StepTimer, Duration: "1h"}
+	due := timerDueAt(inst, step, now)
+	if due == nil {
+		t.Fatal("due should be computed")
+	}
+	if now.Before(*due) {
+		t.Fatalf("timer should be due, now=%v due=%v", now, *due)
+	}
+}
+
+func TestTimerDueAtNotReady(t *testing.T) {
+	now := time.Now()
+	inst := &ProcessInstance{StepResults: map[string]any{
+		"timer1": map[string]any{"started_at": now.Format(time.RFC3339)},
+	}}
+	step := &Step{ID: "timer1", Type: StepTimer, Duration: "1h"}
+	due := timerDueAt(inst, step, now)
+	if due == nil {
+		t.Fatal("due should be computed")
+	}
+	if !now.Before(*due) {
+		t.Fatalf("timer should not be due yet, now=%v due=%v", now, *due)
+	}
+}
+
+// --- 并行网关: 自动分支顺序执行 ---
+
+func TestRunAutomatedParallelAllAuto(t *testing.T) {
+	s := &Service{scriptExec: &fakeScriptExec{results: map[string]struct {
+		output   string
+		exitCode int
+		err      error
+	}{
+		"sc1": {output: "ok", exitCode: 0},
+		"sc2": {output: "ok", exitCode: 0},
+	}}}
+	proc := &Process{ID: "p1", Steps: []Step{
+		{ID: "par", Type: StepParallel, Name: "并行", DependsOn: []Dependency{{NodeID: "start", Condition: "success"}}},
+		{ID: "svc1", Type: StepService, Name: "分支1", ScriptID: "sc1", DependsOn: []Dependency{{NodeID: "par", Condition: "success"}}},
+		{ID: "svc2", Type: StepService, Name: "分支2", ScriptID: "sc2", DependsOn: []Dependency{{NodeID: "par", Condition: "success"}}},
+		{ID: "end", Type: StepEnd, Name: "结束", DependsOn: []Dependency{{NodeID: "svc1", Condition: "success"}, {NodeID: "svc2", Condition: "success"}}},
+	}}
+	inst := &ProcessInstance{TicketID: "t1", TenantID: "default", StepResults: map[string]any{}}
+	landing, err := s.runAutomated(context.Background(), proc, inst, proc.StepByID("par"), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if landing != nil {
+		t.Fatalf("all-auto parallel should finish (nil landing), got %+v", landing)
+	}
+	for _, id := range []string{"svc1", "svc2"} {
+		if _, ok := inst.StepResults[id]; !ok {
+			t.Fatalf("branch %s should be executed", id)
+		}
+	}
+}
+
+func TestRunAutomatedParallelStopsAtUser(t *testing.T) {
+	s := &Service{scriptExec: &fakeScriptExec{results: map[string]struct {
+		output   string
+		exitCode int
+		err      error
+	}{
+		"sc1": {output: "ok", exitCode: 0},
+		"sc2": {output: "ok", exitCode: 0},
+	}}}
+	proc := &Process{ID: "p1", Steps: []Step{
+		{ID: "par", Type: StepParallel, Name: "并行", DependsOn: []Dependency{{NodeID: "start", Condition: "success"}}},
+		{ID: "svc1", Type: StepService, Name: "分支1", ScriptID: "sc1", DependsOn: []Dependency{{NodeID: "par", Condition: "success"}}},
+		{ID: "approve", Type: StepUser, Name: "人工审批", DependsOn: []Dependency{{NodeID: "svc1", Condition: "success"}}},
+		{ID: "svc2", Type: StepService, Name: "分支2", ScriptID: "sc2", DependsOn: []Dependency{{NodeID: "par", Condition: "success"}}},
+		{ID: "end", Type: StepEnd, Name: "结束", DependsOn: []Dependency{{NodeID: "approve", Condition: "success"}, {NodeID: "svc2", Condition: "success"}}},
+	}}
+	inst := &ProcessInstance{TicketID: "t1", TenantID: "default", StepResults: map[string]any{}}
+	landing, err := s.runAutomated(context.Background(), proc, inst, proc.StepByID("par"), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if landing == nil || landing.ID != "approve" {
+		t.Fatalf("parallel with user branch should stop at approve, got %+v", landing)
+	}
+	// 两条自动分支都应已执行
+	for _, id := range []string{"svc1", "svc2"} {
+		if _, ok := inst.StepResults[id]; !ok {
+			t.Fatalf("branch %s should be executed before stopping", id)
+		}
+	}
+}
+
+// --- 可执行子流程 ---
+
+func TestRunSubflowAutoComplete(t *testing.T) {
+	child := &Process{ID: "child", Steps: []Step{
+		{ID: "cstart", Type: StepStart},
+		{ID: "csvc", Type: StepService, ScriptID: "sc1", DependsOn: []Dependency{{NodeID: "cstart", Condition: "success"}}},
+		{ID: "cend", Type: StepEnd, DependsOn: []Dependency{{NodeID: "csvc", Condition: "success"}}},
+	}}
+	parent := &Process{ID: "parent", Steps: []Step{
+		{ID: "start", Type: StepStart},
+		{ID: "sub", Type: StepSubflow, SubflowID: "child", DependsOn: []Dependency{{NodeID: "start", Condition: "success"}}},
+		{ID: "end", Type: StepEnd, DependsOn: []Dependency{{NodeID: "sub", Condition: "success"}}},
+	}}
+	s := &Service{
+		scriptExec: &fakeScriptExec{results: map[string]struct {
+			output   string
+			exitCode int
+			err      error
+		}{
+			"sc1": {output: "ok", exitCode: 0},
+		}},
+		subflowLoader: func(ctx context.Context, id, tenantID string) (*Process, error) { return child, nil },
+	}
+	inst := &ProcessInstance{TicketID: "t1", TenantID: "default", StepResults: map[string]any{}}
+	landing, err := s.runAutomated(context.Background(), parent, inst, parent.StepByID("sub"), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if landing == nil || landing.ID != "end" {
+		t.Fatalf("subflow auto-complete should land on parent end, got %+v", landing)
+	}
+	if _, ok := inst.StepResults["csvc"]; !ok {
+		t.Fatal("subflow service step should be recorded")
+	}
+}
+
+func TestRunSubflowPauseAndResume(t *testing.T) {
+	child := &Process{ID: "child", Steps: []Step{
+		{ID: "cstart", Type: StepStart},
+		{ID: "csvc", Type: StepService, ScriptID: "sc1", DependsOn: []Dependency{{NodeID: "cstart", Condition: "success"}}},
+		{ID: "capprove", Type: StepUser, DependsOn: []Dependency{{NodeID: "csvc", Condition: "success"}}},
+		{ID: "cend", Type: StepEnd, DependsOn: []Dependency{{NodeID: "capprove", Condition: "success"}}},
+	}}
+	parent := &Process{ID: "parent", Steps: []Step{
+		{ID: "start", Type: StepStart},
+		{ID: "sub", Type: StepSubflow, SubflowID: "child", DependsOn: []Dependency{{NodeID: "start", Condition: "success"}}},
+		{ID: "end", Type: StepEnd, DependsOn: []Dependency{{NodeID: "sub", Condition: "success"}}},
+	}}
+	s := &Service{
+		scriptExec: &fakeScriptExec{results: map[string]struct {
+			output   string
+			exitCode int
+			err      error
+		}{
+			"sc1": {output: "ok", exitCode: 0},
+		}},
+		subflowLoader: func(ctx context.Context, id, tenantID string) (*Process, error) { return child, nil },
+	}
+	ctx := context.Background()
+	inst := &ProcessInstance{TicketID: "t1", TenantID: "default", StepResults: map[string]any{}}
+
+	// 第一次: 子流程停在 capprove(user), 父流程返回 sub 步骤
+	landing, err := s.runAutomated(ctx, parent, inst, parent.StepByID("sub"), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if landing == nil || landing.ID != "sub" {
+		t.Fatalf("subflow pause should return parent sub step, got %+v", landing)
+	}
+	rec, _ := inst.StepResults["sub"].(map[string]any)
+	if rec == nil || rec["subflow_next"] != "capprove" {
+		t.Fatalf("pause should record subflow_next=capprove, got %+v", inst.StepResults["sub"])
+	}
+
+	// 第二次(模拟用户推进): 从暂停点继续, 子流程到 end, 父流程到 end
+	landing2, err := s.runAutomated(ctx, parent, inst, parent.StepByID("sub"), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if landing2 == nil || landing2.ID != "end" {
+		t.Fatalf("subflow resume should land on parent end, got %+v", landing2)
+	}
+	if rec2, _ := inst.StepResults["sub"].(map[string]any); rec2 != nil {
+		if _, still := rec2["subflow_next"]; still {
+			t.Fatal("subflow_next should be cleared after completion")
+		}
 	}
 }

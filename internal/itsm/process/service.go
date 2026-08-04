@@ -25,11 +25,25 @@ type Service struct {
 	Name  string
 	// scriptExec 由 cmd/core 注入: StepService 步骤执行脚本(nil=跳过脚本, 服务步骤按 success 直通)。
 	scriptExec ScriptExecutor
+	// subflowLoader 加载子流程定义(默认走 store.Get; 测试可注入 fake 避免依赖 DB)。
+	subflowLoader func(ctx context.Context, id, tenantID string) (*Process, error)
 }
 
 // SetScriptExecutor 注入脚本执行器, 使流程的 service 步骤真正驱动自动化脚本执行。
 func (s *Service) SetScriptExecutor(e ScriptExecutor) {
 	s.scriptExec = e
+}
+
+// SetSubflowLoader 注入子流程定义加载器(默认 s.store.Get; 测试用)。
+func (s *Service) SetSubflowLoader(f func(ctx context.Context, id, tenantID string) (*Process, error)) {
+	s.subflowLoader = f
+}
+
+func (s *Service) loadSubflow(ctx context.Context, id, tenantID string) (*Process, error) {
+	if s.subflowLoader != nil {
+		return s.subflowLoader(ctx, id, tenantID)
+	}
+	return s.store.Get(ctx, id, tenantID)
 }
 
 func (s *Service) Get(ctx context.Context, id, tenantID string) (*Process, error) {
