@@ -42,3 +42,36 @@ func TestPrivateCloudProvidersRegistered(t *testing.T) {
 		}
 	}
 }
+
+// TestProviderSupportedVersions 验证每个已注册 Provider 都声明了适配版本，
+// 且纳管界面透出的「已验证/待测」状态符合预期（VMware 已验证，深信服/ZStack 待测）。
+func TestProviderSupportedVersions(t *testing.T) {
+	cases := map[string]cloud.VersionStatus{
+		"vmware":  cloud.VersionVerified,
+		"sangfor": cloud.VersionUntested,
+		"zstack":  cloud.VersionUntested,
+		"proxmox": cloud.VersionVerified,
+		"aliyun":  cloud.VersionVerified,
+	}
+	for name, wantStatus := range cases {
+		p, err := cloud.Get(name)
+		if err != nil {
+			t.Fatalf("provider %q not registered: %v", name, err)
+		}
+		vs := p.SupportedVersions()
+		if len(vs) == 0 {
+			t.Errorf("provider %q declared no supported versions", name)
+			continue
+		}
+		has := false
+		for _, v := range vs {
+			if v.Status == wantStatus {
+				has = true
+				break
+			}
+		}
+		if !has {
+			t.Errorf("provider %q has no version with status %q; got=%v", name, wantStatus, vs)
+		}
+	}
+}

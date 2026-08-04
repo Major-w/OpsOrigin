@@ -34,6 +34,10 @@ func (f *fakeProvider) CollectMetrics(ctx context.Context, cred Credential, regi
 	return nil, nil
 }
 
+func (f *fakeProvider) SupportedVersions() []ProviderVersion {
+	return nil
+}
+
 // fakeCMDBWriter 记录 SyncResources 调用并返回预设结果。
 type fakeCMDBWriter struct {
 	mu            sync.Mutex

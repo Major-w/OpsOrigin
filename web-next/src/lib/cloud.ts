@@ -3,6 +3,16 @@
 export interface CloudProvider {
   name: string
   types: string[]
+  // 适配版本声明（已验证/待测），纳管表单选择云商后透出。
+  versions?: ProviderVersion[]
+}
+
+// 云厂商适配版本声明（对齐后端 cloud.ProviderVersion）。
+export interface ProviderVersion {
+  version: string
+  // verified=已验证；untested=待测（代码已适配但未实测）
+  status: 'verified' | 'untested'
+  note?: string
 }
 
 export interface CloudCredential {

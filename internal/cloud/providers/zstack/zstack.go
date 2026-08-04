@@ -40,6 +40,13 @@ func init() {
 // Name 返回提供商标识。
 func (p *provider) Name() string { return "zstack" }
 
+// SupportedVersions 声明本 Provider 适配/验证过的 ZStack 版本。
+func (p *provider) SupportedVersions() []cloud.ProviderVersion {
+	return []cloud.ProviderVersion{
+		{Version: "ZStack 3.x / 4.x", Status: cloud.VersionUntested, Note: "MVP 占位，接口路径待联调"},
+	}
+}
+
 // ListResources 列举指定地域、指定类型的 ZStack 资源。
 // 单类资源发现失败仅记录日志并跳过，不影响其他类（参照 VMware/OpenStack 容错范式）。
 func (p *provider) ListResources(ctx context.Context, cred cloud.Credential, region string, kinds []cloud.ResourceType) ([]cloud.Resource, error) {

@@ -6,10 +6,11 @@ import (
 	"strings"
 )
 
-// providerInfo 描述一个已注册云商及其支持的资源类型。
+// providerInfo 描述一个已注册云商及其支持的资源类型与适配版本。
 type providerInfo struct {
-	Name  string   `json:"name"`
-	Types []string `json:"types"`
+	Name     string            `json:"name"`
+	Types    []string          `json:"types"`
+	Versions []ProviderVersion `json:"versions,omitempty"`
 }
 
 // credentialView 是凭证对外视图，刻意不包含 SecretKey，避免密钥回显/泄漏。
@@ -33,7 +34,11 @@ func (s *Service) handleListProviders(w http.ResponseWriter, r *http.Request) {
 		for i, t := range kt {
 			types[i] = string(t)
 		}
-		providers = append(providers, providerInfo{Name: n, Types: types})
+		pv := providerInfo{Name: n, Types: types}
+		if p, err := Get(n); err == nil {
+			pv.Versions = p.SupportedVersions()
+		}
+		providers = append(providers, pv)
 	}
 	if s.k8sDiscoverer != nil {
 		kt := K8sResourceTypes()

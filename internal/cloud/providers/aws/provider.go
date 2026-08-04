@@ -34,6 +34,13 @@ func init() {
 // Name 返回提供商标识。
 func (p *Provider) Name() string { return "aws" }
 
+// SupportedVersions 声明本 Provider 适配/验证过的 AWS 版本。
+func (p *Provider) SupportedVersions() []cloud.ProviderVersion {
+	return []cloud.ProviderVersion{
+		{Version: "OpenAPI（全区域）", Status: cloud.VersionVerified, Note: "AccessKey/SecretKey，接口向后兼容"},
+	}
+}
+
 // ListResources 列举指定地域、指定类型的资源。
 func (p *Provider) ListResources(ctx context.Context, cred cloud.Credential, region string, kinds []cloud.ResourceType) ([]cloud.Resource, error) {
 	if region == "" {

@@ -37,6 +37,13 @@ func init() {
 // Name 厂商标识。
 func (p *Provider) Name() string { return "huawei" }
 
+// SupportedVersions 声明本 Provider 适配/验证过的华为云版本。
+func (p *Provider) SupportedVersions() []cloud.ProviderVersion {
+	return []cloud.ProviderVersion{
+		{Version: "OpenAPI（全区域）", Status: cloud.VersionVerified, Note: "AK/SK 认证，接口向后兼容"},
+	}
+}
+
 // ListResources 按类型列举资源。
 func (p *Provider) ListResources(ctx context.Context, cred cloud.Credential, region string, kinds []cloud.ResourceType) ([]cloud.Resource, error) {
 	if region == "" {

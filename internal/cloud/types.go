@@ -99,6 +99,26 @@ type Provider interface {
 	GetResource(ctx context.Context, cred Credential, region, kind, id string) (*Resource, error)
 	// CollectMetrics 采集给定资源的指标（按需实现，可返回 nil）。
 	CollectMetrics(ctx context.Context, cred Credential, region string, resources []Resource) ([]Metric, error)
+	// SupportedVersions 返回本 Provider 已适配并验证的云版本声明，供纳管 UI 透出「已验证/待测版本」。
+	SupportedVersions() []ProviderVersion
+}
+
+// VersionStatus 描述某云版本的适配验证状态。
+type VersionStatus string
+
+const (
+	// VersionVerified 已在测试/生产环境联调通过。
+	VersionVerified VersionStatus = "verified"
+	// VersionUntested 代码已适配但未实测（如占位端点待联调）。
+	VersionUntested VersionStatus = "untested"
+)
+
+// ProviderVersion 声明某 Provider 适配/验证过的云版本。
+// 纳管 UI 据 Status 透出「已验证 / 待测」标记，辅助用户确认目标版本。
+type ProviderVersion struct {
+	Version string       `json:"version"`        // 版本号或区间描述，如 "6.7" / "6.5+" / "8.x"
+	Status  VersionStatus `json:"status"`        // verified / untested
+	Note    string       `json:"note,omitempty"` // 适配说明（可选）
 }
 
 // supportedKinds 记录各 Provider 对外声明的可纳管资源类型，用于 UI 类型选择。

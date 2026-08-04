@@ -40,6 +40,17 @@ func init() {
 // Name 返回提供商标识。
 func (p *provider) Name() string { return "vmware" }
 
+// SupportedVersions 声明本 Provider 适配/验证过的 vCenter 版本。
+func (p *provider) SupportedVersions() []cloud.ProviderVersion {
+	return []cloud.ProviderVersion{
+		{Version: "6.5", Status: cloud.VersionVerified, Note: "REST API 适配（含 6.5 内存字段兼容）"},
+		{Version: "6.7", Status: cloud.VersionVerified},
+		{Version: "7.0", Status: cloud.VersionVerified},
+		{Version: "8.0", Status: cloud.VersionVerified},
+		{Version: "< 6.5", Status: cloud.VersionUntested, Note: "vCenter REST API 自 6.5 起提供，旧版未适配"},
+	}
+}
+
 // ListResources 列举指定地域、指定类型的 VMware 资源。
 // 单类资源发现失败仅记录日志并跳过，不影响其他类（参照 k8s Discoverer 容错范式）。
 func (p *provider) ListResources(ctx context.Context, cred cloud.Credential, region string, kinds []cloud.ResourceType) ([]cloud.Resource, error) {

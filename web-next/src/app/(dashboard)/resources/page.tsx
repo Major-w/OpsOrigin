@@ -1049,6 +1049,31 @@ export default function ResourcesPage() {
                       {providers.map(p => <option key={p.name} value={p.name}>{p.name}</option>)}
                     </select>
                   </div>
+                  {cloudProvider && (() => {
+                    const sel = providers.find(p => p.name === cloudProvider)
+                    if (!sel || !sel.versions || sel.versions.length === 0) return null
+                    return (
+                      <div className="rounded-md border bg-muted/30 p-3 space-y-2">
+                        <p className="text-xs font-medium text-muted-foreground">适配版本（纳管前请确认目标版本）</p>
+                        <div className="flex flex-wrap gap-2">
+                          {sel.versions.map((v, i) => (
+                            <span key={i} className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[11px] ${v.status === 'verified' ? 'border-emerald-500/40 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300' : 'border-amber-500/40 bg-amber-500/10 text-amber-700 dark:text-amber-300'}`}>
+                              <span className={`h-1.5 w-1.5 rounded-full ${v.status === 'verified' ? 'bg-emerald-500' : 'bg-amber-500'}`} />
+                              {v.version}
+                              {v.status === 'untested' && <span className="opacity-70">·待测</span>}
+                            </span>
+                          ))}
+                        </div>
+                        {sel.versions.some(v => v.note) && (
+                          <ul className="text-[11px] text-muted-foreground space-y-0.5">
+                            {sel.versions.filter(v => v.note).map((v, i) => (
+                              <li key={i}>· {v.version}：{v.note}</li>
+                            ))}
+                          </ul>
+                        )}
+                      </div>
+                    )
+                  })()}
                   <div>
                     <label className="text-sm font-medium">Region</label>
                     <Input value={cloudRegion} onChange={e => setCloudRegion(e.target.value)} placeholder="如 cn-hangzhou / us-east-1" />
