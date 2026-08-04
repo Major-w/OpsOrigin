@@ -53,10 +53,14 @@ type Condition struct {
 	Value string `json:"value,omitempty"`
 }
 
-// FieldOption 选项（select / multiselect 用）
+// FieldOption 选项（select / multiselect / cascader 用）
+//
+// Children 非空表示该项还有下一级，供 cascader 级联逐级展开；
+// 扁平类型（select 等）忽略 Children。
 type FieldOption struct {
-	Value string `json:"value"`
-	Label string `json:"label"`
+	Value    string        `json:"value"`
+	Label    string        `json:"label"`
+	Children []FieldOption `json:"children,omitempty"`
 }
 
 // FieldValidation 字段级校验
@@ -91,7 +95,8 @@ type FieldDef struct {
 	VisibleLogic     string      `json:"visible_logic,omitempty"` // and(默认) | or
 
 	// Source 动态选项来源，为空表示用静态 Options。
-	// 约定：cmdb:<typeName>（如 cmdb:host）、iam:user、iam:role、iam:group
+	// 约定：cmdb:<typeName>（如 cmdb:host）、iam:user、iam:role、iam:group、
+	// cmdb:types（CMDB 模型类型层级树，供 cascader 级联逐级展开）
 	Source string `json:"source,omitempty"`
 }
 
@@ -114,4 +119,12 @@ type SchemaStore interface {
 // 实现方按前缀路由：cmdb:* 走 CMDB、iam:* 走 IAM/用户中心。
 type SourceResolver interface {
 	Resolve(ctx context.Context, tenantID, source string) ([]FieldOption, error)
+}
+
+// TreeSourceResolver 可选能力：解析器若支持层级数据源（cascader 级联）则实现之。
+// parent 为空表示取根层级；非空表示取该父节点下的直接子节点（懒加载，避免一次拉整棵树）。
+// 对没有层级语义的来源，实现方可退化为「parent 为空返回全量、非空返回空」。
+type TreeSourceResolver interface {
+	SourceResolver
+	ResolveTree(ctx context.Context, tenantID, source, parent string) ([]FieldOption, error)
 }

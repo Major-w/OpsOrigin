@@ -23,6 +23,8 @@ export type FormFieldType =
 export interface FormFieldOption {
   value: string
   label: string
+  /** 级联子项：cascader 逐级展开用；扁平控件忽略 */
+  children?: FormFieldOption[]
 }
 
 export interface FormFieldValidation {
@@ -90,7 +92,7 @@ export interface FormFieldDef {
   visible_when_rules?: FormCondition[]
   /** 规则组合逻辑：and(默认) | or */
   visible_logic?: 'and' | 'or'
-  /** 动态选项来源：cmdb:<typeName> / iam:user / iam:role / iam:group */
+  /** 动态选项来源：cmdb:<typeName> / iam:user / iam:role / iam:group / cmdb:types（级联层级树） */
   source?: string
 }
 
@@ -228,8 +230,16 @@ export function fieldVisible(field: FormFieldDef, context: Record<string, unknow
   return evalConditions(rules, 'and', context)
 }
 
-/** 动态选项加载器：由页面注入，通常打 GET /itsm/form-options?source= */
-export type LoadOptionsFn = (source: string, keyword?: string) => Promise<FormFieldOption[]>
+/**
+ * 动态选项加载器：由页面注入，通常打 GET /itsm/form-options?source=
+ * parent 传字符串（含空串）时进入层级模式，返回该父节点下的子选项，供 cascader 逐级展开；
+ * 不传 parent 即平铺模式。
+ */
+export type LoadOptionsFn = (
+  source: string,
+  keyword?: string,
+  parent?: string,
+) => Promise<FormFieldOption[]>
 
 interface DynamicFormProps {
   schema?: FormSchema | null
@@ -312,7 +322,8 @@ function effectiveSource(field: FormFieldDef): string {
 function useFieldOptions(field: FormFieldDef, loadOptions?: LoadOptionsFn) {
   const staticOpts = field.options || []
   const source = effectiveSource(field)
-  const needRemote = staticOpts.length === 0 && !!source && !!loadOptions
+  // 级联字段自己按层级拉取（见 Cascader），这里不重复打平铺请求
+  const needRemote = staticOpts.length === 0 && !!source && !!loadOptions && field.type !== 'cascader'
 
   const [remote, setRemote] = useState<FormFieldOption[]>([])
   const [loading, setLoading] = useState(false)
@@ -481,6 +492,15 @@ function FieldControl({
         />
       )
     case 'cascader':
+      return (
+        <Cascader
+          field={field}
+          value={value}
+          disabled={disabled}
+          onChange={onChange}
+          loadOptions={loadOptions}
+        />
+      )
     case 'text':
     default:
       return (
@@ -494,6 +514,193 @@ function FieldControl({
         />
       )
   }
+}
+
+/** 把级联值归一化成路径数组：新版是 string[]，旧版文本输入按 "a/b/c" 斜杠兼容 */
+export function toCascaderPath(v: unknown): string[] {
+  if (Array.isArray(v)) return v.map(x => String(x).trim()).filter(Boolean)
+  if (typeof v === 'string') {
+    return v
+      .split('/')
+      .map(s => s.trim())
+      .filter(Boolean)
+  }
+  return []
+}
+
+interface CascaderLevel {
+  options: FormFieldOption[]
+  selected: string
+  parent: string
+}
+
+/**
+ * resolveLevels —— 按已选路径自顶向下推导出每一级的候选项。
+ * 返回 levels（要渲染的下拉个数）与 stale（路径中在树里找不到的残留片段）。
+ */
+function resolveLevels(
+  rootOptions: FormFieldOption[],
+  path: string[],
+  lazy: Record<string, FormFieldOption[]>,
+): { levels: CascaderLevel[]; stale: string[] } {
+  const levels: CascaderLevel[] = []
+  let cur = rootOptions
+  let parent = ''
+  let i = 0
+  for (; ; i++) {
+    levels.push({ options: cur, selected: path[i] ?? '', parent })
+    const sel = path[i]
+    if (!sel) break
+    const node = cur.find(o => o.value === sel)
+    if (!node) return { levels, stale: path.slice(i) } // 历史值已不在当前树里
+    const kids = node.children ?? lazy[sel]
+    if (!kids || kids.length === 0) break // 叶子节点，不再往下渲染
+    parent = sel
+    cur = kids
+  }
+  return { levels, stale: [] }
+}
+
+/**
+ * Cascader —— 多级联动选择器。
+ * 静态 options（带 children）直接本地逐级展开；配了 source 则先取根层级，
+ * 选中项若未随包返回 children 再按 parent 懒加载下一级。值统一为 string[] 路径。
+ */
+function Cascader({
+  field,
+  value,
+  disabled,
+  onChange,
+  loadOptions,
+}: {
+  field: FormFieldDef
+  value: unknown
+  disabled: boolean
+  onChange: (v: unknown) => void
+  loadOptions?: LoadOptionsFn
+}) {
+  const staticOpts = useMemo(() => field.options || [], [field.options])
+  const source = field.source || ''
+  const needRemote = staticOpts.length === 0 && !!source && !!loadOptions
+
+  const path = useMemo(() => toCascaderPath(value), [value])
+
+  const [root, setRoot] = useState<FormFieldOption[]>([])
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState('')
+  const [lazy, setLazy] = useState<Record<string, FormFieldOption[]>>({})
+  const reqRef = useRef(0)
+  const attemptedRef = useRef<Set<string>>(new Set())
+
+  // 根层级（parent 传空串 → 层级模式）
+  useEffect(() => {
+    if (!needRemote) return
+    const seq = ++reqRef.current
+    setLoading(true)
+    setError('')
+    attemptedRef.current = new Set()
+    loadOptions!(source, undefined, '')
+      .then(opts => {
+        if (reqRef.current !== seq) return
+        setRoot(opts || [])
+      })
+      .catch((e: unknown) => {
+        if (reqRef.current !== seq) return
+        setError(e instanceof Error ? e.message : '选项加载失败')
+      })
+      .finally(() => {
+        if (reqRef.current === seq) setLoading(false)
+      })
+  }, [needRemote, source, loadOptions])
+
+  const rootOptions = staticOpts.length > 0 ? staticOpts : root
+  const { levels, stale } = useMemo(
+    () => resolveLevels(rootOptions, path, lazy),
+    [rootOptions, path, lazy],
+  )
+
+  // 末级选中项若未随包带回 children，按 parent 懒加载一次（空结果=叶子，也会被缓存住不再重试）
+  const tail = path.length > 0 ? path[path.length - 1] : ''
+  const tailHasChildren = useMemo(() => {
+    if (!tail) return true
+    const last = levels[levels.length - 1]
+    const node = last?.options.find(o => o.value === tail)
+    return node?.children !== undefined
+  }, [tail, levels])
+
+  useEffect(() => {
+    if (!needRemote || !tail || tailHasChildren) return
+    if (attemptedRef.current.has(tail)) return
+    attemptedRef.current.add(tail)
+    loadOptions!(source, undefined, tail)
+      .then(kids => setLazy(prev => ({ ...prev, [tail]: kids || [] })))
+      .catch(() => setLazy(prev => ({ ...prev, [tail]: [] })))
+  }, [needRemote, source, loadOptions, tail, tailHasChildren])
+
+  const pick = (levelIdx: number, v: string) => {
+    const next = path.slice(0, levelIdx)
+    if (v) next.push(v)
+    onChange(next)
+  }
+
+  const crumbs = useMemo(() => {
+    const out: string[] = []
+    levels.forEach(lv => {
+      if (!lv.selected) return
+      out.push(lv.options.find(o => o.value === lv.selected)?.label || lv.selected)
+    })
+    return out.concat(stale)
+  }, [levels, stale])
+
+  if (needRemote && loading && rootOptions.length === 0) return <OptionsHint text="选项加载中…" />
+  if (needRemote && error) return <OptionsHint text={`选项加载失败：${error}`} tone="error" />
+  if (rootOptions.length === 0) {
+    return (
+      <OptionsHint
+        text={
+          needRemote
+            ? '该来源暂无可选层级'
+            : '未配置层级选项来源，请在表单配置中设置动态来源或静态层级选项'
+        }
+      />
+    )
+  }
+
+  return (
+    <div className="space-y-1.5">
+      <div className="flex flex-wrap gap-1.5">
+        {levels.map((lv, i) => (
+          <select
+            key={`${lv.parent}-${i}`}
+            className={`${fieldBaseCls} w-auto min-w-[9rem] flex-1`}
+            value={lv.selected}
+            disabled={disabled}
+            onChange={e => pick(i, e.target.value)}
+          >
+            <option value="">{i === 0 ? field.placeholder || '请选择' : '下一级（可选）'}</option>
+            {lv.options.map(o => (
+              <option key={o.value} value={o.value}>
+                {o.label}
+              </option>
+            ))}
+          </select>
+        ))}
+      </div>
+      {crumbs.length > 0 && (
+        <div className="flex items-center gap-2 text-xs text-muted-foreground">
+          <span className="truncate">已选：{crumbs.join(' / ')}</span>
+          {!disabled && (
+            <button type="button" className="shrink-0 hover:text-foreground underline" onClick={() => onChange([])}>
+              清空
+            </button>
+          )}
+        </div>
+      )}
+      {stale.length > 0 && (
+        <OptionsHint text={`历史取值「${stale.join(' / ')}」已不在当前层级中，请重新选择`} tone="error" />
+      )}
+    </div>
+  )
 }
 
 function OptionsHint({ text, tone }: { text: string; tone?: 'error' }) {

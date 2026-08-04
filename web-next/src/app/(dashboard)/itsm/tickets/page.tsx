@@ -159,9 +159,10 @@ export default function ITSMPage() {
   }, [form.title])
 
   // 动态选项加载器：带 source 的字段（cmdb:<type> / iam:user|role|group）用它拉取可选项。
+  // parent 用于级联字段逐级取子节点（空串=根层级）。
   // useCallback 保持引用稳定，避免 DynamicForm 内部 effect 反复触发请求。
   const loadOptions = useCallback(
-    (source: string, keyword?: string) => getFormOptions(source, keyword),
+    (source: string, keyword?: string, parent?: string) => getFormOptions(source, keyword, parent),
     [getFormOptions],
   )
 

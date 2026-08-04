@@ -172,6 +172,20 @@ type fakeResolver struct {
 	opts  []FieldOption
 	err   error
 	calls int
+	// tree: parent → 子选项，用于 ResolveTree（cascader 级联）
+	tree      map[string][]FieldOption
+	treeCalls int
+}
+
+func (r *fakeResolver) ResolveTree(_ context.Context, _, source, parent string) ([]FieldOption, error) {
+	r.treeCalls++
+	if r.err != nil {
+		return nil, r.err
+	}
+	if source != "cmdb:types" {
+		return nil, errors.New("unsupported source")
+	}
+	return r.tree[parent], nil
 }
 
 func (r *fakeResolver) Resolve(_ context.Context, _, source string) ([]FieldOption, error) {
@@ -261,5 +275,114 @@ func TestEngineValidateNoSchemaPasses(t *testing.T) {
 	eng := NewEngine(&fakeStore{schema: nil})
 	if err := eng.Validate(context.Background(), "t1", "ticket:default", map[string]any{"x": 1}); err != nil {
 		t.Fatalf("无 schema 应放行: %v", err)
+	}
+}
+
+// ---- cascader 级联 ----
+
+func cascaderTree() []FieldOption {
+	return []FieldOption{
+		{Value: "biz", Label: "业务系统", Children: []FieldOption{
+			{Value: "app", Label: "应用", Children: []FieldOption{
+				{Value: "mysql", Label: "MySQL 实例"},
+			}},
+			{Value: "gateway", Label: "网关"},
+		}},
+		{Value: "infra", Label: "基础设施"},
+	}
+}
+
+func TestCascaderPathValidation(t *testing.T) {
+	schema := &FormSchema{Fields: []FieldDef{
+		{Key: "target", Label: "纳管对象", Type: TypeCascader, Options: cascaderTree()},
+	}}
+	cases := []struct {
+		name    string
+		value   any
+		wantErr bool
+	}{
+		{"完整路径", []any{"biz", "app", "mysql"}, false},
+		{"选到中间层级也允许", []any{"biz", "app"}, false},
+		{"仅一级", []any{"infra"}, false},
+		{"string 切片同样接受", []string{"biz", "gateway"}, false},
+		{"旧版斜杠文本兼容", "biz/app/mysql", false},
+		{"层级顺序错乱", []any{"app", "biz"}, true},
+		{"越过树深", []any{"infra", "whatever"}, true},
+		{"不存在的取值", []any{"nope"}, true},
+		{"非字符串元素", []any{"biz", 42}, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := ValidateSchema(schema, map[string]any{"target": tc.value})
+			if tc.wantErr && err == nil {
+				t.Fatalf("期望报错，实际通过（value=%v）", tc.value)
+			}
+			if !tc.wantErr && err != nil {
+				t.Fatalf("期望通过，实际报错: %v", err)
+			}
+		})
+	}
+}
+
+func TestCascaderEmptyArrayCountsAsUnfilled(t *testing.T) {
+	required := &FormSchema{Fields: []FieldDef{
+		{Key: "target", Label: "纳管对象", Type: TypeCascader, Options: cascaderTree(), Required: true},
+	}}
+	if err := ValidateSchema(required, map[string]any{"target": []any{}}); err == nil {
+		t.Fatal("必填级联传空数组应视为未填并报错")
+	}
+	optional := &FormSchema{Fields: []FieldDef{
+		{Key: "target", Label: "纳管对象", Type: TypeCascader, Options: cascaderTree()},
+	}}
+	if err := ValidateSchema(optional, map[string]any{"target": []any{}}); err != nil {
+		t.Fatalf("非必填级联传空数组应放行: %v", err)
+	}
+}
+
+// 同一处修复也覆盖多选：此前 v == "" 判空对空数组失效，必填校验会被绕过
+func TestRequiredMultiSelectRejectsEmptyArray(t *testing.T) {
+	schema := &FormSchema{Fields: []FieldDef{
+		{Key: "hosts", Label: "主机", Type: TypeMultiSelect, Required: true,
+			Options: []FieldOption{{Value: "ci-1"}}},
+	}}
+	if err := ValidateSchema(schema, map[string]any{"hosts": []any{}}); err == nil {
+		t.Fatal("必填多选传空数组应报错")
+	}
+}
+
+func TestCascaderNoOptionsSkipsRangeCheck(t *testing.T) {
+	// 未配 options 且无 resolver：不限制取值范围，但仍走长度/正则校验
+	schema := &FormSchema{Fields: []FieldDef{
+		{Key: "target", Label: "对象", Type: TypeCascader,
+			Validation: &FieldValidation{MaxLen: 4}},
+	}}
+	if err := ValidateSchema(schema, map[string]any{"target": []any{"abc", "de"}}); err != nil {
+		t.Fatalf("无选项约束时应放行: %v", err)
+	}
+	if err := ValidateSchema(schema, map[string]any{"target": []any{"abc", "toolongsegment"}}); err == nil {
+		t.Fatal("超长片段应被 MaxLen 拦下")
+	}
+}
+
+func TestResolveTreeThroughEngineResolver(t *testing.T) {
+	res := &fakeResolver{tree: map[string][]FieldOption{
+		"":    {{Value: "biz", Label: "业务系统"}},
+		"biz": {{Value: "app", Label: "应用"}},
+	}}
+	var tr TreeSourceResolver = res
+
+	roots, err := tr.ResolveTree(context.Background(), "t1", "cmdb:types", "")
+	if err != nil || len(roots) != 1 || roots[0].Value != "biz" {
+		t.Fatalf("根层级解析异常: %v / %+v", err, roots)
+	}
+	kids, err := tr.ResolveTree(context.Background(), "t1", "cmdb:types", "biz")
+	if err != nil || len(kids) != 1 || kids[0].Value != "app" {
+		t.Fatalf("子层级解析异常: %v / %+v", err, kids)
+	}
+	if _, err := tr.ResolveTree(context.Background(), "t1", "cmdb:host", ""); err == nil {
+		t.Fatal("非层级来源应报错")
+	}
+	if res.treeCalls != 3 {
+		t.Fatalf("ResolveTree 调用次数应为 3，实际 %d", res.treeCalls)
 	}
 }

@@ -17,7 +17,54 @@ type CIRef struct {
 	Type string `json:"type"`
 }
 
+// CITypeNode CMDB 模型类型层级节点：作为 ITSM 级联选择器（cascader）的目录数据源。
+// 模型类型自带 ParentID 继承关系（业务域 → 类别 → 具体类型），天然是一棵树；
+// CI 实例之间没有父子字段，所以级联走"类型树"而非"实例树"。
+type CITypeNode struct {
+	ID       string `json:"id"`
+	Name     string `json:"name"`
+	ParentID string `json:"parent_id,omitempty"`
+}
+
 const defaultLookupLimit = 200
+
+// ListCITypeTree 返回本租户全部 CI 模型类型（扁平列表 + ParentID，由调用方按需组树）。
+// 内存回退模式没有模型类型定义，退化为一层扁平根节点，仅供本地演示。
+func (s *Service) ListCITypeTree(ctx context.Context, tenantID string) ([]CITypeNode, error) {
+	if s.pg == nil {
+		seen := map[string]struct{}{}
+		for _, ci := range s.mem.listCIs(tenantID, "") {
+			if ci == nil || strings.TrimSpace(ci.TypeID) == "" {
+				continue
+			}
+			seen[ci.TypeID] = struct{}{}
+		}
+		names := sortedKeys(seen)
+		out := make([]CITypeNode, 0, len(names))
+		for _, n := range names {
+			out = append(out, CITypeNode{ID: n, Name: n})
+		}
+		return out, nil
+	}
+
+	types, err := s.pg.ListCIModelTypes(ctx, tenantID, 0, 0)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]CITypeNode, 0, len(types))
+	for _, t := range types {
+		if t == nil || strings.TrimSpace(t.Name) == "" {
+			continue
+		}
+		out = append(out, CITypeNode{
+			ID:       t.ID,
+			Name:     t.Name,
+			ParentID: strings.TrimSpace(t.ParentID),
+		})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	return out, nil
+}
 
 // ListCITypeNames 返回本租户可用的 CI 模型类型名（用于表单配置时挑选 source）。
 func (s *Service) ListCITypeNames(ctx context.Context, tenantID string) ([]string, error) {

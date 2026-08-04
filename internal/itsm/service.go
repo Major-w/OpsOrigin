@@ -1132,9 +1132,10 @@ func (s *Service) handleUpsertFormSchema(w http.ResponseWriter, r *http.Request)
 	writeJSON(w, http.StatusOK, map[string]any{"status": "ok", "scope": req.Scope})
 }
 
-// handleFormOptions 解析表单字段的动态选项来源（cmdb:<type> / iam:user|role|group）。
+// handleFormOptions 解析表单字段的动态选项来源（cmdb:<type> / iam:user|role|group / cmdb:types）。
 // 不带 source 参数时返回本租户可用的 source 清单，供表单配置界面下拉选择。
 // keyword 用于前端下拉搜索时做服务端过滤，limit 限制返回条数（默认 200）。
+// 带 parent 参数（可为空串）时进入层级模式：返回该父节点下的子选项，供 cascader 级联逐级展开。
 func (s *Service) handleFormOptions(w http.ResponseWriter, r *http.Request) {
 	tenantID := tenantFromCtx(r.Context())
 	if s.formEngine == nil || s.formEngine.SourceResolver() == nil {
@@ -1149,6 +1150,25 @@ func (s *Service) handleFormOptions(w http.ResponseWriter, r *http.Request) {
 			sources = c.SourceCatalog(r.Context(), tenantID)
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"sources": sources})
+		return
+	}
+	// 层级模式：parent 参数存在即按树取子节点（parent 为空取根层级）
+	if r.URL.Query().Has("parent") {
+		tr, ok := resolver.(form.TreeSourceResolver)
+		if !ok {
+			writeJSON(w, http.StatusOK, map[string]any{"source": source, "options": []form.FieldOption{}})
+			return
+		}
+		parent := strings.TrimSpace(r.URL.Query().Get("parent"))
+		children, err := tr.ResolveTree(r.Context(), tenantID, source, parent)
+		if err != nil {
+			writeError(w, http.StatusBadGateway, fmt.Sprintf("解析选项来源失败: %v", err))
+			return
+		}
+		if children == nil {
+			children = []form.FieldOption{}
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"source": source, "parent": parent, "options": children})
 		return
 	}
 	opts, err := resolver.Resolve(r.Context(), tenantID, source)

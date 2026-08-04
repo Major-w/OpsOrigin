@@ -55,7 +55,8 @@ func (e *Engine) ValidateValues(ctx context.Context, tenantID string, schema *Fo
 			continue
 		}
 		v, ok := values[f.Key]
-		if !ok || v == nil || v == "" {
+		// 空判定统一走 isEmptyValue：多选 / 级联提交的空数组同样算"未填"
+		if !ok || isEmptyValue(v) {
 			if f.Required {
 				return fmt.Errorf("字段 %s(%s) 为必填", f.Label, f.Key)
 			}
@@ -94,7 +95,7 @@ func ValidateSchema(schema *FormSchema, values map[string]any) error {
 			continue
 		}
 		v, ok := values[f.Key]
-		if !ok || v == nil || v == "" {
+		if !ok || isEmptyValue(v) {
 			if f.Required {
 				return fmt.Errorf("字段 %s(%s) 为必填", f.Label, f.Key)
 			}
@@ -114,7 +115,7 @@ func ValidateSchema(schema *FormSchema, values map[string]any) error {
 // 为空表示不限制取值范围。
 func validateFieldWith(f FieldDef, v any, opts []FieldOption) error {
 	switch f.Type {
-	case TypeText, TypeTextarea, TypeDate, TypeUser, TypeCI, TypeCascader:
+	case TypeText, TypeTextarea, TypeDate, TypeUser, TypeCI:
 		s, ok := v.(string)
 		if !ok {
 			return fmt.Errorf("字段 %s(%s) 应为文本", f.Label, f.Key)
@@ -124,6 +125,23 @@ func validateFieldWith(f FieldDef, v any, opts []FieldOption) error {
 		}
 		if err := checkRegex(f, s); err != nil {
 			return err
+		}
+	case TypeCascader:
+		path, ok := cascaderPath(v)
+		if !ok {
+			return fmt.Errorf("字段 %s(%s) 应为级联路径（字符串数组）", f.Label, f.Key)
+		}
+		for _, seg := range path {
+			if err := checkLen(f, seg); err != nil {
+				return err
+			}
+			if err := checkRegex(f, seg); err != nil {
+				return err
+			}
+		}
+		// opts 为完整选项树时才做归属校验；允许只选到中间层级后提交
+		if len(opts) > 0 && !treeContainsPath(opts, path) {
+			return fmt.Errorf("字段 %s(%s) 取值 %q 不在可选范围内", f.Label, f.Key, strings.Join(path, "/"))
 		}
 	case TypeSelect:
 		s, ok := v.(string)
@@ -189,6 +207,62 @@ func toFloat(v any) (float64, error) {
 		}
 	}
 	return 0, fmt.Errorf("not a number")
+}
+
+// cascaderPath 把级联值归一化成路径片段。
+// 新版前端提交 []string / []any；旧版是文本输入，按 "业务系统/应用/实例" 斜杠分隔兼容。
+func cascaderPath(v any) ([]string, bool) {
+	appendSeg := func(out []string, s string) []string {
+		if s = strings.TrimSpace(s); s != "" {
+			return append(out, s)
+		}
+		return out
+	}
+	switch t := v.(type) {
+	case string:
+		parts := strings.Split(t, "/")
+		out := make([]string, 0, len(parts))
+		for _, p := range parts {
+			out = appendSeg(out, p)
+		}
+		return out, true
+	case []string:
+		out := make([]string, 0, len(t))
+		for _, p := range t {
+			out = appendSeg(out, p)
+		}
+		return out, true
+	case []any:
+		out := make([]string, 0, len(t))
+		for _, item := range t {
+			s, ok := item.(string)
+			if !ok {
+				return nil, false
+			}
+			out = appendSeg(out, s)
+		}
+		return out, true
+	}
+	return nil, false
+}
+
+// treeContainsPath 自顶向下逐级匹配路径；路径可短于树深（选到中间层级即可提交）。
+func treeContainsPath(opts []FieldOption, path []string) bool {
+	cur := opts
+	for _, seg := range path {
+		idx := -1
+		for i, o := range cur {
+			if o.Value == seg {
+				idx = i
+				break
+			}
+		}
+		if idx < 0 {
+			return false
+		}
+		cur = cur[idx].Children
+	}
+	return true
 }
 
 func optionContains(opts []FieldOption, v string) bool {

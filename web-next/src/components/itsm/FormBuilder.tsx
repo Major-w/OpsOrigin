@@ -34,7 +34,7 @@ const FIELD_TYPES: { value: FormFieldType; label: string }[] = [
   { value: 'cascader', label: '级联' },
 ]
 
-const OPTION_TYPES: FormFieldType[] = ['select', 'multiselect', 'user', 'ci']
+const OPTION_TYPES: FormFieldType[] = ['select', 'multiselect', 'user', 'ci', 'cascader']
 
 const inputCls =
   'flex h-9 w-full rounded-md border border-input bg-background px-2 text-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring'
@@ -262,6 +262,7 @@ function FieldPropertyPanel({
 }) {
   const supportsOptions = OPTION_TYPES.includes(field.type)
   const isTextual = ['text', 'textarea'].includes(field.type)
+  const isCascader = field.type === 'cascader'
 
   // 旧版单条表达式在首次编辑时自动升级为规则列表，配置界面只暴露规则形态
   const rules: FormCondition[] =
@@ -371,14 +372,30 @@ function FieldPropertyPanel({
                 value={field.source || ''}
                 disabled={disabled}
                 onChange={e => onChange({ source: e.target.value.trim() || undefined })}
-                placeholder="cmdb:host / iam:user"
+                placeholder={isCascader ? 'cmdb:types' : 'cmdb:host / iam:user'}
               />
             </div>
           </Labeled>
-          {!field.source && <StaticOptionsEditor field={field} disabled={disabled} onChange={onChange} />}
+          {!field.source &&
+            (isCascader ? (
+              <TreeOptionsEditor
+                options={field.options || []}
+                disabled={disabled}
+                onChange={next => onChange({ options: next })}
+              />
+            ) : (
+              <StaticOptionsEditor field={field} disabled={disabled} onChange={onChange} />
+            ))}
           {field.source && (
             <p className="text-[11px] text-muted-foreground">
               选项将在渲染时实时从 <code className="px-1 rounded bg-muted">{field.source}</code> 拉取；后端校验同样按该来源核对取值。
+              {isCascader && (
+                <>
+                  {' '}
+                  级联建议选 <code className="px-1 rounded bg-muted">cmdb:types</code>（CMDB 模型类型层级树），
+                  非层级来源只会有一级。
+                </>
+              )}
             </p>
           )}
         </Section>
@@ -502,6 +519,78 @@ function StaticOptionsEditor({
       >
         <Plus className="h-3 w-3" />
         添加选项
+      </Button>
+    </div>
+  )
+}
+
+/**
+ * TreeOptionsEditor —— 级联静态层级选项编辑器。
+ * 递归渲染 value/label 行，每行可「加子项」向下扩展一级，产出结构与后端 FieldOption.Children 对齐。
+ */
+function TreeOptionsEditor({
+  options,
+  disabled,
+  onChange,
+  depth = 0,
+}: {
+  options: FormFieldOption[]
+  disabled?: boolean
+  onChange: (next: FormFieldOption[]) => void
+  depth?: number
+}) {
+  const patch = (i: number, changes: Partial<FormFieldOption>) =>
+    onChange(options.map((x, j) => (j === i ? { ...x, ...changes } : x)))
+
+  return (
+    <div className={`space-y-1.5 ${depth > 0 ? 'pl-3 border-l border-dashed border-input' : ''}`}>
+      {options.map((o, i) => (
+        <div key={i} className="space-y-1.5">
+          <div className="flex gap-1.5 items-center">
+            <input
+              className={inputCls}
+              value={o.value}
+              disabled={disabled}
+              placeholder="value"
+              onChange={e => patch(i, { value: e.target.value })}
+            />
+            <input
+              className={inputCls}
+              value={o.label}
+              disabled={disabled}
+              placeholder="显示文本"
+              onChange={e => patch(i, { label: e.target.value })}
+            />
+            <IconBtn
+              title="添加子级"
+              disabled={disabled || depth >= 4}
+              onClick={() => patch(i, { children: [...(o.children || []), { value: '', label: '' }] })}
+            >
+              <Plus className="h-3.5 w-3.5" />
+            </IconBtn>
+            <IconBtn title="删除该项及其子级" danger disabled={disabled} onClick={() => onChange(options.filter((_, j) => j !== i))}>
+              <Trash2 className="h-3.5 w-3.5" />
+            </IconBtn>
+          </div>
+          {o.children && o.children.length > 0 && (
+            <TreeOptionsEditor
+              options={o.children}
+              disabled={disabled}
+              depth={depth + 1}
+              onChange={kids => patch(i, { children: kids.length > 0 ? kids : undefined })}
+            />
+          )}
+        </div>
+      ))}
+      <Button
+        size="sm"
+        variant="outline"
+        disabled={disabled}
+        className="h-7 text-xs"
+        onClick={() => onChange([...options, { value: '', label: '' }])}
+      >
+        <Plus className="h-3 w-3" />
+        {depth === 0 ? '添加一级选项' : '添加同级'}
       </Button>
     </div>
   )

@@ -109,7 +109,7 @@ interface ITSMState {
   getFormScopes: () => Promise<string[]>
   upsertFormSchema: (scope: string, schema: FormSchema) => Promise<boolean>
   // 动态选项来源（cmdb:<type> / iam:user|role|group）
-  getFormOptions: (source: string, keyword?: string) => Promise<FormFieldOption[]>
+  getFormOptions: (source: string, keyword?: string, parent?: string) => Promise<FormFieldOption[]>
   getFormOptionSources: () => Promise<string[]>
   approve: (id: string, comment?: string) => Promise<boolean>
   reject: (id: string, reason: string) => Promise<boolean>
@@ -276,13 +276,15 @@ export const useITSMStore = create<ITSMState>((set, get) => ({
       return false
     }
   },
-  getFormOptions: async (source, keyword) => {
+  getFormOptions: async (source, keyword, parent) => {
     // 命中进程内缓存则直接返回，避免同一张表单多个字段重复打后端
-    const cacheKey = `${source}|${keyword || ''}`
+    // parent 为 undefined = 平铺模式；为字符串（含空串）= 级联层级模式，空串取根层级
+    const cacheKey = `${source}|${keyword || ''}|${parent === undefined ? '' : `p:${parent}`}`
     const cached = formOptionsCache.get(cacheKey)
     if (cached && Date.now() < cached.expireAt) return cached.options
     const qs = new URLSearchParams({ source })
     if (keyword) qs.set('keyword', keyword)
+    if (parent !== undefined) qs.set('parent', parent)
     const data = await apiFetch<{ source: string; options: FormFieldOption[] }>(`/itsm/form-options?${qs.toString()}`)
     const options = data.options || []
     formOptionsCache.set(cacheKey, { options, expireAt: Date.now() + FORM_OPTIONS_TTL_MS })
