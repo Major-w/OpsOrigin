@@ -40,6 +40,54 @@ const navGroups: (NavItem | NavGroup)[] = [
     ]
   },
   {
+    label: 'ITSM', icon: TicketCheck, items: [
+      { to: '/itsm/overview', label: '总览', icon: LayoutDashboard },
+      { to: '/itsm/portal', label: '自助服务', icon: Store },
+      { to: '/itsm/tickets', label: '工单列表', icon: TicketCheck },
+      { to: '/itsm/change', label: '变更日历', icon: Calendar },
+      { to: '/itsm/reports', label: '报表看板', icon: BarChart3 },
+      {
+        label: '服务管理', items: [
+          { to: '/itsm/process', label: '流程定义', icon: GitBranch },
+          { to: '/itsm/catalog', label: '服务目录定义', icon: Package },
+          { to: '/itsm/sla', label: 'SLA 管理', icon: Clock },
+        ]
+      },
+      { to: '/itsm/oncall', label: '值班管理', icon: Calendar },
+      { to: '/cmdb/change-assess', label: '变更影响评估', icon: FileText },
+    ]
+  },
+  {
+    label: '知识库', icon: BookOpen, items: [
+      { to: '/knowledge', label: '文章列表', icon: BookOpen },
+      { to: '/knowledge/new', label: 'AI 写作', icon: Sparkles },
+    ]
+  },
+  {
+    label: 'CMDB', icon: Server, items: [
+      { to: '/cmdb/models', label: '模型管理', icon: Package },
+      { to: '/cmdb/instances', label: '实例管理', icon: Server },
+      { to: '/cmdb/relations', label: '关系管理', icon: GitBranch },
+      { to: '/cmdb/discovery', label: '自动发现', icon: Scan },
+      { to: '/cmdb/collection', label: '采集任务', icon: Radio },
+      { to: '/cmdb/stats', label: '资源统计', icon: BarChart3 },
+      { to: '/cmdb/idc', label: '机房机柜', icon: Building2 },
+      { to: '/cmdb/app-arch', label: '应用架构', icon: Network },
+      { to: '/cmdb/subscriptions', label: '消息订阅', icon: Bell },
+      { to: '/cmdb/topology', label: '拓扑可视化', icon: Network },
+      { to: '/cmdb/history', label: '版本追溯', icon: History },
+    ]
+  },
+  {
+    label: '监控中心', icon: Activity, items: [
+      { to: '/monitor', label: '监控总览', icon: Activity },
+      { to: '/monitor/alerts', label: '告警中心', icon: AlertTriangle },
+      { to: '/monitor/targets', label: '监控配置', icon: Settings },
+      { to: '/monitor/predict', label: '趋势预测', icon: TrendingUp },
+      { to: '/cmdb/impact', label: '影响分析', icon: AlertTriangle },
+    ]
+  },
+  {
     label: '自动化运维', icon: Workflow, items: [
       { to: '/auto', label: '运维总览', icon: Workflow },
       { to: '/auto/job', label: '作业中心', icon: Play },
@@ -60,47 +108,6 @@ const navGroups: (NavItem | NavGroup)[] = [
     ]
   },
   {
-    label: 'CMDB', icon: Server, items: [
-      { to: '/cmdb/models', label: '模型管理', icon: Package },
-      { to: '/cmdb/instances', label: '实例管理', icon: Server },
-      { to: '/cmdb/relations', label: '关系管理', icon: GitBranch },
-      { to: '/cmdb/discovery', label: '自动发现', icon: Scan },
-      { to: '/cmdb/collection', label: '采集任务', icon: Radio },
-      { to: '/cmdb/stats', label: '资源统计', icon: BarChart3 },
-      { to: '/cmdb/idc', label: '机房机柜', icon: Building2 },
-      { to: '/cmdb/app-arch', label: '应用架构', icon: Network },
-      { to: '/cmdb/subscriptions', label: '消息订阅', icon: Bell },
-      { to: '/cmdb/topology', label: '拓扑可视化', icon: Network },
-      { to: '/cmdb/impact', label: '影响分析', icon: AlertTriangle },
-      { to: '/cmdb/change-assess', label: '变更评估', icon: FileText },
-      { to: '/cmdb/history', label: '版本追溯', icon: History },
-    ]
-  },
-  {
-    label: 'ITSM', icon: TicketCheck, items: [
-      { to: '/itsm/overview', label: '总览', icon: LayoutDashboard },
-      { to: '/itsm/portal', label: '自助服务', icon: Store },
-      { to: '/itsm/tickets', label: '工单列表', icon: TicketCheck },
-      { to: '/itsm/reports', label: '报表看板', icon: BarChart3 },
-      {
-        label: '服务管理', items: [
-          { to: '/itsm/process', label: '流程定义', icon: GitBranch },
-          { to: '/itsm/catalog', label: '服务目录定义', icon: Package },
-          { to: '/itsm/sla', label: 'SLA 管理', icon: Clock },
-        ]
-      },
-      { to: '/itsm/oncall', label: '值班管理', icon: Calendar },
-    ]
-  },
-  {
-    label: '监控中心', icon: Activity, items: [
-      { to: '/monitor', label: '监控总览', icon: Activity },
-      { to: '/monitor/alerts', label: '告警中心', icon: AlertTriangle },
-      { to: '/monitor/targets', label: '监控配置', icon: Settings },
-      { to: '/monitor/predict', label: '趋势预测', icon: TrendingUp },
-    ]
-  },
-  {
     label: 'AI 助手', icon: Bot, items: [
       { to: '/ai', label: 'AI 对话', icon: MessagesSquare },
       { to: '/ai/scenes', label: '场景包', icon: Package },
@@ -115,12 +122,6 @@ const navGroups: (NavItem | NavGroup)[] = [
     ]
   },
   {
-    label: '知识库', icon: BookOpen, items: [
-      { to: '/knowledge', label: '文章列表', icon: BookOpen },
-      { to: '/knowledge/new', label: 'AI 写作', icon: Sparkles },
-    ]
-  },
-  {
     label: '系统管理', icon: Users, items: [
       { to: '/system/users', label: '用户管理', icon: Users },
       { to: '/system/groups', label: '用户组管理', icon: Users },
@@ -128,6 +129,7 @@ const navGroups: (NavItem | NavGroup)[] = [
       { to: '/system/auth', label: '认证设置', icon: Key },
       { to: '/system/notifications', label: '消息通知设置', icon: Bell },
       { to: '/system/settings', label: '全局参数', icon: Settings },
+      { to: '/system/collection-policy', label: '采集策略', icon: Database },
       { to: '/audit', label: '审计日志', icon: Shield },
     ]
   },
@@ -174,7 +176,17 @@ function NavGroupComponent({ group, collapsed, toggle }: { group: NavGroup; coll
   const isActive = activeLeaf !== null
   const Icon = group.icon
   const { theme } = useThemeStore()
-  const [openSubs, setOpenSubs] = useState<Record<string, boolean>>({})
+  // 三级子菜单默认收起；但当前路由命中该子组时自动展开，确保能暴露当前所处位置。
+  const [openSubs, setOpenSubs] = useState<Record<string, boolean>>(() =>
+    group.items.reduce<Record<string, boolean>>((acc, item) => {
+      if (!isNavItem(item) && item.items.some(sub => pathMatches(pathname, sub.to))) {
+        acc[item.label] = true
+      }
+      return acc
+    }, {})
+  )
+  // 顶层分组：命中当前路由时强制展开，否则尊重用户的折叠状态。
+  const expanded = isActive || !collapsed
 
   const toggleSub = (label: string) => {
     setOpenSubs(prev => ({ ...prev, [label]: !prev[label] }))
@@ -193,9 +205,9 @@ function NavGroupComponent({ group, collapsed, toggle }: { group: NavGroup; coll
       >
         <Icon className={cn('h-4 w-4', isActive && 'text-emerald-500 dark:text-emerald-400')} strokeWidth={1.5} />
         <span className="text-xs font-medium tracking-wide flex-1">{group.label}</span>
-        <svg className={cn('h-3 w-3 transition-transform', !collapsed && 'rotate-90')} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path d="M9 5l7 7-7 7" /></svg>
+        <svg className={cn('h-3 w-3 transition-transform', expanded && 'rotate-90')} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path d="M9 5l7 7-7 7" /></svg>
       </button>
-      {!collapsed && (
+      {expanded && (
         <div className="ml-4 mt-0.5 space-y-0.5">
           {group.items.map((item, idx) => {
             if (isNavItem(item)) {
