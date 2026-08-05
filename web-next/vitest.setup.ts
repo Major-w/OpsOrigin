@@ -34,10 +34,8 @@ beforeAll(() => {
       rootMargin = ''
       thresholds = []
     }
-    // @ts-expect-error 兜底补齐 jsdom 缺失的构造器
-    window.IntersectionObserver = IO
-    // @ts-expect-error 兜底补齐 jsdom 缺失的构造器
-    global.IntersectionObserver = IO
+    ;(window as any).IntersectionObserver = IO
+    ;(globalThis as any).IntersectionObserver = IO
   }
 
   if (!('ResizeObserver' in window)) {
@@ -46,16 +44,13 @@ beforeAll(() => {
       unobserve = vi.fn()
       disconnect = vi.fn()
     }
-    // @ts-expect-error 兜底补齐 jsdom 缺失的构造器
-    window.ResizeObserver = RO
-    // @ts-expect-error 兜底补齐 jsdom 缺失的构造器
-    global.ResizeObserver = RO
+    ;(window as any).ResizeObserver = RO
+    ;(globalThis as any).ResizeObserver = RO
   }
 
   // jsdom 默认无 crypto.randomUUID（utils.ts 的 apiFetch 用到）
   if (!('crypto' in globalThis) || !(globalThis.crypto as Crypto).randomUUID) {
-    // @ts-expect-error 测试环境兜底
-    globalThis.crypto = {
+    ;(globalThis as any).crypto = {
       randomUUID: () =>
         '00000000-0000-4000-8000-' +
         Math.random().toString(16).slice(2, 10) +
