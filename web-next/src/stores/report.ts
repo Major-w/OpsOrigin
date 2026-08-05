@@ -127,6 +127,26 @@ export interface DashboardSummary {
   createdByName?: string
 }
 
+/** AI 生成的看板草稿：只在前端预览，用户确认后才走创建接口落库 */
+export interface DashboardDraft {
+  dashboard: {
+    name: string
+    description?: string
+    widgets: Widget[]
+  }
+  /** 模型自述：这个看板回答了什么问题 */
+  explanation?: string
+  /** 平台对模型输出做白名单修复时留下的提示，透明展示避免黑箱 */
+  warnings?: string[]
+}
+
+/** 提示词建议 chip，由后端按已注册数据集动态生成 */
+export interface WorkspaceSuggestion {
+  dataset: string
+  label: string
+  prompt: string
+}
+
 export interface RenderedWidget {
   id: string
   type: string
@@ -152,6 +172,8 @@ interface ReportState {
   updateDashboard: (id: string, d: Partial<Dashboard>) => Promise<Dashboard>
   deleteDashboard: (id: string) => Promise<void>
   runQuery: (q: Query) => Promise<Result>
+  generateDashboard: (prompt: string) => Promise<DashboardDraft>
+  loadWorkspaceSuggestions: () => Promise<WorkspaceSuggestion[]>
   closeDashboard: () => void
 }
 
@@ -245,6 +267,25 @@ export const useReportStore = create<ReportState>((set, get) => ({
       method: 'POST',
       body: JSON.stringify(q),
     })
+  },
+
+  // AI 只产草稿，落库仍走 createDashboard，权限与归属和人工搭建完全一致
+  generateDashboard: async (prompt: string) => {
+    return apiFetch<DashboardDraft>('/api/v1/ai/workspace/generate', {
+      method: 'POST',
+      body: JSON.stringify({ prompt }),
+    })
+  },
+
+  loadWorkspaceSuggestions: async () => {
+    try {
+      const res = await apiFetch<{ suggestions: WorkspaceSuggestion[] }>(
+        '/api/v1/ai/workspace/suggestions'
+      )
+      return res.suggestions || []
+    } catch {
+      return []
+    }
   },
 
   closeDashboard: () => set({ current: null, rendered: [] }),

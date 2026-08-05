@@ -12,6 +12,7 @@ import {
   Save,
   X,
   UserRound,
+  Sparkles,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
@@ -20,6 +21,7 @@ import { Select } from '@/components/ui/select'
 import { Badge } from '@/components/ui/badge'
 import { Dialog } from '@/components/ui/dialog'
 import { ReportRenderer } from '@/components/report/ReportRenderer'
+import { AIWorkspace } from '@/components/report/AIWorkspace'
 import { toast } from '@/stores/toast'
 import {
   useReportStore,
@@ -78,7 +80,7 @@ export default function ReportsPage() {
     closeDashboard,
   } = useReportStore()
 
-  const [tab, setTab] = useState<'dashboards' | 'explore'>('dashboards')
+  const [tab, setTab] = useState<'dashboards' | 'explore' | 'ai'>('dashboards')
   const [createOpen, setCreateOpen] = useState(false)
   const [newName, setNewName] = useState('')
   const [newDesc, setNewDesc] = useState('')
@@ -244,7 +246,25 @@ export default function ReportsPage() {
           <Compass className="h-4 w-4" />
           数据探索
         </button>
+        <button
+          onClick={() => setTab('ai')}
+          className={`flex items-center gap-1.5 rounded-md px-4 py-1.5 text-sm transition-all ${
+            tab === 'ai' ? 'bg-background shadow-sm font-medium' : 'text-muted-foreground hover:text-foreground'
+          }`}
+        >
+          <Sparkles className={`h-4 w-4 ${tab === 'ai' ? 'text-violet-500' : ''}`} />
+          AI 生成
+        </button>
       </div>
+
+      {/* —— AI 定义工作空间：自然语言 → 受约束的看板草稿 —— */}
+      {tab === 'ai' && (
+        <AIWorkspace
+          onSaved={() => {
+            setTab('dashboards')
+          }}
+        />
+      )}
 
       {/* —— 看板 —— */}
       {tab === 'dashboards' && !current && (
@@ -297,11 +317,18 @@ export default function ReportsPage() {
               <CardContent className="flex flex-col items-center justify-center py-14 text-center">
                 <LayoutDashboard className="mb-3 h-10 w-10 text-muted-foreground/40" />
                 <p className="text-sm text-muted-foreground">
-                  还没有看板，先去「数据探索」里查一份数据并加入看板吧
+                  还没有看板，可以手动搭建，也可以直接描述需求让 AI 生成
                 </p>
-                <Button className="mt-4" variant="outline" onClick={() => setTab('explore')}>
-                  开始探索
-                </Button>
+                <div className="mt-4 flex gap-2">
+                  <Button variant="outline" onClick={() => setTab('explore')}>
+                    <Compass className="mr-1.5 h-4 w-4" />
+                    手动探索
+                  </Button>
+                  <Button onClick={() => setTab('ai')}>
+                    <Sparkles className="mr-1.5 h-4 w-4" />
+                    让 AI 生成
+                  </Button>
+                </div>
               </CardContent>
             </Card>
           )}

@@ -33,6 +33,11 @@ type Service struct {
 	limiter       ratelimit.RateLimiter
 	ragFn         func(ctx context.Context, query, agentID string) string // RAG上下文注入(按 Agent 绑定分类过滤)
 	feedbackStore agentic.FeedbackStore                                   // 点赞/点踩反馈持久化(P2-Eval)
+
+	// llmClient 供"非对话式"结构化生成场景直连模型(如 AI 生成报表看板),
+	// 不走 Engine 的对话/工具循环。sysconfig 改配置时随 UpdateLLMConfig 一起热替换。
+	llmMu     sync.RWMutex
+	llmClient *llm.Client
 }
 
 func NewService(cfg *config.Config, llmClient *llm.Client, redisClient *redisclient.Client, db *sql.DB) *Service {
@@ -80,7 +85,15 @@ func NewService(cfg *config.Config, llmClient *llm.Client, redisClient *rediscli
 		Registry:      reg,
 		limiter:       lim,
 		feedbackStore: feedbackStore,
+		llmClient:     llmClient,
 	}
+}
+
+// LLMClient 返回当前生效的 LLM 客户端(可能为 nil，表示尚未配置模型)。
+func (s *Service) LLMClient() *llm.Client {
+	s.llmMu.RLock()
+	defer s.llmMu.RUnlock()
+	return s.llmClient
 }
 
 // LLMConfigHook 在 sysconfig 修改 LLM 设置后被调用(热生效)。nil 表示未设置。
@@ -186,6 +199,11 @@ func (s *Service) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/v1/ai/skills/{id}/favorite", s.handleIsFavorite)
 	mux.HandleFunc("GET /api/v1/ai/skills/favorites", s.handleListFavorites)
 	mux.HandleFunc("GET /api/v1/ai/skills/{id}/versions", s.handleListVersions)
+
+	// —— AI 定义工作空间 (P1: 自然语言 -> 受约束的报表看板草稿) ——
+	// 只产草稿不落库；用户确认后走 POST /report/dashboards，权限归属与人工搭建一致。
+	mux.HandleFunc("POST /api/v1/ai/workspace/generate", s.handleGenerateWorkspace)
+	mux.HandleFunc("GET /api/v1/ai/workspace/suggestions", s.handleWorkspaceSuggestions)
 
 	// —— 训练数据集导出 (P3-1 反馈驱动微调) ——
 	mux.HandleFunc("GET /api/v1/ai/dataset", s.handleExportDataset)
@@ -372,6 +390,10 @@ func (s *Service) UpdateLLMConfig(cfg llm.Config) {
 		}
 	}
 	s.Engine.HotUpdateRouter(cfg, extra)
+	// 结构化生成走的是独立客户端，这里一并换掉，避免改完配置后看板生成还在用旧 key。
+	s.llmMu.Lock()
+	s.llmClient = llm.NewClient(cfg)
+	s.llmMu.Unlock()
 }
 
 // ——— 对话持久 ———

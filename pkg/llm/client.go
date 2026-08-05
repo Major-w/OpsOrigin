@@ -67,12 +67,25 @@ type ToolFunc struct {
 }
 
 type ChatRequest struct {
-	Model       string    `json:"model"`
-	Messages    []Message `json:"messages"`
-	Tools       []ToolDef `json:"tools,omitempty"`
-	MaxTokens   int       `json:"max_tokens,omitempty"`
-	Temperature float64   `json:"temperature,omitempty"`
-	Stream      bool      `json:"stream"`
+	Model    string    `json:"model"`
+	Messages []Message `json:"messages"`
+	Tools    []ToolDef `json:"tools,omitempty"`
+	// ToolChoice 控制函数调用策略, OpenAI 兼容语义:
+	// 字符串 "auto"/"none"/"required", 或对象 {"type":"function","function":{"name":"xxx"}}。
+	// 留空时不下发该字段, 与既有调用方完全兼容。
+	ToolChoice  any     `json:"tool_choice,omitempty"`
+	MaxTokens   int     `json:"max_tokens,omitempty"`
+	Temperature float64 `json:"temperature,omitempty"`
+	Stream      bool    `json:"stream"`
+}
+
+// ForceTool 构造强制调用指定函数的 tool_choice 值。
+// 用于「schema 填空器」场景: 让模型必须以结构化参数回答, 而不是自由文本。
+func ForceTool(name string) any {
+	return map[string]any{
+		"type":     "function",
+		"function": map[string]any{"name": name},
+	}
 }
 
 type ChatResponse struct {
