@@ -94,6 +94,8 @@ export interface ProcessStep {
   position_x?: number; position_y?: number
   // 表单作用域：工单流转到本步骤时渲染的自定义表单 scope（如 process:<pid>:step:<step_id>）
   form_scope?: string
+  // 表单 Schema（JSON 字符串）：经 FormBuilder 可视化设计的自定义表单，随流程存储
+  form_schema?: string
 }
 
 type StepType = 'start' | 'end' | 'user' | 'service' | 'gateway' | 'timer' | 'notify' | 'parallel' | 'subflow'

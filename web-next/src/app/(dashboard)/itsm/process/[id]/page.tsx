@@ -17,9 +17,12 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Badge } from '@/components/ui/badge'
+import { Dialog } from '@/components/ui/dialog'
 import { formatTime } from '@/lib/utils'
+import { FormBuilder } from '@/components/itsm/FormBuilder'
+import { type FormSchema } from '@/components/itsm/DynamicForm'
 import {
-  Plus, Trash2, Save, X, ChevronLeft, Loader2,
+  Plus, Trash2, Save, X, Pencil, ChevronLeft, Loader2,
   PlayCircle, StopCircle, UserCheck, GitBranch,
   Clock, Bell, Server, FolderTree,
 } from 'lucide-react'
@@ -167,25 +170,45 @@ const nodeTypes: Record<string, any> = {
 }
 
 // ---- step property panel ----
-function StepPanel({ step, steps, scripts, channels, onChange }: {
+function StepPanel({ step, steps, scripts, channels, processId, onChange }: {
   step: ProcessStep; steps: ProcessStep[]; scripts: any[]; channels: any[]
+  processId: string
   onChange: (p: Partial<ProcessStep>) => void
 }) {
   const other = steps.filter(s => s.id !== step.id)
+  const [formOpen, setFormOpen] = useState(false)
+  const formSchema: FormSchema = useMemo(() => {
+    if (step.form_schema) {
+      try { return JSON.parse(step.form_schema) as FormSchema } catch { /* 解析失败则回落空表单 */ }
+    }
+    return { version: 1, scope: '', fields: [] }
+  }, [step.form_schema])
+  const fieldCount = formSchema.fields?.length || 0
 
   const removeDep = (nodeId: string) => {
     onChange({ depends_on: (step.depends_on || []).filter(d => d.nodeId !== nodeId) })
   }
 
-  return <Card>
+  return <>
+    <Card>
     <CardHeader className="py-3"><CardTitle className="text-sm">{META[step.type]?.label || step.type}</CardTitle></CardHeader>
     <CardContent className="space-y-2 text-sm">
       <div><label className="text-xs font-medium">名称</label><Input value={step.name} onChange={e=>onChange({name:e.target.value})} className="h-8 mt-1"/></div>
       {step.type === 'user' && <>
         <div><label className="text-xs font-medium">审批人 (逗号分隔)</label><Input value={(step.approvers||[]).join(',')} onChange={e=>onChange({approvers:e.target.value.split(',').map(s=>s.trim()).filter(Boolean)})} className="h-8 mt-1" placeholder="admin,manager"/></div>
         <div><label className="text-xs font-medium">审批消息</label><Input value={step.approval_msg||''} onChange={e=>onChange({approval_msg:e.target.value})} className="h-8 mt-1" placeholder="请审批此变更"/></div>
-        <div><label className="text-xs font-medium">表单作用域</label><Input value={step.form_scope||''} onChange={e=>onChange({form_scope:e.target.value})} className="h-8 mt-1" placeholder="process:流程ID:step:步骤ID"/></div>
-        <p className="text-[10px] text-muted-foreground">工单流转到本步骤时渲染的自定义表单 scope，留空则不挂表单。格式：process:流程ID:step:步骤ID</p>
+        <div className="space-y-1">
+          <div className="flex items-center justify-between gap-2">
+            <label className="text-xs font-medium">表单作用域</label>
+            <Button type="button" size="sm" variant="outline" className="h-6 px-2 text-[10px]" onClick={() => {
+              const scope = step.form_scope || `process:${processId}:step:${step.id}`
+              if (!step.form_scope) onChange({ form_scope: scope })
+              setFormOpen(true)
+            }}><Pencil className="h-3 w-3 mr-1"/>设计表单{fieldCount > 0 && <span className="ml-1 rounded bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 px-1">{fieldCount}</span>}</Button>
+          </div>
+          <Input value={step.form_scope||''} onChange={e=>onChange({form_scope:e.target.value})} className="h-8 mt-1" placeholder="process:流程ID:step:步骤ID"/>
+          <p className="text-[10px] text-muted-foreground">工单流转到本步骤时渲染的自定义表单 scope，留空则默认 process:{processId}:step:{step.id}。点击「设计表单」可视化配置字段。</p>
+        </div>
       </>}
       {step.type === 'gateway' && <div><label className="text-xs font-medium">条件表达式</label><Input value={step.condition||''} onChange={e=>onChange({condition:e.target.value})} className="h-8 mt-1" placeholder='risk == "high"'/></div>}
       {step.type === 'timer' && <div><label className="text-xs font-medium">超时时长</label><Input value={step.duration||''} onChange={e=>onChange({duration:e.target.value})} className="h-8 mt-1" placeholder="4h / 30m / 1d"/></div>}
@@ -206,6 +229,19 @@ function StepPanel({ step, steps, scripts, channels, onChange }: {
       </div>}
     </CardContent>
   </Card>
+      <Dialog open={formOpen} onClose={() => setFormOpen(false)} title={`设计表单 · ${step.name}`}>
+        <div className="space-y-3">
+          <p className="text-xs text-muted-foreground">左侧管理字段、右侧编辑属性、下方实时预览。保存后随流程一起存储到本步骤（作用域 {step.form_scope || `process:${processId}:step:${step.id}`}）。</p>
+          <FormBuilder
+            schema={formSchema}
+            onChange={(next) => onChange({ form_schema: JSON.stringify({ ...next, scope: step.form_scope || `process:${processId}:step:${step.id}`, version: next.version || 1 }) })}
+          />
+          <div className="flex justify-end">
+            <Button variant="outline" onClick={() => setFormOpen(false)}>完成</Button>
+          </div>
+        </div>
+      </Dialog>
+    </>
 }
 
 // ---- BPMN canvas ----
@@ -312,7 +348,7 @@ function BPMNCanvas({ process: proc, scripts, channels, onSave }: {
       </ReactFlow>
     </div>
     <div className="w-60 shrink-0">
-      {sel ? <div className="flex flex-col gap-2"><StepPanel step={sel} steps={steps} scripts={scripts} channels={channels} onChange={p=>update(sel.id,p)}/>{sel.type!=='start'&&<Button variant="destructive" size="sm" onClick={()=>remove(sel.id)}><Trash2 className="h-3.5 w-3.5 mr-1"/>删除</Button>}</div> :
+      {sel ? <div className="flex flex-col gap-2"><StepPanel step={sel} steps={steps} scripts={scripts} channels={channels} processId={proc.id} onChange={p=>update(sel.id,p)}/>{sel.type!=='start'&&<Button variant="destructive" size="sm" onClick={()=>remove(sel.id)}><Trash2 className="h-3.5 w-3.5 mr-1"/>删除</Button>}</div> :
       <Card className="h-full min-h-[200px] flex items-center justify-center"><CardContent className="text-center text-muted-foreground text-xs"><p>选中节点编辑属性</p></CardContent></Card>}
     </div>
     {dirty && <div className="fixed bottom-6 right-6 z-50 flex gap-2 bg-background border rounded-full shadow-lg px-4 py-2"><span className="text-sm text-amber-600 self-center">有未保存的修改</span><Button size="sm" onClick={handleSave} disabled={saving}>{saving?<Loader2 className="h-3 w-3 mr-1 animate-spin"/>:<Save className="h-3 w-3 mr-1"/>}保存</Button><Button size="sm" variant="outline" onClick={()=>{setSteps(proc.steps||[]);setDirty(false)}}><X className="h-3 w-3 mr-1"/>放弃</Button></div>}
