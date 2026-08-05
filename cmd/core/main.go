@@ -52,6 +52,8 @@ import (
 	monitormodel "github.com/opsorigin/core/internal/monitor/model"
 	"github.com/opsorigin/core/internal/notification"
 	"github.com/opsorigin/core/internal/ops"
+	"github.com/opsorigin/core/internal/report"
+	"github.com/opsorigin/core/internal/report/datasets"
 	"github.com/opsorigin/core/internal/sysconfig"
 	"github.com/opsorigin/core/internal/tunnel"
 	"github.com/opsorigin/core/internal/user"
@@ -445,6 +447,16 @@ func main() {
 
 	knowledgeSvc := knowledge.NewService(db)
 	server.RegisterService(knowledgeSvc)
+
+	// 统一报表模块: 注册内置数据集 + 装配控制面 REST(看板持久化、统一查询)。
+	if db != nil {
+		if err := datasets.Install(db, report.Default()); err != nil {
+			log.Printf("report datasets install failed: %v", err)
+		}
+		reportSvc := report.NewService(report.Default(), db)
+		reportSvc.InitSchema(ctx)
+		server.RegisterService(reportSvc)
+	}
 
 	oncallSvc := oncall.NewService(db)
 	server.RegisterService(oncallSvc)
