@@ -218,7 +218,14 @@ type Service struct {
 	// 角色权限变更(Create/Update/Delete)时整体失效。
 	permCacheMu sync.Mutex
 	permCache   map[string][]string
+	// onPermChange 权限配置变更时的外部通知钩子(如鉴权链的身份富化器缓存)。
+	// 仅在装配期设置一次,运行期只读,故不加锁。
+	onPermChange func()
 }
+
+// SetPermissionChangeHook 注册权限配置变更回调。角色被增删改后触发,
+// 供上游缓存(如 identity.Enricher)同步失效,避免改完权限还要等 TTL 才生效。
+func (s *Service) SetPermissionChangeHook(fn func()) { s.onPermChange = fn }
 
 // NewService 创建 Service 并 seed 预置权限与内置角色。
 func NewService(db *sql.DB) *Service {
@@ -270,11 +277,15 @@ func (s *Service) ResolvePermissions(tenantID, roleName string) []string {
 	return role.Permissions
 }
 
-// invalidatePermCache 使权限解析缓存整体失效(角色增删改后调用)。
+// invalidatePermCache 使权限解析缓存整体失效(角色增删改后调用),
+// 并通知上游缓存一并失效。
 func (s *Service) invalidatePermCache() {
 	s.permCacheMu.Lock()
 	s.permCache = make(map[string][]string)
 	s.permCacheMu.Unlock()
+	if s.onPermChange != nil {
+		s.onPermChange()
+	}
 }
 
 // seedPermissions 返回平台预定义的权限点清单。

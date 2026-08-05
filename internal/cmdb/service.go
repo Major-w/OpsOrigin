@@ -320,7 +320,7 @@ func (s *Service) handleGetCI(w http.ResponseWriter, r *http.Request) {
 	}
 	// P2-4 字段级规则权限
 	if rules, rerr := s.pg.ListFieldRules(r.Context(), tenantID, ci.TypeID); rerr == nil {
-		applyFieldRules([]*model.CIModel{ci}, rules, permissionsFromRequest(r))
+		applyFieldRules([]*model.CIModel{ci}, rules, subjectFromRequest(r))
 	}
 	writeJSON(w, http.StatusOK, ci)
 }
@@ -474,7 +474,7 @@ func (s *Service) handleListCI(w http.ResponseWriter, r *http.Request) {
 	}
 	// P2-4 字段级规则权限
 	if rules, rerr := s.pg.ListFieldRules(r.Context(), tenantID, typeID); rerr == nil {
-		applyFieldRules(cis, rules, permissionsFromRequest(r))
+		applyFieldRules(cis, rules, subjectFromRequest(r))
 	}
 	writeJSON(w, http.StatusOK, cis)
 }
@@ -593,7 +593,7 @@ func (s *Service) handleSearchCI(w http.ResponseWriter, r *http.Request) {
 		}
 		// P2-4 字段级规则权限
 		if rules, rerr := s.pg.ListFieldRules(r.Context(), tenantID, typeID); rerr == nil {
-			applyFieldRules(cis, rules, permissionsFromRequest(r))
+			applyFieldRules(cis, rules, subjectFromRequest(r))
 		}
 		writeJSON(w, http.StatusOK, cis)
 		return
@@ -613,7 +613,7 @@ func (s *Service) handleSearchCI(w http.ResponseWriter, r *http.Request) {
 	}
 	// P2-4 字段级规则权限
 	if rules, rerr := s.pg.ListFieldRules(r.Context(), tenantID, typeID); rerr == nil {
-		applyFieldRules(cis, rules, permissionsFromRequest(r))
+		applyFieldRules(cis, rules, subjectFromRequest(r))
 	}
 	writeJSON(w, http.StatusOK, cis)
 }

@@ -4,12 +4,12 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
-	"fmt"
 	"log/slog"
 	"net/http"
 	"strings"
 
 	"github.com/opsorigin/core/pkg/auth"
+	"github.com/opsorigin/core/pkg/principal"
 )
 
 type contextKey string
@@ -20,18 +20,18 @@ const (
 	KeyPrincipal contextKey = "principal"
 )
 
-type PrincipalType string
-
-const (
-	PrincipalHuman   PrincipalType = "HUMAN"
-	PrincipalAIAgent PrincipalType = "AI_AGENT"
+// 审计主体统一复用 pkg/principal 的模型,避免同一概念两套结构。
+// 保留这些别名以兼容既有调用方。
+type (
+	PrincipalType = principal.Type
+	Principal     = principal.Principal
 )
 
-type Principal struct {
-	Type     PrincipalType `json:"type"`
-	ID       string        `json:"id"`
-	TicketID string        `json:"ticket_id,omitempty"`
-}
+const (
+	PrincipalHuman   = principal.TypeHuman
+	PrincipalAIAgent = principal.TypeAIAgent
+	PrincipalService = principal.TypeService
+)
 
 func generateTraceID() string {
 	bytes := make([]byte, 16)
@@ -127,37 +127,27 @@ func Middleware(next http.Handler) http.Handler {
 		}
 		ctx = context.WithValue(ctx, KeyTenantID, tenantID)
 
-		// principal 解析优先级:
-		//  1) 显式 X-Principal-* 请求头(服务间调用 / AI Agent 旁路鉴权场景)
-		//  2) 否则从 JWT 鉴权上下文推导(浏览器/客户端走 Bearer 登录,不携带 X-Principal 头)
-		// 此前仅认请求头,导致所有 Bearer 登录请求被误判为 "missing principal credentials" 而 403。
-		principalType := r.Header.Get("X-Principal-Type")
-		principalID := r.Header.Get("X-Principal-ID")
-		if principalType != "" && principalID != "" {
-			ctx = context.WithValue(ctx, KeyPrincipal, Principal{
-				Type: PrincipalType(principalType),
-				ID:   principalID,
-			})
-			slog.Debug("audit: request authenticated via explicit principal header",
-				"trace_id", traceID,
-				"principal_type", principalType,
-				"principal_id", principalID)
-		} else {
-			uid := auth.UserIDFromContext(ctx)
-			if uid == "" {
+		// principal 一律取自鉴权中间件写入的可信上下文。
+		// 请求头 X-Principal-* 已在鉴权层完成校验:仅内部服务凭证通道可产生,
+		// 其余来源被剥离 —— 审计层不再自行读头,杜绝主体伪造。
+		pr, ok := principal.FromContext(ctx)
+		if !ok || pr.ID == "" {
+			// 兜底:少数上下文由旧式裸 key 构造(如后台任务派生的请求)。
+			if uid := auth.UserIDFromContext(ctx); uid != "" {
+				pr = principal.Principal{Type: PrincipalHuman, ID: uid, TenantID: tenantID}
+			} else {
 				// 鉴权中间件应已拦截未登录请求;此处兜底为 401 而非 403。
-				slog.Warn("audit: authenticated context missing user_id",
+				slog.Warn("audit: authenticated context missing principal",
 					"trace_id", traceID,
 					"path", r.URL.Path)
 				http.Error(w, `{"error":"unauthorized"}`, http.StatusUnauthorized)
 				return
 			}
-			// Bearer 登录的用户一律视为人类主体。
-			ctx = context.WithValue(ctx, KeyPrincipal, Principal{
-				Type: PrincipalHuman,
-				ID:   uid,
-			})
 		}
+		if pr.TenantID == "" {
+			pr.TenantID = tenantID
+		}
+		ctx = context.WithValue(ctx, KeyPrincipal, pr)
 
 		w.Header().Set("X-Trace-ID", traceID)
 		r = r.WithContext(ctx)
@@ -179,26 +169,11 @@ func TenantIDFromContext(ctx context.Context) string {
 	return ""
 }
 
+// PrincipalFromContext 读取审计主体。优先取本中间件写入的值,
+// 回落到鉴权层写入的统一主体(便于未经审计中间件的内部调用也能取到)。
 func PrincipalFromContext(ctx context.Context) (Principal, bool) {
-	p, ok := ctx.Value(KeyPrincipal).(Principal)
-	return p, ok
-}
-
-func ValidateRequest(r *http.Request) error {
-	traceID := r.Header.Get("X-Trace-ID")
-	if traceID == "" {
-		return fmt.Errorf("[ASSERT-AUDIT-01] missing trace ID")
+	if p, ok := ctx.Value(KeyPrincipal).(Principal); ok {
+		return p, true
 	}
-
-	principal := r.Header.Get("X-Principal-Type")
-	principalID := r.Header.Get("X-Principal-ID")
-	if principal == "" || principalID == "" {
-		return fmt.Errorf("[ASSERT-AUDIT-01] missing principal credentials")
-	}
-
-	if principal != string(PrincipalHuman) && principal != string(PrincipalAIAgent) {
-		return fmt.Errorf("[ASSERT-AUDIT-01] invalid principal type: %s", principal)
-	}
-
-	return nil
+	return principal.FromContext(ctx)
 }

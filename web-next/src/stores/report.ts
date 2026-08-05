@@ -110,7 +110,9 @@ export interface Dashboard {
   widgets: Widget[]
   createdAt: string
   updatedAt: string
+  /** 创建者由服务端从可信用户上下文写入，前端传入无效 */
   createdBy?: string
+  createdByName?: string
 }
 
 export interface DashboardSummary {
@@ -122,6 +124,7 @@ export interface DashboardSummary {
   createdAt: string
   updatedAt: string
   createdBy?: string
+  createdByName?: string
 }
 
 export interface RenderedWidget {

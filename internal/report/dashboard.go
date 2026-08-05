@@ -69,7 +69,10 @@ type Dashboard struct {
 	Widgets     []Widget  `json:"widgets"`
 	CreatedAt   time.Time `json:"createdAt"`
 	UpdatedAt   time.Time `json:"updatedAt"`
-	CreatedBy   string    `json:"createdBy,omitempty"`
+	// CreatedBy / CreatedByName 由服务端从可信用户上下文写入，请求体带的值一律被覆盖，
+	// 避免前端伪造归属。展示名冗余落库是为了列表页直接显示"谁建的"，无需回查用户表。
+	CreatedBy     string `json:"createdBy,omitempty"`
+	CreatedByName string `json:"createdByName,omitempty"`
 }
 
 // Validate 校验看板整体结构。reg 用于逐个校验 Widget 查询。

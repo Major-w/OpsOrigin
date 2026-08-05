@@ -109,6 +109,8 @@ func (s *pgDashboardStore) InitSchema(ctx context.Context) {
 		slog.Warn("report: create report_dashboards table failed", "err", err)
 		return
 	}
+	// 存量表补列(幂等)：P0.5 起看板同时记录创建者展示名，列表页免回查用户表
+	s.db.ExecContext(ctx, `ALTER TABLE report_dashboards ADD COLUMN IF NOT EXISTS created_by_name TEXT DEFAULT ''`)
 	s.db.ExecContext(ctx, `CREATE INDEX IF NOT EXISTS idx_report_dashboards_tenant ON report_dashboards(tenant_id)`)
 }
 
@@ -126,9 +128,9 @@ func (s *pgDashboardStore) Create(ctx context.Context, d *Dashboard) error {
 		return fmt.Errorf("report: marshal widgets failed: %w", err)
 	}
 	_, err = s.db.ExecContext(ctx, `
-		INSERT INTO report_dashboards (id, tenant_id, name, description, widgets, created_at, updated_at, created_by)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
-		d.ID, d.TenantID, d.Name, d.Description, widgets, d.CreatedAt, d.UpdatedAt, d.CreatedBy,
+		INSERT INTO report_dashboards (id, tenant_id, name, description, widgets, created_at, updated_at, created_by, created_by_name)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+		d.ID, d.TenantID, d.Name, d.Description, widgets, d.CreatedAt, d.UpdatedAt, d.CreatedBy, d.CreatedByName,
 	)
 	if err != nil {
 		return fmt.Errorf("report: insert dashboard failed: %w", err)
@@ -140,9 +142,9 @@ func (s *pgDashboardStore) Get(ctx context.Context, id, tenantID string) (*Dashb
 	var d Dashboard
 	var widgetsJSON []byte
 	err := s.db.QueryRowContext(ctx, `
-		SELECT id, tenant_id, name, description, widgets, created_at, updated_at, created_by
+		SELECT id, tenant_id, name, description, widgets, created_at, updated_at, created_by, COALESCE(created_by_name, '')
 		FROM report_dashboards WHERE id = $1 AND tenant_id = $2`, id, tenantID).
-		Scan(&d.ID, &d.TenantID, &d.Name, &d.Description, &widgetsJSON, &d.CreatedAt, &d.UpdatedAt, &d.CreatedBy)
+		Scan(&d.ID, &d.TenantID, &d.Name, &d.Description, &widgetsJSON, &d.CreatedAt, &d.UpdatedAt, &d.CreatedBy, &d.CreatedByName)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -159,7 +161,7 @@ func (s *pgDashboardStore) Get(ctx context.Context, id, tenantID string) (*Dashb
 
 func (s *pgDashboardStore) List(ctx context.Context, tenantID string) ([]*Dashboard, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT id, tenant_id, name, description, widgets, created_at, updated_at, created_by
+		SELECT id, tenant_id, name, description, widgets, created_at, updated_at, created_by, COALESCE(created_by_name, '')
 		FROM report_dashboards WHERE tenant_id = $1 ORDER BY updated_at DESC`, tenantID)
 	if err != nil {
 		return nil, fmt.Errorf("report: list dashboards failed: %w", err)
@@ -169,7 +171,7 @@ func (s *pgDashboardStore) List(ctx context.Context, tenantID string) ([]*Dashbo
 	for rows.Next() {
 		var d Dashboard
 		var widgetsJSON []byte
-		if err := rows.Scan(&d.ID, &d.TenantID, &d.Name, &d.Description, &widgetsJSON, &d.CreatedAt, &d.UpdatedAt, &d.CreatedBy); err != nil {
+		if err := rows.Scan(&d.ID, &d.TenantID, &d.Name, &d.Description, &widgetsJSON, &d.CreatedAt, &d.UpdatedAt, &d.CreatedBy, &d.CreatedByName); err != nil {
 			return nil, fmt.Errorf("report: scan dashboard failed: %w", err)
 		}
 		if len(widgetsJSON) > 0 {

@@ -7,6 +7,7 @@ import (
 	"net/http"
 
 	"github.com/opsorigin/core/pkg/httputil"
+	"github.com/opsorigin/core/pkg/principal"
 )
 
 // Service 是统一报表模块的控制面：数据集浏览、统一查询、看板 CRUD 与渲染。
@@ -81,14 +82,15 @@ func (s *Service) handleListDashboards(w http.ResponseWriter, r *http.Request) {
 	summary := make([]map[string]any, 0, len(ds))
 	for _, d := range ds {
 		summary = append(summary, map[string]any{
-			"id":          d.ID,
-			"tenantId":    d.TenantID,
-			"name":        d.Name,
-			"description": d.Description,
-			"widgetCount": len(d.Widgets),
-			"createdAt":   d.CreatedAt,
-			"updatedAt":   d.UpdatedAt,
-			"createdBy":   d.CreatedBy,
+			"id":            d.ID,
+			"tenantId":      d.TenantID,
+			"name":          d.Name,
+			"description":   d.Description,
+			"widgetCount":   len(d.Widgets),
+			"createdAt":     d.CreatedAt,
+			"updatedAt":     d.UpdatedAt,
+			"createdBy":     d.CreatedBy,
+			"createdByName": d.CreatedByName,
 		})
 	}
 	writeJSON(w, http.StatusOK, summary)
@@ -100,8 +102,10 @@ func (s *Service) handleCreateDashboard(w http.ResponseWriter, r *http.Request) 
 		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
+	// 归属信息一律由服务端可信上下文覆盖，忽略请求体传入值(防伪造)
 	d.TenantID = tenantFromCtx(r.Context())
 	d.CreatedBy = userFromCtx(r.Context())
+	d.CreatedByName = userNameFromCtx(r.Context())
 	// 存储前校验所有 Widget 的查询引用，拒绝指向未注册字段/数据集的看板配置
 	if err := d.Validate(s.reg); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
@@ -189,7 +193,9 @@ func (s *Service) handleUpdateDashboard(w http.ResponseWriter, r *http.Request) 
 	incoming.ID = existing.ID
 	incoming.TenantID = existing.TenantID
 	incoming.CreatedAt = existing.CreatedAt
+	// 创建者归属不可被更新覆盖
 	incoming.CreatedBy = existing.CreatedBy
+	incoming.CreatedByName = existing.CreatedByName
 	if err := incoming.Validate(s.reg); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
@@ -212,23 +218,37 @@ func (s *Service) handleDeleteDashboard(w http.ResponseWriter, r *http.Request) 
 
 // ——— 上下文辅助 ———
 
-// tenantFromCtx 从 context 取租户 ID。与仓库其他模块保持一致，缺省回落 default。
-// P0.5(X-Principal 用户上下文)落地后将与 userFromCtx 共用解析逻辑。
+// tenantFromCtx 从可信用户上下文取租户 ID。
+// 优先读 principal(由鉴权中间件从 JWT / 内部服务凭证派生，客户端无法伪造)，
+// 兼容仍以裸 key 注入上下文的旧调用方，最终回落 default。
 func tenantFromCtx(ctx context.Context) string {
+	if t := principal.TenantID(ctx); t != "" {
+		return t
+	}
 	if t, ok := ctx.Value("tenant_id").(string); ok && t != "" {
 		return t
 	}
 	return "default"
 }
 
-// userFromCtx 从 context 取真实用户(操作人)ID。
-// 当前 X-Principal 上下文尚未接通，缺省空串；P0.5 完成后将改为读可信头，
-// 并在缺失时回落到 system，记录"谁创建了看板"用于审计与协作。
+// userFromCtx 从可信用户上下文取操作人 ID，用于记录"谁创建了看板"(审计与协作)。
+// 上下文缺失(内部定时任务等无主体场景)时回落 system，避免出现空归属的孤儿看板。
 func userFromCtx(ctx context.Context) string {
+	if u := principal.UserID(ctx); u != "" {
+		return u
+	}
 	if u, ok := ctx.Value("user_id").(string); ok && u != "" {
 		return u
 	}
-	return ""
+	return "system"
+}
+
+// userNameFromCtx 取操作人展示名(由 identity 富化器带缓存回填)，缺失时回落到 ID。
+func userNameFromCtx(ctx context.Context) string {
+	if n := principal.DisplayName(ctx); n != "" {
+		return n
+	}
+	return userFromCtx(ctx)
 }
 
 // ——— HTTP 响应封装 ———

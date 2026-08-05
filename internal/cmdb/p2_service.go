@@ -12,15 +12,16 @@ import (
 	"time"
 
 	"github.com/opsorigin/core/internal/cmdb/model"
+	"github.com/opsorigin/core/pkg/principal"
 )
 
 // ============================================================
-// 通用：当前用户权限 / 标识（对齐 X-Principal-* 可信头模式）
+// 通用：当前用户权限 / 标识（统一取自 pkg/principal 可信上下文）
 // ============================================================
 
 var (
-	errEmptyWebhook   = errString("webhook target url is empty")
-	errAppNotFound    = errString("app ci not found")
+	errEmptyWebhook = errString("webhook target url is empty")
+	errAppNotFound  = errString("app ci not found")
 )
 
 type errString string
@@ -31,21 +32,42 @@ func errWebhookStatus(code int) error {
 	return errString("webhook returned status " + strconv.Itoa(code))
 }
 
-// permissionsFromRequest 从请求头读取当前用户权限集合（前端注入 X-Permissions）。
-// 缺省视为管理员全量权限（兼容旧客户端与内部调用）。
-func permissionsFromRequest(r *http.Request) []string {
-	h := r.Header.Get("X-Permissions")
-	if h == "" {
-		return []string{"cmdb:admin", "cmdb:write", "cmdb:delete"}
+// fieldRuleSubject 字段级规则的判定主体。
+//
+// 注意字段规则的语义是「约束」而非「授权」:FieldRule.Permission 指的是
+// 「持有该权限的用户受此规则约束」。因此主体不可识别时,空权限集意味着
+// 不命中任何规则 = 看到全部字段(fail-open),必须显式按最严格处理。
+type fieldRuleSubject struct {
+	perms []string
+	// restrictAll 主体无法识别时置位:视为命中全部规则(fail-closed)。
+	restrictAll bool
+}
+
+func (s fieldRuleSubject) matches(permission string) bool {
+	if s.restrictAll {
+		return true
 	}
-	parts := strings.Split(h, ",")
-	out := make([]string, 0, len(parts))
-	for _, p := range parts {
-		if p = strings.TrimSpace(p); p != "" {
-			out = append(out, p)
+	for _, p := range s.perms {
+		if p == permission {
+			return true
 		}
 	}
-	return out
+	return false
+}
+
+// subjectFromRequest 取当前请求的字段规则判定主体。
+//
+// 权限一律来自鉴权中间件写入的可信上下文(IAM 角色库服务端解析),
+// 不再读客户端自报的 X-Permissions 头 —— 那等于把字段级鉴权交给攻击者:
+// 任意登录用户改一个请求头就能改变自己受哪些字段规则约束。
+func subjectFromRequest(r *http.Request) fieldRuleSubject {
+	pr, ok := principal.FromContext(r.Context())
+	if !ok || pr.ID == "" {
+		// 走到这里说明请求绕过了鉴权链(理论上不应发生)。
+		// 对数据保密类规则,宁可多遮不可少遮。
+		return fieldRuleSubject{restrictAll: true}
+	}
+	return fieldRuleSubject{perms: pr.Permissions}
 }
 
 // ============================================================
@@ -58,19 +80,14 @@ func permissionsFromRequest(r *http.Request) []string {
 //   - 同一字段命中多条规则取最严格：hidden > readonly > 默认可见。
 //
 // 仅处理带 FieldAccess 需求的实例；无规则时原样返回。
-func applyFieldRules(cis []*model.CIModel, rules []*model.FieldRule, permissions []string) {
+func applyFieldRules(cis []*model.CIModel, rules []*model.FieldRule, subject fieldRuleSubject) {
 	if len(rules) == 0 {
 		return
-	}
-	// permission → 是否命中当前用户
-	hasPerm := map[string]bool{}
-	for _, p := range permissions {
-		hasPerm[p] = true
 	}
 	// model_type_id|field → action（取最严格）
 	eff := map[string]string{}
 	for _, rl := range rules {
-		if !hasPerm[rl.Permission] {
+		if !subject.matches(rl.Permission) {
 			continue
 		}
 		key := rl.ModelTypeID + "|" + rl.Field
@@ -232,12 +249,12 @@ type AppTopoEdge struct {
 }
 
 type AppTopology struct {
-	AppCIID   string        `json:"app_ci_id"`
-	AppName   string        `json:"app_name"`
-	Layers    []TopoLayer   `json:"layers"`
-	Nodes     []AppTopoNode `json:"nodes"`
-	Edges     []AppTopoEdge `json:"edges"`
-	TotalCI   int           `json:"total_ci"`
+	AppCIID string        `json:"app_ci_id"`
+	AppName string        `json:"app_name"`
+	Layers  []TopoLayer   `json:"layers"`
+	Nodes   []AppTopoNode `json:"nodes"`
+	Edges   []AppTopoEdge `json:"edges"`
+	TotalCI int           `json:"total_ci"`
 }
 
 type TopoLayer struct {

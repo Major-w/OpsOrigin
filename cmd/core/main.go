@@ -36,6 +36,7 @@ import (
 	"github.com/opsorigin/core/internal/deploy"
 	"github.com/opsorigin/core/internal/ent"
 	"github.com/opsorigin/core/internal/iam"
+	"github.com/opsorigin/core/internal/identity"
 	"github.com/opsorigin/core/internal/itsm"
 	"github.com/opsorigin/core/internal/itsm/catalog"
 	itsmmodel "github.com/opsorigin/core/internal/itsm/model"
@@ -134,6 +135,12 @@ func main() {
 	}
 
 	authProvider := auth.NewProvider(cfg.Auth.JWTSecret, ldapProv, ssoProv)
+	// P0.5 可信边界:仅携带此密钥的内部服务调用才被允许用 X-Principal-* 断言主体;
+	// 留空 = 断言头通道关闭(fail-closed),浏览器请求一律从 JWT 派生身份。
+	authProvider.SetServiceToken(cfg.Auth.ServiceToken)
+	if cfg.Auth.ServiceToken == "" {
+		slog.Info("auth: internal principal assertion channel disabled (OPSNEXUS_SERVICE_TOKEN unset)")
+	}
 
 	var db *sql.DB
 	if pgRepo != nil {
@@ -552,6 +559,14 @@ func main() {
 	// IAM:角色/用户组/权限管理(PG 存储,预置 3 内置角色 + 权限点目录)
 	iamSvc := iam.NewService(db)
 	server.RegisterService(iamSvc)
+
+	// P0.5 身份富化:鉴权链在派生主体后回填「服务端解析的权限集合 + 用户展示名」。
+	// 权限来自 IAM 角色库聚合(角色 + 用户组),不再由客户端 X-Permissions 头自报;
+	// 展示名按 uid 回查 users.username,让审计 actor 可读。两者均带 TTL 缓存。
+	identityEnricher := identity.NewEnricher(db, iamSvc.GetAggregatedPermissions)
+	authProvider.SetPrincipalEnricher(identityEnricher)
+	// 角色权限被编辑后立即失效富化器缓存,不必等 TTL。
+	iamSvc.SetPermissionChangeHook(identityEnricher.InvalidatePermissions)
 
 	// ITSM 动态表单选项来源:cmdb:<type> 取配置项、iam:user/role/group 取人与角色。
 	// 解析器由 itsm 侧定义(form 包只认接口),此处在 cmdb/user/iam 就绪后装配,带 TTL 缓存。

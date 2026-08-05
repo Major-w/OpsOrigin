@@ -14,6 +14,7 @@ import (
 	"github.com/opsorigin/core/internal/audit/rls"
 	"github.com/opsorigin/core/internal/audit/store"
 	"github.com/opsorigin/core/pkg/config"
+	"github.com/opsorigin/core/pkg/principal"
 
 	"github.com/opsorigin/core/pkg/httputil"
 )
@@ -58,7 +59,26 @@ func (s *Service) Middleware(next http.Handler) http.Handler {
 	return interceptor.Middleware(next)
 }
 
+// ActorFromContext 由可信主体上下文构造审计操作者。
+// 任何模块写审计事件都应经由此函数取 actor,保证「谁干的」全平台口径一致,
+// 且永远不取自请求体/请求头等调用方自述内容。
+func ActorFromContext(ctx context.Context) model.AuditActor {
+	pr, ok := principal.FromContext(ctx)
+	if !ok || pr.ID == "" {
+		return model.AuditActor{Type: string(principal.TypeService), ID: "system", DisplayName: "系统"}
+	}
+	return model.AuditActor{
+		Type:        string(pr.Type),
+		ID:          pr.ID,
+		DisplayName: pr.Name(), // 无展示名时回落 ID,保证 actor 永不为空
+		TicketID:    pr.TicketID,
+	}
+}
+
 func (s *Service) RecordEvent(ctx context.Context, event *model.AuditEvent) error {
+	if event.Actor.ID == "" {
+		event.Actor = ActorFromContext(ctx)
+	}
 	return s.store.Record(ctx, event)
 }
 
@@ -69,8 +89,16 @@ func (s *Service) handleRecordEvent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// actor 一律由服务端可信主体覆盖 —— 请求体里的 actor 不可信,
+	// 否则任何登录用户都能伪造「某某删除了核心 CI」这类审计记录。
+	event.Actor = ActorFromContext(r.Context())
+
 	event.TraceID = interceptor.TraceIDFromContext(r.Context())
 	event.TenantID = interceptor.TenantIDFromContext(r.Context())
+	if event.TenantID == "" {
+		// /api/v1/audit/* 被审计中间件跳过(避免自审计递归),租户回落主体上下文。
+		event.TenantID = principal.TenantID(r.Context())
+	}
 
 	if event.TraceID == "" || event.TenantID == "" {
 		writeError(w, http.StatusForbidden, "[ASSERT-AUDIT-01] missing trace_id or tenant_id")

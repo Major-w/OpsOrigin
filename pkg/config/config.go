@@ -98,6 +98,10 @@ type CMDBConfig struct {
 
 type AuthConfig struct {
 	JWTSecret string `json:"jwt_secret"`
+	// ServiceToken 内部服务间调用的共享密钥。仅当请求携带 X-Internal-Token
+	// 且与此值一致时,才采信 X-Principal-* 断言头(代表某用户/AI 主体执行)。
+	// 留空 = 关闭断言头通道(fail-closed),浏览器请求一律从 JWT 派生主体。
+	ServiceToken string `json:"service_token,omitempty"`
 }
 
 // TunnelConfig 是 Proxy/Core 隧道通信的认证配置。
@@ -130,11 +134,11 @@ type LLMConfig struct {
 
 // LLMProviderConfig 模型池中的一个附加 provider(多模型路由 P3)。
 type LLMProviderConfig struct {
-	Name    string `json:"name"`     // 池内唯一标识(Agent.model_name 可填此名)
+	Name    string `json:"name"` // 池内唯一标识(Agent.model_name 可填此名)
 	APIKey  string `json:"api_key"`
-	Model   string `json:"model"`    // 该 provider 的默认模型
+	Model   string `json:"model"` // 该 provider 的默认模型
 	BaseURL string `json:"base_url"`
-	Weight  int    `json:"weight"`   // 路由权重(越大越优先, 默认 50)
+	Weight  int    `json:"weight"` // 路由权重(越大越优先, 默认 50)
 }
 
 type PostgresConfig struct {
@@ -188,7 +192,8 @@ func Load() (*Config, error) {
 			DgraphAPIKey: envStr("OPSNEXUS_DGRAPH_API_KEY", ""),
 		},
 		Auth: AuthConfig{
-			JWTSecret: envStr("OPSNEXUS_JWT_SECRET", "opsnexus-dev-secret-do-not-use-in-production"),
+			JWTSecret:    envStr("OPSNEXUS_JWT_SECRET", "opsnexus-dev-secret-do-not-use-in-production"),
+			ServiceToken: envStr("OPSNEXUS_SERVICE_TOKEN", ""),
 		},
 		LLM: LLMConfig{
 			APIKey:  envStr("OPSNEXUS_LLM_API_KEY", ""),
@@ -205,7 +210,7 @@ func Load() (*Config, error) {
 			DefaultSystemPrompt: envStr("OPSNEXUS_LLM_DEFAULT_SYSTEM_PROMPT",
 				"你是 OpsOrigin 智能运维助手,帮助用户完成主机巡检、故障排查、报告生成等运维任务。回答应简洁、专业、可操作。"),
 		},
-		RedisAddr:     envStr("OPSNEXUS_REDIS_ADDR", "localhost:6379"),		RedisPoolSize: envInt("OPSNEXUS_REDIS_POOL_SIZE", 50),
+		RedisAddr: envStr("OPSNEXUS_REDIS_ADDR", "localhost:6379"), RedisPoolSize: envInt("OPSNEXUS_REDIS_POOL_SIZE", 50),
 		LDAP: LDAPConfig{
 			Enabled:    envBool("OPSNEXUS_LDAP_ENABLED", false),
 			Addr:       envStr("OPSNEXUS_LDAP_ADDR", "ldap://localhost:389"),

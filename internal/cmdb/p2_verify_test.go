@@ -69,7 +69,7 @@ func TestP2FieldRules(t *testing.T) {
 	}
 
 	// 拥有 cmdb:write 的用户：secret 隐藏、ip 只读
-	applyFieldRules([]*model.CIModel{ci}, rules, []string{"cmdb:write"})
+	applyFieldRules([]*model.CIModel{ci}, rules, fieldRuleSubject{perms: []string{"cmdb:write"}})
 	if _, ok := ci.Attributes["secret"]; ok {
 		t.Errorf("secret should be hidden")
 	}

@@ -11,6 +11,7 @@ import {
   Compass,
   Save,
   X,
+  UserRound,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
@@ -264,6 +265,14 @@ export default function ReportsPage() {
                 <p className="line-clamp-2 text-sm text-muted-foreground">
                   {d.description || '暂无描述'}
                 </p>
+                {(d.createdByName || d.createdBy) && (
+                  <div className="mt-2 flex items-center gap-1.5 text-xs text-muted-foreground">
+                    <UserRound className="h-3.5 w-3.5 shrink-0 opacity-70" />
+                    <span className="truncate">
+                      {d.createdByName || d.createdBy} 创建
+                    </span>
+                  </div>
+                )}
                 <div className="mt-3 flex items-center justify-between">
                   <span className="text-xs text-muted-foreground">
                     {new Date(d.updatedAt).toLocaleString('zh-CN')}
