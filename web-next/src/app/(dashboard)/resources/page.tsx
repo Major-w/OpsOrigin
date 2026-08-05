@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useAgentStore, type AgentHost, type ProxyInfo, type TaskInfo } from '@/stores/agent'
 import { useKeyStore } from '@/stores/keys'
 import { useCloudStore } from '@/stores/cloud'
@@ -16,9 +16,8 @@ import { Select } from '@/components/ui/select'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { ViewToggle, DataList, type ViewMode, type Column, type FilterOption, type BulkAction } from '@/components/ui/data-list'
 import { formatTime, apiBase, apiFetch } from '@/lib/utils'
-import { DEFAULT_PLATFORM_POLICY, FREQUENCY_PRESETS, validateFrequency, type PlatformPolicy } from '@/lib/collection'
 import { validateHostName, sanitizeHostName, HOST_NAME_RULE_TEXT } from '@/lib/validate'
-import { Plus, Trash2, Terminal, Monitor, RefreshCw, Download, CheckCircle, XCircle, Clock, Eye, Cpu, HardDrive, MemoryStick, Copy, Server, Wifi, WifiOff, Cloud, Container, Pencil, RotateCcw, Zap, ListChecks, AlertTriangle, Save, Play, ArrowUp, BookOpen, GitMerge, Settings2, Database, Activity, Loader2 } from 'lucide-react'
+import { Plus, Trash2, Terminal, Monitor, RefreshCw, Download, CheckCircle, XCircle, Clock, Eye, Cpu, HardDrive, MemoryStick, Copy, Server, Wifi, WifiOff, Cloud, Container, Pencil, RotateCcw, Zap, ListChecks, AlertTriangle, Save, Play, ArrowUp, BookOpen, GitMerge, Database, ArrowRight } from 'lucide-react'
 import { toast } from '@/stores/toast'
 
 function statusVariant(s: string): 'success' | 'destructive' | 'secondary' | 'outline' {
@@ -69,7 +68,7 @@ export default function ResourcesPage() {
   const { agents, proxies, fetch, register, update, remove, batchInstall, testSSH, getInstallScript, fetchProxies, registerProxy, updateProxy, deleteProxy, getCircuitBreaker, setCircuitBreaker, restartAgent, upgradeAgent, uninstallAgent, fetchTasks, createTask } = useAgentStore()
   const { keys, fetch: fetchKeys, create: createKey } = useKeyStore()
   const { providers, resources, fetchProviders, listCredentials, saveCredential, listResources, syncToCMDB } = useCloudStore()
-  const { policy: collectPolicy, fetchPolicy, savePolicy, saving: policySaving, onboardResource } = useCollectionStore()
+  const { policy: collectPolicy, fetchPolicy, onboardResource } = useCollectionStore()
 
   // 云资源 tab 表单状态
   const [cloudProvider, setCloudProvider] = useState('')
@@ -97,16 +96,6 @@ export default function ResourcesPage() {
   const [hostTab, setHostTab] = useState<string>('list')
   const [agentViewMode, setAgentViewMode] = useState<ViewMode>('list')
   const [proxyViewMode, setProxyViewMode] = useState<ViewMode>('list')
-
-  // 全局默认采集策略（资源接入时与此关联：纳管表单开关预填此处的默认值，可逐资源覆盖）
-  const [policyDraft, setPolicyDraft] = useState<PlatformPolicy>(DEFAULT_PLATFORM_POLICY)
-  const policyDirty = useMemo(() =>
-    policyDraft.default_cmdb_enabled !== collectPolicy.default_cmdb_enabled ||
-    policyDraft.default_monitor_enabled !== collectPolicy.default_monitor_enabled ||
-    policyDraft.cmdb_default_frequency !== collectPolicy.cmdb_default_frequency ||
-    policyDraft.monitor_default_frequency !== collectPolicy.monitor_default_frequency,
-  [policyDraft, collectPolicy])
-  const policyFreqErr = validateFrequency(policyDraft.cmdb_default_frequency) || validateFrequency(policyDraft.monitor_default_frequency)
 
   const [regMethod, setRegMethod] = useState<'auto' | 'manual' | 'ssh'>('auto')
   const [autoForm, setAutoForm] = useState({ addresses: '', username: 'root', password: '', port: 22, credentialType: 'password', credentialId: '', keyName: '', keyContent: '', proxyId: '' })
@@ -479,25 +468,14 @@ export default function ResourcesPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
-  // 拉取平台默认采集策略，用于预填纳管表单的采集开关 + 全局策略卡片。
+  // 拉取平台默认采集策略，用于预填纳管表单的采集开关。
   useEffect(() => {
     fetchPolicy().then(p => {
-      setPolicyDraft(p)
       setCloudEnableCMDB(p.default_cmdb_enabled)
       setCloudEnableMonitor(p.default_monitor_enabled)
     })
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
-
-  const handleSavePolicy = async () => {
-    if (policyFreqErr) { toast.error('采集频率格式无效'); return }
-    const ok = await savePolicy(policyDraft)
-    if (ok) {
-      // 保存后刷新纳管表单的默认开关，保持与策略一致
-      setCloudEnableCMDB(policyDraft.default_cmdb_enabled)
-      setCloudEnableMonitor(policyDraft.default_monitor_enabled)
-    }
-  }
 
   const handleK8sDiscover = async () => {
     if (!k8sAgent) { toast.error('请选择目标集群网关 Agent'); return }
@@ -653,81 +631,19 @@ export default function ResourcesPage() {
         </a>
       </div>
 
-      {/* 全局默认采集策略：资源接入（纳管）时与采集策略定义关联，纳管表单开关预填此处默认值 */}
-      <Card>
-        <CardHeader>
-          <CardTitle className="text-sm flex items-center gap-2"><Settings2 className="h-4 w-4" />全局采集策略（资源接入默认值）</CardTitle>
-          <CardDescription>
-            资源接入时与采集策略定义关联：下方三个纳管表单的「采集设置」开关默认预填这里的值，可针对单个资源覆盖；逐资源配置以纳管时勾选为准。
-          </CardDescription>
-        </CardHeader>
-        <CardContent className="space-y-4">
-          <div className="grid gap-4 md:grid-cols-2">
-            <div className="space-y-3">
-              <SwitchField
-                label="默认开启 CMDB 采集"
-                description="CMDB 是平台基石，建议保持开启：新资源纳管后自动创建 cmdb 类采集任务，周期性写入配置项。"
-                checked={policyDraft.default_cmdb_enabled}
-                onCheckedChange={v => setPolicyDraft(d => ({ ...d, default_cmdb_enabled: v }))}
-              />
-              <div>
-                <label className="text-xs font-medium text-muted-foreground">CMDB 采集默认频率</label>
-                <div className="flex gap-2 mt-1">
-                  <Input
-                    value={policyDraft.cmdb_default_frequency}
-                    onChange={e => setPolicyDraft(d => ({ ...d, cmdb_default_frequency: e.target.value }))}
-                    placeholder="1h"
-                    className="font-mono"
-                  />
-                  <Select
-                    className="w-32"
-                    value=""
-                    options={[{ value: '', label: '预设' }, ...FREQUENCY_PRESETS.map(f => ({ value: f.value, label: f.label }))]}
-                    onChange={e => e.target.value && setPolicyDraft(d => ({ ...d, cmdb_default_frequency: e.target.value }))}
-                  />
-                </div>
-              </div>
-            </div>
-
-            <div className="space-y-3">
-              <SwitchField
-                label="默认开启监控采集"
-                description="默认关闭：监控采集频率高、资源开销大，建议按需为关键资源单独开启。"
-                checked={policyDraft.default_monitor_enabled}
-                onCheckedChange={v => setPolicyDraft(d => ({ ...d, default_monitor_enabled: v }))}
-              />
-              <div>
-                <label className="text-xs font-medium text-muted-foreground">监控采集默认频率</label>
-                <div className="flex gap-2 mt-1">
-                  <Input
-                    value={policyDraft.monitor_default_frequency}
-                    onChange={e => setPolicyDraft(d => ({ ...d, monitor_default_frequency: e.target.value }))}
-                    placeholder="5m"
-                    className="font-mono"
-                  />
-                  <Select
-                    className="w-32"
-                    value=""
-                    options={[{ value: '', label: '预设' }, ...FREQUENCY_PRESETS.map(f => ({ value: f.value, label: f.label }))]}
-                    onChange={e => e.target.value && setPolicyDraft(d => ({ ...d, monitor_default_frequency: e.target.value }))}
-                  />
-                </div>
-              </div>
+      {/* 全局默认采集策略已迁移至「系统管理 / 采集策略」，此处保留入口指引 */}
+      <Card className="border-dashed">
+        <CardContent className="flex items-center justify-between py-4">
+          <div className="flex items-center gap-3">
+            <Database className="h-5 w-5 text-emerald-500" />
+            <div>
+              <p className="text-sm font-medium">全局默认采集策略</p>
+              <p className="text-xs text-muted-foreground">资源接入时采集开关的默认值，已在系统管理中统一配置。</p>
             </div>
           </div>
-
-          <div className="flex items-center justify-between pt-1 border-t border-gray-100 dark:border-gray-800">
-            <p className="text-xs text-muted-foreground pt-3">
-              {policyDirty ? '有未保存的更改，保存后新接入资源将使用新默认值' : '策略已是最新'}
-              {collectPolicy.updated_at && !policyDirty && ` · 更新于 ${collectPolicy.updated_at.slice(0, 19).replace('T', ' ')}`}
-            </p>
-            <div className="flex gap-2 pt-3">
-              {policyDirty && <Button variant="outline" onClick={() => setPolicyDraft(collectPolicy)}>撤销</Button>}
-              <Button onClick={handleSavePolicy} disabled={!policyDirty || policySaving || !!policyFreqErr}>
-                {policySaving ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}保存策略
-              </Button>
-            </div>
-          </div>
+          <a href="/system/collection-policy" className="inline-flex items-center justify-center rounded-md text-sm font-medium border border-input bg-background hover:bg-accent hover:text-accent-foreground h-9 px-4 py-2">
+            前往配置<ArrowRight className="h-4 w-4 ml-1" />
+          </a>
         </CardContent>
       </Card>
 
