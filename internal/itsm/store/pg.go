@@ -555,8 +555,7 @@ func (s *PGStore) GetStats(ctx context.Context, tenantID string) (*model.ITSMSta
 
 	for rows.Next() {
 		var status, risk, createdBy, createdByType string
-		var approvedAt, createdAt time.Time
-		var executedAt, completedAt sql.NullTime
+		var approvedAt, createdAt, executedAt, completedAt sql.NullTime
 		if err := rows.Scan(&status, &risk, &createdBy, &createdByType, &approvedAt, &createdAt, &executedAt, &completedAt); err != nil {
 			return nil, fmt.Errorf("scan stats row: %w", err)
 		}
@@ -575,12 +574,14 @@ func (s *PGStore) GetStats(ctx context.Context, tenantID string) (*model.ITSMSta
 			approvedCount++
 		}
 		// 趋势: 创建按 created_at, 关闭按 completed_at(仅终态且有关闭时间)
-		day := createdAt.Format("2006-01-02")
-		if _, ok := days[day]; !ok {
-			days[day] = &dayAgg{}
-			dayOrder = append(dayOrder, day)
+		if createdAt.Valid {
+			day := createdAt.Time.Format("2006-01-02")
+			if _, ok := days[day]; !ok {
+				days[day] = &dayAgg{}
+				dayOrder = append(dayOrder, day)
+			}
+			days[day].created++
 		}
-		days[day].created++
 		if completedAt.Valid {
 			cd := completedAt.Time.Format("2006-01-02")
 			if _, ok := days[cd]; !ok {
@@ -589,13 +590,12 @@ func (s *PGStore) GetStats(ctx context.Context, tenantID string) (*model.ITSMSta
 			}
 			days[cd].closed++
 		}
-		var zero time.Time
-		if approvedAt != zero && createdAt.Before(approvedAt) {
-			totalApprovalMs += approvedAt.Sub(createdAt).Milliseconds()
+		if approvedAt.Valid && createdAt.Valid && createdAt.Time.Before(approvedAt.Time) {
+			totalApprovalMs += approvedAt.Time.Sub(createdAt.Time).Milliseconds()
 			approvedWithAt++
 		}
-		if executedAt.Valid && approvedAt != zero && executedAt.Time.After(approvedAt) {
-			totalExecutionMs += executedAt.Time.Sub(approvedAt).Milliseconds()
+		if executedAt.Valid && approvedAt.Valid && executedAt.Time.After(approvedAt.Time) {
+			totalExecutionMs += executedAt.Time.Sub(approvedAt.Time).Milliseconds()
 			executedWithAt++
 		}
 	}

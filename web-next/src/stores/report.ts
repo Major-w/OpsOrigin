@@ -187,7 +187,7 @@ export const useReportStore = create<ReportState>((set, get) => ({
 
   loadDatasets: async () => {
     try {
-      const ds = await apiList<Dataset>('/api/v1/report/datasets')
+      const ds = await apiList<Dataset>('/report/datasets')
       set({ datasets: ds })
     } catch (e) {
       toast.error('加载数据集失败: ' + (e as Error).message)
@@ -195,14 +195,14 @@ export const useReportStore = create<ReportState>((set, get) => ({
   },
 
   listDashboards: async () => {
-    const list = await apiList<DashboardSummary>('/api/v1/report/dashboards')
+    const list = await apiList<DashboardSummary>('/report/dashboards')
     set({ dashboards: list })
   },
 
   getDashboard: async (id: string) => {
     set({ loading: true })
     try {
-      const d = await apiFetch<Dashboard>(`/api/v1/report/dashboards/${id}`)
+      const d = await apiFetch<Dashboard>(`/report/dashboards/${id}`)
       set({ current: d })
       await get().renderDashboard(id)
     } catch (e) {
@@ -216,7 +216,7 @@ export const useReportStore = create<ReportState>((set, get) => ({
     set({ rendering: true })
     try {
       const res = await apiFetch<{ id: string; name: string; widgets: RenderedWidget[] }>(
-        `/api/v1/report/dashboards/${id}/render`
+        `/report/dashboards/${id}/render`
       )
       set({ rendered: res.widgets || [] })
     } catch (e) {
@@ -232,7 +232,7 @@ export const useReportStore = create<ReportState>((set, get) => ({
       description: d.description || '',
       widgets: d.widgets || [],
     }
-    const created = await apiFetch<Dashboard>('/api/v1/report/dashboards', {
+    const created = await apiFetch<Dashboard>('/report/dashboards', {
       method: 'POST',
       body: JSON.stringify(payload),
     })
@@ -244,7 +244,7 @@ export const useReportStore = create<ReportState>((set, get) => ({
   },
 
   updateDashboard: async (id: string, d: Partial<Dashboard>) => {
-    const updated = await apiFetch<Dashboard>(`/api/v1/report/dashboards/${id}`, {
+    const updated = await apiFetch<Dashboard>(`/report/dashboards/${id}`, {
       method: 'PUT',
       body: JSON.stringify(d),
     })
@@ -256,14 +256,14 @@ export const useReportStore = create<ReportState>((set, get) => ({
   },
 
   deleteDashboard: async (id: string) => {
-    await apiFetch(`/api/v1/report/dashboards/${id}`, { method: 'DELETE' })
+    await apiFetch(`/report/dashboards/${id}`, { method: 'DELETE' })
     if (get().current?.id === id) set({ current: null, rendered: [] })
     await get().listDashboards()
     toast.success('看板已删除')
   },
 
   runQuery: async (q: Query) => {
-    return apiFetch<Result>('/api/v1/report/query', {
+    return apiFetch<Result>('/report/query', {
       method: 'POST',
       body: JSON.stringify(q),
     })
@@ -271,7 +271,7 @@ export const useReportStore = create<ReportState>((set, get) => ({
 
   // AI 只产草稿，落库仍走 createDashboard，权限与归属和人工搭建完全一致
   generateDashboard: async (prompt: string) => {
-    return apiFetch<DashboardDraft>('/api/v1/ai/workspace/generate', {
+    return apiFetch<DashboardDraft>('/ai/workspace/generate', {
       method: 'POST',
       body: JSON.stringify({ prompt }),
     })
@@ -280,7 +280,7 @@ export const useReportStore = create<ReportState>((set, get) => ({
   loadWorkspaceSuggestions: async () => {
     try {
       const res = await apiFetch<{ suggestions: WorkspaceSuggestion[] }>(
-        '/api/v1/ai/workspace/suggestions'
+        '/ai/workspace/suggestions'
       )
       return res.suggestions || []
     } catch {
