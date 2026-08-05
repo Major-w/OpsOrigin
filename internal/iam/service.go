@@ -235,6 +235,16 @@ func NewService(db *sql.DB) *Service {
 	return s
 }
 
+// ListRoles / ListGroups 委托给底层存储, 满足 itsm.IAMProvider 接口,
+// 供 ITSM 动态表单 source=iam:role / iam:group 解析配置项可选来源。
+func (s *Service) ListRoles(ctx context.Context, tenantID string) ([]*Role, error) {
+	return s.store.ListRoles(ctx, tenantID)
+}
+
+func (s *Service) ListGroups(ctx context.Context, tenantID string) ([]*Group, error) {
+	return s.store.ListGroups(ctx, tenantID)
+}
+
 // ResolvePermissions 按 (tenantID, roleName) 解析角色权限,供 RBAC 中间件鉴权使用。
 // 优先返回 IAM 角色库中配置的权限;角色不存在时返回 nil(由中间件回落到写死映射)。
 // 结果按 (tenant,role) 缓存,角色变更时通过 invalidatePermCache 失效。

@@ -19,6 +19,7 @@ import (
 	"github.com/opsorigin/core/internal/ai/agentic"
 	"github.com/opsorigin/core/internal/audit"
 	"github.com/opsorigin/core/internal/automation/actions"
+	"github.com/opsorigin/core/internal/automation/inboundbot"
 	"github.com/opsorigin/core/internal/automation/inboundmail"
 	"github.com/opsorigin/core/internal/automation/scheduler"
 	"github.com/opsorigin/core/internal/automation/script"
@@ -613,9 +614,92 @@ func main() {
 				return tk.ID, nil
 			},
 		})
-		mailSvc.Start(rootCtx)
+		mailSvc.Start(ctx)
 	} else {
 		slog.Info("inbound mail: ITSM_MAIL_IMAP_HOST not set, disabled")
+	}
+
+	// 多渠道机器人入站: 企业微信/钉钉回调机器人, 环境变量驱动(未配置则不挂载 webhook)。
+	// 消息命中工单 ID → 回复追加评论; 未命中 → 创建新工单(created_by_type 标记渠道,
+	// 直接进入报表看板 ByChannel 统计)。各渠道独立开关, 互不影响。
+	if wecomToken := os.Getenv("ITSM_WECOM_TOKEN"); wecomToken != "" {
+		wecomProc := os.Getenv("ITSM_WECOM_PROCESS_ID")
+		botSvc := inboundbot.New(inboundbot.Config{
+			WeCom: inboundbot.WeComConfig{
+				Enable:    true,
+				Token:     wecomToken,
+				AESKey:    os.Getenv("ITSM_WECOM_AESKEY"),
+				CorpID:    os.Getenv("ITSM_WECOM_CORPID"),
+				AgentID:   os.Getenv("ITSM_WECOM_AGENTID"),
+				TenantID:  os.Getenv("ITSM_WECOM_TENANT"),
+				ProcessID: wecomProc,
+			},
+		})
+		botSvc.SetHandlers(inboundbot.Handlers{
+			ReplyToTicket: func(ctx context.Context, tenantID, ticketID, author, body string) error {
+				return itsmSvc.AddTicketComment(ctx, tenantID, ticketID, author, body)
+			},
+			CreateTicket: func(ctx context.Context, tenantID, channel, from, subject, body string) (string, error) {
+				req := itsmmodel.CreateTicketRequest{
+					Title:         subject,
+					Description:   body,
+					RiskLevel:     itsmmodel.RiskLow,
+					CreatedBy:     channel + ":" + from,
+					CreatedByType: channel,
+				}
+				if wecomProc != "" {
+					req.ProcessID = wecomProc
+				}
+				tctx := context.WithValue(ctx, "tenant_id", tenantID)
+				tk, err := itsmSvc.CreateTicket(tctx, req)
+				if err != nil {
+					return "", err
+				}
+				return tk.ID, nil
+			},
+		})
+		server.RegisterService(botSvc)
+	} else {
+		slog.Info("inbound bot: ITSM_WECOM_TOKEN not set, wecom disabled")
+	}
+
+	if dtToken := os.Getenv("ITSM_DINGTALK_TOKEN"); dtToken != "" {
+		dtProc := os.Getenv("ITSM_DINGTALK_PROCESS_ID")
+		botSvc := inboundbot.New(inboundbot.Config{
+			DingTalk: inboundbot.DingTalkConfig{
+				Enable:    true,
+				Token:     dtToken,
+				AESKey:    os.Getenv("ITSM_DINGTALK_AESKEY"),
+				TenantID:  os.Getenv("ITSM_DINGTALK_TENANT"),
+				ProcessID: dtProc,
+			},
+		})
+		botSvc.SetHandlers(inboundbot.Handlers{
+			ReplyToTicket: func(ctx context.Context, tenantID, ticketID, author, body string) error {
+				return itsmSvc.AddTicketComment(ctx, tenantID, ticketID, author, body)
+			},
+			CreateTicket: func(ctx context.Context, tenantID, channel, from, subject, body string) (string, error) {
+				req := itsmmodel.CreateTicketRequest{
+					Title:         subject,
+					Description:   body,
+					RiskLevel:     itsmmodel.RiskLow,
+					CreatedBy:     channel + ":" + from,
+					CreatedByType: channel,
+				}
+				if dtProc != "" {
+					req.ProcessID = dtProc
+				}
+				tctx := context.WithValue(ctx, "tenant_id", tenantID)
+				tk, err := itsmSvc.CreateTicket(tctx, req)
+				if err != nil {
+					return "", err
+				}
+				return tk.ID, nil
+			},
+		})
+		server.RegisterService(botSvc)
+	} else {
+		slog.Info("inbound bot: ITSM_DINGTALK_TOKEN not set, dingtalk disabled")
 	}
 
 	// P2-5 CMDB 消息订阅：通知渠道经平台通知中心分发（避免 cmdb↔notification 循环依赖）
