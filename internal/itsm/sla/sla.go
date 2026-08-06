@@ -99,6 +99,31 @@ func (s *Store) Update(ctx context.Context, p *Policy) error {
 	return err
 }
 
+// Create 新建一条 SLA 策略（自定义/风险皆可）。自动生成 ID 与时间戳。
+func (s *Store) Create(ctx context.Context, p *Policy) error {
+	if p.ID == "" {
+		p.ID = uuid.New().String()
+	}
+	if p.TenantID == "" {
+		p.TenantID = "default"
+	}
+	if p.RiskLevel == "" {
+		p.RiskLevel = "custom"
+	}
+	now := time.Now()
+	p.CreatedAt = now
+	p.UpdatedAt = now
+	_, err := s.db.ExecContext(ctx, `INSERT INTO itsm_sla_policies(id,tenant_id,name,risk_level,process_id,response_hours,resolution_hours,escalation_hours,escalation_to,enabled,created_at,updated_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`,
+		p.ID, p.TenantID, p.Name, p.RiskLevel, p.ProcessID, p.ResponseHours, p.ResolutionHours, p.EscalationHours, p.EscalationTo, p.Enabled, p.CreatedAt, p.UpdatedAt)
+	return err
+}
+
+// Delete 删除一条 SLA 策略（按 ID + 租户）。
+func (s *Store) Delete(ctx context.Context, id, tenantID string) error {
+	_, err := s.db.ExecContext(ctx, `DELETE FROM itsm_sla_policies WHERE id=$1 AND tenant_id=$2`, id, tenantID)
+	return err
+}
+
 func (s *Store) GetByRisk(ctx context.Context, tenantID, riskLevel string) (*Policy, error) {
 	var p Policy
 	err := s.db.QueryRowContext(ctx, `SELECT `+slaCols+` FROM itsm_sla_policies WHERE tenant_id=$1 AND risk_level=$2 AND enabled=true AND process_id=''`, tenantID, riskLevel).
@@ -126,7 +151,9 @@ func (s *Store) GetByProcessID(ctx context.Context, tenantID, processID string) 
 // RegisterRoutes registers SLA HTTP endpoints
 func (s *Store) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/v1/itsm/sla/policies", s.handleList)
+	mux.HandleFunc("POST /api/v1/itsm/sla/policies", s.handleCreate)
 	mux.HandleFunc("PUT /api/v1/itsm/sla/policies/{id}", s.handleUpdate)
+	mux.HandleFunc("DELETE /api/v1/itsm/sla/policies/{id}", s.handleDelete)
 }
 
 func (s *Store) handleList(w http.ResponseWriter, r *http.Request) {
@@ -160,6 +187,37 @@ func (s *Store) handleUpdate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, 200, p)
+}
+
+func (s *Store) handleCreate(w http.ResponseWriter, r *http.Request) {
+	tenant := r.Header.Get("X-Tenant-ID")
+	if tenant == "" {
+		tenant = "default"
+	}
+	var p Policy
+	if err := json.NewDecoder(r.Body).Decode(&p); err != nil {
+		writeJSON(w, 400, map[string]string{"error": "invalid body"})
+		return
+	}
+	p.TenantID = tenant
+	if err := s.Create(r.Context(), &p); err != nil {
+		writeJSON(w, 500, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, 201, p)
+}
+
+func (s *Store) handleDelete(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	tenant := r.Header.Get("X-Tenant-ID")
+	if tenant == "" {
+		tenant = "default"
+	}
+	if err := s.Delete(r.Context(), id, tenant); err != nil {
+		writeJSON(w, 500, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, 204, nil)
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {
