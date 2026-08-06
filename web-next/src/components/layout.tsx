@@ -4,7 +4,7 @@ import { useState } from 'react'
 import Link from 'next/link'
 import { usePathname, useRouter } from 'next/navigation'
 import { cn } from '@/lib/utils'
-import { Server, TicketCheck, Activity, Bot, Shield, LayoutDashboard, Hexagon, LogOut, User, Terminal, Workflow, Clock, Search, BookOpen, Calendar, GitBranch, Package, Bell, Key, Blocks, Users, Settings, Sun, Moon, Scan, Bug, Download, PackagePlus, Network, AlertTriangle, History, FileText, Rocket, AppWindow, FileCheck2, Cloud, Play, Sparkles, Database, Radio, BarChart3, Building2, Radar, MessagesSquare, Gauge, FlaskConical, TrendingUp, Store, type LucideIcon } from 'lucide-react'
+import { Server, TicketCheck, Activity, Bot, Shield, LayoutDashboard, Hexagon, LogOut, User, Terminal, Workflow, Clock, Search, BookOpen, Calendar, GitBranch, Package, Bell, Key, Blocks, Users, Settings, Sun, Moon, Scan, Bug, Download, PackagePlus, Network, AlertTriangle, History, FileText, Rocket, AppWindow, FileCheck2, Cloud, Play, Sparkles, Database, Radio, BarChart3, Building2, Radar, MessagesSquare, Gauge, FlaskConical, TrendingUp, Store, Cpu, Timer, Webhook, Mail, MessageSquare, type LucideIcon } from 'lucide-react'
 import { useAuthStore } from '@/stores/auth'
 import { useThemeStore } from '@/stores/theme'
 import { ScrollToTop } from '@/components/ui/scroll-to-top'
@@ -51,6 +51,7 @@ const navGroups: (NavItem | NavGroup)[] = [
           { to: '/itsm/process', label: '流程定义', icon: GitBranch },
           { to: '/itsm/catalog', label: '服务目录定义', icon: Package },
           { to: '/itsm/sla', label: 'SLA 管理', icon: Clock },
+          { to: '/itsm/ola', label: 'OLA 管理', icon: Timer },
         ]
       },
       { to: '/itsm/oncall', label: '值班管理', icon: Calendar },
@@ -70,6 +71,7 @@ const navGroups: (NavItem | NavGroup)[] = [
       { to: '/cmdb/relations', label: '关系管理', icon: GitBranch },
       { to: '/cmdb/discovery', label: '自动发现', icon: Scan },
       { to: '/cmdb/collection', label: '采集任务', icon: Radio },
+      { to: '/cmdb/collectors', label: '采集器', icon: Cpu },
       { to: '/cmdb/stats', label: '资源统计', icon: BarChart3 },
       { to: '/cmdb/idc', label: '机房机柜', icon: Building2 },
       { to: '/cmdb/app-arch', label: '应用架构', icon: Network },
@@ -97,6 +99,7 @@ const navGroups: (NavItem | NavGroup)[] = [
       { to: '/auto/patch', label: '补丁安装', icon: Download },
       { to: '/auto/software', label: '文件分发', icon: PackagePlus },
       { to: '/auto/collect', label: '数据采集', icon: Database },
+      { to: '/automation/inbound', label: '入站配置', icon: Webhook },
     ]
   },
   {
