@@ -281,7 +281,12 @@ export function Layout({ children }: { children: React.ReactNode }) {
   const pathname = usePathname()
   const router = useRouter()
   const { user, logout } = useAuthStore()
-  const [collapsed, setCollapsed] = useState<Record<string, boolean>>({ 'CMDB': true, 'ITSM': true })
+  // 默认所有分组折叠（仅显示组标题），登录后菜单收起；当前路由命中的分组会自动展开。
+  const [collapsed, setCollapsed] = useState<Record<string, boolean>>(() => {
+    const init: Record<string, boolean> = {}
+    for (const g of navGroups) if (isNavGroup(g)) init[g.label] = true
+    return init
+  })
   const { theme, toggle } = useThemeStore()
 
   const toggleGroup = (label: string) => {
