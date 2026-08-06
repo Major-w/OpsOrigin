@@ -10,7 +10,7 @@ import { Badge } from '@/components/ui/badge'
 import { formatTime, apiList } from '@/lib/utils'
 import { apiFetch } from '@/lib/utils'
 import { toast } from '@/stores/toast'
-import { ChevronLeft, Save, Sparkles, Loader2, Trash2, Heart, Bookmark, MessageSquare, Share2, History, RotateCcw, Pencil, Eye, PenLine, AlignLeft } from 'lucide-react'
+import { ChevronLeft, Save, Sparkles, Loader2, Trash2, Heart, Bookmark, MessageSquare, Share2, History, RotateCcw, Pencil, Eye, PenLine, AlignLeft, Bell } from 'lucide-react'
 import { MarkdownViewer } from '@/components/markdown-viewer'
 import { RichTextEditor } from '@/components/rich-text-editor'
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs'
@@ -35,6 +35,7 @@ export default function KnowledgeEditorPage() {
   const [rollingBack, setRollingBack] = useState(false)
   // Social
   const [liked, setLiked] = useState(false); const [bookmarked, setBookmarked] = useState(false)
+  const [followed, setFollowed] = useState(false)
   const [likeCount, setLikeCount] = useState(0); const [commentCount, setCommentCount] = useState(0)
   const [comments, setComments] = useState<any[]>([]); const [newComment, setNewComment] = useState('')
   const [showSocial, setShowSocial] = useState(false)
@@ -53,7 +54,7 @@ export default function KnowledgeEditorPage() {
   useEffect(() => {
     if (isNew || !params.id) return
     apiFetch<any>(`/knowledge/${params.id}/stats?user=${userId}`).then(st => {
-      setLiked(st.liked); setBookmarked(st.bookmarked); setLikeCount(st.likes)
+      setLiked(st.liked); setBookmarked(st.bookmarked); setFollowed(st.followed); setLikeCount(st.likes)
     }).catch(() => {})
     apiList<any>(`/knowledge/${params.id}/comments`).then(c => {
       setComments(c||[]); setCommentCount((c||[]).length)
@@ -110,6 +111,10 @@ export default function KnowledgeEditorPage() {
     const res = await apiFetch<{ bookmarked: boolean }>(`/knowledge/${params.id}/bookmark?user=${userId}`, { method: 'POST' })
     setBookmarked(res.bookmarked); toast.success(res.bookmarked ? '已收藏' : '已取消')
   }
+  const toggleFollow = async () => {
+    const res = await apiFetch<{ followed: boolean }>(`/knowledge/${params.id}/follow?user=${userId}`, { method: 'POST' })
+    setFollowed(res.followed); toast.success(res.followed ? '已关注,文章更新将通知你' : '已取消关注')
+  }
   const addComment = async () => {
     if (!newComment.trim()) return
     const c = await apiFetch<any>(`/knowledge/${params.id}/comments?user=${userId}`, { method: 'POST', body: JSON.stringify({ content: newComment }) })
@@ -124,7 +129,7 @@ export default function KnowledgeEditorPage() {
     if (!aiPrompt.trim()) { toast.error('请输入AI提示词'); return }
     setAiGenerating(true)
     try {
-      const res = await apiFetch<{ content: string }>('/v1/ai/chat', {
+      const res = await apiFetch<{ content: string }>('/ai/chat', {
         method: 'POST',
         body: JSON.stringify({ prompt: `写一篇运维知识库文章,题目是"${form.title || aiPrompt}"。请生成Markdown格式的完整文章,包含背景、步骤、注意事项等。直接输出文章正文,不要加任何前缀说明。`, stream: false }),
       })
@@ -169,6 +174,7 @@ export default function KnowledgeEditorPage() {
         <div className="flex gap-1 py-3 border-b mb-4">
           <Button variant={liked?'default':'outline'} size="sm" className="h-7 text-xs gap-1" onClick={toggleLike}><Heart className="h-3 w-3" fill={liked?'currentColor':'none'}/>{likeCount}</Button>
           <Button variant={bookmarked?'default':'outline'} size="sm" className="h-7 text-xs gap-1" onClick={toggleBookmark}><Bookmark className="h-3 w-3" fill={bookmarked?'currentColor':'none'}/></Button>
+          <Button variant={followed?'default':'outline'} size="sm" className="h-7 text-xs gap-1" onClick={toggleFollow}><Bell className="h-3 w-3" fill={followed?'currentColor':'none'}/></Button>
           <Button variant="outline" size="sm" className="h-7 text-xs gap-1" onClick={handleShare}><Share2 className="h-3 w-3"/>分享</Button>
           <Button variant="outline" size="sm" className="h-7 text-xs gap-1" onClick={()=>setShowSocial(!showSocial)}><MessageSquare className="h-3 w-3"/>{commentCount}</Button>
         </div>

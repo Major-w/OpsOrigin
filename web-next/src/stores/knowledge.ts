@@ -38,6 +38,28 @@ interface KnowledgeState {
   importArticles: (items: { title: string; content: string; category?: string; tags?: string[]; status?: string }[]) => Promise<{ imported: number; errors: string[] }>
   // 文件导入: 上传原始文件(.md/.txt/.json/.pdf/.docx), 由后端解析建文章
   importFile: (file: File, category?: string) => Promise<{ imported: number; errors: string[] }>
+  // 收藏/关注: 我的收藏列表 + 关注开关 + 关注更新通知
+  listBookmarks: (user?: string) => Promise<string[]>
+  toggleFollow: (id: string, user?: string) => Promise<boolean>
+  listFollows: (user?: string) => Promise<string[]>
+  listFollowUpdates: (user?: string, unreadOnly?: boolean) => Promise<{ article_id: string; updated_at: string; read: boolean }[]>
+  markFollowUpdateRead: (articleId: string, user?: string) => Promise<void>
+  // 自动沉淀策略
+  listPrecipitationRules: () => Promise<PrecipitationRule[]>
+  savePrecipitationRule: (rule: Partial<PrecipitationRule>) => Promise<PrecipitationRule>
+  deletePrecipitationRule: (id: string) => Promise<void>
+  runPrecipitationRule: (id: string, vars?: Record<string, string>) => Promise<{ article_id: string }>
+}
+
+export interface PrecipitationRule {
+  id?: string
+  name: string
+  source: string
+  category: string
+  title_template: string
+  content_template: string
+  enabled: boolean
+  auto_publish: boolean
 }
 
 export const useKnowledgeStore = create<KnowledgeState>((set, get) => ({
@@ -181,5 +203,77 @@ export const useKnowledgeStore = create<KnowledgeState>((set, get) => ({
       toast.error(`导入失败: ${e.message}`)
       return { imported: 0, errors: [e.message] }
     }
+  },
+
+  // —— 收藏 / 关注 ——
+  listBookmarks: async (user = 'admin') => {
+    try {
+      const res = await apiFetch<{ article_ids: string[] }>(`/knowledge/bookmarks?user=${encodeURIComponent(user)}`)
+      return res.article_ids || []
+    } catch {
+      return []
+    }
+  },
+  toggleFollow: async (id, user = 'admin') => {
+    try {
+      const res = await apiFetch<{ followed: boolean }>(`/knowledge/${id}/follow?user=${encodeURIComponent(user)}`, { method: 'POST' })
+      return res.followed
+    } catch (e: any) {
+      toast.error(`操作失败: ${e.message}`)
+      return false
+    }
+  },
+  listFollows: async (user = 'admin') => {
+    try {
+      const res = await apiFetch<{ article_ids: string[] }>(`/knowledge/follows?user=${encodeURIComponent(user)}`)
+      return res.article_ids || []
+    } catch {
+      return []
+    }
+  },
+  listFollowUpdates: async (user = 'admin', unreadOnly = false) => {
+    try {
+      return await apiList<{ article_id: string; updated_at: string; read: boolean }>(`/knowledge/follow-updates?user=${encodeURIComponent(user)}&unread=${unreadOnly}`)
+    } catch {
+      return []
+    }
+  },
+  markFollowUpdateRead: async (articleId, user = 'admin') => {
+    try {
+      await apiFetch(`/knowledge/follow-updates/read?user=${encodeURIComponent(user)}`, { method: 'POST', body: JSON.stringify({ article_id: articleId }) })
+    } catch {
+      /* 忽略 */
+    }
+  },
+
+  // —— 自动沉淀策略 ——
+  listPrecipitationRules: async () => {
+    try {
+      return await apiList<PrecipitationRule>('/knowledge/precipitation-rules')
+    } catch (e: any) {
+      toast.error(`加载沉淀策略失败: ${e.message}`)
+      return []
+    }
+  },
+  savePrecipitationRule: async (rule) => {
+    const isNew = !rule.id
+    const res = await apiFetch<PrecipitationRule>(`/knowledge/precipitation-rules${isNew ? '' : `/${rule.id}`}`, {
+      method: isNew ? 'POST' : 'PUT',
+      body: JSON.stringify(rule),
+    })
+    toast.success(isNew ? '策略已创建' : '策略已更新')
+    return res
+  },
+  deletePrecipitationRule: async (id) => {
+    await apiFetch(`/knowledge/precipitation-rules/${id}`, { method: 'DELETE' })
+    toast.success('策略已删除')
+  },
+  runPrecipitationRule: async (id, vars = {}) => {
+    const res = await apiFetch<{ article_id: string }>(`/knowledge/precipitation-rules/${id}/run`, {
+      method: 'POST',
+      body: JSON.stringify({ vars }),
+    })
+    toast.success('已按策略沉淀一篇知识文章')
+    return res
   },
 }))

@@ -958,7 +958,11 @@ func main() {
 	deploySvc := deploy.NewService(db)
 	deploySvc.SetAgentRunner(agentSvc) // 注入 Agent 下发通道，使部署真实在目标主机执行
 	server.RegisterService(deploySvc)
-	server.RegisterService(knowledge.NewSocialStore(db))
+	socialStore := knowledge.NewSocialStore(db)
+	server.RegisterService(socialStore)
+	knowledgeSvc.SetSocialStore(socialStore)
+	// 自动沉淀策略: 可配置的"运维事件 → 知识库文章"沉淀规则(替代硬编码的处置案例沉淀)。
+	server.RegisterService(knowledge.NewPrecipitationStore(db, knowledgeSvc))
 
 	// 漏洞扫描：规则匹配器 + 真实 inventory 注入(经 CMDB 适配器)。
 	// 适配器把 cmdb.Service.ListCI 按约定 schema 映射为 vuln.InventoryEntry,

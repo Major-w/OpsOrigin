@@ -22,6 +22,8 @@ func NewSocialStore(db *sql.DB) *SocialStore {
 func (s *SocialStore) migrate() {
 	s.db.Exec(`CREATE TABLE IF NOT EXISTS knowledge_likes (article_id TEXT NOT NULL, user_id TEXT NOT NULL DEFAULT 'admin', created_at TIMESTAMPTZ DEFAULT NOW(), PRIMARY KEY(article_id, user_id))`)
 	s.db.Exec(`CREATE TABLE IF NOT EXISTS knowledge_bookmarks (article_id TEXT NOT NULL, user_id TEXT NOT NULL DEFAULT 'admin', created_at TIMESTAMPTZ DEFAULT NOW(), PRIMARY KEY(article_id, user_id))`)
+	s.db.Exec(`CREATE TABLE IF NOT EXISTS knowledge_follows (article_id TEXT NOT NULL, user_id TEXT NOT NULL DEFAULT 'admin', created_at TIMESTAMPTZ DEFAULT NOW(), PRIMARY KEY(article_id, user_id))`)
+	s.db.Exec(`CREATE TABLE IF NOT EXISTS knowledge_follow_updates (article_id TEXT NOT NULL, user_id TEXT NOT NULL DEFAULT 'admin', updated_at TIMESTAMPTZ DEFAULT NOW(), read BOOLEAN DEFAULT false, PRIMARY KEY(article_id, user_id))`)
 	s.db.Exec(`CREATE TABLE IF NOT EXISTS knowledge_ratings (id TEXT PRIMARY KEY, article_id TEXT NOT NULL, user_id TEXT NOT NULL DEFAULT 'admin', rating INT NOT NULL CHECK(rating BETWEEN 1 AND 5), comment TEXT DEFAULT '', created_at TIMESTAMPTZ DEFAULT NOW())`)
 	s.db.Exec(`CREATE TABLE IF NOT EXISTS knowledge_comments (id TEXT PRIMARY KEY, article_id TEXT NOT NULL, user_id TEXT NOT NULL DEFAULT 'admin', content TEXT NOT NULL, parent_id TEXT DEFAULT '', created_at TIMESTAMPTZ DEFAULT NOW())`)
 }
@@ -29,10 +31,12 @@ func (s *SocialStore) migrate() {
 type ArticleStats struct {
 	Likes       int     `json:"likes"`
 	Bookmarks   int     `json:"bookmarks"`
+	Followers   int     `json:"followers"`
 	AvgRating   float64 `json:"avg_rating"`
 	RatingCount int     `json:"rating_count"`
 	Liked       bool    `json:"liked"`
 	Bookmarked  bool    `json:"bookmarked"`
+	Followed    bool    `json:"followed"`
 	UserRating  *int    `json:"user_rating,omitempty"`
 }
 
@@ -58,13 +62,16 @@ func (s *SocialStore) GetStats(ctx context.Context, articleID, userID string) (*
 	st := &ArticleStats{}
 	s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM knowledge_likes WHERE article_id=$1`, articleID).Scan(&st.Likes)
 	s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM knowledge_bookmarks WHERE article_id=$1`, articleID).Scan(&st.Bookmarks)
+	s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM knowledge_follows WHERE article_id=$1`, articleID).Scan(&st.Followers)
 	s.db.QueryRowContext(ctx, `SELECT COALESCE(AVG(rating),0), COUNT(*) FROM knowledge_ratings WHERE article_id=$1`, articleID).Scan(&st.AvgRating, &st.RatingCount)
 	if userID != "" {
-		var liked, bookmarked int
+		var liked, bookmarked, followed int
 		s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM knowledge_likes WHERE article_id=$1 AND user_id=$2`, articleID, userID).Scan(&liked)
 		s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM knowledge_bookmarks WHERE article_id=$1 AND user_id=$2`, articleID, userID).Scan(&bookmarked)
+		s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM knowledge_follows WHERE article_id=$1 AND user_id=$2`, articleID, userID).Scan(&followed)
 		st.Liked = liked > 0
 		st.Bookmarked = bookmarked > 0
+		st.Followed = followed > 0
 	}
 	return st, nil
 }
@@ -124,6 +131,11 @@ func (s *SocialStore) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/v1/knowledge/{id}/stats", s.handleStats)
 	mux.HandleFunc("POST /api/v1/knowledge/{id}/like", s.handleLike)
 	mux.HandleFunc("POST /api/v1/knowledge/{id}/bookmark", s.handleBookmark)
+	mux.HandleFunc("POST /api/v1/knowledge/{id}/follow", s.handleFollow)
+	mux.HandleFunc("GET /api/v1/knowledge/follows", s.handleListFollows)
+	mux.HandleFunc("GET /api/v1/knowledge/bookmarks", s.handleListBookmarks)
+	mux.HandleFunc("GET /api/v1/knowledge/follow-updates", s.handleListFollowUpdates)
+	mux.HandleFunc("POST /api/v1/knowledge/follow-updates/read", s.handleMarkFollowUpdateRead)
 	mux.HandleFunc("POST /api/v1/knowledge/{id}/rate", s.handleRate)
 	mux.HandleFunc("POST /api/v1/knowledge/{id}/comments", s.handleAddComment)
 	mux.HandleFunc("GET /api/v1/knowledge/{id}/comments", s.handleListComments)

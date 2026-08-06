@@ -165,7 +165,8 @@ func (s *MemoryStore) RollbackToVersion(ctx context.Context, articleID, tenantID
 }
 
 type Service struct {
-	store Store
+	store  Store
+	social *SocialStore
 }
 
 func NewService(db *sql.DB) *Service {
@@ -268,6 +269,11 @@ func (s *Service) SetEmbedder(e Embedder) {
 	}
 }
 
+// SetSocialStore 注入社交存储,使文章更新时能为关注者生成更新通知。
+func (s *Service) SetSocialStore(soc *SocialStore) {
+	s.social = soc
+}
+
 // ReindexAll 为存量文章补算 embedding(语义检索开启后的幂等回填, 仅处理 embedding IS NULL 的行)。
 func (s *Service) ReindexAll(ctx context.Context) (int, error) {
 	ps, ok := s.store.(*pgStore)
@@ -360,6 +366,10 @@ func (s *Service) handleUpdate(w http.ResponseWriter, r *http.Request) {
 		a.Status = existing.Status // 未显式传状态时不降级(如 published → draft)
 	}
 	s.store.Update(r.Context(), &a)
+	// 文章更新后, 通知关注者(关注更新)
+	if s.social != nil {
+		s.social.NotifyFollowersOnUpdate(r.Context(), id)
+	}
 	writeJSON(w, http.StatusOK, a)
 }
 
