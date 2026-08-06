@@ -200,6 +200,14 @@ func (s *Service) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/v1/ai/skills/favorites", s.handleListFavorites)
 	mux.HandleFunc("GET /api/v1/ai/skills/{id}/versions", s.handleListVersions)
 
+	// —— 提示词库 (可复用文本片段; 与技能包的边界见 agentic/prompt.go 顶部注释) ——
+	mux.HandleFunc("GET /api/v1/ai/prompts", s.handleListPrompts)
+	mux.HandleFunc("POST /api/v1/ai/prompts", s.handleCreatePrompt)
+	mux.HandleFunc("GET /api/v1/ai/prompts/{id}", s.handleGetPrompt)
+	mux.HandleFunc("PUT /api/v1/ai/prompts/{id}", s.handleUpdatePrompt)
+	mux.HandleFunc("DELETE /api/v1/ai/prompts/{id}", s.handleDeletePrompt)
+	mux.HandleFunc("POST /api/v1/ai/prompts/{id}/render", s.handleRenderPrompt)
+
 	// —— AI 定义工作空间 (P1: 自然语言 -> 受约束的报表看板草稿) ——
 	// 只产草稿不落库；用户确认后走 POST /report/dashboards，权限归属与人工搭建一致。
 	mux.HandleFunc("POST /api/v1/ai/workspace/generate", s.handleGenerateWorkspace)

@@ -281,6 +281,10 @@ func (e *Engine) Start() error {
 	if err := e.SyncCustomTools(context.Background()); err != nil {
 		slog.Warn("failed to sync custom tools", "err", err)
 	}
+	// 预置技能市场内置技能包(按名+版本幂等)。必须在 store 就绪之后, 故放在此处而非 NewEngine。
+	SeedSkillPackages(context.Background(), e)
+	// 预置提示词库(按固定 ID 幂等), 并把默认系统提示词回灌到引擎兜底值(用户改过的优先)。
+	SeedPromptTemplates(context.Background(), e)
 	// 主动巡检调度器(P0): 启动进程内定时循环, 扫描到期启用的巡检任务。
 	e.StartInspectionScheduler()
 	slog.Info("agentic engine started",

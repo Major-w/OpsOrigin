@@ -23,6 +23,7 @@ type memStore struct {
 	tokens   []model.TokenRecord
 	insps    map[string]*Inspection
 	inspRuns map[string][]*InspectionRun
+	prompts  map[string]*PromptTemplate
 }
 
 func newMemStore() *memStore {
@@ -35,7 +36,41 @@ func newMemStore() *memStore {
 		favs:     map[string]bool{},
 		insps:    map[string]*Inspection{},
 		inspRuns: map[string][]*InspectionRun{},
+		prompts:  map[string]*PromptTemplate{},
 	}
+}
+
+// ——— 提示词库 ———
+
+func (m *memStore) CreatePromptTemplate(_ context.Context, p *PromptTemplate) error {
+	cp := *p
+	m.prompts[p.ID] = &cp
+	return nil
+}
+func (m *memStore) GetPromptTemplate(_ context.Context, _, id string) (*PromptTemplate, error) {
+	if p, ok := m.prompts[id]; ok {
+		cp := *p
+		return &cp, nil
+	}
+	return nil, nil
+}
+func (m *memStore) ListPromptTemplates(_ context.Context, _ string) ([]*PromptTemplate, error) {
+	out := make([]*PromptTemplate, 0, len(m.prompts))
+	for _, p := range m.prompts {
+		cp := *p
+		out = append(out, &cp)
+	}
+	return out, nil
+}
+func (m *memStore) DeletePromptTemplate(_ context.Context, _, id string) error {
+	delete(m.prompts, id)
+	return nil
+}
+func (m *memStore) IncrPromptUsage(_ context.Context, _, id string) error {
+	if p, ok := m.prompts[id]; ok {
+		p.Usage++
+	}
+	return nil
 }
 
 func (m *memStore) CreateAgent(_ context.Context, a *AgentRecord) error {

@@ -53,6 +53,13 @@ type Store interface {
 	IsFavorite(ctx context.Context, tenantID, pkgID, user string) (bool, error)
 	ListFavoriteIDs(ctx context.Context, tenantID, user string) ([]string, error)
 
+	// ——— 提示词库(可复用文本片段, 与技能包的边界见 prompt.go 顶部注释) ———
+	CreatePromptTemplate(ctx context.Context, p *PromptTemplate) error // upsert by id
+	GetPromptTemplate(ctx context.Context, tenantID, id string) (*PromptTemplate, error)
+	ListPromptTemplates(ctx context.Context, tenantID string) ([]*PromptTemplate, error)
+	DeletePromptTemplate(ctx context.Context, tenantID, id string) error
+	IncrPromptUsage(ctx context.Context, tenantID, id string) error
+
 	// ——— 主动巡检 Agent (P0) ———
 	CreateInspection(ctx context.Context, in *Inspection) error
 	GetInspection(ctx context.Context, id, tenantID string) (*Inspection, error)
@@ -222,6 +229,18 @@ func (s *PGStore) migrate() {
 		UNIQUE(tenant_id, package_id, user_id)
 	)`)
 	s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_ai_skill_favorites_user ON ai_skill_favorites(tenant_id, user_id)`)
+	// 提示词库: 可复用文本片段(人设/约束/输出格式), 整对象 JSONB 与技能包同构。
+	// usage 单列便于原子自增; is_default 单列便于唯一性校验与快速定位租户兜底提示词。
+	s.db.Exec(`CREATE TABLE IF NOT EXISTS ai_prompts (
+		id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL DEFAULT 'default',
+		name TEXT NOT NULL, scene TEXT DEFAULT '',
+		data JSONB NOT NULL DEFAULT '{}',
+		usage_count INT NOT NULL DEFAULT 0,
+		is_default BOOLEAN NOT NULL DEFAULT FALSE,
+		builtin BOOLEAN NOT NULL DEFAULT FALSE,
+		created_at TIMESTAMPTZ DEFAULT NOW(), updated_at TIMESTAMPTZ DEFAULT NOW()
+	)`)
+	s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_ai_prompts_tenant ON ai_prompts(tenant_id)`)
 }
 
 // ——— 自定义 MCP 工具持久化 (PRD 5.2.2) ———
@@ -536,6 +555,100 @@ func (s *PGStore) ListFavoriteIDs(ctx context.Context, tenantID, user string) ([
 		out = append(out, pid)
 	}
 	return out, rows.Err()
+}
+
+// ——— 提示词库持久化 ———
+// 整对象 JSONB(与技能包同构): 提示词结构可能继续演进(变量元数据/多语言变体),
+// 避免每次加字段改表; usage_count 单列便于原子自增, is_default/builtin 单列便于快速筛选。
+
+func (s *PGStore) CreatePromptTemplate(ctx context.Context, p *PromptTemplate) error {
+	if p.TenantID == "" {
+		p.TenantID = "default"
+	}
+	data, _ := json.Marshal(p)
+	_, err := s.db.ExecContext(ctx,
+		`INSERT INTO ai_prompts(id,tenant_id,name,scene,data,usage_count,is_default,builtin,created_at,updated_at)
+		 VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+		 ON CONFLICT (id) DO UPDATE SET name=EXCLUDED.name, scene=EXCLUDED.scene, data=EXCLUDED.data,
+		   is_default=EXCLUDED.is_default, updated_at=EXCLUDED.updated_at`,
+		p.ID, p.TenantID, p.Name, p.Scene, data, p.Usage, p.IsDefault, p.Builtin, p.CreatedAt, p.UpdatedAt)
+	return err
+}
+
+func (s *PGStore) GetPromptTemplate(ctx context.Context, tenantID, id string) (*PromptTemplate, error) {
+	if tenantID == "" {
+		tenantID = "default"
+	}
+	var (
+		data      []byte
+		usage     int
+		isDefault bool
+	)
+	err := s.db.QueryRowContext(ctx,
+		`SELECT data, usage_count, is_default FROM ai_prompts WHERE id=$1 AND tenant_id=$2`, id, tenantID).
+		Scan(&data, &usage, &isDefault)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	p := &PromptTemplate{}
+	if err := json.Unmarshal(data, p); err != nil {
+		return nil, err
+	}
+	// 单列为准: usage 走原子自增, is_default 走唯一性维护, 均可能领先于 JSONB 快照
+	p.Usage = usage
+	p.IsDefault = isDefault
+	return p, nil
+}
+
+func (s *PGStore) ListPromptTemplates(ctx context.Context, tenantID string) ([]*PromptTemplate, error) {
+	if tenantID == "" {
+		tenantID = "default"
+	}
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT data, usage_count, is_default FROM ai_prompts WHERE tenant_id=$1 ORDER BY updated_at DESC`, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []*PromptTemplate
+	for rows.Next() {
+		var (
+			data      []byte
+			usage     int
+			isDefault bool
+		)
+		if err := rows.Scan(&data, &usage, &isDefault); err != nil {
+			return nil, err
+		}
+		p := &PromptTemplate{}
+		if json.Unmarshal(data, p) != nil {
+			continue
+		}
+		p.Usage = usage
+		p.IsDefault = isDefault
+		out = append(out, p)
+	}
+	return out, rows.Err()
+}
+
+func (s *PGStore) DeletePromptTemplate(ctx context.Context, tenantID, id string) error {
+	if tenantID == "" {
+		tenantID = "default"
+	}
+	_, err := s.db.ExecContext(ctx, `DELETE FROM ai_prompts WHERE id=$1 AND tenant_id=$2`, id, tenantID)
+	return err
+}
+
+func (s *PGStore) IncrPromptUsage(ctx context.Context, tenantID, id string) error {
+	if tenantID == "" {
+		tenantID = "default"
+	}
+	_, err := s.db.ExecContext(ctx,
+		`UPDATE ai_prompts SET usage_count = usage_count + 1 WHERE id=$1 AND tenant_id=$2`, id, tenantID)
+	return err
 }
 
 // ——— 主动巡检持久化 (P0) ———

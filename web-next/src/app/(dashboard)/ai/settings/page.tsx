@@ -1,14 +1,15 @@
 'use client'
 
-import { useEffect, useState } from 'react'
+import { useEffect, useState, type ReactNode } from 'react'
+import Link from 'next/link'
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Badge } from '@/components/ui/badge'
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs'
 import { toast } from '@/stores/toast'
-import { Bot, Plus, Trash2, Save, Wrench, Brain, Settings2, Terminal, Wand2, AlertCircle, CheckCircle2, Loader2, ChevronRight, ShieldCheck, Database, Download, RefreshCw, Sparkles } from 'lucide-react'
-import { cn } from '@/lib/utils'
+import { Bot, Plus, Trash2, Save, Wrench, Brain, Settings2, Terminal, Wand2, AlertCircle, CheckCircle2, Loader2, ChevronRight, ShieldCheck, Database, Download, RefreshCw, Sparkles, Copy, Pencil, Star, Search, Package, Eye } from 'lucide-react'
+import { cn, apiFetch, apiList } from '@/lib/utils'
 import { useThemeStore } from '@/stores/theme'
 import { useAIStore, type ApprovalMode } from '@/stores/ai'
 const APPROVAL_MODES: { value: ApprovalMode; label: string; desc: string }[] = [
@@ -42,6 +43,70 @@ interface FinetuneTaskItem {
 }
 
 const EMPTY_SKILL: SkillFormItem = { name: '', description: '', instructions: '' }
+
+// —— 提示词库 ——
+// 提示词 = 可复用的一段「文本」(人设/约束/输出格式), 支持 {{变量}} 占位, 复制即用;
+// 技能包 = 可移植的「运行单元」(Agent 完整配置 + 依赖工具), 安装即上岗。两者边界见页面底部说明卡片。
+interface PromptTemplate {
+  id: string
+  name: string
+  scene?: string
+  description?: string
+  content: string
+  variables?: string[]
+  builtin: boolean
+  is_default: boolean
+  usage: number
+  created_at: string
+  updated_at: string
+}
+
+interface PromptForm {
+  id: string
+  name: string
+  scene: string
+  description: string
+  content: string
+  is_default: boolean
+}
+
+const EMPTY_PROMPT: PromptForm = { id: '', name: '', scene: '通用', description: '', content: '', is_default: false }
+
+// 预置场景, 与后端 seed 口径一致; 用户自建的新场景会自动并入筛选条
+const PROMPT_SCENES = ['通用', '故障排查', '变更评审', '告警降噪', '知识沉淀', '容量规划']
+
+// 解析 {{变量}} 占位(去重保序), 与后端 promptVarRe 同口径: 允许中英文/数字/下划线
+function parsePromptVars(content: string): string[] {
+  const re = /\{\{\s*([\u4e00-\u9fa5A-Za-z0-9_]+)\s*\}\}/g
+  const out: string[] = []
+  const seen = new Set<string>()
+  let m: RegExpExecArray | null
+  while ((m = re.exec(content)) !== null) {
+    if (seen.has(m[1])) continue
+    seen.add(m[1])
+    out.push(m[1])
+  }
+  return out
+}
+
+// 本地渲染(仅用于编辑器内预览, 不计引用次数); 真正插入 Agent 时走后端 render 端点
+function renderPromptLocal(content: string, vars: Record<string, string>): string {
+  return content.replace(/\{\{\s*([\u4e00-\u9fa5A-Za-z0-9_]+)\s*\}\}/g, (raw, name: string) => vars[name] || raw)
+}
+
+/** 提示词正文需要更宽的编辑区，基础 Dialog 固定 max-w-lg，这里按同一视觉规范派生宽版弹层 */
+function WideDialog({ open, onClose, title, children }: { open: boolean; onClose: () => void; title: string; children: ReactNode }) {
+  if (!open) return null
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+      <div className="fixed inset-0 bg-black/50" onClick={onClose} />
+      <div className="relative z-50 w-full max-w-3xl max-h-[88vh] overflow-auto rounded-xl border bg-background p-6 shadow-lg">
+        <h2 className="text-lg font-semibold mb-4">{title}</h2>
+        {children}
+      </div>
+    </div>
+  )
+}
 
 // SkillsEditor 可复用能力编辑器(名称/用途/使用说明), 创建与编辑 Agent 共用。
 function SkillsEditor({ value, onChange }: { value: SkillFormItem[]; onChange: (v: SkillFormItem[]) => void }) {
@@ -91,15 +156,6 @@ export default function AISettingsPage() {
   const [tools, setTools] = useState<any[]>([])
   const [testing, setTesting] = useState(false)
   const [testStatus, setTestStatus] = useState<string | null>(null)
-  // 自定义 MCP 工具
-  const [customTools, setCustomTools] = useState<any[]>([])
-  const [ctSaving, setCtSaving] = useState(false)
-  const [ctForm, setCtForm] = useState({
-    name: '', description: '', type: 'http', enabled: true,
-    parameters: [{ name: '', type: 'string', description: '', required: false }],
-    http_method: 'GET', http_url: '', http_headers: [{ k: '', v: '' }], timeout_sec: 30,
-    cli_command: '',
-  })
   // 知识库分类(从文章去重拉取, 兜底硬编码)
   const [kbCategories, setKbCategories] = useState<string[]>(FALLBACK_CATEGORIES)
   // 可选工具(排除内建): 供 Agent 工具白名单勾选
@@ -115,7 +171,7 @@ export default function AISettingsPage() {
   const [approvalScope, setApprovalScope] = useState<'global' | 'agent'>('global')
   const [approvalAgentId, setApprovalAgentId] = useState('')
 
-  useEffect(() => { fetchAgents(); loadTools(); loadSysConfig(); loadApprovalPolicy(); loadKbCategories(); loadCustomTools(); loadModelPool(); loadFinetuneTasks() }, [])
+  useEffect(() => { fetchAgents(); loadTools(); loadSysConfig(); loadApprovalPolicy(); loadKbCategories(); loadModelPool(); loadFinetuneTasks(); loadPrompts() }, [])
   const loadModelPool = async () => {
     try {
       const r = await fetch('/api/v1/ai/models')
@@ -188,64 +244,138 @@ export default function AISettingsPage() {
       loadFinetuneTasks()
     } catch (e: any) { toast.error(`创建失败: ${e.message}`) } finally { setFtCreating(false) }
   }
-  
-  const loadCustomTools = async () => {
+
+  // —— 提示词库: 列表 / 编辑 / 默认提示词热更新 / 插入 Agent ——
+  const [prompts, setPrompts] = useState<PromptTemplate[]>([])
+  const [promptLoading, setPromptLoading] = useState(false)
+  const [promptScene, setPromptScene] = useState('')
+  const [promptKeyword, setPromptKeyword] = useState('')
+  const [promptDialogOpen, setPromptDialogOpen] = useState(false)
+  const [promptForm, setPromptForm] = useState<PromptForm>({ ...EMPTY_PROMPT })
+  const [promptSaving, setPromptSaving] = useState(false)
+  const [promptVars, setPromptVars] = useState<Record<string, string>>({})
+  const [promptPreview, setPromptPreview] = useState<string | null>(null)
+  // 默认系统提示词单独占一张置顶卡片, 草稿态与列表解耦, 保存即热生效
+  const [defaultDraft, setDefaultDraft] = useState('')
+
+  const defaultPrompt = prompts.find(p => p.is_default) || null
+  const defaultDirty = !!defaultPrompt && defaultDraft.trim() !== defaultPrompt.content.trim()
+  // 场景筛选项 = 预置场景 ∪ 用户自建场景
+  const promptScenes = Array.from(new Set([...PROMPT_SCENES, ...prompts.map(p => p.scene || '').filter(Boolean)]))
+  const visiblePrompts = prompts.filter(p => {
+    if (p.is_default) return false // 默认提示词已在置顶卡片单独展示
+    if (promptScene && p.scene !== promptScene) return false
+    if (!promptKeyword.trim()) return true
+    const k = promptKeyword.trim().toLowerCase()
+    return [p.name, p.description, p.scene, p.content].some(x => (x || '').toLowerCase().includes(k))
+  })
+
+  const loadPrompts = async () => {
+    setPromptLoading(true)
     try {
-      const r = await fetch('/api/v1/ai/tools/custom')
-      if (r.ok) setCustomTools(await r.json())
-    } catch {}
+      const list = await apiList<PromptTemplate>('/ai/prompts')
+      setPrompts(list)
+      const def = list.find(p => p.is_default)
+      setDefaultDraft(def?.content || '')
+    } catch (e: any) {
+      toast.error(`加载提示词失败: ${e.message}`)
+    } finally { setPromptLoading(false) }
   }
 
-  const handleCreateCustomTool = async () => {
-    const f = ctForm
-    if (!f.name.trim()) return toast.error('请输入工具名（小写字母开头）')
-    if (f.type === 'http' && !f.http_url.trim()) return toast.error('HTTP 工具必须填写 URL')
-    if (f.type === 'cli' && !f.cli_command.trim()) return toast.error('CLI 工具必须填写命令模板')
-    setCtSaving(true)
+  const openPromptDialog = (p?: PromptTemplate, asCopy = false) => {
+    if (!p) {
+      setPromptForm({ ...EMPTY_PROMPT })
+    } else if (asCopy) {
+      // 另存副本: 丢弃 id 与默认标记, 预置提示词由此派生可自由改写的自建版本
+      setPromptForm({ id: '', name: `${p.name} 副本`, scene: p.scene || '通用', description: p.description || '', content: p.content, is_default: false })
+    } else {
+      setPromptForm({ id: p.id, name: p.name, scene: p.scene || '通用', description: p.description || '', content: p.content, is_default: p.is_default })
+    }
+    setPromptVars({})
+    setPromptPreview(null)
+    setPromptDialogOpen(true)
+  }
+
+  const submitPrompt = async () => {
+    if (!promptForm.name.trim()) return toast.error('请填写提示词名称')
+    if (!promptForm.content.trim()) return toast.error('请填写提示词正文')
+    setPromptSaving(true)
     try {
-      const r = await fetch('/api/v1/ai/tools/custom', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
+      const body = JSON.stringify({
+        name: promptForm.name.trim(),
+        scene: promptForm.scene.trim(),
+        description: promptForm.description.trim(),
+        content: promptForm.content,
+        is_default: promptForm.is_default,
+      })
+      if (promptForm.id) await apiFetch(`/ai/prompts/${promptForm.id}`, { method: 'PUT', body })
+      else await apiFetch('/ai/prompts', { method: 'POST', body })
+      toast.success(promptForm.is_default ? '已保存并设为默认，立即热生效' : '提示词已保存')
+      setPromptDialogOpen(false)
+      loadPrompts()
+    } catch (e: any) { toast.error(`保存失败: ${e.message}`) } finally { setPromptSaving(false) }
+  }
+
+  const saveDefaultPrompt = async () => {
+    if (!defaultPrompt) return
+    if (!defaultDraft.trim()) return toast.error('默认系统提示词不能为空')
+    setPromptSaving(true)
+    try {
+      await apiFetch(`/ai/prompts/${defaultPrompt.id}`, {
+        method: 'PUT',
         body: JSON.stringify({
-          name: f.name.trim(),
-          description: f.description,
-          type: f.type,
-          enabled: f.enabled,
-          parameters: f.parameters.filter(p => p.name.trim()),
-          http_method: f.http_method,
-          http_url: f.http_url,
-          http_headers: Object.fromEntries(f.http_headers.filter(h => h.k.trim()).map(h => [h.k.trim(), h.v])),
-          timeout_sec: f.timeout_sec,
-          cli_command: f.cli_command,
+          name: defaultPrompt.name, scene: defaultPrompt.scene || '通用',
+          description: defaultPrompt.description || '', content: defaultDraft, is_default: true,
         }),
       })
-      if (!r.ok) { const d = await r.json().catch(() => ({})); toast.error(d?.error || '创建失败'); return }
-      toast.success('自定义工具已创建并注册')
-      setCtForm({ name: '', description: '', type: 'http', enabled: true, parameters: [{ name: '', type: 'string', description: '', required: false }], http_method: 'GET', http_url: '', http_headers: [{ k: '', v: '' }], timeout_sec: 30, cli_command: '' })
-      loadCustomTools()
-    } catch { toast.error('创建失败') } finally { setCtSaving(false) }
+      toast.success('默认系统提示词已保存，立即热生效（无需重启 Core）')
+      loadPrompts()
+    } catch (e: any) { toast.error(`保存失败: ${e.message}`) } finally { setPromptSaving(false) }
   }
 
-  const handleToggleCustomTool = async (t: any) => {
+  const setAsDefault = async (p: PromptTemplate) => {
+    if (!confirm(`将「${p.name}」设为默认系统提示词？所有未单独配置 system_prompt 的 Agent 与对话都会改用它。`)) return
     try {
-      const r = await fetch(`/api/v1/ai/tools/custom/${t.id}`, {
-        method: 'PUT', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ...t, enabled: !t.enabled }),
+      await apiFetch(`/ai/prompts/${p.id}`, {
+        method: 'PUT',
+        body: JSON.stringify({ name: p.name, scene: p.scene || '', description: p.description || '', content: p.content, is_default: true }),
       })
-      if (!r.ok) { const d = await r.json().catch(() => ({})); toast.error(d?.error || '更新失败'); return }
-      toast.success(t.enabled ? '工具已禁用' : '工具已启用')
-      loadCustomTools()
-    } catch { toast.error('更新失败') }
+      toast.success('已设为默认，立即热生效')
+      loadPrompts()
+    } catch (e: any) { toast.error(`操作失败: ${e.message}`) }
   }
 
-  const handleDeleteCustomTool = async (id: string) => {
-    if (!confirm('删除该自定义工具？删除后 AI 将无法调用。')) return
+  const deletePrompt = async (p: PromptTemplate) => {
+    if (!confirm(`确定删除提示词「${p.name}」？`)) return
     try {
-      await fetch(`/api/v1/ai/tools/custom/${id}`, { method: 'DELETE' })
-      toast.success('已删除')
-      loadCustomTools()
-    } catch { toast.error('删除失败') }
+      await apiFetch(`/ai/prompts/${p.id}`, { method: 'DELETE' })
+      toast.success('提示词已删除')
+      loadPrompts()
+    } catch (e: any) { toast.error(`删除失败: ${e.message}`) }
   }
-  
+
+  const copyPromptContent = async (p: PromptTemplate) => {
+    try {
+      await navigator.clipboard.writeText(p.content)
+      toast.success('提示词正文已复制到剪贴板')
+    } catch { toast.error('复制失败，请手动选择文本') }
+  }
+
+  // 插入 Agent 系统提示词: 走后端 render 端点(计入引用次数), 未填变量的占位原样保留待人工补全
+  const insertPromptInto = async (target: 'create' | 'edit', id: string) => {
+    if (!id) return
+    try {
+      const r = await apiFetch<{ content: string }>(`/ai/prompts/${id}/render`, { method: 'POST', body: JSON.stringify({ variables: {} }) })
+      const text = r?.content || ''
+      if (!text) return toast.error('提示词内容为空')
+      const merge = (prev: string) => (prev.trim() ? `${prev.trimEnd()}\n\n${text}` : text)
+      if (target === 'create') setForm(f => ({ ...f, system_prompt: merge(f.system_prompt) }))
+      else setEditForm(f => ({ ...f, system_prompt: merge(f.system_prompt) }))
+      toast.success('已插入提示词，{{变量}} 占位请按需替换为实际值')
+      loadPrompts()
+    } catch (e: any) { toast.error(`插入失败: ${e.message}`) }
+  }
+
   const loadKbCategories = async () => {
     try {
       const r = await fetch('/api/v1/knowledge?limit=500')
@@ -361,7 +491,7 @@ export default function AISettingsPage() {
             <Settings2 className="h-6 w-6 text-emerald-500" />
             AI 智能体配置
           </h1>
-          <p className="text-sm text-muted-foreground">管理 Agent、提示词、模型和 MCP 工具</p>
+          <p className="text-sm text-muted-foreground">管理 Agent、提示词、模型与审批策略；MCP 工具的注册与启停请前往「MCP 工具」页</p>
         </div>
       </div>
 
@@ -376,7 +506,6 @@ export default function AISettingsPage() {
           <TabsTrigger value="agents"><Bot className="h-4 w-4 mr-1.5" />智能体</TabsTrigger>
           <TabsTrigger value="prompts"><Wand2 className="h-4 w-4 mr-1.5" />提示词</TabsTrigger>
           <TabsTrigger value="model"><Brain className="h-4 w-4 mr-1.5" />模型</TabsTrigger>
-          <TabsTrigger value="tools"><Wrench className="h-4 w-4 mr-1.5" />MCP 工具</TabsTrigger>
           <TabsTrigger value="approval"><ShieldCheck className="h-4 w-4 mr-1.5" />审批策略</TabsTrigger>
         </TabsList>
 
@@ -387,7 +516,23 @@ export default function AISettingsPage() {
             <CardContent className="space-y-3">
               <Input placeholder="Agent 名称 (如: 运维助手)" value={form.name} onChange={e => setForm({...form, name: e.target.value})} />
               <Input list="model-pool" placeholder="模型名 (如: deepseek-chat / provider 名, 留空使用默认)" value={form.model_name} onChange={e => setForm({...form, model_name: e.target.value})} />
-              <textarea placeholder="系统提示词, 定义 Agent 的行为和角色..." value={form.system_prompt} onChange={e => setForm({...form, system_prompt: e.target.value})} rows={4} className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 resize-none" />
+              {/* 系统提示词: 可从提示词库一键插入(计入引用次数), 留空则回退到默认系统提示词 */}
+              <div>
+                <div className="flex items-center justify-between mb-1.5">
+                  <label className="text-xs font-medium">系统提示词 <span className="text-muted-foreground font-normal">(留空 = 使用默认系统提示词)</span></label>
+                  <select
+                    value=""
+                    onChange={e => { insertPromptInto('create', e.target.value); e.currentTarget.value = '' }}
+                    className="text-[11px] h-6 rounded-md border border-input bg-background px-1.5 text-muted-foreground focus-visible:outline-none"
+                  >
+                    <option value="">＋ 从提示词库插入…</option>
+                    {prompts.map(p => (
+                      <option key={p.id} value={p.id}>{p.scene ? `[${p.scene}] ` : ''}{p.name}</option>
+                    ))}
+                  </select>
+                </div>
+                <textarea placeholder="系统提示词, 定义 Agent 的行为和角色..." value={form.system_prompt} onChange={e => setForm({...form, system_prompt: e.target.value})} rows={4} className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 resize-none" />
+              </div>
               {/* 知识库绑定 */}
               <div>
                 <label className="text-xs font-medium mb-1.5 block">
@@ -420,11 +565,16 @@ export default function AISettingsPage() {
               </div>
               {/* MCP 工具选择 */}
               <div>
-                <label className="text-xs font-medium mb-1.5 block">
-                  可用 MCP 工具 <span className="text-muted-foreground font-normal">(留空 = 全部)</span>
-                </label>
+                <div className="flex items-center justify-between mb-1.5">
+                  <label className="text-xs font-medium">
+                    可用 MCP 工具 <span className="text-muted-foreground font-normal">(留空 = 全部)</span>
+                  </label>
+                  <Link href="/ai/mcp" className="text-[11px] text-emerald-600 dark:text-emerald-400 hover:underline flex items-center gap-1">
+                    <Wrench className="h-3 w-3" />管理工具
+                  </Link>
+                </div>
                 {selectableTools.length === 0 ? (
-                  <p className="text-xs text-muted-foreground">暂无可用工具。</p>
+                  <p className="text-xs text-muted-foreground">暂无可用工具，先到「MCP 工具」页注册。</p>
                 ) : (
                   <div className="flex gap-2 flex-wrap">
                     {selectableTools.map(t => (
@@ -474,7 +624,22 @@ export default function AISettingsPage() {
                       <div className="space-y-2">
                         <Input value={editForm.name} onChange={e => setEditForm({...editForm, name: e.target.value})} placeholder="名称" />
                         <Input list="model-pool" value={editForm.model_name} onChange={e => setEditForm({...editForm, model_name: e.target.value})} placeholder="模型名" />
-                        <textarea rows={3} value={editForm.system_prompt} onChange={e => setEditForm({...editForm, system_prompt: e.target.value})} className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm resize-none" placeholder="系统提示词" />
+                        <div>
+                          <div className="flex items-center justify-between mb-1.5">
+                            <label className="text-xs font-medium">系统提示词</label>
+                            <select
+                              value=""
+                              onChange={e => { insertPromptInto('edit', e.target.value); e.currentTarget.value = '' }}
+                              className="text-[11px] h-6 rounded-md border border-input bg-background px-1.5 text-muted-foreground focus-visible:outline-none"
+                            >
+                              <option value="">＋ 从提示词库插入…</option>
+                              {prompts.map(p => (
+                                <option key={p.id} value={p.id}>{p.scene ? `[${p.scene}] ` : ''}{p.name}</option>
+                              ))}
+                            </select>
+                          </div>
+                          <textarea rows={3} value={editForm.system_prompt} onChange={e => setEditForm({...editForm, system_prompt: e.target.value})} className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm resize-none" placeholder="系统提示词" />
+                        </div>
                         {/* 编辑态: 知识库绑定 */}
                         <div>
                           <label className="text-xs font-medium mb-1.5 block">绑定知识库分类 <span className="text-muted-foreground font-normal">(留空 = 全部)</span></label>
@@ -580,31 +745,196 @@ export default function AISettingsPage() {
           </div>
         </TabsContent>
 
-        {/* 提示词模板 */}
+        {/* 提示词库 */}
         <TabsContent value="prompts" className="flex-1 overflow-auto space-y-4">
-          <Card>
-            <CardHeader><CardTitle className="text-base">默认系统提示词</CardTitle><CardDescription>当 Agent 未单独设置 system_prompt 时使用此默认值</CardDescription></CardHeader>
-            <CardContent className="space-y-3">
-              <textarea
-                defaultValue="你是 OpsOrigin 智能运维助手,帮助用户完成主机巡检、故障排查、报告生成等运维任务。回答应简洁、专业、可操作。"
-                rows={5}
-                className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm font-mono ring-offset-background resize-none"
-              />
-              <p className="text-xs text-muted-foreground">
-                提示：各 Agent 的独立提示词请在「智能体」Tab 中创建 Agent 时填写 system_prompt 字段，
-                或在 Agent 卡片中点击编辑。此处显示的是引擎默认回退提示词（只读参考）。
-              </p>
+          {/* 默认系统提示词: 租户内唯一, 保存即热生效 */}
+          <Card className="border-emerald-200 dark:border-emerald-500/25">
+            <CardHeader className="pb-2">
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <CardTitle className="text-base flex items-center gap-2">
+                    <Star className="h-4 w-4 text-emerald-500 fill-emerald-500" />
+                    默认系统提示词
+                  </CardTitle>
+                  <CardDescription>所有未单独配置 system_prompt 的 Agent 与对话的兜底人设，保存后立即热生效，无需重启 Core</CardDescription>
+                </div>
+                <Button size="sm" onClick={saveDefaultPrompt} disabled={promptSaving || !defaultDirty || !defaultPrompt}>
+                  {promptSaving ? <Loader2 className="h-3.5 w-3.5 mr-1 animate-spin" /> : <Save className="h-3.5 w-3.5 mr-1" />}
+                  {defaultDirty ? '保存并生效' : '已是最新'}
+                </Button>
+              </div>
+            </CardHeader>
+            <CardContent className="space-y-2">
+              {promptLoading && prompts.length === 0 ? (
+                <div className="h-28 flex items-center justify-center text-xs text-muted-foreground">
+                  <Loader2 className="h-4 w-4 mr-1.5 animate-spin" />加载提示词库…
+                </div>
+              ) : !defaultPrompt ? (
+                <p className="text-xs text-muted-foreground py-6 text-center">未找到默认提示词，可在下方任意提示词上点击「设为默认」。</p>
+              ) : (
+                <>
+                  <textarea
+                    value={defaultDraft}
+                    onChange={e => setDefaultDraft(e.target.value)}
+                    rows={6}
+                    className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm font-mono leading-relaxed ring-offset-background resize-y focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500/40"
+                  />
+                  <div className="flex items-center justify-between text-[11px] text-muted-foreground">
+                    <span>{defaultDraft.length} 字符 · 被引用 {defaultPrompt.usage} 次</span>
+                    {defaultDirty && <span className="text-amber-600 dark:text-amber-400">有未保存的修改</span>}
+                  </div>
+                </>
+              )}
             </CardContent>
           </Card>
 
+          {/* 提示词库: 场景筛选 + 关键字检索 + 新建 */}
+          <div className="flex items-center gap-2 flex-wrap">
+            <div className="relative flex-1 min-w-[200px]">
+              <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground" />
+              <Input
+                placeholder="搜索提示词名称、描述或正文…"
+                value={promptKeyword}
+                onChange={e => setPromptKeyword(e.target.value)}
+                className="pl-8 h-9"
+              />
+            </div>
+            <Button variant="outline" size="sm" onClick={loadPrompts} disabled={promptLoading}>
+              <RefreshCw className={cn('h-3.5 w-3.5 mr-1', promptLoading && 'animate-spin')} />刷新
+            </Button>
+            <Button size="sm" onClick={() => openPromptDialog()}>
+              <Plus className="h-3.5 w-3.5 mr-1" />新建提示词
+            </Button>
+          </div>
+
+          <div className="flex gap-1.5 flex-wrap">
+            <button
+              onClick={() => setPromptScene('')}
+              className={cn(
+                'text-xs px-2.5 py-1 rounded-md border transition-colors',
+                promptScene === ''
+                  ? 'border-emerald-300 bg-emerald-50 text-emerald-700 dark:border-emerald-500/40 dark:bg-emerald-500/10 dark:text-emerald-400'
+                  : 'border-gray-200 dark:border-[rgba(255,255,255,0.08)] text-muted-foreground hover:border-gray-300',
+              )}
+            >全部 ({prompts.filter(p => !p.is_default).length})</button>
+            {promptScenes.map(s => {
+              const n = prompts.filter(p => !p.is_default && p.scene === s).length
+              return (
+                <button
+                  key={s}
+                  onClick={() => setPromptScene(promptScene === s ? '' : s)}
+                  className={cn(
+                    'text-xs px-2.5 py-1 rounded-md border transition-colors',
+                    promptScene === s
+                      ? 'border-emerald-300 bg-emerald-50 text-emerald-700 dark:border-emerald-500/40 dark:bg-emerald-500/10 dark:text-emerald-400'
+                      : 'border-gray-200 dark:border-[rgba(255,255,255,0.08)] text-muted-foreground hover:border-gray-300',
+                  )}
+                >{s} ({n})</button>
+              )
+            })}
+          </div>
+
+          {visiblePrompts.length === 0 ? (
+            <Card><CardContent className="py-10 text-center text-xs text-muted-foreground">
+              {promptKeyword || promptScene ? '没有匹配的提示词，换个关键字或场景试试。' : '提示词库为空，点击右上角「新建提示词」添加。'}
+            </CardContent></Card>
+          ) : (
+            <div className="grid gap-3 md:grid-cols-2">
+              {visiblePrompts.map(p => {
+                const vars = p.variables || parsePromptVars(p.content)
+                return (
+                  <Card key={p.id} className="transition-all hover:shadow-md hover:-translate-y-0.5">
+                    <CardContent className="p-4 space-y-2">
+                      <div className="flex items-start justify-between gap-2">
+                        <div className="min-w-0">
+                          <div className="flex items-center gap-1.5 flex-wrap">
+                            <Wand2 className="h-3.5 w-3.5 text-emerald-500 shrink-0" />
+                            <span className="font-medium text-sm truncate">{p.name}</span>
+                            {p.scene && <Badge variant="outline" className="text-[9px]">{p.scene}</Badge>}
+                            {p.builtin && <Badge variant="secondary" className="text-[9px]">预置</Badge>}
+                          </div>
+                          {p.description && <p className="text-[11px] text-muted-foreground mt-1 line-clamp-2">{p.description}</p>}
+                        </div>
+                        <span className="text-[10px] text-muted-foreground shrink-0">引用 {p.usage}</span>
+                      </div>
+
+                      <pre className="text-[11px] font-mono text-muted-foreground bg-gray-50 dark:bg-[rgba(255,255,255,0.03)] rounded-md p-2 max-h-20 overflow-hidden whitespace-pre-wrap break-all">
+                        {p.content.slice(0, 220)}{p.content.length > 220 ? '…' : ''}
+                      </pre>
+
+                      {vars.length > 0 && (
+                        <div className="flex gap-1 flex-wrap">
+                          {vars.map(v => (
+                            <code key={v} className="text-[10px] px-1.5 py-0.5 rounded bg-blue-50 text-blue-600 dark:bg-blue-500/10 dark:text-blue-400 font-mono">{'{{'}{v}{'}}'}</code>
+                          ))}
+                        </div>
+                      )}
+
+                      <div className="flex items-center gap-1 pt-1">
+                        <Button variant="ghost" size="sm" className="h-7 px-2 text-xs" onClick={() => openPromptDialog(p)}>
+                          <Pencil className="h-3 w-3 mr-1" />编辑
+                        </Button>
+                        <Button variant="ghost" size="sm" className="h-7 px-2 text-xs" onClick={() => openPromptDialog(p, true)}>
+                          <Copy className="h-3 w-3 mr-1" />另存副本
+                        </Button>
+                        <Button variant="ghost" size="sm" className="h-7 px-2 text-xs" onClick={() => copyPromptContent(p)}>
+                          <Terminal className="h-3 w-3 mr-1" />复制正文
+                        </Button>
+                        <div className="flex-1" />
+                        <Button variant="ghost" size="sm" className="h-7 px-2 text-xs" title="设为默认系统提示词" onClick={() => setAsDefault(p)}>
+                          <Star className="h-3 w-3" />
+                        </Button>
+                        <Button
+                          variant="ghost" size="sm" className="h-7 px-2"
+                          title={p.builtin ? '预置提示词不可删除，可另存副本后修改' : '删除'}
+                          disabled={p.builtin}
+                          onClick={() => deletePrompt(p)}
+                        >
+                          <Trash2 className={cn('h-3 w-3', p.builtin ? 'text-muted-foreground' : 'text-red-400')} />
+                        </Button>
+                      </div>
+                    </CardContent>
+                  </Card>
+                )
+              })}
+            </div>
+          )}
+
+          {/* 概念边界: 消除「提示词 vs 技能包」的选型困惑 */}
           <Card>
-            <CardHeader><CardTitle className="text-base">提示词最佳实践</CardTitle></CardHeader>
-            <CardContent className="space-y-2 text-sm text-muted-foreground">
-              <p>✅ 明确定义角色： "你是一位资深 Linux 运维工程师..."</p>
-              <p>✅ 限制输出格式： "使用 Markdown 格式回答，代码块标注语言"</p>
-              <p>✅ 指定行为边界： "只回答运维相关问题，拒绝无关请求"</p>
-              <p>✅ 结合工具能力： "你可以使用 llm_chat 和 http_get 工具辅助回答"</p>
-              <p>⚠️ system_prompt 变更后即时生效，无需重启 Core</p>
+            <CardHeader className="pb-2">
+              <CardTitle className="text-base flex items-center gap-2"><AlertCircle className="h-4 w-4 text-blue-500" />提示词 与 技能包，该用哪个？</CardTitle>
+              <CardDescription>两者不是同一层的东西：一个是「文本」，一个是「运行单元」。</CardDescription>
+            </CardHeader>
+            <CardContent className="grid gap-3 md:grid-cols-2 text-xs">
+              <div className="rounded-lg border border-emerald-200 dark:border-emerald-500/25 p-3 space-y-1.5">
+                <div className="flex items-center gap-1.5 font-medium text-sm"><Wand2 className="h-4 w-4 text-emerald-500" />提示词（本页）</div>
+                <p className="text-muted-foreground">一段可复用的<strong className="text-foreground">文本</strong>：人设、约束、输出格式、排查话术。</p>
+                <ul className="text-muted-foreground space-y-0.5 list-disc pl-4">
+                  <li>支持 <code className="font-mono">{'{{变量}}'}</code> 占位，插入时按需替换</li>
+                  <li>不绑定模型 / 工具 / 知识库，复制粘贴即可用</li>
+                  <li>可设为全局默认，保存即热生效</li>
+                </ul>
+                <p className="text-emerald-700 dark:text-emerald-400 pt-1">👉 只想复用一段话术，选提示词</p>
+              </div>
+              <div className="rounded-lg border border-purple-200 dark:border-purple-500/25 p-3 space-y-1.5">
+                <div className="flex items-center gap-1.5 font-medium text-sm"><Package className="h-4 w-4 text-purple-500" />技能包（技能市场）</div>
+                <p className="text-muted-foreground">一个可移植的<strong className="text-foreground">运行单元</strong>：数字员工的完整配置。</p>
+                <ul className="text-muted-foreground space-y-0.5 list-disc pl-4">
+                  <li>模型 + 系统提示词 + 知识库分类 + 工具白名单 + 技能指令</li>
+                  <li>连同依赖的自定义 MCP 工具一起打包，安装即上岗</li>
+                  <li>可导出 JSON 跨环境迁移，带版本与评分</li>
+                </ul>
+                <div className="pt-1">
+                  <Link href="/ai/marketplace" className="text-purple-600 dark:text-purple-400 hover:underline inline-flex items-center gap-1">
+                    👉 想把整个数字员工搬到另一套环境，去技能市场 <ChevronRight className="h-3 w-3" />
+                  </Link>
+                </div>
+              </div>
+              <p className="md:col-span-2 text-[11px] text-muted-foreground">
+                依赖方向是单向的：技能包内会<strong className="text-foreground">内嵌</strong>提示词文本，而提示词不感知技能包。
+                因此改提示词库不会影响已安装的技能包，需要同步时在技能包里重新插入即可。
+              </p>
             </CardContent>
           </Card>
         </TabsContent>
@@ -775,162 +1105,6 @@ export default function AISettingsPage() {
           </Card>
         </TabsContent>
 
-        {/* MCP 工具 */}
-        <TabsContent value="tools" className="flex-1 overflow-auto space-y-4">
-          <Card>
-            <CardHeader><CardTitle className="text-base">已注册 MCP 工具</CardTitle><CardDescription>Agent 引擎可调用的工具列表</CardDescription></CardHeader>
-            <CardContent>
-              {tools.length === 0 ? (
-                <div className="text-center py-8 text-muted-foreground">
-                  <Wrench className="h-8 w-8 mx-auto mb-2 opacity-30" />
-                  <p className="text-sm">暂无注册工具</p>
-                </div>
-              ) : (
-                <div className="space-y-2">
-                  {tools.map((t: any, i: number) => (
-                    <div key={i} className={cn("flex items-center justify-between p-3 rounded-lg", theme === 'dark' ? 'bg-white/[0.02] border border-white/[0.04]' : 'bg-gray-50 border border-gray-100')}>
-                      <div>
-                        <div className="flex items-center gap-2">
-                          <Terminal className="h-4 w-4 text-emerald-500" />
-                          <span className="font-medium text-sm">{t.name}</span>
-                          {t.description && <span className="text-xs text-muted-foreground">— {t.description}</span>}
-                        </div>
-                      </div>
-                      <Badge variant="outline" className="text-[10px]">MCP</Badge>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </CardContent>
-          </Card>
-
-          {/* 自定义工具注册 (PRD 5.2.2) */}
-          <Card>
-            <CardHeader>
-              <CardTitle className="text-base flex items-center gap-2"><Terminal className="h-4 w-4 text-emerald-500" />自定义 MCP 工具</CardTitle>
-              <CardDescription>注册 HTTP API 或本地 CLI 为 AI 可调用的工具，保存后即时生效</CardDescription>
-            </CardHeader>
-            <CardContent className="space-y-4">
-              {/* 新建表单 */}
-              <div className={cn("rounded-lg border p-4 space-y-3", theme === 'dark' ? 'border-white/[0.06] bg-white/[0.02]' : 'border-gray-200 bg-gray-50/60')}>
-                <p className="text-xs font-medium">新建自定义工具</p>
-                <div className="grid grid-cols-2 gap-2">
-                  <Input placeholder="工具名 (如: weather_query)" value={ctForm.name} onChange={e => setCtForm({ ...ctForm, name: e.target.value })} />
-                  <Input placeholder="描述 (告诉 AI 何时使用)" value={ctForm.description} onChange={e => setCtForm({ ...ctForm, description: e.target.value })} />
-                </div>
-                <div className="flex items-center gap-4">
-                  <div className="flex gap-2">
-                    {(['http', 'cli'] as const).map(tp => (
-                      <label key={tp} className={cn('flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-md border cursor-pointer', ctForm.type === tp ? 'border-emerald-300 bg-emerald-50 text-emerald-700 dark:border-emerald-500/40 dark:bg-emerald-500/10 dark:text-emerald-400' : 'border-gray-200 text-muted-foreground dark:border-[rgba(255,255,255,0.08)]')}>
-                        <input type="radio" checked={ctForm.type === tp} onChange={() => setCtForm({ ...ctForm, type: tp })} className="accent-emerald-500" />
-                        {tp === 'http' ? 'HTTP API' : 'CLI 命令'}
-                      </label>
-                    ))}
-                  </div>
-                  <label className="flex items-center gap-1.5 text-xs text-muted-foreground cursor-pointer">
-                    <input type="checkbox" checked={ctForm.enabled} onChange={e => setCtForm({ ...ctForm, enabled: e.target.checked })} className="accent-emerald-500" />
-                    创建后立即启用
-                  </label>
-                </div>
-
-                {/* HTTP 配置 */}
-                {ctForm.type === 'http' ? (
-                  <div className="space-y-2">
-                    <div className="flex gap-2">
-                      <select value={ctForm.http_method} onChange={e => setCtForm({ ...ctForm, http_method: e.target.value })} className="h-10 rounded-md border border-input bg-background px-2 text-sm">
-                        {['GET', 'POST', 'PUT', 'DELETE', 'PATCH'].map(m => <option key={m} value={m}>{m}</option>)}
-                      </select>
-                      <Input placeholder="URL 模板, 支持 {param} 占位符 (如 https://api.example.com/hosts/{name})" value={ctForm.http_url} onChange={e => setCtForm({ ...ctForm, http_url: e.target.value })} className="flex-1" />
-                      <Input type="number" min={1} max={120} value={ctForm.timeout_sec} onChange={e => setCtForm({ ...ctForm, timeout_sec: parseInt(e.target.value) || 30 })} className="w-20" title="超时(秒)" />
-                    </div>
-                    {/* Headers */}
-                    <div className="space-y-1.5">
-                      <p className="text-[11px] text-muted-foreground">请求头（可选）</p>
-                      {ctForm.http_headers.map((h, i) => (
-                        <div key={i} className="flex gap-2">
-                          <Input placeholder="Header 名" value={h.k} onChange={e => { const arr = [...ctForm.http_headers]; arr[i] = { ...arr[i], k: e.target.value }; setCtForm({ ...ctForm, http_headers: arr }) }} className="w-48" />
-                          <Input placeholder="值" value={h.v} onChange={e => { const arr = [...ctForm.http_headers]; arr[i] = { ...arr[i], v: e.target.value }; setCtForm({ ...ctForm, http_headers: arr }) }} className="flex-1" />
-                          <Button variant="ghost" size="icon" className="h-10 w-8 shrink-0" onClick={() => setCtForm({ ...ctForm, http_headers: ctForm.http_headers.filter((_, idx) => idx !== i) })}><Trash2 className="h-3.5 w-3.5 text-red-400" /></Button>
-                        </div>
-                      ))}
-                      <Button variant="outline" size="sm" onClick={() => setCtForm({ ...ctForm, http_headers: [...ctForm.http_headers, { k: '', v: '' }] })}><Plus className="h-3.5 w-3.5 mr-1" />加请求头</Button>
-                    </div>
-                  </div>
-                ) : (
-                  <div className="space-y-2">
-                    <Input placeholder="CLI 命令模板, 支持 {param} (如: df -h | grep {mount})" value={ctForm.cli_command} onChange={e => setCtForm({ ...ctForm, cli_command: e.target.value })} />
-                    <div className={cn("flex items-start gap-2 text-[11px] p-2.5 rounded-lg", theme === 'dark' ? 'bg-red-500/5 border border-red-500/10' : 'bg-red-50 border border-red-200')}>
-                      <AlertCircle className="h-3.5 w-3.5 text-red-500 shrink-0 mt-0.5" />
-                      <span className="text-red-600 dark:text-red-400">CLI 工具在服务器本地以 shell 执行，存在命令注入风险。仅建议管理员在可信环境使用。</span>
-                    </div>
-                  </div>
-                )}
-
-                {/* 参数 Schema */}
-                <div className="space-y-1.5">
-                  <p className="text-[11px] text-muted-foreground">参数定义（供 LLM 识别调用参数）</p>
-                  {ctForm.parameters.map((p, i) => (
-                    <div key={i} className="flex gap-2 items-center">
-                      <Input placeholder="参数名" value={p.name} onChange={e => { const arr = [...ctForm.parameters]; arr[i] = { ...arr[i], name: e.target.value }; setCtForm({ ...ctForm, parameters: arr }) }} className="w-36" />
-                      <select value={p.type} onChange={e => { const arr = [...ctForm.parameters]; arr[i] = { ...arr[i], type: e.target.value }; setCtForm({ ...ctForm, parameters: arr }) }} className="h-10 rounded-md border border-input bg-background px-2 text-sm w-28">
-                        <option value="string">string</option>
-                        <option value="number">number</option>
-                        <option value="boolean">boolean</option>
-                      </select>
-                      <Input placeholder="描述" value={p.description} onChange={e => { const arr = [...ctForm.parameters]; arr[i] = { ...arr[i], description: e.target.value }; setCtForm({ ...ctForm, parameters: arr }) }} className="flex-1" />
-                      <label className="flex items-center gap-1 text-[11px] text-muted-foreground whitespace-nowrap cursor-pointer">
-                        <input type="checkbox" checked={p.required} onChange={e => { const arr = [...ctForm.parameters]; arr[i] = { ...arr[i], required: e.target.checked }; setCtForm({ ...ctForm, parameters: arr }) }} className="accent-emerald-500" />必填
-                      </label>
-                      <Button variant="ghost" size="icon" className="h-10 w-8 shrink-0" onClick={() => setCtForm({ ...ctForm, parameters: ctForm.parameters.filter((_, idx) => idx !== i) })}><Trash2 className="h-3.5 w-3.5 text-red-400" /></Button>
-                    </div>
-                  ))}
-                  <Button variant="outline" size="sm" onClick={() => setCtForm({ ...ctForm, parameters: [...ctForm.parameters, { name: '', type: 'string', description: '', required: false }] })}><Plus className="h-3.5 w-3.5 mr-1" />加参数</Button>
-                </div>
-
-                <Button onClick={handleCreateCustomTool} disabled={ctSaving} className="w-full">
-                  {ctSaving ? <Loader2 className="h-4 w-4 mr-1 animate-spin" /> : <Plus className="h-4 w-4 mr-1" />}注册工具
-                </Button>
-              </div>
-
-              {/* 已注册列表 */}
-              <div className="space-y-1.5">
-                <p className="text-xs font-medium">已注册自定义工具 ({customTools.length})</p>
-                {customTools.length === 0 ? (
-                  <p className="text-xs text-muted-foreground p-3 text-center">暂无自定义工具</p>
-                ) : (
-                  customTools.map(t => (
-                    <div key={t.id} className={cn("flex items-center justify-between p-3 rounded-lg", theme === 'dark' ? 'bg-white/[0.02] border border-white/[0.04]' : 'bg-gray-50 border border-gray-100')}>
-                      <div className="min-w-0">
-                        <div className="flex items-center gap-2">
-                          <code className="text-sm font-medium text-emerald-600 dark:text-emerald-400">{t.name}</code>
-                          <Badge variant={t.type === 'http' ? 'info' : 'warning'} className="text-[9px]">{t.type === 'http' ? 'HTTP' : 'CLI'}</Badge>
-                          {!t.enabled && <Badge variant="secondary" className="text-[9px]">已禁用</Badge>}
-                        </div>
-                        {t.description && <p className="text-[11px] text-muted-foreground truncate mt-0.5">{t.description}</p>}
-                        {t.type === 'http' ? (
-                          <p className="text-[10px] text-muted-foreground truncate mt-0.5">{t.http_method} {t.http_url}</p>
-                        ) : (
-                          <p className="text-[10px] text-muted-foreground truncate mt-0.5">{t.cli_command}</p>
-                        )}
-                      </div>
-                      <div className="flex items-center gap-2 shrink-0">
-                        <button
-                          onClick={() => handleToggleCustomTool(t)}
-                          className={cn('relative w-9 h-5 rounded-full transition-colors', t.enabled ? 'bg-emerald-500' : 'bg-gray-300 dark:bg-gray-600')}
-                          title={t.enabled ? '禁用' : '启用'}
-                        >
-                          <span className={cn('absolute top-0.5 h-4 w-4 rounded-full bg-white transition-all', t.enabled ? 'left-[18px]' : 'left-0.5')} />
-                        </button>
-                        <Button variant="ghost" size="sm" onClick={() => handleDeleteCustomTool(t.id)}><Trash2 className="h-3.5 w-3.5 text-red-400" /></Button>
-                      </div>
-                    </div>
-                  ))
-                )}
-              </div>
-            </CardContent>
-          </Card>
-        </TabsContent>
-
         {/* 审批策略 */}
         <TabsContent value="approval" className="flex-1 overflow-auto space-y-4">
           <Card>
@@ -1055,6 +1229,112 @@ export default function AISettingsPage() {
           </Card>
         </TabsContent>
       </Tabs>
+
+      {/* 提示词编辑器: 正文 + 变量实时解析 + 本地预览(不计引用次数) */}
+      <WideDialog
+        open={promptDialogOpen}
+        onClose={() => setPromptDialogOpen(false)}
+        title={promptForm.id ? '编辑提示词' : '新建提示词'}
+      >
+        <div className="space-y-3">
+          <div className="grid gap-3 md:grid-cols-2">
+            <div>
+              <label className="text-xs font-medium mb-1.5 block">名称 <span className="text-red-400">*</span></label>
+              <Input placeholder="如: 故障排查（分层定位）" value={promptForm.name} onChange={e => setPromptForm(f => ({ ...f, name: e.target.value }))} />
+            </div>
+            <div>
+              <label className="text-xs font-medium mb-1.5 block">场景</label>
+              <Input list="prompt-scenes" placeholder="如: 故障排查（可自定义）" value={promptForm.scene} onChange={e => setPromptForm(f => ({ ...f, scene: e.target.value }))} />
+              <datalist id="prompt-scenes">
+                {promptScenes.map(s => <option key={s} value={s} />)}
+              </datalist>
+            </div>
+          </div>
+
+          <div>
+            <label className="text-xs font-medium mb-1.5 block">用途描述</label>
+            <Input placeholder="一句话说明这条提示词解决什么问题" value={promptForm.description} onChange={e => setPromptForm(f => ({ ...f, description: e.target.value }))} />
+          </div>
+
+          <div>
+            <div className="flex items-center justify-between mb-1.5">
+              <label className="text-xs font-medium">正文 <span className="text-red-400">*</span></label>
+              <span className="text-[11px] text-muted-foreground">
+                用 <code className="font-mono text-blue-600 dark:text-blue-400">{'{{变量名}}'}</code> 标记待填内容，插入时按需替换
+              </span>
+            </div>
+            <textarea
+              value={promptForm.content}
+              onChange={e => setPromptForm(f => ({ ...f, content: e.target.value }))}
+              rows={12}
+              placeholder={'你是一位资深 SRE，负责快速定位线上故障。\n\n现象: {{现象}}\n涉及系统: {{系统}}\n\n请按以下结构回答:\n1. ...'}
+              className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm font-mono leading-relaxed resize-y focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500/40"
+            />
+          </div>
+
+          {/* 变量解析 + 预览取值 */}
+          {parsePromptVars(promptForm.content).length > 0 && (
+            <div className="rounded-lg border border-gray-200 dark:border-[rgba(255,255,255,0.08)] p-3 space-y-2">
+              <div className="flex items-center justify-between">
+                <span className="text-xs font-medium">检测到 {parsePromptVars(promptForm.content).length} 个变量</span>
+                <Button variant="outline" size="sm" className="h-7 text-xs" onClick={() => setPromptPreview(renderPromptLocal(promptForm.content, promptVars))}>
+                  <Eye className="h-3 w-3 mr-1" />预览渲染
+                </Button>
+              </div>
+              <div className="grid gap-2 md:grid-cols-2">
+                {parsePromptVars(promptForm.content).map(v => (
+                  <div key={v} className="flex items-center gap-2">
+                    <code className="text-[10px] px-1.5 py-0.5 rounded bg-blue-50 text-blue-600 dark:bg-blue-500/10 dark:text-blue-400 font-mono shrink-0">{v}</code>
+                    <Input
+                      placeholder="预览用示例值（不会保存）"
+                      value={promptVars[v] || ''}
+                      onChange={e => setPromptVars(prev => ({ ...prev, [v]: e.target.value }))}
+                      className="h-7 text-xs"
+                    />
+                  </div>
+                ))}
+              </div>
+              {promptPreview !== null && (
+                <pre className="text-[11px] font-mono bg-gray-50 dark:bg-[rgba(255,255,255,0.03)] rounded-md p-2.5 max-h-48 overflow-auto whitespace-pre-wrap">{promptPreview}</pre>
+              )}
+            </div>
+          )}
+
+          <label className={cn(
+            'flex items-start gap-2 text-xs p-2.5 rounded-lg border cursor-pointer transition-colors',
+            promptForm.is_default
+              ? 'border-emerald-300 bg-emerald-50 dark:border-emerald-500/40 dark:bg-emerald-500/10'
+              : 'border-gray-200 dark:border-[rgba(255,255,255,0.08)]',
+          )}>
+            <input
+              type="checkbox"
+              checked={promptForm.is_default}
+              onChange={e => setPromptForm(f => ({ ...f, is_default: e.target.checked }))}
+              className="accent-emerald-500 mt-0.5"
+            />
+            <span>
+              <span className="font-medium">设为默认系统提示词</span>
+              <span className="text-muted-foreground block mt-0.5">
+                租户内唯一：勾选后原默认自动摘牌，所有未单独配置 system_prompt 的 Agent 与对话立即改用这条（热生效）。
+              </span>
+            </span>
+          </label>
+
+          {promptForm.id && prompts.find(p => p.id === promptForm.id)?.builtin && (
+            <p className="text-[11px] text-amber-600 dark:text-amber-400 flex items-start gap-1.5">
+              <AlertCircle className="h-3.5 w-3.5 shrink-0 mt-px" />
+              这是预置提示词：正文可以改，但不能删除。若想保留原版，建议用「另存副本」派生自建版本。
+            </p>
+          )}
+
+          <div className="flex justify-end gap-2 pt-1">
+            <Button variant="outline" onClick={() => setPromptDialogOpen(false)}>取消</Button>
+            <Button onClick={submitPrompt} disabled={promptSaving}>
+              {promptSaving ? <Loader2 className="h-4 w-4 mr-1 animate-spin" /> : <Save className="h-4 w-4 mr-1" />}保存
+            </Button>
+          </div>
+        </div>
+      </WideDialog>
     </div>
   )
 }
