@@ -14,6 +14,7 @@ import (
 	"github.com/opsorigin/core/internal/monitor/ebpf"
 	"github.com/opsorigin/core/internal/monitor/metrics"
 	"github.com/opsorigin/core/internal/monitor/model"
+	"github.com/opsorigin/core/internal/monitor/plugin"
 	"github.com/opsorigin/core/internal/monitor/synthetic"
 	"github.com/opsorigin/core/pkg/config"
 	"github.com/redis/go-redis/v9"
@@ -28,6 +29,7 @@ type Service struct {
 	ebpf         *ebpf.Collector
 	aggregator   *alert.Aggregator
 	topology     *SimpleTopology
+	plugins      *plugin.Registry
 	wsHub        interface{ BroadcastToTenant(interface{}, string) }
 	probeMu      sync.Mutex
 	probeResults []*model.ProbeResult
@@ -47,9 +49,13 @@ func NewService(cfg *config.Config, rdb *redis.Client) *Service {
 		ebpf:         ebpf.NewCollector(),
 		aggregator:   alert.NewAggregator(topo),
 		topology:     topo,
+		plugins:      plugin.NewDefaultRegistry(),
 		probeResults: make([]*model.ProbeResult, 0),
 	}
 }
+
+// Plugins 暴露插件注册表，供装配期追加自定义插件声明。
+func (s *Service) Plugins() *plugin.Registry { return s.plugins }
 
 // AddAlertNotifier 注册告警触发回调(每次新告警触发时调用, 异步安全)。
 // 供 cmd/core 装配智能值班路由等扩展能力; 与内置 WS 广播互不干扰。
@@ -87,6 +93,7 @@ func (s *Service) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/v1/monitor/rules", s.handleCreateRule)
 	mux.HandleFunc("DELETE /api/v1/monitor/rules/{id}", s.handleDeleteRule)
 	mux.HandleFunc("GET /api/v1/monitor/metrics", s.handleGetMetrics)
+	mux.HandleFunc("GET /api/v1/monitor/plugins", s.handleListPlugins)
 	mux.HandleFunc("POST /api/v1/monitor/topology/parent", s.handleSetParent)
 }
 
@@ -204,6 +211,37 @@ func (s *Service) handleListTargets(w http.ResponseWriter, r *http.Request) {
 		filtered = []*model.MonitorTarget{}
 	}
 	writeJSON(w, http.StatusOK, filtered)
+}
+
+// pluginWithUsage 在插件声明之上附加「当前租户已接入多少个目标」，
+// 让目录页一眼看出哪些插件是真在跑的，而不是一份静态说明书。
+type pluginWithUsage struct {
+	*plugin.Plugin
+	InUse   int      `json:"in_use"`
+	Targets []string `json:"targets,omitempty"`
+}
+
+func (s *Service) handleListPlugins(w http.ResponseWriter, r *http.Request) {
+	tenantID := tenantFromCtx(r.Context())
+
+	// 统计各插件的接入目标：绑定关系记录在 target.Labels["plugin"]，复用既有目标存储。
+	usage := make(map[string][]string)
+	for _, t := range s.discovery.GetTargets() {
+		if t.TenantID != tenantID || t.Labels == nil {
+			continue
+		}
+		if key := t.Labels["plugin"]; key != "" {
+			usage[key] = append(usage[key], t.Name)
+		}
+	}
+
+	list := s.plugins.List()
+	out := make([]pluginWithUsage, 0, len(list))
+	for _, p := range list {
+		names := usage[p.Key]
+		out = append(out, pluginWithUsage{Plugin: p, InUse: len(names), Targets: names})
+	}
+	writeJSON(w, http.StatusOK, out)
 }
 
 func (s *Service) handleGetTarget(w http.ResponseWriter, r *http.Request) {
