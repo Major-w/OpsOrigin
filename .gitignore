@@ -22,3 +22,6 @@ internal/ent/*.go
 internal/ent/*/
 !internal/ent/schema/
 cmd/core/core
+
+# PRD 已移出仓库，仅保留在本地固定目录（如 ~/Documents/OpsOrigin/PRD.md），不入库。
+/PRD.md
