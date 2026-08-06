@@ -16,6 +16,7 @@ import (
 	"net/textproto"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/emersion/go-imap"
@@ -44,8 +45,10 @@ type Handlers struct {
 
 // Service 邮件入站轮询服务。
 type Service struct {
+	mu       sync.Mutex
 	cfg      Config
 	handlers Handlers
+	cancel   context.CancelFunc
 }
 
 func New(cfg Config) *Service {
@@ -68,19 +71,34 @@ func New(cfg Config) *Service {
 func (s *Service) SetHandlers(h Handlers) { s.handlers = h }
 
 // Start 启动轮询 goroutine。未启用或回调未注入时直接返回。
+// 多次调用(如 Reload)会先取消上一次轮询再重启,实现配置热更新。
 func (s *Service) Start(ctx context.Context) {
+	s.mu.Lock()
 	if !s.cfg.Enable {
+		s.mu.Unlock()
 		slog.Info("inbound mail: disabled, skip")
 		return
 	}
 	if s.handlers.ReplyToTicket == nil && s.handlers.CreateTicket == nil {
+		s.mu.Unlock()
 		slog.Warn("inbound mail: handlers not injected, skip")
 		return
 	}
+	if s.cancel != nil {
+		s.cancel()
+		s.cancel = nil
+	}
+	pollSecs := s.cfg.PollSecs
+	host := s.cfg.Host
+	mailbox := s.cfg.Mailbox
+	ctx, cancel := context.WithCancel(ctx)
+	s.cancel = cancel
+	s.mu.Unlock()
+
 	go func() {
-		ticker := time.NewTicker(time.Duration(s.cfg.PollSecs) * time.Second)
+		ticker := time.NewTicker(time.Duration(pollSecs) * time.Second)
 		defer ticker.Stop()
-		slog.Info("inbound mail: polling started", "host", s.cfg.Host, "mailbox", s.cfg.Mailbox)
+		slog.Info("inbound mail: polling started", "host", host, "mailbox", mailbox)
 		// 启动即拉一次
 		if err := s.pollOnce(ctx); err != nil {
 			slog.Warn("inbound mail: first poll failed", "error", err)
@@ -96,6 +114,24 @@ func (s *Service) Start(ctx context.Context) {
 			}
 		}
 	}()
+}
+
+// Reload 用新配置热更新轮询(取消旧轮询并以新配置重启)。
+func (s *Service) Reload(cfg Config) {
+	s.mu.Lock()
+	s.cfg = cfg
+	s.mu.Unlock()
+	s.Start(context.Background())
+}
+
+// Stop 停止轮询。
+func (s *Service) Stop() {
+	s.mu.Lock()
+	if s.cancel != nil {
+		s.cancel()
+		s.cancel = nil
+	}
+	s.mu.Unlock()
 }
 
 // ticketIDRe 匹配工单 UUID(ID 形态)。

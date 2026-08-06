@@ -20,6 +20,7 @@ import (
 	"github.com/opsorigin/core/internal/audit"
 	"github.com/opsorigin/core/internal/automation/actions"
 	"github.com/opsorigin/core/internal/automation/inboundbot"
+	"github.com/opsorigin/core/internal/automation/inboundconfig"
 	"github.com/opsorigin/core/internal/automation/inboundmail"
 	"github.com/opsorigin/core/internal/automation/scheduler"
 	"github.com/opsorigin/core/internal/automation/script"
@@ -28,6 +29,7 @@ import (
 	k8s "github.com/opsorigin/core/internal/cloud/k8s"
 	_ "github.com/opsorigin/core/internal/cloud/providers/all"
 	"github.com/opsorigin/core/internal/cmdb"
+	changeassess "github.com/opsorigin/core/internal/cmdb/changeassess"
 	"github.com/opsorigin/core/internal/cmdb/dgraph"
 	"github.com/opsorigin/core/internal/cmdb/discovery/plugins"
 	"github.com/opsorigin/core/internal/cmdb/outbox"
@@ -42,6 +44,7 @@ import (
 	itsmmodel "github.com/opsorigin/core/internal/itsm/model"
 	"github.com/opsorigin/core/internal/itsm/oncall"
 	"github.com/opsorigin/core/internal/itsm/process"
+	"github.com/opsorigin/core/internal/itsm/ola"
 	"github.com/opsorigin/core/internal/itsm/sla"
 	"github.com/opsorigin/core/internal/keystore"
 	"github.com/opsorigin/core/internal/knowledge"
@@ -201,6 +204,7 @@ func main() {
 
 	cmdbSvc := cmdb.NewService(cfg, pgRepo, dgClient)
 	server.RegisterService(cmdbSvc)
+	server.RegisterService(changeassess.NewStore(db)) // 变更影响评估：变更请求持久化
 
 	// 云资源接出：注册 4 云 Provider（空白导入触发 init）并把云 Service 接入 Core mux，
 	// 经 cloudCMDBAdapter 把发现的资源同步进 CMDB（复用完整 CI 生命周期）。
@@ -263,6 +267,7 @@ func main() {
 	itsmSvc.SetProcessStore(processSvc)
 	slaStore := sla.NewStore(db)
 	server.RegisterService(slaStore)
+	server.RegisterService(ola.NewStore(db)) // OLA 独立管理
 	itsmSvc.SetSLAStore(slaStore)
 	catalogStore := catalog.NewStore(db)
 	server.RegisterService(catalogStore)
@@ -609,125 +614,194 @@ func main() {
 	})
 	processSvc.SetActionExecutor(actionExec)
 
-	// 邮件入站: 环境变量驱动(ITSM_MAIL_IMAP_HOST 等), 未配置则服务不启动。
-	// 主题/正文命中工单 ID → 回复追加评论; 未命中 → 创建新工单。
-	if imapHost := os.Getenv("ITSM_MAIL_IMAP_HOST"); imapHost != "" {
-		mailSvc := inboundmail.New(inboundmail.Config{
-			Enable:   true,
-			Host:     imapHost,
-			Port:     os.Getenv("ITSM_MAIL_IMAP_PORT"),
-			Username: os.Getenv("ITSM_MAIL_USERNAME"),
-			Password: os.Getenv("ITSM_MAIL_PASSWORD"),
-			Mailbox:  os.Getenv("ITSM_MAIL_MAILBOX"),
-			TenantID: os.Getenv("ITSM_MAIL_TENANT"),
-		})
-		mailSvc.SetHandlers(inboundmail.Handlers{
-			ReplyToTicket: func(ctx context.Context, tenantID, ticketID, author, body string) error {
-				return itsmSvc.AddTicketComment(ctx, tenantID, ticketID, "mail:"+author, body)
-			},
-			CreateTicket: func(ctx context.Context, tenantID, from, subject, body string) (string, error) {
-				req := itsmmodel.CreateTicketRequest{
-					Title:         subject,
-					Description:   body,
-					RiskLevel:     itsmmodel.RiskLow,
-					CreatedBy:     "mail:" + from,
-					CreatedByType: "mail",
+	// 入站渠道配置统一由「入站配置」存储(automation_inbound_channels)驱动,
+	// 界面可动态管理渠道开关与参数; 渠道未配置时回退到环境变量(兼容旧部署)。
+	inboundStore := inboundconfig.NewStore(db)
+	server.RegisterService(inboundStore)
+
+	// 邮件入站: 从存储读取 IMAP 配置(缺省回退环境变量), 启动后每 30s 检查变更并热重载。
+	mailSvc := inboundmail.New(inboundmail.Config{})
+	mailSvc.SetHandlers(inboundmail.Handlers{
+		ReplyToTicket: func(ctx context.Context, tenantID, ticketID, author, body string) error {
+			return itsmSvc.AddTicketComment(ctx, tenantID, ticketID, "mail:"+author, body)
+		},
+		CreateTicket: func(ctx context.Context, tenantID, from, subject, body string) (string, error) {
+			req := itsmmodel.CreateTicketRequest{
+				Title:         subject,
+				Description:   body,
+				RiskLevel:     itsmmodel.RiskLow,
+				CreatedBy:     "mail:" + from,
+				CreatedByType: "mail",
+			}
+			tctx := context.WithValue(ctx, "tenant_id", tenantID)
+			tk, err := itsmSvc.CreateTicket(tctx, req)
+			if err != nil {
+				return "", err
+			}
+			return tk.ID, nil
+		},
+	})
+	var mailSig string
+	applyMail := func() {
+		ch, _ := inboundStore.GetByType(ctx, "default", inboundconfig.TypeEmail)
+		if ch == nil {
+			return
+		}
+		var k struct {
+			Host     string `json:"host"`
+			Port     string `json:"port"`
+			Username string `json:"username"`
+			Password string `json:"password"`
+			Mailbox  string `json:"mailbox"`
+			PollSecs int    `json:"poll_secs"`
+		}
+		json.Unmarshal([]byte(ch.Config), &k)
+		host := k.Host
+		if host == "" {
+			host = os.Getenv("ITSM_MAIL_IMAP_HOST")
+		}
+		port := k.Port
+		if port == "" {
+			port = os.Getenv("ITSM_MAIL_IMAP_PORT")
+		}
+		user := k.Username
+		if user == "" {
+			user = os.Getenv("ITSM_MAIL_USERNAME")
+		}
+		pass := k.Password
+		if pass == "" {
+			pass = os.Getenv("ITSM_MAIL_PASSWORD")
+		}
+		mb := k.Mailbox
+		if mb == "" {
+			mb = os.Getenv("ITSM_MAIL_MAILBOX")
+		}
+		enable := ch.Enabled || host != ""
+		if !enable {
+			return
+		}
+		cfg := inboundmail.Config{Enable: true, Host: host, Port: port, Username: user, Password: pass, Mailbox: mb, TenantID: "default"}
+		if k.PollSecs > 0 {
+			cfg.PollSecs = k.PollSecs
+		}
+		sig := fmt.Sprintf("%v|%s|%s|%s|%s|%s|%d", enable, host, port, user, mb, pass, k.PollSecs)
+		if sig != mailSig {
+			mailSig = sig
+			mailSvc.Reload(cfg)
+		}
+	}
+	applyMail()
+	go func() {
+		ticker := time.NewTicker(30 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				mailSvc.Stop()
+				return
+			case <-ticker.C:
+				applyMail()
+			}
+		}
+	}()
+
+	// 多渠道机器人入站(企业微信/钉钉/飞书): 配置从「入站配置」存储读取,
+	// 经 SetConfigProvider 在每次请求时实时生效(界面改动无需重启)。
+	// 渠道未配置时回退到环境变量(兼容旧部署)。
+	buildBotConfig := func() inboundbot.Config {
+		c := inboundbot.Config{}
+		if ch, _ := inboundStore.GetByType(ctx, "default", inboundconfig.TypeWeCom); ch != nil {
+			var k struct {
+				Token     string `json:"token"`
+				AESKey    string `json:"aeskey"`
+				CorpID    string `json:"corpid"`
+				AgentID   string `json:"agentid"`
+				ProcessID string `json:"process_id"`
+			}
+			json.Unmarshal([]byte(ch.Config), &k)
+			token := firstNonEmpty(k.Token, os.Getenv("ITSM_WECOM_TOKEN"))
+			if ch.Enabled || token != "" {
+				c.WeCom = inboundbot.WeComConfig{
+					Enable:    true,
+					Token:     token,
+					AESKey:    firstNonEmpty(k.AESKey, os.Getenv("ITSM_WECOM_AESKEY")),
+					CorpID:    firstNonEmpty(k.CorpID, os.Getenv("ITSM_WECOM_CORPID")),
+					AgentID:   firstNonEmpty(k.AgentID, os.Getenv("ITSM_WECOM_AGENTID")),
+					TenantID:  "default",
+					ProcessID: firstNonEmpty(k.ProcessID, os.Getenv("ITSM_WECOM_PROCESS_ID")),
 				}
-				tctx := context.WithValue(ctx, "tenant_id", tenantID)
-				tk, err := itsmSvc.CreateTicket(tctx, req)
-				if err != nil {
-					return "", err
+			}
+		}
+		if ch, _ := inboundStore.GetByType(ctx, "default", inboundconfig.TypeDingTalk); ch != nil {
+			var k struct {
+				Token     string `json:"token"`
+				AESKey    string `json:"aeskey"`
+				ProcessID string `json:"process_id"`
+			}
+			json.Unmarshal([]byte(ch.Config), &k)
+			token := firstNonEmpty(k.Token, os.Getenv("ITSM_DINGTALK_TOKEN"))
+			if ch.Enabled || token != "" {
+				c.DingTalk = inboundbot.DingTalkConfig{
+					Enable:    true,
+					Token:     token,
+					AESKey:    firstNonEmpty(k.AESKey, os.Getenv("ITSM_DINGTALK_AESKEY")),
+					TenantID:  "default",
+					ProcessID: firstNonEmpty(k.ProcessID, os.Getenv("ITSM_DINGTALK_PROCESS_ID")),
 				}
-				return tk.ID, nil
-			},
-		})
-		mailSvc.Start(ctx)
-	} else {
-		slog.Info("inbound mail: ITSM_MAIL_IMAP_HOST not set, disabled")
+			}
+		}
+		if ch, _ := inboundStore.GetByType(ctx, "default", inboundconfig.TypeFeishu); ch != nil && ch.Enabled {
+			var k struct {
+				Token      string `json:"token"`
+				Secret     string `json:"secret"`
+				EncryptKey string `json:"encrypt_key"`
+				ProcessID  string `json:"process_id"`
+			}
+			json.Unmarshal([]byte(ch.Config), &k)
+			c.Feishu = inboundbot.FeishuConfig{
+				Enable: true, Token: k.Token, Secret: k.Secret,
+				EncryptKey: k.EncryptKey, TenantID: "default", ProcessID: k.ProcessID,
+			}
+		}
+		return c
 	}
 
-	// 多渠道机器人入站: 企业微信/钉钉回调机器人, 环境变量驱动(未配置则不挂载 webhook)。
-	// 消息命中工单 ID → 回复追加评论; 未命中 → 创建新工单(created_by_type 标记渠道,
-	// 直接进入报表看板 ByChannel 统计)。各渠道独立开关, 互不影响。
-	if wecomToken := os.Getenv("ITSM_WECOM_TOKEN"); wecomToken != "" {
-		wecomProc := os.Getenv("ITSM_WECOM_PROCESS_ID")
-		botSvc := inboundbot.New(inboundbot.Config{
-			WeCom: inboundbot.WeComConfig{
-				Enable:    true,
-				Token:     wecomToken,
-				AESKey:    os.Getenv("ITSM_WECOM_AESKEY"),
-				CorpID:    os.Getenv("ITSM_WECOM_CORPID"),
-				AgentID:   os.Getenv("ITSM_WECOM_AGENTID"),
-				TenantID:  os.Getenv("ITSM_WECOM_TENANT"),
-				ProcessID: wecomProc,
-			},
-		})
-		botSvc.SetHandlers(inboundbot.Handlers{
-			ReplyToTicket: func(ctx context.Context, tenantID, ticketID, author, body string) error {
-				return itsmSvc.AddTicketComment(ctx, tenantID, ticketID, author, body)
-			},
-			CreateTicket: func(ctx context.Context, tenantID, channel, from, subject, body string) (string, error) {
-				req := itsmmodel.CreateTicketRequest{
-					Title:         subject,
-					Description:   body,
-					RiskLevel:     itsmmodel.RiskLow,
-					CreatedBy:     channel + ":" + from,
-					CreatedByType: channel,
-				}
-				if wecomProc != "" {
-					req.ProcessID = wecomProc
-				}
-				tctx := context.WithValue(ctx, "tenant_id", tenantID)
-				tk, err := itsmSvc.CreateTicket(tctx, req)
-				if err != nil {
-					return "", err
-				}
-				return tk.ID, nil
-			},
-		})
-		server.RegisterService(botSvc)
-	} else {
-		slog.Info("inbound bot: ITSM_WECOM_TOKEN not set, wecom disabled")
-	}
-
-	if dtToken := os.Getenv("ITSM_DINGTALK_TOKEN"); dtToken != "" {
-		dtProc := os.Getenv("ITSM_DINGTALK_PROCESS_ID")
-		botSvc := inboundbot.New(inboundbot.Config{
-			DingTalk: inboundbot.DingTalkConfig{
-				Enable:    true,
-				Token:     dtToken,
-				AESKey:    os.Getenv("ITSM_DINGTALK_AESKEY"),
-				TenantID:  os.Getenv("ITSM_DINGTALK_TENANT"),
-				ProcessID: dtProc,
-			},
-		})
-		botSvc.SetHandlers(inboundbot.Handlers{
-			ReplyToTicket: func(ctx context.Context, tenantID, ticketID, author, body string) error {
-				return itsmSvc.AddTicketComment(ctx, tenantID, ticketID, author, body)
-			},
-			CreateTicket: func(ctx context.Context, tenantID, channel, from, subject, body string) (string, error) {
-				req := itsmmodel.CreateTicketRequest{
-					Title:         subject,
-					Description:   body,
-					RiskLevel:     itsmmodel.RiskLow,
-					CreatedBy:     channel + ":" + from,
-					CreatedByType: channel,
-				}
-				if dtProc != "" {
-					req.ProcessID = dtProc
-				}
-				tctx := context.WithValue(ctx, "tenant_id", tenantID)
-				tk, err := itsmSvc.CreateTicket(tctx, req)
-				if err != nil {
-					return "", err
-				}
-				return tk.ID, nil
-			},
-		})
-		server.RegisterService(botSvc)
-	} else {
-		slog.Info("inbound bot: ITSM_DINGTALK_TOKEN not set, dingtalk disabled")
-	}
+	botSvc := inboundbot.New(inboundbot.Config{})
+	botSvc.SetHandlers(inboundbot.Handlers{
+		ReplyToTicket: func(ctx context.Context, tenantID, ticketID, author, body string) error {
+			return itsmSvc.AddTicketComment(ctx, tenantID, ticketID, author, body)
+		},
+		CreateTicket: func(ctx context.Context, tenantID, channel, from, subject, body string) (string, error) {
+			cfg := botSvc.CurrentConfig()
+			var proc string
+			switch channel {
+			case "wecom":
+				proc = cfg.WeCom.ProcessID
+			case "dingtalk":
+				proc = cfg.DingTalk.ProcessID
+			case "feishu":
+				proc = cfg.Feishu.ProcessID
+			}
+			req := itsmmodel.CreateTicketRequest{
+				Title:         subject,
+				Description:   body,
+				RiskLevel:     itsmmodel.RiskLow,
+				CreatedBy:     channel + ":" + from,
+				CreatedByType: channel,
+			}
+			if proc != "" {
+				req.ProcessID = proc
+			}
+			tctx := context.WithValue(ctx, "tenant_id", tenantID)
+			tk, err := itsmSvc.CreateTicket(tctx, req)
+			if err != nil {
+				return "", err
+			}
+			return tk.ID, nil
+		},
+	})
+	botSvc.SetConfigProvider(buildBotConfig)
+	server.RegisterService(botSvc)
 
 	// P2-5 CMDB 消息订阅：通知渠道经平台通知中心分发（避免 cmdb↔notification 循环依赖）
 	cmdbSvc.SetNotifyCallback(func(ctx context.Context, tenantID, title, content string) error {

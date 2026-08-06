@@ -11,6 +11,7 @@ import (
 	"context"
 	"crypto/aes"
 	"crypto/cipher"
+	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha1"
 	"crypto/sha256"
@@ -28,10 +29,21 @@ import (
 	"strings"
 )
 
-// Config 多渠道机器人入站配置(由 cmd/core 从环境变量装配)。
+// Config 多渠道机器人入站配置(由 cmd/core 从环境变量或入站配置存储装配)。
 type Config struct {
 	WeCom    WeComConfig
 	DingTalk DingTalkConfig
+	Feishu   FeishuConfig
+}
+
+// FeishuConfig 飞书(Lark)事件订阅回调配置。
+type FeishuConfig struct {
+	Enable     bool   // 总开关
+	Token      string // Verification Token：用于 URL 验证与签名校验(HMAC key)
+	Secret     string // App Secret：参与签名计算(sign = base64(HMAC-SHA256(timestamp+"\n"+secret, key=Token)))
+	EncryptKey string // 可选：数据加密模式 EncodingAESKey(43 字符)，留空=明文模式
+	TenantID   string // 工单归属租户, 默认 default
+	ProcessID  string // 可选: 机器人提单默认流程模板 ID
 }
 
 // WeComConfig 企业微信回调配置(自建应用消息回调模式)。
@@ -64,8 +76,9 @@ type Handlers struct {
 
 // Service 多渠道机器人入站服务。
 type Service struct {
-	cfg      Config
-	handlers Handlers
+	cfg         Config
+	cfgProvider func() Config // 运行时配置提供者(由 cmd/core 注入, 从入站配置存储读取, 使 UI 改动实时生效)
+	handlers    Handlers
 }
 
 // New 构造服务并补全缺省租户。
@@ -82,18 +95,26 @@ func New(cfg Config) *Service {
 // SetHandlers 注入处理回调(建单/回复)。
 func (s *Service) SetHandlers(h Handlers) { s.handlers = h }
 
-// RegisterRoutes 把各渠道 webhook 挂到 mux(仅挂载 Enable 的渠道)。
+// SetConfigProvider 注入运行时配置提供者(从入站配置存储读取),使 UI 改动实时生效。
+// 未注入时回退到构造时传入的静态 Config(兼容纯环境变量装配场景)。
+func (s *Service) SetConfigProvider(p func() Config) { s.cfgProvider = p }
+
+// CurrentConfig 返回当前生效配置:优先运行时提供者,否则静态 Config。
+func (s *Service) CurrentConfig() Config {
+	if s.cfgProvider != nil {
+		return s.cfgProvider()
+	}
+	return s.cfg
+}
+
+// RegisterRoutes 把各渠道 webhook 挂到 mux(始终挂载, 渠道启用态在请求时按当前配置判定)。
 func (s *Service) RegisterRoutes(mux *http.ServeMux) {
-	if s.cfg.WeCom.Enable {
-		slog.Info("inbound bot: wecom webhook enabled", "path", "/api/v1/inbound/wecom")
-		mux.HandleFunc("GET /api/v1/inbound/wecom", s.handleWeComVerify)
-		mux.HandleFunc("POST /api/v1/inbound/wecom", s.handleWeComMessage)
-	}
-	if s.cfg.DingTalk.Enable {
-		slog.Info("inbound bot: dingtalk webhook enabled", "path", "/api/v1/inbound/dingtalk")
-		mux.HandleFunc("POST /api/v1/inbound/dingtalk", s.handleDingTalk)
-		mux.HandleFunc("GET /api/v1/inbound/dingtalk", s.handleDingTalk)
-	}
+	mux.HandleFunc("GET /api/v1/inbound/wecom", s.handleWeComVerify)
+	mux.HandleFunc("POST /api/v1/inbound/wecom", s.handleWeComMessage)
+	mux.HandleFunc("POST /api/v1/inbound/dingtalk", s.handleDingTalk)
+	mux.HandleFunc("GET /api/v1/inbound/dingtalk", s.handleDingTalk)
+	mux.HandleFunc("GET /api/v1/inbound/feishu", s.handleFeishuVerify)
+	mux.HandleFunc("POST /api/v1/inbound/feishu", s.handleFeishuMessage)
 }
 
 // ticketIDRe 匹配工单 UUID(ID 形态), 与 inboundmail 保持一致。
@@ -197,17 +218,22 @@ func wecomEncrypt(key []byte, msg, receiveID string) (string, error) {
 
 // handleWeComVerify GET 回调地址验证: 验签后 AES 解密 echostr 原样返回。
 func (s *Service) handleWeComVerify(w http.ResponseWriter, r *http.Request) {
+	cfg := s.CurrentConfig()
+	if !cfg.WeCom.Enable {
+		http.NotFound(w, r)
+		return
+	}
 	q := r.URL.Query()
 	msgSig := q.Get("msg_signature")
 	timestamp := q.Get("timestamp")
 	nonce := q.Get("nonce")
 	echostr := q.Get("echostr")
-	key, err := wecomDecodeKey(s.cfg.WeCom.AESKey)
+	key, err := wecomDecodeKey(cfg.WeCom.AESKey)
 	if err != nil {
 		http.Error(w, "bad aeskey", http.StatusInternalServerError)
 		return
 	}
-	if wecomSignature(s.cfg.WeCom.Token, timestamp, nonce, echostr) != msgSig {
+	if wecomSignature(cfg.WeCom.Token, timestamp, nonce, echostr) != msgSig {
 		http.Error(w, "invalid signature", http.StatusForbidden)
 		return
 	}
@@ -222,6 +248,11 @@ func (s *Service) handleWeComVerify(w http.ResponseWriter, r *http.Request) {
 
 // handleWeComMessage POST 消息回调: 验签 → 解密 → 解析文本 → 路由。
 func (s *Service) handleWeComMessage(w http.ResponseWriter, r *http.Request) {
+	cfg := s.CurrentConfig()
+	if !cfg.WeCom.Enable {
+		http.NotFound(w, r)
+		return
+	}
 	q := r.URL.Query()
 	msgSig := q.Get("msg_signature")
 	timestamp := q.Get("timestamp")
@@ -235,12 +266,12 @@ func (s *Service) handleWeComMessage(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "bad body", http.StatusBadRequest)
 		return
 	}
-	key, err := wecomDecodeKey(s.cfg.WeCom.AESKey)
+	key, err := wecomDecodeKey(cfg.WeCom.AESKey)
 	if err != nil {
 		http.Error(w, "bad aeskey", http.StatusInternalServerError)
 		return
 	}
-	if wecomSignature(s.cfg.WeCom.Token, timestamp, nonce, env.Encrypt) != msgSig {
+	if wecomSignature(cfg.WeCom.Token, timestamp, nonce, env.Encrypt) != msgSig {
 		http.Error(w, "invalid signature", http.StatusForbidden)
 		return
 	}
@@ -263,7 +294,7 @@ func (s *Service) handleWeComMessage(w http.ResponseWriter, r *http.Request) {
 		writeText(w, "success")
 		return
 	}
-	s.route(r.Context(), "wecom", s.cfg.WeCom.TenantID, msg.FromUser, msg.Content, msg.Content)
+	s.route(r.Context(), "wecom", cfg.WeCom.TenantID, msg.FromUser, msg.Content, msg.Content)
 	writeText(w, "success")
 }
 
@@ -280,6 +311,11 @@ func dingSignature(token, timestamp, nonce, payload string) string {
 
 // handleDingTalk POST/GET 回调: 区分 URL 验证(check_url) 与消息回调。
 func (s *Service) handleDingTalk(w http.ResponseWriter, r *http.Request) {
+	cfg := s.CurrentConfig()
+	if !cfg.DingTalk.Enable {
+		http.NotFound(w, r)
+		return
+	}
 	q := r.URL.Query()
 	signature := q.Get("signature")
 	timestamp := q.Get("timestamp")
@@ -292,15 +328,15 @@ func (s *Service) handleDingTalk(w http.ResponseWriter, r *http.Request) {
 	// URL 验证
 	if t, _ := probe["type"].(string); t == "check_url" {
 		random, _ := probe["random"].(string)
-		if s.cfg.DingTalk.Token != "" {
-			if dingSignature(s.cfg.DingTalk.Token, timestamp, nonce, random) != signature {
+		if cfg.DingTalk.Token != "" {
+			if dingSignature(cfg.DingTalk.Token, timestamp, nonce, random) != signature {
 				http.Error(w, "invalid signature", http.StatusForbidden)
 				return
 			}
 		}
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]string{
-			"signature": dingSignature(s.cfg.DingTalk.Token, timestamp, nonce, random),
+			"signature": dingSignature(cfg.DingTalk.Token, timestamp, nonce, random),
 			"timestamp": timestamp,
 			"nonce":     nonce,
 			"echostr":   random,
@@ -309,8 +345,8 @@ func (s *Service) handleDingTalk(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 消息验签(非加密模式: 对原始 body 签名; 加密模式可在此扩展)
-	if s.cfg.DingTalk.Token != "" {
-		if dingSignature(s.cfg.DingTalk.Token, timestamp, nonce, string(bodyBytes)) != signature {
+	if cfg.DingTalk.Token != "" {
+		if dingSignature(cfg.DingTalk.Token, timestamp, nonce, string(bodyBytes)) != signature {
 			http.Error(w, "invalid signature", http.StatusForbidden)
 			return
 		}
@@ -333,6 +369,164 @@ func (s *Service) handleDingTalk(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.route(r.Context(), "dingtalk", s.cfg.DingTalk.TenantID, dm.SenderID, dm.Text.Content, dm.Text.Content)
+	writeText(w, "success")
+}
+
+// ---------------------------------------------------------------------------
+// 飞书(Lark)回调: 验签(HMAC-SHA256) + 可选 AES 加密 + 事件路由
+// ---------------------------------------------------------------------------
+
+func feishuSignature(token, timestamp, secret string) string {
+	mac := hmac.New(sha256.New, []byte(token))
+	mac.Write([]byte(timestamp + "\n" + secret))
+	return base64.StdEncoding.EncodeToString(mac.Sum(nil))
+}
+
+// feishuDecrypt 解密飞书加密消息体(数据加密模式): EncodingAESKey(43 字符) → 32 字节 key,
+// AES-256-CBC, IV = key[:16], PKCS7 去填充, 明文即 JSON(无 WeCom 式 16+4 头)。
+func feishuDecrypt(key []byte, encrypted string) (string, error) {
+	raw, err := base64.StdEncoding.DecodeString(encrypted)
+	if err != nil {
+		return "", err
+	}
+	plain, err := aesCBCDecrypt(key, raw)
+	if err != nil {
+		return "", err
+	}
+	return string(plain), nil
+}
+
+func feishuDecodeKey(aesKey string) ([]byte, error) {
+	if len(aesKey) != 43 {
+		return nil, fmt.Errorf("EncodingAESKey must be 43 chars, got %d", len(aesKey))
+	}
+	b, err := base64.StdEncoding.DecodeString(aesKey + "=")
+	if err != nil {
+		return nil, err
+	}
+	if len(b) != 32 {
+		return nil, fmt.Errorf("decoded key length %d, want 32", len(b))
+	}
+	return b, nil
+}
+
+// handleFeishuVerify GET URL 验证(v1.0): 校验 token 与 signature=base64(HMAC-SHA256(timestamp+"\n"+secret, key=Token)),
+// 校验通过原样返回 challenge。
+func (s *Service) handleFeishuVerify(w http.ResponseWriter, r *http.Request) {
+	cfg := s.CurrentConfig()
+	if !cfg.Feishu.Enable {
+		http.NotFound(w, r)
+		return
+	}
+	q := r.URL.Query()
+	token := q.Get("token")
+	timestamp := q.Get("timestamp")
+	sign := q.Get("signature")
+	challenge := q.Get("challenge")
+	if token != cfg.Feishu.Token {
+		http.Error(w, "invalid token", http.StatusForbidden)
+		return
+	}
+	if cfg.Feishu.Secret != "" {
+		if feishuSignature(cfg.Feishu.Token, timestamp, cfg.Feishu.Secret) != sign {
+			http.Error(w, "invalid signature", http.StatusForbidden)
+			return
+		}
+	}
+	writeText(w, challenge)
+}
+
+// handleFeishuMessage POST 事件回调: 支持 v2.0 url_verification 与 event_callback(明文/加密模式)。
+func (s *Service) handleFeishuMessage(w http.ResponseWriter, r *http.Request) {
+	cfg := s.CurrentConfig()
+	if !cfg.Feishu.Enable {
+		http.NotFound(w, r)
+		return
+	}
+	body, _ := io.ReadAll(r.Body)
+	var env struct {
+		Type      string `json:"type"`
+		Challenge string `json:"challenge"`
+		Token     string `json:"token"`
+		Timestamp string `json:"timestamp"`
+		Sign      string `json:"sign"`
+		Encrypt   string `json:"encrypt"`
+		Event     struct {
+			MsgType string `json:"msg_type"`
+			Content string `json:"content"`
+			Sender  struct {
+				SenderID struct {
+					OpenID     string `json:"open_id"`
+					EmployeeID string `json:"employee_id"`
+				} `json:"sender_id"`
+			} `json:"sender"`
+		} `json:"event"`
+	}
+	if err := json.Unmarshal(body, &env); err != nil {
+		writeText(w, "success")
+		return
+	}
+	// v2.0 URL 验证
+	if env.Type == "url_verification" {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]string{"challenge": env.Challenge})
+		return
+	}
+	// 签名校验(加密/明文模式通用)
+	if cfg.Feishu.Secret != "" {
+		if feishuSignature(cfg.Feishu.Token, env.Timestamp, cfg.Feishu.Secret) != env.Sign {
+			http.Error(w, "invalid signature", http.StatusForbidden)
+			return
+		}
+	}
+	// 解密(若启用加密模式)
+	if env.Encrypt != "" {
+		if cfg.Feishu.EncryptKey == "" {
+			writeText(w, "success")
+			return
+		}
+		key, err := feishuDecodeKey(cfg.Feishu.EncryptKey)
+		if err != nil {
+			writeText(w, "success")
+			return
+		}
+		dec, err := feishuDecrypt(key, env.Encrypt)
+		if err != nil {
+			writeText(w, "success")
+			return
+		}
+		var inner struct {
+			Event struct {
+				MsgType string `json:"msg_type"`
+				Content string `json:"content"`
+				Sender  struct {
+					SenderID struct {
+						OpenID     string `json:"open_id"`
+						EmployeeID string `json:"employee_id"`
+					} `json:"sender_id"`
+				} `json:"sender"`
+			} `json:"event"`
+		}
+		if err := json.Unmarshal([]byte(dec), &inner); err == nil {
+			env.Event = inner.Event
+		}
+	}
+	if env.Event.MsgType != "text" || env.Event.Content == "" {
+		writeText(w, "success")
+		return
+	}
+	var content struct {
+		Text string `json:"text"`
+	}
+	if err := json.Unmarshal([]byte(env.Event.Content), &content); err != nil || strings.TrimSpace(content.Text) == "" {
+		writeText(w, "success")
+		return
+	}
+	from := env.Event.Sender.SenderID.OpenID
+	if from == "" {
+		from = env.Event.Sender.SenderID.EmployeeID
+	}
+	s.route(r.Context(), "feishu", cfg.Feishu.TenantID, from, content.Text, content.Text)
 	writeText(w, "success")
 }
 
