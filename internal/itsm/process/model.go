@@ -1,6 +1,9 @@
 package process
 
-import "time"
+import (
+	"encoding/json"
+	"time"
+)
 
 // StepType — BPMN 风格节点类型
 type StepType string
@@ -72,6 +75,13 @@ type Process struct {
 	Labels      map[string]string `json:"labels,omitempty"`
 	Enabled     bool              `json:"enabled"`
 	Version     int               `json:"version"`
+	// Form 流程级主表单 Schema(工单创建时采集的自定义字段), JSON 结构对齐 internal/itsm/form.FormSchema。
+	// 与画布中「人工任务」节点的 form_schema 互补: 前者是工单入口表单, 后者是流转到该步骤时的补充表单。
+	Form json.RawMessage `json:"form,omitempty"`
+	// SlaPolicyID 关联 SLA 策略(id); 运行期工单启动时按 process_id 命中 GetByProcessID, 优先级高于风险级。
+	SlaPolicyID string `json:"sla_policy_id,omitempty"`
+	// NotifyConfig 流程级通知策略(JSON): { channels:[...], on_create:bool, on_complete:bool, template:string }。
+	NotifyConfig json.RawMessage `json:"notify_config,omitempty"`
 	CreatedAt   time.Time         `json:"created_at"`
 	UpdatedAt   time.Time         `json:"updated_at"`
 }

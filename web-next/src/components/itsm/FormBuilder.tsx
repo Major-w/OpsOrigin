@@ -21,7 +21,7 @@ import {
   parseVisibleWhen,
 } from './DynamicForm'
 
-const FIELD_TYPES: { value: FormFieldType; label: string }[] = [
+export const FIELD_TYPES: { value: FormFieldType; label: string }[] = [
   { value: 'text', label: '单行文本' },
   { value: 'textarea', label: '多行文本' },
   { value: 'select', label: '单选' },
@@ -39,7 +39,18 @@ const FIELD_TYPES: { value: FormFieldType; label: string }[] = [
   { value: 'cascader', label: '级联' },
 ]
 
-const OPTION_TYPES: FormFieldType[] = ['select', 'multiselect', 'user', 'ci', 'cascader']
+export const OPTION_TYPES: FormFieldType[] = ['select', 'multiselect', 'user', 'ci', 'cascader']
+
+/** 字段工厂：按类型生成带唯一 key 的 FormFieldDef，供拖拽表单设计器新增字段复用。 */
+export function createField(type: FormFieldType, n: number): FormFieldDef {
+  return {
+    key: `field_${n}`,
+    label: `字段 ${n}`,
+    type,
+    required: false,
+    order: n,
+  }
+}
 
 const inputCls =
   'flex h-9 w-full rounded-md border border-input bg-background px-2 text-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring'
@@ -252,7 +263,7 @@ function IconBtn({
   )
 }
 
-function FieldPropertyPanel({
+export function FieldPropertyPanel({
   field,
   sources,
   referableFields,

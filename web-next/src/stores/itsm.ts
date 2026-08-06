@@ -104,6 +104,12 @@ export interface Process {
   id: string; name: string; description?: string; category?: string
   steps: ProcessStep[]; labels?: Record<string,string>
   enabled: boolean; version: number
+  // 流程级主表单 Schema(JSON 字符串或对象), 向导「表单设计」步骤产出
+  form?: any
+  // 关联 SLA 策略 id; 运行期按 process_id 命中流程级 SLA, 优先于风险级
+  sla_policy_id?: string
+  // 流程级通知策略(JSON 字符串或对象)
+  notify_config?: any
   created_at: string; updated_at: string
 }
 
