@@ -6,6 +6,8 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { Input } from '@/components/ui/input'
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
+import { AppArchPanel } from '@/components/cmdb/app-arch-panel'
 import {
   ZoomIn, ZoomOut, Maximize, RefreshCw, Network, AlertTriangle,
   Server, Database, Cloud, Globe, Boxes, Shield, Layers,
@@ -78,6 +80,8 @@ export default function TopologyPage() {
   const [pan, setPan] = useState({ x: 0, y: 0 })
   const [selectedNode, setSelectedNode] = useState<TopologyNode | null>(null)
   const [impactLoading, setImpactLoading] = useState(false)
+  // 视图模式：关系图谱（以任意 CI 为根）/ 应用架构（按业务分层）——同一份关系数据的两种呈现
+  const [view, setView] = useState<'graph' | 'app'>('graph')
 
   // 节点位置(可拖拽)
   const [positions, setPositions] = useState<Record<string, { x: number; y: number }>>({})
@@ -208,19 +212,28 @@ export default function TopologyPage() {
     <div className="p-6 space-y-4">
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-2xl font-bold">拓扑图谱</h1>
-          <p className="text-sm text-muted-foreground">以指定 CI 为根,展示 3 层拓扑关系图</p>
+          <h1 className="text-2xl font-bold">拓扑可视化</h1>
+          <p className="text-sm text-muted-foreground">关系图谱以任意 CI 为根展开 3 层关系；应用架构按业务分层聚合上下游资产</p>
         </div>
-        <div className="flex items-center gap-2">
-          <Button variant="outline" size="sm" onClick={() => selectedCI && loadTopology(selectedCI)}>
-            <RefreshCw className="h-3.5 w-3.5 mr-1" />刷新
-          </Button>
-          <Button variant="outline" size="sm" onClick={runImpact} disabled={!selectedCI || impactLoading}>
-            <AlertTriangle className="h-3.5 w-3.5 mr-1" />{impactLoading ? '分析中...' : '影响分析'}
-          </Button>
-        </div>
+        {view === 'graph' && (
+          <div className="flex items-center gap-2">
+            <Button variant="outline" size="sm" onClick={() => selectedCI && loadTopology(selectedCI)}>
+              <RefreshCw className="h-3.5 w-3.5 mr-1" />刷新
+            </Button>
+            <Button variant="outline" size="sm" onClick={runImpact} disabled={!selectedCI || impactLoading}>
+              <AlertTriangle className="h-3.5 w-3.5 mr-1" />{impactLoading ? '分析中...' : '影响分析'}
+            </Button>
+          </div>
+        )}
       </div>
 
+      <Tabs value={view} onValueChange={v => setView(v as 'graph' | 'app')}>
+        <TabsList>
+          <TabsTrigger value="graph"><Network className="h-3.5 w-3.5 mr-1" />关系图谱</TabsTrigger>
+          <TabsTrigger value="app"><Layers className="h-3.5 w-3.5 mr-1" />应用架构</TabsTrigger>
+        </TabsList>
+
+        <TabsContent value="graph" className="space-y-4 mt-4">
       <div className="grid grid-cols-1 lg:grid-cols-4 gap-4">
         {/* 左侧:CI 选择器 */}
         <div className="lg:col-span-1 space-y-4">
@@ -548,6 +561,12 @@ export default function TopologyPage() {
           </CardContent>
         </Card>
       )}
+        </TabsContent>
+
+        <TabsContent value="app" className="mt-4">
+          <AppArchPanel />
+        </TabsContent>
+      </Tabs>
     </div>
   )
 }

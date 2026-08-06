@@ -1,12 +1,19 @@
 'use client'
 
+/**
+ * 应用架构面板 —— 以应用为中心的分层拓扑视图。
+ *
+ * 原先是独立页面 /cmdb/app-arch，现整合进「拓扑可视化」作为一种视图模式：
+ * 关系图谱（以任意 CI 为根的关系网）与应用架构（按业务分层聚合）本质是同一份
+ * 关系数据的两种呈现，拆成两个入口会让用户在导航里反复横跳。
+ */
+
 import { useEffect, useState } from 'react'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
-import { apiFetch, apiList } from '@/lib/utils'
+import { apiFetch, apiList, cn } from '@/lib/utils'
 import { Network, RefreshCw, ArrowDown } from 'lucide-react'
-import { cn } from '@/lib/utils'
 
 interface AppTopoNode { id: string; name: string; type_id: string; category: string; layer: string }
 interface AppTopoEdge { source: string; target: string; type: string }
@@ -23,12 +30,13 @@ const LAYER_META: Record<string, { label: string; color: string; border: string 
   other: { label: '其它', color: 'bg-gray-400', border: 'border-gray-300 dark:border-gray-600' },
 }
 
-export default function AppArchPage() {
+export function AppArchPanel() {
   const [cis, setCis] = useState<CIModel[]>([])
   const [appId, setAppId] = useState('')
   const [depth, setDepth] = useState(2)
   const [topo, setTopo] = useState<AppTopology | null>(null)
   const [loading, setLoading] = useState(false)
+  const [err, setErr] = useState('')
 
   useEffect(() => {
     apiList<CIModel>('/cmdb/ci?limit=2000').then(setCis).catch(() => setCis([]))
@@ -36,35 +44,32 @@ export default function AppArchPage() {
 
   const load = async () => {
     if (!appId) return
-    setLoading(true)
+    setLoading(true); setErr('')
     try {
       setTopo(await apiFetch<AppTopology>(`/cmdb/app-topology?app_ci_id=${encodeURIComponent(appId)}&depth=${depth}`))
-    } catch (e: any) { setTopo(null); alert(e.message) } finally { setLoading(false) }
+    } catch (e: any) {
+      setTopo(null); setErr(e?.message || '生成应用架构视图失败')
+    } finally { setLoading(false) }
   }
 
   const nodeById = (id: string) => topo?.nodes.find(n => n.id === id)
   const layerNodes = (layer: TopoLayer) => layer.nodes.map(id => nodeById(id)).filter(Boolean) as AppTopoNode[]
 
   return (
-    <div className="p-6 space-y-4">
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-2xl font-bold">应用架构拓扑</h1>
-          <p className="text-sm text-muted-foreground">以应用为中心的业务/分层架构视图，自动按关系聚合上下游资产</p>
-        </div>
-        <div className="flex gap-2 items-center">
-          <select value={appId} onChange={e => setAppId(e.target.value)} className="h-9 rounded-md border border-input bg-background px-3 py-1.5 text-sm w-64">
-            <option value="">选择应用（CI 资产）…</option>
-            {cis.map(c => <option key={c.id} value={c.id}>{c.name} ({c.type_id})</option>)}
-          </select>
-          <select value={depth} onChange={e => setDepth(Number(e.target.value))} className="h-9 rounded-md border border-input bg-background px-2 py-1.5 text-sm">
-            <option value={1}>1 层</option>
-            <option value={2}>2 层</option>
-            <option value={3}>3 层</option>
-          </select>
-          <Button onClick={load} disabled={!appId || loading}><Network className="h-4 w-4" />生成视图</Button>
-          {topo && <Button variant="outline" onClick={load}><RefreshCw className="h-4 w-4" /></Button>}
-        </div>
+    <div className="space-y-4">
+      <div className="flex flex-wrap gap-2 items-center">
+        <select value={appId} onChange={e => setAppId(e.target.value)} className="h-9 rounded-md border border-input bg-background px-3 py-1.5 text-sm w-64">
+          <option value="">选择应用（CI 资产）…</option>
+          {cis.map(c => <option key={c.id} value={c.id}>{c.name} ({c.type_id})</option>)}
+        </select>
+        <select value={depth} onChange={e => setDepth(Number(e.target.value))} className="h-9 rounded-md border border-input bg-background px-2 py-1.5 text-sm">
+          <option value={1}>1 层</option>
+          <option value={2}>2 层</option>
+          <option value={3}>3 层</option>
+        </select>
+        <Button onClick={load} disabled={!appId || loading}><Network className="h-4 w-4" />{loading ? '生成中…' : '生成视图'}</Button>
+        {topo && <Button variant="outline" onClick={load}><RefreshCw className="h-4 w-4" /></Button>}
+        {err && <span className="text-xs text-red-500">{err}</span>}
       </div>
 
       {!topo ? (
@@ -79,7 +84,6 @@ export default function AppArchPage() {
             <Badge variant="outline">{topo.edges.length} 条关系</Badge>
           </CardHeader>
           <CardContent>
-            {/* 分层列布局 */}
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-3">
               {topo.layers.map(layer => {
                 const meta = LAYER_META[layer.name] || LAYER_META.other
@@ -104,13 +108,15 @@ export default function AppArchPage() {
                 )
               })}
             </div>
-            {/* 关系线（文本描述） */}
             {topo.edges.length > 0 && (
               <div className="mt-4">
                 <p className="text-xs font-medium mb-2 flex items-center gap-1"><ArrowDown className="h-3 w-3" />关联明细</p>
                 <div className="flex flex-wrap gap-1.5">
                   {topo.edges.map((e, i) => (
-                    <Badge key={i} variant="outline" className="text-[10px]">{nodeById(e.source)?.name || e.source.slice(0, 6)} → {nodeById(e.target)?.name || e.target.slice(0, 6)} <span className="text-muted-foreground ml-1">{e.type}</span></Badge>
+                    <Badge key={i} variant="outline" className="text-[10px]">
+                      {nodeById(e.source)?.name || e.source.slice(0, 6)} → {nodeById(e.target)?.name || e.target.slice(0, 6)}
+                      <span className="text-muted-foreground ml-1">{e.type}</span>
+                    </Badge>
                   ))}
                 </div>
               </div>

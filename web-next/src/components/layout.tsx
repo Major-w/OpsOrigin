@@ -66,24 +66,28 @@ const navGroups: (NavItem | NavGroup)[] = [
   },
   {
     label: 'CMDB', icon: Server, items: [
-      { to: '/cmdb/models', label: '模型管理', icon: Package },
+      { to: '/cmdb', label: '概览', icon: LayoutDashboard },
+      { to: '/cmdb/search', label: '全局搜索', icon: Search },
       { to: '/cmdb/instances', label: '实例管理', icon: Server },
-      { to: '/cmdb/relations', label: '关系管理', icon: GitBranch },
-      { to: '/cmdb/discovery', label: '自动发现', icon: Scan },
-      { to: '/cmdb/collection', label: '采集任务', icon: Radio },
-      { to: '/cmdb/collectors', label: '采集器', icon: Cpu },
       { to: '/cmdb/stats', label: '资源统计', icon: BarChart3 },
-      { to: '/cmdb/idc', label: '机房机柜', icon: Building2 },
-      { to: '/cmdb/app-arch', label: '应用架构', icon: Network },
-      { to: '/cmdb/subscriptions', label: '消息订阅', icon: Bell },
       { to: '/cmdb/topology', label: '拓扑可视化', icon: Network },
-      { to: '/cmdb/history', label: '版本追溯', icon: History },
+      { to: '/cmdb/idc', label: '机房机柜', icon: Building2 },
+      {
+        label: '配置项设置', items: [
+          { to: '/cmdb/models', label: '模型管理', icon: Package },
+          { to: '/cmdb/auto-collect', label: '自动采集', icon: Radio },
+          { to: '/cmdb/subscriptions', label: '消息订阅', icon: Bell },
+          { to: '/cmdb/history', label: '版本追溯', icon: History },
+        ]
+      },
     ]
   },
   {
     label: '监控中心', icon: Activity, items: [
       { to: '/monitor', label: '监控总览', icon: Activity },
       { to: '/monitor/alerts', label: '告警中心', icon: AlertTriangle },
+      { to: '/monitor/collection', label: '监控采集', icon: Radio },
+      { to: '/monitor/plugins', label: '监控插件', icon: Blocks },
       { to: '/monitor/targets', label: '监控配置', icon: Settings },
       { to: '/monitor/predict', label: '趋势预测', icon: TrendingUp },
       { to: '/cmdb/impact', label: '影响分析', icon: AlertTriangle },
@@ -98,7 +102,6 @@ const navGroups: (NavItem | NavGroup)[] = [
       { to: '/auto/vuln-scan', label: '漏洞扫描', icon: Bug },
       { to: '/auto/patch', label: '补丁安装', icon: Download },
       { to: '/auto/software', label: '文件分发', icon: PackagePlus },
-      { to: '/auto/collect', label: '数据采集', icon: Database },
       { to: '/automation/inbound', label: '入站配置', icon: Webhook },
     ]
   },

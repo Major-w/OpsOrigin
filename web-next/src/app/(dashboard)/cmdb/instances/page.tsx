@@ -1,6 +1,7 @@
 'use client'
 
 import { useEffect, useState, useRef } from 'react'
+import { useSearchParams } from 'next/navigation'
 import { useCMDBStore, type CIModel, type AttributeChange, type CIRelation } from '@/stores/cmdb'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
@@ -32,6 +33,10 @@ function statusVariant(s: string): 'success' | 'destructive' | 'outline' | 'seco
 export default function CMDBPage() {
   const { items, relations, loading, fetch, search, create, update, remove, getAudit, fetchRelations, createRelation, deleteRelation } = useCMDBStore()
   const canDelete = useCan('cmdb:delete')
+  const searchParams = useSearchParams()
+  // CMDB 概览页/搜索结果通过 ?ci=<id> 深链进来，需要直接展开对应配置项详情
+  const deepLinkCI = searchParams.get('ci')
+  const deepLinkDone = useRef<string | null>(null)
   const [dialogOpen, setDialogOpen] = useState(false)
   const [editId, setEditId] = useState<string | null>(null)
   const [form, setForm] = useState<{ name: string; type_id: string; description: string; attributes: Record<string, any>; labels: Record<string, string> }>({ name: '', type_id: 'server', description: '', attributes: {}, labels: {} })
@@ -174,6 +179,15 @@ export default function CMDBPage() {
       setCiRelations((rels || []).filter((r: CIRelation) => r.source_id === item.id || r.target_id === item.id))
     } catch { setAuditLog([]); setCiRelations([]) }
   }
+
+  // 深链选中：列表加载完成后按 id 命中一次即可，避免用户手动切换后被反复拉回
+  useEffect(() => {
+    if (!deepLinkCI || deepLinkDone.current === deepLinkCI) return
+    const hit = items.find(i => i.id === deepLinkCI)
+    if (!hit) return
+    deepLinkDone.current = deepLinkCI
+    handleSelectCI(hit)
+  }, [deepLinkCI, items])
 
   const handleTopology = async (ciId: string) => {
     setTopoLoading(true); setDetailTab('topo')

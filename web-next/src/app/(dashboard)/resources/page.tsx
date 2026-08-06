@@ -1017,7 +1017,7 @@ export default function ResourcesPage() {
                   <div className="space-y-2 pt-1">
                     <div className="flex items-center justify-between">
                       <label className="text-sm font-medium">采集设置</label>
-                      <a href="/cmdb/collection" className="text-xs text-emerald-600 dark:text-emerald-400 hover:underline">
+                      <a href="/cmdb/auto-collect" className="text-xs text-emerald-600 dark:text-emerald-400 hover:underline">
                         全局默认策略
                       </a>
                     </div>
