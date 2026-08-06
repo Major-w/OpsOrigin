@@ -25,3 +25,16 @@ cmd/core/core
 
 # PRD 已移出仓库，仅保留在本地固定目录（如 ~/Documents/OpsOrigin/PRD.md），不入库。
 /PRD.md
+
+# 本地产物 / 临时文档 / 工作区记忆（不入库）
+outputs/
+overview.md
+.workbuddy/
+web-next/coverage/
+web-next/.next.bak*/
+# 运行时偶发生成的根目录产物
+/dev
+/ip_address
+/private_ip
+/k8s-probe
+/management_ip
