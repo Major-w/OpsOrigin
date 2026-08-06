@@ -47,7 +47,13 @@ export function RichTextEditor({ value, onChange, className }: RichTextEditorPro
     content: value,
     immediatelyRender: false,
     onUpdate: ({ editor }) => {
-      const md = (editor as any).getMarkdown() as string
+      let md = ''
+      try {
+        // tiptap-markdown v0.9 的 API: markdown 内容挂在 storage.markdown 上, 而非 editor 直接方法
+        md = (editor.storage as any).markdown.getMarkdown() as string
+      } catch {
+        md = editor.getText()
+      }
       lastValueRef.current = md
       onChange(md)
     },
@@ -65,6 +71,9 @@ export function RichTextEditor({ value, onChange, className }: RichTextEditorPro
   if (!editor) {
     return <div className="min-h-[400px] rounded-md border border-input bg-background" />
   }
+
+  // 给编辑区一个最小高度, 避免内容少时空荡且难以定位光标
+  const editorMinH = 'min-h-[400px]'
 
   const run = (fn: () => void) => () => { fn(); editor.view.focus() }
   const active = (name: string, attrs?: Record<string, unknown>) => editor.isActive(name, attrs)
@@ -105,7 +114,7 @@ export function RichTextEditor({ value, onChange, className }: RichTextEditorPro
         <button type="button" title="撤销" className={btnCls(false)} onClick={run(() => editor.chain().undo().run())}><Undo2 className="h-4 w-4" /></button>
         <button type="button" title="重做" className={btnCls(false)} onClick={run(() => editor.chain().redo().run())}><Redo2 className="h-4 w-4" /></button>
       </div>
-      <EditorContent editor={editor} className="markdown-body rich-editor" />
+      <EditorContent editor={editor} className={cn('markdown-body rich-editor', editorMinH)} />
     </div>
   )
 }
