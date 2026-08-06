@@ -117,6 +117,9 @@ func (s *Service) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/v1/cmdb/relation", s.handleCreateRelation)
 	mux.HandleFunc("DELETE /api/v1/cmdb/relation/{id}", s.handleDeleteRelation)
 
+	// 采集器矩阵（前端露出采集能力覆盖）
+	mux.HandleFunc("GET /api/v1/cmdb/collectors", s.handleListCollectors)
+
 	mux.HandleFunc("POST /api/v1/cmdb/model-type", s.handleCreateModelType)
 	mux.HandleFunc("GET /api/v1/cmdb/model-type", s.handleListModelTypes)
 	mux.HandleFunc("GET /api/v1/cmdb/model-type/{id}", s.handleGetModelType)
