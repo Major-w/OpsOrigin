@@ -210,9 +210,11 @@ func (s *Store) seed() {
 
 // insertRow 全字段写入（含多级分类字段）。
 func (s *Store) insertRow(it ServiceItem) {
-	s.db.Exec(`INSERT INTO itsm_catalog(`+catalogCols+`) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`,
+	if _, err := s.db.Exec(`INSERT INTO itsm_catalog(`+catalogCols+`) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`,
 		it.ID, it.TenantID, it.Name, it.Description, it.Category, it.ParentID, it.Level, it.SortOrder,
-		it.ProcessID, it.FormScope, it.Enabled, marshalAudience(it.Audience), it.CreatedAt, it.UpdatedAt)
+		it.ProcessID, it.FormScope, it.Enabled, marshalAudience(it.Audience), it.CreatedAt, it.UpdatedAt); err != nil {
+		slog.Error("itsm catalog seed insert failed", "name", it.Name, "err", err)
+	}
 }
 
 func (s *Store) List(ctx context.Context, tenantID string) ([]ServiceItem, error) {
