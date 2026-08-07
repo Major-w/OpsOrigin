@@ -14,6 +14,7 @@ import { Dialog, DialogFooter } from '@/components/ui/dialog'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { formatTime, apiFetch, apiList } from '@/lib/utils'
 import { useCan, useCanAny } from '@/stores/permissions'
+import { useAuthStore } from '@/stores/auth'
 import { Plus, Check, X, Play, RotateCcw, Clock, FileText, Activity, ChevronRight, Paperclip, MessageSquare, Upload, Download, Trash2, FileUp, FileDown, BookOpen, BookOpenCheck, Send, UserPlus, CheckCircle2, ListChecks, Bell, Link2 } from 'lucide-react'
 
 const riskBadge: Record<string, 'destructive' | 'warning' | 'secondary' | 'success'> = { critical: 'destructive', high: 'warning', medium: 'secondary', low: 'success' }
@@ -85,7 +86,9 @@ export default function ITSMPage() {
   const { tickets, stats, loading, fetch, create, approve, reject, execute, complete, rollback, submit, assign, close, withdraw, reopen, hold, resume, remind, relate, getTicket, getEvents, fetchStats, processes, fetchProcesses, getFormSchema, upsertFormSchema, getFormOptions, getFormOptionSources, getTicketProcess, updateTicketCustomFields } = useITSMStore()
   const canWrite = useCan('itsm:write')
   const canApprove = useCanAny(['itsm:approve', 'itsm:write'])
+  const me = useAuthStore(s => s.user)
   const [dialogOpen, setDialogOpen] = useState(false)
+  const [myOnly, setMyOnly] = useState(false)
   const [form, setForm] = useState({ title: '', description: '', risk_level: 'low', change_plan: '', rollback_plan: '', created_by: 'admin', process_id: '' })
   // 可配置表单：自定义字段值与创建用 schema
   const [customFields, setCustomFields] = useState<Record<string, any>>({})
@@ -627,6 +630,11 @@ export default function ITSMPage() {
     return new Date(ticket.deadline_at) < new Date()
   }
 
+  // 「我的工单」筛选：仅看由我创建或指派给我的工单
+  const ticketView = myOnly && me
+    ? tickets.filter(t => t.created_by === me.username || (t.assignee || '') === me.username)
+    : tickets
+
   return (
     <div className="p-6 space-y-4">
       <div className="flex items-center justify-between">
@@ -675,11 +683,21 @@ export default function ITSMPage() {
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
         <div className="lg:col-span-1">
           <Card>
-            <CardHeader className="py-3"><CardTitle className="text-sm">工单列表</CardTitle></CardHeader>
+            <CardHeader className="py-3 flex items-center justify-between">
+              <CardTitle className="text-sm">工单列表{myOnly ? ' · 我的工单' : ''}（{ticketView.length}）</CardTitle>
+              <button
+                type="button"
+                onClick={() => setMyOnly(v => !v)}
+                className={`text-xs rounded-full px-2.5 py-1 border transition-colors ${myOnly ? 'bg-primary text-primary-foreground border-primary' : 'border-input text-muted-foreground hover:bg-accent'}`}
+                title="仅显示由我创建或指派给我的工单"
+              >
+                我的工单{myOnly ? ' ✓' : ''}
+              </button>
+            </CardHeader>
             <CardContent className="p-0">
-              {loading ? <p className="px-4 text-sm text-muted-foreground">加载中...</p> : tickets.length === 0 ? <p className="px-4 text-sm text-muted-foreground">暂无工单。</p> : (
+              {loading ? <p className="px-4 text-sm text-muted-foreground">加载中...</p> : ticketView.length === 0 ? <p className="px-4 text-sm text-muted-foreground">暂无工单。</p> : (
                 <div className="flex flex-col">
-                  {tickets.map(t => (
+                  {ticketView.map(t => (
                     <div key={t.id} onClick={() => handleSelectTicket(t)}
                       className={`px-4 py-3 border-b last:border-0 cursor-pointer hover:bg-accent transition-colors ${selectedTicket?.id === t.id ? 'bg-accent border-l-2 border-l-emerald-500' : ''} ${isOverdue(t) ? 'border-l-2 border-l-destructive' : ''}`}>
                       <div className="flex items-center justify-between">

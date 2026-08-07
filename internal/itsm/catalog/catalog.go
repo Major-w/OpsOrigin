@@ -43,13 +43,16 @@ func (a Audience) Allows(userID string, groupIDs []string) bool {
 	return false
 }
 
-// ServiceItem 服务目录项
+// ServiceItem 服务目录项（支持多级分类：parent_id 为空=一级分类）
 type ServiceItem struct {
 	ID          string    `json:"id"`
 	TenantID    string    `json:"tenant_id"`
 	Name        string    `json:"name"`
 	Description string    `json:"description,omitempty"`
-	Category    string    `json:"category,omitempty"`   // change/incident/problem/request
+	Category    string    `json:"category,omitempty"`   // 继承的一级分类(change/incident/problem/request/release)，用于统计/分组
+	ParentID    string    `json:"parent_id"`            // 父分类 ID；空字符串=一级分类
+	Level       int       `json:"level"`                // 层级：1=一级分类
+	SortOrder   int       `json:"sort_order"`           // 同级排序(升序)
 	ProcessID   string    `json:"process_id,omitempty"` // 关联流程(申请时自动套用)
 	FormScope   string    `json:"form_scope,omitempty"` // 关联表单作用域(如 ticket:default / catalog:<id> 自定义)
 	Enabled     bool      `json:"enabled"`              // 上线/下线: 仅上线项出现在自助服务门户
@@ -89,9 +92,13 @@ func (s *Store) migrate() {
 	s.db.Exec(`ALTER TABLE itsm_catalog ADD COLUMN IF NOT EXISTS form_scope TEXT DEFAULT ''`)
 	// 服务对象(可见范围): {user_ids:[], group_ids:[]}, 空对象=全员可见
 	s.db.Exec(`ALTER TABLE itsm_catalog ADD COLUMN IF NOT EXISTS audience JSONB DEFAULT '{}'::jsonb`)
+	// 多级分类：父分类 / 层级 / 同级排序（空 parent_id = 一级分类）
+	s.db.Exec(`ALTER TABLE itsm_catalog ADD COLUMN IF NOT EXISTS parent_id TEXT DEFAULT ''`)
+	s.db.Exec(`ALTER TABLE itsm_catalog ADD COLUMN IF NOT EXISTS level INTEGER DEFAULT 1`)
+	s.db.Exec(`ALTER TABLE itsm_catalog ADD COLUMN IF NOT EXISTS sort_order INTEGER DEFAULT 0`)
 }
 
-const catalogCols = `id,tenant_id,name,description,category,process_id,form_scope,enabled,audience,created_at,updated_at`
+const catalogCols = `id,tenant_id,name,description,category,parent_id,level,sort_order,process_id,form_scope,enabled,audience,created_at,updated_at`
 
 func marshalAudience(a Audience) []byte {
 	b, err := json.Marshal(a)
@@ -117,27 +124,57 @@ func (s *Store) seed() {
 	if count > 0 {
 		return
 	}
-	items := []ServiceItem{
-		{Name: "服务器重启", Description: "重启指定服务器或虚拟机", Category: "change"},
-		{Name: "数据库配置修改", Description: "修改数据库参数或执行 DDL", Category: "change"},
-		{Name: "SSL 证书续期", Description: "续费或更新 SSL 证书", Category: "change"},
-		{Name: "DNS 记录变更", Description: "添加/修改/删除 DNS 记录", Category: "change"},
-		{Name: "防火墙规则变更", Description: "修改防火墙白名单或策略", Category: "change"},
-		{Name: "账号权限申请", Description: "申请系统或数据库访问权限", Category: "request"},
+	now := time.Now()
+	// ITIL 最佳实践 5 大类一级分类（文件夹型，无流程模板）
+	topCats := []struct {
+		key  string
+		name string
+		desc string
+	}{
+		{"incident", "事件管理", "故障报修与中断恢复"},
+		{"problem", "问题管理", "根因分析与重复故障治理"},
+		{"change", "变更管理", "标准与紧急变更实施"},
+		{"request", "服务请求", "常规服务开通与权限申请"},
+		{"release", "发布管理", "版本发布与上线部署"},
 	}
-	for _, it := range items {
+	catIDs := make(map[string]string)
+	for i, c := range topCats {
+		id := uuid.New().String()
+		catIDs[c.key] = id
+		s.insertRow(ServiceItem{
+			ID: id, TenantID: "default", Name: c.name, Description: c.desc,
+			Category: c.key, ParentID: "", Level: 1, SortOrder: i + 1,
+			Enabled: true, Audience: Audience{}, CreatedAt: now, UpdatedAt: now,
+		})
+	}
+	// 示例服务：挂在对应一级分类下（二级），上线后即在门户可见
+	samples := []ServiceItem{
+		{Name: "服务器重启", Description: "重启指定服务器或虚拟机", Category: "change", ParentID: catIDs["change"], Level: 2, SortOrder: 1},
+		{Name: "数据库配置修改", Description: "修改数据库参数或执行 DDL", Category: "change", ParentID: catIDs["change"], Level: 2, SortOrder: 2},
+		{Name: "SSL 证书续期", Description: "续费或更新 SSL 证书", Category: "change", ParentID: catIDs["change"], Level: 2, SortOrder: 3},
+		{Name: "DNS 记录变更", Description: "添加/修改/删除 DNS 记录", Category: "change", ParentID: catIDs["change"], Level: 2, SortOrder: 4},
+		{Name: "防火墙规则变更", Description: "修改防火墙白名单或策略", Category: "change", ParentID: catIDs["change"], Level: 2, SortOrder: 5},
+		{Name: "账号权限申请", Description: "申请系统或数据库访问权限", Category: "request", ParentID: catIDs["request"], Level: 2, SortOrder: 1},
+	}
+	for _, it := range samples {
 		it.ID = uuid.New().String()
 		it.TenantID = "default"
 		it.Enabled = true
-		it.CreatedAt = time.Now()
-		it.UpdatedAt = it.CreatedAt
-		s.db.Exec(`INSERT INTO itsm_catalog(`+catalogCols+`) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
-			it.ID, it.TenantID, it.Name, it.Description, it.Category, it.ProcessID, it.FormScope, it.Enabled, marshalAudience(it.Audience), it.CreatedAt, it.UpdatedAt)
+		it.CreatedAt = now
+		it.UpdatedAt = now
+		s.insertRow(it)
 	}
 }
 
+// insertRow 全字段写入（含多级分类字段）。
+func (s *Store) insertRow(it ServiceItem) {
+	s.db.Exec(`INSERT INTO itsm_catalog(`+catalogCols+`) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`,
+		it.ID, it.TenantID, it.Name, it.Description, it.Category, it.ParentID, it.Level, it.SortOrder,
+		it.ProcessID, it.FormScope, it.Enabled, marshalAudience(it.Audience), it.CreatedAt, it.UpdatedAt)
+}
+
 func (s *Store) List(ctx context.Context, tenantID string) ([]ServiceItem, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT `+catalogCols+` FROM itsm_catalog WHERE tenant_id=$1 ORDER BY name`, tenantID)
+	rows, err := s.db.QueryContext(ctx, `SELECT `+catalogCols+` FROM itsm_catalog WHERE tenant_id=$1 ORDER BY level, sort_order, name`, tenantID)
 	if err != nil {
 		return nil, err
 	}
@@ -146,7 +183,7 @@ func (s *Store) List(ctx context.Context, tenantID string) ([]ServiceItem, error
 	for rows.Next() {
 		var it ServiceItem
 		var audRaw []byte
-		if err := rows.Scan(&it.ID, &it.TenantID, &it.Name, &it.Description, &it.Category, &it.ProcessID, &it.FormScope, &it.Enabled, &audRaw, &it.CreatedAt, &it.UpdatedAt); err != nil {
+		if err := rows.Scan(&it.ID, &it.TenantID, &it.Name, &it.Description, &it.Category, &it.ParentID, &it.Level, &it.SortOrder, &it.ProcessID, &it.FormScope, &it.Enabled, &audRaw, &it.CreatedAt, &it.UpdatedAt); err != nil {
 			return nil, err
 		}
 		unmarshalAudience(audRaw, &it.Audience)
@@ -160,7 +197,7 @@ func (s *Store) Get(ctx context.Context, id, tenantID string) (*ServiceItem, err
 	var it ServiceItem
 	var audRaw []byte
 	err := s.db.QueryRowContext(ctx, `SELECT `+catalogCols+` FROM itsm_catalog WHERE id=$1 AND tenant_id=$2`, id, tenantID).
-		Scan(&it.ID, &it.TenantID, &it.Name, &it.Description, &it.Category, &it.ProcessID, &it.FormScope, &it.Enabled, &audRaw, &it.CreatedAt, &it.UpdatedAt)
+		Scan(&it.ID, &it.TenantID, &it.Name, &it.Description, &it.Category, &it.ParentID, &it.Level, &it.SortOrder, &it.ProcessID, &it.FormScope, &it.Enabled, &audRaw, &it.CreatedAt, &it.UpdatedAt)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -178,15 +215,19 @@ func (s *Store) Create(ctx context.Context, it *ServiceItem) error {
 	if it.TenantID == "" {
 		it.TenantID = "default"
 	}
-	_, err := s.db.ExecContext(ctx, `INSERT INTO itsm_catalog(`+catalogCols+`) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
-		it.ID, it.TenantID, it.Name, it.Description, it.Category, it.ProcessID, it.FormScope, it.Enabled, marshalAudience(it.Audience), it.CreatedAt, it.UpdatedAt)
+	if it.Level == 0 {
+		it.Level = 1
+	}
+	_, err := s.db.ExecContext(ctx, `INSERT INTO itsm_catalog(`+catalogCols+`) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`,
+		it.ID, it.TenantID, it.Name, it.Description, it.Category, it.ParentID, it.Level, it.SortOrder,
+		it.ProcessID, it.FormScope, it.Enabled, marshalAudience(it.Audience), it.CreatedAt, it.UpdatedAt)
 	return err
 }
 
 func (s *Store) Update(ctx context.Context, it *ServiceItem) error {
 	it.UpdatedAt = time.Now()
-	_, err := s.db.ExecContext(ctx, `UPDATE itsm_catalog SET name=$1,description=$2,category=$3,process_id=$4,form_scope=$5,enabled=$6,audience=$7,updated_at=$8 WHERE id=$9 AND tenant_id=$10`,
-		it.Name, it.Description, it.Category, it.ProcessID, it.FormScope, it.Enabled, marshalAudience(it.Audience), it.UpdatedAt, it.ID, it.TenantID)
+	_, err := s.db.ExecContext(ctx, `UPDATE itsm_catalog SET name=$1,description=$2,category=$3,parent_id=$4,level=$5,sort_order=$6,process_id=$7,form_scope=$8,enabled=$9,audience=$10,updated_at=$11 WHERE id=$12 AND tenant_id=$13`,
+		it.Name, it.Description, it.Category, it.ParentID, it.Level, it.SortOrder, it.ProcessID, it.FormScope, it.Enabled, marshalAudience(it.Audience), it.UpdatedAt, it.ID, it.TenantID)
 	return err
 }
 

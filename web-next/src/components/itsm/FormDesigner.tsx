@@ -84,6 +84,16 @@ export function FormDesigner({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sectionsKey, emptySections])
 
+  // 旧 schema 迁移：给缺失 col_start 的字段补齐起始列（仅当存在缺失时才提交，幂等防循环）
+  useEffect(() => {
+    const all = schema.fields || []
+    if (all.length > 0 && all.some(f => !f.col_start)) {
+      const { fields: norm } = normalizeColStarts(all)
+      onChange({ ...schema, fields: norm })
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [schema])
+
   const blocks: Block[] = useMemo(() => {
     const grouped = new Map<string, FormFieldDef[]>()
     for (const f of fields) {
@@ -126,7 +136,14 @@ export function FormDesigner({
   }
 
   const updateFieldByKey = (key: string, changes: Partial<FormFieldDef>) => {
-    commit(blocks.map(b => ({ ...b, items: b.items.map(f => (f.key === key ? { ...f, ...changes } : f)) })))
+    // 调宽可能盖住右侧字段 → 仅对所在块做下移消解，绝不向上补位
+    commit(
+      blocks.map(b =>
+        b.items.some(f => f.key === key)
+          ? { ...b, items: resolveOverlaps(b.items.map(f => (f.key === key ? { ...f, ...changes } : f))) }
+          : b,
+      ),
+    )
   }
 
   const removeField = (key: string) => {
@@ -152,7 +169,7 @@ export function FormDesigner({
       else items.push(f)
       return { ...b, items }
     })
-    commit(next)
+    commit(setFieldStartByPacking(next, f.key))
     setActiveKey(f.key)
   }
 
@@ -175,7 +192,7 @@ export function FormDesigner({
       else items.push(moving)
       return { ...b, items }
     })
-    commit(next)
+    commit(setFieldStartByPacking(next, key))
     setActiveKey(key)
   }
 
@@ -368,11 +385,22 @@ export function FormDesigner({
           onDrop={onCanvasDrop}
           className={`min-h-[22rem] space-y-2 rounded-md border border-input p-3 ${dragOver ? 'bg-emerald-500/5 ring-2 ring-emerald-500/40' : ''}`}
         >
-          <div className="mb-1 flex items-center justify-between">
+          <div className="mb-1 flex flex-wrap items-center justify-between gap-2">
             <span className="text-xs font-semibold">
               表单页面（{blocks.length} 个分区 · {fieldCount} 个字段）
             </span>
-            <span className="text-[10px] text-muted-foreground">拖控件入分区（右侧落入同行剩余空间）· 拖卡片右缘调宽 · 拖分区头排序</span>
+            <div className="flex items-center gap-2">
+              <span className="hidden text-[10px] text-muted-foreground sm:inline">拖控件入分区 · 拖右缘调宽 · 拖分区头排序 · 删/移不自动补全</span>
+              <button
+                type="button"
+                disabled={disabled || fieldCount === 0}
+                onClick={() => commit(autoLayout(blocks))}
+                className="shrink-0 rounded-md border border-input bg-background px-2 py-1 text-[11px] font-medium hover:bg-accent disabled:cursor-not-allowed disabled:opacity-50"
+                title="按字段类型把当前控件排布成整齐栅格；之后可任意拖拽、调宽、删除，且不再自动补全"
+              >
+                一键布局
+              </button>
+            </div>
           </div>
 
           {blocks.map((b, bi) => {
@@ -467,6 +495,7 @@ export function FormDesigner({
                             onDragOver={e => allowDrop(e, [MIME_TYPE, MIME_FIELD])}
                             onDrop={e => onDropOnField(e, b.title, f.key)}
                             onClick={() => setActiveKey(f.key)}
+                            style={{ gridColumn: f.col_start ? `${f.col_start} / span ${span}` : undefined }}
                             className={`group relative flex min-w-0 cursor-pointer items-center gap-1.5 rounded-md border bg-background px-2 py-2 ${SPAN_CLS[span]} ${
                               selected ? 'border-primary ring-1 ring-primary/40' : 'border-input hover:bg-accent/50'
                             } ${isResizing ? 'ring-2 ring-emerald-500/50' : ''}`}
@@ -560,6 +589,84 @@ function remainingColsAfter(items: FormFieldDef[], key: string): number {
     if (f.key === key) return Math.max(0, 12 - curCol)
   }
   return 12
+}
+
+/** 12 栅格逐行打包：返回每个字段在栅格中的「起始列」(1~12)，从左到右排布、超 12 自动换行。 */
+function packStarts(items: FormFieldDef[]): number[] {
+  const starts: number[] = []
+  let cur = 1
+  for (const f of items) {
+    const span = normalizeColSpan(f.col_span)
+    if (cur + span - 1 > 12) cur = 1 // 当前行放不下 → 换行
+    starts.push(cur)
+    cur += span
+  }
+  return starts
+}
+
+/** 冲突消解：从左到右扫描，遇到与上一字段重叠的就地「下移一行」(只向下推，绝不向上拉补)。
+ *  因此删除字段不会触发回流(无重叠则不移动)，插入/调宽产生的重叠则被推开避免叠放。 */
+function resolveOverlaps(items: FormFieldDef[]): FormFieldDef[] {
+  let rowEnd = 0 // 当前行下一个空闲列(1-based)，0 表示本行尚空
+  return items.map(f => {
+    const span = normalizeColSpan(f.col_span)
+    let start = f.col_start && f.col_start >= 1 && f.col_start <= 12 ? f.col_start : rowEnd || 1
+    if (rowEnd > 0 && start < rowEnd) start = rowEnd // 与同行前序重叠 → 推到行尾
+    if (start + span - 1 > 12) {
+      start = 1
+      rowEnd = 0
+    }
+    rowEnd = start + span
+    return { ...f, col_start: start }
+  })
+}
+
+/** 给刚落位的字段计算起始列（按「其之前字段」打包得到落点），再对本块做冲突消解（只下移不补上）。
+ *  这样插入/搬运不会触发整块回流，也就不会自动把后面的控件「补」上来。 */
+function setFieldStartByPacking(blocks: Block[], key: string): Block[] {
+  return blocks.map(b => {
+    const idx = b.items.findIndex(f => f.key === key)
+    if (idx < 0) return b
+    const ps = packStarts([...b.items.slice(0, idx), b.items[idx]])
+    const start = ps[ps.length - 1]
+    const placed = b.items.map((f, i) => (i === idx ? { ...f, col_start: start } : f))
+    return { ...b, items: resolveOverlaps(placed) }
+  })
+}
+
+/** 一键布局：按字段类型给合理宽度(宽控件整行、其余半行)，再逐块打包成整齐的栅格。
+ *  每次点击都重新排布，之后用户仍可任意拖拽、调宽、删除，且不再自动补全。 */
+function autoLayout(blocks: Block[]): Block[] {
+  return blocks.map(b => {
+    if (b.items.length === 0) return b
+    const withSpan = b.items.map(f => ({ ...f, col_span: defaultColSpan(f.type) }))
+    const starts = packStarts(withSpan)
+    return { ...b, items: withSpan.map((f, i) => ({ ...f, col_start: starts[i] })) }
+  })
+}
+
+/** 旧 schema 迁移：缺失 col_start 的字段按「分区内出现顺序 + 现有 col_span」补齐起始列，
+ *  视觉与改造前自动排布一致，但落定后删除/拖走不再回流。 */
+function normalizeColStarts(fields: FormFieldDef[]): { fields: FormFieldDef[]; changed: boolean } {
+  const groups = new Map<string, FormFieldDef[]>()
+  for (const f of fields) {
+    const s = f.section || ''
+    if (!groups.has(s)) groups.set(s, [])
+    groups.get(s)!.push(f)
+  }
+  const out: FormFieldDef[] = []
+  let changed = false
+  for (const arr of groups.values()) {
+    const starts = packStarts(arr)
+    arr.forEach((f, i) => {
+      const ns = starts[i]
+      if (f.col_start !== ns) {
+        changed = true
+        out.push({ ...f, col_start: ns })
+      } else out.push(f)
+    })
+  }
+  return { fields: out, changed }
 }
 
 /** 取 fields 中出现过的分区名（保持首次出现顺序） */

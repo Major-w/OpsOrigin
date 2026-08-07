@@ -4,7 +4,7 @@ import { useState } from 'react'
 import Link from 'next/link'
 import { usePathname, useRouter } from 'next/navigation'
 import { cn } from '@/lib/utils'
-import { Server, TicketCheck, Activity, Bot, Shield, LayoutDashboard, Hexagon, LogOut, User, Terminal, Workflow, Clock, Search, BookOpen, Calendar, GitBranch, Package, Bell, Key, Blocks, Users, Settings, Sun, Moon, Scan, Bug, Download, PackagePlus, Network, AlertTriangle, History, FileText, Rocket, AppWindow, FileCheck2, Cloud, Play, Sparkles, Database, Radio, BarChart3, Building2, Radar, MessagesSquare, Gauge, FlaskConical, TrendingUp, Store, Cpu, Timer, Webhook, Mail, MessageSquare, Wrench, type LucideIcon } from 'lucide-react'
+import { Server, TicketCheck, Activity, Bot, Shield, LayoutDashboard, Hexagon, LogOut, User, Terminal, Workflow, Clock, Search, BookOpen, Calendar, GitBranch, Package, Bell, Key, Blocks, Users, Settings, Sun, Moon, Scan, Bug, Download, PackagePlus, Network, AlertTriangle, History, FileText, Rocket, AppWindow, FileCheck2, Cloud, Play, Sparkles, Database, Radio, BarChart3, Building2, Radar, MessagesSquare, Gauge, FlaskConical, TrendingUp, Store, Cpu, Webhook, Mail, MessageSquare, Wrench, type LucideIcon } from 'lucide-react'
 import { useAuthStore } from '@/stores/auth'
 import { useThemeStore } from '@/stores/theme'
 import { ScrollToTop } from '@/components/ui/scroll-to-top'
@@ -45,13 +45,12 @@ const navGroups: (NavItem | NavGroup)[] = [
       { to: '/itsm/portal', label: '自助服务', icon: Store },
       { to: '/itsm/tickets', label: '工单列表', icon: TicketCheck },
       { to: '/itsm/change', label: '变更日历', icon: Calendar },
-      { to: '/itsm/reports', label: '报表看板', icon: BarChart3 },
+      { to: '/itsm/reports', label: '自定义报表', icon: BarChart3 },
       {
         label: '服务管理', items: [
           { to: '/itsm/process', label: '流程定义', icon: GitBranch },
           { to: '/itsm/catalog', label: '服务目录定义', icon: Package },
-          { to: '/itsm/sla', label: 'SLA 管理', icon: Clock },
-          { to: '/itsm/ola', label: 'OLA 管理', icon: Timer },
+          { to: '/itsm/sla-ola', label: 'SLA/OLA', icon: Clock },
         ]
       },
       { to: '/itsm/oncall', label: '值班管理', icon: Calendar },

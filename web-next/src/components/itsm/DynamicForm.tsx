@@ -107,6 +107,9 @@ export interface FormFieldDef {
   roles?: string[]
   /** 12 栅格中占用的列数(1~12)，缺省=12(整行)。由表单设计器画布拖拽调节 */
   col_span?: number
+  /** 显式起始列(1~12)：设计器「不自动补全」模式下记录字段在栅格中的固定位置，
+   *  拖走/删除字段后其余字段不回流占位。缺省时回落为按 col_span 自动排布。 */
+  col_start?: number
   /** 附件：单文件最大体积(MB)，0/缺省=不限 */
   max_size?: number
   /** 附件：允许的扩展名/MIME，逗号分隔（如 ".png,.pdf,image/*"） */
@@ -288,6 +291,16 @@ const fieldBaseCls =
   'flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring'
 
 export function DynamicForm({ schema, values, context, onChange, readOnly, loadOptions, ticketId }: DynamicFormProps) {
+  // 桌面端(>=640px)才应用显式 col_start：窄屏统一单列，避免强制定位导致横向溢出
+  const [desktop, setDesktop] = useState(true)
+  useEffect(() => {
+    const mq = window.matchMedia('(min-width: 640px)')
+    const sync = () => setDesktop(mq.matches)
+    sync()
+    mq.addEventListener('change', sync)
+    return () => mq.removeEventListener('change', sync)
+  }, [])
+
   if (!schema || !schema.fields || schema.fields.length === 0) {
     return (
       <p className="text-xs text-muted-foreground italic">
@@ -319,8 +332,11 @@ export function DynamicForm({ schema, values, context, onChange, readOnly, loadO
           {sec && <h4 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">{sec}</h4>}
           {/* 12 栅格：字段按 col_span 占列，缺省整行；窄屏统一降为单列避免挤压 */}
           <div className="grid grid-cols-1 gap-x-4 gap-y-3 sm:grid-cols-12">
-            {fs.map(f => (
-              <div key={f.key} className={COL_SPAN_CLS[normalizeColSpan(f.col_span)]}>
+            {fs.map(f => {
+              const span = normalizeColSpan(f.col_span)
+              const explicit = desktop && f.col_start ? { gridColumn: `${f.col_start} / span ${span}` } : undefined
+              return (
+              <div key={f.key} className={COL_SPAN_CLS[span]} style={explicit}>
                 <label className="text-sm font-medium flex items-center gap-1">
                   {f.label}
                   {f.required && <span className="text-destructive">*</span>}
@@ -337,7 +353,8 @@ export function DynamicForm({ schema, values, context, onChange, readOnly, loadO
                 </div>
                 {f.help && <p className="text-xs text-muted-foreground mt-1">{f.help}</p>}
               </div>
-            ))}
+              )
+            })}
           </div>
         </div>
       ))}

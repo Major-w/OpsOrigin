@@ -2,30 +2,24 @@
 
 // 员工自助门户 —— 三门户的「员工自助」形态：
 // 服务目录浏览(分类卡片) + 一键申请(跳工单页自动套用目录 scope) + 我的工单(进度查询)。
-import { useEffect, useState, useCallback } from 'react'
+import { useEffect, useState, useCallback, useMemo } from 'react'
 import { useRouter } from 'next/navigation'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
-import { apiList, formatTime } from '@/lib/utils'
-import { TicketCheck, Package, ChevronRight, Loader2 } from 'lucide-react'
+import { apiList } from '@/lib/utils'
+import { Package, ChevronRight, Loader2, FolderTree } from 'lucide-react'
 
 interface ServiceItem {
   id: string
   name: string
   description?: string
   category: string
+  parent_id?: string
+  level?: number
+  sort_order?: number
   process_id?: string
   enabled: boolean
-}
-
-interface PortalTicket {
-  id: string
-  title: string
-  status: string
-  risk_level: string
-  created_at: string
-  assignee?: string
 }
 
 const statusLabels: Record<string, string> = {
@@ -40,20 +34,16 @@ const categoryLabels: Record<string, string> = { change: '变更申请', inciden
 export default function ITSMPortalPage() {
   const router = useRouter()
   const [services, setServices] = useState<ServiceItem[]>([])
-  const [tickets, setTickets] = useState<PortalTicket[]>([])
   const [loading, setLoading] = useState(true)
 
   // 门户只拉「已上线 且 当前用户在服务对象范围内」的目录项：
   // 过滤在服务端完成(catalog/visible)，前端拿不到越权目录，避免可见范围靠前端自觉。
+  // 「我的工单」已收敛到工单列表页的「我的工单」筛选，门户只聚焦服务申请。
   const fetchAll = useCallback(async () => {
     setLoading(true)
     try {
-      const [svc, tks] = await Promise.all([
-        apiList<ServiceItem>('/itsm/catalog/visible'),
-        apiList<PortalTicket>('/itsm/tickets'),
-      ])
+      const svc = await apiList<ServiceItem>('/itsm/catalog/visible')
       setServices(svc || [])
-      setTickets((tks || []).slice(0, 20))
     } catch { /* ignore */ }
     setLoading(false)
   }, [])
@@ -64,12 +54,65 @@ export default function ITSMPortalPage() {
     router.push(`/itsm/tickets?catalog=${item.id}`)
   }
 
-  // 分类分组
-  const groups = new Map<string, ServiceItem[]>()
-  for (const s of services) {
-    const key = s.category || 'request'
-    if (!groups.has(key)) groups.set(key, [])
-    groups.get(key)!.push(s)
+  // 多级目录：把门户可见的扁平列表构造成树；父级不在可见集合(被下线/无权限)的子项提升为一级，避免服务丢失。
+  interface PortalNode { item: ServiceItem; children: PortalNode[]; depth: number }
+  const buildPortalTree = (src: ServiceItem[]): PortalNode[] => {
+    const byId = new Map(src.map(s => [s.id, s]))
+    const map = new Map<string, PortalNode>()
+    src.forEach(s => map.set(s.id, { item: s, children: [], depth: 0 }))
+    const roots: PortalNode[] = []
+    src.forEach(s => {
+      const node = map.get(s.id)!
+      if (s.parent_id && byId.has(s.parent_id)) map.get(s.parent_id)!.children.push(node)
+      else roots.push(node)
+    })
+    const depthOf = (it: ServiceItem): number => {
+      let d = 0; let cur = it.parent_id
+      while (cur && byId.has(cur)) { d++; cur = byId.get(cur)!.parent_id }
+      return d
+    }
+    const sortNodes = (ns: PortalNode[]) => {
+      ns.sort((a, b) => (a.item.sort_order || 0) - (b.item.sort_order || 0) || a.item.name.localeCompare(b.item.name))
+      ns.forEach(n => { n.depth = depthOf(n.item); sortNodes(n.children) })
+    }
+    sortNodes(roots)
+    return roots
+  }
+  const tree = useMemo(() => buildPortalTree(services), [services])
+
+  const renderTreeNode = (node: PortalNode): JSX.Element => {
+    const it = node.item
+    const isFolder = node.children.length > 0
+    if (isFolder) {
+      return (
+        <div key={it.id} style={{ marginLeft: `${node.depth * 18}px` }}>
+          <div className="flex items-center gap-2 py-2 px-2 mt-1 rounded-md bg-muted/40">
+            <FolderTree className="h-4 w-4 text-primary" />
+            <span className="text-sm font-semibold">{it.name}</span>
+            <span className="text-[10px] text-muted-foreground">{node.children.length} 项</span>
+          </div>
+          <div className="space-y-2 mt-1">{node.children.map(c => renderTreeNode(c))}</div>
+        </div>
+      )
+    }
+    return (
+      <div key={it.id} style={{ marginLeft: `${node.depth * 18}px` }}>
+        <div role="button" tabIndex={0}
+          onClick={() => apply(it)}
+          onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); apply(it) } }}
+          className="border rounded-lg p-4 cursor-pointer hover:border-primary/60 hover:shadow-md hover:-translate-y-0.5 transition-all duration-200 group focus:outline-none focus:ring-2 focus:ring-primary/40">
+          <div className="flex items-start justify-between">
+            <span className={`mt-1 h-2 w-2 rounded-full ${riskColor[it.category === 'change' ? 'medium' : 'low']}`} />
+            <Badge variant="outline" className="text-[10px]">{it.process_id ? '含流程' : '直通'}</Badge>
+          </div>
+          <h5 className="font-medium text-sm mt-1 group-hover:text-primary transition-colors">{it.name}</h5>
+          {it.description && <p className="text-xs text-muted-foreground mt-1 line-clamp-2">{it.description}</p>}
+          <Button size="sm" variant="outline" className="mt-3 w-full pointer-events-none group-hover:border-primary/60 group-hover:text-primary">
+            {it.process_id ? '发起流程' : '发起申请'} <ChevronRight className="h-3 w-3 group-hover:translate-x-0.5 transition-transform" />
+          </Button>
+        </div>
+      </div>
+    )
   }
 
   return (
@@ -77,11 +120,11 @@ export default function ITSMPortalPage() {
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-2xl font-bold">自助服务门户</h1>
-          <p className="text-sm text-muted-foreground">浏览服务目录发起申请，随时查看我的工单进度</p>
+          <p className="text-sm text-muted-foreground">浏览服务目录发起申请（我的工单请在「ITSM 工单」页用「我的工单」筛选查看）</p>
         </div>
       </div>
 
-      {/* 服务目录 */}
+      {/* 服务目录（多级） */}
       <Card>
         <CardHeader className="py-3"><CardTitle className="text-sm flex items-center gap-1.5"><Package className="h-3.5 w-3.5" />服务目录</CardTitle></CardHeader>
         <CardContent>
@@ -90,59 +133,7 @@ export default function ITSMPortalPage() {
           ) : services.length === 0 ? (
             <p className="text-sm text-muted-foreground py-6 text-center">暂无可用服务，请联系管理员在「服务目录定义」中配置。</p>
           ) : (
-            <div className="space-y-4">
-              {Array.from(groups.entries()).map(([cat, items]) => (
-                <div key={cat}>
-                  <h4 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground mb-2">{categoryLabels[cat] || cat}</h4>
-                  <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
-                    {items.map(item => (
-                      <div key={item.id}
-                        role="button" tabIndex={0}
-                        onClick={() => apply(item)}
-                        onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); apply(item) } }}
-                        className="border rounded-lg p-4 cursor-pointer hover:border-primary/60 hover:shadow-md hover:-translate-y-0.5 transition-all duration-200 group focus:outline-none focus:ring-2 focus:ring-primary/40">
-                        <div className="flex items-start justify-between">
-                          <span className={`mt-1 h-2 w-2 rounded-full ${riskColor[item.category === 'change' ? 'medium' : 'low']}`} />
-                          <Badge variant="outline" className="text-[10px]">{item.process_id ? '含流程' : '直通'}</Badge>
-                        </div>
-                        <h5 className="font-medium text-sm mt-1 group-hover:text-primary transition-colors">{item.name}</h5>
-                        {item.description && <p className="text-xs text-muted-foreground mt-1 line-clamp-2">{item.description}</p>}
-                        <Button size="sm" variant="outline" className="mt-3 w-full pointer-events-none group-hover:border-primary/60 group-hover:text-primary">
-                          {item.process_id ? '发起流程' : '发起申请'} <ChevronRight className="h-3 w-3 group-hover:translate-x-0.5 transition-transform" />
-                        </Button>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              ))}
-            </div>
-          )}
-        </CardContent>
-      </Card>
-
-      {/* 我的工单 */}
-      <Card>
-        <CardHeader className="py-3"><CardTitle className="text-sm flex items-center gap-1.5"><TicketCheck className="h-3.5 w-3.5" />我的工单（最近 20 条）</CardTitle></CardHeader>
-        <CardContent>
-          {tickets.length === 0 ? (
-            <p className="text-sm text-muted-foreground py-6 text-center">暂无工单，从上方服务目录发起第一个申请吧。</p>
-          ) : (
-            <div className="divide-y">
-              {tickets.map(t => (
-                <div key={t.id} className="flex items-center justify-between py-2.5 hover:bg-accent/50 rounded px-2 cursor-pointer" onClick={() => router.push(`/itsm/tickets?focus=${t.id}`)}>
-                  <div className="min-w-0">
-                    <div className="text-sm truncate">{t.title}</div>
-                    <div className="text-xs text-muted-foreground mt-0.5">{formatTime(t.created_at)} · {t.id.slice(0, 8)}</div>
-                  </div>
-                  <div className="flex items-center gap-2 shrink-0">
-                    <Badge variant="outline" className="text-xs">{riskLabels[t.risk_level] || t.risk_level}</Badge>
-                    <Badge variant={t.status === 'closed' || t.status === 'succeeded' ? 'success' : t.status === 'executing' ? 'secondary' : 'outline'} className="text-xs">
-                      {statusLabels[t.status] || t.status}
-                    </Badge>
-                  </div>
-                </div>
-              ))}
-            </div>
+            <div className="space-y-1">{tree.map(n => renderTreeNode(n))}</div>
           )}
         </CardContent>
       </Card>

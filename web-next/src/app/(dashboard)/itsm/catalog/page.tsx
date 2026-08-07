@@ -10,7 +10,7 @@ import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { Input } from '@/components/ui/input'
 import { Dialog, DialogFooter } from '@/components/ui/dialog'
-import { Package, Plus, Trash2, Pencil, Search, Users, ArrowUpCircle, ArrowDownCircle, Globe } from 'lucide-react'
+import { Package, Plus, Trash2, Pencil, Search, Users, ArrowUpCircle, ArrowDownCircle, Globe, FolderTree } from 'lucide-react'
 import { apiFetch, apiList } from '@/lib/utils'
 import { toast } from '@/stores/toast'
 import { useITSMStore } from '@/stores/itsm'
@@ -23,6 +23,9 @@ interface ServiceItem {
   name: string
   description: string
   category: string
+  parent_id?: string
+  level?: number
+  sort_order?: number
   process_id?: string
   form_scope?: string
   enabled: boolean
@@ -30,15 +33,16 @@ interface ServiceItem {
 }
 
 const CATEGORIES = [
-  { value: 'change', label: '变更' },
-  { value: 'incident', label: '事件' },
-  { value: 'request', label: '请求' },
-  { value: 'problem', label: '问题' },
+  { value: 'change', label: '变更管理' },
+  { value: 'incident', label: '事件管理' },
+  { value: 'request', label: '服务请求' },
+  { value: 'problem', label: '问题管理' },
+  { value: 'release', label: '发布管理' },
 ]
 const catLabel = (v: string) => CATEGORIES.find(c => c.value === v)?.label || v
 
 const emptyDraft = (): ServiceItem => ({
-  id: '', name: '', description: '', category: 'change', process_id: '', enabled: false,
+  id: '', name: '', description: '', category: 'change', parent_id: '', level: 1, sort_order: 0, process_id: '', enabled: false,
   audience: { user_ids: [], group_ids: [] },
 })
 
@@ -62,8 +66,18 @@ export default function ITSMCatalogPage() {
   const isEdit = !!draft.id
   const openCreate = () => { setDraft(emptyDraft()); setAudFilter(''); setAudTab('group'); setDialogOpen(true) }
   const openEdit = (it: ServiceItem) => {
-    setDraft({ ...it, audience: { user_ids: it.audience?.user_ids || [], group_ids: it.audience?.group_ids || [] } })
+    setDraft({ ...it, parent_id: it.parent_id || '', level: it.level || 1, sort_order: it.sort_order || 0, audience: { user_ids: it.audience?.user_ids || [], group_ids: it.audience?.group_ids || [] } })
     setAudFilter(''); setAudTab('group'); setDialogOpen(true)
+  }
+
+  // 选上级分类：自动继承层级与一级分类类型（从 ITIL 5 大类派生）
+  const onParentChange = (pid: string) => {
+    if (!pid) {
+      setDraft(d => ({ ...d, parent_id: '', level: 1 }))
+      return
+    }
+    const parent = items.find(i => i.id === pid)
+    setDraft(d => ({ ...d, parent_id: pid, level: (parent?.level || 1) + 1, category: parent?.category || d.category }))
   }
 
   const save = async () => {
@@ -74,6 +88,9 @@ export default function ITSMCatalogPage() {
         name: draft.name.trim(),
         description: draft.description || '',
         category: draft.category,
+        parent_id: draft.parent_id || '',
+        level: draft.level || 1,
+        sort_order: draft.sort_order || 0,
         process_id: draft.process_id || '',
         form_scope: draft.form_scope || '',
         enabled: draft.enabled,
@@ -103,6 +120,7 @@ export default function ITSMCatalogPage() {
         method: 'PUT',
         body: JSON.stringify({
           name: it.name, description: it.description, category: it.category,
+          parent_id: it.parent_id || '', level: it.level || 1, sort_order: it.sort_order || 0,
           process_id: it.process_id || '', form_scope: it.form_scope || '', enabled: next,
           audience: { user_ids: it.audience?.user_ids || [], group_ids: it.audience?.group_ids || [] },
         }),
@@ -115,6 +133,10 @@ export default function ITSMCatalogPage() {
   }
 
   const remove = async (it: ServiceItem) => {
+    if (hasChildren(it.id)) {
+      toast.error(`「${it.name}」下还有子项，请先移除其子项或调整归属后再删除`)
+      return
+    }
     if (!confirm(`确认删除服务目录「${it.name}」？`)) return
     try {
       await apiFetch(`/itsm/catalog/${it.id}`, { method: 'DELETE' })
@@ -151,6 +173,94 @@ export default function ITSMCatalogPage() {
     ? groups.filter(g => !audFilter || g.name.toLowerCase().includes(audFilter.toLowerCase()))
     : users.filter(u => !audFilter || u.username.toLowerCase().includes(audFilter.toLowerCase()))
 
+  // —— 多级分类：把扁平列表构造成树 ——
+  const byID = useMemo(() => new Map(items.map(i => [i.id, i])), [items])
+  const hasChildren = (id: string) => items.some(i => i.parent_id === id)
+  const depthOf = (it: ServiceItem): number => {
+    let d = 0; let cur = it.parent_id
+    while (cur) { d++; const p = byID.get(cur); if (!p) break; cur = p.parent_id }
+    return d
+  }
+  interface TreeNode { item: ServiceItem; children: TreeNode[]; depth: number }
+  const buildTree = (src: ServiceItem[]): TreeNode[] => {
+    const map = new Map<string, TreeNode>()
+    src.forEach(it => map.set(it.id, { item: it, children: [], depth: 0 }))
+    const roots: TreeNode[] = []
+    src.forEach(it => {
+      const node = map.get(it.id)!
+      if (it.parent_id && map.has(it.parent_id)) map.get(it.parent_id)!.children.push(node)
+      else roots.push(node)
+    })
+    const sortNodes = (ns: TreeNode[]) => {
+      ns.sort((a, b) => (a.item.sort_order || 0) - (b.item.sort_order || 0) || a.item.name.localeCompare(b.item.name))
+      ns.forEach(n => { n.depth = depthOf(n.item); sortNodes(n.children) })
+    }
+    sortNodes(roots)
+    return roots
+  }
+  const tree = useMemo(() => buildTree(items), [items])
+  // 选上级分类时，排除「自己 + 自己的所有后代」，避免成环
+  const descendantIDs = (rootID: string): Set<string> => {
+    const set = new Set<string>(); const walk = (id: string) => {
+      items.filter(i => i.parent_id === id).forEach(c => { set.add(c.id); walk(c.id) })
+    }; walk(rootID); return set
+  }
+  const parentOptions = useMemo(() => {
+    const banned = draft.id ? descendantIDs(draft.id) : new Set<string>()
+    if (draft.id) banned.add(draft.id)
+    return items.filter(i => !banned.has(i.id))
+      .sort((a, b) => (a.level || 1) - (b.level || 1) || (a.sort_order || 0) - (b.sort_order || 0) || a.name.localeCompare(b.name))
+      .map(i => ({ id: i.id, name: i.name, indent: ' '.repeat(depthOf(i) * 2) + (depthOf(i) > 0 ? '└ ' : '') }))
+  }, [items, draft.id])
+
+  const renderRow = (it: ServiceItem, depth: number) => {
+    const isFolder = hasChildren(it.id)
+    const aud = audienceSummary(it)
+    return <div key={it.id}
+      className={`group flex items-center gap-3 rounded-lg border px-3 py-2.5 transition-all hover:shadow-sm ${it.enabled ? 'bg-background' : 'bg-muted/40 opacity-70'}`}
+      style={{ marginLeft: `${depth * 22}px` }}>
+      <div className={`h-8 w-8 rounded-md flex items-center justify-center shrink-0 ${isFolder ? 'bg-primary/10' : it.enabled ? 'bg-emerald-500/10' : 'bg-muted'}`}>
+        {isFolder
+          ? <FolderTree className="h-4 w-4 text-primary" />
+          : <Package className={`h-4 w-4 ${it.enabled ? 'text-emerald-500' : 'text-muted-foreground'}`} />}
+      </div>
+      <div className="flex-1 min-w-0">
+        <div className="flex items-center gap-2">
+          <span className="font-medium text-sm truncate">{it.name}</span>
+          {isFolder && <Badge variant="outline" className="text-[10px]">分类</Badge>}
+          <Badge variant={it.enabled ? 'success' : 'outline'} className="text-[10px] shrink-0">{it.enabled ? '已上线' : '未上线'}</Badge>
+        </div>
+        <p className="text-xs text-muted-foreground truncate mt-0.5">{it.description || '无描述'}</p>
+        <div className="flex flex-wrap gap-1.5 mt-1.5">
+          <Badge variant="outline" className="text-[10px]">{catLabel(it.category)}</Badge>
+          {it.process_id
+            ? <Badge variant="secondary" className="text-[10px]">{processes.find(p => p.id === it.process_id)?.name || '关联流程'}</Badge>
+            : <Badge variant="outline" className="text-[10px] text-muted-foreground">无流程模板</Badge>}
+          <Badge variant="outline" className="text-[10px] gap-1">
+            {aud ? <><Users className="h-2.5 w-2.5" />{aud}</> : <><Globe className="h-2.5 w-2.5" />全员可见</>}
+          </Badge>
+        </div>
+      </div>
+      <div className="flex flex-col gap-1 shrink-0">
+        <Button variant="ghost" size="icon" className="h-7 w-7" title={it.enabled ? '下线' : '上线'} onClick={() => toggleEnabled(it)}>
+          {it.enabled ? <ArrowDownCircle className="h-3.5 w-3.5 text-amber-500" /> : <ArrowUpCircle className="h-3.5 w-3.5 text-emerald-500" />}
+        </Button>
+        <Button variant="ghost" size="icon" className="h-7 w-7" title="编辑" onClick={() => openEdit(it)}>
+          <Pencil className="h-3.5 w-3.5 text-blue-500" />
+        </Button>
+        <Button variant="ghost" size="icon" className="h-7 w-7" title="删除" onClick={() => remove(it)}>
+          <Trash2 className="h-3.5 w-3.5 text-red-400" />
+        </Button>
+      </div>
+    </div>
+  }
+  const renderNode = (node: TreeNode): JSX.Element => (
+    <div key={node.item.id}>
+      {renderRow(node.item, node.depth)}
+      {node.children.map(c => renderNode(c))}
+    </div>
+  )
+
   return <div className="p-6 space-y-4">
     <div className="flex items-center justify-between gap-3">
       <div>
@@ -166,49 +276,19 @@ export default function ITSMCatalogPage() {
       </div>
     </div>
 
-    <div className="grid gap-3 md:grid-cols-2">
-      {filtered.length === 0 ? (
-        <Card className="md:col-span-2"><CardContent className="py-12 text-center text-muted-foreground">
+    <div className="space-y-2">
+      {items.length === 0 ? (
+        <Card><CardContent className="py-12 text-center text-muted-foreground">
           <Package className="h-10 w-10 mx-auto mb-2 opacity-30" />
-          <p className="text-sm">{items.length === 0 ? '暂无服务项，点击右上角「新增服务」开始定义' : '没有匹配的服务项'}</p>
+          <p className="text-sm">暂无服务项，点击右上角「新增服务」开始定义（默认已就绪 ITIL 5 大类一级分类）</p>
         </CardContent></Card>
-      ) : filtered.map(it => {
-        const aud = audienceSummary(it)
-        return <Card key={it.id} className={`transition-all hover:shadow-md ${it.enabled ? '' : 'opacity-70'}`}>
-          <CardContent className="p-4 flex items-start gap-3">
-            <div className={`h-9 w-9 rounded-lg flex items-center justify-center shrink-0 ${it.enabled ? 'bg-emerald-500/10' : 'bg-muted'}`}>
-              <Package className={`h-4.5 w-4.5 ${it.enabled ? 'text-emerald-500' : 'text-muted-foreground'}`} />
-            </div>
-            <div className="flex-1 min-w-0">
-              <div className="flex items-center gap-2">
-                <p className="font-medium text-sm truncate">{it.name}</p>
-                <Badge variant={it.enabled ? 'success' : 'outline'} className="text-[10px] shrink-0">{it.enabled ? '已上线' : '未上线'}</Badge>
-              </div>
-              <p className="text-xs text-muted-foreground truncate mt-0.5">{it.description || '无描述'}</p>
-              <div className="flex flex-wrap gap-1.5 mt-2">
-                <Badge variant="outline" className="text-[10px]">{catLabel(it.category)}</Badge>
-                {it.process_id
-                  ? <Badge variant="secondary" className="text-[10px]">{processes.find(p => p.id === it.process_id)?.name || '关联流程'}</Badge>
-                  : <Badge variant="outline" className="text-[10px] text-muted-foreground">无流程模板</Badge>}
-                <Badge variant="outline" className="text-[10px] gap-1">
-                  {aud ? <><Users className="h-2.5 w-2.5" />{aud}</> : <><Globe className="h-2.5 w-2.5" />全员可见</>}
-                </Badge>
-              </div>
-            </div>
-            <div className="flex flex-col gap-1 shrink-0">
-              <Button variant="ghost" size="icon" className="h-7 w-7" title={it.enabled ? '下线' : '上线'} onClick={() => toggleEnabled(it)}>
-                {it.enabled ? <ArrowDownCircle className="h-3.5 w-3.5 text-amber-500" /> : <ArrowUpCircle className="h-3.5 w-3.5 text-emerald-500" />}
-              </Button>
-              <Button variant="ghost" size="icon" className="h-7 w-7" title="编辑" onClick={() => openEdit(it)}>
-                <Pencil className="h-3.5 w-3.5 text-blue-500" />
-              </Button>
-              <Button variant="ghost" size="icon" className="h-7 w-7" title="删除" onClick={() => remove(it)}>
-                <Trash2 className="h-3.5 w-3.5 text-red-400" />
-              </Button>
-            </div>
-          </CardContent>
-        </Card>
-      })}
+      ) : keyword.trim() ? (
+        filtered.length === 0
+          ? <p className="text-sm text-muted-foreground px-1 py-6">没有匹配的服务项</p>
+          : filtered.map(it => renderRow(it, depthOf(it)))
+      ) : (
+        tree.map(n => renderNode(n))
+      )}
     </div>
 
     {/* 新增 / 编辑弹窗 */}
@@ -221,6 +301,14 @@ export default function ITSMCatalogPage() {
         <div className="space-y-1.5">
           <label className="text-xs font-medium">描述</label>
           <Input placeholder="向员工说明该服务的用途" value={draft.description} onChange={e => setDraft({ ...draft, description: e.target.value })} />
+        </div>
+        <div className="space-y-1.5">
+          <label className="text-xs font-medium">上级分类</label>
+          <select className="flex h-9 w-full rounded-md border border-input bg-background px-2 text-xs" value={draft.parent_id || ''} onChange={e => onParentChange(e.target.value)}>
+            <option value="">（无）作为一级分类</option>
+            {parentOptions.map(o => <option key={o.id} value={o.id}>{o.indent}{o.name}</option>)}
+          </select>
+          <p className="text-[10px] text-muted-foreground">默认一级分类为 ITIL 5 大类；留空即新建一级分类，可选已有分类作为上级形成多级。</p>
         </div>
         <div className="grid grid-cols-2 gap-3">
           <div className="space-y-1.5">
