@@ -267,7 +267,8 @@
   /* ---- 富文本编辑器(TipTap)样式 ---- */
   .rich-editor .ProseMirror {
     padding: 0.75rem 1rem;
-    min-height: 400px;
+    /* 高度可由使用方通过 --rich-editor-min-h 覆盖(表单内嵌场景需要更矮) */
+    min-height: var(--rich-editor-min-h, 400px);
     outline: none;
   }
   .rich-editor .ProseMirror p.is-editor-empty:first-child::before {

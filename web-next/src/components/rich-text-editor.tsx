@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useRef } from 'react'
+import { useEffect, useRef, type CSSProperties } from 'react'
 import { useEditor, EditorContent } from '@tiptap/react'
 import StarterKit from '@tiptap/starter-kit'
 import UnderlineExt from '@tiptap/extension-underline'
@@ -18,6 +18,10 @@ interface RichTextEditorProps {
   value: string
   onChange: (markdown: string) => void
   className?: string
+  /** 只读模式: 禁用编辑并隐藏工具条, 用于工单详情等展示场景 */
+  readOnly?: boolean
+  /** 编辑区最小高度(任意 CSS 长度), 默认 400px; 表单内嵌场景可调小 */
+  minHeight?: string
 }
 
 /**
@@ -25,10 +29,11 @@ interface RichTextEditorProps {
  * 对外契约: value/onChange 均为 **Markdown 字符串** —— 存储格式与后端/渲染层完全兼容。
  * 功能: 标题/粗斜删除线/下划线/行内代码/代码块/引用/有序无序任务列表/链接/分割线/撤销重做。
  */
-export function RichTextEditor({ value, onChange, className }: RichTextEditorProps) {
+export function RichTextEditor({ value, onChange, className, readOnly = false, minHeight = '400px' }: RichTextEditorProps) {
   const lastValueRef = useRef(value)
 
   const editor = useEditor({
+    editable: !readOnly,
     extensions: [
       StarterKit.configure({ heading: { levels: [1, 2, 3] } }),
       UnderlineExt,
@@ -68,12 +73,15 @@ export function RichTextEditor({ value, onChange, className }: RichTextEditorPro
     }
   }, [value, editor])
 
-  if (!editor) {
-    return <div className="min-h-[400px] rounded-md border border-input bg-background" />
-  }
+  // 只读态可由外部动态切换(如工单从查看进入编辑)
+  useEffect(() => {
+    if (!editor) return
+    editor.setEditable(!readOnly)
+  }, [readOnly, editor])
 
-  // 给编辑区一个最小高度, 避免内容少时空荡且难以定位光标
-  const editorMinH = 'min-h-[400px]'
+  if (!editor) {
+    return <div className="rounded-md border border-input bg-background" style={{ minHeight }} />
+  }
 
   const run = (fn: () => void) => () => { fn(); editor.view.focus() }
   const active = (name: string, attrs?: Record<string, unknown>) => editor.isActive(name, attrs)
@@ -91,8 +99,8 @@ export function RichTextEditor({ value, onChange, className }: RichTextEditorPro
   }
 
   return (
-    <div className={cn('rounded-md border border-input bg-background', className)}>
-      <div className="flex flex-wrap items-center gap-0.5 border-b border-border px-2 py-1.5">
+    <div className={cn('rounded-md border border-input bg-background', readOnly && 'bg-muted/30', className)}>
+      <div className={cn('flex flex-wrap items-center gap-0.5 border-b border-border px-2 py-1.5', readOnly && 'hidden')}>
         <button type="button" title="标题 1" className={btnCls(active('heading', { level: 1 }))} onClick={run(() => editor.chain().toggleHeading({ level: 1 }).run())}><Heading1 className="h-4 w-4" /></button>
         <button type="button" title="标题 2" className={btnCls(active('heading', { level: 2 }))} onClick={run(() => editor.chain().toggleHeading({ level: 2 }).run())}><Heading2 className="h-4 w-4" /></button>
         <button type="button" title="标题 3" className={btnCls(active('heading', { level: 3 }))} onClick={run(() => editor.chain().toggleHeading({ level: 3 }).run())}><Heading3 className="h-4 w-4" /></button>
@@ -114,7 +122,11 @@ export function RichTextEditor({ value, onChange, className }: RichTextEditorPro
         <button type="button" title="撤销" className={btnCls(false)} onClick={run(() => editor.chain().undo().run())}><Undo2 className="h-4 w-4" /></button>
         <button type="button" title="重做" className={btnCls(false)} onClick={run(() => editor.chain().redo().run())}><Redo2 className="h-4 w-4" /></button>
       </div>
-      <EditorContent editor={editor} className={cn('markdown-body rich-editor', editorMinH)} />
+      <EditorContent
+        editor={editor}
+        className="markdown-body rich-editor"
+        style={{ '--rich-editor-min-h': minHeight } as CSSProperties}
+      />
     </div>
   )
 }

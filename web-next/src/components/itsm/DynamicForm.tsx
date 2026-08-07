@@ -7,7 +7,8 @@
 // 该组件只渲染「业务自定义字段」，系统字段(title/risk/...)仍由页面负责。
 
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { Upload, X, Plus } from 'lucide-react'
+import { Upload, X, Plus, FileText, AlertCircle } from 'lucide-react'
+import { RichTextEditor } from '@/components/rich-text-editor'
 
 export type FormFieldType =
   | 'text'
@@ -104,6 +105,23 @@ export interface FormFieldDef {
   dict_ref?: string
   /** 可编辑角色白名单：非空时仅这些角色的用户可编辑（空=所有人） */
   roles?: string[]
+  /** 12 栅格中占用的列数(1~12)，缺省=12(整行)。由表单设计器画布拖拽调节 */
+  col_span?: number
+  /** 附件：单文件最大体积(MB)，0/缺省=不限 */
+  max_size?: number
+  /** 附件：允许的扩展名/MIME，逗号分隔（如 ".png,.pdf,image/*"） */
+  accept?: string
+  /** 附件：最多文件数，0/缺省=不限 */
+  max_count?: number
+  /** 附件：是否允许多文件。undefined=未配置(不限)，false=单文件 */
+  multiple?: boolean
+}
+
+/** 栅格列数归一化：非法/缺省一律回落整行 */
+export function normalizeColSpan(n?: number): number {
+  const v = Math.round(Number(n) || 0)
+  if (!v || v < 1) return 12
+  return Math.min(12, v)
 }
 
 export interface FormSchema {
@@ -299,29 +317,51 @@ export function DynamicForm({ schema, values, context, onChange, readOnly, loadO
       {Array.from(sections.entries()).map(([sec, fs]) => (
         <div key={sec || '__root'} className="space-y-3">
           {sec && <h4 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">{sec}</h4>}
-          {fs.map(f => (
-            <div key={f.key}>
-              <label className="text-sm font-medium flex items-center gap-1">
-                {f.label}
-                {f.required && <span className="text-destructive">*</span>}
-              </label>
-              <div className="mt-1">
-                <FieldControl
-                  field={f}
-                  value={values[f.key]}
-                  disabled={readOnly || !!f.readonly}
-                  onChange={v => onChange(f.key, v)}
-                  loadOptions={loadOptions}
-                  ticketId={ticketId}
-                />
+          {/* 12 栅格：字段按 col_span 占列，缺省整行；窄屏统一降为单列避免挤压 */}
+          <div className="grid grid-cols-1 gap-x-4 gap-y-3 sm:grid-cols-12">
+            {fs.map(f => (
+              <div key={f.key} className={COL_SPAN_CLS[normalizeColSpan(f.col_span)]}>
+                <label className="text-sm font-medium flex items-center gap-1">
+                  {f.label}
+                  {f.required && <span className="text-destructive">*</span>}
+                </label>
+                <div className="mt-1">
+                  <FieldControl
+                    field={f}
+                    value={values[f.key]}
+                    disabled={readOnly || !!f.readonly}
+                    onChange={v => onChange(f.key, v)}
+                    loadOptions={loadOptions}
+                    ticketId={ticketId}
+                  />
+                </div>
+                {f.help && <p className="text-xs text-muted-foreground mt-1">{f.help}</p>}
               </div>
-              {f.help && <p className="text-xs text-muted-foreground mt-1">{f.help}</p>}
-            </div>
-          ))}
+            ))}
+          </div>
         </div>
       ))}
     </div>
   )
+}
+
+/**
+ * 栅格列数 → Tailwind 类名静态映射。
+ * 不能用模板字符串拼 `sm:col-span-${n}`：Tailwind 编译期扫描源码，动态类名会被丢弃。
+ */
+export const COL_SPAN_CLS: Record<number, string> = {
+  1: 'sm:col-span-1',
+  2: 'sm:col-span-2',
+  3: 'sm:col-span-3',
+  4: 'sm:col-span-4',
+  5: 'sm:col-span-5',
+  6: 'sm:col-span-6',
+  7: 'sm:col-span-7',
+  8: 'sm:col-span-8',
+  9: 'sm:col-span-9',
+  10: 'sm:col-span-10',
+  11: 'sm:col-span-11',
+  12: 'sm:col-span-12',
 }
 
 /** 默认 source 推断：user/ci 类型未显式配 source 时给个合理缺省 */
@@ -490,6 +530,7 @@ function FieldControl({
     case 'attachment':
       return (
         <AttachmentControl
+          field={field}
           value={value}
           disabled={disabled}
           ticketId={ticketId}
@@ -497,13 +538,13 @@ function FieldControl({
         />
       )
     case 'richtext':
+      // 真·所见即所得编辑器（TipTap）。存储格式为 Markdown，与知识库/工单描述保持一致
       return (
-        <textarea
-          className="flex w-full rounded-md border border-input bg-background px-3 py-2 text-sm min-h-[96px] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+        <RichTextEditor
           value={(value as string) ?? ''}
-          placeholder={field.placeholder || '富文本内容（支持 HTML）'}
-          disabled={disabled}
-          onChange={e => onChange(e.target.value)}
+          onChange={md => onChange(md)}
+          readOnly={disabled}
+          minHeight="160px"
         />
       )
     case 'table':
@@ -914,14 +955,50 @@ function toDatetimeLocal(v: string): string {
   return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate()) + 'T' + pad(d.getHours()) + ':' + pad(d.getMinutes())
 }
 
+/** 附件元数据（后端上传/列表接口返回的字段子集） */
+interface AttachmentMeta {
+  id: string
+  file_name?: string
+  file_size?: number
+  file_type?: string
+}
+
+/** 人类可读体积 */
+export function formatBytes(n?: number): string {
+  const v = Number(n || 0)
+  if (!v) return ''
+  if (v < 1024) return `${v} B`
+  if (v < 1024 * 1024) return `${(v / 1024).toFixed(1)} KB`
+  return `${(v / 1024 / 1024).toFixed(1)} MB`
+}
+
+/**
+ * 按 accept 规则校验文件类型。规则用逗号分隔，支持三种写法：
+ * ".png"（扩展名）、"image/*"（MIME 通配）、"application/pdf"（精确 MIME）。
+ */
+export function matchAccept(file: File, accept: string): boolean {
+  const rules = accept.split(',').map(s => s.trim().toLowerCase()).filter(Boolean)
+  if (rules.length === 0) return true
+  const name = file.name.toLowerCase()
+  const mime = (file.type || '').toLowerCase()
+  return rules.some(r => {
+    if (r.startsWith('.')) return name.endsWith(r)
+    if (r.endsWith('/*')) return mime.startsWith(r.slice(0, -1))
+    return mime === r
+  })
+}
+
 // AttachmentControl —— attachment 字段控件：上传文件到工单附件区, 值 = 附件 ID 字符串数组。
-// 需要 ticketId 才能上传(创建表单无工单 ID 时提示创建后补充)。
+// 支持字段级约束：单文件体积上限(max_size MB)、允许类型(accept)、最多数量(max_count)、多文件开关(multiple)。
+// 上传成功后展示预览（图片走缩略图，其它走文件卡片）。需要 ticketId 才能上传。
 function AttachmentControl({
+  field,
   value,
   disabled,
   ticketId,
   onChange,
 }: {
+  field: FormFieldDef
   value: unknown
   disabled: boolean
   ticketId?: string
@@ -930,27 +1007,92 @@ function AttachmentControl({
   const inputRef = useRef<HTMLInputElement>(null)
   const [uploading, setUploading] = useState(false)
   const [error, setError] = useState('')
+  const [metaMap, setMetaMap] = useState<Record<string, AttachmentMeta>>({})
   const ids = Array.isArray(value) ? (value as (string | number)[]).map(String) : []
 
-  const handleUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0]
-    if (!file || !ticketId) return
-    setUploading(true)
-    setError('')
-    try {
-      const fd = new FormData()
-      fd.append('file', file)
-      fd.append('uploaded_by', 'form')
-      const res = await fetch(`/api/v1/itsm/tickets/${ticketId}/attachments`, {
-        method: 'POST',
-        headers: {},
-        body: fd,
+  const maxSizeMB = Number(field.max_size || 0)
+  const accept = (field.accept || '').trim()
+  const maxCount = Number(field.max_count || 0)
+  // undefined 视为未配置(允许多选)，仅显式 false 才限制为单文件
+  const multiple = field.multiple !== false
+
+  const idsKey = ids.join(',')
+  // 回填历史附件的元数据，让已保存的值也能显示文件名/缩略图而不是「附件 #12」
+  useEffect(() => {
+    if (!ticketId || ids.length === 0) return
+    if (ids.every(id => metaMap[id])) return
+    let alive = true
+    fetch(`/api/v1/itsm/tickets/${ticketId}/attachments`)
+      .then(r => (r.ok ? r.json() : []))
+      .then((list: unknown) => {
+        if (!alive || !Array.isArray(list)) return
+        setMetaMap(prev => {
+          const next = { ...prev }
+          for (const a of list as AttachmentMeta[]) next[String(a.id)] = { ...a, id: String(a.id) }
+          return next
+        })
       })
-      if (!res.ok) throw new Error(`上传失败(${res.status})`)
-      const att = await res.json()
-      onChange([...ids, String(att.id)])
-    } catch (err: any) {
-      setError(err?.message || '上传失败')
+      .catch(() => {})
+    return () => {
+      alive = false
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ticketId, idsKey])
+
+  const constraintHint = [
+    maxSizeMB > 0 ? `单文件 ≤ ${maxSizeMB}MB` : '',
+    accept ? `允许 ${accept}` : '',
+    maxCount > 0 ? `最多 ${maxCount} 个` : '',
+    multiple ? '' : '仅限 1 个',
+  ]
+    .filter(Boolean)
+    .join(' · ')
+
+  const handleUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const picked = Array.from(e.target.files || [])
+    if (picked.length === 0 || !ticketId) return
+    setError('')
+
+    // 数量约束（多选一次挑多个也要拦住）
+    const limit = !multiple ? 1 : maxCount > 0 ? maxCount : Infinity
+    if (ids.length + picked.length > limit) {
+      setError(!multiple ? '该字段只允许上传 1 个附件' : `最多允许上传 ${maxCount} 个附件`)
+      if (inputRef.current) inputRef.current.value = ''
+      return
+    }
+    // 体积 / 类型约束
+    for (const f of picked) {
+      if (maxSizeMB > 0 && f.size > maxSizeMB * 1024 * 1024) {
+        setError(`「${f.name}」超过 ${maxSizeMB}MB 限制（实际 ${formatBytes(f.size)}）`)
+        if (inputRef.current) inputRef.current.value = ''
+        return
+      }
+      if (accept && !matchAccept(f, accept)) {
+        setError(`「${f.name}」类型不被允许，仅接受 ${accept}`)
+        if (inputRef.current) inputRef.current.value = ''
+        return
+      }
+    }
+
+    setUploading(true)
+    const added: string[] = []
+    try {
+      for (const f of picked) {
+        const fd = new FormData()
+        fd.append('file', f)
+        fd.append('uploaded_by', 'form')
+        const res = await fetch(`/api/v1/itsm/tickets/${ticketId}/attachments`, { method: 'POST', body: fd })
+        if (!res.ok) throw new Error(`「${f.name}」上传失败(${res.status})`)
+        const att = (await res.json()) as AttachmentMeta
+        const id = String(att.id)
+        added.push(id)
+        setMetaMap(prev => ({ ...prev, [id]: { ...att, id } }))
+      }
+      onChange([...ids, ...added])
+    } catch (err: unknown) {
+      // 已成功的部分照样写回，避免用户重传
+      if (added.length > 0) onChange([...ids, ...added])
+      setError(err instanceof Error ? err.message : '上传失败')
     }
     setUploading(false)
     if (inputRef.current) inputRef.current.value = ''
@@ -959,43 +1101,89 @@ function AttachmentControl({
   const remove = (id: string) => onChange(ids.filter(x => x !== id))
 
   if (!ticketId) {
-    return <p className="text-xs text-muted-foreground">附件需在工单创建后关联，可稍后在工单附件区补充。</p>
+    return (
+      <div className="space-y-1">
+        <p className="text-xs text-muted-foreground">附件需在工单创建后关联，可稍后在工单附件区补充。</p>
+        {constraintHint && <p className="text-[11px] text-muted-foreground/80">{constraintHint}</p>}
+      </div>
+    )
   }
+
+  const reachedLimit = !multiple ? ids.length >= 1 : maxCount > 0 && ids.length >= maxCount
 
   return (
     <div className="space-y-2">
-      <input ref={inputRef} type="file" className="hidden" onChange={handleUpload} />
-      <button
-        type="button"
-        disabled={disabled || uploading}
-        onClick={() => inputRef.current?.click()}
-        className="inline-flex items-center gap-1 h-8 px-3 rounded-md border border-input text-xs hover:bg-accent disabled:opacity-50"
-      >
-        <Upload className="h-3 w-3" />
-        {uploading ? '上传中…' : '上传附件'}
-      </button>
+      <input
+        ref={inputRef}
+        type="file"
+        className="hidden"
+        multiple={multiple}
+        accept={accept || undefined}
+        onChange={handleUpload}
+      />
+      <div className="flex items-center gap-2 flex-wrap">
+        <button
+          type="button"
+          disabled={disabled || uploading || reachedLimit}
+          onClick={() => inputRef.current?.click()}
+          className="inline-flex items-center gap-1 h-8 px-3 rounded-md border border-input text-xs hover:bg-accent disabled:opacity-50"
+        >
+          <Upload className="h-3 w-3" />
+          {uploading ? '上传中…' : reachedLimit ? '已达数量上限' : multiple ? '上传附件' : '上传附件（单个）'}
+        </button>
+        {constraintHint && <span className="text-[11px] text-muted-foreground">{constraintHint}</span>}
+      </div>
       {ids.length > 0 && (
-        <div className="space-y-1">
-          {ids.map(id => (
-            <div key={id} className="flex items-center justify-between border rounded-md px-2.5 py-1.5 text-xs">
-              <a
-                className="text-primary underline underline-offset-2 truncate"
-                href={`/api/v1/itsm/tickets/${ticketId}/attachments/${id}`}
-                target="_blank"
-                rel="noreferrer"
-              >
-                附件 #{id}
-              </a>
-              {!disabled && (
-                <button type="button" className="text-muted-foreground hover:text-destructive" onClick={() => remove(id)}>
-                  <X className="h-3 w-3" />
-                </button>
-              )}
-            </div>
-          ))}
+        <div className="grid grid-cols-1 gap-1.5 sm:grid-cols-2">
+          {ids.map(id => {
+            const meta = metaMap[id]
+            const url = `/api/v1/itsm/tickets/${ticketId}/attachments/${id}`
+            const isImage = (meta?.file_type || '').startsWith('image/')
+            return (
+              <div key={id} className="flex items-center gap-2 border rounded-md px-2 py-1.5 text-xs bg-muted/20">
+                {isImage ? (
+                  // eslint-disable-next-line @next/next/no-img-element
+                  <img src={url} alt={meta?.file_name || id} className="h-9 w-9 shrink-0 rounded object-cover border" />
+                ) : (
+                  <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded border bg-background">
+                    <FileText className="h-4 w-4 text-muted-foreground" />
+                  </span>
+                )}
+                <div className="min-w-0 flex-1">
+                  <a
+                    className="block truncate text-primary underline underline-offset-2"
+                    href={url}
+                    target="_blank"
+                    rel="noreferrer"
+                    title={meta?.file_name || `附件 #${id}`}
+                  >
+                    {meta?.file_name || `附件 #${id}`}
+                  </a>
+                  {meta?.file_size ? (
+                    <span className="text-[11px] text-muted-foreground">{formatBytes(meta.file_size)}</span>
+                  ) : null}
+                </div>
+                {!disabled && (
+                  <button
+                    type="button"
+                    className="shrink-0 text-muted-foreground hover:text-destructive"
+                    onClick={() => remove(id)}
+                    title="移除"
+                  >
+                    <X className="h-3 w-3" />
+                  </button>
+                )}
+              </div>
+            )
+          })}
         </div>
       )}
-      {error && <p className="text-xs text-destructive">{error}</p>}
+      {error && (
+        <p className="flex items-start gap-1 text-xs text-destructive">
+          <AlertCircle className="mt-0.5 h-3 w-3 shrink-0" />
+          <span>{error}</span>
+        </p>
+      )}
     </div>
   )
 }
