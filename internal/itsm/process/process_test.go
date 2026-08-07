@@ -436,13 +436,16 @@ func TestRunSubflowPauseAndResume(t *testing.T) {
 type memStore struct {
 	procs map[string]*Process
 	insts map[string]*ProcessInstance
+	vers  []*ProcessVersion
 }
 
 func (m *memStore) Create(ctx context.Context, p *Process) error {
 	m.procs[p.ID] = p
 	return nil
 }
-func (m *memStore) Get(ctx context.Context, id, tenantID string) (*Process, error) { return m.procs[id], nil }
+func (m *memStore) Get(ctx context.Context, id, tenantID string) (*Process, error) {
+	return m.procs[id], nil
+}
 func (m *memStore) List(ctx context.Context, tenantID string) ([]*Process, error) {
 	var out []*Process
 	for _, p := range m.procs {
@@ -475,6 +478,33 @@ func (m *memStore) ListRunningInstances(ctx context.Context) ([]*ProcessInstance
 		out = append(out, inst)
 	}
 	return out, nil
+}
+func (m *memStore) SaveVersion(ctx context.Context, v *ProcessVersion) error {
+	for i, old := range m.vers {
+		if old.ProcessID == v.ProcessID && old.Version == v.Version {
+			m.vers[i] = v
+			return nil
+		}
+	}
+	m.vers = append(m.vers, v)
+	return nil
+}
+func (m *memStore) ListVersions(ctx context.Context, processID, tenantID string) ([]*ProcessVersion, error) {
+	var out []*ProcessVersion
+	for _, v := range m.vers {
+		if v.ProcessID == processID {
+			out = append(out, v)
+		}
+	}
+	return out, nil
+}
+func (m *memStore) GetVersion(ctx context.Context, processID, tenantID string, version int) (*ProcessVersion, error) {
+	for _, v := range m.vers {
+		if v.ProcessID == processID && v.Version == version {
+			return v, nil
+		}
+	}
+	return nil, nil
 }
 
 // --- 会签投票 ---
@@ -522,7 +552,7 @@ func TestProcessSnapshotIsolation(t *testing.T) {
 	ctx := context.Background()
 	m.CreateInstance(ctx, &ProcessInstance{
 		ID: "i1", ProcessID: "p1", TicketID: "t1", TenantID: "default", Status: "running", CurrentStep: "start",
-		StepResults:     map[string]any{},
+		StepResults: map[string]any{},
 		ProcessSnapshot: []Step{
 			{ID: "start", Type: StepStart},
 			{ID: "svc", Type: StepService, DependsOn: []Dependency{{NodeID: "start", Condition: "success"}}},

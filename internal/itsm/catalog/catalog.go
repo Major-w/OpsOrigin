@@ -9,8 +9,39 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/opsorigin/core/pkg/auth"
 	"github.com/opsorigin/core/pkg/httputil"
 )
+
+// Audience 服务对象: 限定哪些用户 / 用户组可以在自助服务门户看到该目录项。
+// 两个列表都为空 = 全员可见(不设限)。命中任一即可见(并集语义)。
+type Audience struct {
+	UserIDs  []string `json:"user_ids,omitempty"`
+	GroupIDs []string `json:"group_ids,omitempty"`
+}
+
+// IsEmpty 未配置任何服务对象 → 全员可见。
+func (a Audience) IsEmpty() bool { return len(a.UserIDs) == 0 && len(a.GroupIDs) == 0 }
+
+// Allows 判断给定用户(及其所属用户组)是否在服务对象范围内。
+func (a Audience) Allows(userID string, groupIDs []string) bool {
+	if a.IsEmpty() {
+		return true
+	}
+	for _, u := range a.UserIDs {
+		if u != "" && u == userID {
+			return true
+		}
+	}
+	for _, g := range a.GroupIDs {
+		for _, ug := range groupIDs {
+			if g != "" && g == ug {
+				return true
+			}
+		}
+	}
+	return false
+}
 
 // ServiceItem 服务目录项
 type ServiceItem struct {
@@ -21,12 +52,20 @@ type ServiceItem struct {
 	Category    string    `json:"category,omitempty"`   // change/incident/problem/request
 	ProcessID   string    `json:"process_id,omitempty"` // 关联流程(申请时自动套用)
 	FormScope   string    `json:"form_scope,omitempty"` // 关联表单作用域(如 ticket:default / catalog:<id> 自定义)
-	Enabled     bool      `json:"enabled"`
+	Enabled     bool      `json:"enabled"`              // 上线/下线: 仅上线项出现在自助服务门户
+	Audience    Audience  `json:"audience"`             // 服务对象(可见范围)
 	CreatedAt   time.Time `json:"created_at"`
 	UpdatedAt   time.Time `json:"updated_at"`
 }
 
-type Store struct{ db *sql.DB }
+// GroupResolver 返回某用户所属的用户组 ID 列表(由 cmd/core 注入 IAM 实现,
+// 避免 catalog 反向依赖 iam 包)。未注入时按「无组」处理。
+type GroupResolver func(ctx context.Context, tenantID, userID string) ([]string, error)
+
+type Store struct {
+	db     *sql.DB
+	groups GroupResolver
+}
 
 func NewStore(db *sql.DB) *Store {
 	s := &Store{db: db}
@@ -34,6 +73,9 @@ func NewStore(db *sql.DB) *Store {
 	s.seed()
 	return s
 }
+
+// SetGroupResolver 注入用户组解析器(服务对象按组授权时需要)。
+func (s *Store) SetGroupResolver(r GroupResolver) { s.groups = r }
 
 func (s *Store) migrate() {
 	s.db.Exec(`CREATE TABLE IF NOT EXISTS itsm_catalog (
@@ -45,9 +87,29 @@ func (s *Store) migrate() {
 		created_at TIMESTAMPTZ DEFAULT NOW(), updated_at TIMESTAMPTZ DEFAULT NOW()
 	)`)
 	s.db.Exec(`ALTER TABLE itsm_catalog ADD COLUMN IF NOT EXISTS form_scope TEXT DEFAULT ''`)
+	// 服务对象(可见范围): {user_ids:[], group_ids:[]}, 空对象=全员可见
+	s.db.Exec(`ALTER TABLE itsm_catalog ADD COLUMN IF NOT EXISTS audience JSONB DEFAULT '{}'::jsonb`)
 }
 
-const catalogCols = `id,tenant_id,name,description,category,process_id,form_scope,enabled,created_at,updated_at`
+const catalogCols = `id,tenant_id,name,description,category,process_id,form_scope,enabled,audience,created_at,updated_at`
+
+func marshalAudience(a Audience) []byte {
+	b, err := json.Marshal(a)
+	if err != nil || len(b) == 0 {
+		return []byte("{}")
+	}
+	return b
+}
+
+func unmarshalAudience(raw []byte, a *Audience) {
+	if len(raw) == 0 || string(raw) == "null" {
+		*a = Audience{}
+		return
+	}
+	if err := json.Unmarshal(raw, a); err != nil {
+		*a = Audience{}
+	}
+}
 
 func (s *Store) seed() {
 	var count int
@@ -69,8 +131,8 @@ func (s *Store) seed() {
 		it.Enabled = true
 		it.CreatedAt = time.Now()
 		it.UpdatedAt = it.CreatedAt
-		s.db.Exec(`INSERT INTO itsm_catalog(id,tenant_id,name,description,category,process_id,form_scope,enabled,created_at,updated_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
-			it.ID, it.TenantID, it.Name, it.Description, it.Category, it.ProcessID, it.FormScope, it.Enabled, it.CreatedAt, it.UpdatedAt)
+		s.db.Exec(`INSERT INTO itsm_catalog(`+catalogCols+`) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
+			it.ID, it.TenantID, it.Name, it.Description, it.Category, it.ProcessID, it.FormScope, it.Enabled, marshalAudience(it.Audience), it.CreatedAt, it.UpdatedAt)
 	}
 }
 
@@ -83,9 +145,11 @@ func (s *Store) List(ctx context.Context, tenantID string) ([]ServiceItem, error
 	var out []ServiceItem
 	for rows.Next() {
 		var it ServiceItem
-		if err := rows.Scan(&it.ID, &it.TenantID, &it.Name, &it.Description, &it.Category, &it.ProcessID, &it.FormScope, &it.Enabled, &it.CreatedAt, &it.UpdatedAt); err != nil {
+		var audRaw []byte
+		if err := rows.Scan(&it.ID, &it.TenantID, &it.Name, &it.Description, &it.Category, &it.ProcessID, &it.FormScope, &it.Enabled, &audRaw, &it.CreatedAt, &it.UpdatedAt); err != nil {
 			return nil, err
 		}
+		unmarshalAudience(audRaw, &it.Audience)
 		out = append(out, it)
 	}
 	return out, rows.Err()
@@ -94,14 +158,16 @@ func (s *Store) List(ctx context.Context, tenantID string) ([]ServiceItem, error
 // Get 按 ID 读取单个目录项(供"从目录发起申请"套用流程/表单)。
 func (s *Store) Get(ctx context.Context, id, tenantID string) (*ServiceItem, error) {
 	var it ServiceItem
+	var audRaw []byte
 	err := s.db.QueryRowContext(ctx, `SELECT `+catalogCols+` FROM itsm_catalog WHERE id=$1 AND tenant_id=$2`, id, tenantID).
-		Scan(&it.ID, &it.TenantID, &it.Name, &it.Description, &it.Category, &it.ProcessID, &it.FormScope, &it.Enabled, &it.CreatedAt, &it.UpdatedAt)
+		Scan(&it.ID, &it.TenantID, &it.Name, &it.Description, &it.Category, &it.ProcessID, &it.FormScope, &it.Enabled, &audRaw, &it.CreatedAt, &it.UpdatedAt)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
 	if err != nil {
 		return nil, err
 	}
+	unmarshalAudience(audRaw, &it.Audience)
 	return &it, nil
 }
 
@@ -112,15 +178,15 @@ func (s *Store) Create(ctx context.Context, it *ServiceItem) error {
 	if it.TenantID == "" {
 		it.TenantID = "default"
 	}
-	_, err := s.db.ExecContext(ctx, `INSERT INTO itsm_catalog(`+catalogCols+`) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
-		it.ID, it.TenantID, it.Name, it.Description, it.Category, it.ProcessID, it.FormScope, it.Enabled, it.CreatedAt, it.UpdatedAt)
+	_, err := s.db.ExecContext(ctx, `INSERT INTO itsm_catalog(`+catalogCols+`) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
+		it.ID, it.TenantID, it.Name, it.Description, it.Category, it.ProcessID, it.FormScope, it.Enabled, marshalAudience(it.Audience), it.CreatedAt, it.UpdatedAt)
 	return err
 }
 
 func (s *Store) Update(ctx context.Context, it *ServiceItem) error {
 	it.UpdatedAt = time.Now()
-	_, err := s.db.ExecContext(ctx, `UPDATE itsm_catalog SET name=$1,description=$2,category=$3,process_id=$4,form_scope=$5,enabled=$6,updated_at=$7 WHERE id=$8 AND tenant_id=$9`,
-		it.Name, it.Description, it.Category, it.ProcessID, it.FormScope, it.Enabled, it.UpdatedAt, it.ID, it.TenantID)
+	_, err := s.db.ExecContext(ctx, `UPDATE itsm_catalog SET name=$1,description=$2,category=$3,process_id=$4,form_scope=$5,enabled=$6,audience=$7,updated_at=$8 WHERE id=$9 AND tenant_id=$10`,
+		it.Name, it.Description, it.Category, it.ProcessID, it.FormScope, it.Enabled, marshalAudience(it.Audience), it.UpdatedAt, it.ID, it.TenantID)
 	return err
 }
 
@@ -129,8 +195,34 @@ func (s *Store) Delete(ctx context.Context, id, tenantID string) error {
 	return err
 }
 
+// ListVisible 返回「已上线 且 当前用户在服务对象范围内」的目录项(自助服务门户视角)。
+func (s *Store) ListVisible(ctx context.Context, tenantID, userID string) ([]ServiceItem, error) {
+	all, err := s.List(ctx, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	var groupIDs []string
+	if s.groups != nil && userID != "" {
+		if gs, err := s.groups(ctx, tenantID, userID); err == nil {
+			groupIDs = gs
+		}
+	}
+	out := make([]ServiceItem, 0, len(all))
+	for _, it := range all {
+		if !it.Enabled {
+			continue // 下线项不出现在门户
+		}
+		if !it.Audience.Allows(userID, groupIDs) {
+			continue
+		}
+		out = append(out, it)
+	}
+	return out, nil
+}
+
 func (s *Store) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/v1/itsm/catalog", s.handleList)
+	mux.HandleFunc("GET /api/v1/itsm/catalog/visible", s.handleListVisible)
 	mux.HandleFunc("POST /api/v1/itsm/catalog", s.handleCreate)
 	mux.HandleFunc("PUT /api/v1/itsm/catalog/{id}", s.handleUpdate)
 	mux.HandleFunc("DELETE /api/v1/itsm/catalog/{id}", s.handleDelete)
@@ -142,6 +234,19 @@ func (s *Store) handleList(w http.ResponseWriter, r *http.Request) {
 		tenant = "default"
 	}
 	items, err := s.List(r.Context(), tenant)
+	if err != nil {
+		writeJSON(w, 500, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, 200, items)
+}
+
+func (s *Store) handleListVisible(w http.ResponseWriter, r *http.Request) {
+	tenant := r.Header.Get("X-Tenant-ID")
+	if tenant == "" {
+		tenant = "default"
+	}
+	items, err := s.ListVisible(r.Context(), tenant, auth.UserIDFromContext(r.Context()))
 	if err != nil {
 		writeJSON(w, 500, map[string]string{"error": err.Error()})
 		return

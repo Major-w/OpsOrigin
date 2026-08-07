@@ -143,6 +143,8 @@ func (s *Service) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("DELETE /api/v1/itsm/processes/{id}", s.handleDelete)
 	mux.HandleFunc("GET /api/v1/itsm/processes/{id}/bpmn", s.handleExportBPMN)
 	mux.HandleFunc("POST /api/v1/itsm/processes/import-bpmn", s.handleImportBPMN)
+	mux.HandleFunc("GET /api/v1/itsm/processes/{id}/versions", s.handleListVersions)
+	mux.HandleFunc("GET /api/v1/itsm/processes/{id}/versions/{version}", s.handleGetVersion)
 }
 
 // handleExportBPMN 导出流程为 BPMN 2.0 XML(兼容 Camunda/Flowable/bpmn-js 建模器)。
@@ -270,11 +272,18 @@ func (s *Service) handleUpdate(w http.ResponseWriter, r *http.Request) {
 	p.ID = id
 	p.TenantID = tenant
 	p.CreatedAt = existing.CreatedAt
+	// 覆盖写之前先把「旧定义」归档成历史版本快照(版本列表/差异对比的数据来源)。
+	// 归档失败不阻断保存: 版本轨迹是审计增强, 不应让用户的编辑丢失。
+	if snap := SnapshotOf(existing, actorOf(r)); snap != nil {
+		if err := s.store.SaveVersion(r.Context(), snap); err != nil {
+			slog.Warn("itsm process version snapshot failed", "id", id, "version", existing.Version, "err", err)
+		}
+	}
 	if err := s.store.Update(r.Context(), &p); err != nil {
 		writeError(w, 500, err.Error())
 		return
 	}
-	slog.Info("itsm process updated", "id", id)
+	slog.Info("itsm process updated", "id", id, "version", p.Version)
 	writeJSON(w, 200, p)
 }
 

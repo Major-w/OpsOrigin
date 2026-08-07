@@ -15,7 +15,7 @@ import { useEffect, useMemo, useRef, useState, type DragEvent, type PointerEvent
 import {
   ArrowDown, ArrowUp, ChevronDown, ChevronRight, Eye, GripVertical, Plus, SquareStack, Trash2,
 } from 'lucide-react'
-import { FIELD_TYPES, createField, FieldPropertyPanel } from './FormBuilder'
+import { FIELD_TYPES, createField, defaultColSpan, FieldPropertyPanel } from './FormBuilder'
 import {
   DynamicForm,
   normalizeColSpan,
@@ -134,13 +134,20 @@ export function FormDesigner({
     if (activeKey === key) setActiveKey('')
   }
 
-  /** 新增字段：落到指定分区的 beforeKey 之前（beforeKey 为空则追加到该分区末尾） */
-  const addFieldTo = (type: FormFieldType, section: string, beforeKey?: string) => {
+  /** 新增字段：落到指定分区的 beforeKey 之前 / afterKey 之后（都为空则追加到该分区末尾）。
+   *  clampSpan 用于「拖入行剩余空间」场景：把新字段宽度钳制为剩余列数，使其正好填满该行空隙。 */
+  const addFieldTo = (type: FormFieldType, section: string, beforeKey?: string, afterKey?: string, clampSpan?: number) => {
     const f = createField(type, nextSeq(fields))
+    if (clampSpan && clampSpan > 0) f.col_span = clampSpan
     const next = blocks.map(b => {
       if (b.title !== section) return b
       const items = [...b.items]
-      const at = beforeKey ? items.findIndex(x => x.key === beforeKey) : -1
+      let at = -1
+      if (beforeKey) at = items.findIndex(x => x.key === beforeKey)
+      else if (afterKey) {
+        const i = items.findIndex(x => x.key === afterKey)
+        at = i < 0 ? -1 : i + 1
+      }
       if (at >= 0) items.splice(at, 0, f)
       else items.push(f)
       return { ...b, items }
@@ -149,16 +156,21 @@ export function FormDesigner({
     setActiveKey(f.key)
   }
 
-  /** 搬运字段：可跨分区，落到 beforeKey 之前（为空则该分区末尾） */
-  const moveFieldTo = (key: string, section: string, beforeKey?: string) => {
-    if (key === beforeKey) return
+  /** 搬运字段：可跨分区，落到 beforeKey 之前 / afterKey 之后（为空则该分区末尾） */
+  const moveFieldTo = (key: string, section: string, beforeKey?: string, afterKey?: string) => {
+    if (key === beforeKey || key === afterKey) return
     const moving = fields.find(f => f.key === key)
     if (!moving) return
     const stripped = blocks.map(b => ({ ...b, items: b.items.filter(f => f.key !== key) }))
     const next = stripped.map(b => {
       if (b.title !== section) return b
       const items = [...b.items]
-      const at = beforeKey ? items.findIndex(x => x.key === beforeKey) : -1
+      let at = -1
+      if (beforeKey) at = items.findIndex(x => x.key === beforeKey)
+      else if (afterKey) {
+        const i = items.findIndex(x => x.key === afterKey)
+        at = i < 0 ? -1 : i + 1
+      }
       if (at >= 0) items.splice(at, 0, moving)
       else items.push(moving)
       return { ...b, items }
@@ -252,13 +264,36 @@ export function FormDesigner({
     return true
   }
 
-  const onDropInBlock = (e: DragEvent, section: string, beforeKey?: string) => {
+  const onDropInBlock = (e: DragEvent, section: string, beforeKey?: string, afterKey?: string) => {
     if (!allowDrop(e, [MIME_TYPE, MIME_FIELD])) return
     setDragOver(false)
     const newType = e.dataTransfer.getData(MIME_TYPE)
     const movingKey = e.dataTransfer.getData(MIME_FIELD)
-    if (newType) addFieldTo(newType as FormFieldType, section, beforeKey)
-    else if (movingKey) moveFieldTo(movingKey, section, beforeKey)
+    if (newType) addFieldTo(newType as FormFieldType, section, beforeKey, afterKey)
+    else if (movingKey) moveFieldTo(movingKey, section, beforeKey, afterKey)
+  }
+
+  /** 落在字段卡片上：按光标位于卡片左/右半区决定插到该字段「之前」还是「之后」。
+   *  插到右侧 = 落入同一行的剩余空间，此时把新控件宽度钳制为剩余列数，正好填满空隙。 */
+  const onDropOnField = (e: DragEvent, section: string, fieldKey: string) => {
+    if (!allowDrop(e, [MIME_TYPE, MIME_FIELD])) return
+    setDragOver(false)
+    const rect = e.currentTarget.getBoundingClientRect()
+    const after = e.clientX - rect.left > rect.width / 2
+    const newType = e.dataTransfer.getData(MIME_TYPE)
+    const movingKey = e.dataTransfer.getData(MIME_FIELD)
+    if (newType) {
+      const sectionItems = blocks.find(b => b.title === section)?.items || []
+      let clamp: number | undefined
+      if (after) {
+        const rem = remainingColsAfter(sectionItems, fieldKey)
+        const def = defaultColSpan(newType as FormFieldType)
+        clamp = rem > 0 ? Math.min(def, rem) : def
+      }
+      addFieldTo(newType as FormFieldType, section, after ? undefined : fieldKey, after ? fieldKey : undefined, clamp)
+    } else if (movingKey) {
+      moveFieldTo(movingKey, section, after ? undefined : fieldKey, after ? fieldKey : undefined)
+    }
   }
 
   const onCanvasDrop = (e: DragEvent) => {
@@ -337,7 +372,7 @@ export function FormDesigner({
             <span className="text-xs font-semibold">
               表单页面（{blocks.length} 个分区 · {fieldCount} 个字段）
             </span>
-            <span className="text-[10px] text-muted-foreground">拖控件入分区 · 拖卡片右缘调宽 · 拖分区头排序</span>
+            <span className="text-[10px] text-muted-foreground">拖控件入分区（右侧落入同行剩余空间）· 拖卡片右缘调宽 · 拖分区头排序</span>
           </div>
 
           {blocks.map((b, bi) => {
@@ -430,7 +465,7 @@ export function FormDesigner({
                               e.dataTransfer.effectAllowed = 'move'
                             }}
                             onDragOver={e => allowDrop(e, [MIME_TYPE, MIME_FIELD])}
-                            onDrop={e => onDropInBlock(e, b.title, f.key)}
+                            onDrop={e => onDropOnField(e, b.title, f.key)}
                             onClick={() => setActiveKey(f.key)}
                             className={`group relative flex min-w-0 cursor-pointer items-center gap-1.5 rounded-md border bg-background px-2 py-2 ${SPAN_CLS[span]} ${
                               selected ? 'border-primary ring-1 ring-primary/40' : 'border-input hover:bg-accent/50'
@@ -513,6 +548,18 @@ export function FormDesigner({
       </div>
     </div>
   )
+}
+
+/** 模拟 12 栅格逐行排布：返回某字段所在行的「右侧剩余列数」（用于把拖入的新控件钳制进行内空隙）。 */
+function remainingColsAfter(items: FormFieldDef[], key: string): number {
+  let curCol = 0
+  for (const f of items) {
+    const span = normalizeColSpan(f.col_span)
+    if (curCol + span > 12) curCol = 0 // 换行
+    curCol += span
+    if (f.key === key) return Math.max(0, 12 - curCol)
+  }
+  return 12
 }
 
 /** 取 fields 中出现过的分区名（保持首次出现顺序） */

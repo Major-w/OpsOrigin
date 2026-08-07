@@ -126,6 +126,24 @@ export interface ProcessInstance {
   updated_at?: string
 }
 
+/** 流程定义历史版本快照（GET /itsm/processes/{id}/versions）。ID 为 "current" 表示当前生效版本。 */
+export interface ProcessVersion {
+  id: string
+  process_id: string
+  version: number
+  name: string
+  description?: string
+  category?: string
+  steps: ProcessStep[]
+  labels?: Record<string, string>
+  enabled: boolean
+  form?: any
+  sla_policy_id?: string
+  notify_config?: any
+  created_by: string
+  created_at: string
+}
+
 interface ITSMState {
   tickets: Ticket[]
   stats: ITSMStats | null
@@ -164,6 +182,9 @@ interface ITSMState {
   createProcess: (data: Partial<Process>) => Promise<string | null>
   updateProcess: (id: string, data: Partial<Process>) => Promise<boolean>
   deleteProcess: (id: string) => Promise<boolean>
+  // 流程版本历史（定义演进轨迹）
+  listProcessVersions: (id: string) => Promise<ProcessVersion[]>
+  getProcessVersion: (id: string, version: number) => Promise<ProcessVersion | null>
   // 流程实例与步骤级自定义字段
   getTicketProcess: (ticketId: string) => Promise<ProcessInstance | null>
   updateTicketCustomFields: (ticketId: string, scope: string, fields: Record<string, any>) => Promise<boolean>
@@ -465,6 +486,22 @@ export const useITSMStore = create<ITSMState>((set, get) => ({
       toast.success('删除流程成功')
       return true
     } catch (e: any) { toast.error(`删除失败: ${e.message}`); return false }
+  },
+  listProcessVersions: async (id) => {
+    try {
+      return await apiList<ProcessVersion>(`/itsm/processes/${id}/versions`)
+    } catch (e: any) {
+      toast.error(`加载版本历史失败: ${e.message}`)
+      return []
+    }
+  },
+  getProcessVersion: async (id, version) => {
+    try {
+      return await apiFetch<ProcessVersion>(`/itsm/processes/${id}/versions/${version}`)
+    } catch (e: any) {
+      toast.error(`加载版本失败: ${e.message}`)
+      return null
+    }
   },
   getTicketProcess: async (ticketId) => {
     try {

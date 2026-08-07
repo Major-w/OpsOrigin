@@ -184,12 +184,24 @@ export default function ITSMPage() {
 
   useEffect(() => { fetch(); fetchStats(); fetchProcesses() }, [])
 
-  // 从服务目录「申请」跳转过来时，自动按 catalog:<id> 作用域打开创建 Dialog
+  // 从服务目录「申请」跳转过来时，自动按 catalog:<id> 作用域打开创建 Dialog，
+  // 并把目录项配置的流程模板 / 自定义表单作用域 / 服务名称预填进来 —— 员工点一下即进入该服务的流程。
   useEffect(() => {
     try {
       const params = new URLSearchParams(window.location.search)
       const cat = params.get('catalog')
-      if (cat) openCreateDialog(`catalog:${cat}`)
+      if (!cat) return
+      ;(async () => {
+        let item: any = null
+        try {
+          const list = await apiList<any>('/itsm/catalog/visible')
+          item = (list || []).find((x: any) => x.id === cat) || null
+        } catch { /* 目录不可读时退化为纯 scope 模式 */ }
+        await openCreateDialog(item?.form_scope || `catalog:${cat}`)
+        if (item) {
+          setForm(f => ({ ...f, title: item.name || f.title, process_id: item.process_id || '' }))
+        }
+      })()
     } catch { /* ignore */ }
   }, [])
 

@@ -57,6 +57,15 @@ const ATTACHMENT_PRESETS: { label: string; patch: Partial<FormFieldDef> }[] = [
   { label: '单个≤10MB', patch: { max_size: 10, accept: undefined, max_count: 1, multiple: false } },
 ]
 
+/**
+ * 默认宽度档位：长文本/富文本/附件/表格天然占整行(12)，其余控件默认半行(6)。
+ * 这样从调色板拖出两个普通控件时，会自然落在同一行，满足「一行放多个控件」。
+ */
+export function defaultColSpan(type: FormFieldType): number {
+  const wide = new Set<FormFieldType>(['textarea', 'richtext', 'attachment', 'table'])
+  return wide.has(type) ? 12 : 6
+}
+
 /** 字段工厂：按类型生成带唯一 key 的 FormFieldDef，供拖拽表单设计器新增字段复用。 */
 export function createField(type: FormFieldType, n: number): FormFieldDef {
   return {
@@ -65,6 +74,7 @@ export function createField(type: FormFieldType, n: number): FormFieldDef {
     type,
     required: false,
     order: n,
+    col_span: defaultColSpan(type),
   }
 }
 

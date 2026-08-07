@@ -42,9 +42,9 @@ import (
 	"github.com/opsorigin/core/internal/itsm"
 	"github.com/opsorigin/core/internal/itsm/catalog"
 	itsmmodel "github.com/opsorigin/core/internal/itsm/model"
+	"github.com/opsorigin/core/internal/itsm/ola"
 	"github.com/opsorigin/core/internal/itsm/oncall"
 	"github.com/opsorigin/core/internal/itsm/process"
-	"github.com/opsorigin/core/internal/itsm/ola"
 	"github.com/opsorigin/core/internal/itsm/sla"
 	"github.com/opsorigin/core/internal/keystore"
 	"github.com/opsorigin/core/internal/knowledge"
@@ -576,6 +576,24 @@ func main() {
 	// ITSM 动态表单选项来源:cmdb:<type> 取配置项、iam:user/role/group 取人与角色。
 	// 解析器由 itsm 侧定义(form 包只认接口),此处在 cmdb/user/iam 就绪后装配,带 TTL 缓存。
 	itsmSvc.SetSourceResolver(itsm.NewCMDBIAMResolver(cmdbSvc, userSvc, iamSvc))
+
+	// 服务目录「服务对象」按用户组授权: catalog 不反向依赖 iam,由此处注入组解析器。
+	catalogStore.SetGroupResolver(func(ctx context.Context, tenantID, userID string) ([]string, error) {
+		groups, err := iamSvc.ListGroups(ctx, tenantID)
+		if err != nil {
+			return nil, err
+		}
+		var ids []string
+		for _, g := range groups {
+			for _, uid := range g.UserIDs {
+				if uid == userID {
+					ids = append(ids, g.ID)
+					break
+				}
+			}
+		}
+		return ids, nil
+	})
 
 	// 通知管理:邮件/钉钉/企业微信/飞书/Webhook 五种渠道 + 事件订阅策略
 	notifySvc := notification.NewService(db)

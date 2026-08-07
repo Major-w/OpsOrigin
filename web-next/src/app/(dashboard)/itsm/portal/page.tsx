@@ -43,14 +43,16 @@ export default function ITSMPortalPage() {
   const [tickets, setTickets] = useState<PortalTicket[]>([])
   const [loading, setLoading] = useState(true)
 
+  // 门户只拉「已上线 且 当前用户在服务对象范围内」的目录项：
+  // 过滤在服务端完成(catalog/visible)，前端拿不到越权目录，避免可见范围靠前端自觉。
   const fetchAll = useCallback(async () => {
     setLoading(true)
     try {
       const [svc, tks] = await Promise.all([
-        apiList<ServiceItem>('/itsm/catalog'),
+        apiList<ServiceItem>('/itsm/catalog/visible'),
         apiList<PortalTicket>('/itsm/tickets'),
       ])
-      setServices((svc || []).filter(s => s.enabled))
+      setServices(svc || [])
       setTickets((tks || []).slice(0, 20))
     } catch { /* ignore */ }
     setLoading(false)
@@ -94,15 +96,19 @@ export default function ITSMPortalPage() {
                   <h4 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground mb-2">{categoryLabels[cat] || cat}</h4>
                   <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
                     {items.map(item => (
-                      <div key={item.id} className="border rounded-lg p-4 hover:border-primary/50 transition-colors group">
+                      <div key={item.id}
+                        role="button" tabIndex={0}
+                        onClick={() => apply(item)}
+                        onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); apply(item) } }}
+                        className="border rounded-lg p-4 cursor-pointer hover:border-primary/60 hover:shadow-md hover:-translate-y-0.5 transition-all duration-200 group focus:outline-none focus:ring-2 focus:ring-primary/40">
                         <div className="flex items-start justify-between">
                           <span className={`mt-1 h-2 w-2 rounded-full ${riskColor[item.category === 'change' ? 'medium' : 'low']}`} />
                           <Badge variant="outline" className="text-[10px]">{item.process_id ? '含流程' : '直通'}</Badge>
                         </div>
-                        <h5 className="font-medium text-sm mt-1">{item.name}</h5>
+                        <h5 className="font-medium text-sm mt-1 group-hover:text-primary transition-colors">{item.name}</h5>
                         {item.description && <p className="text-xs text-muted-foreground mt-1 line-clamp-2">{item.description}</p>}
-                        <Button size="sm" variant="outline" className="mt-3 w-full" onClick={() => apply(item)}>
-                          申请此服务 <ChevronRight className="h-3 w-3" />
+                        <Button size="sm" variant="outline" className="mt-3 w-full pointer-events-none group-hover:border-primary/60 group-hover:text-primary">
+                          {item.process_id ? '发起流程' : '发起申请'} <ChevronRight className="h-3 w-3 group-hover:translate-x-0.5 transition-transform" />
                         </Button>
                       </div>
                     ))}

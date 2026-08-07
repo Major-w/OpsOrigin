@@ -7,7 +7,8 @@ import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { Input } from '@/components/ui/input'
 import { useITSMStore, type Process } from '@/stores/itsm'
-import { Plus, Pencil, Trash2, GitBranch, ChevronLeft } from 'lucide-react'
+import { ProcessVersionHistory } from '@/components/itsm/ProcessVersionHistory'
+import { Plus, Pencil, Trash2, GitBranch, ChevronLeft, History } from 'lucide-react'
 
 export default function ITSMProcessPage() {
   const router = useRouter()
@@ -16,6 +17,7 @@ export default function ITSMProcessPage() {
   const [name, setName] = useState('')
   const [desc, setDesc] = useState('')
   const [creating, setCreating] = useState(false)
+  const [histId, setHistId] = useState<string | null>(null)
 
   useEffect(() => { fetchProcesses() }, [])
 
@@ -44,13 +46,17 @@ export default function ITSMProcessPage() {
         <div className="flex items-center gap-3 min-w-0">
           <GitBranch className="h-5 w-5 text-purple-500 shrink-0"/>
           <div className="min-w-0"><p className="font-medium truncate">{p.name}</p><p className="text-xs text-muted-foreground truncate">{p.description||'无描述'} · {p.steps?.length||0} 步骤</p></div>
+          <Badge variant="outline" className="shrink-0 text-[10px]">v{p.version||1}</Badge>
         </div>
         <div className="flex items-center gap-2 shrink-0">
           <Badge variant={p.enabled?'success':'outline'} className="text-xs">{p.enabled?'启用':'禁用'}</Badge>
+          <Button variant="ghost" size="icon" className="h-7 w-7" title="历史版本" onClick={e=>{e.stopPropagation();setHistId(p.id)}}><History className="h-3.5 w-3.5"/></Button>
           <Button variant="ghost" size="icon" className="h-7 w-7" onClick={e=>{e.stopPropagation();router.push(`/itsm/process/${p.id}`)}}><Pencil className="h-3.5 w-3.5"/></Button>
           <Button variant="ghost" size="icon" className="h-7 w-7 text-red-500" onClick={e=>{e.stopPropagation();confirm('确认删除?')&&deleteProcess(p.id)}}><Trash2 className="h-3.5 w-3.5"/></Button>
         </div>
       </CardContent></Card>)}
     </div>
+
+    <ProcessVersionHistory processId={histId || ''} open={histId !== null} onClose={() => setHistId(null)} />
   </div>
 }

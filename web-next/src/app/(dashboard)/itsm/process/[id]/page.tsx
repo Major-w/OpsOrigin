@@ -92,6 +92,53 @@ function detectCycle(steps: ProcessStep[]): boolean {
   return false
 }
 
+/**
+ * 流程完整性校验：必须含开始/结束、不允许环路、从开始可达全部节点、全部节点可到达结束。
+ * 任一不满足返回人类可读的错误提示（以「流程未设计完整」开头），满足返回 null。
+ */
+function validateFlow(steps: ProcessStep[]): string | null {
+  const hasStart = steps.some(s => s.type === 'start')
+  const hasEnd = steps.some(s => s.type === 'end')
+  if (!hasStart || !hasEnd) return '流程未设计完整：必须包含「开始」与「结束」节点'
+  if (detectCycle(steps)) return '流程未设计完整：检测到环路，DAG 不允许出现死循环'
+
+  const idSet = new Set(steps.map(s => s.id))
+  const succ = new Map<string, string[]>()
+  const pred = new Map<string, string[]>()
+  for (const s of steps) { succ.set(s.id, []); pred.set(s.id, []) }
+  for (const s of steps) {
+    for (const d of s.depends_on || []) {
+      if (!idSet.has(d.nodeId)) continue
+      succ.get(d.nodeId)!.push(s.id)
+      pred.get(s.id)!.push(d.nodeId)
+    }
+  }
+  const startId = steps.find(s => s.type === 'start')!.id
+  const endId = steps.find(s => s.type === 'end')!.id
+
+  // 从开始节点正向可达
+  const reach = new Set<string>([startId])
+  const q1 = [startId]
+  while (q1.length) {
+    const u = q1.shift()!
+    for (const v of succ.get(u) || []) if (!reach.has(v)) { reach.add(v); q1.push(v) }
+  }
+  const unreachable = steps.filter(s => !reach.has(s.id)).map(s => s.name)
+  if (unreachable.length) return `流程未设计完整：以下节点无法从「开始」节点到达：${unreachable.join('、')}`
+
+  // 反向可达结束节点
+  const toEnd = new Set<string>([endId])
+  const q2 = [endId]
+  while (q2.length) {
+    const u = q2.shift()!
+    for (const v of pred.get(u) || []) if (!toEnd.has(v)) { toEnd.add(v); q2.push(v) }
+  }
+  const noEnd = steps.filter(s => !toEnd.has(s.id)).map(s => s.name)
+  if (noEnd.length) return `流程未设计完整：以下节点无法到达「结束」节点：${noEnd.join('、')}`
+
+  return null
+}
+
 // 画布节点 data 为展示用途,字段松散;用宽松类型规避 @xyflow/react v12 严格的 NodeProps 默认类型
 type FlowNodeData = Record<string, any>
 type FlowNodeProps = NodeProps<Node<FlowNodeData>>
@@ -496,10 +543,8 @@ export default function ITSMProcessDetailPage() {
 
   const handleSave = async () => {
     if (!proc) return
-    const hasStart = steps.some(s => s.type === 'start')
-    const hasEnd = steps.some(s => s.type === 'end')
-    if (!hasStart || !hasEnd) { alert('流程必须包含开始和结束节点'); return }
-    if (detectCycle(steps)) { alert('检测到环路，DAG不允许环路'); return }
+    const err = validateFlow(steps)
+    if (err) { alert(err); return }
     const payload = {
       ...proc,
       steps,

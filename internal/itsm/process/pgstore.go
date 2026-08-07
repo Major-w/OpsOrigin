@@ -22,6 +22,10 @@ type Store interface {
 	UpdateInstance(ctx context.Context, inst *ProcessInstance) error
 	// ListRunningInstances 返回所有 running 状态的实例(供定时器/扫描器轮询)。
 	ListRunningInstances(ctx context.Context) ([]*ProcessInstance, error)
+	// 流程定义版本快照(每次 Update 前归档旧定义, 支持版本列表/回看/差异对比)
+	SaveVersion(ctx context.Context, v *ProcessVersion) error
+	ListVersions(ctx context.Context, processID, tenantID string) ([]*ProcessVersion, error)
+	GetVersion(ctx context.Context, processID, tenantID string, version int) (*ProcessVersion, error)
 }
 
 type PGStore struct{ db *sql.DB }
@@ -30,6 +34,7 @@ func NewPGStore(db *sql.DB) *PGStore {
 	s := &PGStore{db: db}
 	s.migrate()
 	s.migrateInstances()
+	s.migrateVersions()
 	return s
 }
 
