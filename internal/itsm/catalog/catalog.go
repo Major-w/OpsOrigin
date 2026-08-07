@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"log/slog"
 	"net/http"
 	"time"
 
@@ -81,21 +82,28 @@ func NewStore(db *sql.DB) *Store {
 func (s *Store) SetGroupResolver(r GroupResolver) { s.groups = r }
 
 func (s *Store) migrate() {
-	s.db.Exec(`CREATE TABLE IF NOT EXISTS itsm_catalog (
-		id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL DEFAULT 'default',
-		name TEXT NOT NULL, description TEXT DEFAULT '',
-		category TEXT DEFAULT '', process_id TEXT DEFAULT '',
-		form_scope TEXT DEFAULT '',
-		enabled BOOLEAN DEFAULT TRUE,
-		created_at TIMESTAMPTZ DEFAULT NOW(), updated_at TIMESTAMPTZ DEFAULT NOW()
-	)`)
-	s.db.Exec(`ALTER TABLE itsm_catalog ADD COLUMN IF NOT EXISTS form_scope TEXT DEFAULT ''`)
-	// 服务对象(可见范围): {user_ids:[], group_ids:[]}, 空对象=全员可见
-	s.db.Exec(`ALTER TABLE itsm_catalog ADD COLUMN IF NOT EXISTS audience JSONB DEFAULT '{}'::jsonb`)
-	// 多级分类：父分类 / 层级 / 同级排序（空 parent_id = 一级分类）
-	s.db.Exec(`ALTER TABLE itsm_catalog ADD COLUMN IF NOT EXISTS parent_id TEXT DEFAULT ''`)
-	s.db.Exec(`ALTER TABLE itsm_catalog ADD COLUMN IF NOT EXISTS level INTEGER DEFAULT 1`)
-	s.db.Exec(`ALTER TABLE itsm_catalog ADD COLUMN IF NOT EXISTS sort_order INTEGER DEFAULT 0`)
+	stmts := []string{
+		`CREATE TABLE IF NOT EXISTS itsm_catalog (
+			id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL DEFAULT 'default',
+			name TEXT NOT NULL, description TEXT DEFAULT '',
+			category TEXT DEFAULT '', process_id TEXT DEFAULT '',
+			form_scope TEXT DEFAULT '',
+			enabled BOOLEAN DEFAULT TRUE,
+			created_at TIMESTAMPTZ DEFAULT NOW(), updated_at TIMESTAMPTZ DEFAULT NOW()
+		)`,
+		`ALTER TABLE itsm_catalog ADD COLUMN IF NOT EXISTS form_scope TEXT DEFAULT ''`,
+		// 服务对象(可见范围): {user_ids:[], group_ids:[]}, 空对象=全员可见
+		`ALTER TABLE itsm_catalog ADD COLUMN IF NOT EXISTS audience JSONB DEFAULT '{}'::jsonb`,
+		// 多级分类：父分类 / 层级 / 同级排序（空 parent_id = 一级分类）
+		`ALTER TABLE itsm_catalog ADD COLUMN IF NOT EXISTS parent_id TEXT DEFAULT ''`,
+		`ALTER TABLE itsm_catalog ADD COLUMN IF NOT EXISTS level INTEGER DEFAULT 1`,
+		`ALTER TABLE itsm_catalog ADD COLUMN IF NOT EXISTS sort_order INTEGER DEFAULT 0`,
+	}
+	for _, st := range stmts {
+		if _, err := s.db.Exec(st); err != nil {
+			slog.Error("itsm catalog migrate statement failed", "err", err, "sql", st)
+		}
+	}
 }
 
 const catalogCols = `id,tenant_id,name,description,category,parent_id,level,sort_order,process_id,form_scope,enabled,audience,created_at,updated_at`
