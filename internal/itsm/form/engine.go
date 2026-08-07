@@ -212,6 +212,14 @@ func validateFieldWith(f FieldDef, v any, opts []FieldOption) error {
 				return fmt.Errorf("字段 %s(%s) 附件 ID 应为数字或字符串", f.Label, f.Key)
 			}
 		}
+		// 数量约束兜底：单文件体积/类型在上传阶段由前端拦截，
+		// 这里只校验服务端能独立判定的数量维度，防止绕过前端直接提交。
+		if f.Multiple != nil && !*f.Multiple && len(arr) > 1 {
+			return fmt.Errorf("字段 %s(%s) 只允许上传 1 个附件", f.Label, f.Key)
+		}
+		if f.MaxCount > 0 && len(arr) > f.MaxCount {
+			return fmt.Errorf("字段 %s(%s) 最多上传 %d 个附件", f.Label, f.Key, f.MaxCount)
+		}
 	case TypeRichText:
 		if _, ok := v.(string); !ok {
 			return fmt.Errorf("字段 %s(%s) 应为富文本", f.Label, f.Key)

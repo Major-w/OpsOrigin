@@ -108,6 +108,19 @@ type FieldDef struct {
 	DictRef string `json:"dict_ref,omitempty"`
 	// Roles 可编辑角色白名单: 非空表示仅这些角色的用户可编辑, 空=所有人可编辑。
 	Roles []string `json:"roles,omitempty"`
+
+	// ColSpan 字段在 12 栅格中占用的列数(1~12)，0/缺省视为 12(整行)。
+	// 由表单设计器画布拖拽调节，渲染端按 grid-cols-12 布局。
+	ColSpan int `json:"col_span,omitempty"`
+
+	// 附件类字段(TypeAttachment)的上传约束。
+	// MaxSize 单文件最大体积(MB，0=不限)；Accept 允许的扩展名/MIME，逗号分隔(如 ".png,.pdf,image/*")；
+	// MaxCount 最多文件数(0=不限)；Multiple 是否允许多选上传。
+	// Multiple 用指针以区分「未配置(nil，老 schema，按不限处理)」与「显式单文件(false)」。
+	MaxSize  int    `json:"max_size,omitempty"`
+	Accept   string `json:"accept,omitempty"`
+	MaxCount int    `json:"max_count,omitempty"`
+	Multiple *bool  `json:"multiple,omitempty"`
 }
 
 // FormSchema 一张可配置表单，按作用域定位

@@ -65,3 +65,28 @@ func TestMergeDefaults(t *testing.T) {
 		t.Fatal("default not merged")
 	}
 }
+
+func boolp(v bool) *bool { return &v }
+
+// 附件字段的数量约束：老 schema(Multiple 为 nil) 不受限，显式配置后服务端兜底拦截。
+func TestValidateSchemaAttachmentLimits(t *testing.T) {
+	two := map[string]any{"files": []any{"1", "2"}}
+
+	legacy := &FormSchema{Fields: []FieldDef{{Key: "files", Label: "附件", Type: TypeAttachment}}}
+	if err := ValidateSchema(legacy, two); err != nil {
+		t.Fatalf("未配置约束时不应报错: %v", err)
+	}
+
+	single := &FormSchema{Fields: []FieldDef{{Key: "files", Label: "附件", Type: TypeAttachment, Multiple: boolp(false)}}}
+	if err := ValidateSchema(single, two); err == nil {
+		t.Fatal("单文件字段传两个附件应报错")
+	}
+	if err := ValidateSchema(single, map[string]any{"files": []any{"1"}}); err != nil {
+		t.Fatalf("单文件字段传一个不应报错: %v", err)
+	}
+
+	capped := &FormSchema{Fields: []FieldDef{{Key: "files", Label: "附件", Type: TypeAttachment, Multiple: boolp(true), MaxCount: 1}}}
+	if err := ValidateSchema(capped, two); err == nil {
+		t.Fatal("超过 max_count 应报错")
+	}
+}
