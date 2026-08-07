@@ -18,6 +18,7 @@ import {
   type FormFieldType,
   type FormSchema,
   type LoadOptionsFn,
+  normalizeColSpan,
   parseVisibleWhen,
 } from './DynamicForm'
 
@@ -40,6 +41,21 @@ export const FIELD_TYPES: { value: FormFieldType; label: string }[] = [
 ]
 
 export const OPTION_TYPES: FormFieldType[] = ['select', 'multiselect', 'user', 'ci', 'cascader']
+
+/** 常用宽度档位：整行 / 半行 / 三分之一 / 四分之一 */
+export const COL_SPAN_PRESETS: { span: number; label: string }[] = [
+  { span: 12, label: '整行' },
+  { span: 6, label: '1/2' },
+  { span: 4, label: '1/3' },
+  { span: 3, label: '1/4' },
+]
+
+/** 附件常用配置一键套用 */
+const ATTACHMENT_PRESETS: { label: string; patch: Partial<FormFieldDef> }[] = [
+  { label: '图片(≤5MB×9)', patch: { max_size: 5, accept: 'image/*', max_count: 9, multiple: true } },
+  { label: '文档(≤20MB×5)', patch: { max_size: 20, accept: '.pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx', max_count: 5, multiple: true } },
+  { label: '单个≤10MB', patch: { max_size: 10, accept: undefined, max_count: 1, multiple: false } },
+]
 
 /** 字段工厂：按类型生成带唯一 key 的 FormFieldDef，供拖拽表单设计器新增字段复用。 */
 export function createField(type: FormFieldType, n: number): FormFieldDef {
@@ -333,6 +349,38 @@ export function FieldPropertyPanel({
         </Labeled>
       </Row>
 
+      <Labeled label={`宽度占比 ${normalizeColSpan(field.col_span)}/12 栅格`}>
+        <div className="flex items-center gap-2">
+          <input
+            type="range"
+            min={1}
+            max={12}
+            step={1}
+            className="h-1.5 flex-1 cursor-pointer accent-emerald-500"
+            value={normalizeColSpan(field.col_span)}
+            disabled={disabled}
+            onChange={e => onChange({ col_span: Number(e.target.value) })}
+          />
+          <div className="flex shrink-0 gap-1">
+            {COL_SPAN_PRESETS.map(p => (
+              <button
+                key={p.span}
+                type="button"
+                disabled={disabled}
+                onClick={() => onChange({ col_span: p.span })}
+                className={`h-6 rounded border px-1.5 text-[11px] transition-colors disabled:opacity-50 ${
+                  normalizeColSpan(field.col_span) === p.span
+                    ? 'border-emerald-500 bg-emerald-500/10 text-emerald-600 dark:text-emerald-400'
+                    : 'border-input text-muted-foreground hover:bg-accent'
+                }`}
+              >
+                {p.label}
+              </button>
+            ))}
+          </div>
+        </div>
+      </Labeled>
+
       <Row>
         <Labeled label="占位提示">
           <input className={inputCls} value={field.placeholder || ''} disabled={disabled} onChange={e => onChange({ placeholder: e.target.value })} />
@@ -498,6 +546,80 @@ export function FieldPropertyPanel({
               />
             </Labeled>
           )}
+        </Section>
+      )}
+
+      {field.type === 'attachment' && (
+        <Section title="附件设置">
+          <Row>
+            <Labeled label="单文件最大体积（MB，0=不限）">
+              <input
+                type="number"
+                min={0}
+                className={inputCls}
+                value={field.max_size ?? ''}
+                disabled={disabled}
+                onChange={e => onChange({ max_size: e.target.value === '' ? undefined : Math.max(0, Number(e.target.value)) })}
+                placeholder="如 10"
+              />
+            </Labeled>
+            <Labeled label="最多文件数（0=不限）">
+              <input
+                type="number"
+                min={0}
+                className={inputCls}
+                value={field.max_count ?? ''}
+                disabled={disabled || field.multiple === false}
+                onChange={e => onChange({ max_count: e.target.value === '' ? undefined : Math.max(0, Number(e.target.value)) })}
+                placeholder="如 5"
+              />
+            </Labeled>
+          </Row>
+          <Labeled label="允许的类型（逗号分隔，支持 .png / image/* / application/pdf）">
+            <input
+              className={inputCls}
+              value={field.accept || ''}
+              disabled={disabled}
+              onChange={e => onChange({ accept: e.target.value.trim() || undefined })}
+              placeholder=".png,.jpg,.pdf"
+            />
+          </Labeled>
+          <div className="flex flex-wrap items-center gap-4 text-xs">
+            <label className="flex cursor-pointer items-center gap-1.5">
+              <input
+                type="checkbox"
+                className="h-3.5 w-3.5"
+                checked={field.multiple !== false}
+                disabled={disabled}
+                onChange={e => onChange({ multiple: e.target.checked })}
+              />
+              允许上传多个文件
+            </label>
+            {ATTACHMENT_PRESETS.map(p => (
+              <button
+                key={p.label}
+                type="button"
+                disabled={disabled}
+                onClick={() => onChange(p.patch)}
+                className="h-6 rounded border border-input px-2 text-[11px] text-muted-foreground hover:bg-accent disabled:opacity-50"
+              >
+                {p.label}
+              </button>
+            ))}
+          </div>
+          <p className="text-[11px] text-muted-foreground">
+            体积与类型在选择文件时前端即时拦截；数量上限提交时后端会再校验一次，防止绕过界面直接提交。
+          </p>
+        </Section>
+      )}
+
+      {field.type === 'richtext' && (
+        <Section title="富文本设置">
+          <p className="text-[11px] text-muted-foreground">
+            使用所见即所得编辑器（标题 / 加粗 / 列表 / 任务项 / 链接 / 代码块 / 引用），
+            内容以 <code className="rounded bg-muted px-1">Markdown</code> 存储，与知识库、工单描述的渲染管线一致，
+            天然规避富文本 HTML 注入风险。
+          </p>
         </Section>
       )}
 
