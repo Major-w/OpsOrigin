@@ -118,14 +118,11 @@ func unmarshalAudience(raw []byte, a *Audience) {
 	}
 }
 
+// seed 幂等可叠加：无论库里是否已有旧数据，都保证 ITIL 5 大类一级分类存在，
+// 并把遗留的「无父级服务」挂到对应分类下，形成多级树；空分类补示例服务。
+// 这样即便用户之前手动建过服务（表非空导致整表 seed 跳过），重启后端后门户也能立刻有内容。
 func (s *Store) seed() {
-	var count int
-	s.db.QueryRow(`SELECT COUNT(*) FROM itsm_catalog`).Scan(&count)
-	if count > 0 {
-		return
-	}
 	now := time.Now()
-	// ITIL 最佳实践 5 大类一级分类（文件夹型，无流程模板）
 	topCats := []struct {
 		key  string
 		name string
@@ -137,32 +134,69 @@ func (s *Store) seed() {
 		{"request", "服务请求", "常规服务开通与权限申请"},
 		{"release", "发布管理", "版本发布与上线部署"},
 	}
+	topCatNames := make([]string, len(topCats))
 	catIDs := make(map[string]string)
 	for i, c := range topCats {
-		id := uuid.New().String()
+		topCatNames[i] = c.name
+		// 按名称确保一级分类存在（已存在则复用其 ID，不重复创建）
+		var id string
+		s.db.QueryRow(`SELECT id FROM itsm_catalog WHERE tenant_id=$1 AND name=$2 AND (parent_id='' OR parent_id IS NULL)`, "default", c.name).Scan(&id)
+		if id == "" {
+			id = uuid.New().String()
+			s.insertRow(ServiceItem{
+				ID: id, TenantID: "default", Name: c.name, Description: c.desc,
+				Category: c.key, ParentID: "", Level: 1, SortOrder: i + 1,
+				Enabled: true, Audience: Audience{}, CreatedAt: now, UpdatedAt: now,
+			})
+		}
 		catIDs[c.key] = id
-		s.insertRow(ServiceItem{
-			ID: id, TenantID: "default", Name: c.name, Description: c.desc,
-			Category: c.key, ParentID: "", Level: 1, SortOrder: i + 1,
-			Enabled: true, Audience: Audience{}, CreatedAt: now, UpdatedAt: now,
-		})
 	}
-	// 示例服务：挂在对应一级分类下（二级），上线后即在门户可见
-	samples := []ServiceItem{
-		{Name: "服务器重启", Description: "重启指定服务器或虚拟机", Category: "change", ParentID: catIDs["change"], Level: 2, SortOrder: 1},
-		{Name: "数据库配置修改", Description: "修改数据库参数或执行 DDL", Category: "change", ParentID: catIDs["change"], Level: 2, SortOrder: 2},
-		{Name: "SSL 证书续期", Description: "续费或更新 SSL 证书", Category: "change", ParentID: catIDs["change"], Level: 2, SortOrder: 3},
-		{Name: "DNS 记录变更", Description: "添加/修改/删除 DNS 记录", Category: "change", ParentID: catIDs["change"], Level: 2, SortOrder: 4},
-		{Name: "防火墙规则变更", Description: "修改防火墙白名单或策略", Category: "change", ParentID: catIDs["change"], Level: 2, SortOrder: 5},
-		{Name: "账号权限申请", Description: "申请系统或数据库访问权限", Category: "request", ParentID: catIDs["request"], Level: 2, SortOrder: 1},
+	// 把库里「无父级 且 属于某 ITIL 分类」的遗留服务，挂到对应一级分类下（形成多级树）。
+	// 排除 5 个一级分类自身，避免把自己父级指向自己形成环。
+	for key, cid := range catIDs {
+		_, _ = s.db.Exec(`UPDATE itsm_catalog SET parent_id=$1, level=2 WHERE tenant_id=$2 AND (parent_id='' OR parent_id IS NULL) AND category=$3 AND name NOT IN ($4,$5,$6,$7,$8)`,
+			cid, "default", key, topCatNames[0], topCatNames[1], topCatNames[2], topCatNames[3], topCatNames[4])
 	}
-	for _, it := range samples {
-		it.ID = uuid.New().String()
-		it.TenantID = "default"
-		it.Enabled = true
-		it.CreatedAt = now
-		it.UpdatedAt = now
-		s.insertRow(it)
+	// 每个一级分类：若还没有子项，补示例服务（幂等，避免重复堆积）
+	samples := map[string][]ServiceItem{
+		"incident": {
+			{Name: "故障报修", Description: "提交故障并跟踪恢复进度", Category: "incident"},
+			{Name: "服务中断申报", Description: "申报业务/系统中断影响", Category: "incident"},
+		},
+		"problem": {
+			{Name: "重复故障根因分析", Description: "提交问题单做根因分析", Category: "problem"},
+		},
+		"change": {
+			{Name: "服务器重启", Description: "重启指定服务器或虚拟机", Category: "change"},
+			{Name: "数据库配置修改", Description: "修改数据库参数或执行 DDL", Category: "change"},
+			{Name: "SSL 证书续期", Description: "续费或更新 SSL 证书", Category: "change"},
+			{Name: "DNS 记录变更", Description: "添加/修改/删除 DNS 记录", Category: "change"},
+			{Name: "防火墙规则变更", Description: "修改防火墙白名单或策略", Category: "change"},
+		},
+		"request": {
+			{Name: "账号权限申请", Description: "申请系统或数据库访问权限", Category: "request"},
+		},
+		"release": {
+			{Name: "版本发布申请", Description: "提交版本发布/上线部署", Category: "release"},
+		},
+	}
+	for key, items := range samples {
+		var cnt int
+		s.db.QueryRow(`SELECT COUNT(*) FROM itsm_catalog WHERE tenant_id=$1 AND parent_id=$2`, "default", catIDs[key]).Scan(&cnt)
+		if cnt > 0 {
+			continue // 该分类已有子项（含用户自建/遗留），不再补示例，避免重复
+		}
+		for j, it := range items {
+			it.ID = uuid.New().String()
+			it.TenantID = "default"
+			it.ParentID = catIDs[key]
+			it.Level = 2
+			it.SortOrder = j + 1
+			it.Enabled = true
+			it.CreatedAt = now
+			it.UpdatedAt = now
+			s.insertRow(it)
+		}
 	}
 }
 
