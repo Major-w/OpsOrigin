@@ -6,8 +6,9 @@
 // 与后端 internal/itsm/form 的 FormSchema 完全对齐，产出结构可直接 PUT /itsm/forms。
 
 import { useEffect, useMemo, useState } from 'react'
-import { ArrowDown, ArrowUp, Copy, Eye, Plus, Trash2 } from 'lucide-react'
+import { ArrowDown, ArrowUp, Copy, Eye, Lock, Plus, Trash2 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
+import { apiList } from '@/lib/utils'
 import {
   CONDITION_OPS,
   DynamicForm,
@@ -66,20 +67,116 @@ export function defaultColSpan(type: FormFieldType): number {
   return wide.has(type) ? 12 : 6
 }
 
+/** 附件「允许的类型」勾选项：每项对应一组扩展名/MIME，落库仍是逗号分隔的 accept 串 */
+const ACCEPT_GROUPS: { label: string; tokens: string[] }[] = [
+  { label: '图片', tokens: ['image/*'] },
+  { label: 'PDF', tokens: ['.pdf'] },
+  { label: 'Word', tokens: ['.doc', '.docx'] },
+  { label: 'Excel', tokens: ['.xls', '.xlsx'] },
+  { label: 'PPT', tokens: ['.ppt', '.pptx'] },
+  { label: '文本/日志', tokens: ['.txt', '.log', '.md'] },
+  { label: '压缩包', tokens: ['.zip', '.rar', '.7z', '.tar', '.gz'] },
+  { label: '视频', tokens: ['video/*'] },
+  { label: '音频', tokens: ['audio/*'] },
+]
+
+/** 「选人」控件的候选人来源前缀：全部用户 iam:user，限定组 iam:user@<组ID>[,<组ID>] */
+const USER_SOURCE_ALL = 'iam:user'
+
+/** 从 source 解析出选人控件限定的用户组 ID 列表（非组限定形态返回空数组） */
+export function parseUserGroups(source?: string): string[] {
+  const s = (source || '').trim()
+  if (!s.startsWith(`${USER_SOURCE_ALL}@`)) return []
+  return s
+    .slice(USER_SOURCE_ALL.length + 1)
+    .split(',')
+    .map(x => x.trim())
+    .filter(Boolean)
+}
+
+/** 用户组 ID 列表 → source 串（空列表回落为全部用户） */
+function buildUserSource(groupIDs: string[]): string {
+  const ids = groupIDs.map(x => x.trim()).filter(Boolean)
+  return ids.length ? `${USER_SOURCE_ALL}@${ids.join(',')}` : USER_SOURCE_ALL
+}
+
+/**
+ * 字段标识：控件类型前缀 + 随机短串。
+ * 设计器里对用户只读——标识一旦被工单数据引用就不能再改，随机化同时规避了
+ * 「删掉再拖一个同名字段」导致新字段读到历史脏数据的问题。
+ */
+export function fieldKey(type: FormFieldType): string {
+  const rand = Math.random().toString(36).slice(2, 8)
+  return `${type}_${rand}`
+}
+
 /** 字段工厂：按类型生成带唯一 key 的 FormFieldDef，供拖拽表单设计器新增字段复用。 */
 export function createField(type: FormFieldType, n: number): FormFieldDef {
-  return {
-    key: `field_${n}`,
-    label: `字段 ${n}`,
+  const typeLabel = FIELD_TYPES.find(t => t.value === type)?.label || '字段'
+  const field: FormFieldDef = {
+    key: fieldKey(type),
+    label: `${typeLabel} ${n}`,
     type,
     required: false,
     order: n,
     col_span: defaultColSpan(type),
   }
+  // 选人控件默认可选全部用户，免去每次手填来源
+  if (type === 'user') field.source = USER_SOURCE_ALL
+  return field
 }
 
 const inputCls =
   'flex h-9 w-full rounded-md border border-input bg-background px-2 text-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring'
+
+interface DictRef {
+  id: string
+  key?: string
+  label?: string
+}
+interface GroupRef {
+  id: string
+  name?: string
+}
+
+// 字典与用户组是全局字典型数据，切换字段时不该反复打后端 —— 模块级缓存 + 单飞请求。
+let dictCache: DictRef[] | null = null
+let groupCache: GroupRef[] | null = null
+
+function useRemoteRefs<T>(cacheRead: () => T[] | null, cacheWrite: (v: T[]) => void, path: string): T[] {
+  const [items, setItems] = useState<T[]>(() => cacheRead() || [])
+  useEffect(() => {
+    if (cacheRead()) return
+    let alive = true
+    apiList<T>(path)
+      .then(list => {
+        const v = list || []
+        cacheWrite(v)
+        if (alive) setItems(v)
+      })
+      // 字典/用户组服务不可用时降级为空列表，不阻断表单配置本身
+      .catch(() => undefined)
+    return () => {
+      alive = false
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [path])
+  return items
+}
+
+const useFormDicts = () =>
+  useRemoteRefs<DictRef>(
+    () => dictCache,
+    v => (dictCache = v),
+    '/itsm/form-dicts',
+  )
+
+const useUserGroups = () =>
+  useRemoteRefs<GroupRef>(
+    () => groupCache,
+    v => (groupCache = v),
+    '/iam/groups',
+  )
 
 interface FormBuilderProps {
   schema: FormSchema
@@ -121,20 +218,14 @@ export function FormBuilder({
 
   const addField = () => {
     const n = fields.length + 1
-    const next: FormFieldDef = {
-      key: `field_${n}`,
-      label: `字段 ${n}`,
-      type: 'text',
-      required: false,
-      order: n,
-    }
-    patch([...fields, next])
+    patch([...fields, { ...createField('text', n), col_span: undefined }])
     setActiveIdx(fields.length)
   }
 
   const duplicateField = (idx: number) => {
     const src = fields[idx]
-    const copy: FormFieldDef = { ...src, key: `${src.key}_copy`, label: `${src.label} 副本`, order: fields.length + 1 }
+    // 副本必须换新标识：同 key 会让两个字段写同一份数据
+    const copy: FormFieldDef = { ...src, key: fieldKey(src.type), label: `${src.label} 副本`, order: fields.length + 1 }
     const next = [...fields]
     next.splice(idx + 1, 0, copy)
     patch(next.map((f, i) => ({ ...f, order: i + 1 })))
@@ -302,9 +393,12 @@ export function FieldPropertyPanel({
   disabled?: boolean
   onChange: (changes: Partial<FormFieldDef>) => void
 }) {
-  const supportsOptions = OPTION_TYPES.includes(field.type)
+  const isUser = field.type === 'user'
+  // 选人控件有专属的候选范围配置，不再暴露通用的 source/静态选项编辑
+  const supportsOptions = OPTION_TYPES.includes(field.type) && !isUser
   const isTextual = ['text', 'textarea'].includes(field.type)
   const isCascader = field.type === 'cascader'
+  const typeLabel = FIELD_TYPES.find(t => t.value === field.type)?.label || field.type
 
   // 旧版单条表达式在首次编辑时自动升级为规则列表，配置界面只暴露规则形态
   const rules: FormCondition[] =
@@ -320,13 +414,13 @@ export function FieldPropertyPanel({
     <div className="space-y-3">
       <Row>
         <Labeled label="字段标识 key">
-          <input
-            className={inputCls}
-            value={field.key}
-            disabled={disabled}
-            onChange={e => onChange({ key: e.target.value.trim() })}
-            placeholder="英文标识，存入 custom_fields"
-          />
+          <div
+            className="flex h-9 w-full items-center gap-1.5 rounded-md border border-dashed border-input bg-muted/40 px-2 text-xs text-muted-foreground"
+            title="标识由控件类型自动生成且不可修改：工单数据以它为准落库，改名会让历史数据对不上"
+          >
+            <Lock className="h-3 w-3 shrink-0 opacity-60" />
+            <code className="truncate">{field.key}</code>
+          </div>
         </Labeled>
         <Labeled label="显示名">
           <input className={inputCls} value={field.label} disabled={disabled} onChange={e => onChange({ label: e.target.value })} />
@@ -335,18 +429,13 @@ export function FieldPropertyPanel({
 
       <Row>
         <Labeled label="类型">
-          <select
-            className={inputCls}
-            value={field.type}
-            disabled={disabled}
-            onChange={e => onChange({ type: e.target.value as FormFieldType })}
+          <div
+            className="flex h-9 w-full items-center gap-1.5 rounded-md border border-dashed border-input bg-muted/40 px-2 text-xs text-muted-foreground"
+            title="类型在拖入画布时确定，不能改：换类型请删除本控件后重新拖入目标类型"
           >
-            {FIELD_TYPES.map(t => (
-              <option key={t.value} value={t.value}>
-                {t.label}
-              </option>
-            ))}
-          </select>
+            <Lock className="h-3 w-3 shrink-0 opacity-60" />
+            <span className="truncate">{typeLabel}</span>
+          </div>
         </Labeled>
         <Labeled label="分区（可选）">
           <input
@@ -358,6 +447,9 @@ export function FieldPropertyPanel({
           />
         </Labeled>
       </Row>
+      <p className="-mt-1 text-[11px] text-muted-foreground">
+        标识与类型创建后锁定。需要换控件类型时，删除本字段后从左侧重新拖入。
+      </p>
 
       <Labeled label={`宽度占比 ${normalizeColSpan(field.col_span)}/12 栅格`}>
         <div className="flex items-center gap-2">
@@ -450,14 +542,7 @@ export function FieldPropertyPanel({
               />
             </div>
           </Labeled>
-          <Labeled label="引用数据字典（填字典 ID 后字段定义从字典展开，可跨表单复用）">
-            <input
-              className="flex h-8 w-full rounded-md border border-input bg-background px-2.5 text-xs"
-              value={field.dict_ref || ''}
-              onChange={e => onChange({ dict_ref: e.target.value.trim() || undefined })}
-              placeholder="dict_id（如变更通用字段字典）"
-            />
-          </Labeled>
+          <DictRefPicker value={field.dict_ref} disabled={disabled} onChange={v => onChange({ dict_ref: v })} />
           <Labeled label="可编辑角色（逗号分隔的角色名白名单，留空=所有人可编辑）">
             <input
               className="flex h-8 w-full rounded-md border border-input bg-background px-2.5 text-xs"
@@ -495,6 +580,17 @@ export function FieldPropertyPanel({
               )}
             </p>
           )}
+        </Section>
+      )}
+
+      {isUser && (
+        <Section title="候选人范围">
+          <UserScopePicker
+            source={field.source}
+            disabled={disabled}
+            onChange={src => onChange({ source: src })}
+          />
+          <DictRefPicker value={field.dict_ref} disabled={disabled} onChange={v => onChange({ dict_ref: v })} />
         </Section>
       )}
 
@@ -561,39 +657,29 @@ export function FieldPropertyPanel({
 
       {field.type === 'attachment' && (
         <Section title="附件设置">
-          <Row>
-            <Labeled label="单文件最大体积（MB，0=不限）">
-              <input
-                type="number"
-                min={0}
-                className={inputCls}
-                value={field.max_size ?? ''}
-                disabled={disabled}
-                onChange={e => onChange({ max_size: e.target.value === '' ? undefined : Math.max(0, Number(e.target.value)) })}
-                placeholder="如 10"
-              />
-            </Labeled>
-            <Labeled label="最多文件数（0=不限）">
-              <input
-                type="number"
-                min={0}
-                className={inputCls}
-                value={field.max_count ?? ''}
-                disabled={disabled || field.multiple === false}
-                onChange={e => onChange({ max_count: e.target.value === '' ? undefined : Math.max(0, Number(e.target.value)) })}
-                placeholder="如 5"
-              />
-            </Labeled>
-          </Row>
-          <Labeled label="允许的类型（逗号分隔，支持 .png / image/* / application/pdf）">
+          <Labeled label="单文件最大体积（MB，0=不限）">
             <input
+              type="number"
+              min={0}
               className={inputCls}
-              value={field.accept || ''}
+              value={field.max_size ?? ''}
               disabled={disabled}
-              onChange={e => onChange({ accept: e.target.value.trim() || undefined })}
-              placeholder=".png,.jpg,.pdf"
+              onChange={e => onChange({ max_size: e.target.value === '' ? undefined : Math.max(0, Number(e.target.value)) })}
+              placeholder="如 10"
             />
           </Labeled>
+          <Labeled label="最多文件数（0=不限）">
+            <input
+              type="number"
+              min={0}
+              className={inputCls}
+              value={field.max_count ?? ''}
+              disabled={disabled || field.multiple === false}
+              onChange={e => onChange({ max_count: e.target.value === '' ? undefined : Math.max(0, Number(e.target.value)) })}
+              placeholder="如 5"
+            />
+          </Labeled>
+          <AcceptPicker value={field.accept} disabled={disabled} onChange={v => onChange({ accept: v })} />
           <div className="flex flex-wrap items-center gap-4 text-xs">
             <label className="flex cursor-pointer items-center gap-1.5">
               <input
@@ -643,6 +729,188 @@ export function FieldPropertyPanel({
           onLogicChange={l => onChange({ visible_logic: l })}
         />
       </Section>
+    </div>
+  )
+}
+
+/**
+ * DictRefPicker —— 引用数据字典。
+ * 字典是全局定义的复用型字段集合，让人手抄 ID 既易错又不可发现，这里直接列出可选字典。
+ */
+function DictRefPicker({
+  value,
+  disabled,
+  onChange,
+}: {
+  value?: string
+  disabled?: boolean
+  onChange: (v: string | undefined) => void
+}) {
+  const dicts = useFormDicts()
+  const current = value || ''
+  // 引用的字典已被删除时仍要能看见原值，否则用户无从察觉引用已失效
+  const dangling = current && !dicts.some(d => d.id === current)
+  return (
+    <Labeled label="引用数据字典（选中后字段定义从字典展开，可跨表单复用）">
+      <select
+        className={inputCls}
+        value={current}
+        disabled={disabled}
+        onChange={e => onChange(e.target.value || undefined)}
+      >
+        <option value="">不引用</option>
+        {dicts.map(d => (
+          <option key={d.id} value={d.id}>
+            {d.label || d.key || d.id}
+            {d.key ? `（${d.key}）` : ''}
+          </option>
+        ))}
+        {dangling && <option value={current}>已失效：{current}</option>}
+      </select>
+      {dicts.length === 0 && (
+        <p className="mt-1 text-[11px] text-muted-foreground">
+          暂无可用字典，先到「ITSM · 数据字典」新建后再回来引用。
+        </p>
+      )}
+    </Labeled>
+  )
+}
+
+/**
+ * UserScopePicker —— 「选人」控件的候选人范围。
+ * 全部用户 → source=iam:user；限定用户组 → source=iam:user@<组ID>,<组ID>，
+ * 后端 source_resolver 按组成员并集过滤候选人，不需要额外字段落库。
+ */
+function UserScopePicker({
+  source,
+  disabled,
+  onChange,
+}: {
+  source?: string
+  disabled?: boolean
+  onChange: (source: string) => void
+}) {
+  const groups = useUserGroups()
+  const picked = parseUserGroups(source)
+  const byGroup = picked.length > 0
+
+  const toggle = (id: string) => {
+    const next = picked.includes(id) ? picked.filter(x => x !== id) : [...picked, id]
+    onChange(buildUserSource(next))
+  }
+
+  return (
+    <div className="space-y-2">
+      <div className="flex gap-4 text-xs">
+        {[
+          { key: 'all', label: '全部用户' },
+          { key: 'group', label: '限定用户组' },
+        ].map(m => (
+          <label key={m.key} className="flex cursor-pointer items-center gap-1.5">
+            <input
+              type="radio"
+              className="h-3.5 w-3.5"
+              checked={m.key === 'group' ? byGroup : !byGroup}
+              disabled={disabled}
+              // 从「限定组」切回「全部」会丢掉已选组，这是符合直觉的：范围本就互斥
+              onChange={() => onChange(m.key === 'group' ? buildUserSource(picked) : USER_SOURCE_ALL)}
+            />
+            {m.label}
+          </label>
+        ))}
+      </div>
+
+      {byGroup || groups.length > 0 ? (
+        <div className="max-h-36 space-y-1 overflow-y-auto rounded-md border border-input p-2">
+          {groups.length === 0 && <p className="text-[11px] text-muted-foreground">暂无用户组，可到「用户与权限 · 用户组」创建。</p>}
+          {groups.map(g => (
+            <label key={g.id} className="flex cursor-pointer items-center gap-1.5 text-xs">
+              <input
+                type="checkbox"
+                className="h-3.5 w-3.5"
+                checked={picked.includes(g.id)}
+                disabled={disabled}
+                onChange={() => toggle(g.id)}
+              />
+              {g.name || g.id}
+            </label>
+          ))}
+        </div>
+      ) : null}
+
+      <p className="text-[11px] text-muted-foreground">
+        {byGroup
+          ? `候选人限定在已勾选的 ${picked.length} 个用户组成员内（取并集）。`
+          : '候选人为平台全部用户；勾选用户组后自动收窄到组成员。'}
+      </p>
+    </div>
+  )
+}
+
+/**
+ * AcceptPicker —— 附件允许的类型。
+ * 常见类型走勾选，另留一个自定义补充框兜住业务特有后缀（如 .apk / .ipa）；
+ * 落库仍是逗号分隔的 accept 串，DynamicForm 与后端校验都无需改动。
+ */
+function AcceptPicker({
+  value,
+  disabled,
+  onChange,
+}: {
+  value?: string
+  disabled?: boolean
+  onChange: (v: string | undefined) => void
+}) {
+  const tokens = (value || '')
+    .split(',')
+    .map(s => s.trim())
+    .filter(Boolean)
+  const known = new Set(ACCEPT_GROUPS.flatMap(g => g.tokens))
+  const extras = tokens.filter(t => !known.has(t))
+
+  const commit = (next: string[]) => {
+    const uniq = Array.from(new Set(next.filter(Boolean)))
+    onChange(uniq.length ? uniq.join(',') : undefined)
+  }
+
+  const toggleGroup = (g: (typeof ACCEPT_GROUPS)[number]) => {
+    const on = g.tokens.every(t => tokens.includes(t))
+    commit(on ? tokens.filter(t => !g.tokens.includes(t)) : [...tokens, ...g.tokens])
+  }
+
+  return (
+    <div className="space-y-2">
+      <Labeled label="允许的类型（不勾选=不限制）">
+        <div className="grid grid-cols-3 gap-x-3 gap-y-1.5">
+          {ACCEPT_GROUPS.map(g => (
+            <label key={g.label} className="flex cursor-pointer items-center gap-1.5 text-xs">
+              <input
+                type="checkbox"
+                className="h-3.5 w-3.5"
+                checked={g.tokens.every(t => tokens.includes(t))}
+                disabled={disabled}
+                onChange={() => toggleGroup(g)}
+              />
+              {g.label}
+            </label>
+          ))}
+        </div>
+      </Labeled>
+      <Labeled label="其他类型（逗号分隔，如 .apk,.ipa）">
+        <input
+          className={inputCls}
+          value={extras.join(',')}
+          disabled={disabled}
+          onChange={e => {
+            const custom = e.target.value
+              .split(',')
+              .map(s => s.trim())
+              .filter(Boolean)
+            commit([...tokens.filter(t => known.has(t)), ...custom])
+          }}
+          placeholder=".apk,.ipa"
+        />
+      </Labeled>
     </div>
   )
 }

@@ -2,6 +2,7 @@ package process
 
 import (
 	"encoding/json"
+	"strings"
 	"time"
 )
 
@@ -20,6 +21,12 @@ const (
 	StepSubflow  StepType = "subflow"  // 子流程
 )
 
+// 人工任务表决方式。
+const (
+	ApprovalCountersign = "countersign" // 会签：全部审批人通过才继续（缺省）
+	ApprovalOrSign      = "orsign"      // 或签：任一审批人通过即可继续
+)
+
 // DAGDependency  — 上游依赖
 type Dependency struct {
 	NodeID    string `json:"nodeId"`
@@ -35,6 +42,13 @@ type Step struct {
 	// 人工任务
 	Approvers   []string `json:"approvers,omitempty"`
 	ApprovalMsg string   `json:"approval_msg,omitempty"`
+	// ApprovalType 多审批人时的表决方式：
+	//   countersign(会签, 缺省) — 全部审批人通过才继续；
+	//   orsign(或签)           — 任一审批人通过即可继续。
+	ApprovalType string `json:"approval_type,omitempty"`
+	// ApproverField 从表单字段动态取审批人：非空时取工单自定义字段 <key> 的值追加到审批人集合，
+	// 支持字符串(单人/逗号分隔)与字符串数组两种取值形态，便于「谁提单谁的主管审批」这类场景。
+	ApproverField string `json:"approver_field,omitempty"`
 	// 服务任务
 	ScriptID string         `json:"script_id,omitempty"`
 	Inputs   map[string]any `json:"inputs,omitempty"`
@@ -62,6 +76,58 @@ type Step struct {
 	// 表单作用域：工单流转到本步骤时渲染的自定义表单 scope（如 process:<pid>:step:<step_id>）。
 	// 空表示本步骤不挂动态表单。
 	FormScope string `json:"form_scope,omitempty"`
+}
+
+// ApproverRoster 返回本步骤最终生效的审批人名册：静态配置的 Approvers 与
+// 由 ApproverField 从工单表单动态解析出的 extra 合并去重（保持先静态后动态的稳定次序）。
+func (s *Step) ApproverRoster(extra []string) []string {
+	seen := make(map[string]struct{}, len(s.Approvers)+len(extra))
+	out := make([]string, 0, len(s.Approvers)+len(extra))
+	for _, group := range [][]string{s.Approvers, extra} {
+		for _, a := range group {
+			a = strings.TrimSpace(a)
+			if a == "" {
+				continue
+			}
+			if _, dup := seen[a]; dup {
+				continue
+			}
+			seen[a] = struct{}{}
+			out = append(out, a)
+		}
+	}
+	return out
+}
+
+// ApproversFromValue 把工单自定义字段的取值归一化为审批人列表。
+// 兼容三种落库形态：字符串(可逗号分隔多人)、字符串数组、任意数组(逐个字符串化)。
+func ApproversFromValue(v any) []string {
+	switch t := v.(type) {
+	case nil:
+		return nil
+	case string:
+		parts := strings.Split(t, ",")
+		out := make([]string, 0, len(parts))
+		for _, p := range parts {
+			if p = strings.TrimSpace(p); p != "" {
+				out = append(out, p)
+			}
+		}
+		return out
+	case []string:
+		return t
+	case []any:
+		out := make([]string, 0, len(t))
+		for _, item := range t {
+			if s, ok := item.(string); ok {
+				if s = strings.TrimSpace(s); s != "" {
+					out = append(out, s)
+				}
+			}
+		}
+		return out
+	}
+	return nil
 }
 
 // Process — ITSM 流程定义

@@ -329,6 +329,8 @@ func (s *Store) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/v1/itsm/catalog", s.handleCreate)
 	mux.HandleFunc("PUT /api/v1/itsm/catalog/{id}", s.handleUpdate)
 	mux.HandleFunc("DELETE /api/v1/itsm/catalog/{id}", s.handleDelete)
+	mux.HandleFunc("GET /api/v1/itsm/catalog/usage", s.handleUsage)
+	mux.HandleFunc("POST /api/v1/itsm/catalog/reorder", s.handleReorder)
 }
 
 func (s *Store) handleList(w http.ResponseWriter, r *http.Request) {
@@ -405,6 +407,101 @@ func (s *Store) handleDelete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, 200, map[string]string{"status": "deleted"})
+}
+
+// CatalogUsage 目录项运营指标：申请次数 + 满意度聚合（来源工单的 catalog_id）。
+type CatalogUsage struct {
+	ID              string  `json:"catalog_id"`
+	TicketCount     int     `json:"ticket_count"`
+	AvgSatisfaction float64 `json:"avg_satisfaction"`
+	RatedCount      int     `json:"rated_count"`
+}
+
+// Usage 按 catalog_id 聚合工单申请次数与满意度（仅统计来源于目录的工单）。
+func (s *Store) Usage(ctx context.Context, tenantID string) ([]CatalogUsage, error) {
+	if s.db == nil {
+		return nil, nil
+	}
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT catalog_id,
+		       COUNT(*),
+		       COALESCE(AVG(NULLIF(satisfaction, 0)), 0),
+		       COUNT(*) FILTER (WHERE satisfaction > 0)
+		FROM itsm_tickets
+		WHERE tenant_id=$1 AND catalog_id <> ''
+		GROUP BY catalog_id`, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make([]CatalogUsage, 0)
+	for rows.Next() {
+		var u CatalogUsage
+		if err := rows.Scan(&u.ID, &u.TicketCount, &u.AvgSatisfaction, &u.RatedCount); err != nil {
+			return nil, err
+		}
+		out = append(out, u)
+	}
+	return out, rows.Err()
+}
+
+// ReorderItem 重排请求中的单条记录。
+type ReorderItem struct {
+	ID        string `json:"id"`
+	SortOrder int    `json:"sort_order"`
+}
+
+// Reorder 按给定顺序批量更新同级目录项的 sort_order（与 List 的 ORDER BY 对齐）。
+func (s *Store) Reorder(ctx context.Context, tenantID string, items []ReorderItem) error {
+	if s.db == nil {
+		return fmt.Errorf("database not available")
+	}
+	for _, it := range items {
+		if _, err := s.db.ExecContext(ctx,
+			`UPDATE itsm_catalog SET sort_order=$1, updated_at=$2 WHERE id=$3 AND tenant_id=$4`,
+			it.SortOrder, time.Now(), it.ID, tenantID); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (s *Store) handleUsage(w http.ResponseWriter, r *http.Request) {
+	tenant := r.Header.Get("X-Tenant-ID")
+	if tenant == "" {
+		tenant = "default"
+	}
+	list, err := s.Usage(r.Context(), tenant)
+	if err != nil {
+		writeJSON(w, 500, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, 200, list)
+}
+
+type reorderReq struct {
+	Items []ReorderItem `json:"items"`
+}
+
+func (s *Store) handleReorder(w http.ResponseWriter, r *http.Request) {
+	tenant := r.Header.Get("X-Tenant-ID")
+	if tenant == "" {
+		tenant = "default"
+	}
+	var req reorderReq
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, 400, map[string]string{"error": "invalid body"})
+		return
+	}
+	if len(req.Items) == 0 {
+		writeJSON(w, 400, map[string]string{"error": "empty items"})
+		return
+	}
+	if err := s.Reorder(r.Context(), tenant, req.Items); err != nil {
+		writeJSON(w, 500, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, 200, map[string]string{"status": "ok"})
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {

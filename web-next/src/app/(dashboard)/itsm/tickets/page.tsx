@@ -17,7 +17,7 @@ import { useCan, useCanAny } from '@/stores/permissions'
 import { useAuthStore } from '@/stores/auth'
 import { useWebSocket } from '@/lib/useWebSocket'
 import { Plus, Check, X, Play, RotateCcw, Clock, FileText, Activity, ChevronRight, Paperclip, MessageSquare, Upload, Download, Trash2, FileUp, FileDown, BookOpen, BookOpenCheck, Send, UserPlus, CheckCircle2, ListChecks, Bell, Link2 } from 'lucide-react'
-import { RISK_LABELS, STATUS_LABELS, RISK_BADGE_VARIANT } from '@/lib/itsm-constants'
+import { RISK_LABELS, STATUS_LABELS, RISK_BADGE_VARIANT, parseFormSchema, applyStepFieldPerms } from '@/lib/itsm-constants'
 import { toast } from '@/stores/toast'
 
 const SLA_BY_RISK: Record<string, string> = { critical: '4小时', high: '24小时', medium: '48小时', low: '72小时' }
@@ -92,8 +92,12 @@ export default function ITSMPage() {
   const [knowledgeRecs, setKnowledgeRecs] = useState<any[]>([])
   const [selectedTicket, setSelectedTicket] = useState<Ticket | null>(null)
   const [selectedSchema, setSelectedSchema] = useState<FormSchema | null>(null)
-  // 流程步骤级表单：当前步骤的 form_scope（非空时详情页渲染可编辑步骤表单）+ 编辑中字段值 + 保存态
+  // 流程步骤级表单：流程只有一张主表单，节点按 form_fields 权限决定「哪些字段在本节点可见/可编辑」。
+  // stepScope 仅作为保存时回传的作用域（兼容旧版节点独立表单）；stepName 用于标题展示；
+  // stepEditable=true 表示当前节点存在可编辑字段，才渲染保存按钮。
   const [stepScope, setStepScope] = useState('')
+  const [stepName, setStepName] = useState('')
+  const [stepEditable, setStepEditable] = useState(false)
   const [stepFields, setStepFields] = useState<Record<string, any>>({})
   const [stepSaving, setStepSaving] = useState(false)
   const [ticketEvents, setTicketEvents] = useState<TicketEvent[]>([])
@@ -209,23 +213,18 @@ export default function ITSMPage() {
 
   useEffect(() => { if (me) setCommentAuthor(me.username) }, [me])
 
-  // 从服务目录「申请」跳转过来时，自动按 catalog:<id> 作用域打开创建 Dialog，
-  // 并把目录项配置的流程模板 / 自定义表单作用域 / 服务名称预填进来 —— 员工点一下即进入该服务的流程。
+  // 深链 ?id=<ticket>：从服务门户提交申请后「查看工单」跳进来，直接展开该工单详情。
+  // 服务申请本身已收敛到服务门户内的抽屉表单完成，不再通过跳本页创建。
   useEffect(() => {
     try {
-      const params = new URLSearchParams(window.location.search)
-      const cat = params.get('catalog')
-      if (!cat) return
+      const tid = new URLSearchParams(window.location.search).get('id')
+      if (!tid) return
       ;(async () => {
-        let item: any = null
         try {
-          const list = await apiList<any>('/itsm/catalog/visible')
-          item = (list || []).find((x: any) => x.id === cat) || null
-        } catch { toast.error('加载服务目录失败') }
-        await openCreateDialog(item?.form_scope || `catalog:${cat}`)
-        if (item) {
-          setForm(f => ({ ...f, title: item.name || f.title, process_id: item.process_id || '' }))
-        }
+          await fetchProcesses() // 先备好流程定义，详情才能按主表单+节点权限渲染
+          const t = await getTicket(tid)
+          if (t) await handleSelectTicket(t)
+        } catch { toast.error('工单不存在或无权访问') }
       })()
     } catch { /* ignore */ }
   }, [])
@@ -281,7 +280,7 @@ export default function ITSMPage() {
   const handleSelectTicket = async (ticket: Ticket) => {
     setSelectedTicket(ticket)
     setDetailTab('detail')
-    setStepScope(''); setStepFields({}); setStepSaving(false)
+    setStepScope(''); setStepName(''); setStepEditable(false); setStepFields({}); setStepSaving(false)
     try {
       const events = await getEvents(ticket.id)
       setTicketEvents(events || [])
@@ -289,31 +288,49 @@ export default function ITSMPage() {
     fetchComments(ticket.id)
     fetchAttachments(ticket.id)
     fetchSubtasks(ticket.id)
-    // 解析表单作用域：优先流程实例当前步骤的 form_scope，否则 ticket.form_scope / ticket:default
+
+    // 表单解析：流程主表单（流程设计第一步产出）为唯一数据源，
+    // 当前节点按 form_fields 权限投影出「本节点可见/可编辑」的字段子集。
+    // 未绑定流程或流程没主表单时，回退到 ticket.form_scope 对应的作用域表单（兼容存量）。
     let scope = ticket.form_scope || 'ticket:default'
+    let schema: FormSchema | null = null
     if (ticket.process_id) {
+      // 直接读 store 快照：深链 ?id= 场景下 render 闭包里的 processes 可能还没拉回来
+      const procList = useITSMStore.getState().processes
+      const proc = (procList.length ? procList : processes).find(p => p.id === ticket.process_id)
+      const main = parseFormSchema(proc?.form)
+      if (main.fields.length) schema = main
       try {
         const inst = await getTicketProcess(ticket.id)
         setProcessInst(inst || null)
-        if (inst && inst.current_step) {
-          const proc = processes.find(p => p.id === ticket.process_id)
-          const step = proc?.steps?.find(s => s.id === inst.current_step)
-          if (step?.form_scope) {
+        const step = inst?.current_step ? proc?.steps?.find(s => s.id === inst.current_step) : undefined
+        if (step) {
+          setStepName(step.name || '')
+          if (schema) {
+            const projected = applyStepFieldPerms(schema, step.form_fields)
+            schema = projected
+            const editable = (projected?.fields || []).some(f => !f.readonly)
+            setStepEditable(step.type === 'user' && editable)
+            setStepScope(ticket.form_scope || '')
+          } else if (step.form_scope) {
+            // 存量流程：节点仍挂着独立表单作用域
             scope = step.form_scope
             setStepScope(step.form_scope)
+            setStepEditable(true)
           }
         }
       } catch { /* 流程实例不可用时回退默认作用域 */ }
     }
     try {
-      const schema = await getFormSchema(scope)
+      if (!schema) schema = await getFormSchema(scope)
       setSelectedSchema(schema)
       setStepFields({ ...(ticket.custom_fields || {}) })
     } catch { setSelectedSchema(null) }
   }
 
   const handleSaveStepForm = async () => {
-    if (!selectedTicket || !stepScope) return
+    // 主表单模式下 stepScope 允许为空（服务端按空作用域跳过二次校验，仍会推进流程）
+    if (!selectedTicket || !stepEditable) return
     setStepSaving(true)
     const ok = await updateTicketCustomFields(selectedTicket.id, stepScope, stepFields)
     setStepSaving(false)
@@ -869,22 +886,28 @@ export default function ITSMPage() {
                         </div>
                       </div>
                     )}
-                    {stepScope ? (
+                    {(stepEditable || stepName) && selectedSchema && (selectedSchema.fields || []).length > 0 ? (
                       <div>
-                        <h4 className="text-sm font-medium mb-1">当前步骤表单 <span className="text-xs font-normal text-muted-foreground">（{stepScope}）</span></h4>
+                        <h4 className="text-sm font-medium mb-1">
+                          流程表单
+                          {stepName && <span className="text-xs font-normal text-muted-foreground">（当前节点：{stepName}）</span>}
+                        </h4>
                         <DynamicForm
                           schema={selectedSchema}
                           values={stepFields}
                           context={selectedTicket as unknown as Record<string, unknown>}
                           onChange={(k, v) => setStepFields(f => ({ ...f, [k]: v }))}
                           loadOptions={loadOptions}
+                          readOnly={!stepEditable}
                           ticketId={selectedTicket.id}
                         />
-                        <div className="pt-1">
-                          <Button size="sm" onClick={handleSaveStepForm} disabled={stepSaving}>
-                            {stepSaving ? '保存中…' : '保存步骤表单'}
-                          </Button>
-                        </div>
+                        {stepEditable && (
+                          <div className="pt-1">
+                            <Button size="sm" onClick={handleSaveStepForm} disabled={stepSaving}>
+                              {stepSaving ? '保存中…' : '保存并推进'}
+                            </Button>
+                          </div>
+                        )}
                       </div>
                     ) : (selectedTicket.custom_fields && Object.keys(selectedTicket.custom_fields).length > 0) && (
                       <div>

@@ -221,6 +221,7 @@ func (s *PGStore) migrate(ctx context.Context) {
 		`ALTER TABLE itsm_tickets ADD COLUMN IF NOT EXISTS hold_reason TEXT`,
 		`ALTER TABLE itsm_tickets ADD COLUMN IF NOT EXISTS hold_until_at TIMESTAMPTZ`,
 		`ALTER TABLE itsm_tickets ADD COLUMN IF NOT EXISTS related_ticket_ids TEXT DEFAULT '[]'`,
+		`ALTER TABLE itsm_tickets ADD COLUMN IF NOT EXISTS catalog_id TEXT DEFAULT ''`,
 	}
 	for _, m := range migrations {
 		s.db.ExecContext(ctx, m)
@@ -246,8 +247,8 @@ func (s *PGStore) Create(ctx context.Context, ticket *model.Ticket) error {
 			 labels, trace_id, scheduled_at, deadline_at, created_at, updated_at,
 			 approved_at, executed_at, completed_at, rolled_back_at, process_id, custom_fields,
 			 assignee, assigned_at, satisfaction,
-			 on_hold, hold_reason, hold_until_at, related_ticket_ids)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35,$36)`,
+			 on_hold, hold_reason, hold_until_at, related_ticket_ids, catalog_id)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35,$36,$37)`,
 		ticket.ID, ticket.TenantID, ticket.Title, nullable(ticket.Description),
 		string(ticket.RiskLevel), string(ticket.Status), nullable(ticket.ChangePlan),
 		nullable(ticket.RollbackPlan), ticket.CreatedBy, ticket.CreatedByType,
@@ -261,7 +262,7 @@ func (s *PGStore) Create(ctx context.Context, ticket *model.Ticket) error {
 		nullableTime(ticket.CompletedAt), nullableTime(ticket.RolledBackAt),
 		nullable(ticket.ProcessID), string(customFieldsJSON),
 		nullable(ticket.Assignee), nullableTime(ticket.AssignedAt), ticket.Satisfaction,
-		ticket.OnHold, nullable(ticket.HoldReason), nullableTime(ticket.HoldUntilAt), string(relatedJSON))
+		ticket.OnHold, nullable(ticket.HoldReason), nullableTime(ticket.HoldUntilAt), string(relatedJSON), nullable(ticket.CatalogID))
 	if err != nil {
 		return fmt.Errorf("insert ticket: %w", err)
 	}
@@ -275,6 +276,7 @@ func (s *PGStore) Get(ctx context.Context, id, tenantID string) (*model.Ticket, 
 	var labelsJSON, ciIDsJSON sql.NullString
 	var customFieldsJSON sql.NullString
 	var processID sql.NullString
+	var catalogID sql.NullString
 	var assignee sql.NullString
 	var assignedAt sql.NullTime
 	var satisfaction sql.NullInt32
@@ -291,7 +293,7 @@ func (s *PGStore) Get(ctx context.Context, id, tenantID string) (*model.Ticket, 
 		       labels, trace_id, scheduled_at, deadline_at, created_at, updated_at,
 		       approved_at, executed_at, completed_at, rolled_back_at, process_id, custom_fields,
 		       assignee, assigned_at, satisfaction,
-		       on_hold, hold_reason, hold_until_at, related_ticket_ids
+		       on_hold, hold_reason, hold_until_at, related_ticket_ids, catalog_id
 		FROM itsm_tickets WHERE id = $1 AND tenant_id = $2`, id, tenantID).Scan(
 		&t.ID, &t.TenantID, &t.Title, &desc, &t.RiskLevel, &t.Status,
 		&changePlan, &rollbackPlan, &t.CreatedBy, &t.CreatedByType,
@@ -300,7 +302,7 @@ func (s *PGStore) Get(ctx context.Context, id, tenantID string) (*model.Ticket, 
 		&scheduledAt, &deadlineAt, &t.CreatedAt, &t.UpdatedAt,
 		&approvedAt, &executedAt, &completedAt, &rolledBackAt, &processID, &customFieldsJSON,
 		&assignee, &assignedAt, &satisfaction,
-		&t.OnHold, &holdReason, &holdUntilAt, &relatedJSON)
+		&t.OnHold, &holdReason, &holdUntilAt, &relatedJSON, &catalogID)
 	if err != nil {
 		if err == sql.ErrNoRows {
 			return nil, ErrNotFound
@@ -309,6 +311,7 @@ func (s *PGStore) Get(ctx context.Context, id, tenantID string) (*model.Ticket, 
 	}
 
 	t.ProcessID = nullableStr(processID)
+	t.CatalogID = nullableStr(catalogID)
 	t.Description = nullableStr(desc)
 	t.ChangePlan = nullableStr(changePlan)
 	t.RollbackPlan = nullableStr(rollbackPlan)

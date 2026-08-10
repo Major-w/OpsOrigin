@@ -99,16 +99,28 @@ export interface ProcessStep {
   id: string; name: string; type: StepType
   description?: string
   approvers?: string[]; approval_msg?: string
+  /** 多审批人表决方式：countersign 会签（全部通过，缺省）/ orsign 或签（任一通过） */
+  approval_type?: 'countersign' | 'orsign'
+  /** 从工单表单字段动态取审批人（字段 key），与静态 approvers 合并去重后生效 */
+  approver_field?: string
   script_id?: string; inputs?: Record<string,any>
+  /** @deprecated 分支条件已迁移到连线（depends_on[].condition），网关节点自身不再持有条件 */
   condition?: string
   duration?: string; deadline?: string
   notify_channel?: string; notify_title?: string; notify_body?: string
   subflow_id?: string
+  /** 上游依赖；condition 为 success / failure / always（默认分支）或表达式（如 risk_level == "high"） */
   depends_on?: { nodeId: string; condition: string }[]
   position_x?: number; position_y?: number
-  // 表单作用域：工单流转到本步骤时渲染的自定义表单 scope（如 process:<pid>:step:<step_id>）
+  /**
+   * 节点字段权限：流程只有一张主表单（向导第一步「表单设计」产出，存 Process.form），
+   * 节点不再各自设计表单，只声明主表单字段在本节点「可见 / 可编辑」。
+   * 空/缺省 = 该节点沿用主表单原样（全部可见可编辑）。
+   */
+  form_fields?: { key: string; visible: boolean; editable: boolean }[]
+  /** @deprecated 旧版节点独立表单作用域，仅为兼容历史流程数据保留，新流程不再写入 */
   form_scope?: string
-  // 表单 Schema（JSON 字符串）：经 FormBuilder 可视化设计的自定义表单，随流程存储
+  /** @deprecated 旧版节点独立表单 Schema(JSON)，已由 form_fields + 主表单取代 */
   form_schema?: string
 }
 

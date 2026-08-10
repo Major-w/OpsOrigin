@@ -210,10 +210,20 @@ func (r *cmdbIAMResolver) resolveUncached(ctx context.Context, tenantID, source 
 
 	case strings.HasPrefix(source, SourcePrefixIAM):
 		kind := strings.TrimSpace(strings.TrimPrefix(source, SourcePrefixIAM))
+		// "iam:user@<组ID>[,<组ID>...]" 把候选人限定在若干用户组的成员并集内
+		groupScope := ""
+		if at := strings.Index(kind, "@"); at >= 0 {
+			groupScope = strings.TrimSpace(kind[at+1:])
+			kind = strings.TrimSpace(kind[:at])
+		}
 		switch kind {
 		case "user":
 			if r.users == nil {
 				return nil, fmt.Errorf("用户中心未接入，无法解析选项来源 %q", source)
+			}
+			allow, err := r.groupMemberSet(ctx, tenantID, groupScope)
+			if err != nil {
+				return nil, err
 			}
 			us, err := r.users.ListUsers(ctx, tenantID, "", 0)
 			if err != nil {
@@ -221,6 +231,11 @@ func (r *cmdbIAMResolver) resolveUncached(ctx context.Context, tenantID, source 
 			}
 			opts := make([]form.FieldOption, 0, len(us))
 			for _, u := range us {
+				if allow != nil {
+					if _, ok := allow[u.ID]; !ok {
+						continue
+					}
+				}
 				label := u.Username
 				if u.Email != "" {
 					label = fmt.Sprintf("%s (%s)", u.Username, u.Email)
@@ -268,6 +283,47 @@ func (r *cmdbIAMResolver) resolveUncached(ctx context.Context, tenantID, source 
 		return nil, fmt.Errorf("不支持的 IAM 选项来源 %q", source)
 	}
 	return nil, fmt.Errorf("不支持的选项来源 %q", source)
+}
+
+// groupMemberSet 把逗号分隔的用户组 ID 列表展开为成员用户 ID 集合。
+// scope 为空返回 nil，表示不做限定（全量用户可选）；引用了不存在的组时只跳过该组，
+// 避免组被删除后整个字段的候选人凭空清零。
+func (r *cmdbIAMResolver) groupMemberSet(ctx context.Context, tenantID, scope string) (map[string]struct{}, error) {
+	scope = strings.TrimSpace(scope)
+	if scope == "" {
+		return nil, nil
+	}
+	if r.iam == nil {
+		return nil, fmt.Errorf("IAM 未接入，无法按用户组限定候选人")
+	}
+	wanted := map[string]struct{}{}
+	for _, id := range strings.Split(scope, ",") {
+		if id = strings.TrimSpace(id); id != "" {
+			wanted[id] = struct{}{}
+		}
+	}
+	if len(wanted) == 0 {
+		return nil, nil
+	}
+	groups, err := r.iam.ListGroups(ctx, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	members := map[string]struct{}{}
+	for _, g := range groups {
+		if g == nil {
+			continue
+		}
+		if _, ok := wanted[g.ID]; !ok {
+			continue
+		}
+		for _, uid := range g.UserIDs {
+			if uid = strings.TrimSpace(uid); uid != "" {
+				members[uid] = struct{}{}
+			}
+		}
+	}
+	return members, nil
 }
 
 // SourceCatalog 返回可用的 source 取值清单，供表单配置界面下拉选择。

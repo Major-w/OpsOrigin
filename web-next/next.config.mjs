@@ -1,7 +1,7 @@
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   reactStrictMode: true,
-  transpilePackages: ['@tremor/react', 'echarts-for-react'],
+  transpilePackages: ['@tremor/react', 'echarts-for-react', 'react-markdown', 'remark-gfm'],
   async rewrites() {
     return [
       {

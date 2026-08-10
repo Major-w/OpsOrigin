@@ -1,5 +1,7 @@
 /** ITSM 共享常量 — 避免各页面重复定义 */
 
+import type { FormSchema, FormFieldDef } from '@/components/itsm/DynamicForm'
+
 export const STATUS_LABELS: Record<string, string> = {
   draft: '草稿',
   pending: '待审批',
@@ -171,6 +173,53 @@ export function flattenTree<T>(nodes: TreeNode<T>[]): T[] {
     result.push(...flattenTree(node.children))
   }
   return result
+}
+
+/**
+ * 解析流程主表单。后端 Process.form 可能是对象也可能是 JSON 字符串，
+ * 统一收敛成 FormSchema，避免各页面各写一份解析。
+ */
+export function parseFormSchema(raw: any): FormSchema {
+  if (!raw) return { version: 1, scope: '', fields: [] }
+  if (typeof raw === 'string') {
+    try {
+      const o = JSON.parse(raw)
+      return { version: o.version || 1, scope: o.scope || '', fields: o.fields || [] }
+    } catch {
+      return { version: 1, scope: '', fields: [] }
+    }
+  }
+  return { version: raw.version || 1, scope: raw.scope || '', fields: raw.fields || [] }
+}
+
+/**
+ * 节点字段权限：流程节点不再各自设计表单，只声明「流程主表单的某字段在本节点可见/可编辑」。
+ * key 为主表单字段 key；未声明的字段按 defaultVisible/defaultEditable 处理。
+ */
+export interface StepFieldPerm {
+  key: string
+  visible: boolean
+  editable: boolean
+}
+
+/**
+ * 把节点字段权限投影到主表单上：
+ * - 不可见字段直接剔除（不下发到前端渲染，也就不会被填写）
+ * - 不可编辑字段标 readonly（DynamicForm 会 disabled 掉控件）
+ * 未配置权限（perms 为空）时视为「全部可见可编辑」，保证老流程零改造仍能跑。
+ */
+export function applyStepFieldPerms(schema: FormSchema | null | undefined, perms?: StepFieldPerm[]): FormSchema | null {
+  if (!schema) return null
+  if (!perms || perms.length === 0) return schema
+  const byKey = new Map(perms.map(p => [p.key, p]))
+  const fields: FormFieldDef[] = []
+  for (const f of schema.fields || []) {
+    const p = byKey.get(f.key)
+    if (!p) { fields.push(f); continue }       // 未声明 = 沿用字段自身定义
+    if (!p.visible) continue                    // 本节点不可见 → 剔除
+    fields.push(p.editable ? f : { ...f, readonly: true })
+  }
+  return { ...schema, fields }
 }
 
 /** 获取树节点的所有后代 ID */

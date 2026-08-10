@@ -71,10 +71,12 @@ func (s *Service) loadSubflow(ctx context.Context, id, tenantID string) (*Proces
 	return s.store.Get(ctx, id, tenantID)
 }
 
-// VoteStep 记录人工步骤(会签)的审批投票, 返回当前是否已全部 Approvers 投票且全通过。
-// 非会签步骤(Approvers 为空)直接返回 allApproved=true(不影响原单审批路径)。
+// VoteStep 记录人工步骤的审批投票, 返回本步骤是否已达成通过条件。
+// 表决方式由 Step.ApprovalType 决定: 会签(缺省)要求名册内全部通过, 或签只要任一人通过。
+// extraApprovers 是调用方按 Step.ApproverField 从工单表单解析出的动态审批人, 与静态名单合并。
+// 名册为空的步骤直接返回 allApproved=true(不影响原单审批路径)。
 // 投票存于 StepResults[stepID].approvals = {approver: bool}。
-func (s *Service) VoteStep(ctx context.Context, tenantID, ticketID, stepID, approver string, approved bool) (bool, error) {
+func (s *Service) VoteStep(ctx context.Context, tenantID, ticketID, stepID, approver string, approved bool, extraApprovers []string) (bool, error) {
 	if tenantID == "" {
 		tenantID = "default"
 	}
@@ -96,8 +98,9 @@ func (s *Service) VoteStep(ctx context.Context, tenantID, ticketID, stepID, appr
 	if step == nil {
 		return false, fmt.Errorf("step %s not found", stepID)
 	}
-	if len(step.Approvers) == 0 {
-		return true, nil // 非会签步骤
+	roster := step.ApproverRoster(extraApprovers)
+	if len(roster) == 0 {
+		return true, nil // 未指定审批人的步骤不参与表决
 	}
 	if inst.StepResults == nil {
 		inst.StepResults = map[string]any{}
@@ -116,15 +119,23 @@ func (s *Service) VoteStep(ctx context.Context, tenantID, ticketID, stepID, appr
 	if err := s.store.UpdateInstance(ctx, inst); err != nil {
 		return false, err
 	}
-	allApproved := true
-	for _, a := range step.Approvers {
+	if step.ApprovalType == ApprovalOrSign {
+		// 或签：名册内任一人投了通过即达成，其余人无需再表态
+		for _, a := range roster {
+			if v, ok := approvals[a].(bool); ok && v {
+				return true, nil
+			}
+		}
+		return false, nil
+	}
+	// 会签（缺省）：名册内全部投通过才达成
+	for _, a := range roster {
 		v, ok := approvals[a].(bool)
 		if !ok || !v {
-			allApproved = false
-			break
+			return false, nil
 		}
 	}
-	return allApproved, nil
+	return true, nil
 }
 
 func (s *Service) Get(ctx context.Context, id, tenantID string) (*Process, error) {

@@ -42,7 +42,7 @@ const navGroups: (NavItem | NavGroup)[] = [
   {
     label: 'ITSM', icon: TicketCheck, items: [
       { to: '/itsm/overview', label: '总览', icon: LayoutDashboard },
-      { to: '/itsm/portal', label: '自助服务', icon: Store },
+      { to: '/itsm/portal', label: '服务门户', icon: Store },
       { to: '/itsm/tickets', label: '工单列表', icon: TicketCheck },
       { to: '/itsm/change', label: '变更日历', icon: Calendar },
       { to: '/itsm/reports', label: '自定义报表', icon: BarChart3 },

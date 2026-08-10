@@ -72,6 +72,7 @@ type Ticket struct {
 	// 由 form.FormSchema 驱动（internal/itsm/form），无 schema 时为空。
 	CustomFields       map[string]any `json:"custom_fields,omitempty"`
 	ProcessID          string         `json:"process_id,omitempty"` // 绑定的流程模板 ID
+	CatalogID          string         `json:"catalog_id,omitempty"` // 发起来源的服务目录项 ID（用于使用量统计与满意度聚合）
 	TraceID            string         `json:"trace_id"`
 	ScheduledAt        *time.Time     `json:"scheduled_at,omitempty"`
 	DeadlineAt         *time.Time     `json:"deadline_at,omitempty"`
@@ -138,6 +139,7 @@ type CreateTicketRequest struct {
 	// FormScope 指定本工单套用的表单作用域（默认 ticket:default）；用于目录/流程按场景套不同字段。
 	FormScope      string         `json:"form_scope,omitempty"`
 	ProcessID      string         `json:"process_id,omitempty"` // 绑定的流程模板 ID（触发流程引擎驱动）
+	CatalogID      string         `json:"catalog_id,omitempty"` // 发起来源的服务目录项 ID
 	ScheduledAt    *time.Time     `json:"scheduled_at,omitempty"`
 	DeadlineAt     *time.Time     `json:"deadline_at,omitempty"`
 	TraceID        string         `json:"trace_id,omitempty"`

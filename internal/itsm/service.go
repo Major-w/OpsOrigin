@@ -262,6 +262,7 @@ func (s *Service) CreateTicketFromCatalog(ctx context.Context, catalogID, tenant
 	if req.ProcessID == "" {
 		req.ProcessID = item.ProcessID
 	}
+	req.CatalogID = catalogID // 记录工单来源目录项，供使用量统计与满意度聚合
 	if req.Labels == nil {
 		req.Labels = map[string]string{}
 	}
@@ -427,6 +428,7 @@ func (s *Service) CreateTicket(ctx context.Context, req model.CreateTicketReques
 		Labels:        req.Labels,
 		CIIDs:         req.CIIDs,
 		CustomFields:  req.CustomFields,
+		CatalogID:     req.CatalogID,
 		TraceID:       traceIDFromCtx(ctx),
 		ScheduledAt:   req.ScheduledAt,
 		DeadlineAt:    req.DeadlineAt,
@@ -677,13 +679,13 @@ func (s *Service) handleList(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, tickets)
 }
 
-// stepVoter 是可选的会签投票能力接口(由 process.Service 实现, 可选能力不破坏既有 ProcessEngine)。
+// stepVoter 是可选的多人审批表决能力接口(由 process.Service 实现, 可选能力不破坏既有 ProcessEngine)。
 type stepVoter interface {
 	ProcessEngine
-	VoteStep(ctx context.Context, tenantID, ticketID, stepID, approver string, approved bool) (allApproved bool, err error)
+	VoteStep(ctx context.Context, tenantID, ticketID, stepID, approver string, approved bool, extraApprovers []string) (allApproved bool, err error)
 }
 
-// currentVoteStep 返回工单当前步骤中需要会签的 user 步骤(Approvers 非空), 否则 nil。
+// currentVoteStep 返回工单当前步骤中需要多人表决的 user 步骤(配了静态审批人或审批人取值字段), 否则 nil。
 func (s *Service) currentVoteStep(ctx context.Context, ticket *model.Ticket) *process.Step {
 	if s.processStore == nil || ticket.ProcessID == "" {
 		return nil
@@ -698,11 +700,20 @@ func (s *Service) currentVoteStep(ctx context.Context, ticket *model.Ticket) *pr
 	}
 	for i := range proc.Steps {
 		st := &proc.Steps[i]
-		if st.ID == inst.CurrentStep && st.Type == process.StepUser && len(st.Approvers) > 0 {
+		if st.ID == inst.CurrentStep && st.Type == process.StepUser && (len(st.Approvers) > 0 || st.ApproverField != "") {
 			return st
 		}
 	}
 	return nil
+}
+
+// dynamicApprovers 按步骤配置的 ApproverField 从工单表单取值解析出动态审批人。
+// 未配置或工单未采集到该字段时返回 nil，此时仅静态审批人名单生效。
+func dynamicApprovers(step *process.Step, ticket *model.Ticket) []string {
+	if step == nil || step.ApproverField == "" || ticket == nil {
+		return nil
+	}
+	return process.ApproversFromValue(ticket.CustomFields[step.ApproverField])
 }
 
 func (s *Service) handleApprove(w http.ResponseWriter, r *http.Request) {
@@ -813,10 +824,11 @@ func (s *Service) handleApprove(w http.ResponseWriter, r *http.Request) {
 			ticket.ApprovalStatus.FinalResult = "approved"
 		}
 	} else {
-		// 会签: 当前步骤多审批人时先记录投票, 未全票通过则保持待审批(不推进状态/流程)。
+		// 多人审批: 当前步骤先记录投票, 未达成表决条件(会签未全票 / 或签无人通过)则保持待审批, 不推进状态与流程。
 		if voter, ok := s.processStore.(stepVoter); ok {
 			if step := s.currentVoteStep(r.Context(), ticket); step != nil {
-				all, err := voter.VoteStep(r.Context(), ticket.TenantID, ticket.ID, step.ID, req.ApprovedBy, true)
+				extra := dynamicApprovers(step, ticket)
+				all, err := voter.VoteStep(r.Context(), ticket.TenantID, ticket.ID, step.ID, req.ApprovedBy, true, extra)
 				if err == nil && !all {
 					writeJSON(w, http.StatusOK, map[string]any{
 						"status":  "waiting",

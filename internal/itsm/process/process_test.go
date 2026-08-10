@@ -517,14 +517,14 @@ func TestVoteStep(t *testing.T) {
 	ctx := context.Background()
 	m.CreateInstance(ctx, &ProcessInstance{ID: "i1", ProcessID: "p1", TicketID: "t1", TenantID: "default", Status: "running", StepResults: map[string]any{}})
 
-	all, err := s.VoteStep(ctx, "default", "t1", "approve", "alice", true)
+	all, err := s.VoteStep(ctx, "default", "t1", "approve", "alice", true, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if all {
 		t.Fatal("first vote should not be all-approved yet")
 	}
-	all, err = s.VoteStep(ctx, "default", "t1", "approve", "bob", true)
+	all, err = s.VoteStep(ctx, "default", "t1", "approve", "bob", true, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -535,6 +535,85 @@ func TestVoteStep(t *testing.T) {
 	approvals := rec["approvals"].(map[string]any)
 	if approvals["alice"] != true || approvals["bob"] != true {
 		t.Fatalf("approvals not recorded: %+v", approvals)
+	}
+}
+
+// 或签：名册内任一人通过即达成，无需等待其余人表态。
+func TestVoteStepOrSign(t *testing.T) {
+	m := &memStore{procs: map[string]*Process{
+		"p1": {ID: "p1", Steps: []Step{
+			{ID: "approve", Type: StepUser, Approvers: []string{"alice", "bob"}, ApprovalType: ApprovalOrSign},
+		}},
+	}, insts: map[string]*ProcessInstance{}}
+	s := &Service{store: m}
+	ctx := context.Background()
+	m.CreateInstance(ctx, &ProcessInstance{ID: "i1", ProcessID: "p1", TicketID: "t1", TenantID: "default", Status: "running", StepResults: map[string]any{}})
+
+	all, err := s.VoteStep(ctx, "default", "t1", "approve", "alice", true, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !all {
+		t.Fatal("或签下首个通过票即应达成")
+	}
+
+	// 反对票不构成达成
+	m2 := &memStore{procs: m.procs, insts: map[string]*ProcessInstance{}}
+	s2 := &Service{store: m2}
+	m2.CreateInstance(ctx, &ProcessInstance{ID: "i2", ProcessID: "p1", TicketID: "t2", TenantID: "default", Status: "running", StepResults: map[string]any{}})
+	if all, _ = s2.VoteStep(ctx, "default", "t2", "approve", "alice", false, nil); all {
+		t.Fatal("或签下反对票不应达成")
+	}
+}
+
+// 审批人从表单字段动态注入：静态名单为空时也能形成有效名册。
+func TestVoteStepDynamicApprovers(t *testing.T) {
+	m := &memStore{procs: map[string]*Process{
+		"p1": {ID: "p1", Steps: []Step{
+			{ID: "approve", Type: StepUser, ApproverField: "owner"},
+		}},
+	}, insts: map[string]*ProcessInstance{}}
+	s := &Service{store: m}
+	ctx := context.Background()
+	m.CreateInstance(ctx, &ProcessInstance{ID: "i1", ProcessID: "p1", TicketID: "t1", TenantID: "default", Status: "running", StepResults: map[string]any{}})
+
+	// 未传动态审批人 → 名册为空，直接放行
+	if all, _ := s.VoteStep(ctx, "default", "t1", "approve", "carol", true, nil); !all {
+		t.Fatal("空名册应直接放行")
+	}
+	// 传入两人 → 会签需两票
+	if all, _ := s.VoteStep(ctx, "default", "t1", "approve", "carol", true, []string{"carol", "dave"}); all {
+		t.Fatal("会签下仅一人投票不应达成")
+	}
+	if all, _ := s.VoteStep(ctx, "default", "t1", "approve", "dave", true, []string{"carol", "dave"}); !all {
+		t.Fatal("会签下两人均通过应达成")
+	}
+}
+
+func TestApproversFromValue(t *testing.T) {
+	cases := []struct {
+		in   any
+		want int
+	}{
+		{nil, 0},
+		{"alice", 1},
+		{"alice, bob ,", 2},
+		{[]string{"alice", "bob"}, 2},
+		{[]any{"alice", "", "bob"}, 2},
+		{42, 0},
+	}
+	for _, c := range cases {
+		if got := ApproversFromValue(c.in); len(got) != c.want {
+			t.Fatalf("ApproversFromValue(%v) = %v, want %d 项", c.in, got, c.want)
+		}
+	}
+}
+
+func TestApproverRosterDedup(t *testing.T) {
+	st := &Step{Approvers: []string{"alice", " bob ", ""}}
+	got := st.ApproverRoster([]string{"bob", "carol"})
+	if len(got) != 3 || got[0] != "alice" || got[1] != "bob" || got[2] != "carol" {
+		t.Fatalf("名册去重/排序不符合预期: %v", got)
 	}
 }
 

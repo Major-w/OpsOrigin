@@ -68,9 +68,8 @@ export default function KnowledgeListPage() {
   const [followIds, setFollowIds] = useState<string[]>([])
   const [followUpdateIds, setFollowUpdateIds] = useState<string[]>([])
 
-  // 新建文章弹窗: 增强编辑器状态
+  // 新建文章弹窗: 增强编辑器状态 (实时分栏预览, 不再用 编辑/预览 Tab 切换)
   const [dialogInputMode, setDialogInputMode] = useState<'markdown' | 'rich'>('markdown')
-  const [dialogEditTab, setDialogEditTab] = useState<'write' | 'preview'>('write')
   const [dialogAiPrompt, setDialogAiPrompt] = useState('')
   const [dialogAiGen, setDialogAiGen] = useState(false)
   const [formError, setFormError] = useState('')
@@ -113,7 +112,6 @@ export default function KnowledgeListPage() {
       setDialogOpen(false)
       setForm({ title: '', content: '', category: categories[0] || '', tags: '', author: getKBUser(), status: 'draft' })
       setFormError('')
-      setDialogEditTab('write')
     }
   }
 
@@ -263,7 +261,7 @@ export default function KnowledgeListPage() {
     {/* 新建文章弹窗(升级版: 宽屏 + Markdown/富文本 + 实时预览 + 格式校验 + AI 伴写) */}
     {dialogOpen && <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
       <div className="fixed inset-0 bg-black/50" onClick={() => setDialogOpen(false)} />
-      <div className="relative z-50 w-full max-w-4xl max-h-[92vh] overflow-y-auto bg-white dark:bg-gray-900 rounded-xl border p-6 shadow-lg">
+      <div className="relative z-50 w-full max-w-5xl max-h-[92vh] overflow-y-auto bg-white dark:bg-gray-900 rounded-xl border p-6 shadow-lg">
         <div className="flex items-center justify-between mb-4">
           <h2 className="text-lg font-semibold">新建文章</h2>
           <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => setDialogOpen(false)}>✕</Button>
@@ -282,25 +280,30 @@ export default function KnowledgeListPage() {
             </div>
             <Input placeholder="标签,逗号分隔" value={form.tags} onChange={e => setForm({ ...form, tags: e.target.value })} />
             <div className="flex flex-wrap items-center gap-2">
-              <Tabs value={dialogEditTab} onValueChange={v => setDialogEditTab(v as 'write' | 'preview')}>
-                <TabsList className="h-8">
-                  <TabsTrigger value="write" className="text-xs py-1"><PenLine className="h-3 w-3 mr-1" />编辑</TabsTrigger>
-                  <TabsTrigger value="preview" className="text-xs py-1"><Eye className="h-3 w-3 mr-1" />预览</TabsTrigger>
-                </TabsList>
-              </Tabs>
-              <div className="flex-1" />
               <Tabs value={dialogInputMode} onValueChange={v => setDialogInputMode(v as 'markdown' | 'rich')}>
                 <TabsList className="h-8">
                   <TabsTrigger value="markdown" className="text-xs py-1"><PenLine className="h-3 w-3 mr-1" />Markdown</TabsTrigger>
                   <TabsTrigger value="rich" className="text-xs py-1"><AlignLeft className="h-3 w-3 mr-1" />富文本</TabsTrigger>
                 </TabsList>
               </Tabs>
+              <div className="flex-1" />
+              <span className="text-[10px] text-muted-foreground flex items-center gap-1"><Eye className="h-3 w-3" />右侧实时预览</span>
             </div>
-            {dialogEditTab === 'write'
-              ? (dialogInputMode === 'rich'
-                  ? <RichTextEditor value={form.content} onChange={md => setForm(f => ({ ...f, content: md }))} />
-                  : <textarea className={cn('flex min-h-[360px] w-full rounded-md border border-input bg-background px-3 py-2 text-sm font-mono', !form.content && formError && 'border-red-500')} value={form.content} onChange={e => { setForm({ ...form, content: e.target.value }); if (formError) setFormError('') }} placeholder="文章正文 (Markdown, 支持表格/任务列表等 GFM 语法)" />)
-              : <div className="rounded-md border border-border bg-background p-4 md:p-6 min-h-[360px]"><MarkdownViewer content={form.content} /></div>}
+            {/* 编辑 + 实时预览 分栏: 始终可见, 避免切到预览页才看到、且像"没渲染"的困惑 */}
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+              {/* 左: 编辑区 */}
+              <div className="border rounded-md overflow-hidden">
+                {dialogInputMode === 'rich'
+                  ? <RichTextEditor value={form.content} onChange={md => setForm(f => ({ ...f, content: md }))} minHeight="360px" />
+                  : <textarea className={cn('flex min-h-[360px] w-full bg-background px-3 py-2 text-sm font-mono focus-visible:outline-none', !form.content && formError && 'border border-red-500')} value={form.content} onChange={e => { setForm({ ...form, content: e.target.value }); if (formError) setFormError('') }} placeholder="文章正文 (Markdown, 支持表格/任务列表等 GFM 语法)" />}
+              </div>
+              {/* 右: 预览区, 兼容 Markdown / 富文本两种录入模式 */}
+              <div className="rounded-md border border-border bg-background p-4 md:p-6 overflow-y-auto max-h-[480px]">
+                {dialogInputMode === 'rich'
+                  ? <RichTextEditor value={form.content} onChange={() => {}} readOnly minHeight="360px" />
+                  : (form.content.trim() ? <MarkdownViewer content={form.content} /> : <p className="text-xs text-muted-foreground italic">（空内容）</p>)}
+              </div>
+            </div>
             {formError && <p className="text-xs text-red-500">{formError}</p>}
           </div>
 
