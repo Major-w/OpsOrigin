@@ -153,7 +153,7 @@ func TestAssertionChannelClosedByDefault(t *testing.T) {
 
 // DEV 模式只写 context,不得回写断言请求头。
 func TestDevModeDoesNotWriteAssertionHeaders(t *testing.T) {
-	p := NewProvider("opsnexus-dev-secret-do-not-use-in-production", nil, nil)
+	p := NewProvider("opsorigin-dev-secret-do-not-use-in-production", nil, nil)
 
 	var got principal.Principal
 	var seen http.Header

@@ -10,25 +10,26 @@ import { Dialog, DialogFooter } from '@/components/ui/dialog'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { formatTime } from '@/lib/utils'
 import { Plus, Trash2, BookOpen, Search } from 'lucide-react'
-
-const CATEGORIES = ['常见问题', '变更操作', '故障处理', '最佳实践', '参考文档']
+import { useAuthStore } from '@/stores/auth'
 
 export default function KnowledgePage() {
-  const { articles, fetch, create, update, remove } = useKnowledgeStore()
+  const { articles, fetch, create, update, remove, categories, fetchCategories } = useKnowledgeStore()
+  const me = useAuthStore(s => s.user)
   const [dialogOpen, setDialogOpen] = useState(false)
   const [editId, setEditId] = useState<string | null>(null)
-  const [form, setForm] = useState({ title: '', content: '', category: '常见问题', tags: '', author: 'admin' })
+  const [form, setForm] = useState({ title: '', content: '', category: '常见问题', tags: '', author: '' })
   const [viewArticle, setViewArticle] = useState<any>(null)
   const [filterCat, setFilterCat] = useState('')
   const [searchQ, setSearchQ] = useState('')
 
   useEffect(() => { fetch(filterCat) }, [filterCat])
+  useEffect(() => { fetchCategories() }, [fetchCategories])
 
   const handleSave = async () => {
     const data = { ...form, tags: form.tags.split(',').map(t => t.trim()).filter(Boolean) }
     if (editId) await update(editId, data)
     else await create(data)
-    setDialogOpen(false); setEditId(null); setForm({ title: '', content: '', category: '常见问题', tags: '', author: 'admin' })
+    setDialogOpen(false); setEditId(null); setForm({ title: '', content: '', category: '常见问题', tags: '', author: me?.username || 'anonymous' })
     fetch(filterCat)
   }
 
@@ -43,12 +44,12 @@ export default function KnowledgePage() {
     <div className="p-6 space-y-4">
       <div className="flex items-center justify-between">
         <div><h1 className="text-2xl font-bold">知识管理</h1><p className="text-sm text-muted-foreground">运维知识库</p></div>
-        <Button onClick={() => { setEditId(null); setForm({ title: '', content: '', category: '常见问题', tags: '', author: 'admin' }); setDialogOpen(true) }}><Plus className="h-4 w-4" />新建文章</Button>
+        <Button onClick={() => { setEditId(null); setForm({ title: '', content: '', category: '常见问题', tags: '', author: me?.username || 'anonymous' }); setDialogOpen(true) }}><Plus className="h-4 w-4" />新建文章</Button>
       </div>
 
       <div className="flex gap-2 items-center">
         <div className="relative flex-1 max-w-sm"><Search className="absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground" /><Input className="pl-8" placeholder="搜索..." value={searchQ} onChange={e => setSearchQ(e.target.value)} /></div>
-        <div className="flex gap-1">{(['', ...CATEGORIES]).map(c => <Button key={c} variant={filterCat === c ? 'default' : 'outline'} size="sm" onClick={() => setFilterCat(c)}>{c || '全部'}</Button>)}</div>
+        <div className="flex gap-1">{(['', ...categories]).map(c => <Button key={c} variant={filterCat === c ? 'default' : 'outline'} size="sm" onClick={() => setFilterCat(c)}>{c || '全部'}</Button>)}</div>
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
@@ -87,7 +88,7 @@ export default function KnowledgePage() {
         <div className="space-y-3 max-h-[70vh] overflow-y-auto">
           <div><label className="text-sm font-medium">标题 *</label><Input value={form.title} onChange={e => setForm(f => ({ ...f, title: e.target.value }))} /></div>
           <div className="grid grid-cols-2 gap-3">
-            <div><label className="text-sm font-medium">分类</label><select className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm" value={form.category} onChange={e => setForm(f => ({ ...f, category: e.target.value }))}>{CATEGORIES.map(c => <option key={c} value={c}>{c}</option>)}</select></div>
+            <div><label className="text-sm font-medium">分类</label><select className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm" value={form.category} onChange={e => setForm(f => ({ ...f, category: e.target.value }))}>{categories.map(c => <option key={c} value={c}>{c}</option>)}</select></div>
             <div><label className="text-sm font-medium">标签 (逗号分隔)</label><Input value={form.tags} onChange={e => setForm(f => ({ ...f, tags: e.target.value }))} placeholder="linux,mysql" /></div>
           </div>
           <div><label className="text-sm font-medium">内容</label><textarea className="flex h-48 w-full rounded-md border border-input bg-background px-3 py-2 text-sm" value={form.content} onChange={e => setForm(f => ({ ...f, content: e.target.value }))} /></div>

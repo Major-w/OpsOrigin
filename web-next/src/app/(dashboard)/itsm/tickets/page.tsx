@@ -15,15 +15,11 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { formatTime, apiFetch, apiList } from '@/lib/utils'
 import { useCan, useCanAny } from '@/stores/permissions'
 import { useAuthStore } from '@/stores/auth'
+import { useWebSocket } from '@/lib/useWebSocket'
 import { Plus, Check, X, Play, RotateCcw, Clock, FileText, Activity, ChevronRight, Paperclip, MessageSquare, Upload, Download, Trash2, FileUp, FileDown, BookOpen, BookOpenCheck, Send, UserPlus, CheckCircle2, ListChecks, Bell, Link2 } from 'lucide-react'
+import { RISK_LABELS, STATUS_LABELS, RISK_BADGE_VARIANT } from '@/lib/itsm-constants'
+import { toast } from '@/stores/toast'
 
-const riskBadge: Record<string, 'destructive' | 'warning' | 'secondary' | 'success'> = { critical: 'destructive', high: 'warning', medium: 'secondary', low: 'success' }
-const riskLabels: Record<string, string> = { critical: '致命', high: '高危', medium: '中危', low: '低危' }
-const statusLabels: Record<string, string> = {
-  draft: '草稿', pending_review: '待审批', approved: '已审批', rejected: '已驳回',
-  executing: '执行中', succeeded: '已完成', failed: '已失败', rolled_back: '已回滚',
-  closed: '已关闭',
-}
 const SLA_BY_RISK: Record<string, string> = { critical: '4小时', high: '24小时', medium: '48小时', low: '72小时' }
 
 interface Comment {
@@ -89,7 +85,7 @@ export default function ITSMPage() {
   const me = useAuthStore(s => s.user)
   const [dialogOpen, setDialogOpen] = useState(false)
   const [myOnly, setMyOnly] = useState(false)
-  const [form, setForm] = useState({ title: '', description: '', risk_level: 'low', change_plan: '', rollback_plan: '', created_by: 'admin', process_id: '' })
+  const [form, setForm] = useState({ title: '', description: '', risk_level: 'low', change_plan: '', rollback_plan: '', created_by: '', process_id: '' })
   // 可配置表单：自定义字段值与创建用 schema
   const [customFields, setCustomFields] = useState<Record<string, any>>({})
   const [createSchema, setCreateSchema] = useState<FormSchema | null>(null)
@@ -123,7 +119,7 @@ export default function ITSMPage() {
 
   // Comments
   const [comments, setComments] = useState<Comment[]>([])
-  const [commentAuthor, setCommentAuthor] = useState('admin')
+  const [commentAuthor, setCommentAuthor] = useState('')
   const [commentContent, setCommentContent] = useState('')
   const [commentLoading, setCommentLoading] = useState(false)
 
@@ -161,6 +157,30 @@ export default function ITSMPage() {
   const initialScopeRef = useRef('ticket:default')
   // 配置 Dialog 的 scope 选择（ticket 默认 / catalog 目录项 / process 流程 / process_step 流程步骤）
   const [configScopeType, setConfigScopeType] = useState<'ticket' | 'catalog' | 'process' | 'process_step'>('ticket')
+
+  // WebSocket 实时更新
+  useWebSocket({
+    onEvent: (data) => {
+      if (data.type === 'ticket.updated' && data.ticket) {
+        // 刷新工单列表
+        fetch()
+        // 如果当前选中的工单被更新，刷新详情
+        if (selectedTicket && data.ticket.id === selectedTicket.id) {
+          getTicket(data.ticket.id).then(updated => {
+            setSelectedTicket(updated)
+          })
+        }
+      } else if (data.type === 'ola_breached') {
+        toast.error(`OLA 超时: 工单 ${data.ticket_id} — ${data.policy || ''}`)
+        fetch()
+      } else if (data.type === 'ola_warning') {
+        toast.warning(`OLA 预警: 工单 ${data.ticket_id} — ${data.policy || ''}`)
+      } else if (data.type === 'hold_resumed') {
+        toast.success(`工单 ${data.ticket_id} 已自动恢复`)
+        fetch()
+      }
+    },
+  })
   const [configScopeId, setConfigScopeId] = useState('')
   const [configStepId, setConfigStepId] = useState('')
 
@@ -168,24 +188,26 @@ export default function ITSMPage() {
     try {
       const data = await apiList<Comment>(`/itsm/tickets/${ticketId}/comments`)
       setComments(data || [])
-    } catch { setComments([]) }
+    } catch { setComments([]); toast.error('加载评论失败') }
   }, [])
 
   const fetchAttachments = useCallback(async (ticketId: string) => {
     try {
       const data = await apiList<Attachment>(`/itsm/tickets/${ticketId}/attachments`)
       setAttachments(data || [])
-    } catch { setAttachments([]) }
+    } catch { setAttachments([]); toast.error('加载附件失败') }
   }, [])
 
   const fetchSubtasks = useCallback(async (ticketId: string) => {
     try {
       const data = await apiList<Subtask>(`/itsm/tickets/${ticketId}/subtasks`)
       setSubtasks(data || [])
-    } catch { setSubtasks([]) }
+    } catch { setSubtasks([]); toast.error('加载子任务失败') }
   }, [])
 
   useEffect(() => { fetch(); fetchStats(); fetchProcesses() }, [])
+
+  useEffect(() => { if (me) setCommentAuthor(me.username) }, [me])
 
   // 从服务目录「申请」跳转过来时，自动按 catalog:<id> 作用域打开创建 Dialog，
   // 并把目录项配置的流程模板 / 自定义表单作用域 / 服务名称预填进来 —— 员工点一下即进入该服务的流程。
@@ -199,7 +221,7 @@ export default function ITSMPage() {
         try {
           const list = await apiList<any>('/itsm/catalog/visible')
           item = (list || []).find((x: any) => x.id === cat) || null
-        } catch { /* 目录不可读时退化为纯 scope 模式 */ }
+        } catch { toast.error('加载服务目录失败') }
         await openCreateDialog(item?.form_scope || `catalog:${cat}`)
         if (item) {
           setForm(f => ({ ...f, title: item.name || f.title, process_id: item.process_id || '' }))
@@ -238,7 +260,7 @@ export default function ITSMPage() {
   const openCreateDialog = async (scope = 'ticket:default') => {
     initialScopeRef.current = scope
     setCreateScope(scope)
-    setForm({ title: '', description: '', risk_level: 'low', change_plan: '', rollback_plan: '', created_by: 'admin', process_id: '' })
+    setForm({ title: '', description: '', risk_level: 'low', change_plan: '', rollback_plan: '', created_by: me?.username || 'anonymous', process_id: '' })
     setCustomFields({})
     setCiIds([])
     setDialogOpen(true)
@@ -252,7 +274,7 @@ export default function ITSMPage() {
     setCiIds([])
     setCustomFields({})
     setCreateSchema(null)
-    setForm({ title: '', description: '', risk_level: 'low', change_plan: '', rollback_plan: '', created_by: 'admin', process_id: '' })
+    setForm({ title: '', description: '', risk_level: 'low', change_plan: '', rollback_plan: '', created_by: me?.username || 'anonymous', process_id: '' })
     fetchStats()
   }
 
@@ -335,7 +357,7 @@ export default function ITSMPage() {
         const parsed = JSON.parse(configJson) as FormSchema
         setConfigSchema({ version: parsed.version || 1, scope: resolveConfigScope(), fields: parsed.fields || [] })
       } catch {
-        alert('JSON 格式错误，无法切回可视化模式')
+        toast.error('JSON 格式错误，无法切回可视化模式')
         return
       }
     }
@@ -350,17 +372,17 @@ export default function ITSMPage() {
         const parsed = JSON.parse(configJson) as FormSchema
         next = { version: parsed.version || 1, scope, fields: parsed.fields || [] }
       } catch {
-        alert('JSON 格式错误，请检查')
+        toast.error('JSON 格式错误，请检查')
         return
       }
     }
     const keys = (next.fields || []).map(f => (f.key || '').trim())
     if (keys.some(k => !k)) {
-      alert('存在未填写字段标识 key 的字段')
+      toast.error('存在未填写字段标识 key 的字段')
       return
     }
     if (new Set(keys).size !== keys.length) {
-      alert('字段标识 key 存在重复，请修正')
+      toast.error('字段标识 key 存在重复，请修正')
       return
     }
     setConfigSaving(true)
@@ -484,9 +506,9 @@ export default function ITSMPage() {
       ticket.completed_at ? '- 完成时间: ' + formatTime(ticket.completed_at) : '',
     ].filter(Boolean).join('\n\n')
     try {
-      await apiFetch('/knowledge', { method: 'POST', body: JSON.stringify({ title: ticket.title + ' - 处理总结', content, category: '故障处理', tags: [ticket.risk_level, '工单转换'], author: 'admin' }) })
+      await apiFetch('/knowledge', { method: 'POST', body: JSON.stringify({ title: ticket.title + ' - 处理总结', content, category: '故障处理', tags: [ticket.risk_level, '工单转换'], author: me?.username || 'anonymous' }) })
       router.push('/knowledge')
-    } catch (e: any) { alert('转换失败: ' + e.message) }
+    } catch (e: any) { toast.error('转换失败: ' + e.message) }
   }
 
   const handleAddComment = async () => {
@@ -499,7 +521,7 @@ export default function ITSMPage() {
       })
       setCommentContent('')
       fetchComments(selectedTicket.id)
-    } catch { /* ignore */ }
+    } catch { toast.error('添加评论失败') }
     setCommentLoading(false)
   }
 
@@ -508,7 +530,7 @@ export default function ITSMPage() {
     try {
       await apiFetch(`/itsm/tickets/${selectedTicket.id}/comments/${cid}`, { method: 'DELETE' })
       fetchComments(selectedTicket.id)
-    } catch { /* ignore */ }
+    } catch { toast.error('删除评论失败') }
   }
 
   // --- Subtasks ---
@@ -523,12 +545,12 @@ export default function ITSMPage() {
           description: subtaskDesc.trim(),
           assignee: subtaskAssignee.trim(),
           due_at: subtaskDue ? new Date(subtaskDue).toISOString() : null,
-          created_by: 'admin',
+          created_by: me?.username || 'anonymous',
         }),
       })
       setSubtaskDialog(false); setSubtaskTitle(''); setSubtaskDesc(''); setSubtaskAssignee(''); setSubtaskDue('')
       fetchSubtasks(selectedTicket.id)
-    } catch { /* ignore */ }
+    } catch { toast.error('创建子任务失败') }
     setSubtaskSaving(false)
   }
 
@@ -541,7 +563,7 @@ export default function ITSMPage() {
         body: JSON.stringify({ status: next }),
       })
       fetchSubtasks(selectedTicket.id)
-    } catch { /* ignore */ }
+    } catch { toast.error('更新子任务失败') }
   }
 
   const handleSetSubtaskStatus = async (st: Subtask, status: string) => {
@@ -552,7 +574,7 @@ export default function ITSMPage() {
         body: JSON.stringify({ status }),
       })
       fetchSubtasks(selectedTicket.id)
-    } catch { /* ignore */ }
+    } catch { toast.error('更新子任务失败') }
   }
 
   const handleDeleteSubtask = async (sid: number) => {
@@ -560,7 +582,7 @@ export default function ITSMPage() {
     try {
       await apiFetch(`/itsm/tickets/${selectedTicket.id}/subtasks/${sid}`, { method: 'DELETE' })
       fetchSubtasks(selectedTicket.id)
-    } catch { /* ignore */ }
+    } catch { toast.error('删除子任务失败') }
   }
 
   const handleUploadFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -577,7 +599,7 @@ export default function ITSMPage() {
         body: formData,
       })
       fetchAttachments(selectedTicket.id)
-    } catch { /* ignore */ }
+    } catch { toast.error('上传附件失败') }
     setUploading(false)
     if (fileInputRef.current) fileInputRef.current.value = ''
   }
@@ -587,7 +609,7 @@ export default function ITSMPage() {
     try {
       await apiFetch(`/itsm/tickets/${selectedTicket.id}/attachments/${aid}`, { method: 'DELETE' })
       fetchAttachments(selectedTicket.id)
-    } catch { /* ignore */ }
+    } catch { toast.error('删除附件失败') }
   }
 
   const addCiId = () => {
@@ -612,7 +634,7 @@ export default function ITSMPage() {
       setImportDialog(true)
       fetch()
       fetchStats()
-    } catch { /* ignore */ }
+    } catch { toast.error('CSV 导入失败') }
     setImporting(false)
     if (importFileRef.current) importFileRef.current.value = ''
   }
@@ -672,7 +694,7 @@ export default function ITSMPage() {
             <CardContent className="pt-0">
               <div className="flex gap-2 flex-wrap">
                 {Object.entries(stats.by_status).filter(([,v]) => v > 0).map(([k, v]) => (
-                  <Badge key={k} variant={statusVariant(k)} className="text-xs">{statusLabels[k] || k}: {v}</Badge>
+                  <Badge key={k} variant={statusVariant(k)} className="text-xs">{STATUS_LABELS[k] || k}: {v}</Badge>
                 ))}
               </div>
             </CardContent>
@@ -705,8 +727,8 @@ export default function ITSMPage() {
                         <ChevronRight className="h-3 w-3 text-muted-foreground shrink-0" />
                       </div>
                       <div className="flex gap-1.5 mt-1.5 flex-wrap">
-                        <Badge variant={riskBadge[t.risk_level] || 'secondary'} className="text-xs">{riskLabels[t.risk_level] || t.risk_level}</Badge>
-                        <Badge variant={statusVariant(t.status)} className="text-xs">{statusLabels[t.status] || t.status}</Badge>
+                        <Badge variant={RISK_BADGE_VARIANT[t.risk_level] || 'secondary'} className="text-xs">{RISK_LABELS[t.risk_level] || t.risk_level}</Badge>
+                        <Badge variant={statusVariant(t.status)} className="text-xs">{STATUS_LABELS[t.status] || t.status}</Badge>
                         {isOverdue(t) && <Badge variant="destructive" className="text-xs"><Clock className="h-3 w-3 mr-0.5" />SLA 逾期</Badge>}
                       </div>
                       <p className="text-xs text-muted-foreground mt-1">{t.created_by} · {formatTime(t.created_at)}</p>
@@ -768,6 +790,8 @@ export default function ITSMPage() {
                         )}
                         <Button variant="outline" size="sm" onClick={() => setRemindDialog(true)} disabled={!canWrite}><Bell className="h-3 w-3" />催办</Button>
                         <Button variant="outline" size="sm" onClick={() => setRelateDialog(true)} disabled={!canWrite}><Link2 className="h-3 w-3" />关联</Button>
+                        <Button variant="outline" size="sm" onClick={() => router.push(`/itsm/change?ticket=${selectedTicket.id}`)} disabled={!canWrite}><FileText className="h-3 w-3" />变更</Button>
+                        <Button variant="outline" size="sm" onClick={() => router.push(`/knowledge/new?ticket=${selectedTicket.id}&title=${encodeURIComponent(selectedTicket.title)}`)} disabled={!canWrite}><BookOpen className="h-3 w-3" />转知识</Button>
                       </>
                     )}
                   </div>
@@ -775,8 +799,8 @@ export default function ITSMPage() {
               </CardHeader>
               <CardContent>
                 <div className="grid grid-cols-3 gap-2 text-sm mb-3">
-                  <div><span className="text-muted-foreground">风险:</span> <Badge variant={riskBadge[selectedTicket.risk_level]} className="text-xs">{riskLabels[selectedTicket.risk_level]}</Badge></div>
-                  <div><span className="text-muted-foreground">状态:</span> <Badge variant={statusVariant(selectedTicket.status)} className="text-xs">{statusLabels[selectedTicket.status]}</Badge></div>
+                  <div><span className="text-muted-foreground">风险:</span> <Badge variant={RISK_BADGE_VARIANT[selectedTicket.risk_level]} className="text-xs">{RISK_LABELS[selectedTicket.risk_level]}</Badge></div>
+                  <div><span className="text-muted-foreground">状态:</span> <Badge variant={statusVariant(selectedTicket.status)} className="text-xs">{STATUS_LABELS[selectedTicket.status]}</Badge></div>
                   <div><span className="text-muted-foreground">流程:</span> {selectedTicket.process_id ? <Badge variant="outline" className="text-xs">{processes.find(p => p.id === selectedTicket.process_id)?.name || selectedTicket.process_id.slice(0, 8)}</Badge> : '无'}</div>
                   <div><span className="text-muted-foreground">SLA:</span> <span className={isOverdue(selectedTicket) ? 'text-destructive font-medium' : ''}>{SLA_BY_RISK[selectedTicket.risk_level] || '72小时'}{isOverdue(selectedTicket) && ' 已逾期'}</span></div>
                   {selectedTicket.deadline_at && <div className="col-span-3"><span className="text-muted-foreground">截止:</span> <Clock className="h-3 w-3 inline mr-1" />{formatTime(selectedTicket.deadline_at)}</div>}
@@ -809,6 +833,7 @@ export default function ITSMPage() {
                 <Tabs value={detailTab} onValueChange={setDetailTab}>
                   <TabsList>
                     <TabsTrigger value="detail"><FileText className="w-3 h-3 mr-1" />详情</TabsTrigger>
+                    <TabsTrigger value="sla"><Clock className="w-3 h-3 mr-1" />SLA</TabsTrigger>
                     {selectedTicket.process_id && <TabsTrigger value="process"><Activity className="w-3 h-3 mr-1" />流程</TabsTrigger>}
                     <TabsTrigger value="events"><Activity className="w-3 h-3 mr-1" />事件 ({ticketEvents.length})</TabsTrigger>
                     <TabsTrigger value="comments"><MessageSquare className="w-3 h-3 mr-1" />评论 ({comments.length})</TabsTrigger>
@@ -876,6 +901,91 @@ export default function ITSMPage() {
                       </div>
                     )}
                   </TabsContent>
+                  <TabsContent value="sla" className="mt-3">
+                    <div className="space-y-4">
+                      <div className="flex items-center justify-between">
+                        <h3 className="text-sm font-medium">SLA 概览</h3>
+                        <Button variant="outline" size="sm" onClick={() => router.push(`/itsm/tickets/${selectedTicket.id}/sla`)}>
+                          <Clock className="h-3 w-3 mr-1" />SLA 详情
+                        </Button>
+                      </div>
+                      <div className="grid grid-cols-2 gap-4">
+                        <div className="border rounded-md p-3">
+                          <p className="text-xs text-muted-foreground">风险等级</p>
+                          <p className="text-lg font-medium">{RISK_LABELS[selectedTicket.risk_level] || selectedTicket.risk_level}</p>
+                        </div>
+                        <div className="border rounded-md p-3">
+                          <p className="text-xs text-muted-foreground">SLA 目标</p>
+                          <p className="text-lg font-medium">{SLA_BY_RISK[selectedTicket.risk_level] || '-'}</p>
+                        </div>
+                      </div>
+
+                      {/* 时间线 */}
+                      <div className="border rounded-md p-3 space-y-3">
+                        <h4 className="text-sm font-medium">时间线</h4>
+                        <div className="space-y-2 text-sm">
+                          <div className="flex justify-between">
+                            <span className="text-muted-foreground">创建时间</span>
+                            <span>{formatTime(selectedTicket.created_at)}</span>
+                          </div>
+                          {selectedTicket.approved_at && (
+                            <div className="flex justify-between">
+                              <span className="text-muted-foreground">审批时间</span>
+                              <span>{formatTime(selectedTicket.approved_at)}</span>
+                            </div>
+                          )}
+                          {selectedTicket.executed_at && (
+                            <div className="flex justify-between">
+                              <span className="text-muted-foreground">执行时间</span>
+                              <span>{formatTime(selectedTicket.executed_at)}</span>
+                            </div>
+                          )}
+                          {selectedTicket.completed_at && (
+                            <div className="flex justify-between">
+                              <span className="text-muted-foreground">完成时间</span>
+                              <span>{formatTime(selectedTicket.completed_at)}</span>
+                            </div>
+                          )}
+                          {selectedTicket.deadline_at && (
+                            <div className="flex justify-between">
+                              <span className="text-muted-foreground">截止时间</span>
+                              <span className={selectedTicket.sla_breached ? 'text-red-500 font-medium' : ''}>
+                                {formatTime(selectedTicket.deadline_at)}
+                              </span>
+                            </div>
+                          )}
+                        </div>
+                      </div>
+
+                      {/* 挂起信息 */}
+                      {selectedTicket.on_hold && (
+                        <div className="border rounded-md p-3 bg-yellow-50 dark:bg-yellow-900/20">
+                          <h4 className="text-sm font-medium text-yellow-700 dark:text-yellow-400">已挂起</h4>
+                          <p className="text-sm text-muted-foreground mt-1">{selectedTicket.hold_reason || '无原因'}</p>
+                          {selectedTicket.hold_until_at && (
+                            <p className="text-xs text-muted-foreground mt-1">预计恢复: {formatTime(selectedTicket.hold_until_at)}</p>
+                          )}
+                        </div>
+                      )}
+
+                      {/* SLA 状态 */}
+                      <div className="border rounded-md p-3">
+                        <h4 className="text-sm font-medium mb-2">SLA 状态</h4>
+                        {selectedTicket.sla_breached ? (
+                          <Badge variant="destructive">已违规</Badge>
+                        ) : selectedTicket.sla_warning_notified ? (
+                          <Badge variant="warning">即将到期</Badge>
+                        ) : (
+                          <Badge variant="success">正常</Badge>
+                        )}
+                        {(selectedTicket.hold_seconds || 0) > 0 && (
+                          <p className="text-xs text-muted-foreground mt-2">
+                            累计挂起时长: {Math.floor((selectedTicket.hold_seconds || 0) / 3600)}小时 {Math.floor(((selectedTicket.hold_seconds || 0) % 3600) / 60)}分钟
+                          </p>
+                        )}
+                      </div>
+                    </div>
+                  </TabsContent>
                   <TabsContent value="process" className="mt-3">
                     {(() => {
                       const proc = processes.find(p => p.id === selectedTicket.process_id)
@@ -901,8 +1011,8 @@ export default function ITSMPage() {
                             </div>
                             <div className="flex-1 min-w-0">
                               <div className="flex items-center gap-2">
-                                <Badge variant={statusVariant(ev.to_status)} className="text-xs">{statusLabels[ev.to_status] || ev.to_status}</Badge>
-                                {ev.from_status && <span className="text-xs text-muted-foreground">从 {statusLabels[ev.from_status] || ev.from_status}</span>}
+                                <Badge variant={statusVariant(ev.to_status)} className="text-xs">{STATUS_LABELS[ev.to_status] || ev.to_status}</Badge>
+                                {ev.from_status && <span className="text-xs text-muted-foreground">从 {STATUS_LABELS[ev.from_status] || ev.from_status}</span>}
                               </div>
                               <p className="text-xs text-muted-foreground mt-0.5">{ev.changed_by} · {formatTime(ev.created_at)}</p>
                               {ev.comment && <p className="text-xs mt-1 text-muted-foreground italic">{ev.comment}</p>}

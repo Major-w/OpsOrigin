@@ -20,7 +20,7 @@ import (
 
 // ConfigItem 描述一个可配置项的元数据。
 type ConfigItem struct {
-	Key             string `json:"key"`              // 环境变量名,如 OPSNEXUS_CORE_PORT
+	Key             string `json:"key"`              // 环境变量名,如 OPSORIGIN_CORE_PORT
 	Category        string `json:"category"`         // 分组: core/agent_ws/tls/database/...
 	Label           string `json:"label"`            // 中文标签
 	Description     string `json:"description"`      // 说明文字
@@ -76,85 +76,85 @@ func (s *Service) buildConfigItems() []ConfigGroup {
 			Category: "core",
 			Label:    "核心服务",
 			Items: []ConfigItem{
-				{Key: "OPSNEXUS_CORE_PORT", Category: "core", Label: "主服务端口", Description: "Core HTTP API 监听端口", Type: "int", CurrentValue: fmt.Sprintf("%d", cfg.Core.Port), DefaultValue: "8080", RequiresRestart: true},
+				{Key: "OPSORIGIN_CORE_PORT", Category: "core", Label: "主服务端口", Description: "Core HTTP API 监听端口", Type: "int", CurrentValue: fmt.Sprintf("%d", cfg.Core.Port), DefaultValue: "8080", RequiresRestart: true},
 			},
 		},
 		{
 			Category: "tls",
 			Label:    "全局 TLS",
 			Items: []ConfigItem{
-				{Key: "OPSNEXUS_TLS_ENABLED", Category: "tls", Label: "启用 HTTPS", Description: "全局启用 HTTPS,影响安装脚本中的下载链接 scheme", Type: "bool", CurrentValue: fmt.Sprintf("%t", cfg.TLS.Enabled), DefaultValue: "false", RequiresRestart: true},
-				{Key: "OPSNEXUS_TLS_CERT", Category: "tls", Label: "TLS 证书路径", Description: "全局 TLS 证书文件路径", Type: "string", CurrentValue: cfg.TLS.CertFile, DefaultValue: "", RequiresRestart: true},
-				{Key: "OPSNEXUS_TLS_KEY", Category: "tls", Label: "TLS 私钥路径", Description: "全局 TLS 私钥文件路径", Type: "string", CurrentValue: cfg.TLS.KeyFile, DefaultValue: "", RequiresRestart: true, Sensitive: true},
+				{Key: "OPSORIGIN_TLS_ENABLED", Category: "tls", Label: "启用 HTTPS", Description: "全局启用 HTTPS,影响安装脚本中的下载链接 scheme", Type: "bool", CurrentValue: fmt.Sprintf("%t", cfg.TLS.Enabled), DefaultValue: "false", RequiresRestart: true},
+				{Key: "OPSORIGIN_TLS_CERT", Category: "tls", Label: "TLS 证书路径", Description: "全局 TLS 证书文件路径", Type: "string", CurrentValue: cfg.TLS.CertFile, DefaultValue: "", RequiresRestart: true},
+				{Key: "OPSORIGIN_TLS_KEY", Category: "tls", Label: "TLS 私钥路径", Description: "全局 TLS 私钥文件路径", Type: "string", CurrentValue: cfg.TLS.KeyFile, DefaultValue: "", RequiresRestart: true, Sensitive: true},
 			},
 		},
 		{
 			Category: "tunnel",
 			Label:    "Proxy 隧道",
 			Items: []ConfigItem{
-				{Key: "OPSNEXUS_PROXY_ID", Category: "tunnel", Label: "Proxy 节点 ID", Description: "默认 Proxy 节点标识", Type: "string", CurrentValue: cfg.Proxy.ID, DefaultValue: "proxy-001", RequiresRestart: true},
-				{Key: "OPSNEXUS_PROXY_CORE_ADDR", Category: "tunnel", Label: "Proxy 连接地址", Description: "Proxy 连接 Core 的地址(host:port)", Type: "string", CurrentValue: cfg.Proxy.CoreAddr, DefaultValue: "localhost:8080", RequiresRestart: true},
-				{Key: "OPSNEXUS_PROXY_LISTEN", Category: "tunnel", Label: "隧道监听地址", Description: "Core 端 tunnel server 监听地址", Type: "string", CurrentValue: cfg.Proxy.Listen, DefaultValue: ":9090", RequiresRestart: true},
-				{Key: "OPSNEXUS_AGENT_PROXY_ADDR", Category: "tunnel", Label: "Agent Proxy 地址", Description: "Agent 连接 Proxy 的地址", Type: "string", CurrentValue: cfg.Agent.ProxyAddr, DefaultValue: "localhost:9090", RequiresRestart: true},
+				{Key: "OPSORIGIN_PROXY_ID", Category: "tunnel", Label: "Proxy 节点 ID", Description: "默认 Proxy 节点标识", Type: "string", CurrentValue: cfg.Proxy.ID, DefaultValue: "proxy-001", RequiresRestart: true},
+				{Key: "OPSORIGIN_PROXY_CORE_ADDR", Category: "tunnel", Label: "Proxy 连接地址", Description: "Proxy 连接 Core 的地址(host:port)", Type: "string", CurrentValue: cfg.Proxy.CoreAddr, DefaultValue: "localhost:8080", RequiresRestart: true},
+				{Key: "OPSORIGIN_PROXY_LISTEN", Category: "tunnel", Label: "隧道监听地址", Description: "Core 端 tunnel server 监听地址", Type: "string", CurrentValue: cfg.Proxy.Listen, DefaultValue: ":9090", RequiresRestart: true},
+				{Key: "OPSORIGIN_AGENT_PROXY_ADDR", Category: "tunnel", Label: "Agent Proxy 地址", Description: "Agent 连接 Proxy 的地址", Type: "string", CurrentValue: cfg.Agent.ProxyAddr, DefaultValue: "localhost:9090", RequiresRestart: true},
 			},
 		},
 		{
 			Category: "database",
 			Label:    "数据存储",
 			Items: []ConfigItem{
-				{Key: "OPSNEXUS_POSTGRES_DSN", Category: "database", Label: "PostgreSQL DSN", Description: "CMDB PostgreSQL 连接串", Type: "secret", CurrentValue: maskSensitive(cfg.CMDB.PostgresDSN), DefaultValue: "postgres://opsnexus:opsnexus@localhost:5432/opsnexus?sslmode=disable", RequiresRestart: true, Sensitive: true},
-				{Key: "OPSNEXUS_DGRAPH_TARGET", Category: "database", Label: "Dgraph 地址", Description: "Dgraph gRPC 地址", Type: "string", CurrentValue: cfg.CMDB.DgraphTarget, DefaultValue: "localhost:9080", RequiresRestart: true},
-				{Key: "OPSNEXUS_DGRAPH_API_KEY", Category: "database", Label: "Dgraph API Key", Description: "Dgraph API 密钥(可选)", Type: "secret", CurrentValue: maskSensitive(cfg.CMDB.DgraphAPIKey), DefaultValue: "", RequiresRestart: true, Sensitive: true},
-				{Key: "OPSNEXUS_REDIS_ADDR", Category: "database", Label: "Redis 地址", Description: "Redis 服务器地址", Type: "string", CurrentValue: cfg.RedisAddr, DefaultValue: "localhost:6379", RequiresRestart: true},
+				{Key: "OPSORIGIN_POSTGRES_DSN", Category: "database", Label: "PostgreSQL DSN", Description: "CMDB PostgreSQL 连接串", Type: "secret", CurrentValue: maskSensitive(cfg.CMDB.PostgresDSN), DefaultValue: "postgres://opsorigin:opsorigin@localhost:5432/opsorigin?sslmode=disable", RequiresRestart: true, Sensitive: true},
+				{Key: "OPSORIGIN_DGRAPH_TARGET", Category: "database", Label: "Dgraph 地址", Description: "Dgraph gRPC 地址", Type: "string", CurrentValue: cfg.CMDB.DgraphTarget, DefaultValue: "localhost:9080", RequiresRestart: true},
+				{Key: "OPSORIGIN_DGRAPH_API_KEY", Category: "database", Label: "Dgraph API Key", Description: "Dgraph API 密钥(可选)", Type: "secret", CurrentValue: maskSensitive(cfg.CMDB.DgraphAPIKey), DefaultValue: "", RequiresRestart: true, Sensitive: true},
+				{Key: "OPSORIGIN_REDIS_ADDR", Category: "database", Label: "Redis 地址", Description: "Redis 服务器地址", Type: "string", CurrentValue: cfg.RedisAddr, DefaultValue: "localhost:6379", RequiresRestart: true},
 			},
 		},
 		{
 			Category: "auth",
 			Label:    "认证安全",
 			Items: []ConfigItem{
-				{Key: "OPSNEXUS_JWT_SECRET", Category: "auth", Label: "JWT 密钥", Description: "JWT Token 签名密钥,修改后所有已登录用户需重新登录", Type: "secret", CurrentValue: maskSensitive(cfg.Auth.JWTSecret), DefaultValue: "opsnexus-dev-secret-do-not-use-in-production", RequiresRestart: true, Sensitive: true},
+				{Key: "OPSORIGIN_JWT_SECRET", Category: "auth", Label: "JWT 密钥", Description: "JWT Token 签名密钥,修改后所有已登录用户需重新登录", Type: "secret", CurrentValue: maskSensitive(cfg.Auth.JWTSecret), DefaultValue: "opsorigin-dev-secret-do-not-use-in-production", RequiresRestart: true, Sensitive: true},
 			},
 		},
 		{
 			Category: "llm",
 			Label:    "AI 模型",
 			Items: []ConfigItem{
-				{Key: "OPSNEXUS_LLM_API_KEY", Category: "llm", Label: "LLM API Key", Description: "大模型 API 密钥", Type: "secret", CurrentValue: maskSensitive(cfg.LLM.APIKey), DefaultValue: "", RequiresRestart: false, Sensitive: true},
-				{Key: "OPSNEXUS_LLM_MODEL", Category: "llm", Label: "LLM 模型", Description: "大模型名称", Type: "string", CurrentValue: cfg.LLM.Model, DefaultValue: "deepseek-chat", RequiresRestart: false},
-				{Key: "OPSNEXUS_LLM_BASE_URL", Category: "llm", Label: "LLM Base URL", Description: "大模型 API 基础地址", Type: "string", CurrentValue: cfg.LLM.BaseURL, DefaultValue: "https://api.deepseek.com", RequiresRestart: false},
-				{Key: "OPSNEXUS_LLM_TIMEOUT", Category: "llm", Label: "LLM 超时(秒)", Description: "大模型请求超时时间", Type: "int", CurrentValue: fmt.Sprintf("%d", cfg.LLM.Timeout), DefaultValue: "60", RequiresRestart: false},
+				{Key: "OPSORIGIN_LLM_API_KEY", Category: "llm", Label: "LLM API Key", Description: "大模型 API 密钥", Type: "secret", CurrentValue: maskSensitive(cfg.LLM.APIKey), DefaultValue: "", RequiresRestart: false, Sensitive: true},
+				{Key: "OPSORIGIN_LLM_MODEL", Category: "llm", Label: "LLM 模型", Description: "大模型名称", Type: "string", CurrentValue: cfg.LLM.Model, DefaultValue: "deepseek-chat", RequiresRestart: false},
+				{Key: "OPSORIGIN_LLM_BASE_URL", Category: "llm", Label: "LLM Base URL", Description: "大模型 API 基础地址", Type: "string", CurrentValue: cfg.LLM.BaseURL, DefaultValue: "https://api.deepseek.com", RequiresRestart: false},
+				{Key: "OPSORIGIN_LLM_TIMEOUT", Category: "llm", Label: "LLM 超时(秒)", Description: "大模型请求超时时间", Type: "int", CurrentValue: fmt.Sprintf("%d", cfg.LLM.Timeout), DefaultValue: "60", RequiresRestart: false},
 			},
 		},
 		{
 			Category: "outbox",
 			Label:    "事件外发",
 			Items: []ConfigItem{
-				{Key: "OPSNEXUS_OUTBOX_POLL_INTERVAL", Category: "outbox", Label: "轮询间隔", Description: "Outbox 事件轮询间隔", Type: "duration", CurrentValue: cfg.Outbox.PollInterval.String(), DefaultValue: "1s", RequiresRestart: true},
-				{Key: "OPSNEXUS_OUTBOX_BATCH_SIZE", Category: "outbox", Label: "批量大小", Description: "Outbox 事件批量处理数量", Type: "int", CurrentValue: fmt.Sprintf("%d", cfg.Outbox.BatchSize), DefaultValue: "100", RequiresRestart: true},
+				{Key: "OPSORIGIN_OUTBOX_POLL_INTERVAL", Category: "outbox", Label: "轮询间隔", Description: "Outbox 事件轮询间隔", Type: "duration", CurrentValue: cfg.Outbox.PollInterval.String(), DefaultValue: "1s", RequiresRestart: true},
+				{Key: "OPSORIGIN_OUTBOX_BATCH_SIZE", Category: "outbox", Label: "批量大小", Description: "Outbox 事件批量处理数量", Type: "int", CurrentValue: fmt.Sprintf("%d", cfg.Outbox.BatchSize), DefaultValue: "100", RequiresRestart: true},
 			},
 		},
 		{
 			Category: "ldap",
 			Label:    "LDAP",
 			Items: []ConfigItem{
-				{Key: "OPSNEXUS_LDAP_ENABLED", Category: "ldap", Label: "启用 LDAP", Description: "是否启用 LDAP 认证", Type: "bool", CurrentValue: fmt.Sprintf("%t", cfg.LDAP.Enabled), DefaultValue: "false", RequiresRestart: false},
-				{Key: "OPSNEXUS_LDAP_ADDR", Category: "ldap", Label: "LDAP 地址", Description: "LDAP 服务器地址", Type: "string", CurrentValue: cfg.LDAP.Addr, DefaultValue: "ldap://localhost:389", RequiresRestart: false},
-				{Key: "OPSNEXUS_LDAP_BASE_DN", Category: "ldap", Label: "Base DN", Description: "LDAP Base DN", Type: "string", CurrentValue: cfg.LDAP.BaseDN, DefaultValue: "dc=example,dc=org", RequiresRestart: false},
-				{Key: "OPSNEXUS_LDAP_BIND_DN", Category: "ldap", Label: "Bind DN", Description: "LDAP 绑定 DN", Type: "string", CurrentValue: cfg.LDAP.BindDN, DefaultValue: "cn=admin,dc=example,dc=org", RequiresRestart: false},
-				{Key: "OPSNEXUS_LDAP_BIND_PASS", Category: "ldap", Label: "Bind 密码", Description: "LDAP 绑定密码", Type: "secret", CurrentValue: maskSensitive(cfg.LDAP.BindPass), DefaultValue: "", RequiresRestart: false, Sensitive: true},
-				{Key: "OPSNEXUS_LDAP_USER_FILTER", Category: "ldap", Label: "用户过滤器", Description: "LDAP 用户搜索过滤器", Type: "string", CurrentValue: cfg.LDAP.UserFilter, DefaultValue: "(uid=%s)", RequiresRestart: false},
+				{Key: "OPSORIGIN_LDAP_ENABLED", Category: "ldap", Label: "启用 LDAP", Description: "是否启用 LDAP 认证", Type: "bool", CurrentValue: fmt.Sprintf("%t", cfg.LDAP.Enabled), DefaultValue: "false", RequiresRestart: false},
+				{Key: "OPSORIGIN_LDAP_ADDR", Category: "ldap", Label: "LDAP 地址", Description: "LDAP 服务器地址", Type: "string", CurrentValue: cfg.LDAP.Addr, DefaultValue: "ldap://localhost:389", RequiresRestart: false},
+				{Key: "OPSORIGIN_LDAP_BASE_DN", Category: "ldap", Label: "Base DN", Description: "LDAP Base DN", Type: "string", CurrentValue: cfg.LDAP.BaseDN, DefaultValue: "dc=example,dc=org", RequiresRestart: false},
+				{Key: "OPSORIGIN_LDAP_BIND_DN", Category: "ldap", Label: "Bind DN", Description: "LDAP 绑定 DN", Type: "string", CurrentValue: cfg.LDAP.BindDN, DefaultValue: "cn=admin,dc=example,dc=org", RequiresRestart: false},
+				{Key: "OPSORIGIN_LDAP_BIND_PASS", Category: "ldap", Label: "Bind 密码", Description: "LDAP 绑定密码", Type: "secret", CurrentValue: maskSensitive(cfg.LDAP.BindPass), DefaultValue: "", RequiresRestart: false, Sensitive: true},
+				{Key: "OPSORIGIN_LDAP_USER_FILTER", Category: "ldap", Label: "用户过滤器", Description: "LDAP 用户搜索过滤器", Type: "string", CurrentValue: cfg.LDAP.UserFilter, DefaultValue: "(uid=%s)", RequiresRestart: false},
 			},
 		},
 		{
 			Category: "sso",
 			Label:    "SSO 单点登录",
 			Items: []ConfigItem{
-				{Key: "OPSNEXUS_SSO_ENABLED", Category: "sso", Label: "启用 SSO", Description: "是否启用 SSO 单点登录", Type: "bool", CurrentValue: fmt.Sprintf("%t", cfg.SSO.Enabled), DefaultValue: "false", RequiresRestart: false},
-				{Key: "OPSNEXUS_SSO_PROVIDER", Category: "sso", Label: "SSO 提供商", Description: "SSO 提供商类型", Type: "string", CurrentValue: cfg.SSO.Provider, DefaultValue: "oidc", RequiresRestart: false},
-				{Key: "OPSNEXUS_SSO_CLIENT_ID", Category: "sso", Label: "Client ID", Description: "SSO 客户端 ID", Type: "string", CurrentValue: cfg.SSO.ClientID, DefaultValue: "", RequiresRestart: false},
-				{Key: "OPSNEXUS_SSO_CLIENT_SECRET", Category: "sso", Label: "Client Secret", Description: "SSO 客户端密钥", Type: "secret", CurrentValue: maskSensitive(cfg.SSO.ClientSecret), DefaultValue: "", RequiresRestart: false, Sensitive: true},
-				{Key: "OPSNEXUS_SSO_REDIRECT_URL", Category: "sso", Label: "回调地址", Description: "SSO 登录回调地址", Type: "string", CurrentValue: cfg.SSO.RedirectURL, DefaultValue: "http://localhost:8080/api/v1/auth/callback", RequiresRestart: false},
-				{Key: "OPSNEXUS_SSO_ISSUER_URL", Category: "sso", Label: "Issuer URL", Description: "SSO Issuer URL", Type: "string", CurrentValue: cfg.SSO.IssuerURL, DefaultValue: "", RequiresRestart: false},
+				{Key: "OPSORIGIN_SSO_ENABLED", Category: "sso", Label: "启用 SSO", Description: "是否启用 SSO 单点登录", Type: "bool", CurrentValue: fmt.Sprintf("%t", cfg.SSO.Enabled), DefaultValue: "false", RequiresRestart: false},
+				{Key: "OPSORIGIN_SSO_PROVIDER", Category: "sso", Label: "SSO 提供商", Description: "SSO 提供商类型", Type: "string", CurrentValue: cfg.SSO.Provider, DefaultValue: "oidc", RequiresRestart: false},
+				{Key: "OPSORIGIN_SSO_CLIENT_ID", Category: "sso", Label: "Client ID", Description: "SSO 客户端 ID", Type: "string", CurrentValue: cfg.SSO.ClientID, DefaultValue: "", RequiresRestart: false},
+				{Key: "OPSORIGIN_SSO_CLIENT_SECRET", Category: "sso", Label: "Client Secret", Description: "SSO 客户端密钥", Type: "secret", CurrentValue: maskSensitive(cfg.SSO.ClientSecret), DefaultValue: "", RequiresRestart: false, Sensitive: true},
+				{Key: "OPSORIGIN_SSO_REDIRECT_URL", Category: "sso", Label: "回调地址", Description: "SSO 登录回调地址", Type: "string", CurrentValue: cfg.SSO.RedirectURL, DefaultValue: "http://localhost:8080/api/v1/auth/callback", RequiresRestart: false},
+				{Key: "OPSORIGIN_SSO_ISSUER_URL", Category: "sso", Label: "Issuer URL", Description: "SSO Issuer URL", Type: "string", CurrentValue: cfg.SSO.IssuerURL, DefaultValue: "", RequiresRestart: false},
 			},
 		},
 	}
@@ -259,71 +259,71 @@ func (s *Service) handleUpdateConfig(w http.ResponseWriter, r *http.Request) {
 func (s *Service) applyUpdate(key, value string) {
 	cfg := s.cfg
 	switch key {
-	case "OPSNEXUS_CORE_PORT":
+	case "OPSORIGIN_CORE_PORT":
 		cfg.Core.Port = atoiSafe(value, 8080)
-	case "OPSNEXUS_TLS_ENABLED":
+	case "OPSORIGIN_TLS_ENABLED":
 		cfg.TLS.Enabled = value == "true" || value == "1"
-	case "OPSNEXUS_TLS_CERT":
+	case "OPSORIGIN_TLS_CERT":
 		cfg.TLS.CertFile = value
-	case "OPSNEXUS_TLS_KEY":
+	case "OPSORIGIN_TLS_KEY":
 		cfg.TLS.KeyFile = value
-	case "OPSNEXUS_PROXY_ID":
+	case "OPSORIGIN_PROXY_ID":
 		cfg.Proxy.ID = value
-	case "OPSNEXUS_PROXY_CORE_ADDR":
+	case "OPSORIGIN_PROXY_CORE_ADDR":
 		cfg.Proxy.CoreAddr = value
-	case "OPSNEXUS_PROXY_LISTEN":
+	case "OPSORIGIN_PROXY_LISTEN":
 		cfg.Proxy.Listen = value
-	case "OPSNEXUS_AGENT_PROXY_ADDR":
+	case "OPSORIGIN_AGENT_PROXY_ADDR":
 		cfg.Agent.ProxyAddr = value
-	case "OPSNEXUS_POSTGRES_DSN":
+	case "OPSORIGIN_POSTGRES_DSN":
 		cfg.CMDB.PostgresDSN = value
-	case "OPSNEXUS_DGRAPH_TARGET":
+	case "OPSORIGIN_DGRAPH_TARGET":
 		cfg.CMDB.DgraphTarget = value
-	case "OPSNEXUS_DGRAPH_API_KEY":
+	case "OPSORIGIN_DGRAPH_API_KEY":
 		cfg.CMDB.DgraphAPIKey = value
-	case "OPSNEXUS_REDIS_ADDR":
+	case "OPSORIGIN_REDIS_ADDR":
 		cfg.RedisAddr = value
-	case "OPSNEXUS_JWT_SECRET":
+	case "OPSORIGIN_JWT_SECRET":
 		cfg.Auth.JWTSecret = value
-	case "OPSNEXUS_LLM_API_KEY":
+	case "OPSORIGIN_LLM_API_KEY":
 		cfg.LLM.APIKey = value
 		pushLLMUpdate(cfg)
-	case "OPSNEXUS_LLM_MODEL":
+	case "OPSORIGIN_LLM_MODEL":
 		cfg.LLM.Model = value
 		pushLLMUpdate(cfg)
-	case "OPSNEXUS_LLM_BASE_URL":
+	case "OPSORIGIN_LLM_BASE_URL":
 		cfg.LLM.BaseURL = value
 		pushLLMUpdate(cfg)
-	case "OPSNEXUS_LLM_TIMEOUT":
+	case "OPSORIGIN_LLM_TIMEOUT":
 		cfg.LLM.Timeout = atoiSafe(value, 60)
 		pushLLMUpdate(cfg)
-	case "OPSNEXUS_OUTBOX_POLL_INTERVAL":
+	case "OPSORIGIN_OUTBOX_POLL_INTERVAL":
 		cfg.Outbox.PollInterval = parseDurationSafe(value)
-	case "OPSNEXUS_OUTBOX_BATCH_SIZE":
+	case "OPSORIGIN_OUTBOX_BATCH_SIZE":
 		cfg.Outbox.BatchSize = atoiSafe(value, 100)
-	case "OPSNEXUS_LDAP_ENABLED":
+	case "OPSORIGIN_LDAP_ENABLED":
 		cfg.LDAP.Enabled = value == "true" || value == "1"
-	case "OPSNEXUS_LDAP_ADDR":
+	case "OPSORIGIN_LDAP_ADDR":
 		cfg.LDAP.Addr = value
-	case "OPSNEXUS_LDAP_BASE_DN":
+	case "OPSORIGIN_LDAP_BASE_DN":
 		cfg.LDAP.BaseDN = value
-	case "OPSNEXUS_LDAP_BIND_DN":
+	case "OPSORIGIN_LDAP_BIND_DN":
 		cfg.LDAP.BindDN = value
-	case "OPSNEXUS_LDAP_BIND_PASS":
+	case "OPSORIGIN_LDAP_BIND_PASS":
 		cfg.LDAP.BindPass = value
-	case "OPSNEXUS_LDAP_USER_FILTER":
+	case "OPSORIGIN_LDAP_USER_FILTER":
 		cfg.LDAP.UserFilter = value
-	case "OPSNEXUS_SSO_ENABLED":
+	case "OPSORIGIN_SSO_ENABLED":
 		cfg.SSO.Enabled = value == "true" || value == "1"
-	case "OPSNEXUS_SSO_PROVIDER":
+	case "OPSORIGIN_SSO_PROVIDER":
 		cfg.SSO.Provider = value
-	case "OPSNEXUS_SSO_CLIENT_ID":
+	case "OPSORIGIN_SSO_CLIENT_ID":
 		cfg.SSO.ClientID = value
-	case "OPSNEXUS_SSO_CLIENT_SECRET":
+	case "OPSORIGIN_SSO_CLIENT_SECRET":
 		cfg.SSO.ClientSecret = value
-	case "OPSNEXUS_SSO_REDIRECT_URL":
+	case "OPSORIGIN_SSO_REDIRECT_URL":
 		cfg.SSO.RedirectURL = value
-	case "OPSNEXUS_SSO_ISSUER_URL":
+	case "OPSORIGIN_SSO_ISSUER_URL":
 		cfg.SSO.IssuerURL = value
 	}
 }

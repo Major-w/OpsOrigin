@@ -25,6 +25,7 @@ type Store interface {
 	AddComment(ctx context.Context, comment *model.Comment) error
 	ListComments(ctx context.Context, ticketID, tenantID string) ([]*model.Comment, error)
 	DeleteComment(ctx context.Context, id int64, ticketID, tenantID string) error
+	EditComment(ctx context.Context, id int64, ticketID, tenantID, content string) error
 	// Subtasks
 	CreateSubtask(ctx context.Context, st *model.Subtask) error
 	ListSubtasks(ctx context.Context, ticketID, tenantID string) ([]*model.Subtask, error)
@@ -37,6 +38,7 @@ type Store interface {
 	DeleteAttachment(ctx context.Context, id int64, ticketID, tenantID string) error
 	// SLA
 	ListActiveTicketsWithDeadline(ctx context.Context, tenantID string) ([]*model.Ticket, error)
+	ListOnHoldTicketsPastDue(ctx context.Context, tenantID string) ([]*model.Ticket, error)
 	GetSLAStats(ctx context.Context, tenantID string) (*model.SLAStats, error)
 	// ListTenantIDs 返回存在工单的所有租户, 供 SLA 检查器等跨租户任务遍历。
 	ListTenantIDs(ctx context.Context) ([]string, error)
@@ -275,6 +277,21 @@ func (s *MemoryStore) DeleteComment(ctx context.Context, id int64, ticketID, ten
 	return ErrNotFound
 }
 
+func (s *MemoryStore) EditComment(ctx context.Context, id int64, ticketID, tenantID, content string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	now := time.Now()
+	for _, c := range s.comments {
+		if c.ID == id && c.TicketID == ticketID && c.TenantID == tenantID {
+			c.Content = content
+			c.Edited = true
+			c.EditedAt = &now
+			return nil
+		}
+	}
+	return ErrNotFound
+}
+
 // --- Subtasks (in-memory) ---
 
 func (s *MemoryStore) CreateSubtask(ctx context.Context, st *model.Subtask) error {
@@ -405,6 +422,26 @@ func (s *MemoryStore) ListActiveTicketsWithDeadline(ctx context.Context, tenantI
 		}
 		if t.OnHold {
 			continue // 挂起工单 SLA 停表
+		}
+		result = append(result, t)
+	}
+	return result, nil
+}
+
+func (s *MemoryStore) ListOnHoldTicketsPastDue(ctx context.Context, tenantID string) ([]*model.Ticket, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	var result []*model.Ticket
+	now := time.Now()
+	for _, t := range s.tickets {
+		if t.TenantID != tenantID {
+			continue
+		}
+		if !t.OnHold || t.HoldUntilAt == nil {
+			continue
+		}
+		if !t.HoldUntilAt.Before(now) {
+			continue
 		}
 		result = append(result, t)
 	}

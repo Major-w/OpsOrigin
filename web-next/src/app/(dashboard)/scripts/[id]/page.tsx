@@ -265,7 +265,7 @@ export default function ScriptDetailPage() {
   useEffect(() => {
     if (!scriptId || isNew) return
     try {
-      const raw = localStorage.getItem('opsnexus_starred_scripts')
+      const raw = localStorage.getItem('opsorigin_starred_scripts')
       if (!raw) return
       const arr = JSON.parse(raw)
       if (Array.isArray(arr)) setStarred(arr.includes(scriptId))
@@ -285,12 +285,12 @@ export default function ScriptDetailPage() {
   const toggleStar = () => {
     if (!scriptId || isNew || !viewScript) return
     try {
-      const raw = localStorage.getItem('opsnexus_starred_scripts') || '[]'
+      const raw = localStorage.getItem('opsorigin_starred_scripts') || '[]'
       const arr = JSON.parse(raw)
       const next = arr.includes(scriptId)
         ? arr.filter((x: string) => x !== scriptId)
         : [...arr, scriptId]
-      localStorage.setItem('opsnexus_starred_scripts', JSON.stringify(next))
+      localStorage.setItem('opsorigin_starred_scripts', JSON.stringify(next))
       setStarred(!starred)
     } catch {}
   }

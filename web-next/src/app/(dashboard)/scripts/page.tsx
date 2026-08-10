@@ -23,7 +23,7 @@ const TYPE_COLORS: Record<string, string> = {
   bat: 'bg-yellow-500/10 text-yellow-600 dark:text-yellow-400 border-yellow-500/20',
 }
 
-const STARRED_KEY = 'opsnexus_starred_scripts'
+const STARRED_KEY = 'opsorigin_starred_scripts'
 
 function loadStarred(): Set<string> {
   try {

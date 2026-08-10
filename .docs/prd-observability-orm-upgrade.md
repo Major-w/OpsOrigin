@@ -24,7 +24,7 @@
 > 作为 OpsOrigin 的 Go 后端开发者，我希望用 ent 的 Schema-as-Code 方式定义数据库表结构，通过 `go generate` 自动生成类型安全的 CRUD 代码，替代手写 SQL 字符串和 `Scan` 的维护负担。编译期即可发现字段类型错误，而不是上线后才炸。
 
 ### US-4：运维管理员 — 连接池调优
-> 作为运维管理员，我希望通过环境变量 `OPSNEXUS_POSTGRES_MAX_CONNS` 调整 PG 连接池大小，而不必重新编译代码。当被管主机数量从 1000 扩展到 8000 时，我能根据实际负载动态调整连接数，避免连接耗尽或资源浪费。
+> 作为运维管理员，我希望通过环境变量 `OPSORIGIN_POSTGRES_MAX_CONNS` 调整 PG 连接池大小，而不必重新编译代码。当被管主机数量从 1000 扩展到 8000 时，我能根据实际负载动态调整连接数，避免连接耗尽或资源浪费。
 
 ### US-5：运维管理员 — 批量任务下发
 > 作为运维管理员，当我需要对 500 台 Agent 批量下发安全补丁任务时，希望 Core 不会因为串行执行而阻塞其他操作。任务的创建和分发应异步化，我只需提交一次批量请求，系统自行排队分发，并通过任务状态 API 查询各 Agent 的执行进度。
@@ -47,8 +47,8 @@
 
 | ID  | 功能                   | 描述                                                                                                                                                                                           | 验收标准                                                                                                                                                                                                                                                |
 | --- | --------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| F03 | **PG 连接池可配**      | 在 `config.Load()` 中新增 `OPSNEXUS_POSTGRES_MAX_CONNS` 环境变量（默认 25），注入 `db.SetMaxOpenConns()`。同时暴露 `OPSNEXUS_POSTGRES_MAX_IDLE_CONNS`（默认 5）和 `OPSNEXUS_POSTGRES_CONN_MAX_LIFETIME`（默认 30m）。 | 1. 设置 `OPSNEXUS_POSTGRES_MAX_CONNS=50` 启动 Core，`SHOW max_connections` 或 pprof 中观察到连接池上限为 50；2. 不设环境变量时默认值为 25；3. 设置 `MAX_CONNS=0` 时使用 `database/sql` 默认行为（无上限）+ 日志 Warn；4. 配置变更无需重新编译。 |
-| F04 | **任务下发队列**        | 在 `agentmgr` 中增加 `TaskQueue` 抽象。P0 阶段用 Go channel（buffered 1000）实现进程内异步，后续可替换为 Redis Stream。`BulkCreateTasks` 批量写入 PG `agent_tasks` 表后，逐个 push 到队列，由 worker goroutine 消费并分发。 | 1. 调用 `POST /api/v1/agents/tasks/bulk` 提交 500 个任务，接口在 500ms 内返回（任务记录已落库）；2. 各 Agent 异步收到任务并在 60s 内全部完成；3. worker panic 不影响 Core 主流程，含 recover + 重试 3 次；4. 队列深度可配（`OPSNEXUS_TASK_QUEUE_SIZE`，默认 1000）。 |
+| F03 | **PG 连接池可配**      | 在 `config.Load()` 中新增 `OPSORIGIN_POSTGRES_MAX_CONNS` 环境变量（默认 25），注入 `db.SetMaxOpenConns()`。同时暴露 `OPSORIGIN_POSTGRES_MAX_IDLE_CONNS`（默认 5）和 `OPSORIGIN_POSTGRES_CONN_MAX_LIFETIME`（默认 30m）。 | 1. 设置 `OPSORIGIN_POSTGRES_MAX_CONNS=50` 启动 Core，`SHOW max_connections` 或 pprof 中观察到连接池上限为 50；2. 不设环境变量时默认值为 25；3. 设置 `MAX_CONNS=0` 时使用 `database/sql` 默认行为（无上限）+ 日志 Warn；4. 配置变更无需重新编译。 |
+| F04 | **任务下发队列**        | 在 `agentmgr` 中增加 `TaskQueue` 抽象。P0 阶段用 Go channel（buffered 1000）实现进程内异步，后续可替换为 Redis Stream。`BulkCreateTasks` 批量写入 PG `agent_tasks` 表后，逐个 push 到队列，由 worker goroutine 消费并分发。 | 1. 调用 `POST /api/v1/agents/tasks/bulk` 提交 500 个任务，接口在 500ms 内返回（任务记录已落库）；2. 各 Agent 异步收到任务并在 60s 内全部完成；3. worker panic 不影响 Core 主流程，含 recover + 重试 3 次；4. 队列深度可配（`OPSORIGIN_TASK_QUEUE_SIZE`，默认 1000）。 |
 | F05 | **滚动升级通道**        | Core 新增 `POST /api/v1/agents/upgrade/upload` 上传 Agent 二进制 + SHA256；`POST /api/v1/agents/upgrade/rollout` 设定策略（`batch_size`, `batch_interval`）。Agent 心跳时获取升级元数据，下载新版本、校验 checksum、替换并重启。 | 1. 上传 Agent v2.0 二进制后，SHA256 checksum 校验通过；2. 设置 `batch_size: 10` → 每 60s 最多 10 个 Agent 升级；3. 某 Agent 下载失败或 checksum 不匹配 → 状态标记为 `upgrade_failed`，不重启，保留旧版本继续运行；4. 升级进度可通过 `GET /api/v1/agents/upgrade/status` 查询。 |
 
 ---

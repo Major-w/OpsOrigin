@@ -8,6 +8,7 @@ import { Badge } from '@/components/ui/badge'
 import { Input } from '@/components/ui/input'
 import { useITSMStore, type Process } from '@/stores/itsm'
 import { ProcessVersionHistory } from '@/components/itsm/ProcessVersionHistory'
+import { ConfirmDialog } from '@/components/ui/confirm-dialog'
 import { Plus, Pencil, Trash2, GitBranch, ChevronLeft, History } from 'lucide-react'
 
 export default function ITSMProcessPage() {
@@ -18,6 +19,7 @@ export default function ITSMProcessPage() {
   const [desc, setDesc] = useState('')
   const [creating, setCreating] = useState(false)
   const [histId, setHistId] = useState<string | null>(null)
+  const [deleteTarget, setDeleteTarget] = useState<Process | null>(null)
 
   useEffect(() => { fetchProcesses() }, [])
 
@@ -52,11 +54,12 @@ export default function ITSMProcessPage() {
           <Badge variant={p.enabled?'success':'outline'} className="text-xs">{p.enabled?'启用':'禁用'}</Badge>
           <Button variant="ghost" size="icon" className="h-7 w-7" title="历史版本" onClick={e=>{e.stopPropagation();setHistId(p.id)}}><History className="h-3.5 w-3.5"/></Button>
           <Button variant="ghost" size="icon" className="h-7 w-7" onClick={e=>{e.stopPropagation();router.push(`/itsm/process/${p.id}`)}}><Pencil className="h-3.5 w-3.5"/></Button>
-          <Button variant="ghost" size="icon" className="h-7 w-7 text-red-500" onClick={e=>{e.stopPropagation();confirm('确认删除?')&&deleteProcess(p.id)}}><Trash2 className="h-3.5 w-3.5"/></Button>
+          <Button variant="ghost" size="icon" className="h-7 w-7 text-red-500" onClick={e=>{e.stopPropagation();setDeleteTarget(p)}}><Trash2 className="h-3.5 w-3.5"/></Button>
         </div>
       </CardContent></Card>)}
     </div>
 
     <ProcessVersionHistory processId={histId || ''} open={histId !== null} onClose={() => setHistId(null)} />
+    <ConfirmDialog open={!!deleteTarget} onClose={() => setDeleteTarget(null)} onConfirm={() => { if (deleteTarget) deleteProcess(deleteTarget.id); setDeleteTarget(null) }} title="确认删除" description={`确定删除流程「${deleteTarget?.name || ''}」？`} />
   </div>
 }

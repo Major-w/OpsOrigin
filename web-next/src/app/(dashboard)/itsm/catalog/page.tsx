@@ -10,6 +10,7 @@ import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { Input } from '@/components/ui/input'
 import { Dialog, DialogFooter } from '@/components/ui/dialog'
+import { ConfirmDialog } from '@/components/ui/confirm-dialog'
 import { Package, Plus, Trash2, Pencil, Search, Users, ArrowUpCircle, ArrowDownCircle, Globe, FolderTree } from 'lucide-react'
 import { apiFetch, apiList } from '@/lib/utils'
 import { toast } from '@/stores/toast'
@@ -56,6 +57,7 @@ export default function ITSMCatalogPage() {
   const [dialogOpen, setDialogOpen] = useState(false)
   const [draft, setDraft] = useState<ServiceItem>(emptyDraft())
   const [saving, setSaving] = useState(false)
+  const [deleteTarget, setDeleteTarget] = useState<ServiceItem | null>(null)
   const [audTab, setAudTab] = useState<'group' | 'user'>('group')
   const [audFilter, setAudFilter] = useState('')
 
@@ -137,11 +139,16 @@ export default function ITSMCatalogPage() {
       toast.error(`「${it.name}」下还有子项，请先移除其子项或调整归属后再删除`)
       return
     }
-    if (!confirm(`确认删除服务目录「${it.name}」？`)) return
+    setDeleteTarget(it)
+  }
+
+  const confirmDelete = async () => {
+    if (!deleteTarget) return
     try {
-      await apiFetch(`/itsm/catalog/${it.id}`, { method: 'DELETE' })
+      await apiFetch(`/itsm/catalog/${deleteTarget.id}`, { method: 'DELETE' })
       toast.success('已删除'); load()
     } catch (e: any) { toast.error(`删除失败: ${e?.message || e}`) }
+    setDeleteTarget(null)
   }
 
   const toggleAud = (kind: 'user_ids' | 'group_ids', id: string) => {
@@ -377,5 +384,6 @@ export default function ITSMCatalogPage() {
         <Button onClick={save} disabled={saving || !draft.name.trim()}>{saving ? '保存中…' : isEdit ? '保存修改' : '创建'}</Button>
       </DialogFooter>
     </Dialog>
+    <ConfirmDialog open={!!deleteTarget} onClose={() => setDeleteTarget(null)} onConfirm={confirmDelete} title="确认删除" description={`确定删除服务目录「${deleteTarget?.name || ''}」？`} />
   </div>
 }

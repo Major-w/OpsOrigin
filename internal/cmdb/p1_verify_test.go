@@ -20,9 +20,9 @@ import (
 // TestP1CICSV 在真实 Postgres 上验证 CI 实例的 CSV 导出/导入往返：
 // 导出表头含 id/name/description/status + schema 属性列；导入支持按 id upsert 更新 + 新建。
 func TestP1CICSV(t *testing.T) {
-	dsn := os.Getenv("OPSNEXUS_POSTGRES_DSN")
+	dsn := os.Getenv("OPSORIGIN_POSTGRES_DSN")
 	if dsn == "" {
-		t.Skip("OPSNEXUS_POSTGRES_DSN not set; skipping live DB test")
+		t.Skip("OPSORIGIN_POSTGRES_DSN not set; skipping live DB test")
 	}
 	repo, err := pg.NewRepository(dsn)
 	if err != nil {
@@ -152,9 +152,9 @@ func indexOf(s []string, v string) int {
 //   - 归档后 status=archived，普通列表(排除归档)不再出现，归档视图仅含归档项；
 //   - 恢复后 status=active，普通列表重新出现。
 func TestP1ArchiveRestore(t *testing.T) {
-	dsn := os.Getenv("OPSNEXUS_POSTGRES_DSN")
+	dsn := os.Getenv("OPSORIGIN_POSTGRES_DSN")
 	if dsn == "" {
-		t.Skip("OPSNEXUS_POSTGRES_DSN not set; skipping live DB test")
+		t.Skip("OPSORIGIN_POSTGRES_DSN not set; skipping live DB test")
 	}
 	repo, err := pg.NewRepository(dsn)
 	if err != nil {
@@ -233,9 +233,9 @@ func TestP1ArchiveRestore(t *testing.T) {
 // TestP1SavedQueryDynamicTarget 在真实 Postgres 上验证保存查询（"我想查"）与
 // 采集动态目标解析：保存查询命中带 resource_id 的 CI，解析为可下发采集目标集合。
 func TestP1SavedQueryDynamicTarget(t *testing.T) {
-	dsn := os.Getenv("OPSNEXUS_POSTGRES_DSN")
+	dsn := os.Getenv("OPSORIGIN_POSTGRES_DSN")
 	if dsn == "" {
-		t.Skip("OPSNEXUS_POSTGRES_DSN not set; skipping live DB test")
+		t.Skip("OPSORIGIN_POSTGRES_DSN not set; skipping live DB test")
 	}
 	repo, err := pg.NewRepository(dsn)
 	if err != nil {
@@ -339,9 +339,9 @@ func containsString(s []string, v string) bool {
 // TestP1CreateModelTypeHandler 验证 #3 修复：新建模型（ID/ParentID 均为空）不再被
 // 「模型不能继承自身」误判拦截；且列表接口 items 永不为 null（页面不再空白）。
 func TestP1CreateModelTypeHandler(t *testing.T) {
-	dsn := os.Getenv("OPSNEXUS_POSTGRES_DSN")
+	dsn := os.Getenv("OPSORIGIN_POSTGRES_DSN")
 	if dsn == "" {
-		t.Skip("OPSNEXUS_POSTGRES_DSN not set; skipping live DB test")
+		t.Skip("OPSORIGIN_POSTGRES_DSN not set; skipping live DB test")
 	}
 	repo, err := pg.NewRepository(dsn)
 	if err != nil {
@@ -400,9 +400,9 @@ func TestP1CreateModelTypeHandler(t *testing.T) {
 
 // TestP1ModelCategories 验证 #2：内置 5 分类种子齐全 + 新增/删除自定义分类。
 func TestP1ModelCategories(t *testing.T) {
-	dsn := os.Getenv("OPSNEXUS_POSTGRES_DSN")
+	dsn := os.Getenv("OPSORIGIN_POSTGRES_DSN")
 	if dsn == "" {
-		t.Skip("OPSNEXUS_POSTGRES_DSN not set; skipping live DB test")
+		t.Skip("OPSORIGIN_POSTGRES_DSN not set; skipping live DB test")
 	}
 	repo, err := pg.NewRepository(dsn)
 	if err != nil {

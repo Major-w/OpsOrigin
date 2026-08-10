@@ -128,13 +128,13 @@ export const useAgentStore = create<AgentState>((set, get) => ({
   },
   getInstallScript: async (os) => {
     try {
-      const token = typeof window !== 'undefined' ? localStorage.getItem('opsnexus_token') : null
+      const token = typeof window !== 'undefined' ? localStorage.getItem('opsorigin_token') : null
       const headers: Record<string, string> = {
         'Authorization': `Bearer ${token || ''}`,
         'X-Trace-ID': typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : Math.random().toString(36).slice(2),
       }
       if (typeof window !== 'undefined') {
-        const userStr = localStorage.getItem('opsnexus_user')
+        const userStr = localStorage.getItem('opsorigin_user')
         if (userStr) {
           try {
             const user = JSON.parse(userStr)

@@ -14,8 +14,9 @@ import { cn } from '@/lib/utils'
 import { MarkdownViewer } from '@/components/markdown-viewer'
 import { RichTextEditor } from '@/components/rich-text-editor'
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs'
+import { useAuthStore } from '@/stores/auth'
 
-const KB_USER = 'admin'
+const getKBUser = () => useAuthStore.getState().user?.username || 'anonymous'
 
 /** 轻量 Markdown 清洗: 去掉标记符号, 得到适合列表摘要的纯文本 */
 function stripMarkdown(s: string): string {
@@ -55,7 +56,7 @@ export default function KnowledgeListPage() {
   const [dialogOpen, setDialogOpen] = useState(false)
   const [catDialog, setCatDialog] = useState(false)
   const [catForm, setCatForm] = useState({ id: '', name: '', description: '', sort_order: 0, color: '' })
-  const [form, setForm] = useState({ title: '', content: '', category: '', tags: '', author: 'admin', status: 'draft' })
+  const [form, setForm] = useState({ title: '', content: '', category: '', tags: '', author: '', status: 'draft' })
   const [filterCat, setFilterCat] = useState('')
   const [searchQ, setSearchQ] = useState('')
   const [importing, setImporting] = useState(false)
@@ -86,12 +87,12 @@ export default function KnowledgeListPage() {
   useEffect(() => { fetchCategories() }, [fetchCategories])
   // 加载收藏/关注 ID, 供过滤与计数徽标使用
   useEffect(() => {
-    listBookmarks(KB_USER).then(setBookmarkIds)
-    listFollows(KB_USER).then(setFollowIds)
+    listBookmarks(getKBUser()).then(setBookmarkIds)
+    listFollows(getKBUser()).then(setFollowIds)
   }, [listBookmarks, listFollows])
   useEffect(() => {
     if (view === 'follows') {
-      listFollowUpdates(KB_USER, false).then(u => setFollowUpdateIds(u.map(x => x.article_id)))
+      listFollowUpdates(getKBUser(), false).then(u => setFollowUpdateIds(u.map(x => x.article_id)))
     }
   }, [view, listFollowUpdates])
 
@@ -110,7 +111,7 @@ export default function KnowledgeListPage() {
     const ok = await create(data)
     if (ok) {
       setDialogOpen(false)
-      setForm({ title: '', content: '', category: categories[0] || '', tags: '', author: 'admin', status: 'draft' })
+      setForm({ title: '', content: '', category: categories[0] || '', tags: '', author: getKBUser(), status: 'draft' })
       setFormError('')
       setDialogEditTab('write')
     }
@@ -233,7 +234,7 @@ export default function KnowledgeListPage() {
       {visible.length === 0 ? <Card className="col-span-2"><CardContent className="py-10 text-center text-muted-foreground"><BookOpen className="h-10 w-10 mx-auto mb-2 opacity-30" /><p>暂无文章</p></CardContent></Card> :
         visible.map(a => {
           const hasUpdate = view === 'follows' && followUpdateIds.includes(a.id)
-          return <Card key={a.id} className="cursor-pointer hover:border-primary/50" onClick={() => { router.push(`/knowledge/${a.id}`); if (hasUpdate) markFollowUpdateRead(a.id, KB_USER) }}>
+          return <Card key={a.id} className="cursor-pointer hover:border-primary/50" onClick={() => { router.push(`/knowledge/${a.id}`); if (hasUpdate) markFollowUpdateRead(a.id, getKBUser()) }}>
             <CardContent className="p-4">
               <div className="flex items-start justify-between gap-2">
                 <h3 className="font-medium text-sm truncate flex-1 flex items-center gap-1">

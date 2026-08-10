@@ -74,10 +74,23 @@ func (s *PGStore) Init(ctx context.Context) error {
 			tenant_id  TEXT NOT NULL,
 			author     TEXT NOT NULL,
 			content    TEXT NOT NULL,
+			type       TEXT DEFAULT 'normal',
+			mentions   JSONB DEFAULT '[]'::jsonb,
+			edited     BOOLEAN DEFAULT FALSE,
+			edited_at  TIMESTAMPTZ,
 			created_at TIMESTAMPTZ NOT NULL
 		)`)
 	if err != nil {
 		return fmt.Errorf("init itsm_comments table: %w", err)
+	}
+	// 向后兼容: 旧表可能缺少新列
+	for _, col := range []string{
+		`ALTER TABLE itsm_comments ADD COLUMN IF NOT EXISTS type TEXT DEFAULT 'normal'`,
+		`ALTER TABLE itsm_comments ADD COLUMN IF NOT EXISTS mentions JSONB DEFAULT '[]'::jsonb`,
+		`ALTER TABLE itsm_comments ADD COLUMN IF NOT EXISTS edited BOOLEAN DEFAULT FALSE`,
+		`ALTER TABLE itsm_comments ADD COLUMN IF NOT EXISTS edited_at TIMESTAMPTZ`,
+	} {
+		s.db.ExecContext(ctx, col)
 	}
 	_, err = s.db.ExecContext(ctx, `
 		CREATE INDEX IF NOT EXISTS idx_itsm_comments_ticket ON itsm_comments(ticket_id, tenant_id)`)
@@ -640,16 +653,20 @@ func nullableTime(t *time.Time) *time.Time {
 
 func (s *PGStore) AddComment(ctx context.Context, comment *model.Comment) error {
 	comment.CreatedAt = time.Now()
+	if comment.Type == "" {
+		comment.Type = "normal"
+	}
+	mentionsJSON, _ := json.Marshal(comment.Mentions)
 	err := s.db.QueryRowContext(ctx, `
-		INSERT INTO itsm_comments (ticket_id, tenant_id, author, content, created_at)
-		VALUES ($1, $2, $3, $4, $5) RETURNING id`,
-		comment.TicketID, comment.TenantID, comment.Author, comment.Content, comment.CreatedAt).Scan(&comment.ID)
+		INSERT INTO itsm_comments (ticket_id, tenant_id, author, content, type, mentions, created_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id`,
+		comment.TicketID, comment.TenantID, comment.Author, comment.Content, comment.Type, mentionsJSON, comment.CreatedAt).Scan(&comment.ID)
 	return err
 }
 
 func (s *PGStore) ListComments(ctx context.Context, ticketID, tenantID string) ([]*model.Comment, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT id, ticket_id, tenant_id, author, content, created_at
+		SELECT id, ticket_id, tenant_id, author, content, type, mentions, edited, edited_at, created_at
 		FROM itsm_comments WHERE ticket_id = $1 AND tenant_id = $2
 		ORDER BY created_at ASC`, ticketID, tenantID)
 	if err != nil {
@@ -659,8 +676,12 @@ func (s *PGStore) ListComments(ctx context.Context, ticketID, tenantID string) (
 	var comments []*model.Comment
 	for rows.Next() {
 		c := &model.Comment{}
-		if err := rows.Scan(&c.ID, &c.TicketID, &c.TenantID, &c.Author, &c.Content, &c.CreatedAt); err != nil {
+		var mentionsJSON []byte
+		if err := rows.Scan(&c.ID, &c.TicketID, &c.TenantID, &c.Author, &c.Content, &c.Type, &mentionsJSON, &c.Edited, &c.EditedAt, &c.CreatedAt); err != nil {
 			return nil, err
+		}
+		if len(mentionsJSON) > 0 {
+			json.Unmarshal(mentionsJSON, &c.Mentions)
 		}
 		comments = append(comments, c)
 	}
@@ -670,6 +691,21 @@ func (s *PGStore) ListComments(ctx context.Context, ticketID, tenantID string) (
 func (s *PGStore) DeleteComment(ctx context.Context, id int64, ticketID, tenantID string) error {
 	result, err := s.db.ExecContext(ctx, `
 		DELETE FROM itsm_comments WHERE id = $1 AND ticket_id = $2 AND tenant_id = $3`, id, ticketID, tenantID)
+	if err != nil {
+		return err
+	}
+	rows, _ := result.RowsAffected()
+	if rows == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+func (s *PGStore) EditComment(ctx context.Context, id int64, ticketID, tenantID, content string) error {
+	now := time.Now()
+	result, err := s.db.ExecContext(ctx, `
+		UPDATE itsm_comments SET content=$1, edited=TRUE, edited_at=$2
+		WHERE id=$3 AND ticket_id=$4 AND tenant_id=$5`, content, now, id, ticketID, tenantID)
 	if err != nil {
 		return err
 	}
@@ -890,6 +926,69 @@ func (s *PGStore) ListActiveTicketsWithDeadline(ctx context.Context, tenantID st
 			json.Unmarshal(labelsJSON, &t.Labels)
 		}
 		if len(customFieldsJSON) > 0 && string(customFieldsJSON) != "{}" {
+			json.Unmarshal(customFieldsJSON, &t.CustomFields)
+		}
+		t.ProcessID = nullableStr(processID)
+		t.Assignee = nullableStr(assignee)
+		result = append(result, t)
+	}
+	return result, nil
+}
+
+func (s *PGStore) ListOnHoldTicketsPastDue(ctx context.Context, tenantID string) ([]*model.Ticket, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT id, tenant_id, title, description, risk_level, status, change_plan, rollback_plan,
+			created_by, created_by_type, approved_by, reject_reason, completed_by, rolled_back_by,
+			rollback_reason, ci_ids, webhook_url, labels, trace_id, scheduled_at, deadline_at,
+			created_at, updated_at, approved_at, executed_at, completed_at, rolled_back_at,
+			sla_warning_notified, sla_breached, sla_breached_at, sla_escalation_level, custom_fields,
+			process_id, assignee, on_hold, hold_reason, hold_until_at
+		FROM itsm_tickets
+		WHERE tenant_id = $1 AND COALESCE(on_hold, false) = true
+		  AND hold_until_at IS NOT NULL AND hold_until_at <= NOW()`,
+		tenantID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var result []*model.Ticket
+	for rows.Next() {
+		t := &model.Ticket{}
+		var ciIDsJSON, labelsJSON, customFieldsJSON []byte
+		var slaWarningNotified, slaBreached bool
+		var slaBreachedAt, deadlineAt, holdUntilAt sql.NullTime
+		var slaEscalationLevel sql.NullInt64
+		var processID, assignee sql.NullString
+		if err := rows.Scan(
+			&t.ID, &t.TenantID, &t.Title, &t.Description, &t.RiskLevel, &t.Status,
+			&t.ChangePlan, &t.RollbackPlan, &t.CreatedBy, &t.CreatedByType, &t.ApprovedBy,
+			&t.RejectReason, &t.CompletedBy, &t.RolledBackBy, &t.RollbackReason,
+			&ciIDsJSON, &t.WebhookURL, &labelsJSON, &t.TraceID,
+			&t.ScheduledAt, &deadlineAt, &t.CreatedAt, &t.UpdatedAt, &t.ApprovedAt,
+			&t.ExecutedAt, &t.CompletedAt, &t.RolledBackAt,
+			&slaWarningNotified, &slaBreached, &slaBreachedAt, &slaEscalationLevel,
+			&customFieldsJSON, &processID, &assignee, &t.OnHold, &t.HoldReason, &holdUntilAt,
+		); err != nil {
+			return nil, err
+		}
+		t.SLAWarningNotified = slaWarningNotified
+		t.SLABreached = slaBreached
+		if slaBreachedAt.Valid {
+			t.SLABreachedAt = &slaBreachedAt.Time
+		}
+		if deadlineAt.Valid {
+			t.DeadlineAt = &deadlineAt.Time
+		}
+		if holdUntilAt.Valid {
+			t.HoldUntilAt = &holdUntilAt.Time
+		}
+		if ciIDsJSON != nil {
+			json.Unmarshal(ciIDsJSON, &t.CIIDs)
+		}
+		if labelsJSON != nil {
+			json.Unmarshal(labelsJSON, &t.Labels)
+		}
+		if customFieldsJSON != nil {
 			json.Unmarshal(customFieldsJSON, &t.CustomFields)
 		}
 		t.ProcessID = nullableStr(processID)

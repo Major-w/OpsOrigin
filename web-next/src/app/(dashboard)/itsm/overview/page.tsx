@@ -11,14 +11,8 @@ import { Button } from '@/components/ui/button'
 import { apiFetch } from '@/lib/utils'
 import { TimeSeriesChart, GaugeChartView, PieChartView, BarChartView } from '@/components/charts'
 import type { ITSMStats, SLAStats } from '@/stores/itsm'
-
-const statusLabels: Record<string, string> = {
-  draft: '草稿', pending_review: '待审批', approved: '已审批', rejected: '已驳回',
-  executing: '执行中', succeeded: '已完成', failed: '已失败', rolled_back: '已回滚',
-  closed: '已关闭', withdrawn: '已撤回', reopened: '已重开',
-}
-const riskLabels: Record<string, string> = { critical: '致命', high: '高危', medium: '中危', low: '低危' }
-const channelLabels: Record<string, string> = { manual: '人工创建', mail: '邮件入站', system: '系统', catalog: '服务目录', ai: 'AI 巡检' }
+import { STATUS_LABELS, RISK_LABELS, CHANNEL_LABELS } from '@/lib/itsm-constants'
+import { toast } from '@/stores/toast'
 
 const fmtMs = (ms: number) => {
   if (!ms) return '-'
@@ -42,7 +36,7 @@ export default function ITSMOverviewPage() {
       ])
       setStats(s)
       setSla(sl)
-    } catch { /* ignore */ }
+    } catch { toast.error('加载统计数据失败') }
     setLoading(false)
   }, [])
 
@@ -65,13 +59,13 @@ export default function ITSMOverviewPage() {
     </div>
   )
 
-  if (loading) return <div className="p-6 space-y-4">{header}<div className="text-sm text-muted-foreground">加载统计数据…</div></div>
+  if (loading) return <div className="p-6 space-y-4">{header}<div className="animate-pulse space-y-4">{[1,2,3].map(i=><div key={i} className="h-24 bg-muted rounded"/>)}</div></div>
   if (!stats) return <div className="p-6 space-y-4">{header}<div className="text-sm text-muted-foreground">暂无统计数据。</div></div>
 
-  const statusData = Object.entries(stats.by_status || {}).map(([k, v]) => ({ name: statusLabels[k] || k, value: v }))
-  const riskData = Object.entries(stats.by_risk || {}).map(([k, v]) => ({ name: riskLabels[k] || k, value: v }))
+  const statusData = Object.entries(stats.by_status || {}).map(([k, v]) => ({ name: STATUS_LABELS[k] || k, value: v }))
+  const riskData = Object.entries(stats.by_risk || {}).map(([k, v]) => ({ name: RISK_LABELS[k] || k, value: v }))
   const creatorData = Object.entries(stats.by_creator || {}).map(([k, v]) => ({ name: k, value: v })).sort((a, b) => b.value - a.value).slice(0, 10)
-  const channelData = Object.entries(stats.by_channel || {}).map(([k, v]) => ({ name: channelLabels[k] || k, value: v }))
+  const channelData = Object.entries(stats.by_channel || {}).map(([k, v]) => ({ name: CHANNEL_LABELS[k] || k, value: v }))
 
   const compliance = sla ? Math.round((sla.compliance_rate || 0) * 100) : 0
   const trendX = (stats.trends || []).map(t => t.date.slice(5))

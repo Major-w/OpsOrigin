@@ -13,9 +13,9 @@ import (
 // TestPGStoreInspectionRestore 真实库验证 loadFromStore 的恢复链路:
 // ListInspections 与 ListInspectionRuns 是否一致返回(定位重启后 runs 丢失问题)。
 func TestPGStoreInspectionRestore(t *testing.T) {
-	dsn := os.Getenv("OPSNEXUS_POSTGRES_DSN")
+	dsn := os.Getenv("OPSORIGIN_POSTGRES_DSN")
 	if dsn == "" {
-		t.Skip("OPSNEXUS_POSTGRES_DSN not set, skipping real-db test")
+		t.Skip("OPSORIGIN_POSTGRES_DSN not set, skipping real-db test")
 	}
 	db, err := sql.Open("postgres", dsn)
 	if err != nil {

@@ -3,6 +3,9 @@
 import { create } from 'zustand'
 import { apiFetch, apiList } from '@/lib/utils'
 import { toast } from '@/stores/toast'
+import { useAuthStore } from '@/stores/auth'
+
+const getCurrentUser = () => useAuthStore.getState().user?.username || 'anonymous'
 
 export interface Article {
   id: string; title: string; content: string; category: string; tags?: string[]
@@ -206,41 +209,41 @@ export const useKnowledgeStore = create<KnowledgeState>((set, get) => ({
   },
 
   // —— 收藏 / 关注 ——
-  listBookmarks: async (user = 'admin') => {
+  listBookmarks: async (user?: string) => {
     try {
-      const res = await apiFetch<{ article_ids: string[] }>(`/knowledge/bookmarks?user=${encodeURIComponent(user)}`)
+      const res = await apiFetch<{ article_ids: string[] }>(`/knowledge/bookmarks?user=${encodeURIComponent(user || getCurrentUser())}`)
       return res.article_ids || []
     } catch {
       return []
     }
   },
-  toggleFollow: async (id, user = 'admin') => {
+  toggleFollow: async (id, user?: string) => {
     try {
-      const res = await apiFetch<{ followed: boolean }>(`/knowledge/${id}/follow?user=${encodeURIComponent(user)}`, { method: 'POST' })
+      const res = await apiFetch<{ followed: boolean }>(`/knowledge/${id}/follow?user=${encodeURIComponent(user || getCurrentUser())}`, { method: 'POST' })
       return res.followed
     } catch (e: any) {
       toast.error(`操作失败: ${e.message}`)
       return false
     }
   },
-  listFollows: async (user = 'admin') => {
+  listFollows: async (user?: string) => {
     try {
-      const res = await apiFetch<{ article_ids: string[] }>(`/knowledge/follows?user=${encodeURIComponent(user)}`)
+      const res = await apiFetch<{ article_ids: string[] }>(`/knowledge/follows?user=${encodeURIComponent(user || getCurrentUser())}`)
       return res.article_ids || []
     } catch {
       return []
     }
   },
-  listFollowUpdates: async (user = 'admin', unreadOnly = false) => {
+  listFollowUpdates: async (user?: string, unreadOnly = false) => {
     try {
-      return await apiList<{ article_id: string; updated_at: string; read: boolean }>(`/knowledge/follow-updates?user=${encodeURIComponent(user)}&unread=${unreadOnly}`)
+      return await apiList<{ article_id: string; updated_at: string; read: boolean }>(`/knowledge/follow-updates?user=${encodeURIComponent(user || getCurrentUser())}&unread=${unreadOnly}`)
     } catch {
       return []
     }
   },
-  markFollowUpdateRead: async (articleId, user = 'admin') => {
+  markFollowUpdateRead: async (articleId, user?: string) => {
     try {
-      await apiFetch(`/knowledge/follow-updates/read?user=${encodeURIComponent(user)}`, { method: 'POST', body: JSON.stringify({ article_id: articleId }) })
+      await apiFetch(`/knowledge/follow-updates/read?user=${encodeURIComponent(user || getCurrentUser())}`, { method: 'POST', body: JSON.stringify({ article_id: articleId }) })
     } catch {
       /* 忽略 */
     }

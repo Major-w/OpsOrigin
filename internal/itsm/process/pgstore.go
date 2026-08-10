@@ -32,9 +32,11 @@ type PGStore struct{ db *sql.DB }
 
 func NewPGStore(db *sql.DB) *PGStore {
 	s := &PGStore{db: db}
-	s.migrate()
-	s.migrateInstances()
-	s.migrateVersions()
+	if db != nil {
+		s.migrate()
+		s.migrateInstances()
+		s.migrateVersions()
+	}
 	return s
 }
 
@@ -59,6 +61,9 @@ func (s *PGStore) migrate() {
 }
 
 func (s *PGStore) Create(ctx context.Context, p *Process) error {
+	if s.db == nil {
+		return fmt.Errorf("database not available")
+	}
 	p.ID = uuid.New().String()
 	p.CreatedAt = time.Now()
 	p.UpdatedAt = p.CreatedAt
@@ -86,6 +91,9 @@ func (s *PGStore) Create(ctx context.Context, p *Process) error {
 }
 
 func (s *PGStore) Get(ctx context.Context, id, tenantID string) (*Process, error) {
+	if s.db == nil {
+		return nil, nil
+	}
 	var stepsJSON, labelsJSON, formJSON, notifyJSON []byte
 	p := &Process{}
 	err := s.db.QueryRowContext(ctx,
@@ -110,6 +118,9 @@ func (s *PGStore) Get(ctx context.Context, id, tenantID string) (*Process, error
 }
 
 func (s *PGStore) List(ctx context.Context, tenantID string) ([]*Process, error) {
+	if s.db == nil {
+		return nil, nil
+	}
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT id,tenant_id,name,description,category,steps,labels,enabled,version,form,sla_policy_id,notify_config,created_at,updated_at
 		 FROM itsm_processes WHERE tenant_id=$1 ORDER BY updated_at DESC`, tenantID)
@@ -138,6 +149,9 @@ func (s *PGStore) List(ctx context.Context, tenantID string) ([]*Process, error)
 }
 
 func (s *PGStore) Update(ctx context.Context, p *Process) error {
+	if s.db == nil {
+		return fmt.Errorf("database not available")
+	}
 	p.UpdatedAt = time.Now()
 	stepsJSON, _ := json.Marshal(p.Steps)
 	labelsJSON, _ := json.Marshal(p.Labels)
@@ -164,6 +178,9 @@ func (s *PGStore) Update(ctx context.Context, p *Process) error {
 }
 
 func (s *PGStore) Delete(ctx context.Context, id, tenantID string) error {
+	if s.db == nil {
+		return fmt.Errorf("database not available")
+	}
 	_, err := s.db.ExecContext(ctx, `DELETE FROM itsm_processes WHERE id=$1 AND tenant_id=$2`, id, tenantID)
 	return err
 }

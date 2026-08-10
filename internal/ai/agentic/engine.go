@@ -1475,7 +1475,7 @@ func (e *Engine) agentCount() int {
 }
 
 // DefaultSystemPrompt 是全局默认 system prompt 的内置常量(外置化的兜底值)。
-// 运维可通过 LLMConfig.DefaultSystemPrompt(环境变量 OPSNEXUS_LLM_DEFAULT_SYSTEM_PROMPT)覆盖,
+// 运维可通过 LLMConfig.DefaultSystemPrompt(环境变量 OPSORIGIN_LLM_DEFAULT_SYSTEM_PROMPT)覆盖,
 // 实现"提示词外置/版本化": 不必改代码即可调整助手人设与行为边界。
 const DefaultSystemPrompt = "你是 OpsOrigin 智能运维助手,帮助用户完成主机巡检、故障排查、报告生成等运维任务。回答应简洁、专业、可操作。"
 

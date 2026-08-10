@@ -92,8 +92,34 @@ type Ticket struct {
 	OnHold      bool       `json:"on_hold,omitempty"`
 	HoldReason  string     `json:"hold_reason,omitempty"`
 	HoldUntilAt *time.Time `json:"hold_until_at,omitempty"`
+	HoldAt      *time.Time `json:"hold_at,omitempty"`      // 挂起开始时间
+	HoldSeconds int        `json:"hold_seconds,omitempty"` // 累计挂起秒数
+	// 审批链: 支持顺序/并行审批模式
+	ApprovalChain  *ApprovalChain  `json:"approval_chain,omitempty"`
+	ApprovalStatus *ApprovalStatus `json:"approval_status,omitempty"`
 	// 关联工单: 与其它工单的双向关联(互相持有对方 ID)。
 	RelatedTicketIDs []string `json:"related_ticket_ids,omitempty"`
+}
+
+// ApprovalChain 审批链定义
+type ApprovalChain struct {
+	Mode      string   `json:"mode"`      // sequential(顺序) / parallel(并行)
+	Approvers []string `json:"approvers"` // 审批人列表
+}
+
+// ApprovalStatus 审批状态记录
+type ApprovalStatus struct {
+	CurrentIndex int              `json:"current_index"` // 当前审批人索引(顺序模式)
+	Votes        []ApprovalVote   `json:"votes"`         // 投票记录
+	FinalResult  string           `json:"final_result"`  // pending / approved / rejected
+}
+
+// ApprovalVote 单次审批投票
+type ApprovalVote struct {
+	Approver string    `json:"approver"`
+	Approved bool      `json:"approved"`
+	Comment  string    `json:"comment,omitempty"`
+	VotedAt  time.Time `json:"voted_at"`
 }
 
 type CreateTicketRequest struct {
@@ -110,11 +136,12 @@ type CreateTicketRequest struct {
 	// CustomFields 可配置表单采集的业务自定义字段（JSONB）。
 	CustomFields map[string]any `json:"custom_fields,omitempty"`
 	// FormScope 指定本工单套用的表单作用域（默认 ticket:default）；用于目录/流程按场景套不同字段。
-	FormScope   string     `json:"form_scope,omitempty"`
-	ProcessID   string     `json:"process_id,omitempty"` // 绑定的流程模板 ID（触发流程引擎驱动）
-	ScheduledAt *time.Time `json:"scheduled_at,omitempty"`
-	DeadlineAt  *time.Time `json:"deadline_at,omitempty"`
-	TraceID     string     `json:"trace_id,omitempty"`
+	FormScope      string         `json:"form_scope,omitempty"`
+	ProcessID      string         `json:"process_id,omitempty"` // 绑定的流程模板 ID（触发流程引擎驱动）
+	ScheduledAt    *time.Time     `json:"scheduled_at,omitempty"`
+	DeadlineAt     *time.Time     `json:"deadline_at,omitempty"`
+	TraceID        string         `json:"trace_id,omitempty"`
+	ApprovalChain  *ApprovalChain `json:"approval_chain,omitempty"` // 审批链配置
 }
 
 type ApproveRequest struct {
@@ -181,6 +208,8 @@ type RemindRequest struct {
 type RelateRequest struct {
 	RelatedID string `json:"related_id"`
 	RelateBy  string `json:"relate_by,omitempty"`
+	Relation  string `json:"relation,omitempty"`  // parent / child / depends_on / blocks / related
+	Reason    string `json:"reason,omitempty"`    // 关联原因
 }
 
 // UpdateTicketRequest 通用更新基础信息(非状态)。

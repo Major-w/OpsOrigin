@@ -16,12 +16,12 @@ export const apiBase = '/api/v1'
 
 function getToken(): string | null {
   if (typeof window === 'undefined') return null
-  return localStorage.getItem('opsnexus_token')
+  return localStorage.getItem('opsorigin_token')
 }
 
 function getPrincipal(): { type: string; id: string } | null {
   if (typeof window === 'undefined') return null
-  const userStr = localStorage.getItem('opsnexus_user')
+  const userStr = localStorage.getItem('opsorigin_user')
   if (userStr) {
     try {
       const user = JSON.parse(userStr)
@@ -36,7 +36,7 @@ function getPrincipal(): { type: string; id: string } | null {
 function getPermissions(): string[] | null {
   if (typeof window === 'undefined') return null
   try {
-    const raw = localStorage.getItem('opsnexus_permissions')
+    const raw = localStorage.getItem('opsorigin_permissions')
     if (!raw) return null
     const arr = JSON.parse(raw)
     return Array.isArray(arr) && arr.length > 0 ? arr : null
@@ -61,8 +61,8 @@ export async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> 
   const res = await fetch(`${apiBase}${path}`, { headers, ...init })
   if (res.status === 401) {
     if (typeof window !== 'undefined') {
-      localStorage.removeItem('opsnexus_token')
-      localStorage.removeItem('opsnexus_user')
+      localStorage.removeItem('opsorigin_token')
+      localStorage.removeItem('opsorigin_user')
       window.location.href = '/login'
     }
     throw new Error('unauthorized')
@@ -96,8 +96,8 @@ export async function apiFetchRaw(path: string, init?: RequestInit): Promise<Res
   const res = await fetch(`${apiBase}${path}`, { headers, ...init })
   if (res.status === 401) {
     if (typeof window !== 'undefined') {
-      localStorage.removeItem('opsnexus_token')
-      localStorage.removeItem('opsnexus_user')
+      localStorage.removeItem('opsorigin_token')
+      localStorage.removeItem('opsorigin_user')
       window.location.href = '/login'
     }
     throw new Error('unauthorized')

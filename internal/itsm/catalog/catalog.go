@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"time"
@@ -73,8 +74,10 @@ type Store struct {
 
 func NewStore(db *sql.DB) *Store {
 	s := &Store{db: db}
-	s.migrate()
-	s.seed()
+	if db != nil {
+		s.migrate()
+		s.seed()
+	}
 	return s
 }
 
@@ -218,6 +221,9 @@ func (s *Store) insertRow(it ServiceItem) {
 }
 
 func (s *Store) List(ctx context.Context, tenantID string) ([]ServiceItem, error) {
+	if s.db == nil {
+		return nil, nil
+	}
 	rows, err := s.db.QueryContext(ctx, `SELECT `+catalogCols+` FROM itsm_catalog WHERE tenant_id=$1 ORDER BY level, sort_order, name`, tenantID)
 	if err != nil {
 		return nil, err
@@ -238,6 +244,9 @@ func (s *Store) List(ctx context.Context, tenantID string) ([]ServiceItem, error
 
 // Get 按 ID 读取单个目录项(供"从目录发起申请"套用流程/表单)。
 func (s *Store) Get(ctx context.Context, id, tenantID string) (*ServiceItem, error) {
+	if s.db == nil {
+		return nil, nil
+	}
 	var it ServiceItem
 	var audRaw []byte
 	err := s.db.QueryRowContext(ctx, `SELECT `+catalogCols+` FROM itsm_catalog WHERE id=$1 AND tenant_id=$2`, id, tenantID).
@@ -253,6 +262,9 @@ func (s *Store) Get(ctx context.Context, id, tenantID string) (*ServiceItem, err
 }
 
 func (s *Store) Create(ctx context.Context, it *ServiceItem) error {
+	if s.db == nil {
+		return fmt.Errorf("database not available")
+	}
 	it.ID = uuid.New().String()
 	it.CreatedAt = time.Now()
 	it.UpdatedAt = it.CreatedAt
@@ -269,6 +281,9 @@ func (s *Store) Create(ctx context.Context, it *ServiceItem) error {
 }
 
 func (s *Store) Update(ctx context.Context, it *ServiceItem) error {
+	if s.db == nil {
+		return fmt.Errorf("database not available")
+	}
 	it.UpdatedAt = time.Now()
 	_, err := s.db.ExecContext(ctx, `UPDATE itsm_catalog SET name=$1,description=$2,category=$3,parent_id=$4,level=$5,sort_order=$6,process_id=$7,form_scope=$8,enabled=$9,audience=$10,updated_at=$11 WHERE id=$12 AND tenant_id=$13`,
 		it.Name, it.Description, it.Category, it.ParentID, it.Level, it.SortOrder, it.ProcessID, it.FormScope, it.Enabled, marshalAudience(it.Audience), it.UpdatedAt, it.ID, it.TenantID)
@@ -276,6 +291,9 @@ func (s *Store) Update(ctx context.Context, it *ServiceItem) error {
 }
 
 func (s *Store) Delete(ctx context.Context, id, tenantID string) error {
+	if s.db == nil {
+		return fmt.Errorf("database not available")
+	}
 	_, err := s.db.ExecContext(ctx, `DELETE FROM itsm_catalog WHERE id=$1 AND tenant_id=$2`, id, tenantID)
 	return err
 }

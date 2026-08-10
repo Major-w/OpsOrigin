@@ -4,9 +4,9 @@ services:
   postgres:
     image: postgres:16-alpine
     environment:
-      POSTGRES_DB: opsnexus
-      POSTGRES_USER: opsnexus
-      POSTGRES_PASSWORD: opsnexus
+      POSTGRES_DB: opsorigin
+      POSTGRES_USER: opsorigin
+      POSTGRES_PASSWORD: opsorigin
     deploy:
       resources:
         limits:
@@ -18,7 +18,7 @@ services:
       - pg_data:/var/lib/postgresql/data
       - ./migrations/001_init.sql:/docker-entrypoint-initdb.d/001_init.sql
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U opsnexus"]
+      test: ["CMD-SHELL", "pg_isready -U opsorigin"]
       interval: 5s
       timeout: 5s
       retries: 5
@@ -39,7 +39,7 @@ services:
     # Restrict the Dgraph security whitelist to loopback and the compose service
     # network names. 0.0.0.0/0 exposed the entire cluster to any host that
     # could reach the port (see report issue 1.6).
-    command: dgraph alpha --my=dgraph-alpha:7080 --zero=dgraph-zero:5080 --security whitelist=127.0.0.1,dgraph-alpha,dgraph-zero
+    command: dgraph alpha --my=dgraph-alpha:7080 --zero=dgraph-zero:5080 --security whitelist=127.0.0.1,172.19.0.1,dgraph-alpha,dgraph-zero
     deploy:
       resources:
         limits:
@@ -84,10 +84,10 @@ services:
     ports:
       - "8080:8080"
     environment:
-      OPSNEXUS_CORE_PORT: 8080
-      OPSNEXUS_POSTGRES_DSN: postgres://opsnexus:opsnexus@postgres:5432/opsnexus?sslmode=disable
-      OPSNEXUS_DGRAPH_TARGET: dgraph-alpha:9080
-      OPSNEXUS_REDIS_ADDR: redis:6379
+      OPSORIGIN_CORE_PORT: 8080
+      OPSORIGIN_POSTGRES_DSN: postgres://opsorigin:opsorigin@postgres:5432/opsorigin?sslmode=disable
+      OPSORIGIN_DGRAPH_TARGET: dgraph-alpha:9080
+      OPSORIGIN_REDIS_ADDR: redis:6379
     depends_on:
       postgres:
         condition: service_healthy

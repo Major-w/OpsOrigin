@@ -9,6 +9,8 @@ import (
 	"sync"
 	"time"
 
+	httpSwagger "github.com/swaggo/http-swagger"
+
 	"github.com/opsorigin/core/pkg/config"
 )
 
@@ -145,4 +147,18 @@ func (s *Server) GracefulStop() {
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 	_ = srv.Shutdown(shutdownCtx)
+}
+
+// swaggerRegistrar 注册 Swagger UI 路由
+type swaggerRegistrar struct{}
+
+func (s *swaggerRegistrar) RegisterRoutes(mux *http.ServeMux) {
+	// 服务 swagger.json 文件
+	mux.HandleFunc("GET /swagger/doc.json", func(w http.ResponseWriter, r *http.Request) {
+		http.ServeFile(w, r, "docs/swagger/swagger.json")
+	})
+	// 服务 Swagger UI
+	mux.Handle("/swagger/", httpSwagger.Handler(
+		httpSwagger.URL("/swagger/doc.json"),
+	))
 }

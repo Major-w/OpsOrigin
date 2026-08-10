@@ -20,6 +20,8 @@ import { Badge } from '@/components/ui/badge'
 import { Dialog } from '@/components/ui/dialog'
 import { formatTime } from '@/lib/utils'
 import { apiList, apiFetch } from '@/lib/utils'
+import { toast } from '@/stores/toast'
+import { NOTIFY_CHANNEL_LABELS } from '@/lib/itsm-constants'
 import { FormBuilder } from '@/components/itsm/FormBuilder'
 import { FormDesigner } from '@/components/itsm/FormDesigner'
 import { type FormSchema } from '@/components/itsm/DynamicForm'
@@ -388,7 +390,7 @@ function AdvancedSettings({ proc, slaPolicies, olaPolicies, slaPolicyId, setSlaP
   notifyConfig: { channels: string[]; on_create: boolean; on_complete: boolean; template: string }
   setNotifyConfig: (v: { channels: string[]; on_create: boolean; on_complete: boolean; template: string }) => void
 }) {
-  const chLabels: Record<string,string> = { email: '邮件', wecom: '企业微信', dingtalk: '钉钉', feishu: '飞书' }
+  const chLabels = NOTIFY_CHANNEL_LABELS
   const toggleChannel = (c: string) => {
     const has = notifyConfig.channels.includes(c)
     setNotifyConfig({ ...notifyConfig, channels: has ? notifyConfig.channels.filter(x => x !== c) : [...notifyConfig.channels, c] })
@@ -544,7 +546,7 @@ export default function ITSMProcessDetailPage() {
   const handleSave = async () => {
     if (!proc) return
     const err = validateFlow(steps)
-    if (err) { alert(err); return }
+    if (err) { toast.error(err); return }
     const payload = {
       ...proc,
       steps,

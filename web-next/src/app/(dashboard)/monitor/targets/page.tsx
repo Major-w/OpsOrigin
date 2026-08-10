@@ -215,7 +215,7 @@ export default function MonitorConfigPage() {
             </CardHeader>
             <CardContent>
               {ingestStats === null ? (
-                <p className="text-xs text-muted-foreground py-2 text-center">管道未启用或服务不可达(需配置 OPSNEXUS_CORE_VM_ADDR 并接入 Agent)。</p>
+                <p className="text-xs text-muted-foreground py-2 text-center">管道未启用或服务不可达(需配置 OPSORIGIN_CORE_VM_ADDR 并接入 Agent)。</p>
               ) : (
                 <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
                   <div className="rounded-lg border border-gray-200 dark:border-gray-800 p-3">

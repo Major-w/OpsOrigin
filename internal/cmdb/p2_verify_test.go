@@ -16,9 +16,9 @@ import (
 
 func p2Repo(t *testing.T) *pg.Repository {
 	t.Helper()
-	dsn := os.Getenv("OPSNEXUS_POSTGRES_DSN")
+	dsn := os.Getenv("OPSORIGIN_POSTGRES_DSN")
 	if dsn == "" {
-		t.Skip("OPSNEXUS_POSTGRES_DSN not set; skipping live DB test")
+		t.Skip("OPSORIGIN_POSTGRES_DSN not set; skipping live DB test")
 	}
 	repo, err := pg.NewRepository(dsn)
 	if err != nil {

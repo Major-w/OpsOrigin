@@ -57,7 +57,7 @@ docker compose -f deploy/docker-compose.yml up -d postgres dgraph-zero dgraph-al
 
 连接参数见 `.env.example`，默认如下（本地开发）：
 
-- PostgreSQL DSN：`postgres://opsnexus:opsnexus@localhost:5432/opsnexus?sslmode=disable`
+- PostgreSQL DSN：`postgres://opsorigin:opsorigin@localhost:5432/opsorigin?sslmode=disable`
 - Dgraph gRPC：`localhost:9080`
 - Redis：`localhost:6379`
 

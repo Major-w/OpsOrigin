@@ -7,7 +7,11 @@ import { Badge } from '@/components/ui/badge'
 import { Input } from '@/components/ui/input'
 import { Dialog, DialogFooter } from '@/components/ui/dialog'
 import { formatTime, apiFetch, apiList } from '@/lib/utils'
+import { useAuthStore } from '@/stores/auth'
 import { Plus, Check, X, Play, ChevronRight, Shield, ChevronLeft, CalendarDays } from 'lucide-react'
+
+/** 获取当前登录用户名 */
+const getCurrentUser = () => useAuthStore.getState().user?.username || 'anonymous'
 
 interface CABApproval {
   member: string
@@ -57,11 +61,11 @@ export default function ChangeManagementPage() {
   const [createOpen, setCreateOpen] = useState(false)
   const [form, setForm] = useState({
     title: '', description: '', risk_level: 'medium', change_type: 'normal',
-    impact: '', urgency: '', cab_members: '', plan: '', rollback_plan: '', created_by: 'admin', ticket_id: '',
+    impact: '', urgency: '', cab_members: '', plan: '', rollback_plan: '', created_by: '', ticket_id: '',
     scheduled_at: '', window_start: '', window_end: '',
   })
   const [voteDialog, setVoteDialog] = useState(false)
-  const [voteMember, setVoteMember] = useState('admin')
+  const [voteMember, setVoteMember] = useState('')
   const [voteComment, setVoteComment] = useState('')
   const [calYear, setCalYear] = useState(() => new Date().getFullYear())
   const [calMonth, setCalMonth] = useState(() => new Date().getMonth())
@@ -81,10 +85,10 @@ export default function ChangeManagementPage() {
     const cabMembers = form.cab_members.split(',').map(s => s.trim()).filter(Boolean)
     await apiFetch('/itsm/changes', {
       method: 'POST',
-      body: JSON.stringify({ ...form, cab_members: cabMembers }),
+      body: JSON.stringify({ ...form, created_by: getCurrentUser(), cab_members: cabMembers }),
     })
     setCreateOpen(false)
-    setForm({ title: '', description: '', risk_level: 'medium', change_type: 'normal', impact: '', urgency: '', cab_members: '', plan: '', rollback_plan: '', created_by: 'admin', ticket_id: '', scheduled_at: '', window_start: '', window_end: '' })
+    setForm({ title: '', description: '', risk_level: 'medium', change_type: 'normal', impact: '', urgency: '', cab_members: '', plan: '', rollback_plan: '', created_by: '', ticket_id: '', scheduled_at: '', window_start: '', window_end: '' })
     fetchChanges()
   }
 
@@ -92,7 +96,7 @@ export default function ChangeManagementPage() {
     if (!selected) return
     const updated = await apiFetch<ChangeRequest>(`/itsm/changes/${selected.id}/vote`, {
       method: 'POST',
-      body: JSON.stringify({ member: voteMember, approved, comment: voteComment }),
+      body: JSON.stringify({ member: getCurrentUser(), approved, comment: voteComment }),
     })
     setSelected(updated)
     setVoteDialog(false)

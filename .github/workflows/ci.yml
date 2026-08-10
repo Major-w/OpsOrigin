@@ -47,4 +47,4 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Build
-        run: docker build -f deploy/Dockerfile -t opsnexus/core .
+        run: docker build -f deploy/Dockerfile -t opsorigin/core .

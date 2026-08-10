@@ -72,6 +72,26 @@ import (
 	"github.com/redis/go-redis/v9"
 )
 
+// @title OpsOrigin API
+// @version 1.0
+// @description OpsOrigin 一体化运维平台 API 文档
+// @termsOfService http://swagger.io/terms/
+
+// @contact.name OpsOrigin Team
+// @contact.url https://github.com/opsorigin/core
+// @contact.email support@opsorigin.com
+
+// @license.name Apache 2.0
+// @license.url https://www.apache.org/licenses/LICENSE-2.0.html
+
+// @host localhost:8080
+// @BasePath /
+
+// @securityDefinitions.apikey BearerAuth
+// @in header
+// @name Authorization
+// @description 输入格式: "Bearer {token}"
+
 func main() {
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
 	slog.SetDefault(logger)
@@ -142,7 +162,7 @@ func main() {
 	// 留空 = 断言头通道关闭(fail-closed),浏览器请求一律从 JWT 派生身份。
 	authProvider.SetServiceToken(cfg.Auth.ServiceToken)
 	if cfg.Auth.ServiceToken == "" {
-		slog.Info("auth: internal principal assertion channel disabled (OPSNEXUS_SERVICE_TOKEN unset)")
+		slog.Info("auth: internal principal assertion channel disabled (OPSORIGIN_SERVICE_TOKEN unset)")
 	}
 
 	var db *sql.DB
@@ -167,8 +187,11 @@ func main() {
 	server.WithMiddleware(authProvider.Middleware)
 	server.WithMiddleware(auditSvc.Middleware)
 
-	// T03: 注册 bypass 前缀 — /metrics /healthz /readyz /api/v1/health 跳过认证/审计/RBAC 中间件
-	server.WithBypassPrefixes("/metrics", "/healthz", "/readyz", "/api/v1/health")
+	// T03: 注册 bypass 前缀 — /metrics /healthz /readyz /api/v1/health /swagger 跳过认证/审计/RBAC 中间件
+	server.WithBypassPrefixes("/metrics", "/healthz", "/readyz", "/api/v1/health", "/swagger/")
+
+	// Swagger UI 路由
+	server.RegisterService(&swaggerRegistrar{})
 
 	// T07: 给 Core http.Server 的 Handler 包一层 promhttp.InstrumentHandlerDuration
 	server.WithHandlerWrapper(func(next http.Handler) http.Handler {
@@ -204,7 +227,9 @@ func main() {
 
 	cmdbSvc := cmdb.NewService(cfg, pgRepo, dgClient)
 	server.RegisterService(cmdbSvc)
-	server.RegisterService(changeassess.NewStore(db)) // 变更影响评估：变更请求持久化
+	if db != nil {
+		server.RegisterService(changeassess.NewStore(db)) // 变更影响评估：变更请求持久化
+	}
 
 	// 云资源接出：注册 4 云 Provider（空白导入触发 init）并把云 Service 接入 Core mux，
 	// 经 cloudCMDBAdapter 把发现的资源同步进 CMDB（复用完整 CI 生命周期）。
@@ -259,19 +284,27 @@ func main() {
 	server.RegisterService(itsmSvc)
 	itsmSvc.SetWebSocketHub(wsHub)
 	itsmSvc.StartSLAChecker(ctx)
+	itsmSvc.StartOLAChecker(ctx)
 
-	processSvc := process.NewService(db)
-	server.RegisterService(processSvc)
-	processSvc.StartTimerChecker(ctx)
+	var processSvc *process.Service
+	var catalogStore *catalog.Store
+	if db != nil {
+		processSvc = process.NewService(db)
+		server.RegisterService(processSvc)
+		processSvc.StartTimerChecker(ctx)
+		itsmSvc.SetProcessStore(processSvc)
 
-	itsmSvc.SetProcessStore(processSvc)
-	slaStore := sla.NewStore(db)
-	server.RegisterService(slaStore)
-	server.RegisterService(ola.NewStore(db)) // OLA 独立管理
-	itsmSvc.SetSLAStore(slaStore)
-	catalogStore := catalog.NewStore(db)
-	server.RegisterService(catalogStore)
-	itsmSvc.SetCatalogStore(catalogStore)
+		slaStore := sla.NewStore(db)
+		server.RegisterService(slaStore)
+		olaStore := ola.NewStore(db)
+		server.RegisterService(olaStore) // OLA 独立管理
+		itsmSvc.SetSLAStore(slaStore)
+		itsmSvc.SetOLAStore(olaStore)
+
+		catalogStore = catalog.NewStore(db)
+		server.RegisterService(catalogStore)
+		itsmSvc.SetCatalogStore(catalogStore)
+	}
 
 	// 创建 tunnel server,监听 Proxy 连接(用于通过 Proxy 下发命令给 Agent)
 	tunnelServer := tunnel.NewServer(cfg.Proxy.Listen, cfg.Tunnel.AuthSecret, cfg.Tunnel.Insecure)
@@ -296,7 +329,7 @@ func main() {
 	})
 
 	// 监控/CMDB 指标上报管道(阶段 1/2): OnMetrics → 批量缓冲(背压) → Sink。
-	// 配置 OPSNEXUS_CORE_VM_ADDR 后写入 VictoriaMetrics(高频 monitor, Prometheus 文本导入);
+	// 配置 OPSORIGIN_CORE_VM_ADDR 后写入 VictoriaMetrics(高频 monitor, Prometheus 文本导入);
 	// 未配置时回退内存 sink(仅演示/测试)。
 	var ingestSink ingest.Sink = ingest.NewMemorySink()
 	if cfg.Core.VMAddr != "" {
@@ -309,7 +342,7 @@ func main() {
 			},
 		})
 	} else {
-		slog.Warn("metrics ingest: OPSNEXUS_CORE_VM_ADDR not set, using in-memory sink (demo only)")
+		slog.Warn("metrics ingest: OPSORIGIN_CORE_VM_ADDR not set, using in-memory sink (demo only)")
 	}
 	ingestBuf := ingest.NewBuffer(ingestSink, ingest.WithFlushInterval(2*time.Second))
 	ingestBuf.Start(ctx)
@@ -404,77 +437,128 @@ func main() {
 	discoveryReg := plugins.NewRegistry()
 	cmdbSvc.SetDiscoveryRegistry(discoveryReg)
 	cmdbSvc.SetDiscoveryScriptRunner(agentSvc)
-	go func() {
-		ensureCtx, ec := context.WithTimeout(context.Background(), 30*time.Second)
-		defer ec()
-		if err := cmdbSvc.EnsureDiscoveryModelTypes(ensureCtx, "default"); err != nil {
-			slog.Error("ensure discovery model types failed", "err", err)
-		}
-	}()
+	if pgRepo != nil {
+		go func() {
+			ensureCtx, ec := context.WithTimeout(context.Background(), 30*time.Second)
+			defer ec()
+			if err := cmdbSvc.EnsureDiscoveryModelTypes(ensureCtx, "default"); err != nil {
+				slog.Error("ensure discovery model types failed", "err", err)
+			}
+		}()
+	}
 
 	// 系统配置管理服务
 	sysconfigSvc := sysconfig.NewService(cfg)
 	server.RegisterService(sysconfigSvc)
 
-	scriptSvc := script.NewService(db)
-	server.RegisterService(scriptSvc)
+	var scriptSvc *script.Service
+	var workflowSvc *workflow.Service
+	var schedulerSvc *scheduler.Service
+	var knowledgeSvc *knowledge.Service
+	var oncallSvc *oncall.Service
+	var keySvc *keystore.Service
+	var userSvc *user.Service
+	var iamSvc *iam.Service
+	var notifySvc *notification.Service
+	var inboundStore *inboundconfig.Store
+	var deploySvc *deploy.Service
 
-	workflowSvc := workflow.NewService(db)
-	workflowSvc.SetScriptExecutor(scriptSvc)
-	// 让 ITSM 流程的服务任务(StepService)也能驱动同一套自动化脚本执行器。
-	processSvc.SetScriptExecutor(scriptSvc)
-	// 让脚本/工作流在指定 AgentID 时，通过 Tunnel 派发到被管主机执行
-	// （而非 Core 本机 os/exec），并复用 Agent 端命令白名单校验。
-	scriptSvc.SetAgentRunner(agentSvc)
-
-	// 本地兜底执行路径(无 Agent 时)的命令白名单：仅允许 bash/python3/cmd/sudo。
-	// dev 期宽松，生产应替换为 sysconfig 加载的租户白名单。
-	wl, _ := command.New("dev-allowlist", []command.Rule{
-		{Type: command.RulePrefix, Pattern: "bash"},
-		{Type: command.RulePrefix, Pattern: "python3"},
-		{Type: command.RulePrefix, Pattern: "cmd"},
-		{Type: command.RulePrefix, Pattern: "sudo"},
-	})
-	scriptSvc.SetCommandWhitelist(wl)
-	scriptSvc.SetDangerousPolicy(command.NewDangerousPolicy())
-
-	server.RegisterService(workflowSvc)
-
-	schedulerSvc := scheduler.NewService(db)
-	schedulerSvc.SetWorkflowTrigger(func(ctx context.Context, tenantID, workflowID string) error {
-		_, err := workflowSvc.Trigger(ctx, tenantID, workflowID, nil, nil)
-		return err
-	})
-	schedulerSvc.SetScriptTrigger(func(ctx context.Context, tenantID, scriptID string, agentIDs []string) error {
-		agentID := ""
-		if len(agentIDs) > 0 {
-			agentID = agentIDs[0]
-		}
-		_, _, err := scriptSvc.Execute(scriptID, nil, 3600, "", agentID, tenantID)
-		return err
-	})
-	server.RegisterService(schedulerSvc)
-	// 启动定时扫描（按 CronExpr 触发 workflow）。
-	go schedulerSvc.Start(ctx)
-
-	knowledgeSvc := knowledge.NewService(db)
-	server.RegisterService(knowledgeSvc)
-
-	// 统一报表模块: 注册内置数据集 + 装配控制面 REST(看板持久化、统一查询)。
 	if db != nil {
+		scriptSvc = script.NewService(db)
+		server.RegisterService(scriptSvc)
+
+		workflowSvc = workflow.NewService(db)
+		workflowSvc.SetScriptExecutor(scriptSvc)
+		// 让 ITSM 流程的服务任务(StepService)也能驱动同一套自动化脚本执行器。
+		if processSvc != nil {
+			processSvc.SetScriptExecutor(scriptSvc)
+		}
+		// 让脚本/工作流在指定 AgentID 时，通过 Tunnel 派发到被管主机执行
+		// （而非 Core 本机 os/exec），并复用 Agent 端命令白名单校验。
+		scriptSvc.SetAgentRunner(agentSvc)
+
+		// 本地兜底执行路径(无 Agent 时)的命令白名单：仅允许 bash/python3/cmd/sudo。
+		// dev 期宽松，生产应替换为 sysconfig 加载的租户白名单。
+		wl, _ := command.New("dev-allowlist", []command.Rule{
+			{Type: command.RulePrefix, Pattern: "bash"},
+			{Type: command.RulePrefix, Pattern: "python3"},
+			{Type: command.RulePrefix, Pattern: "cmd"},
+			{Type: command.RulePrefix, Pattern: "sudo"},
+		})
+		scriptSvc.SetCommandWhitelist(wl)
+		scriptSvc.SetDangerousPolicy(command.NewDangerousPolicy())
+
+		server.RegisterService(workflowSvc)
+
+		schedulerSvc = scheduler.NewService(db)
+		schedulerSvc.SetWorkflowTrigger(func(ctx context.Context, tenantID, workflowID string) error {
+			_, err := workflowSvc.Trigger(ctx, tenantID, workflowID, nil, nil)
+			return err
+		})
+		schedulerSvc.SetScriptTrigger(func(ctx context.Context, tenantID, scriptID string, agentIDs []string) error {
+			agentID := ""
+			if len(agentIDs) > 0 {
+				agentID = agentIDs[0]
+			}
+			_, _, err := scriptSvc.Execute(scriptID, nil, 3600, "", agentID, tenantID)
+			return err
+		})
+		server.RegisterService(schedulerSvc)
+		// 启动定时扫描（按 CronExpr 触发 workflow）。
+		go schedulerSvc.Start(ctx)
+
+		knowledgeSvc = knowledge.NewService(db)
+		server.RegisterService(knowledgeSvc)
+
+		// 统一报表模块: 注册内置数据集 + 装配控制面 REST(看板持久化、统一查询)。
 		if err := datasets.Install(db, report.Default()); err != nil {
 			log.Printf("report datasets install failed: %v", err)
 		}
 		reportSvc := report.NewService(report.Default(), db)
 		reportSvc.InitSchema(ctx)
 		server.RegisterService(reportSvc)
+
+		oncallSvc = oncall.NewService(db)
+		server.RegisterService(oncallSvc)
+
+		keySvc = keystore.NewService(db)
+		server.RegisterService(keySvc)
+
+		userSvc = user.NewService(db, authProvider)
+		server.RegisterService(userSvc)
+
+		iamSvc = iam.NewService(db)
+		server.RegisterService(iamSvc)
+
+		notifySvc = notification.NewService(db)
+		server.RegisterService(notifySvc)
+
+		inboundStore = inboundconfig.NewStore(db)
+		server.RegisterService(inboundStore)
+
+		deploySvc = deploy.NewService(db)
+		server.RegisterService(deploySvc)
+	} else {
+		slog.Warn("db not available, skipping script/workflow/scheduler/knowledge/oncall/keystore/iam/notification/inbound/deploy")
 	}
 
-	oncallSvc := oncall.NewService(db)
-	server.RegisterService(oncallSvc)
+	// user service always created (has built-in admin fallback for stub mode)
+	if userSvc == nil {
+		userSvc = user.NewService(nil, authProvider)
+		server.RegisterService(userSvc)
+	}
 
-	keySvc := keystore.NewService(db)
-	server.RegisterService(keySvc)
+	// process & catalog always created (nil-db = empty results, routes still registered)
+	if processSvc == nil {
+		processSvc = process.NewService(nil)
+		server.RegisterService(processSvc)
+		itsmSvc.SetProcessStore(processSvc)
+	}
+	if catalogStore == nil {
+		catalogStore = catalog.NewStore(nil)
+		server.RegisterService(catalogStore)
+		itsmSvc.SetCatalogStore(catalogStore)
+	}
 
 	// 初始化低代码引擎
 	var lowcodeSvc *service.Service
@@ -504,7 +588,9 @@ func main() {
 		EmbeddingModel:   cfg.LLM.EmbeddingModel,
 		EmbeddingBaseURL: cfg.LLM.EmbeddingBaseURL,
 	})
-	knowledgeSvc.SetEmbedder(llmClient) // 注入向量生成器,新建/更新知识库文章自动写入 embedding
+	if knowledgeSvc != nil {
+		knowledgeSvc.SetEmbedder(llmClient) // 注入向量生成器,新建/更新知识库文章自动写入 embedding
+	}
 
 	// 多模型路由池(P3): 主配置为兜底 provider, 附加 provider 按权重参与路由(失败自动降级)。
 	var llmProviders []agentic.ProviderConfig
@@ -540,7 +626,9 @@ func main() {
 
 	// P3-1 增量索引自愈: 后台循环定时扫描 embedding IS NULL 的文章带退避重试,
 	// 并刷新 knowledge_unindexed_articles 指标(覆盖启动回填之后新出现/失败的 embedding)。
-	knowledgeSvc.StartReindexLoop(context.Background(), 30*time.Second)
+	if knowledgeSvc != nil {
+		knowledgeSvc.StartReindexLoop(context.Background(), 30*time.Second)
+	}
 
 	// 持续改进闭环: AI 巡检工单完成后, 处置案例自动沉淀到知识库(供 AI 检索复用)。
 	itsmSvc.SetKnowledgeArchiver(func(ctx context.Context, tenantID, title, content string, tags []string) (string, error) {
@@ -558,170 +646,175 @@ func main() {
 		return article.ID, nil
 	})
 
-	userSvc := user.NewService(db, authProvider)
-	server.RegisterService(userSvc)
-
-	// IAM:角色/用户组/权限管理(PG 存储,预置 3 内置角色 + 权限点目录)
-	iamSvc := iam.NewService(db)
-	server.RegisterService(iamSvc)
+	// user/iam/notification 已在 db!=nil 块中创建
 
 	// P0.5 身份富化:鉴权链在派生主体后回填「服务端解析的权限集合 + 用户展示名」。
 	// 权限来自 IAM 角色库聚合(角色 + 用户组),不再由客户端 X-Permissions 头自报;
 	// 展示名按 uid 回查 users.username,让审计 actor 可读。两者均带 TTL 缓存。
-	identityEnricher := identity.NewEnricher(db, iamSvc.GetAggregatedPermissions)
-	authProvider.SetPrincipalEnricher(identityEnricher)
-	// 角色权限被编辑后立即失效富化器缓存,不必等 TTL。
-	iamSvc.SetPermissionChangeHook(identityEnricher.InvalidatePermissions)
+	if db != nil && iamSvc != nil {
+		identityEnricher := identity.NewEnricher(db, iamSvc.GetAggregatedPermissions)
+		authProvider.SetPrincipalEnricher(identityEnricher)
+		// 角色权限被编辑后立即失效富化器缓存,不必等 TTL。
+		iamSvc.SetPermissionChangeHook(identityEnricher.InvalidatePermissions)
 
-	// ITSM 动态表单选项来源:cmdb:<type> 取配置项、iam:user/role/group 取人与角色。
-	// 解析器由 itsm 侧定义(form 包只认接口),此处在 cmdb/user/iam 就绪后装配,带 TTL 缓存。
-	itsmSvc.SetSourceResolver(itsm.NewCMDBIAMResolver(cmdbSvc, userSvc, iamSvc))
+		// ITSM 动态表单选项来源:cmdb:<type> 取配置项、iam:user/role/group 取人与角色。
+		// 解析器由 itsm 侧定义(form 包只认接口),此处在 cmdb/user/iam 就绪后装配,带 TTL 缓存。
+		itsmSvc.SetSourceResolver(itsm.NewCMDBIAMResolver(cmdbSvc, userSvc, iamSvc))
 
-	// 服务目录「服务对象」按用户组授权: catalog 不反向依赖 iam,由此处注入组解析器。
-	catalogStore.SetGroupResolver(func(ctx context.Context, tenantID, userID string) ([]string, error) {
-		groups, err := iamSvc.ListGroups(ctx, tenantID)
-		if err != nil {
-			return nil, err
-		}
-		var ids []string
-		for _, g := range groups {
-			for _, uid := range g.UserIDs {
-				if uid == userID {
-					ids = append(ids, g.ID)
-					break
+		// 服务目录「服务对象」按用户组授权: catalog 不反向依赖 iam,由此处注入组解析器。
+		if catalogStore != nil {
+			catalogStore.SetGroupResolver(func(ctx context.Context, tenantID, userID string) ([]string, error) {
+				groups, err := iamSvc.ListGroups(ctx, tenantID)
+				if err != nil {
+					return nil, err
+				}
+			var ids []string
+			for _, g := range groups {
+				for _, uid := range g.UserIDs {
+					if uid == userID {
+						ids = append(ids, g.ID)
+						break
+					}
 				}
 			}
+			return ids, nil
+		})
 		}
-		return ids, nil
-	})
 
-	// 通知管理:邮件/钉钉/企业微信/飞书/Webhook 五种渠道 + 事件订阅策略
-	notifySvc := notification.NewService(db)
-	server.RegisterService(notifySvc)
-	schedulerSvc.SetNotifier(notifySvc)
-	itsmSvc.SetNotifier(notifySvc)
+		// 通知管理:邮件/钉钉/企业微信/飞书/Webhook 五种渠道 + 事件订阅策略
+		if notifySvc != nil {
+			schedulerSvc.SetNotifier(notifySvc)
+		}
+		itsmSvc.SetNotifier(notifySvc)
 
-	// 流程引擎动作库: service 步骤除脚本外可执行 http / notify / create_ticket / cmdb_update 预置动作。
-	actionExec := actions.New()
-	actionExec.SetScriptExecutor(scriptSvc)
-	actionExec.SetNotifier(notifySvc.NotifyEvent)
-	actionExec.SetUpdateCI(func(ctx context.Context, tenantID, ciID string, attrs map[string]any) error {
-		return cmdbSvc.UpdateCIAttributes(ctx, ciID, tenantID, attrs)
-	})
-	actionExec.SetCreateTicket(func(ctx context.Context, tenantID string, params map[string]any) (string, error) {
-		req := itsmmodel.CreateTicketRequest{
-			Title:        strAny(params["title"]),
-			Description:  strAny(params["description"]),
-			RiskLevel:    itsmmodel.RiskLevel(strAny(params["risk_level"])),
-			ChangePlan:   strAny(params["change_plan"]),
-			CreatedBy:    strAny(params["created_by"]),
-			CustomFields: params,
+		// 流程引擎动作库: service 步骤除脚本外可执行 http / notify / create_ticket / cmdb_update 预置动作。
+		actionExec := actions.New()
+		if scriptSvc != nil {
+			actionExec.SetScriptExecutor(scriptSvc)
 		}
-		if req.Title == "" {
-			return "", fmt.Errorf("create_ticket action: title is required")
+		if notifySvc != nil {
+			actionExec.SetNotifier(notifySvc.NotifyEvent)
 		}
-		if req.CreatedBy == "" {
-			req.CreatedBy = "action"
-		}
-		tctx := context.WithValue(ctx, "tenant_id", tenantID)
-		t, err := itsmSvc.CreateTicket(tctx, req)
-		if err != nil {
-			return "", err
-		}
-		return t.ID, nil
-	})
-	processSvc.SetActionExecutor(actionExec)
-
-	// 入站渠道配置统一由「入站配置」存储(automation_inbound_channels)驱动,
-	// 界面可动态管理渠道开关与参数; 渠道未配置时回退到环境变量(兼容旧部署)。
-	inboundStore := inboundconfig.NewStore(db)
-	server.RegisterService(inboundStore)
-
-	// 邮件入站: 从存储读取 IMAP 配置(缺省回退环境变量), 启动后每 30s 检查变更并热重载。
-	mailSvc := inboundmail.New(inboundmail.Config{})
-	mailSvc.SetHandlers(inboundmail.Handlers{
-		ReplyToTicket: func(ctx context.Context, tenantID, ticketID, author, body string) error {
-			return itsmSvc.AddTicketComment(ctx, tenantID, ticketID, "mail:"+author, body)
-		},
-		CreateTicket: func(ctx context.Context, tenantID, from, subject, body string) (string, error) {
+		actionExec.SetUpdateCI(func(ctx context.Context, tenantID, ciID string, attrs map[string]any) error {
+			return cmdbSvc.UpdateCIAttributes(ctx, ciID, tenantID, attrs)
+		})
+		actionExec.SetCreateTicket(func(ctx context.Context, tenantID string, params map[string]any) (string, error) {
 			req := itsmmodel.CreateTicketRequest{
-				Title:         subject,
-				Description:   body,
-				RiskLevel:     itsmmodel.RiskLow,
-				CreatedBy:     "mail:" + from,
-				CreatedByType: "mail",
+				Title:        strAny(params["title"]),
+				Description:  strAny(params["description"]),
+				RiskLevel:    itsmmodel.RiskLevel(strAny(params["risk_level"])),
+				ChangePlan:   strAny(params["change_plan"]),
+				CreatedBy:    strAny(params["created_by"]),
+				CustomFields: params,
+			}
+			if req.Title == "" {
+				return "", fmt.Errorf("create_ticket action: title is required")
+			}
+			if req.CreatedBy == "" {
+				req.CreatedBy = "action"
 			}
 			tctx := context.WithValue(ctx, "tenant_id", tenantID)
-			tk, err := itsmSvc.CreateTicket(tctx, req)
+			t, err := itsmSvc.CreateTicket(tctx, req)
 			if err != nil {
 				return "", err
 			}
-			return tk.ID, nil
-		},
-	})
-	var mailSig string
-	applyMail := func() {
-		ch, _ := inboundStore.GetByType(ctx, "default", inboundconfig.TypeEmail)
-		if ch == nil {
-			return
-		}
-		var k struct {
-			Host     string `json:"host"`
-			Port     string `json:"port"`
-			Username string `json:"username"`
-			Password string `json:"password"`
-			Mailbox  string `json:"mailbox"`
-			PollSecs int    `json:"poll_secs"`
-		}
-		json.Unmarshal([]byte(ch.Config), &k)
-		host := k.Host
-		if host == "" {
-			host = os.Getenv("ITSM_MAIL_IMAP_HOST")
-		}
-		port := k.Port
-		if port == "" {
-			port = os.Getenv("ITSM_MAIL_IMAP_PORT")
-		}
-		user := k.Username
-		if user == "" {
-			user = os.Getenv("ITSM_MAIL_USERNAME")
-		}
-		pass := k.Password
-		if pass == "" {
-			pass = os.Getenv("ITSM_MAIL_PASSWORD")
-		}
-		mb := k.Mailbox
-		if mb == "" {
-			mb = os.Getenv("ITSM_MAIL_MAILBOX")
-		}
-		enable := ch.Enabled || host != ""
-		if !enable {
-			return
-		}
-		cfg := inboundmail.Config{Enable: true, Host: host, Port: port, Username: user, Password: pass, Mailbox: mb, TenantID: "default"}
-		if k.PollSecs > 0 {
-			cfg.PollSecs = k.PollSecs
-		}
-		sig := fmt.Sprintf("%v|%s|%s|%s|%s|%s|%d", enable, host, port, user, mb, pass, k.PollSecs)
-		if sig != mailSig {
-			mailSig = sig
-			mailSvc.Reload(cfg)
+			return t.ID, nil
+		})
+		if processSvc != nil {
+			processSvc.SetActionExecutor(actionExec)
 		}
 	}
-	applyMail()
-	go func() {
-		ticker := time.NewTicker(30 * time.Second)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-ctx.Done():
-				mailSvc.Stop()
+
+	// 入站渠道配置统一由「入站配置」存储(automation_inbound_channels)驱动,
+	// 界面可动态管理渠道开关与参数; 渠道未配置时回退到环境变量(兼容旧部署)。
+
+	// 邮件入站: 从存储读取 IMAP 配置(缺省回退环境变量), 启动后每 30s 检查变更并热重载。
+	if inboundStore != nil {
+		mailSvc := inboundmail.New(inboundmail.Config{})
+		mailSvc.SetHandlers(inboundmail.Handlers{
+			ReplyToTicket: func(ctx context.Context, tenantID, ticketID, author, body string) error {
+				return itsmSvc.AddTicketComment(ctx, tenantID, ticketID, "mail:"+author, body)
+			},
+			CreateTicket: func(ctx context.Context, tenantID, from, subject, body string) (string, error) {
+				req := itsmmodel.CreateTicketRequest{
+					Title:         subject,
+					Description:   body,
+					RiskLevel:     itsmmodel.RiskLow,
+					CreatedBy:     "mail:" + from,
+					CreatedByType: "mail",
+				}
+				tctx := context.WithValue(ctx, "tenant_id", tenantID)
+				tk, err := itsmSvc.CreateTicket(tctx, req)
+				if err != nil {
+					return "", err
+				}
+				return tk.ID, nil
+			},
+		})
+		var mailSig string
+		applyMail := func() {
+			ch, _ := inboundStore.GetByType(ctx, "default", inboundconfig.TypeEmail)
+			if ch == nil {
 				return
-			case <-ticker.C:
-				applyMail()
+			}
+			var k struct {
+				Host     string `json:"host"`
+				Port     string `json:"port"`
+				Username string `json:"username"`
+				Password string `json:"password"`
+				Mailbox  string `json:"mailbox"`
+				PollSecs int    `json:"poll_secs"`
+			}
+			json.Unmarshal([]byte(ch.Config), &k)
+			host := k.Host
+			if host == "" {
+				host = os.Getenv("ITSM_MAIL_IMAP_HOST")
+			}
+			port := k.Port
+			if port == "" {
+				port = os.Getenv("ITSM_MAIL_IMAP_PORT")
+			}
+			user := k.Username
+			if user == "" {
+				user = os.Getenv("ITSM_MAIL_USERNAME")
+			}
+			pass := k.Password
+			if pass == "" {
+				pass = os.Getenv("ITSM_MAIL_PASSWORD")
+			}
+			mb := k.Mailbox
+			if mb == "" {
+				mb = os.Getenv("ITSM_MAIL_MAILBOX")
+			}
+			enable := ch.Enabled || host != ""
+			if !enable {
+				return
+			}
+			cfg := inboundmail.Config{Enable: true, Host: host, Port: port, Username: user, Password: pass, Mailbox: mb, TenantID: "default"}
+			if k.PollSecs > 0 {
+				cfg.PollSecs = k.PollSecs
+			}
+			sig := fmt.Sprintf("%v|%s|%s|%s|%s|%s|%d", enable, host, port, user, mb, pass, k.PollSecs)
+			if sig != mailSig {
+				mailSig = sig
+				mailSvc.Reload(cfg)
 			}
 		}
-	}()
+		applyMail()
+		go func() {
+			ticker := time.NewTicker(30 * time.Second)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-ctx.Done():
+					mailSvc.Stop()
+					return
+				case <-ticker.C:
+					applyMail()
+				}
+			}
+		}()
+	}
 
 	// 多渠道机器人入站(企业微信/钉钉/飞书): 配置从「入站配置」存储读取,
 	// 经 SetConfigProvider 在每次请求时实时生效(界面改动无需重启)。
@@ -833,7 +926,9 @@ func main() {
 	server.WithMiddleware(rbacMiddleware.AutoPermissionMiddleware)
 
 	aiSvc := ai.NewService(cfg, llmClient, rdbClient, db)
-	aiSvc.Engine.SetStore(agentic.NewPGStore(db))
+	if db != nil {
+		aiSvc.Engine.SetStore(agentic.NewPGStore(db))
+	}
 	aiSvc.Engine.SetModelRouter(llmRouter) // 多模型路由池(权重+健康+失败降级)
 	// 生成参数热更新:仅当配置显式给定时才覆盖引擎内置默认(温度0.7/上限1024/并发32)。
 	if cfg.LLM.GenTemperature > 0 {
@@ -852,7 +947,7 @@ func main() {
 	// 知识库-AI 绑定: 按 Agent 解析其绑定的知识库分类, RAG 检索与 knowledge_search 工具据此过滤。
 	toolSet.SetKnowledgeCategoriesResolver(aiSvc.Engine.AgentKnowledgeCategories)
 	// P0-2: AI 可直接执行的脚本白名单(免人工审批); 缺省全部须经审批。格式: 逗号分隔的 script_id 或 script_name。
-	if s := os.Getenv("OPSNEXUS_AI_APPROVED_SCRIPTS"); s != "" {
+	if s := os.Getenv("OPSORIGIN_AI_APPROVED_SCRIPTS"); s != "" {
 		var ids []string
 		for _, p := range strings.Split(s, ",") {
 			if p = strings.TrimSpace(p); p != "" {
@@ -905,24 +1000,26 @@ func main() {
 		return err
 	})
 	// 场景包自动落库: 启用场景时可将推荐的标准化工单类型真实建到 itsm_catalog(幂等同名跳过)。
-	aiSvc.Engine.SetSceneCatalogCreator(func(ctx context.Context, tenantID, name, description, category string) error {
-		items, err := catalogStore.List(ctx, tenantID)
-		if err != nil {
-			return err
-		}
-		for _, it := range items {
-			if it.Name == name {
-				return agentic.ErrCatalogItemExists // 同名已存在, 幂等跳过(引擎不计入 created_catalog)
+	if catalogStore != nil {
+		aiSvc.Engine.SetSceneCatalogCreator(func(ctx context.Context, tenantID, name, description, category string) error {
+			items, err := catalogStore.List(ctx, tenantID)
+			if err != nil {
+				return err
 			}
-		}
-		return catalogStore.Create(ctx, &catalog.ServiceItem{
-			TenantID:    tenantID,
-			Name:        name,
-			Description: description,
-			Category:    category,
-			Enabled:     true,
+			for _, it := range items {
+				if it.Name == name {
+					return agentic.ErrCatalogItemExists // 同名已存在, 幂等跳过(引擎不计入 created_catalog)
+				}
+			}
+			return catalogStore.Create(ctx, &catalog.ServiceItem{
+				TenantID:    tenantID,
+				Name:        name,
+				Description: description,
+				Category:    category,
+				Enabled:     true,
+			})
 		})
-	})
+	}
 	// 训练数据集导出(P3-1): 处置案例(知识库 disposal-case)经回调注入 AI 引擎。
 	aiSvc.Engine.SetDisposalCaseProvider(func(ctx context.Context, tenantID string) ([]agentic.DisposalCase, error) {
 		items, err := knowledgeSvc.ListDisposalCases(ctx, tenantID)
@@ -941,25 +1038,29 @@ func main() {
 	// —— 智能值班(P1): 告警路由到当班 Agent + AI 自动接管 ——
 	// oncall(itsm 子包) 不依赖 monitor/ai: 告警经 monitor.AddAlertNotifier 注入路由,
 	// AI 接管经 SetAgentHandler 注入(复用 ITSM 建单 + 通知中心, 与巡检闭环同模式)。
-	oncallSvc.SetAgentHandler(func(ctx context.Context, tenantID, agentID, alertTitle, alertDesc string) error {
-		tctx := context.WithValue(ctx, "tenant_id", tenantID)
-		_, err := itsmSvc.CreateTicket(tctx, itsmmodel.CreateTicketRequest{
-			Title:         "[AI接管] " + alertTitle,
-			Description:   alertDesc + "\n\n值班 Agent: " + agentID + "\n来源: 智能值班告警自动接管",
-			CreatedBy:     "oncall-agent",
-			CreatedByType: "system",
-			Labels:        map[string]string{"source": "ai_oncall", "agent_id": agentID, "kind": "alert_takeover"},
+	if oncallSvc != nil {
+		oncallSvc.SetAgentHandler(func(ctx context.Context, tenantID, agentID, alertTitle, alertDesc string) error {
+			tctx := context.WithValue(ctx, "tenant_id", tenantID)
+			_, err := itsmSvc.CreateTicket(tctx, itsmmodel.CreateTicketRequest{
+				Title:         "[AI接管] " + alertTitle,
+				Description:   alertDesc + "\n\n值班 Agent: " + agentID + "\n来源: 智能值班告警自动接管",
+				CreatedBy:     "oncall-agent",
+				CreatedByType: "system",
+				Labels:        map[string]string{"source": "ai_oncall", "agent_id": agentID, "kind": "alert_takeover"},
+			})
+			if err != nil {
+				return err
+			}
+			if notifySvc != nil {
+				return notifySvc.NotifyEvent(ctx, tenantID, "ai.oncall_takeover", "值班Agent已接管告警: "+alertTitle, alertDesc)
+			}
+			return nil
 		})
-		if err != nil {
-			return err
-		}
-		return notifySvc.NotifyEvent(ctx, tenantID, "ai.oncall_takeover", "值班Agent已接管告警: "+alertTitle, alertDesc)
-	})
-	monitorSvc.AddAlertNotifier(func(ae *monitormodel.AlertEvent) {
-		if ae == nil || ae.IsSuppressed {
-			return
-		}
-		oncallSvc.HandleAlert(context.Background(), &oncall.Alert{
+		monitorSvc.AddAlertNotifier(func(ae *monitormodel.AlertEvent) {
+			if ae == nil || ae.IsSuppressed {
+				return
+			}
+			oncallSvc.HandleAlert(context.Background(), &oncall.Alert{
 			ID:          ae.ID,
 			TenantID:    ae.TenantID,
 			Title:       ae.Title,
@@ -968,19 +1069,24 @@ func main() {
 			Labels:      ae.Labels,
 			TriggeredAt: ae.TriggeredAt,
 		})
-	})
+		})
+	}
 
 	opsSvc := ops.NewService(cfg, db)
 	server.RegisterService(opsSvc)
 
-	deploySvc := deploy.NewService(db)
-	deploySvc.SetAgentRunner(agentSvc) // 注入 Agent 下发通道，使部署真实在目标主机执行
-	server.RegisterService(deploySvc)
-	socialStore := knowledge.NewSocialStore(db)
-	server.RegisterService(socialStore)
-	knowledgeSvc.SetSocialStore(socialStore)
+	if deploySvc != nil {
+		deploySvc.SetAgentRunner(agentSvc) // 注入 Agent 下发通道，使部署真实在目标主机执行
+	}
+	if knowledgeSvc != nil {
+		socialStore := knowledge.NewSocialStore(db)
+		server.RegisterService(socialStore)
+		knowledgeSvc.SetSocialStore(socialStore)
+	}
 	// 自动沉淀策略: 可配置的"运维事件 → 知识库文章"沉淀规则(替代硬编码的处置案例沉淀)。
-	server.RegisterService(knowledge.NewPrecipitationStore(db, knowledgeSvc))
+	if db != nil && knowledgeSvc != nil {
+		server.RegisterService(knowledge.NewPrecipitationStore(db, knowledgeSvc))
+	}
 
 	// 漏洞扫描：规则匹配器 + 真实 inventory 注入(经 CMDB 适配器)。
 	// 适配器把 cmdb.Service.ListCI 按约定 schema 映射为 vuln.InventoryEntry,

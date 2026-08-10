@@ -55,7 +55,7 @@ func NewProvider(secret string, ldapCfg *LDAPProvider, ssoCfg *SSOProvider) *Pro
 		jwtManager: NewJWTManager(secret),
 		ldap:       ldapCfg,
 		sso:        ssoCfg,
-		devMode:    secret == "opsnexus-dev-secret-do-not-use-in-production",
+		devMode:    secret == "opsorigin-dev-secret-do-not-use-in-production",
 	}
 }
 

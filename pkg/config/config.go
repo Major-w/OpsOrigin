@@ -142,19 +142,19 @@ type LLMProviderConfig struct {
 }
 
 type PostgresConfig struct {
-	MaxConns        int           `json:"max_conns"`         // OPSNEXUS_POSTGRES_MAX_CONNS, 默认 100 (F4-A 规模化)
-	MaxIdleConns    int           `json:"max_idle_conns"`    // OPSNEXUS_POSTGRES_MAX_IDLE_CONNS, 默认 20 (F4-A 规模化)
-	ConnMaxLifetime time.Duration `json:"conn_max_lifetime"` // OPSNEXUS_POSTGRES_CONN_MAX_LIFETIME, 默认 30m
+	MaxConns        int           `json:"max_conns"`         // OPSORIGIN_POSTGRES_MAX_CONNS, 默认 100 (F4-A 规模化)
+	MaxIdleConns    int           `json:"max_idle_conns"`    // OPSORIGIN_POSTGRES_MAX_IDLE_CONNS, 默认 20 (F4-A 规模化)
+	ConnMaxLifetime time.Duration `json:"conn_max_lifetime"` // OPSORIGIN_POSTGRES_CONN_MAX_LIFETIME, 默认 30m
 }
 
 type TaskQueueConfig struct {
-	QueueSize int `json:"queue_size"` // OPSNEXUS_TASK_QUEUE_SIZE, 默认 1000
-	Workers   int `json:"workers"`    // OPSNEXUS_TASK_QUEUE_WORKERS, 默认 4
+	QueueSize int `json:"queue_size"` // OPSORIGIN_TASK_QUEUE_SIZE, 默认 1000
+	Workers   int `json:"workers"`    // OPSORIGIN_TASK_QUEUE_WORKERS, 默认 4
 }
 
 type UpgradeConfig struct {
-	DefaultBatchSize     int           `json:"default_batch_size"`     // OPSNEXUS_UPGRADE_DEFAULT_BATCH_SIZE, 默认 10
-	DefaultBatchInterval time.Duration `json:"default_batch_interval"` // OPSNEXUS_UPGRADE_DEFAULT_BATCH_INTERVAL, 默认 60s
+	DefaultBatchSize     int           `json:"default_batch_size"`     // OPSORIGIN_UPGRADE_DEFAULT_BATCH_SIZE, 默认 10
+	DefaultBatchInterval time.Duration `json:"default_batch_interval"` // OPSORIGIN_UPGRADE_DEFAULT_BATCH_INTERVAL, 默认 60s
 }
 
 func Load() (*Config, error) {
@@ -162,78 +162,78 @@ func Load() (*Config, error) {
 
 	cfg := &Config{
 		Core: CoreConfig{
-			Port:       envInt("OPSNEXUS_CORE_PORT", 8080),
-			GRPCListen: envStr("OPSNEXUS_CORE_GRPC_LISTEN", ":9091"),
-			PublicURL:  envStr("OPSNEXUS_CORE_PUBLIC_URL", ""),
-			VMAddr:     envStr("OPSNEXUS_CORE_VM_ADDR", ""),
+			Port:       envInt("OPSORIGIN_CORE_PORT", 8080),
+			GRPCListen: envStr("OPSORIGIN_CORE_GRPC_LISTEN", ":9091"),
+			PublicURL:  envStr("OPSORIGIN_CORE_PUBLIC_URL", ""),
+			VMAddr:     envStr("OPSORIGIN_CORE_VM_ADDR", ""),
 		},
 		Proxy: ProxyConfig{
-			ID:         envStr("OPSNEXUS_PROXY_ID", "proxy-001"),
-			CoreAddr:   envStr("OPSNEXUS_PROXY_CORE_ADDR", "localhost:8080"),
-			Listen:     envStr("OPSNEXUS_PROXY_LISTEN", ":9090"),
-			GRPCListen: envStr("OPSNEXUS_PROXY_GRPC_LISTEN", ":9092"),
-			FileListen: envStr("OPSNEXUS_PROXY_FILE_LISTEN", ""),
+			ID:         envStr("OPSORIGIN_PROXY_ID", "proxy-001"),
+			CoreAddr:   envStr("OPSORIGIN_PROXY_CORE_ADDR", "localhost:8080"),
+			Listen:     envStr("OPSORIGIN_PROXY_LISTEN", ":9090"),
+			GRPCListen: envStr("OPSORIGIN_PROXY_GRPC_LISTEN", ":9092"),
+			FileListen: envStr("OPSORIGIN_PROXY_FILE_LISTEN", ""),
 		},
 		Agent: AgentConfig{
-			ProxyAddr: envStr("OPSNEXUS_AGENT_PROXY_ADDR", "localhost:9090"),
+			ProxyAddr: envStr("OPSORIGIN_AGENT_PROXY_ADDR", "localhost:9090"),
 		},
 		TLS: TLSConfig{
-			Enabled:  envBool("OPSNEXUS_TLS_ENABLED", false),
-			CertFile: envStr("OPSNEXUS_TLS_CERT", ""),
-			KeyFile:  envStr("OPSNEXUS_TLS_KEY", ""),
+			Enabled:  envBool("OPSORIGIN_TLS_ENABLED", false),
+			CertFile: envStr("OPSORIGIN_TLS_CERT", ""),
+			KeyFile:  envStr("OPSORIGIN_TLS_KEY", ""),
 		},
 		Outbox: OutboxConfig{
-			PollInterval: envDuration("OPSNEXUS_OUTBOX_POLL_INTERVAL", 1*time.Second),
-			BatchSize:    envInt("OPSNEXUS_OUTBOX_BATCH_SIZE", 100),
+			PollInterval: envDuration("OPSORIGIN_OUTBOX_POLL_INTERVAL", 1*time.Second),
+			BatchSize:    envInt("OPSORIGIN_OUTBOX_BATCH_SIZE", 100),
 		},
 		CMDB: CMDBConfig{
-			PostgresDSN:  envStr("OPSNEXUS_POSTGRES_DSN", "postgres://opsnexus:opsnexus@localhost:5432/opsnexus?sslmode=disable"),
-			DgraphTarget: envStr("OPSNEXUS_DGRAPH_TARGET", "localhost:9080"),
-			DgraphAPIKey: envStr("OPSNEXUS_DGRAPH_API_KEY", ""),
+			PostgresDSN:  envStr("OPSORIGIN_POSTGRES_DSN", "postgres://opsorigin:opsorigin@localhost:5432/opsorigin?sslmode=disable"),
+			DgraphTarget: envStr("OPSORIGIN_DGRAPH_TARGET", "localhost:9080"),
+			DgraphAPIKey: envStr("OPSORIGIN_DGRAPH_API_KEY", ""),
 		},
 		Auth: AuthConfig{
-			JWTSecret:    envStr("OPSNEXUS_JWT_SECRET", "opsnexus-dev-secret-do-not-use-in-production"),
-			ServiceToken: envStr("OPSNEXUS_SERVICE_TOKEN", ""),
+			JWTSecret:    envStr("OPSORIGIN_JWT_SECRET", "opsorigin-dev-secret-do-not-use-in-production"),
+			ServiceToken: envStr("OPSORIGIN_SERVICE_TOKEN", ""),
 		},
 		LLM: LLMConfig{
-			APIKey:  envStr("OPSNEXUS_LLM_API_KEY", ""),
-			Model:   envStr("OPSNEXUS_LLM_MODEL", "deepseek-chat"),
-			BaseURL: envStr("OPSNEXUS_LLM_BASE_URL", "https://api.deepseek.com"),
-			Timeout: envInt("OPSNEXUS_LLM_TIMEOUT", 60),
+			APIKey:  envStr("OPSORIGIN_LLM_API_KEY", ""),
+			Model:   envStr("OPSORIGIN_LLM_MODEL", "deepseek-chat"),
+			BaseURL: envStr("OPSORIGIN_LLM_BASE_URL", "https://api.deepseek.com"),
+			Timeout: envInt("OPSORIGIN_LLM_TIMEOUT", 60),
 			// 留空则回退到通用 OpenAI embeddings 端点；接 OpenAI/兼容服务时只需填 model。
-			EmbeddingModel:   envStr("OPSNEXUS_LLM_EMBEDDING_MODEL", "text-embedding-3-small"),
-			EmbeddingBaseURL: envStr("OPSNEXUS_LLM_EMBEDDING_BASE_URL", ""),
+			EmbeddingModel:   envStr("OPSORIGIN_LLM_EMBEDDING_MODEL", "text-embedding-3-small"),
+			EmbeddingBaseURL: envStr("OPSORIGIN_LLM_EMBEDDING_BASE_URL", ""),
 			// 生成参数(留空则引擎用内置默认:温度0.7/上限1024/并发32)
-			GenTemperature: float64Env("OPSNEXUS_LLM_GEN_TEMPERATURE", 0),
-			GenMaxTokens:   envInt("OPSNEXUS_LLM_GEN_MAX_TOKENS", 0),
-			MaxInflight:    envInt("OPSNEXUS_LLM_MAX_INFLIGHT", 0),
-			DefaultSystemPrompt: envStr("OPSNEXUS_LLM_DEFAULT_SYSTEM_PROMPT",
+			GenTemperature: float64Env("OPSORIGIN_LLM_GEN_TEMPERATURE", 0),
+			GenMaxTokens:   envInt("OPSORIGIN_LLM_GEN_MAX_TOKENS", 0),
+			MaxInflight:    envInt("OPSORIGIN_LLM_MAX_INFLIGHT", 0),
+			DefaultSystemPrompt: envStr("OPSORIGIN_LLM_DEFAULT_SYSTEM_PROMPT",
 				"你是 OpsOrigin 智能运维助手,帮助用户完成主机巡检、故障排查、报告生成等运维任务。回答应简洁、专业、可操作。"),
 		},
-		RedisAddr: envStr("OPSNEXUS_REDIS_ADDR", "localhost:6379"), RedisPoolSize: envInt("OPSNEXUS_REDIS_POOL_SIZE", 50),
+		RedisAddr: envStr("OPSORIGIN_REDIS_ADDR", "localhost:6379"), RedisPoolSize: envInt("OPSORIGIN_REDIS_POOL_SIZE", 50),
 		LDAP: LDAPConfig{
-			Enabled:    envBool("OPSNEXUS_LDAP_ENABLED", false),
-			Addr:       envStr("OPSNEXUS_LDAP_ADDR", "ldap://localhost:389"),
-			BaseDN:     envStr("OPSNEXUS_LDAP_BASE_DN", "dc=example,dc=org"),
-			BindDN:     envStr("OPSNEXUS_LDAP_BIND_DN", "cn=admin,dc=example,dc=org"),
-			BindPass:   envStr("OPSNEXUS_LDAP_BIND_PASS", ""),
-			UserFilter: envStr("OPSNEXUS_LDAP_USER_FILTER", "(uid=%s)"),
+			Enabled:    envBool("OPSORIGIN_LDAP_ENABLED", false),
+			Addr:       envStr("OPSORIGIN_LDAP_ADDR", "ldap://localhost:389"),
+			BaseDN:     envStr("OPSORIGIN_LDAP_BASE_DN", "dc=example,dc=org"),
+			BindDN:     envStr("OPSORIGIN_LDAP_BIND_DN", "cn=admin,dc=example,dc=org"),
+			BindPass:   envStr("OPSORIGIN_LDAP_BIND_PASS", ""),
+			UserFilter: envStr("OPSORIGIN_LDAP_USER_FILTER", "(uid=%s)"),
 		},
 		SSO: SSOConfig{
-			Enabled:      envBool("OPSNEXUS_SSO_ENABLED", false),
-			Provider:     envStr("OPSNEXUS_SSO_PROVIDER", "oidc"),
-			ClientID:     envStr("OPSNEXUS_SSO_CLIENT_ID", ""),
-			ClientSecret: envStr("OPSNEXUS_SSO_CLIENT_SECRET", ""),
-			RedirectURL:  envStr("OPSNEXUS_SSO_REDIRECT_URL", "http://localhost:8080/api/v1/auth/callback"),
-			IssuerURL:    envStr("OPSNEXUS_SSO_ISSUER_URL", ""),
+			Enabled:      envBool("OPSORIGIN_SSO_ENABLED", false),
+			Provider:     envStr("OPSORIGIN_SSO_PROVIDER", "oidc"),
+			ClientID:     envStr("OPSORIGIN_SSO_CLIENT_ID", ""),
+			ClientSecret: envStr("OPSORIGIN_SSO_CLIENT_SECRET", ""),
+			RedirectURL:  envStr("OPSORIGIN_SSO_REDIRECT_URL", "http://localhost:8080/api/v1/auth/callback"),
+			IssuerURL:    envStr("OPSORIGIN_SSO_ISSUER_URL", ""),
 		},
 		Tunnel: TunnelConfig{
-			AuthSecret: envStr("OPSNEXUS_TUNNEL_AUTH_SECRET", ""),
-			Insecure:   envBool("OPSNEXUS_TUNNEL_INSECURE", false),
+			AuthSecret: envStr("OPSORIGIN_TUNNEL_AUTH_SECRET", ""),
+			Insecure:   envBool("OPSORIGIN_TUNNEL_INSECURE", false),
 		},
 		FileStore: FileStoreConfig{
-			Dir:         envStr("OPSNEXUS_FILE_STORE_DIR", "./data/files"),
-			TokenSecret: envStr("OPSNEXUS_FILE_TOKEN_SECRET", ""),
+			Dir:         envStr("OPSORIGIN_FILE_STORE_DIR", "./data/files"),
+			TokenSecret: envStr("OPSORIGIN_FILE_TOKEN_SECRET", ""),
 		},
 	}
 
@@ -241,29 +241,29 @@ func Load() (*Config, error) {
 
 	// Postgres 连接池配置
 	cfg.Postgres = PostgresConfig{
-		MaxConns:        envInt("OPSNEXUS_POSTGRES_MAX_CONNS", 100),
-		MaxIdleConns:    envInt("OPSNEXUS_POSTGRES_MAX_IDLE_CONNS", 20),
-		ConnMaxLifetime: envDuration("OPSNEXUS_POSTGRES_CONN_MAX_LIFETIME", 30*time.Minute),
+		MaxConns:        envInt("OPSORIGIN_POSTGRES_MAX_CONNS", 100),
+		MaxIdleConns:    envInt("OPSORIGIN_POSTGRES_MAX_IDLE_CONNS", 20),
+		ConnMaxLifetime: envDuration("OPSORIGIN_POSTGRES_CONN_MAX_LIFETIME", 30*time.Minute),
 	}
 
 	// TaskQueue 配置
 	cfg.TaskQueue = TaskQueueConfig{
-		QueueSize: envInt("OPSNEXUS_TASK_QUEUE_SIZE", 1000),
-		Workers:   envInt("OPSNEXUS_TASK_QUEUE_WORKERS", 4),
+		QueueSize: envInt("OPSORIGIN_TASK_QUEUE_SIZE", 1000),
+		Workers:   envInt("OPSORIGIN_TASK_QUEUE_WORKERS", 4),
 	}
 
 	// Upgrade 配置
 	cfg.Upgrade = UpgradeConfig{
-		DefaultBatchSize:     envInt("OPSNEXUS_UPGRADE_DEFAULT_BATCH_SIZE", 10),
-		DefaultBatchInterval: envDuration("OPSNEXUS_UPGRADE_DEFAULT_BATCH_INTERVAL", 60*time.Second),
+		DefaultBatchSize:     envInt("OPSORIGIN_UPGRADE_DEFAULT_BATCH_SIZE", 10),
+		DefaultBatchInterval: envDuration("OPSORIGIN_UPGRADE_DEFAULT_BATCH_INTERVAL", 60*time.Second),
 	}
 
-	// 多模型路由池(P3): OPSNEXUS_LLM_PROVIDERS 为 JSON 数组, 如
+	// 多模型路由池(P3): OPSORIGIN_LLM_PROVIDERS 为 JSON 数组, 如
 	// [{"name":"aliyun","api_key":"sk-xxx","model":"qwen-max","base_url":"https://dashscope.aliyuncs.com/compatible-mode/v1","weight":80}]
-	if raw := os.Getenv("OPSNEXUS_LLM_PROVIDERS"); raw != "" {
+	if raw := os.Getenv("OPSORIGIN_LLM_PROVIDERS"); raw != "" {
 		var ps []LLMProviderConfig
 		if err := json.Unmarshal([]byte(raw), &ps); err != nil {
-			slog.Warn("invalid OPSNEXUS_LLM_PROVIDERS json, ignored", "err", err)
+			slog.Warn("invalid OPSORIGIN_LLM_PROVIDERS json, ignored", "err", err)
 		} else {
 			cfg.LLM.Providers = ps
 		}

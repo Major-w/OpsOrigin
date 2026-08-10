@@ -115,9 +115,9 @@ Serve() {
 **方案**：
 - 在 `pkg/config/config.go` 中新增 `PostgresConfig` 结构体
 - 环境变量：
-  - `OPSNEXUS_POSTGRES_MAX_CONNS`，默认 25（0 表示无上限 + 日志 Warn）
-  - `OPSNEXUS_POSTGRES_MAX_IDLE_CONNS`，默认 5
-  - `OPSNEXUS_POSTGRES_CONN_MAX_LIFETIME`，默认 30m
+  - `OPSORIGIN_POSTGRES_MAX_CONNS`，默认 25（0 表示无上限 + 日志 Warn）
+  - `OPSORIGIN_POSTGRES_MAX_IDLE_CONNS`，默认 5
+  - `OPSORIGIN_POSTGRES_CONN_MAX_LIFETIME`，默认 30m
 - 在 `main.go` 中 `pgRepo` 创建后，对 `*sql.DB` 调用 `SetMaxOpenConns / SetMaxIdleConns / SetConnMaxLifetime`
 - 当前 PG 连接通过 `pg.NewRepository(cfg.CMDB.PostgresDSN)` 创建 `*sql.DB`，连接池配置在 `main.go` 中统一注入
 
@@ -157,8 +157,8 @@ Startup recovery
 
 | 环境变量 | 默认值 | 说明 |
 |---------|--------|------|
-| `OPSNEXUS_TASK_QUEUE_SIZE` | 1000 | channel 容量 |
-| `OPSNEXUS_TASK_QUEUE_WORKERS` | 4 | worker goroutine 数 |
+| `OPSORIGIN_TASK_QUEUE_SIZE` | 1000 | channel 容量 |
+| `OPSORIGIN_TASK_QUEUE_WORKERS` | 4 | worker goroutine 数 |
 
 **改动文件**：
 - `internal/agentmgr/taskqueue.go` [新] — TaskQueue 结构体 + BulkCreate/Worker/Dispatch 逻辑
@@ -196,8 +196,8 @@ Startup recovery
 
 | 环境变量 | 默认值 | 说明 |
 |---------|--------|------|
-| `OPSNEXUS_UPGRADE_DEFAULT_BATCH_SIZE` | 10 | 默认每批升级数量 |
-| `OPSNEXUS_UPGRADE_DEFAULT_BATCH_INTERVAL` | 60s | 默认批次间隔 |
+| `OPSORIGIN_UPGRADE_DEFAULT_BATCH_SIZE` | 10 | 默认每批升级数量 |
+| `OPSORIGIN_UPGRADE_DEFAULT_BATCH_INTERVAL` | 60s | 默认批次间隔 |
 
 **改动文件**：
 - `internal/agentmgr/upgrade.go` [新] — UpgradeManager 结构体 + upload/rollout/status 逻辑
@@ -649,19 +649,19 @@ type Config struct {
 }
 
 type PostgresConfig struct {
-    MaxConns        int           // OPSNEXUS_POSTGRES_MAX_CONNS, 默认 25
-    MaxIdleConns    int           // OPSNEXUS_POSTGRES_MAX_IDLE_CONNS, 默认 5
-    ConnMaxLifetime time.Duration // OPSNEXUS_POSTGRES_CONN_MAX_LIFETIME, 默认 30m
+    MaxConns        int           // OPSORIGIN_POSTGRES_MAX_CONNS, 默认 25
+    MaxIdleConns    int           // OPSORIGIN_POSTGRES_MAX_IDLE_CONNS, 默认 5
+    ConnMaxLifetime time.Duration // OPSORIGIN_POSTGRES_CONN_MAX_LIFETIME, 默认 30m
 }
 
 type TaskQueueConfig struct {
-    QueueSize int // OPSNEXUS_TASK_QUEUE_SIZE, 默认 1000
-    Workers   int // OPSNEXUS_TASK_QUEUE_WORKERS, 默认 4
+    QueueSize int // OPSORIGIN_TASK_QUEUE_SIZE, 默认 1000
+    Workers   int // OPSORIGIN_TASK_QUEUE_WORKERS, 默认 4
 }
 
 type UpgradeConfig struct {
-    DefaultBatchSize    int           // OPSNEXUS_UPGRADE_DEFAULT_BATCH_SIZE, 默认 10
-    DefaultBatchInterval time.Duration // OPSNEXUS_UPGRADE_DEFAULT_BATCH_INTERVAL, 默认 60s
+    DefaultBatchSize    int           // OPSORIGIN_UPGRADE_DEFAULT_BATCH_SIZE, 默认 10
+    DefaultBatchInterval time.Duration // OPSORIGIN_UPGRADE_DEFAULT_BATCH_INTERVAL, 默认 60s
 }
 ```
 

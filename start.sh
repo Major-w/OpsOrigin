@@ -26,7 +26,7 @@ FRONTEND_PID_FILE="$PID_DIR/web.pid"
 BACKEND_LOG="$LOG_DIR/core.log"
 FRONTEND_LOG="$LOG_DIR/web.log"
 
-BACKEND_PORT="${OPSNEXUS_CORE_PORT:-8080}"
+BACKEND_PORT="${OPSORIGIN_CORE_PORT:-8080}"
 FRONTEND_PORT="${PORT:-3000}"
 COMPOSE_PROJECT="opsorigin"
 
@@ -88,7 +88,7 @@ ensure_env() {
     # shellcheck disable=SC1090
     source "$ENV_FILE"
     set +a
-    BACKEND_PORT="${OPSNEXUS_CORE_PORT:-8080}"
+    BACKEND_PORT="${OPSORIGIN_CORE_PORT:-8080}"
   fi
 }
 
@@ -99,7 +99,7 @@ start_deps() {
 
   info "等待 PostgreSQL 就绪..."
   local tries=0
-  until docker compose -f "$COMPOSE_FILE" -p "$COMPOSE_PROJECT" exec -T postgres pg_isready -U opsnexus >/dev/null 2>&1; do
+  until docker compose -f "$COMPOSE_FILE" -p "$COMPOSE_PROJECT" exec -T postgres pg_isready -U opsorigin >/dev/null 2>&1; do
     tries=$((tries + 1))
     [[ $tries -gt 30 ]] && { err "PostgreSQL 启动超时"; return 1; }
     sleep 1

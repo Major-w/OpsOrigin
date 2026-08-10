@@ -192,6 +192,18 @@ func (s *Service) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/v1/cmdb/quality", s.handleQualityScan)
 }
 
+// handleCreateCI godoc
+// @Summary 创建 CI
+// @Description 创建一个新的配置项
+// @Tags CMDB
+// @Accept json
+// @Produce json
+// @Param ci body object true "CI 信息"
+// @Success 201 {object} model.CIModel
+// @Failure 400 {object} map[string]string
+// @Failure 500 {object} map[string]string
+// @Router /api/v1/cmdb/ci [post]
+// @Security BearerAuth
 func (s *Service) handleCreateCI(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	tenantID := tenantFromCtx(ctx)
@@ -299,6 +311,18 @@ func (s *Service) handleBatchCreateCI(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// handleGetCI godoc
+// @Summary 获取 CI 详情
+// @Description 根据 ID 获取配置项详情
+// @Tags CMDB
+// @Accept json
+// @Produce json
+// @Param id path string true "CI ID"
+// @Success 200 {object} model.CIModel
+// @Failure 404 {object} map[string]string
+// @Failure 500 {object} map[string]string
+// @Router /api/v1/cmdb/ci/{id} [get]
+// @Security BearerAuth
 func (s *Service) handleGetCI(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	tenantID := tenantFromCtx(r.Context())
@@ -440,6 +464,22 @@ func (s *Service) handleDeleteCI(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// handleListCI godoc
+// @Summary 获取 CI 列表
+// @Description 获取配置项列表，支持分页、排序、过滤
+// @Tags CMDB
+// @Accept json
+// @Produce json
+// @Param type_id query string false "CI 类型 ID"
+// @Param sort_by query string false "排序字段"
+// @Param sort_order query string false "排序方向 (asc/desc)"
+// @Param limit query int false "每页数量"
+// @Param offset query int false "偏移量"
+// @Param archived query string false "归档过滤 (true/all/空)"
+// @Success 200 {array} model.CIModel
+// @Failure 500 {object} map[string]string
+// @Router /api/v1/cmdb/ci [get]
+// @Security BearerAuth
 func (s *Service) handleListCI(w http.ResponseWriter, r *http.Request) {
 	tenantID := tenantFromCtx(r.Context())
 	typeID := r.URL.Query().Get("type_id")

@@ -30,6 +30,7 @@ cmd/core/core
 outputs/
 overview.md
 .workbuddy/
+.docs/
 web-next/coverage/
 web-next/.next.bak*/
 # 运行时偶发生成的根目录产物

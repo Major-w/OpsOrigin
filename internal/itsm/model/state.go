@@ -31,7 +31,9 @@ var validTransitions = map[TicketStatus][]TicketStatus{
 		StatusExecuting,
 		StatusRejected,
 	},
-	StatusRejected: {},
+	StatusRejected: {
+		StatusPendingReview, // 允许被拒后修改重新提交
+	},
 	StatusExecuting: {
 		StatusSucceeded,
 		StatusFailed,
@@ -42,9 +44,13 @@ var validTransitions = map[TicketStatus][]TicketStatus{
 	},
 	StatusFailed: {
 		StatusRolledBack,
-		StatusPendingReview,
+		StatusPendingReview, // 修改方案重新审批
+		StatusExecuting,     // 直接重试
 	},
-	StatusRolledBack: {},
+	StatusRolledBack: {
+		StatusPendingReview, // 修改方案重新审批
+		StatusExecuting,     // 直接重试
+	},
 	StatusClosed: {
 		StatusReopened,
 	},

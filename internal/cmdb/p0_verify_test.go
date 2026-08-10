@@ -14,9 +14,9 @@ import (
 )
 
 func newTestRepo(t *testing.T) *pg.Repository {
-	dsn := os.Getenv("OPSNEXUS_POSTGRES_DSN")
+	dsn := os.Getenv("OPSORIGIN_POSTGRES_DSN")
 	if dsn == "" {
-		t.Skip("OPSNEXUS_POSTGRES_DSN not set")
+		t.Skip("OPSORIGIN_POSTGRES_DSN not set")
 	}
 	repo, err := pg.NewRepository(dsn)
 	if err != nil {

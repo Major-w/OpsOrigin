@@ -475,7 +475,7 @@ export default function AISettingsPage() {
       await fetch('/api/v1/system/config', {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ updates: { [`OPSNEXUS_LLM_${key.toUpperCase()}`]: key === 'timeout' ? String(parseInt(value)||60) : value } }),
+        body: JSON.stringify({ updates: { [`OPSORIGIN_LLM_${key.toUpperCase()}`]: key === 'timeout' ? String(parseInt(value)||60) : value } }),
       })
       toast.success(`${key} 已更新，即时生效`)
       loadSysConfig()

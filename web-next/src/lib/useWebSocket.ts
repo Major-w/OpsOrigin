@@ -16,7 +16,7 @@ export function useWebSocket({ onEvent, onConnect, onDisconnect }: UseWebSocketO
 
   const connect = useCallback(() => {
     if (typeof window === 'undefined') return
-    const token = localStorage.getItem('opsnexus_token')
+    const token = localStorage.getItem('opsorigin_token')
     if (!token) return
 
     const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:'

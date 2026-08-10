@@ -230,6 +230,18 @@ func (s *Service) Start(ctx context.Context) error {
 	return s.Engine.Start()
 }
 
+// handleChat godoc
+// @Summary AI 聊天
+// @Description 发送消息给 AI 助手，支持流式输出
+// @Tags AI
+// @Accept json
+// @Produce json
+// @Param chat body object true "聊天请求"
+// @Success 200 {object} map[string]interface{}
+// @Failure 400 {object} map[string]string
+// @Failure 500 {object} map[string]string
+// @Router /api/v1/ai/chat [post]
+// @Security BearerAuth
 // handleChat 处理 AI 助手聊天请求。
 // req.stream=true 时返回 SSE(text/event-stream)流式输出; 否则返回 JSON。
 func (s *Service) handleChat(w http.ResponseWriter, r *http.Request) {
@@ -437,6 +449,18 @@ func (s *Service) handleGetConversation(w http.ResponseWriter, r *http.Request) 
 	writeJSON(w, http.StatusOK, conv)
 }
 
+// handleCreateAgent godoc
+// @Summary 创建 AI Agent
+// @Description 创建一个新的 AI Agent 实例
+// @Tags AI
+// @Accept json
+// @Produce json
+// @Param agent body object true "Agent 配置"
+// @Success 201 {object} model.AgentInstance
+// @Failure 400 {object} map[string]string
+// @Failure 500 {object} map[string]string
+// @Router /api/v1/ai/agents [post]
+// @Security BearerAuth
 func (s *Service) handleCreateAgent(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Name                string             `json:"name"`

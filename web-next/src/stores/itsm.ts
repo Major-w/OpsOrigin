@@ -3,7 +3,11 @@
 import { create } from 'zustand'
 import { apiFetch, apiList } from '@/lib/utils'
 import { toast } from '@/stores/toast'
+import { useAuthStore } from '@/stores/auth'
 import type { FormSchema, FormFieldOption } from '@/components/itsm/DynamicForm'
+
+/** 获取当前登录用户名，未登录时回退到 'anonymous' */
+const getCurrentUser = () => useAuthStore.getState().user?.username || 'anonymous'
 
 export interface Ticket {
   id: string
@@ -45,6 +49,16 @@ export interface Ticket {
   on_hold?: boolean
   hold_reason?: string
   hold_until_at?: string
+  hold_at?: string
+  hold_seconds?: number
+  /** SLA 相关字段 */
+  sla_warning_notified?: boolean
+  sla_breached?: boolean
+  sla_breached_at?: string
+  sla_escalation_level?: number
+  /** 审批链 */
+  approval_chain?: { mode: string; approvers: string[] }
+  approval_status?: { current_index: number; votes: any[]; final_result: string }
   /** 关联工单 ID 列表 */
   related_ticket_ids?: string[]
 }
@@ -171,6 +185,7 @@ interface ITSMState {
   close: (id: string, comment?: string, satisfaction?: number) => Promise<boolean>
   withdraw: (id: string, reason?: string) => Promise<boolean>
   reopen: (id: string, reason?: string) => Promise<boolean>
+  resubmit: (id: string, reason?: string) => Promise<boolean>
   hold: (id: string, reason?: string) => Promise<boolean>
   resume: (id: string) => Promise<boolean>
   remind: (id: string, message?: string) => Promise<boolean>
@@ -240,7 +255,7 @@ export const useITSMStore = create<ITSMState>((set, get) => ({
   },
   approve: async (id, comment?) => {
     try {
-      await apiFetch(`/itsm/tickets/${id}/approve`, { method: 'POST', body: JSON.stringify({ approved_by: 'admin', comment: comment || '' }) })
+      await apiFetch(`/itsm/tickets/${id}/approve`, { method: 'POST', body: JSON.stringify({ approved_by: getCurrentUser(), comment: comment || '' }) })
       toast.success('审批成功')
       await get().fetch()
       return true
@@ -251,7 +266,7 @@ export const useITSMStore = create<ITSMState>((set, get) => ({
   },
   reject: async (id, reason) => {
     try {
-      await apiFetch(`/itsm/tickets/${id}/reject`, { method: 'POST', body: JSON.stringify({ rejected_by: 'admin', reason }) })
+      await apiFetch(`/itsm/tickets/${id}/reject`, { method: 'POST', body: JSON.stringify({ rejected_by: getCurrentUser(), reason }) })
       toast.success('驳回成功')
       await get().fetch()
       return true
@@ -262,7 +277,7 @@ export const useITSMStore = create<ITSMState>((set, get) => ({
   },
   execute: async (id) => {
     try {
-      await apiFetch(`/itsm/tickets/${id}/execute`, { method: 'POST', body: JSON.stringify({ executed_by: 'admin' }) })
+      await apiFetch(`/itsm/tickets/${id}/execute`, { method: 'POST', body: JSON.stringify({ executed_by: getCurrentUser() }) })
       toast.success('执行成功')
       await get().fetch()
       return true
@@ -273,7 +288,7 @@ export const useITSMStore = create<ITSMState>((set, get) => ({
   },
   complete: async (id, comment?, assessment?) => {
     try {
-      await apiFetch(`/itsm/tickets/${id}/complete`, { method: 'POST', body: JSON.stringify({ completed_by: 'admin', comment: comment || '', assessment: assessment || '' }) })
+      await apiFetch(`/itsm/tickets/${id}/complete`, { method: 'POST', body: JSON.stringify({ completed_by: getCurrentUser(), comment: comment || '', assessment: assessment || '' }) })
       toast.success('完成成功')
       await get().fetch()
       return true
@@ -284,7 +299,7 @@ export const useITSMStore = create<ITSMState>((set, get) => ({
   },
   rollback: async (id, reason?) => {
     try {
-      await apiFetch(`/itsm/tickets/${id}/rollback`, { method: 'POST', body: JSON.stringify({ rolled_back_by: 'admin', rollback_reason: reason || '' }) })
+      await apiFetch(`/itsm/tickets/${id}/rollback`, { method: 'POST', body: JSON.stringify({ rolled_back_by: getCurrentUser(), rollback_reason: reason || '' }) })
       toast.success('回滚成功')
       await get().fetch()
       return true
@@ -295,7 +310,7 @@ export const useITSMStore = create<ITSMState>((set, get) => ({
   },
   submit: async (id) => {
     try {
-      await apiFetch(`/itsm/tickets/${id}/submit`, { method: 'POST', body: JSON.stringify({ submitted_by: 'admin' }) })
+      await apiFetch(`/itsm/tickets/${id}/submit`, { method: 'POST', body: JSON.stringify({ submitted_by: getCurrentUser() }) })
       toast.success('提交成功')
       await get().fetch()
       return true
@@ -306,7 +321,7 @@ export const useITSMStore = create<ITSMState>((set, get) => ({
   },
   withdraw: async (id, reason?) => {
     try {
-      await apiFetch(`/itsm/tickets/${id}/withdraw`, { method: 'POST', body: JSON.stringify({ withdrawn_by: 'admin', reason: reason || '' }) })
+      await apiFetch(`/itsm/tickets/${id}/withdraw`, { method: 'POST', body: JSON.stringify({ withdrawn_by: getCurrentUser(), reason: reason || '' }) })
       toast.success('已撤回')
       await get().fetch()
       return true
@@ -317,7 +332,7 @@ export const useITSMStore = create<ITSMState>((set, get) => ({
   },
   reopen: async (id, reason?) => {
     try {
-      await apiFetch(`/itsm/tickets/${id}/reopen`, { method: 'POST', body: JSON.stringify({ reopened_by: 'admin', reason: reason || '' }) })
+      await apiFetch(`/itsm/tickets/${id}/reopen`, { method: 'POST', body: JSON.stringify({ reopened_by: getCurrentUser(), reason: reason || '' }) })
       toast.success('已重开')
       await get().fetch()
       return true
@@ -326,9 +341,20 @@ export const useITSMStore = create<ITSMState>((set, get) => ({
       return false
     }
   },
+  resubmit: async (id, reason?) => {
+    try {
+      await apiFetch(`/itsm/tickets/${id}/resubmit`, { method: 'POST', body: JSON.stringify({ resubmitted_by: getCurrentUser(), reason: reason || '' }) })
+      toast.success('已重新提交')
+      await get().fetch()
+      return true
+    } catch (e: any) {
+      toast.error(`重新提交失败: ${e.message}`)
+      return false
+    }
+  },
   hold: async (id, reason?) => {
     try {
-      await apiFetch(`/itsm/tickets/${id}/hold`, { method: 'POST', body: JSON.stringify({ hold_by: 'admin', reason: reason || '' }) })
+      await apiFetch(`/itsm/tickets/${id}/hold`, { method: 'POST', body: JSON.stringify({ hold_by: getCurrentUser(), reason: reason || '' }) })
       toast.success('已挂起（SLA 计时暂停）')
       await get().fetch()
       return true
@@ -339,7 +365,7 @@ export const useITSMStore = create<ITSMState>((set, get) => ({
   },
   resume: async (id) => {
     try {
-      await apiFetch(`/itsm/tickets/${id}/resume`, { method: 'POST', body: JSON.stringify({ resumed_by: 'admin' }) })
+      await apiFetch(`/itsm/tickets/${id}/resume`, { method: 'POST', body: JSON.stringify({ resumed_by: getCurrentUser() }) })
       toast.success('已恢复')
       await get().fetch()
       return true
@@ -350,7 +376,7 @@ export const useITSMStore = create<ITSMState>((set, get) => ({
   },
   remind: async (id, message?) => {
     try {
-      await apiFetch(`/itsm/tickets/${id}/remind`, { method: 'POST', body: JSON.stringify({ reminded_by: 'admin', message: message || '' }) })
+      await apiFetch(`/itsm/tickets/${id}/remind`, { method: 'POST', body: JSON.stringify({ reminded_by: getCurrentUser(), message: message || '' }) })
       toast.success('已催办')
       return true
     } catch (e: any) {
@@ -360,7 +386,7 @@ export const useITSMStore = create<ITSMState>((set, get) => ({
   },
   relate: async (id, relatedId) => {
     try {
-      await apiFetch(`/itsm/tickets/${id}/relate`, { method: 'POST', body: JSON.stringify({ related_id: relatedId, relate_by: 'admin' }) })
+      await apiFetch(`/itsm/tickets/${id}/relate`, { method: 'POST', body: JSON.stringify({ related_id: relatedId, relate_by: getCurrentUser() }) })
       toast.success('已关联')
       await get().fetch()
       return true
@@ -371,7 +397,7 @@ export const useITSMStore = create<ITSMState>((set, get) => ({
   },
   assign: async (id, assignee) => {
     try {
-      await apiFetch(`/itsm/tickets/${id}/assign`, { method: 'POST', body: JSON.stringify({ assignee, assigned_by: 'admin' }) })
+      await apiFetch(`/itsm/tickets/${id}/assign`, { method: 'POST', body: JSON.stringify({ assignee, assigned_by: getCurrentUser() }) })
       toast.success('指派成功')
       await get().fetch()
       return true
@@ -382,7 +408,7 @@ export const useITSMStore = create<ITSMState>((set, get) => ({
   },
   close: async (id, comment?, satisfaction?) => {
     try {
-      await apiFetch(`/itsm/tickets/${id}/close`, { method: 'POST', body: JSON.stringify({ closed_by: 'admin', comment: comment || '', satisfaction: satisfaction || 0 }) })
+      await apiFetch(`/itsm/tickets/${id}/close`, { method: 'POST', body: JSON.stringify({ closed_by: getCurrentUser(), comment: comment || '', satisfaction: satisfaction || 0 }) })
       toast.success('关闭成功')
       await get().fetch()
       return true

@@ -9,6 +9,8 @@ import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { apiList } from '@/lib/utils'
 import { Package, ChevronRight, Loader2, FolderTree } from 'lucide-react'
+import { buildTree, type TreeNode } from '@/lib/itsm-constants'
+import { toast } from '@/stores/toast'
 
 interface ServiceItem {
   id: string
@@ -22,12 +24,6 @@ interface ServiceItem {
   enabled: boolean
 }
 
-const statusLabels: Record<string, string> = {
-  draft: '草稿', pending_review: '待审批', approved: '已审批', rejected: '已驳回',
-  executing: '执行中', succeeded: '已完成', failed: '已失败', rolled_back: '已回滚',
-  closed: '已关闭', withdrawn: '已撤回', reopened: '已重开',
-}
-const riskLabels: Record<string, string> = { critical: '致命', high: '高危', medium: '中危', low: '低危' }
 const riskColor: Record<string, string> = { critical: 'bg-red-500', high: 'bg-amber-500', medium: 'bg-blue-500', low: 'bg-emerald-500' }
 const categoryLabels: Record<string, string> = { change: '变更申请', incident: '故障报修', problem: '问题反馈', request: '服务请求' }
 
@@ -44,7 +40,7 @@ export default function ITSMPortalPage() {
     try {
       const svc = await apiList<ServiceItem>('/itsm/catalog/visible')
       setServices(svc || [])
-    } catch { /* ignore */ }
+    } catch { toast.error('加载服务目录失败') }
     setLoading(false)
   }, [])
 
@@ -56,29 +52,18 @@ export default function ITSMPortalPage() {
 
   // 多级目录：把门户可见的扁平列表构造成树；父级不在可见集合(被下线/无权限)的子项提升为一级，避免服务丢失。
   interface PortalNode { item: ServiceItem; children: PortalNode[]; depth: number }
-  const buildPortalTree = (src: ServiceItem[]): PortalNode[] => {
-    const byId = new Map(src.map(s => [s.id, s]))
-    const map = new Map<string, PortalNode>()
-    src.forEach(s => map.set(s.id, { item: s, children: [], depth: 0 }))
-    const roots: PortalNode[] = []
-    src.forEach(s => {
-      const node = map.get(s.id)!
-      if (s.parent_id && byId.has(s.parent_id)) map.get(s.parent_id)!.children.push(node)
-      else roots.push(node)
-    })
+  const tree = useMemo(() => {
+    const byId = new Map(services.map(s => [s.id, s]))
+    const nodes = buildTree(services)
     const depthOf = (it: ServiceItem): number => {
       let d = 0; let cur = it.parent_id
       while (cur && byId.has(cur)) { d++; cur = byId.get(cur)!.parent_id }
       return d
     }
-    const sortNodes = (ns: PortalNode[]) => {
-      ns.sort((a, b) => (a.item.sort_order || 0) - (b.item.sort_order || 0) || a.item.name.localeCompare(b.item.name))
-      ns.forEach(n => { n.depth = depthOf(n.item); sortNodes(n.children) })
-    }
-    sortNodes(roots)
-    return roots
-  }
-  const tree = useMemo(() => buildPortalTree(services), [services])
+    const annotate = (ns: TreeNode<ServiceItem>[]): PortalNode[] =>
+      ns.map(n => ({ item: n.item, depth: depthOf(n.item), children: annotate(n.children) }))
+    return annotate(nodes)
+  }, [services])
 
   const renderTreeNode = (node: PortalNode): JSX.Element => {
     const it = node.item
@@ -129,7 +114,7 @@ export default function ITSMPortalPage() {
         <CardHeader className="py-3"><CardTitle className="text-sm flex items-center gap-1.5"><Package className="h-3.5 w-3.5" />服务目录</CardTitle></CardHeader>
         <CardContent>
           {loading ? (
-            <div className="flex items-center justify-center py-10 text-muted-foreground text-sm"><Loader2 className="h-4 w-4 animate-spin mr-2" />加载中…</div>
+            <div className="animate-pulse space-y-4">{[1,2,3].map(i=><div key={i} className="h-24 bg-muted rounded"/>)}</div>
           ) : services.length === 0 ? (
             <p className="text-sm text-muted-foreground py-6 text-center">暂无可用服务，请联系管理员在「服务目录定义」中配置。</p>
           ) : (

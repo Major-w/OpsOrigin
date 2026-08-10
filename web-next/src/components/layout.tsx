@@ -4,7 +4,7 @@ import { useState } from 'react'
 import Link from 'next/link'
 import { usePathname, useRouter } from 'next/navigation'
 import { cn } from '@/lib/utils'
-import { Server, TicketCheck, Activity, Bot, Shield, LayoutDashboard, Hexagon, LogOut, User, Terminal, Workflow, Clock, Search, BookOpen, Calendar, GitBranch, Package, Bell, Key, Blocks, Users, Settings, Sun, Moon, Scan, Bug, Download, PackagePlus, Network, AlertTriangle, History, FileText, Rocket, AppWindow, FileCheck2, Cloud, Play, Sparkles, Database, Radio, BarChart3, Building2, Radar, MessagesSquare, Gauge, FlaskConical, TrendingUp, Store, Cpu, Webhook, Mail, MessageSquare, Wrench, type LucideIcon } from 'lucide-react'
+import { Server, TicketCheck, Activity, Bot, Shield, LayoutDashboard, Hexagon, LogOut, User, Terminal, Workflow, Clock, Search, BookOpen, Calendar, GitBranch, Package, Bell, Key, Blocks, Users, Settings, Sun, Moon, Scan, Bug, Download, PackagePlus, Network, AlertTriangle, History, FileText, Rocket, AppWindow, FileCheck2, Cloud, Play, Sparkles, Database, Radio, BarChart3, Building2, Radar, MessagesSquare, Gauge, FlaskConical, TrendingUp, Store, Cpu, Webhook, Mail, MessageSquare, Wrench, FolderOpen, type LucideIcon } from 'lucide-react'
 import { useAuthStore } from '@/stores/auth'
 import { useThemeStore } from '@/stores/theme'
 import { ScrollToTop } from '@/components/ui/scroll-to-top'
@@ -51,9 +51,12 @@ const navGroups: (NavItem | NavGroup)[] = [
           { to: '/itsm/process', label: '流程定义', icon: GitBranch },
           { to: '/itsm/catalog', label: '服务目录定义', icon: Package },
           { to: '/itsm/sla-ola', label: 'SLA/OLA', icon: Clock },
+          { to: '/itsm/sla-breached', label: 'SLA 违规', icon: AlertTriangle },
+          { to: '/itsm/form-dicts', label: '数据字典', icon: Database },
         ]
       },
       { to: '/itsm/oncall', label: '值班管理', icon: Calendar },
+      { to: '/itsm/oncall/calendar', label: '值班日历', icon: Calendar },
       { to: '/cmdb/change-assess', label: '变更影响评估', icon: FileText },
     ]
   },
@@ -61,6 +64,7 @@ const navGroups: (NavItem | NavGroup)[] = [
     label: '知识库', icon: BookOpen, items: [
       { to: '/knowledge', label: '文章列表', icon: BookOpen },
       { to: '/knowledge/new', label: 'AI 写作', icon: Sparkles },
+      { to: '/knowledge/categories', label: '分类管理', icon: FolderOpen },
     ]
   },
   {

@@ -56,9 +56,9 @@ echo "==> [3/5] starting mock LLM on $MOCK_ADDR"
 MOCK_PID=$!
 
 echo "==> [3/5] starting core on $CORE_ADDR (stub mode, dev auth)"
-OPSNEXUS_LLM_BASE_URL="http://$MOCK_ADDR" \
-OPSNEXUS_LLM_API_KEY="mock" \
-OPSNEXUS_LLM_MODEL="mock" \
+OPSORIGIN_LLM_BASE_URL="http://$MOCK_ADDR" \
+OPSORIGIN_LLM_API_KEY="mock" \
+OPSORIGIN_LLM_MODEL="mock" \
 "$CORE_BIN" &
 CORE_PID=$!
 

@@ -990,11 +990,11 @@ func (s *Service) handleSetSandboxLabel(w http.ResponseWriter, r *http.Request) 
 // ApplySandboxPool 把"Server 所在主机"的 Agent 自动标记为沙箱环境(默认沙箱池)。
 // 匹配规则:
 //   - 主机名(hostname)等于本机主机名的 Agent;
-//   - Agent ID 命中环境变量 OPSNEXUS_SANDBOX_AGENTS(逗号分隔)列表。
+//   - Agent ID 命中环境变量 OPSORIGIN_SANDBOX_AGENTS(逗号分隔)列表。
 //
-// 可通过 OPSNEXUS_SANDBOX_AUTO=0 关闭自动标记。
+// 可通过 OPSORIGIN_SANDBOX_AUTO=0 关闭自动标记。
 func (s *Service) ApplySandboxPool(ctx context.Context) {
-	if os.Getenv("OPSNEXUS_SANDBOX_AUTO") == "0" {
+	if os.Getenv("OPSORIGIN_SANDBOX_AUTO") == "0" {
 		return
 	}
 	hostname, err := os.Hostname()
@@ -1002,7 +1002,7 @@ func (s *Service) ApplySandboxPool(ctx context.Context) {
 		hostname = ""
 	}
 	cfgSet := map[string]bool{}
-	if v := os.Getenv("OPSNEXUS_SANDBOX_AGENTS"); v != "" {
+	if v := os.Getenv("OPSORIGIN_SANDBOX_AGENTS"); v != "" {
 		for _, p := range strings.Split(v, ",") {
 			if p = strings.TrimSpace(p); p != "" {
 				cfgSet[p] = true

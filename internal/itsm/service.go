@@ -18,15 +18,28 @@ import (
 	"github.com/opsorigin/core/internal/itsm/catalog"
 	"github.com/opsorigin/core/internal/itsm/form"
 	"github.com/opsorigin/core/internal/itsm/model"
+	"github.com/opsorigin/core/internal/itsm/ola"
 	"github.com/opsorigin/core/internal/itsm/process"
 	"github.com/opsorigin/core/internal/itsm/risk"
 	"github.com/opsorigin/core/internal/itsm/sla"
 	"github.com/opsorigin/core/internal/itsm/store"
 	"github.com/opsorigin/core/internal/itsm/webhook"
+	"github.com/opsorigin/core/pkg/auth"
 	"github.com/opsorigin/core/pkg/config"
 
 	"github.com/opsorigin/core/pkg/httputil"
 )
+
+// getUserID 从请求上下文获取用户 ID，未认证时回退到请求体字段或 "system"。
+func getUserID(r *http.Request, fallback string) string {
+	if uid := auth.UserIDFromContext(r.Context()); uid != "" {
+		return uid
+	}
+	if fallback != "" {
+		return fallback
+	}
+	return "system"
+}
 
 // ProcessEngine — itsm 消费的流程引擎能力：加载流程定义 + 驱动流程实例。
 // 由 process.Service 实现（鸭子类型），使工单绑定流程后真正跑起流程实例。
@@ -64,6 +77,7 @@ type Service struct {
 	webhook      *webhook.Callback
 	processStore ProcessEngine
 	slaStore     *sla.Store
+	olaStore     *ola.Store
 	formEngine   *form.Engine
 	wsHub        interface{ BroadcastToTenant(interface{}, string) }
 	stopCh       chan struct{}
@@ -137,6 +151,80 @@ func (s *Service) SetSLAStore(st *sla.Store) {
 	s.slaStore = st
 }
 
+func (s *Service) SetOLAStore(st *ola.Store) {
+	s.olaStore = st
+}
+
+// StartOLAChecker 启动 OLA 超时检查: 定期扫描运行中工单，对超时步骤发送升级通知。
+func (s *Service) StartOLAChecker(ctx context.Context) {
+	go func() {
+		ticker := time.NewTicker(120 * time.Second)
+		defer ticker.Stop()
+		slog.Info("itsm: OLA checker started")
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-s.stopCh:
+				return
+			case <-ticker.C:
+				s.checkOLA(ctx)
+			}
+		}
+	}()
+}
+
+func (s *Service) checkOLA(ctx context.Context) {
+	if s.olaStore == nil {
+		return
+	}
+	tenants, err := s.store.ListTenantIDs(ctx)
+	if err != nil || len(tenants) == 0 {
+		tenants = []string{"default"}
+	}
+	for _, t := range tenants {
+		s.checkOLATenant(ctx, t)
+	}
+}
+
+func (s *Service) checkOLATenant(ctx context.Context, tenantID string) {
+	policies, err := s.olaStore.List(ctx, tenantID)
+	if err != nil || len(policies) == 0 {
+		return
+	}
+	for _, pol := range policies {
+		if !pol.Enabled {
+			continue
+		}
+		if pol.DurationHours <= 0 {
+			continue
+		}
+		s.checkOLAPolicy(ctx, tenantID, pol)
+	}
+}
+
+func (s *Service) checkOLAPolicy(ctx context.Context, tenantID string, pol ola.Policy) {
+	tickets, err := s.store.ListActiveTicketsWithDeadline(ctx, tenantID)
+	if err != nil {
+		return
+	}
+	deadline := time.Duration(pol.DurationHours) * time.Hour
+	for _, t := range tickets {
+		if pol.ProcessID != "" && t.ProcessID != pol.ProcessID {
+			continue
+		}
+		elapsed := time.Since(t.UpdatedAt)
+		remaining := deadline - elapsed
+		if remaining <= 0 {
+			slog.Warn("itsm: OLA breached", "ticket", t.ID, "policy", pol.Name)
+			s.broadcastEvent(tenantID, map[string]any{"type": "ola_breached", "ticket_id": t.ID, "policy": pol.Name})
+		} else if remaining < 1*time.Hour {
+			slog.Info("itsm: OLA warning", "ticket", t.ID, "policy", pol.Name, "remaining", remaining)
+			s.broadcastEvent(tenantID, map[string]any{"type": "ola_warning", "ticket_id": t.ID, "policy": pol.Name, "remaining_seconds": int(remaining.Seconds())})
+		}
+	}
+}
+
 // SetNotifier 注入通知中心, 使工单关键事件能经 Policy 分发到各渠道(nil=关闭通知)。
 func (s *Service) SetNotifier(n Notifier) {
 	s.notify = n
@@ -207,6 +295,7 @@ func (s *Service) RegisterRoutes(mux *http.ServeMux) {
 	// 工单操作补齐: 撤回/重开/挂起恢复/催办/关联/通用更新
 	mux.HandleFunc("POST /api/v1/itsm/tickets/{id}/withdraw", s.handleWithdraw)
 	mux.HandleFunc("POST /api/v1/itsm/tickets/{id}/reopen", s.handleReopen)
+	mux.HandleFunc("POST /api/v1/itsm/tickets/{id}/resubmit", s.handleResubmit) // 被拒后重新提交
 	mux.HandleFunc("POST /api/v1/itsm/tickets/{id}/hold", s.handleHold)
 	mux.HandleFunc("POST /api/v1/itsm/tickets/{id}/resume", s.handleResume)
 	mux.HandleFunc("POST /api/v1/itsm/tickets/{id}/remind", s.handleRemind)
@@ -219,6 +308,7 @@ func (s *Service) RegisterRoutes(mux *http.ServeMux) {
 	// Comments
 	mux.HandleFunc("POST /api/v1/itsm/tickets/{id}/comments", s.handleAddComment)
 	mux.HandleFunc("GET /api/v1/itsm/tickets/{id}/comments", s.handleListComments)
+	mux.HandleFunc("PUT /api/v1/itsm/tickets/{id}/comments/{cid}", s.handleEditComment)
 	mux.HandleFunc("DELETE /api/v1/itsm/tickets/{id}/comments/{cid}", s.handleDeleteComment)
 	// Subtasks
 	mux.HandleFunc("POST /api/v1/itsm/tickets/{id}/subtasks", s.handleAddSubtask)
@@ -255,6 +345,18 @@ func (s *Service) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/v1/itsm/stats/export/csv", s.handleExportStatsCSV)
 }
 
+// handleCreate godoc
+// @Summary 创建工单
+// @Description 创建一个新的 ITSM 工单
+// @Tags ITSM
+// @Accept json
+// @Produce json
+// @Param ticket body model.CreateTicketRequest true "工单信息"
+// @Success 201 {object} model.Ticket
+// @Failure 400 {object} map[string]string
+// @Failure 500 {object} map[string]string
+// @Router /api/v1/itsm/tickets [post]
+// @Security BearerAuth
 func (s *Service) handleCreate(w http.ResponseWriter, r *http.Request) {
 	var req model.CreateTicketRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -265,6 +367,11 @@ func (s *Service) handleCreate(w http.ResponseWriter, r *http.Request) {
 	if req.Title == "" {
 		writeError(w, http.StatusBadRequest, "title is required")
 		return
+	}
+
+	// 优先从 JWT 提取用户身份，回退到请求体字段
+	if req.CreatedBy == "" || req.CreatedBy == "admin" {
+		req.CreatedBy = getUserID(r, req.CreatedBy)
 	}
 
 	ticket, err := s.CreateTicket(r.Context(), req)
@@ -400,21 +507,33 @@ func (s *Service) SetExperienceSink(f func(ctx context.Context, tenantID, agentI
 	s.experienceSink = f
 }
 
-// archiveTicketToKnowledge 工单成功完成后, 将 AI 巡检产生的处置案例自动沉淀到知识库,
+// archiveTicketToKnowledge 工单成功完成后, 将处置案例自动沉淀到知识库,
 // 供后续 AI 检索复用(持续改进闭环: 发现 → 处置 → 沉淀 → 复用)。
+// 支持两种触发条件: AI 巡检来源工单(source=ai_inspection) 或 标记了 auto_archived=true 的普通工单。
 func (s *Service) archiveTicketToKnowledge(ctx context.Context, ticket *model.Ticket, resultComment string) {
 	if s.knowledgeArchiver == nil {
 		return
 	}
-	if ticket.Labels == nil || ticket.Labels["source"] != "ai_inspection" {
-		return // 仅沉淀 AI 巡检来源的工单
+	// 检查是否需要沉淀: AI 巡检来源 或 标记了 auto_archived
+	isAISource := ticket.Labels != nil && ticket.Labels["source"] == "ai_inspection"
+	autoArchived := ticket.Labels != nil && ticket.Labels["auto_archived"] == "true"
+	if !isAISource && !autoArchived {
+		return
 	}
-	if ticket.Labels["kb_archived"] == "true" {
+	if ticket.Labels != nil && ticket.Labels["kb_archived"] == "true" {
 		return // 幂等: 已沉淀过
 	}
 
-	title := fmt.Sprintf("[处置案例] %s", ticket.Title)
-	content := "来源: 主动巡检发现并转工单处置\n"
+	var title, source string
+	if isAISource {
+		title = fmt.Sprintf("[处置案例] %s", ticket.Title)
+		source = "主动巡检发现并转工单处置"
+	} else {
+		title = fmt.Sprintf("[工单案例] %s", ticket.Title)
+		source = "工单完成后自动沉淀"
+	}
+
+	content := "来源: " + source + "\n"
 	if ticket.Description != "" {
 		content += "\n【问题描述】\n" + ticket.Description
 	}
@@ -426,8 +545,12 @@ func (s *Service) archiveTicketToKnowledge(ctx context.Context, ticket *model.Ti
 		content += "\n【关联资产】" + strings.Join(ticket.CIIDs, ", ")
 	}
 
-	articleID, err := s.knowledgeArchiver(ctx, ticket.TenantID, title, content,
-		[]string{"ai_inspection", "disposal-case", string(ticket.RiskLevel)})
+	tags := []string{"disposal-case", string(ticket.RiskLevel)}
+	if isAISource {
+		tags = append(tags, "ai_inspection")
+	}
+
+	articleID, err := s.knowledgeArchiver(ctx, ticket.TenantID, title, content, tags)
 	if err != nil {
 		slog.Warn("archive ticket to knowledge failed", "ticket_id", ticket.ID, "error", err)
 		return
@@ -446,6 +569,18 @@ func (s *Service) archiveTicketToKnowledge(ctx context.Context, ticket *model.Ti
 	s.rememberTicketExperience(ctx, ticket, resultComment)
 }
 
+// handleGet godoc
+// @Summary 获取工单详情
+// @Description 根据 ID 获取工单详情
+// @Tags ITSM
+// @Accept json
+// @Produce json
+// @Param id path string true "工单 ID"
+// @Success 200 {object} model.Ticket
+// @Failure 404 {object} map[string]string
+// @Failure 500 {object} map[string]string
+// @Router /api/v1/itsm/tickets/{id} [get]
+// @Security BearerAuth
 func (s *Service) handleGet(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	tenantID := tenantFromCtx(r.Context())
@@ -515,6 +650,17 @@ func (s *Service) TicketMetricsBySource(ctx context.Context, tenantID, source st
 	return total, byStatus, avg, byAssessment, rows.Err()
 }
 
+// handleList godoc
+// @Summary 获取工单列表
+// @Description 获取工单列表，支持按状态过滤
+// @Tags ITSM
+// @Accept json
+// @Produce json
+// @Param status query string false "工单状态过滤"
+// @Success 200 {array} model.Ticket
+// @Failure 500 {object} map[string]string
+// @Router /api/v1/itsm/tickets [get]
+// @Security BearerAuth
 func (s *Service) handleList(w http.ResponseWriter, r *http.Request) {
 	tenantID := tenantFromCtx(r.Context())
 	status := model.TicketStatus(r.URL.Query().Get("status"))
@@ -584,33 +730,124 @@ func (s *Service) handleApprove(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 会签: 当前步骤多审批人时先记录投票, 未全票通过则保持待审批(不推进状态/流程)。
-	if voter, ok := s.processStore.(stepVoter); ok {
-		if step := s.currentVoteStep(r.Context(), ticket); step != nil {
-			all, err := voter.VoteStep(r.Context(), ticket.TenantID, ticket.ID, step.ID, req.ApprovedBy, true)
-			if err == nil && !all {
+	// 审批链处理: 支持顺序/并行审批模式
+	if ticket.ApprovalChain != nil && len(ticket.ApprovalChain.Approvers) > 1 {
+		if ticket.ApprovalStatus == nil {
+			ticket.ApprovalStatus = &model.ApprovalStatus{
+				CurrentIndex: 0,
+				Votes:        []model.ApprovalVote{},
+				FinalResult:  "pending",
+			}
+		}
+
+		vote := model.ApprovalVote{
+			Approver: req.ApprovedBy,
+			Approved: true,
+			Comment:  req.Comment,
+			VotedAt:  time.Now(),
+		}
+		ticket.ApprovalStatus.Votes = append(ticket.ApprovalStatus.Votes, vote)
+
+		if ticket.ApprovalChain.Mode == "parallel" {
+			// 并行模式: 检查是否所有审批人都已投票
+			allVoted := len(ticket.ApprovalStatus.Votes) >= len(ticket.ApprovalChain.Approvers)
+			allApproved := true
+			for _, v := range ticket.ApprovalStatus.Votes {
+				if !v.Approved {
+					allApproved = false
+					break
+				}
+			}
+			if !allVoted {
+				// 还有审批人未投票，等待
+				if err := s.store.Update(r.Context(), ticket); err != nil {
+					writeError(w, http.StatusInternalServerError, "failed to update ticket")
+					return
+				}
 				writeJSON(w, http.StatusOK, map[string]any{
 					"status":  "waiting",
-					"message": "已记录审批意见, 等待其余审批人",
+					"message": fmt.Sprintf("已记录审批意见, 等待其余审批人 (%d/%d)", len(ticket.ApprovalStatus.Votes), len(ticket.ApprovalChain.Approvers)),
 					"ticket":  ticket,
 				})
 				return
+			}
+			// 所有人都已投票
+			if !allApproved {
+				ticket.ApprovalStatus.FinalResult = "rejected"
+				ticket.Status = model.StatusRejected
+				ticket.RejectReason = "审批链驳回"
+				if err := s.store.Update(r.Context(), ticket); err != nil {
+					writeError(w, http.StatusInternalServerError, "failed to update ticket")
+					return
+				}
+				s.recordEvent(r.Context(), ticket, model.StatusPendingReview, model.StatusRejected, req.ApprovedBy, "审批链驳回")
+				s.broadcastTicketUpdate(ticket)
+				writeJSON(w, http.StatusOK, ticket)
+				return
+			}
+			// 全部通过
+			ticket.ApprovalStatus.FinalResult = "approved"
+		} else {
+			// 顺序模式: 检查当前审批人是否是正确的顺序
+			currentApprover := ticket.ApprovalChain.Approvers[ticket.ApprovalStatus.CurrentIndex]
+			if req.ApprovedBy != currentApprover {
+				writeError(w, http.StatusConflict, fmt.Sprintf("当前审批人应为 %s", currentApprover))
+				return
+			}
+			ticket.ApprovalStatus.CurrentIndex++
+			// 检查是否还有下一个审批人
+			if ticket.ApprovalStatus.CurrentIndex < len(ticket.ApprovalChain.Approvers) {
+				if err := s.store.Update(r.Context(), ticket); err != nil {
+					writeError(w, http.StatusInternalServerError, "failed to update ticket")
+					return
+				}
+				nextApprover := ticket.ApprovalChain.Approvers[ticket.ApprovalStatus.CurrentIndex]
+				writeJSON(w, http.StatusOK, map[string]any{
+					"status":  "waiting",
+					"message": fmt.Sprintf("已通过, 等待下一级审批人: %s", nextApprover),
+					"ticket":  ticket,
+				})
+				return
+			}
+			// 所有顺序审批人都已通过
+			ticket.ApprovalStatus.FinalResult = "approved"
+		}
+	} else {
+		// 会签: 当前步骤多审批人时先记录投票, 未全票通过则保持待审批(不推进状态/流程)。
+		if voter, ok := s.processStore.(stepVoter); ok {
+			if step := s.currentVoteStep(r.Context(), ticket); step != nil {
+				all, err := voter.VoteStep(r.Context(), ticket.TenantID, ticket.ID, step.ID, req.ApprovedBy, true)
+				if err == nil && !all {
+					writeJSON(w, http.StatusOK, map[string]any{
+						"status":  "waiting",
+						"message": "已记录审批意见, 等待其余审批人",
+						"ticket":  ticket,
+					})
+					return
+				}
 			}
 		}
 	}
 
 	previousStatus := ticket.Status
-	ticket.Status = model.StatusApproved
 	ticket.ApprovedBy = req.ApprovedBy
 	now := time.Now()
 	ticket.ApprovedAt = &now
+
+	// 审批通过后自动推进：无流程绑定时自动进入 executing 状态
+	if ticket.ProcessID == "" {
+		ticket.Status = model.StatusExecuting
+		ticket.ExecutedAt = &now
+	} else {
+		ticket.Status = model.StatusApproved
+	}
 
 	if err := s.store.Update(r.Context(), ticket); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to update ticket")
 		return
 	}
 
-	s.recordEvent(r.Context(), ticket, previousStatus, model.StatusApproved, req.ApprovedBy, req.Comment)
+	s.recordEvent(r.Context(), ticket, previousStatus, ticket.Status, req.ApprovedBy, req.Comment)
 	s.fireWebhook(r.Context(), "ticket.approved", ticket, req.ApprovedBy)
 	s.notifyTicket(r.Context(), tenantID, evTicketApproved, "工单已审批通过: "+ticket.Title, fmt.Sprintf("审批人: %s", req.ApprovedBy))
 	s.advanceProcess(r.Context(), ticket, "success")
@@ -712,7 +949,7 @@ func (s *Service) handleComplete(w http.ResponseWriter, r *http.Request) {
 	var req model.CompleteRequest
 	json.NewDecoder(r.Body).Decode(&req)
 	if req.CompletedBy == "" {
-		req.CompletedBy = "system"
+		req.CompletedBy = getUserID(r, "")
 	}
 
 	ticket, err := s.store.Get(r.Context(), id, tenantID)
@@ -764,7 +1001,7 @@ func (s *Service) handleRollback(w http.ResponseWriter, r *http.Request) {
 	var req model.RollbackRequest
 	json.NewDecoder(r.Body).Decode(&req)
 	if req.RolledBackBy == "" {
-		req.RolledBackBy = "system"
+		req.RolledBackBy = getUserID(r, "")
 	}
 
 	ticket, err := s.store.Get(r.Context(), id, tenantID)
@@ -807,6 +1044,11 @@ func (s *Service) handleSubmit(w http.ResponseWriter, r *http.Request) {
 
 	var req model.SubmitRequest
 	json.NewDecoder(r.Body).Decode(&req)
+
+	// 优先从 JWT 提取用户身份
+	if req.SubmittedBy == "" || req.SubmittedBy == "admin" {
+		req.SubmittedBy = getUserID(r, req.SubmittedBy)
+	}
 
 	ticket, err := s.store.Get(r.Context(), id, tenantID)
 	if err != nil {
@@ -861,6 +1103,11 @@ func (s *Service) handleAssign(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// 优先从 JWT 提取用户身份
+	if req.AssignedBy == "" || req.AssignedBy == "admin" {
+		req.AssignedBy = getUserID(r, req.AssignedBy)
+	}
+
 	ticket, err := s.store.Get(r.Context(), id, tenantID)
 	if err != nil {
 		if err == store.ErrNotFound {
@@ -898,7 +1145,7 @@ func (s *Service) handleClose(w http.ResponseWriter, r *http.Request) {
 	var req model.CloseRequest
 	json.NewDecoder(r.Body).Decode(&req)
 	if req.ClosedBy == "" {
-		req.ClosedBy = "system"
+		req.ClosedBy = getUserID(r, "")
 	}
 
 	ticket, err := s.store.Get(r.Context(), id, tenantID)
@@ -952,7 +1199,7 @@ func (s *Service) handleWithdraw(w http.ResponseWriter, r *http.Request) {
 	var req model.WithdrawRequest
 	json.NewDecoder(r.Body).Decode(&req)
 	if req.WithdrawnBy == "" {
-		req.WithdrawnBy = "system"
+		req.WithdrawnBy = getUserID(r, "")
 	}
 	ticket, err := s.store.Get(r.Context(), id, tenantID)
 	if err != nil {
@@ -981,7 +1228,7 @@ func (s *Service) handleReopen(w http.ResponseWriter, r *http.Request) {
 	var req model.ReopenRequest
 	json.NewDecoder(r.Body).Decode(&req)
 	if req.ReopenedBy == "" {
-		req.ReopenedBy = "system"
+		req.ReopenedBy = getUserID(r, "")
 	}
 	ticket, err := s.store.Get(r.Context(), id, tenantID)
 	if err != nil {
@@ -1005,13 +1252,46 @@ func (s *Service) handleReopen(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, ticket)
 }
 
+// handleResubmit 允许被拒工单修改后重新提交到 pending_review 状态。
+func (s *Service) handleResubmit(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	tenantID := tenantFromCtx(r.Context())
+	var req struct {
+		ResubmittedBy string `json:"resubmitted_by"`
+		Reason        string `json:"reason,omitempty"`
+	}
+	json.NewDecoder(r.Body).Decode(&req)
+	if req.ResubmittedBy == "" {
+		req.ResubmittedBy = getUserID(r, "")
+	}
+	ticket, err := s.store.Get(r.Context(), id, tenantID)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "ticket not found")
+		return
+	}
+	if err := model.CanTransition(ticket.Status, model.StatusPendingReview); err != nil {
+		writeError(w, http.StatusConflict, err.Error())
+		return
+	}
+	prev := ticket.Status
+	ticket.Status = model.StatusPendingReview
+	if err := s.store.Update(r.Context(), ticket); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to update ticket")
+		return
+	}
+	s.recordEvent(r.Context(), ticket, prev, model.StatusPendingReview, req.ResubmittedBy, "重新提交: "+req.Reason)
+	s.fireWebhook(r.Context(), "ticket.resubmitted", ticket, req.ResubmittedBy)
+	s.broadcastTicketUpdate(ticket)
+	writeJSON(w, http.StatusOK, ticket)
+}
+
 func (s *Service) handleHold(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	tenantID := tenantFromCtx(r.Context())
 	var req model.HoldRequest
 	json.NewDecoder(r.Body).Decode(&req)
 	if req.HoldBy == "" {
-		req.HoldBy = "system"
+		req.HoldBy = getUserID(r, "")
 	}
 	ticket, err := s.store.Get(r.Context(), id, tenantID)
 	if err != nil {
@@ -1022,9 +1302,11 @@ func (s *Service) handleHold(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusConflict, "terminal ticket cannot be held")
 		return
 	}
+	now := time.Now()
 	ticket.OnHold = true
 	ticket.HoldReason = req.Reason
 	ticket.HoldUntilAt = req.HoldUntilAt
+	ticket.HoldAt = &now // 记录挂起开始时间
 	if err := s.store.Update(r.Context(), ticket); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to update ticket")
 		return
@@ -1043,7 +1325,7 @@ func (s *Service) handleResume(w http.ResponseWriter, r *http.Request) {
 	}
 	json.NewDecoder(r.Body).Decode(&req)
 	if req.ResumedBy == "" {
-		req.ResumedBy = "system"
+		req.ResumedBy = getUserID(r, "")
 	}
 	ticket, err := s.store.Get(r.Context(), id, tenantID)
 	if err != nil {
@@ -1054,9 +1336,24 @@ func (s *Service) handleResume(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusConflict, "ticket is not on hold")
 		return
 	}
+	now := time.Now()
 	ticket.OnHold = false
 	ticket.HoldReason = ""
 	ticket.HoldUntilAt = nil
+
+	// 计算本次挂起时长并累加
+	if ticket.HoldAt != nil {
+		holdDuration := int(now.Sub(*ticket.HoldAt).Seconds())
+		ticket.HoldSeconds += holdDuration
+		ticket.HoldAt = nil
+	}
+
+	// 如果有截止时间，延长挂起时长
+	if ticket.DeadlineAt != nil {
+		extended := ticket.DeadlineAt.Add(time.Duration(ticket.HoldSeconds) * time.Second)
+		ticket.DeadlineAt = &extended
+	}
+
 	if err := s.store.Update(r.Context(), ticket); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to update ticket")
 		return
@@ -1072,7 +1369,7 @@ func (s *Service) handleRemind(w http.ResponseWriter, r *http.Request) {
 	var req model.RemindRequest
 	json.NewDecoder(r.Body).Decode(&req)
 	if req.RemindedBy == "" {
-		req.RemindedBy = "system"
+		req.RemindedBy = getUserID(r, "")
 	}
 	ticket, err := s.store.Get(r.Context(), id, tenantID)
 	if err != nil {
@@ -1122,7 +1419,7 @@ func (s *Service) handleRelate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	_ = s.store.Update(r.Context(), b)
-	s.recordEvent(r.Context(), a, a.Status, a.Status, req.RelateBy, "关联工单: "+b.ID)
+	s.recordEvent(r.Context(), a, a.Status, a.Status, req.RelateBy, fmt.Sprintf("关联工单: %s (类型: %s)", b.ID, req.Relation))
 	s.broadcastTicketUpdate(a)
 	writeJSON(w, http.StatusOK, a)
 }
@@ -1368,6 +1665,36 @@ func (s *Service) handleDeleteComment(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
 }
 
+func (s *Service) handleEditComment(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	cidStr := r.PathValue("cid")
+	tenantID := tenantFromCtx(r.Context())
+
+	cid, err := strconv.ParseInt(cidStr, 10, 64)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid comment id")
+		return
+	}
+
+	var body struct {
+		Content string `json:"content"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.Content == "" {
+		writeError(w, http.StatusBadRequest, "content is required")
+		return
+	}
+
+	if err := s.store.EditComment(r.Context(), cid, id, tenantID, body.Content); err != nil {
+		if err == store.ErrNotFound {
+			writeError(w, http.StatusNotFound, "comment not found")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "updated"})
+}
+
 // --- Subtasks ---
 
 func (s *Service) handleAddSubtask(w http.ResponseWriter, r *http.Request) {
@@ -1384,7 +1711,7 @@ func (s *Service) handleAddSubtask(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if req.CreatedBy == "" {
-		req.CreatedBy = "admin"
+		req.CreatedBy = getUserID(r, "")
 	}
 
 	st := &model.Subtask{
@@ -1671,10 +1998,17 @@ func (s *Service) recordEvent(ctx context.Context, ticket *model.Ticket, from, t
 func (s *Service) broadcastTicketUpdate(ticket *model.Ticket) {
 	if s.wsHub != nil {
 		s.wsHub.BroadcastToTenant(map[string]any{
-			"type":    "itsm",
-			"payload": ticket,
+			"type":    "ticket.updated",
+			"ticket":  ticket,
 			"time":    time.Now().UnixMilli(),
 		}, ticket.TenantID)
+	}
+}
+
+func (s *Service) broadcastEvent(tenantID string, event map[string]any) {
+	if s.wsHub != nil {
+		event["time"] = time.Now().UnixMilli()
+		s.wsHub.BroadcastToTenant(event, tenantID)
 	}
 }
 
@@ -1739,6 +2073,27 @@ func (s *Service) checkSLA(ctx context.Context) {
 	}
 	for _, t := range tenants {
 		s.checkSLATenant(ctx, t)
+		s.checkHoldAutoResume(ctx, t)
+	}
+}
+
+func (s *Service) checkHoldAutoResume(ctx context.Context, tenantID string) {
+	tickets, err := s.store.ListOnHoldTicketsPastDue(ctx, tenantID)
+	if err != nil {
+		slog.Error("itsm: hold auto-resume check failed", "tenant", tenantID, "error", err)
+		return
+	}
+	for _, t := range tickets {
+		slog.Info("itsm: auto-resuming hold ticket", "ticket", t.ID, "hold_until", t.HoldUntilAt)
+		t.OnHold = false
+		t.HoldReason = ""
+		t.HoldUntilAt = nil
+		t.UpdatedAt = time.Now()
+		if err := s.store.Update(ctx, t); err != nil {
+			slog.Error("itsm: failed to auto-resume ticket", "ticket", t.ID, "error", err)
+			continue
+		}
+		s.broadcastEvent(tenantID, map[string]any{"type": "hold_resumed", "ticket_id": t.ID})
 	}
 }
 
@@ -1758,13 +2113,34 @@ func (s *Service) checkSLATenant(ctx context.Context, tenantID string) {
 		totalDuration := deadline.Sub(t.CreatedAt)
 		elapsed := now.Sub(t.CreatedAt)
 
+		// 扣除挂起时间: 挂起期间 SLA 不计时，需从已用时中减去累计挂起秒数
+		if t.HoldSeconds > 0 {
+			elapsed -= time.Duration(t.HoldSeconds) * time.Second
+		}
+
 		// SLA breached
 		if now.After(deadline) && !t.SLABreached {
 			t.SLABreached = true
 			t.SLABreachedAt = &now
 			t.SLAEscalationLevel = 2
-			// 升级策略落地: 命中策略且配置 EscalationTo 时自动转派(当前无负责人或负责人非升级角色)。
-			if pol := s.slaPolicyForTicket(ctx, tenantID, t); pol != nil && pol.EscalationTo != "" && t.Assignee != pol.EscalationTo {
+			// 多级升级策略: 遍历 EscalationLevels，命中的最高级别生效
+			pol := s.slaPolicyForTicket(ctx, tenantID, t)
+			if pol != nil && len(pol.EscalationLevels) > 0 {
+				elapsedHours := elapsed.Hours()
+				for _, lvl := range pol.EscalationLevels {
+					if elapsedHours >= float64(lvl.Hours) && lvl.Level > t.SLAEscalationLevel {
+						t.SLAEscalationLevel = lvl.Level
+						if lvl.NotifyTo != "" && t.Assignee != lvl.NotifyTo {
+							prev := t.Assignee
+							at := time.Now()
+							t.Assignee = lvl.NotifyTo
+							t.AssignedAt = &at
+							s.recordEvent(ctx, t, t.Status, t.Status, "sla_escalation", fmt.Sprintf("SLA 多级升级(L%d): %s → %s", lvl.Level, prev, lvl.NotifyTo))
+						}
+					}
+				}
+			} else if pol != nil && pol.EscalationTo != "" && t.Assignee != pol.EscalationTo {
+				// 兼容旧单级升级: 命中策略且配置 EscalationTo 时自动转派
 				prev := t.Assignee
 				at := time.Now()
 				t.Assignee = pol.EscalationTo
@@ -1781,10 +2157,32 @@ func (s *Service) checkSLATenant(ctx context.Context, tenantID string) {
 			continue
 		}
 
+		// 多级 SLA 预警: 遍历 EscalationLevels，在到达各级阈值时通知
+		if pol := s.slaPolicyForTicket(ctx, tenantID, t); pol != nil && len(pol.EscalationLevels) > 0 {
+			elapsedHours := elapsed.Hours()
+			for _, lvl := range pol.EscalationLevels {
+				if elapsedHours >= float64(lvl.Hours) && lvl.Level > t.SLAEscalationLevel {
+					t.SLAEscalationLevel = lvl.Level
+					if err := s.store.Update(ctx, t); err != nil {
+						slog.Error("itsm: failed to update SLA escalation level", "ticket_id", t.ID, "error", err)
+						continue
+					}
+					slog.Info("itsm: SLA multi-level escalation", "ticket_id", t.ID, "level", lvl.Level, "hours", lvl.Hours)
+					s.broadcastTicketUpdate(t)
+					if lvl.NotifyTo != "" {
+						content := fmt.Sprintf("工单 SLA 升级至 L%d (已用时 %.1f 小时)\n负责人: %s → %s", lvl.Level, elapsedHours, t.Assignee, lvl.NotifyTo)
+						s.notifyTicket(ctx, tenantID, evSLAWarning, fmt.Sprintf("SLA 升级 L%d: %s", lvl.Level, t.Title), content)
+					}
+				}
+			}
+		}
+
 		// SLA warning at 80%
 		if totalDuration > 0 && elapsed.Seconds()/totalDuration.Seconds() >= 0.8 && !t.SLAWarningNotified && !t.SLABreached {
 			t.SLAWarningNotified = true
-			t.SLAEscalationLevel = 1
+			if t.SLAEscalationLevel == 0 {
+				t.SLAEscalationLevel = 1
+			}
 			if err := s.store.Update(ctx, t); err != nil {
 				slog.Error("itsm: failed to mark SLA warning", "ticket_id", t.ID, "error", err)
 				continue

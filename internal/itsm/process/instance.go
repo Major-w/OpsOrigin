@@ -33,6 +33,9 @@ func (s *PGStore) migrateInstances() {
 }
 
 func (s *PGStore) CreateInstance(ctx context.Context, inst *ProcessInstance) error {
+	if s.db == nil {
+		return fmt.Errorf("database not available")
+	}
 	if inst.ID == "" {
 		inst.ID = uuid.NewString()
 	}
@@ -59,6 +62,9 @@ func (s *PGStore) CreateInstance(ctx context.Context, inst *ProcessInstance) err
 }
 
 func (s *PGStore) ListRunningInstances(ctx context.Context) ([]*ProcessInstance, error) {
+	if s.db == nil {
+		return nil, nil
+	}
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT id,process_id,ticket_id,tenant_id,current_step,status,step_results,process_snapshot,started_at,finished_at,created_at,updated_at
 		 FROM itsm_process_instances WHERE status='running'`)
@@ -86,6 +92,9 @@ func (s *PGStore) ListRunningInstances(ctx context.Context) ([]*ProcessInstance,
 }
 
 func (s *PGStore) GetInstanceByTicket(ctx context.Context, ticketID, tenantID string) (*ProcessInstance, error) {
+	if s.db == nil {
+		return nil, nil
+	}
 	var resultsJSON, snapshotJSON []byte
 	inst := &ProcessInstance{}
 	err := s.db.QueryRowContext(ctx,
@@ -110,6 +119,9 @@ func (s *PGStore) GetInstanceByTicket(ctx context.Context, ticketID, tenantID st
 }
 
 func (s *PGStore) UpdateInstance(ctx context.Context, inst *ProcessInstance) error {
+	if s.db == nil {
+		return fmt.Errorf("database not available")
+	}
 	inst.UpdatedAt = time.Now()
 	resultsJSON, _ := json.Marshal(inst.StepResults)
 	snapshotJSON, _ := json.Marshal(inst.ProcessSnapshot)

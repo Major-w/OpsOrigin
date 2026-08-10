@@ -85,6 +85,9 @@ const versionCols = `id,process_id,tenant_id,version,name,description,category,s
 
 // SaveVersion 归档一份版本快照; 同 (tenant, process, version) 已存在则覆盖。
 func (s *PGStore) SaveVersion(ctx context.Context, v *ProcessVersion) error {
+	if s.db == nil {
+		return nil
+	}
 	if v == nil {
 		return nil
 	}
@@ -140,6 +143,9 @@ func scanVersion(sc interface{ Scan(...any) error }) (*ProcessVersion, error) {
 
 // ListVersions 按版本倒序返回某流程的历史快照。
 func (s *PGStore) ListVersions(ctx context.Context, processID, tenantID string) ([]*ProcessVersion, error) {
+	if s.db == nil {
+		return nil, nil
+	}
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT `+versionCols+` FROM itsm_process_versions WHERE process_id=$1 AND tenant_id=$2 ORDER BY version DESC`,
 		processID, tenantID)
@@ -160,6 +166,9 @@ func (s *PGStore) ListVersions(ctx context.Context, processID, tenantID string) 
 
 // GetVersion 读取指定版本快照; 不存在返回 (nil, nil)。
 func (s *PGStore) GetVersion(ctx context.Context, processID, tenantID string, version int) (*ProcessVersion, error) {
+	if s.db == nil {
+		return nil, nil
+	}
 	row := s.db.QueryRowContext(ctx,
 		`SELECT `+versionCols+` FROM itsm_process_versions WHERE process_id=$1 AND tenant_id=$2 AND version=$3`,
 		processID, tenantID, version)
