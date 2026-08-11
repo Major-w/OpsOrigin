@@ -49,6 +49,7 @@ import (
 	"github.com/opsorigin/core/internal/keystore"
 	"github.com/opsorigin/core/internal/knowledge"
 	"github.com/opsorigin/core/internal/lowcode/service"
+	"github.com/opsorigin/core/internal/message"
 	"github.com/opsorigin/core/internal/monitor"
 	healthhandler "github.com/opsorigin/core/internal/monitor/health"
 	"github.com/opsorigin/core/internal/monitor/ingest"
@@ -285,6 +286,12 @@ func main() {
 	itsmSvc.SetWebSocketHub(wsHub)
 	itsmSvc.StartSLAChecker(ctx)
 	itsmSvc.StartOLAChecker(ctx)
+
+	// 站内消息:独立收件箱服务。PG 建表失败会自动回落内存实现,
+	// 不会因 DDL 问题拖垮主流程。实时推送走 wsHub(由下方 SetAuthenticator 鉴权)。
+	msgSvc := message.NewService(db)
+	server.RegisterService(msgSvc)
+	msgSvc.SetPusher(wsHub)
 
 	var processSvc *process.Service
 	var catalogStore *catalog.Store
@@ -657,6 +664,25 @@ func main() {
 		// 角色权限被编辑后立即失效富化器缓存,不必等 TTL。
 		iamSvc.SetPermissionChangeHook(identityEnricher.InvalidatePermissions)
 
+		// WebSocket 握手鉴权:浏览器无法带自定义头,握手时从 ?token= 取 JWT,
+		// 由 auth.Provider 校验后派生身份。username 从 uid 经身份富化器解析
+		// (users.username),使「按 username 投递的站内消息」能精确推到在线用户。
+		wsHub.SetAuthenticator(func(token string) (ws.Identity, bool) {
+			claims, err := authProvider.ValidateToken(token)
+			if err != nil || claims == nil {
+				return ws.Identity{}, false
+			}
+			username := claims.UserID
+			if name := identityEnricher.DisplayName(ctx, claims.TenantID, claims.UserID); name != "" {
+				username = name
+			}
+			return ws.Identity{
+				UserID:   claims.UserID,
+				Username: username,
+				TenantID: claims.TenantID,
+			}, true
+		})
+
 		// ITSM 动态表单选项来源:cmdb:<type> 取配置项、iam:user/role/group 取人与角色。
 		// 解析器由 itsm 侧定义(form 包只认接口),此处在 cmdb/user/iam 就绪后装配,带 TTL 缓存。
 		itsmSvc.SetSourceResolver(itsm.NewCMDBIAMResolver(cmdbSvc, userSvc, iamSvc))
@@ -668,17 +694,17 @@ func main() {
 				if err != nil {
 					return nil, err
 				}
-			var ids []string
-			for _, g := range groups {
-				for _, uid := range g.UserIDs {
-					if uid == userID {
-						ids = append(ids, g.ID)
-						break
+				var ids []string
+				for _, g := range groups {
+					for _, uid := range g.UserIDs {
+						if uid == userID {
+							ids = append(ids, g.ID)
+							break
+						}
 					}
 				}
-			}
-			return ids, nil
-		})
+				return ids, nil
+			})
 		}
 
 		// 通知管理:邮件/钉钉/企业微信/飞书/Webhook 五种渠道 + 事件订阅策略
@@ -686,6 +712,10 @@ func main() {
 			schedulerSvc.SetNotifier(notifySvc)
 		}
 		itsmSvc.SetNotifier(notifySvc)
+
+		// 站内消息投递桥:把 ITSM 的 username 收件人转成 message.Message 落库+推送。
+		// 用匿名适配器隔离两个包,ITSM 只依赖极小的 MessageSender 接口。
+		itsmSvc.SetMessageSender(messageInboxSender{svc: msgSvc})
 
 		// 流程引擎动作库: service 步骤除脚本外可执行 http / notify / create_ticket / cmdb_update 预置动作。
 		actionExec := actions.New()
@@ -1061,14 +1091,14 @@ func main() {
 				return
 			}
 			oncallSvc.HandleAlert(context.Background(), &oncall.Alert{
-			ID:          ae.ID,
-			TenantID:    ae.TenantID,
-			Title:       ae.Title,
-			Description: ae.Description,
-			Severity:    string(ae.Severity),
-			Labels:      ae.Labels,
-			TriggeredAt: ae.TriggeredAt,
-		})
+				ID:          ae.ID,
+				TenantID:    ae.TenantID,
+				Title:       ae.Title,
+				Description: ae.Description,
+				Severity:    string(ae.Severity),
+				Labels:      ae.Labels,
+				TriggeredAt: ae.TriggeredAt,
+			})
 		})
 	}
 
@@ -1238,4 +1268,31 @@ func strAny(v any) string {
 		return ""
 	}
 	return fmt.Sprint(v)
+}
+
+// messageInboxSender 把 ITSM 的站内消息投递桥接到 message.Service。
+// ITSM 业务主体一律是 username(assignee / created_by / @提及),适配层只填
+// Recipient.Username;收件箱查询与 WS 推送都按 username 命中,与前端的
+// 当前用户展示名(= users.username)保持一致。
+type messageInboxSender struct {
+	svc *message.Service
+}
+
+func (a messageInboxSender) SendToUsers(ctx context.Context, tenantID string, usernames []string, m itsm.InboxMessage) error {
+	recips := make([]message.Recipient, 0, len(usernames))
+	for _, u := range usernames {
+		recips = append(recips, message.Recipient{Username: u})
+	}
+	tpl := message.Message{
+		TenantID: tenantID,
+		Category: message.Category(m.Category),
+		Level:    message.Level(m.Level),
+		Title:    m.Title,
+		Content:  m.Content,
+		Link:     m.Link,
+		RefType:  m.RefType,
+		RefID:    m.RefID,
+		Actor:    m.Actor,
+	}
+	return a.svc.DeliverTo(ctx, recips, tpl)
 }

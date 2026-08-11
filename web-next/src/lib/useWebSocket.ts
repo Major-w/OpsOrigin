@@ -20,7 +20,9 @@ export function useWebSocket({ onEvent, onConnect, onDisconnect }: UseWebSocketO
     if (!token) return
 
     const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:'
-    const url = `${protocol}//${location.host}/api/v1/ws`
+    // 后端 WebSocket 握手需带 JWT(浏览器无法自定义头), 服务端校验后派生
+    // 用户身份, 才能做「只推给某个人」的定向推送(站内消息角标)。
+    const url = `${protocol}//${location.host}/api/v1/ws?token=${encodeURIComponent(token)}`
 
     const ws = new WebSocket(url)
     wsRef.current = ws

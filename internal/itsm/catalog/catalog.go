@@ -55,6 +55,7 @@ type ServiceItem struct {
 	ParentID    string    `json:"parent_id"`            // 父分类 ID；空字符串=一级分类
 	Level       int       `json:"level"`                // 层级：1=一级分类
 	SortOrder   int       `json:"sort_order"`           // 同级排序(升序)
+	Kind        string    `json:"kind"`                 // 节点类型：folder=纯目录(仅组织分类，不可上线/无流程) / service=服务目录项(须关联流程、可上线)
 	ProcessID   string    `json:"process_id,omitempty"` // 关联流程(申请时自动套用)
 	FormScope   string    `json:"form_scope,omitempty"` // 关联表单作用域(如 ticket:default / catalog:<id> 自定义)
 	Enabled     bool      `json:"enabled"`              // 上线/下线: 仅上线项出现在自助服务门户
@@ -101,6 +102,8 @@ func (s *Store) migrate() {
 		`ALTER TABLE itsm_catalog ADD COLUMN IF NOT EXISTS parent_id TEXT DEFAULT ''`,
 		`ALTER TABLE itsm_catalog ADD COLUMN IF NOT EXISTS level INTEGER DEFAULT 1`,
 		`ALTER TABLE itsm_catalog ADD COLUMN IF NOT EXISTS sort_order INTEGER DEFAULT 0`,
+		// 节点类型：folder=纯目录 / service=服务目录项（默认 service，兼容历史数据）
+		`ALTER TABLE itsm_catalog ADD COLUMN IF NOT EXISTS kind TEXT DEFAULT 'service'`,
 	}
 	for _, st := range stmts {
 		if _, err := s.db.Exec(st); err != nil {
@@ -109,7 +112,7 @@ func (s *Store) migrate() {
 	}
 }
 
-const catalogCols = `id,tenant_id,name,description,category,parent_id,level,sort_order,process_id,form_scope,enabled,audience,created_at,updated_at`
+const catalogCols = `id,tenant_id,name,description,category,parent_id,level,sort_order,kind,process_id,form_scope,enabled,audience,created_at,updated_at`
 
 func marshalAudience(a Audience) []byte {
 	b, err := json.Marshal(a)
@@ -157,15 +160,18 @@ func (s *Store) seed() {
 			s.insertRow(ServiceItem{
 				ID: id, TenantID: "default", Name: c.name, Description: c.desc,
 				Category: c.key, ParentID: "", Level: 1, SortOrder: i + 1,
-				Enabled: true, Audience: Audience{}, CreatedAt: now, UpdatedAt: now,
+				Kind: "folder", Enabled: true, Audience: Audience{}, CreatedAt: now, UpdatedAt: now,
 			})
+		} else {
+			// 兼容存量：历史一级分类确保标记为纯目录(folder)
+			_, _ = s.db.Exec(`UPDATE itsm_catalog SET kind='folder' WHERE id=$1`, id)
 		}
 		catIDs[c.key] = id
 	}
 	// 把库里「无父级 且 属于某 ITIL 分类」的遗留服务，挂到对应一级分类下（形成多级树）。
 	// 排除 5 个一级分类自身，避免把自己父级指向自己形成环。
 	for key, cid := range catIDs {
-		_, _ = s.db.Exec(`UPDATE itsm_catalog SET parent_id=$1, level=2 WHERE tenant_id=$2 AND (parent_id='' OR parent_id IS NULL) AND category=$3 AND name NOT IN ($4,$5,$6,$7,$8)`,
+		_, _ = s.db.Exec(`UPDATE itsm_catalog SET parent_id=$1, level=2, kind='service' WHERE tenant_id=$2 AND (parent_id='' OR parent_id IS NULL) AND category=$3 AND name NOT IN ($4,$5,$6,$7,$8)`,
 			cid, "default", key, topCatNames[0], topCatNames[1], topCatNames[2], topCatNames[3], topCatNames[4])
 	}
 	// 每个一级分类：若还没有子项，补示例服务（幂等，避免重复堆积）
@@ -200,6 +206,7 @@ func (s *Store) seed() {
 		for j, it := range items {
 			it.ID = uuid.New().String()
 			it.TenantID = "default"
+			it.Kind = "service"
 			it.ParentID = catIDs[key]
 			it.Level = 2
 			it.SortOrder = j + 1
@@ -213,8 +220,8 @@ func (s *Store) seed() {
 
 // insertRow 全字段写入（含多级分类字段）。
 func (s *Store) insertRow(it ServiceItem) {
-	if _, err := s.db.Exec(`INSERT INTO itsm_catalog(`+catalogCols+`) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`,
-		it.ID, it.TenantID, it.Name, it.Description, it.Category, it.ParentID, it.Level, it.SortOrder,
+	if _, err := s.db.Exec(`INSERT INTO itsm_catalog(`+catalogCols+`) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)`,
+		it.ID, it.TenantID, it.Name, it.Description, it.Category, it.ParentID, it.Level, it.SortOrder, it.Kind,
 		it.ProcessID, it.FormScope, it.Enabled, marshalAudience(it.Audience), it.CreatedAt, it.UpdatedAt); err != nil {
 		slog.Error("itsm catalog seed insert failed", "name", it.Name, "err", err)
 	}
@@ -233,7 +240,7 @@ func (s *Store) List(ctx context.Context, tenantID string) ([]ServiceItem, error
 	for rows.Next() {
 		var it ServiceItem
 		var audRaw []byte
-		if err := rows.Scan(&it.ID, &it.TenantID, &it.Name, &it.Description, &it.Category, &it.ParentID, &it.Level, &it.SortOrder, &it.ProcessID, &it.FormScope, &it.Enabled, &audRaw, &it.CreatedAt, &it.UpdatedAt); err != nil {
+		if err := rows.Scan(&it.ID, &it.TenantID, &it.Name, &it.Description, &it.Category, &it.ParentID, &it.Level, &it.SortOrder, &it.Kind, &it.ProcessID, &it.FormScope, &it.Enabled, &audRaw, &it.CreatedAt, &it.UpdatedAt); err != nil {
 			return nil, err
 		}
 		unmarshalAudience(audRaw, &it.Audience)
@@ -250,7 +257,7 @@ func (s *Store) Get(ctx context.Context, id, tenantID string) (*ServiceItem, err
 	var it ServiceItem
 	var audRaw []byte
 	err := s.db.QueryRowContext(ctx, `SELECT `+catalogCols+` FROM itsm_catalog WHERE id=$1 AND tenant_id=$2`, id, tenantID).
-		Scan(&it.ID, &it.TenantID, &it.Name, &it.Description, &it.Category, &it.ParentID, &it.Level, &it.SortOrder, &it.ProcessID, &it.FormScope, &it.Enabled, &audRaw, &it.CreatedAt, &it.UpdatedAt)
+		Scan(&it.ID, &it.TenantID, &it.Name, &it.Description, &it.Category, &it.ParentID, &it.Level, &it.SortOrder, &it.Kind, &it.ProcessID, &it.FormScope, &it.Enabled, &audRaw, &it.CreatedAt, &it.UpdatedAt)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -271,11 +278,14 @@ func (s *Store) Create(ctx context.Context, it *ServiceItem) error {
 	if it.TenantID == "" {
 		it.TenantID = "default"
 	}
+	if it.Kind == "" {
+		it.Kind = "service"
+	}
 	if it.Level == 0 {
 		it.Level = 1
 	}
-	_, err := s.db.ExecContext(ctx, `INSERT INTO itsm_catalog(`+catalogCols+`) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`,
-		it.ID, it.TenantID, it.Name, it.Description, it.Category, it.ParentID, it.Level, it.SortOrder,
+	_, err := s.db.ExecContext(ctx, `INSERT INTO itsm_catalog(`+catalogCols+`) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)`,
+		it.ID, it.TenantID, it.Name, it.Description, it.Category, it.ParentID, it.Level, it.SortOrder, it.Kind,
 		it.ProcessID, it.FormScope, it.Enabled, marshalAudience(it.Audience), it.CreatedAt, it.UpdatedAt)
 	return err
 }
@@ -285,8 +295,8 @@ func (s *Store) Update(ctx context.Context, it *ServiceItem) error {
 		return fmt.Errorf("database not available")
 	}
 	it.UpdatedAt = time.Now()
-	_, err := s.db.ExecContext(ctx, `UPDATE itsm_catalog SET name=$1,description=$2,category=$3,parent_id=$4,level=$5,sort_order=$6,process_id=$7,form_scope=$8,enabled=$9,audience=$10,updated_at=$11 WHERE id=$12 AND tenant_id=$13`,
-		it.Name, it.Description, it.Category, it.ParentID, it.Level, it.SortOrder, it.ProcessID, it.FormScope, it.Enabled, marshalAudience(it.Audience), it.UpdatedAt, it.ID, it.TenantID)
+	_, err := s.db.ExecContext(ctx, `UPDATE itsm_catalog SET name=$1,description=$2,category=$3,parent_id=$4,level=$5,sort_order=$6,kind=$7,process_id=$8,form_scope=$9,enabled=$10,audience=$11,updated_at=$12 WHERE id=$13 AND tenant_id=$14`,
+		it.Name, it.Description, it.Category, it.ParentID, it.Level, it.SortOrder, it.Kind, it.ProcessID, it.FormScope, it.Enabled, marshalAudience(it.Audience), it.UpdatedAt, it.ID, it.TenantID)
 	return err
 }
 
@@ -312,6 +322,9 @@ func (s *Store) ListVisible(ctx context.Context, tenantID, userID string) ([]Ser
 	}
 	out := make([]ServiceItem, 0, len(all))
 	for _, it := range all {
+		if it.Kind == "folder" {
+			continue // 纯目录(folder)不出现在自助服务门户
+		}
 		if !it.Enabled {
 			continue // 下线项不出现在门户
 		}
@@ -369,6 +382,10 @@ func (s *Store) handleCreate(w http.ResponseWriter, r *http.Request) {
 	if it.TenantID == "" {
 		it.TenantID = "default"
 	}
+	if it.Kind != "folder" && it.Enabled && it.ProcessID == "" {
+		writeJSON(w, 400, map[string]string{"error": "服务目录必须关联流程模板才能上线"})
+		return
+	}
 	if err := s.Create(r.Context(), &it); err != nil {
 		writeJSON(w, 500, map[string]string{"error": err.Error()})
 		return
@@ -389,6 +406,10 @@ func (s *Store) handleUpdate(w http.ResponseWriter, r *http.Request) {
 	}
 	it.ID = id
 	it.TenantID = tenant
+	if it.Kind != "folder" && it.Enabled && it.ProcessID == "" {
+		writeJSON(w, 400, map[string]string{"error": "服务目录必须关联流程模板才能上线"})
+		return
+	}
 	if err := s.Update(r.Context(), &it); err != nil {
 		writeJSON(w, 500, map[string]string{"error": err.Error()})
 		return

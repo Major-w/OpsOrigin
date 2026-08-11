@@ -10,7 +10,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
-import { Select } from '@/components/ui/select'
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { apiList, apiFetch } from '@/lib/utils'
 import {
   Package, ChevronRight, ChevronDown, Loader2, FolderTree, Search,
@@ -20,7 +20,7 @@ import { buildTree, parseFormSchema, type TreeNode } from '@/lib/itsm-constants'
 import { toast } from '@/stores/toast'
 import { useITSMStore, type Process } from '@/stores/itsm'
 import { useAuthStore } from '@/stores/auth'
-import { DynamicForm, type FormSchema } from '@/components/itsm/DynamicForm'
+import { DynamicForm, withBuiltinFields, splitBuiltinValues, type FormSchema } from '@/components/itsm/DynamicForm'
 import ProcessFlowView from '@/components/itsm/ProcessFlowView'
 
 interface ServiceItem {
@@ -47,12 +47,6 @@ const CATEGORIES = [
 const catLabel = (v: string) => CATEGORIES.find(c => c.value === v)?.label || v
 
 const ROOT_KEY = '__all__'
-const RISK_OPTIONS = [
-  { value: 'low', label: '低风险' },
-  { value: 'medium', label: '中风险' },
-  { value: 'high', label: '高风险' },
-  { value: 'critical', label: '紧急' },
-]
 
 interface PortalNode { item: ServiceItem; children: PortalNode[] }
 
@@ -176,19 +170,18 @@ export default function ITSMPortalPage() {
   const [proc, setProc] = useState<Process | null>(null)
   const [schema, setSchema] = useState<FormSchema | null>(null)
   const [schemaLoading, setSchemaLoading] = useState(false)
-  const [form, setForm] = useState({ title: '', description: '', risk_level: 'low' })
-  const [customFields, setCustomFields] = useState<Record<string, unknown>>({})
+  // 表单值（含内置字段 title/description/risk_level + 自定义字段），提交时由 splitBuiltinValues 拆回一等列与 custom_fields
+  const [formValues, setFormValues] = useState<Record<string, unknown>>({})
   const [submitting, setSubmitting] = useState(false)
   const [createdId, setCreatedId] = useState<string | null>(null)
 
   const openApply = async (item: ServiceItem) => {
     setApplyItem(item)
     setCreatedId(null)
-    setForm({ title: `申请：${item.name}`, description: '', risk_level: 'low' })
-    setCustomFields({})
     setSchema(null)
     setProc(null)
     setSchemaLoading(true)
+    setFormValues({})
     try {
       // 表单来源优先级：绑定流程的主表单（流程设计第一步产出） > 目录项自定义作用域表单
       let s: FormSchema | null = null
@@ -201,11 +194,13 @@ export default function ITSMPortalPage() {
       setProc(p)
       if (!s) s = await getFormSchema(item.form_scope || `catalog:${item.id}`)
       setSchema(s)
-      // 预填默认值，避免用户面对空表单还要手动挑一遍
-      const defaults: Record<string, unknown> = {}
-      for (const f of s?.fields || []) if (f.default !== undefined) defaults[f.key] = f.default
-      setCustomFields(defaults)
-    } catch { setSchema(null) }
+      // 预填默认值：内置字段(title=申请：服务名, risk_level=low) + 自定义字段默认
+      const merged = withBuiltinFields(s)
+      const defaults: Record<string, unknown> = { risk_level: 'low' }
+      for (const f of merged.fields || []) if (f.default !== undefined) defaults[f.key] = f.default
+      if (!('title' in defaults) || !defaults.title) defaults.title = `申请：${item.name}`
+      setFormValues(defaults)
+    } catch { setSchema(null); setFormValues({}) }
     setSchemaLoading(false)
   }
 
@@ -213,22 +208,23 @@ export default function ITSMPortalPage() {
 
   const submitApply = async () => {
     if (!applyItem) return
-    if (!form.title.trim()) { toast.error('请填写申请标题'); return }
-    // 必填校验前置到前端，省掉一次失败往返
-    const missing = (schema?.fields || []).filter(f => f.required && !f.readonly).find(f => {
-      const v = customFields[f.key]
+    // 必填校验前置到前端：内置字段与自定义字段一并校验
+    const merged = withBuiltinFields(schema)
+    const missing = merged.fields.filter(f => f.required && !f.readonly).find(f => {
+      const v = formValues[f.key]
       return v === undefined || v === null || v === '' || (Array.isArray(v) && v.length === 0)
     })
     if (missing) { toast.error(`请填写必填项：${missing.label}`); return }
     setSubmitting(true)
     try {
+      const { builtin, custom } = splitBuiltinValues(formValues)
       const tk = await apiFetch<{ id: string }>(`/itsm/catalog/${applyItem.id}/fulfill`, {
         method: 'POST',
         body: JSON.stringify({
-          title: form.title.trim(),
-          description: form.description,
-          risk_level: form.risk_level,
-          custom_fields: customFields,
+          title: String(builtin.title ?? '').trim(),
+          description: builtin.description ?? '',
+          risk_level: builtin.risk_level ?? 'low',
+          custom_fields: custom,
           created_by: me?.username || 'portal',
         }),
       })
@@ -352,7 +348,7 @@ export default function ITSMPortalPage() {
                           className="border rounded-lg p-4 cursor-pointer hover:border-primary/60 hover:shadow-md hover:-translate-y-0.5 transition-all duration-200 group focus:outline-none focus:ring-2 focus:ring-primary/40">
                           <div className="flex items-start justify-between">
                             <Badge variant="outline" className="text-[10px]">{catLabel(it.category)}</Badge>
-                            <Badge variant="outline" className="text-[10px]">{it.process_id ? '含流程' : '无流程'}</Badge>
+                            <Badge variant={it.process_id ? 'outline' : 'outline'} className={`text-[10px] ${it.process_id ? '' : 'text-amber-500'}`}>{it.process_id ? '含流程' : '未关联流程'}</Badge>
                           </div>
                           <h5 className="font-medium text-sm mt-2 group-hover:text-primary transition-colors">{it.name}</h5>
                           {it.description && <p className="text-xs text-muted-foreground mt-1 line-clamp-2">{it.description}</p>}
@@ -374,7 +370,7 @@ export default function ITSMPortalPage() {
       {applyItem && (
         <div className="fixed inset-0 z-50 flex justify-end">
           <div className="absolute inset-0 bg-black/40 backdrop-blur-[1px]" onClick={closeApply} />
-          <div className="relative w-full sm:w-[520px] h-full bg-background border-l shadow-2xl flex flex-col animate-in slide-in-from-right duration-200">
+          <div className="relative w-full sm:w-[680px] max-w-[95vw] h-full bg-background border-l shadow-2xl flex flex-col animate-in slide-in-from-right duration-200">
             <div className="flex items-start justify-between px-5 py-4 border-b shrink-0">
               <div className="min-w-0">
                 <h3 className="font-semibold truncate">{applyItem.name}</h3>
@@ -403,51 +399,36 @@ export default function ITSMPortalPage() {
                   </div>
                 </div>
               ) : (
-                <>
-                  <div>
-                    <label className="text-sm font-medium">申请标题 <span className="text-destructive">*</span></label>
-                    <Input className="mt-1" value={form.title} onChange={e => setForm({ ...form, title: e.target.value })} placeholder="一句话说明诉求" />
-                  </div>
-                  <div>
-                    <label className="text-sm font-medium">申请说明</label>
-                    <textarea
-                      className="mt-1 flex min-h-[80px] w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                      value={form.description}
-                      onChange={e => setForm({ ...form, description: e.target.value })}
-                      placeholder="补充背景、期望完成时间等"
-                    />
-                  </div>
-                  <div>
-                    <label className="text-sm font-medium">紧急程度</label>
-                    <Select className="mt-1" options={RISK_OPTIONS} value={form.risk_level} onChange={e => setForm({ ...form, risk_level: e.target.value })} />
-                  </div>
-
-                  {proc && proc.steps && proc.steps.length > 0 && (
-                    <div className="pt-1 border-t">
-                      <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground pt-3 pb-2">流程过程</p>
-                      <ProcessFlowView steps={proc.steps} processName={proc.name} />
-                    </div>
-                  )}
-
-                  <div className="pt-1 border-t">
-                    <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground pt-3 pb-2">服务信息</p>
+                <Tabs defaultValue="form" className="space-y-4">
+                  <TabsList className="grid grid-cols-2 w-full">
+                    <TabsTrigger value="form">填写申请</TabsTrigger>
+                    <TabsTrigger value="flow">流程过程</TabsTrigger>
+                  </TabsList>
+                  <TabsContent value="form" className="space-y-4 mt-2">
                     {schemaLoading ? (
                       <div className="flex items-center gap-2 text-xs text-muted-foreground py-4">
                         <Loader2 className="h-3.5 w-3.5 animate-spin" />加载表单…
                       </div>
-                    ) : schema && schema.fields.length ? (
+                    ) : schema ? (
                       <DynamicForm
-                        schema={schema}
-                        values={customFields}
-                        context={{ risk_level: form.risk_level }}
-                        onChange={(k, v) => setCustomFields(prev => ({ ...prev, [k]: v }))}
+                        schema={withBuiltinFields(schema)}
+                        values={formValues}
+                        context={formValues}
+                        onChange={(k, v) => setFormValues(prev => ({ ...prev, [k]: v }))}
                         loadOptions={getFormOptions}
                       />
                     ) : (
-                      <p className="text-xs text-muted-foreground italic py-2">该服务未配置额外信息项，填写上方内容即可提交。</p>
+                      <p className="text-xs text-muted-foreground italic py-2">该服务未配置表单，填写上方内容即可提交。</p>
                     )}
-                  </div>
-                </>
+                  </TabsContent>
+                  <TabsContent value="flow" className="mt-2">
+                    {proc && proc.steps && proc.steps.length > 0 ? (
+                      <ProcessFlowView steps={proc.steps} processName={proc.name} />
+                    ) : (
+                      <p className="text-xs text-muted-foreground italic py-4 text-center">该服务未关联流程，无流程图可展示。</p>
+                    )}
+                  </TabsContent>
+                </Tabs>
               )}
             </div>
 

@@ -112,9 +112,20 @@ func (s *PGStore) Init(ctx context.Context) error {
 			created_at  TIMESTAMPTZ NOT NULL,
 			updated_at  TIMESTAMPTZ NOT NULL,
 			completed_at TIMESTAMPTZ,
-			meta        TEXT DEFAULT '{}'
+			meta        TEXT DEFAULT '{}',
+			detail      TEXT,
+			viewed_at   TIMESTAMPTZ,
+			started_at  TIMESTAMPTZ,
+			updated_by  TEXT,
+			close_with_parent BOOLEAN NOT NULL DEFAULT TRUE
 		)`)
+	// 自愈: 老库补列(派发式子任务增强)。
 	s.db.Exec(`ALTER TABLE itsm_subtasks ADD COLUMN IF NOT EXISTS meta TEXT DEFAULT '{}'`)
+	s.db.Exec(`ALTER TABLE itsm_subtasks ADD COLUMN IF NOT EXISTS detail TEXT`)
+	s.db.Exec(`ALTER TABLE itsm_subtasks ADD COLUMN IF NOT EXISTS viewed_at TIMESTAMPTZ`)
+	s.db.Exec(`ALTER TABLE itsm_subtasks ADD COLUMN IF NOT EXISTS started_at TIMESTAMPTZ`)
+	s.db.Exec(`ALTER TABLE itsm_subtasks ADD COLUMN IF NOT EXISTS updated_by TEXT`)
+	s.db.Exec(`ALTER TABLE itsm_subtasks ADD COLUMN IF NOT EXISTS close_with_parent BOOLEAN NOT NULL DEFAULT TRUE`)
 	if err != nil {
 		return fmt.Errorf("init itsm_subtasks table: %w", err)
 	}
@@ -731,16 +742,63 @@ func (s *PGStore) CreateSubtask(ctx context.Context, st *model.Subtask) error {
 	}
 	metaJSON, _ := json.Marshal(st.Meta)
 	err := s.db.QueryRowContext(ctx, `
-		INSERT INTO itsm_subtasks (ticket_id, tenant_id, title, description, assignee, status, due_at, created_by, created_at, updated_at, completed_at, meta)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12) RETURNING id`,
+		INSERT INTO itsm_subtasks (ticket_id, tenant_id, title, description, assignee, status, due_at, created_by, created_at, updated_at, completed_at, meta,
+			detail, viewed_at, started_at, updated_by, close_with_parent)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17) RETURNING id`,
 		st.TicketID, st.TenantID, st.Title, nullable(st.Description), nullable(st.Assignee),
-		string(st.Status), nullableTime(st.DueAt), st.CreatedBy, st.CreatedAt, st.UpdatedAt, nullableTime(st.CompletedAt), string(metaJSON)).Scan(&st.ID)
+		string(st.Status), nullableTime(st.DueAt), st.CreatedBy, st.CreatedAt, st.UpdatedAt, nullableTime(st.CompletedAt), string(metaJSON),
+		nullable(st.Detail), nullableTime(st.ViewedAt), nullableTime(st.StartedAt), nullable(st.UpdatedBy), st.CloseWithParent).Scan(&st.ID)
 	return err
+}
+
+// subtaskColumns 子任务查询列, Get/List 共用以保证 scanSubtask 顺序一致。
+const subtaskColumns = `id, ticket_id, tenant_id, title, description, assignee, status, due_at, created_by,
+	created_at, updated_at, completed_at, meta, detail, viewed_at, started_at, updated_by, close_with_parent`
+
+// scanSubtask 按 subtaskColumns 顺序读取一行子任务。
+func scanSubtask(sc interface{ Scan(...any) error }) (*model.Subtask, error) {
+	st := &model.Subtask{}
+	var description, assignee, createdBy, detail, updatedBy sql.NullString
+	var dueAt, completedAt, viewedAt, startedAt sql.NullTime
+	var metaJSON sql.NullString
+	var closeWithParent sql.NullBool
+	if err := sc.Scan(&st.ID, &st.TicketID, &st.TenantID, &st.Title,
+		&description, &assignee, &st.Status, &dueAt, &createdBy,
+		&st.CreatedAt, &st.UpdatedAt, &completedAt, &metaJSON,
+		&detail, &viewedAt, &startedAt, &updatedBy, &closeWithParent); err != nil {
+		return nil, err
+	}
+	st.Description = nullableStr(description)
+	st.Assignee = nullableStr(assignee)
+	st.CreatedBy = nullableStr(createdBy)
+	st.Detail = nullableStr(detail)
+	st.UpdatedBy = nullableStr(updatedBy)
+	setTimePtr(&st.DueAt, dueAt)
+	setTimePtr(&st.CompletedAt, completedAt)
+	setTimePtr(&st.ViewedAt, viewedAt)
+	setTimePtr(&st.StartedAt, startedAt)
+	// 老数据 NULL 视为 true, 保持既有级联关闭语义。
+	st.CloseWithParent = !closeWithParent.Valid || closeWithParent.Bool
+	if metaJSON.Valid && metaJSON.String != "" && metaJSON.String != "{}" {
+		json.Unmarshal([]byte(metaJSON.String), &st.Meta)
+	}
+	return st, nil
+}
+
+func (s *PGStore) GetSubtask(ctx context.Context, id int64, ticketID, tenantID string) (*model.Subtask, error) {
+	row := s.db.QueryRowContext(ctx, `
+		SELECT `+subtaskColumns+`
+		FROM itsm_subtasks WHERE id = $1 AND ticket_id = $2 AND tenant_id = $3`, id, ticketID, tenantID)
+	st, err := scanSubtask(row)
+	if err == sql.ErrNoRows {
+		return nil, ErrNotFound
+	}
+	return st, err
 }
 
 func (s *PGStore) ListSubtasks(ctx context.Context, ticketID, tenantID string) ([]*model.Subtask, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT id, ticket_id, tenant_id, title, description, assignee, status, due_at, created_by, created_at, updated_at, completed_at, meta
+		SELECT `+subtaskColumns+`
 		FROM itsm_subtasks WHERE ticket_id = $1 AND tenant_id = $2
 		ORDER BY created_at ASC`, ticketID, tenantID)
 	if err != nil {
@@ -749,22 +807,9 @@ func (s *PGStore) ListSubtasks(ctx context.Context, ticketID, tenantID string) (
 	defer rows.Close()
 	var out []*model.Subtask
 	for rows.Next() {
-		st := &model.Subtask{}
-		var description, assignee, createdBy sql.NullString
-		var dueAt, completedAt sql.NullTime
-		var metaJSON sql.NullString
-		if err := rows.Scan(&st.ID, &st.TicketID, &st.TenantID, &st.Title,
-			&description, &assignee, &st.Status, &dueAt, &createdBy,
-			&st.CreatedAt, &st.UpdatedAt, &completedAt, &metaJSON); err != nil {
+		st, err := scanSubtask(rows)
+		if err != nil {
 			return nil, err
-		}
-		st.Description = nullableStr(description)
-		st.Assignee = nullableStr(assignee)
-		st.CreatedBy = nullableStr(createdBy)
-		setTimePtr(&st.DueAt, dueAt)
-		setTimePtr(&st.CompletedAt, completedAt)
-		if metaJSON.Valid && metaJSON.String != "" && metaJSON.String != "{}" {
-			json.Unmarshal([]byte(metaJSON.String), &st.Meta)
 		}
 		out = append(out, st)
 	}
@@ -779,12 +824,20 @@ func (s *PGStore) UpdateSubtask(ctx context.Context, st *model.Subtask) error {
 	} else if st.Status != model.SubtaskDone {
 		st.CompletedAt = nil
 	}
+	// 进入处理中且未记开始时间时补齐(手动置 in_progress 或首次查看认领)。
+	if st.Status == model.SubtaskInProgress && st.StartedAt == nil {
+		now := st.UpdatedAt
+		st.StartedAt = &now
+	}
 	result, err := s.db.ExecContext(ctx, `
 		UPDATE itsm_subtasks SET title=$1, description=$2, assignee=$3, status=$4,
-			due_at=$5, updated_at=$6, completed_at=$7
-		WHERE id=$8 AND ticket_id=$9 AND tenant_id=$10`,
+			due_at=$5, updated_at=$6, completed_at=$7,
+			detail=$8, viewed_at=$9, started_at=$10, updated_by=$11, close_with_parent=$12
+		WHERE id=$13 AND ticket_id=$14 AND tenant_id=$15`,
 		st.Title, nullable(st.Description), nullable(st.Assignee), string(st.Status),
 		nullableTime(st.DueAt), st.UpdatedAt, nullableTime(st.CompletedAt),
+		nullable(st.Detail), nullableTime(st.ViewedAt), nullableTime(st.StartedAt),
+		nullable(st.UpdatedBy), st.CloseWithParent,
 		st.ID, st.TicketID, st.TenantID)
 	if err != nil {
 		return err
@@ -886,11 +939,11 @@ func (s *PGStore) ListActiveTicketsWithDeadline(ctx context.Context, tenantID st
 	for rows.Next() {
 		t := &model.Ticket{}
 		var ciIDsJSON, labelsJSON, customFieldsJSON []byte
-		var processID, assignee sql.NullString
+		var processID, assignee, changePlan, rollbackPlan sql.NullString
 		var scheduledAt, deadlineAt, approvedAt, executedAt, completedAt, rolledBackAt, slaBreachedAt sql.NullTime
 		err := rows.Scan(
 			&t.ID, &t.TenantID, &t.Title, &t.Description, &t.RiskLevel, &t.Status,
-			&t.ChangePlan, &t.RollbackPlan, &t.CreatedBy, &t.CreatedByType,
+			&changePlan, &rollbackPlan, &t.CreatedBy, &t.CreatedByType,
 			&t.ApprovedBy, &t.RejectReason, &t.CompletedBy, &t.RolledBackBy,
 			&t.RollbackReason, &ciIDsJSON, &t.WebhookURL, &labelsJSON, &t.TraceID,
 			&scheduledAt, &deadlineAt, &t.CreatedAt, &t.UpdatedAt,
@@ -901,6 +954,8 @@ func (s *PGStore) ListActiveTicketsWithDeadline(ctx context.Context, tenantID st
 		if err != nil {
 			return nil, err
 		}
+		t.ChangePlan = nullableStr(changePlan)
+		t.RollbackPlan = nullableStr(rollbackPlan)
 		if scheduledAt.Valid {
 			t.ScheduledAt = &scheduledAt.Time
 		}
@@ -961,10 +1016,10 @@ func (s *PGStore) ListOnHoldTicketsPastDue(ctx context.Context, tenantID string)
 		var slaWarningNotified, slaBreached bool
 		var slaBreachedAt, deadlineAt, holdUntilAt sql.NullTime
 		var slaEscalationLevel sql.NullInt64
-		var processID, assignee sql.NullString
+		var processID, assignee, changePlan, rollbackPlan sql.NullString
 		if err := rows.Scan(
 			&t.ID, &t.TenantID, &t.Title, &t.Description, &t.RiskLevel, &t.Status,
-			&t.ChangePlan, &t.RollbackPlan, &t.CreatedBy, &t.CreatedByType, &t.ApprovedBy,
+			&changePlan, &rollbackPlan, &t.CreatedBy, &t.CreatedByType, &t.ApprovedBy,
 			&t.RejectReason, &t.CompletedBy, &t.RolledBackBy, &t.RollbackReason,
 			&ciIDsJSON, &t.WebhookURL, &labelsJSON, &t.TraceID,
 			&t.ScheduledAt, &deadlineAt, &t.CreatedAt, &t.UpdatedAt, &t.ApprovedAt,
@@ -974,6 +1029,8 @@ func (s *PGStore) ListOnHoldTicketsPastDue(ctx context.Context, tenantID string)
 		); err != nil {
 			return nil, err
 		}
+		t.ChangePlan = nullableStr(changePlan)
+		t.RollbackPlan = nullableStr(rollbackPlan)
 		t.SLAWarningNotified = slaWarningNotified
 		t.SLABreached = slaBreached
 		if slaBreachedAt.Valid {

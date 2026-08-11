@@ -88,6 +88,9 @@ type Service struct {
 	experienceSink func(ctx context.Context, tenantID, agentID, problem, resolution string, outcome bool) error
 	// notify 对接通知中心(解耦接口, 避免 import 环): 工单关键事件触发 Policy 分发。
 	notify Notifier
+	// messages 对接站内消息(解耦接口): 工单关键事件投递到当事人收件箱。
+	// 与 notify 的区别 —— notify 往外部渠道群发, messages 进具体某个人的铃铛。
+	messages MessageSender
 	// catalogStore 由 cmd/core 注入: 从服务目录发起申请时套用目录项配置的流程/表单。
 	catalogStore catalogGetter
 }
@@ -314,6 +317,7 @@ func (s *Service) RegisterRoutes(mux *http.ServeMux) {
 	// Subtasks
 	mux.HandleFunc("POST /api/v1/itsm/tickets/{id}/subtasks", s.handleAddSubtask)
 	mux.HandleFunc("GET /api/v1/itsm/tickets/{id}/subtasks", s.handleListSubtasks)
+	mux.HandleFunc("GET /api/v1/itsm/tickets/{id}/subtasks/{sid}", s.handleGetSubtask)
 	mux.HandleFunc("PUT /api/v1/itsm/tickets/{id}/subtasks/{sid}", s.handleUpdateSubtask)
 	mux.HandleFunc("DELETE /api/v1/itsm/tickets/{id}/subtasks/{sid}", s.handleDeleteSubtask)
 	// Attachments
@@ -462,6 +466,13 @@ func (s *Service) CreateTicket(ctx context.Context, req model.CreateTicketReques
 
 	s.fireWebhook(ctx, "ticket.created", ticket, req.CreatedBy)
 	s.notifyTicket(ctx, tenantID, evTicketCreated, "新工单: "+ticket.Title, fmt.Sprintf("风险: %s / 状态: %s", ticket.RiskLevel, ticket.Status))
+	// 建单时已指定负责人的(目录申请/自动派单)直接进对方收件箱; 未指派的等 assign 再发。
+	if ticket.Assignee != "" {
+		s.notifyTicketInbox(ctx, ticket, msgCategoryTicket, msgLevelInfo,
+			"新工单待处理: "+ticket.Title,
+			fmt.Sprintf("申请人: %s / 风险: %s", ticket.CreatedBy, ticket.RiskLevel),
+			req.CreatedBy, ticket.Assignee)
+	}
 
 	// 流程引擎接入：绑定了流程模板则创建流程实例并推进到首个真实步骤，
 	// 由落点步骤类型映射工单初始状态（流程优先于基于风险的自动流转）。
@@ -862,6 +873,10 @@ func (s *Service) handleApprove(w http.ResponseWriter, r *http.Request) {
 	s.recordEvent(r.Context(), ticket, previousStatus, ticket.Status, req.ApprovedBy, req.Comment)
 	s.fireWebhook(r.Context(), "ticket.approved", ticket, req.ApprovedBy)
 	s.notifyTicket(r.Context(), tenantID, evTicketApproved, "工单已审批通过: "+ticket.Title, fmt.Sprintf("审批人: %s", req.ApprovedBy))
+	s.notifyTicketInbox(r.Context(), ticket, msgCategoryApproval, msgLevelInfo,
+		"工单审批通过: "+ticket.Title,
+		fmt.Sprintf("审批人: %s%s", req.ApprovedBy, optionalComment(req.Comment)),
+		req.ApprovedBy, assigneeAndOwner(ticket)...)
 	s.advanceProcess(r.Context(), ticket, "success")
 	s.broadcastTicketUpdate(ticket)
 	writeJSON(w, http.StatusOK, ticket)
@@ -903,6 +918,10 @@ func (s *Service) handleReject(w http.ResponseWriter, r *http.Request) {
 
 	s.recordEvent(r.Context(), ticket, previousStatus, model.StatusRejected, req.RejectedBy, req.Reason)
 	s.fireWebhook(r.Context(), "ticket.rejected", ticket, req.RejectedBy)
+	s.notifyTicketInbox(r.Context(), ticket, msgCategoryApproval, msgLevelWarning,
+		"工单被驳回: "+ticket.Title,
+		fmt.Sprintf("审批人: %s / 原因: %s", req.RejectedBy, truncate(req.Reason, 120)),
+		req.RejectedBy, assigneeAndOwner(ticket)...)
 	s.advanceProcess(r.Context(), ticket, "failure")
 	s.broadcastTicketUpdate(ticket)
 	writeJSON(w, http.StatusOK, ticket)
@@ -1146,6 +1165,10 @@ func (s *Service) handleAssign(w http.ResponseWriter, r *http.Request) {
 
 	s.recordEvent(r.Context(), ticket, previousStatus, ticket.Status, req.AssignedBy, "指派给 "+req.Assignee)
 	s.notifyTicket(r.Context(), tenantID, evTicketAssigned, "工单已指派: "+ticket.Title, fmt.Sprintf("负责人: %s", req.Assignee))
+	s.notifyTicketInbox(r.Context(), ticket, msgCategoryTicket, msgLevelInfo,
+		"工单指派给你: "+ticket.Title,
+		fmt.Sprintf("指派人: %s / 风险: %s", req.AssignedBy, ticket.RiskLevel),
+		req.AssignedBy, req.Assignee)
 	s.broadcastTicketUpdate(ticket)
 	writeJSON(w, http.StatusOK, ticket)
 }
@@ -1185,15 +1208,20 @@ func (s *Service) handleClose(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 子任务联动: 主工单关闭时级联关闭所有未完成子任务(记完成时间)。
+	// 子任务联动: 仅对 close_with_parent=true 的未完成子任务级联关闭(记完成时间)。
+	// 置 false 的子任务独立于主单生命周期, 需单独验收, 关单时保持原状态。
 	if subs, serr := s.store.ListSubtasks(r.Context(), id, tenantID); serr == nil {
 		now := time.Now()
 		for _, sub := range subs {
-			if sub.Status == model.SubtaskDone {
+			if sub.Status == model.SubtaskDone || !sub.CloseWithParent {
 				continue
 			}
 			sub.Status = model.SubtaskDone
 			sub.CompletedAt = &now
+			if sub.Detail == "" {
+				sub.Detail = "主工单关闭时自动结束"
+			}
+			sub.UpdatedBy = req.ClosedBy
 			_ = s.store.UpdateSubtask(r.Context(), sub)
 		}
 	}
@@ -1201,6 +1229,10 @@ func (s *Service) handleClose(w http.ResponseWriter, r *http.Request) {
 	s.recordEvent(r.Context(), ticket, previousStatus, model.StatusClosed, req.ClosedBy, req.Comment)
 	s.fireWebhook(r.Context(), "ticket.closed", ticket, req.ClosedBy)
 	s.notifyTicket(r.Context(), tenantID, evTicketClosed, "工单已关闭: "+ticket.Title, req.Comment)
+	s.notifyTicketInbox(r.Context(), ticket, msgCategoryTicket, msgLevelInfo,
+		"工单已关闭: "+ticket.Title,
+		fmt.Sprintf("关闭人: %s%s", req.ClosedBy, optionalComment(req.Comment)),
+		req.ClosedBy, assigneeAndOwner(ticket)...)
 	s.broadcastTicketUpdate(ticket)
 	writeJSON(w, http.StatusOK, ticket)
 }
@@ -1260,6 +1292,10 @@ func (s *Service) handleReopen(w http.ResponseWriter, r *http.Request) {
 	s.recordEvent(r.Context(), ticket, prev, model.StatusReopened, req.ReopenedBy, req.Reason)
 	s.fireWebhook(r.Context(), "ticket.reopened", ticket, req.ReopenedBy)
 	s.notifyTicket(r.Context(), tenantID, evTicketReopened, "工单重开: "+ticket.Title, req.Reason)
+	s.notifyTicketInbox(r.Context(), ticket, msgCategoryTicket, msgLevelWarning,
+		"工单被重开: "+ticket.Title,
+		fmt.Sprintf("重开人: %s / 原因: %s", req.ReopenedBy, truncate(req.Reason, 120)),
+		req.ReopenedBy, assigneeAndOwner(ticket)...)
 	s.broadcastTicketUpdate(ticket)
 	writeJSON(w, http.StatusOK, ticket)
 }
@@ -1393,6 +1429,10 @@ func (s *Service) handleRemind(w http.ResponseWriter, r *http.Request) {
 		content += "\n" + req.Message
 	}
 	s.notifyTicket(r.Context(), tenantID, evTicketReminded, "工单催办: "+ticket.Title, content)
+	s.notifyTicketInbox(r.Context(), ticket, msgCategoryTicket, msgLevelWarning,
+		"工单催办: "+ticket.Title,
+		fmt.Sprintf("催办人: %s%s", req.RemindedBy, optionalComment(req.Message)),
+		req.RemindedBy, ticket.Assignee)
 	s.recordEvent(r.Context(), ticket, ticket.Status, ticket.Status, req.RemindedBy, "催办: "+req.Message)
 	writeJSON(w, http.StatusOK, map[string]string{"status": "reminded"})
 }
@@ -1521,7 +1561,19 @@ func (s *Service) advanceProcess(ctx context.Context, ticket *model.Ticket, cond
 		return
 	}
 	if next == nil {
-		return // 流程结束, 工单状态由 handler 已设置(succeeded 等)
+		// 流程到达 End 节点：工单视为已完成（与 StepTypeToTicketStatus(StepEnd)="succeeded" 一致）。
+		// 此前漏置工单状态，导致自动流程走到 End 时工单状态停留在执行中 / 为空。
+		if ticket.Status != model.StatusSucceeded {
+			prev := ticket.Status
+			ticket.Status = model.StatusSucceeded
+			if err := s.store.Update(ctx, ticket); err != nil {
+				slog.Error("itsm: persist process-end status failed", "ticket_id", ticket.ID, "error", err)
+				return
+			}
+			s.recordEvent(ctx, ticket, prev, ticket.Status, "process", "流程结束(到达结束节点)")
+			s.broadcastTicketUpdate(ticket)
+		}
+		return
 	}
 	mapped := process.StepTypeToTicketStatus(next)
 	if mapped == "" || model.TicketStatus(mapped) == ticket.Status {
@@ -1592,8 +1644,9 @@ func (s *Service) handleAddComment(w http.ResponseWriter, r *http.Request) {
 	tenantID := tenantFromCtx(r.Context())
 
 	var req struct {
-		Author  string `json:"author"`
-		Content string `json:"content"`
+		Author   string   `json:"author"`
+		Content  string   `json:"content"`
+		Mentions []string `json:"mentions,omitempty"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
@@ -1604,7 +1657,7 @@ func (s *Service) handleAddComment(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	_, err := s.store.Get(r.Context(), id, tenantID)
+	ticket, err := s.store.Get(r.Context(), id, tenantID)
 	if err != nil {
 		if err == store.ErrNotFound {
 			writeError(w, http.StatusNotFound, "ticket not found")
@@ -1619,11 +1672,26 @@ func (s *Service) handleAddComment(w http.ResponseWriter, r *http.Request) {
 		TenantID: tenantID,
 		Author:   req.Author,
 		Content:  req.Content,
+		// 显式 mentions 优先, 正文里的 @xxx 作为兜底 —— 保证任何入口
+		// (页面 / 邮件入站 / 机器人)@ 到的人都能收到站内消息。
+		Mentions: extractMentions(req.Content, req.Mentions),
 	}
 	if err := s.store.AddComment(r.Context(), comment); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to add comment")
 		return
 	}
+
+	if len(comment.Mentions) > 0 {
+		s.notifyTicketInbox(r.Context(), ticket, msgCategoryMention, msgLevelInfo,
+			req.Author+" 在工单中提到了你",
+			truncate(req.Content, 140), req.Author, comment.Mentions...)
+	}
+	// 评论本身也知会负责人与申请人(被 @ 的人已在上一条收到, sendInbox 会去重触发者本人)。
+	s.notifyTicketInbox(r.Context(), ticket, msgCategoryTicket, msgLevelInfo,
+		"工单有新评论: "+ticket.Title,
+		truncate(req.Content, 140), req.Author, assigneeAndOwner(ticket)...)
+
+	s.broadcastTicketUpdate(ticket)
 	writeJSON(w, http.StatusCreated, comment)
 }
 
@@ -1641,7 +1709,8 @@ func (s *Service) AddTicketComment(ctx context.Context, tenantID, ticketID, auth
 	return nil
 }
 
-func (s *Service) handleListComments(w http.ResponseWriter, r *http.Request) {	id := r.PathValue("id")
+func (s *Service) handleListComments(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
 	tenantID := tenantFromCtx(r.Context())
 
 	comments, err := s.store.ListComments(r.Context(), id, tenantID)
@@ -1726,15 +1795,21 @@ func (s *Service) handleAddSubtask(w http.ResponseWriter, r *http.Request) {
 		req.CreatedBy = getUserID(r, "")
 	}
 
+	// 随主单关闭默认开启, 兼容既有级联行为; 显式传 false 则该子任务独立于主单生命周期。
+	closeWithParent := true
+	if req.CloseWithParent != nil {
+		closeWithParent = *req.CloseWithParent
+	}
 	st := &model.Subtask{
-		TicketID:    id,
-		TenantID:    tenantID,
-		Title:       req.Title,
-		Description: req.Description,
-		Assignee:    req.Assignee,
-		Status:      model.SubtaskPending,
-		DueAt:       req.DueAt,
-		CreatedBy:   req.CreatedBy,
+		TicketID:        id,
+		TenantID:        tenantID,
+		Title:           req.Title,
+		Description:     req.Description,
+		Assignee:        req.Assignee,
+		Status:          model.SubtaskPending,
+		DueAt:           req.DueAt,
+		CreatedBy:       req.CreatedBy,
+		CloseWithParent: closeWithParent,
 	}
 	// 主单字段同步: 按 sync_fields 从主工单拷贝字段值到子任务 meta(系统字段/自定义字段均可)。
 	if len(req.SyncFields) > 0 {
@@ -1775,7 +1850,61 @@ func (s *Service) handleAddSubtask(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "failed to create subtask")
 		return
 	}
+	// 派发即通知: 子任务有指派人时向其站内信箱投递待办。
+	if st.Assignee != "" {
+		if parent, perr := s.store.Get(r.Context(), id, tenantID); perr == nil && parent != nil {
+			s.notifySubtaskInbox(r.Context(), parent, st, msgLevelInfo,
+				"子任务待处理: "+st.Title,
+				fmt.Sprintf("来自工单「%s」, 派发人: %s%s", parent.Title, st.CreatedBy, optionalComment(st.Description)),
+				st.CreatedBy, st.Assignee)
+		}
+	}
 	writeJSON(w, http.StatusCreated, st)
+}
+
+// handleGetSubtask 获取子任务详情。
+// 派发语义: 指派人首次查看即认领——记录 viewed_at, 并把 pending 自动推进为 in_progress。
+func (s *Service) handleGetSubtask(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	sidStr := r.PathValue("sid")
+	tenantID := tenantFromCtx(r.Context())
+
+	sid, err := strconv.ParseInt(sidStr, 10, 64)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid subtask id")
+		return
+	}
+	st, err := s.store.GetSubtask(r.Context(), sid, id, tenantID)
+	if err != nil {
+		if err == store.ErrNotFound {
+			writeError(w, http.StatusNotFound, "subtask not found")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	viewer := actorOf(r, "")
+	// 仅指派人本人的首次查看触发认领; 旁观者(创建人/管理员)查看不改状态。
+	if st.Assignee != "" && strings.EqualFold(viewer, st.Assignee) && st.ViewedAt == nil {
+		now := time.Now()
+		updated := *st
+		updated.ViewedAt = &now
+		if updated.Status == model.SubtaskPending {
+			updated.Status = model.SubtaskInProgress
+			updated.StartedAt = &now
+		}
+		if err := s.store.UpdateSubtask(r.Context(), &updated); err == nil {
+			st = &updated
+			if parent, perr := s.store.Get(r.Context(), id, tenantID); perr == nil && parent != nil {
+				s.notifySubtaskInbox(r.Context(), parent, st, msgLevelInfo,
+					"子任务已受理: "+st.Title,
+					fmt.Sprintf("处理人 %s 已查看并开始处理", viewer),
+					viewer, st.CreatedBy)
+			}
+		}
+	}
+	writeJSON(w, http.StatusOK, st)
 }
 
 func (s *Service) handleListSubtasks(w http.ResponseWriter, r *http.Request) {
@@ -1811,20 +1940,13 @@ func (s *Service) handleUpdateSubtask(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 先取原记录, 未传字段保持原值
-	subtasks, err := s.store.ListSubtasks(r.Context(), id, tenantID)
+	cur, err := s.store.GetSubtask(r.Context(), sid, id, tenantID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-	var cur *model.Subtask
-	for _, st := range subtasks {
-		if st.ID == sid {
-			cur = st
-			break
+		if err == store.ErrNotFound {
+			writeError(w, http.StatusNotFound, "subtask not found")
+			return
 		}
-	}
-	if cur == nil {
-		writeError(w, http.StatusNotFound, "subtask not found")
+		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 
@@ -1851,6 +1973,20 @@ func (s *Service) handleUpdateSubtask(w http.ResponseWriter, r *http.Request) {
 	if req.DueAt != nil {
 		updated.DueAt = req.DueAt
 	}
+	// 处理情况: 指针语义, 不传保持原值, 传空串表示清空。
+	if req.Detail != nil {
+		updated.Detail = *req.Detail
+	}
+	if req.CloseWithParent != nil {
+		updated.CloseWithParent = *req.CloseWithParent
+	}
+	operator := actorOf(r, req.UpdatedBy)
+	updated.UpdatedBy = operator
+	// 处理人动手即视为已接收, 补记查看时间(避免只走更新未走详情接口的场景漏记)。
+	if updated.ViewedAt == nil && updated.Assignee != "" && strings.EqualFold(operator, updated.Assignee) {
+		now := time.Now()
+		updated.ViewedAt = &now
+	}
 
 	if err := s.store.UpdateSubtask(r.Context(), &updated); err != nil {
 		if err == store.ErrNotFound {
@@ -1859,6 +1995,24 @@ func (s *Service) handleUpdateSubtask(w http.ResponseWriter, r *http.Request) {
 		}
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
+	}
+
+	// 状态流转知会派发人: 完成/受阻是主单负责人需要感知的节点。
+	if req.Status != "" && req.Status != cur.Status {
+		if parent, perr := s.store.Get(r.Context(), id, tenantID); perr == nil && parent != nil {
+			switch updated.Status {
+			case model.SubtaskDone:
+				s.notifySubtaskInbox(r.Context(), parent, &updated, msgLevelInfo,
+					"子任务已完成: "+updated.Title,
+					fmt.Sprintf("处理人: %s%s", operator, optionalComment(updated.Detail)),
+					operator, updated.CreatedBy, parent.Assignee)
+			case model.SubtaskBlocked:
+				s.notifySubtaskInbox(r.Context(), parent, &updated, msgLevelWarning,
+					"子任务受阻: "+updated.Title,
+					fmt.Sprintf("处理人: %s%s", operator, optionalComment(updated.Detail)),
+					operator, updated.CreatedBy, parent.Assignee)
+			}
+		}
 	}
 	writeJSON(w, http.StatusOK, &updated)
 }
@@ -2010,9 +2164,9 @@ func (s *Service) recordEvent(ctx context.Context, ticket *model.Ticket, from, t
 func (s *Service) broadcastTicketUpdate(ticket *model.Ticket) {
 	if s.wsHub != nil {
 		s.wsHub.BroadcastToTenant(map[string]any{
-			"type":    "ticket.updated",
-			"ticket":  ticket,
-			"time":    time.Now().UnixMilli(),
+			"type":   "ticket.updated",
+			"ticket": ticket,
+			"time":   time.Now().UnixMilli(),
 		}, ticket.TenantID)
 	}
 }
@@ -2229,9 +2383,14 @@ func (s *Service) notifySLA(ctx context.Context, tenantID string, t *model.Ticke
 	if breached {
 		content := fmt.Sprintf("工单已超出 SLA 截止时间\n负责人: %s\n升级至: %s", t.Assignee, escalation)
 		s.notifyTicket(ctx, tenantID, evSLABreached, "SLA 违约: "+t.Title, content)
+		// 升级对象一并进收件箱: 违约时光通知负责人是不够的, 升级人得同步看到。
+		s.notifyTicketInbox(ctx, t, msgCategorySLA, msgLevelCritical,
+			"SLA 违约: "+t.Title, content, "", t.Assignee, t.CreatedBy, escalation)
 	} else {
 		content := fmt.Sprintf("工单即将达到 SLA 截止时间(剩余<20%%)\n负责人: %s\n升级至: %s", t.Assignee, escalation)
 		s.notifyTicket(ctx, tenantID, evSLAWarning, "SLA 预警: "+t.Title, content)
+		s.notifyTicketInbox(ctx, t, msgCategorySLA, msgLevelWarning,
+			"SLA 预警: "+t.Title, content, "", t.Assignee)
 	}
 }
 
@@ -2732,12 +2891,12 @@ func (s *Service) handleVoteChange(w http.ResponseWriter, r *http.Request) {
 		if change.TicketID == "" {
 			tctx := context.WithValue(r.Context(), "tenant_id", tenantID)
 			tk, terr := s.CreateTicket(tctx, model.CreateTicketRequest{
-				Title:        "执行变更: " + change.Title,
-				Description:  change.Plan,
-				RiskLevel:    change.RiskLevel,
-				ChangePlan:   change.Plan,
-				RollbackPlan: change.RollbackPlan,
-				CreatedBy:    change.CreatedBy,
+				Title:         "执行变更: " + change.Title,
+				Description:   change.Plan,
+				RiskLevel:     change.RiskLevel,
+				ChangePlan:    change.Plan,
+				RollbackPlan:  change.RollbackPlan,
+				CreatedBy:     change.CreatedBy,
 				CreatedByType: "system",
 			})
 			if terr == nil && tk != nil {

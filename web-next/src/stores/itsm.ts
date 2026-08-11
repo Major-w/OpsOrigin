@@ -122,6 +122,8 @@ export interface ProcessStep {
   form_scope?: string
   /** @deprecated 旧版节点独立表单 Schema(JSON)，已由 form_fields + 主表单取代 */
   form_schema?: string
+  /** 本节点允许展示的操作按钮 key；非空时工单在该节点只显示这些按钮，空/缺省表示全部显示（向后兼容） */
+  actions?: string[]
 }
 
 type StepType = 'start' | 'end' | 'user' | 'service' | 'gateway' | 'timer' | 'notify' | 'parallel' | 'subflow'

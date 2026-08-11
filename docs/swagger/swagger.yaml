@@ -1,0 +1,206 @@
+openapi: 3.0.3
+info:
+  title: OpsOrigin Core API
+  description: 一体化运维平台 API 文档
+  version: 1.0.0
+  contact:
+    name: OpsOrigin
+    url: https://github.com/opsorigin/core
+servers:
+  - url: http://localhost:8080
+components:
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+security:
+  - BearerAuth: []
+paths:
+  /api/v1/cmdb/ci:
+    get:
+      tags: [CMDB]
+      summary: 获取 CI 列表
+      description: 获取配置项列表，支持分页、排序、过滤
+      parameters:
+        - name: type_id
+          in: query
+          description: CI 类型 ID
+          schema:
+            type: string
+        - name: sort_by
+          in: query
+          description: 排序字段
+          schema:
+            type: string
+        - name: sort_order
+          in: query
+          description: 排序方向
+          schema:
+            type: string
+        - name: limit
+          in: query
+          description: 每页数量
+          schema:
+            type: integer
+        - name: offset
+          in: query
+          description: 偏移量
+          schema:
+            type: integer
+        - name: archived
+          in: query
+          description: 归档过滤
+          schema:
+            type: string
+      responses:
+        '200':
+          description: 成功
+    post:
+      tags: [CMDB]
+      summary: 创建 CI
+      description: 创建一个新的配置项
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+      responses:
+        '201':
+          description: 创建成功
+        '400':
+          description: 请求错误
+        '500':
+          description: 服务器错误
+  /api/v1/cmdb/ci/{id}:
+    get:
+      tags: [CMDB]
+      summary: 获取 CI 详情
+      description: 根据 ID 获取配置项详情
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: CI ID
+          schema:
+            type: string
+      responses:
+        '200':
+          description: 成功
+        '404':
+          description: 未找到
+    put:
+      tags: [CMDB]
+      summary: 更新 CI
+      description: 更新配置项信息
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: CI ID
+          schema:
+            type: string
+      responses:
+        '200':
+          description: 更新成功
+    delete:
+      tags: [CMDB]
+      summary: 删除 CI
+      description: 删除配置项
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: CI ID
+          schema:
+            type: string
+      responses:
+        '204':
+          description: 删除成功
+  /api/v1/itsm/tickets:
+    get:
+      tags: [ITSM]
+      summary: 获取工单列表
+      description: 获取工单列表，支持按状态过滤
+      parameters:
+        - name: status
+          in: query
+          description: 工单状态过滤
+          schema:
+            type: string
+      responses:
+        '200':
+          description: 成功
+    post:
+      tags: [ITSM]
+      summary: 创建工单
+      description: 创建一个新的 ITSM 工单
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+      responses:
+        '201':
+          description: 创建成功
+  /api/v1/itsm/tickets/{id}:
+    get:
+      tags: [ITSM]
+      summary: 获取工单详情
+      description: 根据 ID 获取工单详情
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: 工单 ID
+          schema:
+            type: string
+      responses:
+        '200':
+          description: 成功
+        '404':
+          description: 未找到
+  /api/v1/ai/agents:
+    get:
+      tags: [AI]
+      summary: 获取 Agent 列表
+      description: 获取所有 AI Agent 实例
+      responses:
+        '200':
+          description: 成功
+    post:
+      tags: [AI]
+      summary: 创建 AI Agent
+      description: 创建一个新的 AI Agent 实例
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+      responses:
+        '201':
+          description: 创建成功
+  /api/v1/ai/chat:
+    post:
+      tags: [AI]
+      summary: AI 聊天
+      description: 发送消息给 AI 助手，支持流式输出
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+      responses:
+        '200':
+          description: 成功
+tags:
+  - name: CMDB
+    description: 配置管理
+  - name: ITSM
+    description: IT服务管理
+  - name: AI
+    description: AI 助手

@@ -28,6 +28,7 @@ type Store interface {
 	EditComment(ctx context.Context, id int64, ticketID, tenantID, content string) error
 	// Subtasks
 	CreateSubtask(ctx context.Context, st *model.Subtask) error
+	GetSubtask(ctx context.Context, id int64, ticketID, tenantID string) (*model.Subtask, error)
 	ListSubtasks(ctx context.Context, ticketID, tenantID string) ([]*model.Subtask, error)
 	UpdateSubtask(ctx context.Context, st *model.Subtask) error
 	DeleteSubtask(ctx context.Context, id int64, ticketID, tenantID string) error
@@ -312,6 +313,18 @@ func (s *MemoryStore) CreateSubtask(ctx context.Context, st *model.Subtask) erro
 	return nil
 }
 
+func (s *MemoryStore) GetSubtask(ctx context.Context, id int64, ticketID, tenantID string) (*model.Subtask, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	for _, st := range s.subtasks {
+		if st.ID == id && st.TicketID == ticketID && st.TenantID == tenantID {
+			cp := *st
+			return &cp, nil
+		}
+	}
+	return nil, ErrNotFound
+}
+
 func (s *MemoryStore) ListSubtasks(ctx context.Context, ticketID, tenantID string) ([]*model.Subtask, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -335,6 +348,11 @@ func (s *MemoryStore) UpdateSubtask(ctx context.Context, st *model.Subtask) erro
 				st.CompletedAt = &now
 			} else if st.Status != model.SubtaskDone {
 				st.CompletedAt = nil
+			}
+			// 与 PG 实现保持一致: 进入处理中且未记开始时间时补齐。
+			if st.Status == model.SubtaskInProgress && st.StartedAt == nil {
+				now := st.UpdatedAt
+				st.StartedAt = &now
 			}
 			s.subtasks[i] = st
 			return nil

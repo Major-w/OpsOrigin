@@ -49,6 +49,11 @@ func callPut(t *testing.T, s *Service, path, body string) *httptest.ResponseReco
 	return doMethod(t, s, http.MethodPut, path, body)
 }
 
+func callGet(t *testing.T, s *Service, path string) *httptest.ResponseRecorder {
+	t.Helper()
+	return doMethod(t, s, http.MethodGet, path, "")
+}
+
 func doMethod(t *testing.T, s *Service, method, path, body string) *httptest.ResponseRecorder {
 	t.Helper()
 	mux := http.NewServeMux()
@@ -108,15 +113,14 @@ func TestClosedLoopHighRisk(t *testing.T) {
 	if tk.Status != model.StatusPendingReview {
 		t.Fatalf("high-risk new ticket should auto go pending_review, got %s", tk.Status)
 	}
+	// 未绑定流程时审批通过直接进入 executing(无流程可推进, 不需要再手工点执行)
 	w := callPost(t, s, "/api/v1/itsm/tickets/"+tk.ID+"/approve", `{"approved_by":"u1"}`)
 	tk = decodeTicket(t, w)
-	if tk.Status != model.StatusApproved {
-		t.Fatalf("after approve: want approved got %s", tk.Status)
-	}
-	w = callPost(t, s, "/api/v1/itsm/tickets/"+tk.ID+"/execute", `{"executed_by":"u1"}`)
-	tk = decodeTicket(t, w)
 	if tk.Status != model.StatusExecuting {
-		t.Fatalf("after execute: want executing got %s", tk.Status)
+		t.Fatalf("after approve(no process): want executing got %s", tk.Status)
+	}
+	if tk.ApprovedBy != "u1" || tk.ApprovedAt == nil {
+		t.Fatalf("approval trace missing: %+v", tk)
 	}
 	w = callPost(t, s, "/api/v1/itsm/tickets/"+tk.ID+"/complete", `{"completed_by":"u1"}`)
 	tk = decodeTicket(t, w)
@@ -445,6 +449,8 @@ func TestSubtaskCascadeOnClose(t *testing.T) {
 	callPost(t, s, "/api/v1/itsm/tickets/"+tk.ID+"/execute", `{"executed_by":"admin"}`)
 	callPost(t, s, "/api/v1/itsm/tickets/"+tk.ID+"/complete", `{"completed_by":"admin"}`)
 	callPost(t, s, "/api/v1/itsm/tickets/"+tk.ID+"/subtasks", `{"title":"子任务1","created_by":"admin","sync_fields":["risk_level"]}`)
+	// 第二个子任务显式关掉"随主单关闭", 主单关闭后应保持原状态
+	callPost(t, s, "/api/v1/itsm/tickets/"+tk.ID+"/subtasks", `{"title":"子任务2","created_by":"admin","close_with_parent":false}`)
 
 	// 关闭主单 → 子任务级联 done
 	w := callPost(t, s, "/api/v1/itsm/tickets/"+tk.ID+"/close", `{"closed_by":"admin"}`)
@@ -452,12 +458,87 @@ func TestSubtaskCascadeOnClose(t *testing.T) {
 		t.Fatalf("close: %d %s", w.Code, w.Body.String())
 	}
 	subs, _ := s.store.ListSubtasks(context.Background(), tk.ID, "default")
-	if len(subs) != 1 || subs[0].Status != model.SubtaskDone {
-		t.Fatalf("subtask not cascaded: %+v", subs)
+	if len(subs) != 2 {
+		t.Fatalf("expect 2 subtasks, got %+v", subs)
+	}
+	byTitle := map[string]*model.Subtask{}
+	for _, st := range subs {
+		byTitle[st.Title] = st
+	}
+	one, two := byTitle["子任务1"], byTitle["子任务2"]
+	if one == nil || two == nil {
+		t.Fatalf("subtasks missing: %+v", subs)
+	}
+	// 默认 close_with_parent=true → 级联关闭
+	if one.Status != model.SubtaskDone {
+		t.Fatalf("subtask1 not cascaded: %+v", one)
+	}
+	if !one.CloseWithParent {
+		t.Fatalf("subtask1 close_with_parent should default true: %+v", one)
+	}
+	// 显式 false → 不随主单关闭
+	if two.CloseWithParent {
+		t.Fatalf("subtask2 close_with_parent should be false: %+v", two)
+	}
+	if two.Status == model.SubtaskDone {
+		t.Fatalf("subtask2 should NOT be cascaded: %+v", two)
 	}
 	// 字段同步: meta 含 risk_level
-	if subs[0].Meta == nil || subs[0].Meta["risk_level"] != "low" {
-		t.Fatalf("sync_fields not copied: %+v", subs[0].Meta)
+	if one.Meta == nil || one.Meta["risk_level"] != "low" {
+		t.Fatalf("sync_fields not copied: %+v", one.Meta)
+	}
+}
+
+// TestSubtaskClaimAndDetail 子任务派发语义: 处理人首次查看进入处理中, 可回填处理情况。
+func TestSubtaskClaimAndDetail(t *testing.T) {
+	s := newTestService()
+	tk := createTicket(t, s, model.RiskLow)
+	w := callPost(t, s, "/api/v1/itsm/tickets/"+tk.ID+"/subtasks", `{"title":"排查磁盘","created_by":"admin","assignee":"ops"}`)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("create subtask: %d %s", w.Code, w.Body.String())
+	}
+	var st model.Subtask
+	json.Unmarshal(w.Body.Bytes(), &st)
+	if st.Status != model.SubtaskPending {
+		t.Fatalf("new subtask should be pending: %+v", st)
+	}
+	sid := strconv.FormatInt(st.ID, 10)
+
+	// 非处理人查看: 不改状态
+	w = callGet(t, s, "/api/v1/itsm/tickets/"+tk.ID+"/subtasks/"+sid+"?viewer=someone")
+	if w.Code != http.StatusOK {
+		t.Fatalf("get subtask: %d %s", w.Code, w.Body.String())
+	}
+	json.Unmarshal(w.Body.Bytes(), &st)
+	if st.Status != model.SubtaskPending {
+		t.Fatalf("non-assignee view should not claim: %+v", st)
+	}
+
+	// 处理人首次查看: pending → in_progress 并记录 viewed_at/started_at
+	w = callGet(t, s, "/api/v1/itsm/tickets/"+tk.ID+"/subtasks/"+sid+"?viewer=ops")
+	if w.Code != http.StatusOK {
+		t.Fatalf("get subtask by assignee: %d %s", w.Code, w.Body.String())
+	}
+	json.Unmarshal(w.Body.Bytes(), &st)
+	if st.Status != model.SubtaskInProgress {
+		t.Fatalf("assignee view should claim to in_progress: %+v", st)
+	}
+	if st.ViewedAt == nil || st.StartedAt == nil {
+		t.Fatalf("viewed_at/started_at should be set: %+v", st)
+	}
+
+	// 回填处理情况
+	w = callPut(t, s, "/api/v1/itsm/tickets/"+tk.ID+"/subtasks/"+sid,
+		`{"detail":"已扩容 /data 至 500G","updated_by":"ops","status":"done"}`)
+	if w.Code != http.StatusOK {
+		t.Fatalf("update subtask: %d %s", w.Code, w.Body.String())
+	}
+	json.Unmarshal(w.Body.Bytes(), &st)
+	if st.Detail != "已扩容 /data 至 500G" || st.UpdatedBy != "ops" {
+		t.Fatalf("detail/updated_by not persisted: %+v", st)
+	}
+	if st.Status != model.SubtaskDone || st.CompletedAt == nil {
+		t.Fatalf("subtask should be done with completed_at: %+v", st)
 	}
 }
 

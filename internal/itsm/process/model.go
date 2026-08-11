@@ -76,6 +76,9 @@ type Step struct {
 	// 表单作用域：工单流转到本步骤时渲染的自定义表单 scope（如 process:<pid>:step:<step_id>）。
 	// 空表示本步骤不挂动态表单。
 	FormScope string `json:"form_scope,omitempty"`
+	// Actions 本节点允许展示的操作按钮 key（如 submit/approve/execute/complete/close...）。
+	// 非空时工单在该节点只显示这些按钮；空/缺省表示沿用默认（全部显示），保持向后兼容。
+	Actions []string `json:"actions,omitempty"`
 }
 
 // ApproverRoster 返回本步骤最终生效的审批人名册：静态配置的 Approvers 与
@@ -148,8 +151,8 @@ type Process struct {
 	SlaPolicyID string `json:"sla_policy_id,omitempty"`
 	// NotifyConfig 流程级通知策略(JSON): { channels:[...], on_create:bool, on_complete:bool, template:string }。
 	NotifyConfig json.RawMessage `json:"notify_config,omitempty"`
-	CreatedAt   time.Time         `json:"created_at"`
-	UpdatedAt   time.Time         `json:"updated_at"`
+	CreatedAt    time.Time       `json:"created_at"`
+	UpdatedAt    time.Time       `json:"updated_at"`
 }
 
 // ProcessInstance — 工作流运行实例（工单关联流程后自动创建）

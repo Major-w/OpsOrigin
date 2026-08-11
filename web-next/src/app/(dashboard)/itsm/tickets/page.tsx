@@ -1,9 +1,9 @@
 'use client'
 
-import { useEffect, useState, useRef, useCallback } from 'react'
+import { useEffect, useState, useRef, useCallback, useMemo, type ChangeEvent } from 'react'
 import { useRouter } from 'next/navigation'
 import { useITSMStore, type Ticket, type TicketEvent, type ITSMStats, type ProcessInstance } from '@/stores/itsm'
-import { DynamicForm, type FormSchema } from '@/components/itsm/DynamicForm'
+import { DynamicForm, withBuiltinFields, BUILTIN_KEYS, type FormSchema } from '@/components/itsm/DynamicForm'
 import { FormBuilder } from '@/components/itsm/FormBuilder'
 import ProcessFlowView from '@/components/itsm/ProcessFlowView'
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card'
@@ -11,10 +11,12 @@ import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { Input } from '@/components/ui/input'
 import { Dialog, DialogFooter } from '@/components/ui/dialog'
+import { Switch, SwitchField } from '@/components/ui/switch'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { formatTime, apiFetch, apiList } from '@/lib/utils'
 import { useCan, useCanAny } from '@/stores/permissions'
 import { useAuthStore } from '@/stores/auth'
+import { useUserStore } from '@/stores/user'
 import { useWebSocket } from '@/lib/useWebSocket'
 import { Plus, Check, X, Play, RotateCcw, Clock, FileText, Activity, ChevronRight, Paperclip, MessageSquare, Upload, Download, Trash2, FileUp, FileDown, BookOpen, BookOpenCheck, Send, UserPlus, CheckCircle2, ListChecks, Bell, Link2 } from 'lucide-react'
 import { RISK_LABELS, STATUS_LABELS, RISK_BADGE_VARIANT, parseFormSchema, applyStepFieldPerms } from '@/lib/itsm-constants'
@@ -55,6 +57,13 @@ interface Subtask {
   created_at: string
   updated_at?: string
   completed_at?: string | null
+  // 派发任务增强字段
+  detail?: string                 // 处理情况：处理人回填的执行过程/结果
+  viewed_at?: string | null       // 首次查看时间（已认领）
+  started_at?: string | null      // 进入处理中时间
+  updated_by?: string             // 最后更新处理情况的人
+  close_with_parent?: boolean     // 是否随主单关闭而自动关闭（默认 true）
+  meta?: Record<string, any>      // 主单字段同步快照
 }
 
 const subtaskLabels: Record<string, string> = {
@@ -79,10 +88,15 @@ function formatFileSize(bytes: number): string {
 
 export default function ITSMPage() {
   const router = useRouter()
+  // 当前流程节点允许展示的操作按钮 key；undefined = 未绑定流程 / 节点未配置 → 沿用默认全部显示（向后兼容）。
+  const [currentStepActions, setCurrentStepActions] = useState<string[] | undefined>(undefined)
   const { tickets, stats, loading, fetch, create, approve, reject, execute, complete, rollback, submit, assign, close, withdraw, reopen, hold, resume, remind, relate, getTicket, getEvents, fetchStats, processes, fetchProcesses, getFormSchema, upsertFormSchema, getFormOptions, getFormOptionSources, getTicketProcess, updateTicketCustomFields } = useITSMStore()
   const canWrite = useCan('itsm:write')
   const canApprove = useCanAny(['itsm:approve', 'itsm:write'])
   const me = useAuthStore(s => s.user)
+  const users = useUserStore(s => s.users)
+  // 按钮可见性：未绑定流程或节点未配置 actions → 全部显示（向后兼容）；否则仅显示节点配置的按钮。
+  const stepAllows = useCallback((key: string) => currentStepActions === undefined || currentStepActions.includes(key), [currentStepActions])
   const [dialogOpen, setDialogOpen] = useState(false)
   const [myOnly, setMyOnly] = useState(false)
   const [form, setForm] = useState({ title: '', description: '', risk_level: 'low', change_plan: '', rollback_plan: '', created_by: '', process_id: '' })
@@ -123,7 +137,6 @@ export default function ITSMPage() {
 
   // Comments
   const [comments, setComments] = useState<Comment[]>([])
-  const [commentAuthor, setCommentAuthor] = useState('')
   const [commentContent, setCommentContent] = useState('')
   const [commentLoading, setCommentLoading] = useState(false)
 
@@ -140,6 +153,13 @@ export default function ITSMPage() {
   const [subtaskDesc, setSubtaskDesc] = useState('')
   const [subtaskDue, setSubtaskDue] = useState('')
   const [subtaskSaving, setSubtaskSaving] = useState(false)
+  // 子任务增强：字段映射(sync_fields) + 随主单关闭开关(close_with_parent)
+  const [subtaskSync, setSubtaskSync] = useState<string[]>([])
+  const [subtaskCloseWithParent, setSubtaskCloseWithParent] = useState(true)
+  // 子任务处理详情弹窗：查看即认领，回填处理情况
+  const [subtaskDetail, setSubtaskDetail] = useState<Subtask | null>(null)
+  const [subtaskDetailOpen, setSubtaskDetailOpen] = useState(false)
+  const [subtaskDetailSaving, setSubtaskDetailSaving] = useState(false)
 
   // Import
   const [importing, setImporting] = useState(false)
@@ -211,7 +231,11 @@ export default function ITSMPage() {
 
   useEffect(() => { fetch(); fetchStats(); fetchProcesses() }, [])
 
-  useEffect(() => { if (me) setCommentAuthor(me.username) }, [me])
+  // 评论/子任务的「用户」下拉：确保用户列表已加载（评论 @ 与子任务处理人共用）。
+  useEffect(() => {
+    const st = useUserStore.getState()
+    if (st.users.length === 0) st.fetch()
+  }, [])
 
   // 深链 ?id=<ticket>：从服务门户提交申请后「查看工单」跳进来，直接展开该工单详情。
   // 服务申请本身已收敛到服务门户内的抽屉表单完成，不再通过跳本页创建。
@@ -294,6 +318,7 @@ export default function ITSMPage() {
     // 未绑定流程或流程没主表单时，回退到 ticket.form_scope 对应的作用域表单（兼容存量）。
     let scope = ticket.form_scope || 'ticket:default'
     let schema: FormSchema | null = null
+    setCurrentStepActions(undefined) // 默认全部显示，绑定流程且节点配置 actions 时再收窄
     if (ticket.process_id) {
       // 直接读 store 快照：深链 ?id= 场景下 render 闭包里的 processes 可能还没拉回来
       const procList = useITSMStore.getState().processes
@@ -306,6 +331,7 @@ export default function ITSMPage() {
         const step = inst?.current_step ? proc?.steps?.find(s => s.id === inst.current_step) : undefined
         if (step) {
           setStepName(step.name || '')
+          setCurrentStepActions(step.actions) // 节点配置了 actions 则按配置收窄按钮
           if (schema) {
             const projected = applyStepFieldPerms(schema, step.form_fields)
             schema = projected
@@ -534,12 +560,48 @@ export default function ITSMPage() {
     try {
       await apiFetch<Comment>(`/itsm/tickets/${selectedTicket.id}/comments`, {
         method: 'POST',
-        body: JSON.stringify({ author: commentAuthor, content: commentContent }),
+        body: JSON.stringify({ author: me?.username || 'anonymous', content: commentContent }),
       })
       setCommentContent('')
+      setMentionOpen(false)
       fetchComments(selectedTicket.id)
     } catch { toast.error('添加评论失败') }
     setCommentLoading(false)
+  }
+
+  // 评论 @ 用户：输入 @ 后弹出用户列表，选中后插入 @用户名。
+  const [mentionOpen, setMentionOpen] = useState(false)
+  const [mentionQuery, setMentionQuery] = useState('')
+  const commentRef = useRef<HTMLTextAreaElement>(null)
+  const mentionMatches = useMemo(() => {
+    const q = mentionQuery.trim().toLowerCase()
+    return (users || []).filter(u => !q || u.username.toLowerCase().includes(q) || (u.email || '').toLowerCase().includes(q)).slice(0, 8)
+  }, [users, mentionQuery])
+
+  const onCommentChange = (e: ChangeEvent<HTMLTextAreaElement>) => {
+    const val = e.target.value
+    setCommentContent(val)
+    const pos = e.target.selectionStart ?? val.length
+    const m = val.slice(0, pos).match(/@([\w\u4e00-\u9fa5]*)$/)
+    if (m) { setMentionQuery(m[1]); setMentionOpen(true) }
+    else setMentionOpen(false)
+  }
+  const pickMention = (username: string) => {
+    const ta = commentRef.current
+    const val = commentContent
+    const pos = ta ? ta.selectionStart ?? val.length : val.length
+    const before = val.slice(0, pos).replace(/@([\w\u4e00-\u9fa5]*)$/, '@' + username + ' ')
+    const after = val.slice(pos)
+    const next = before + after
+    setCommentContent(next)
+    setMentionOpen(false)
+    if (ta) {
+      requestAnimationFrame(() => {
+        ta.focus()
+        const p = before.length
+        ta.setSelectionRange(p, p)
+      })
+    }
   }
 
   const handleDeleteComment = async (cid: number) => {
@@ -563,13 +625,58 @@ export default function ITSMPage() {
           assignee: subtaskAssignee.trim(),
           due_at: subtaskDue ? new Date(subtaskDue).toISOString() : null,
           created_by: me?.username || 'anonymous',
+          sync_fields: subtaskSync,
+          close_with_parent: subtaskCloseWithParent,
         }),
       })
       setSubtaskDialog(false); setSubtaskTitle(''); setSubtaskDesc(''); setSubtaskAssignee(''); setSubtaskDue('')
+      setSubtaskSync([]); setSubtaskCloseWithParent(true)
       fetchSubtasks(selectedTicket.id)
     } catch { toast.error('创建子任务失败') }
     setSubtaskSaving(false)
   }
+
+  // 打开子任务处理详情：首次查看即认领(pending→in_progress)，可回填处理情况/更新字段
+  const openSubtaskDetail = async (st: Subtask) => {
+    if (!selectedTicket) return
+    try {
+      const data = await apiFetch<Subtask>(`/itsm/tickets/${selectedTicket.id}/subtasks/${st.id}`)
+      setSubtaskDetail(data || st)
+    } catch { setSubtaskDetail(st) }
+    setSubtaskDetailOpen(true)
+  }
+
+  const handleSaveSubtaskDetail = async () => {
+    if (!selectedTicket || !subtaskDetail) return
+    setSubtaskDetailSaving(true)
+    try {
+      await apiFetch(`/itsm/tickets/${selectedTicket.id}/subtasks/${subtaskDetail.id}`, {
+        method: 'PUT',
+        body: JSON.stringify({
+          detail: subtaskDetail.detail ?? '',
+          close_with_parent: subtaskDetail.close_with_parent,
+          updated_by: me?.username || 'anonymous',
+        }),
+      })
+      toast.success('已保存处理情况')
+      setSubtaskDetailOpen(false)
+      fetchSubtasks(selectedTicket.id)
+    } catch { toast.error('保存处理情况失败') }
+    setSubtaskDetailSaving(false)
+  }
+
+  // 可同步到子任务的主单字段（系统字段 + 自定义字段），供新建时勾选映射
+  const subtaskSyncOptions = useMemo<{ key: string; label: string }[]>(() => {
+    if (!selectedTicket) return []
+    const opts: { key: string; label: string }[] = [
+      { key: 'risk_level', label: '风险等级' },
+      { key: 'title', label: '标题' },
+      { key: 'description', label: '描述' },
+    ]
+    const cf = (selectedTicket as any).custom_fields || {}
+    for (const k of Object.keys(cf)) opts.push({ key: `custom_fields.${k}`, label: `自定义字段: ${k}` })
+    return opts
+  }, [selectedTicket])
 
   const handleToggleSubtask = async (st: Subtask) => {
     if (!selectedTicket) return
@@ -609,7 +716,7 @@ export default function ITSMPage() {
     try {
       const formData = new FormData()
       formData.append('file', file)
-      formData.append('uploaded_by', commentAuthor)
+      formData.append('uploaded_by', me?.username || 'anonymous')
       await apiFetch<Attachment>(`/itsm/tickets/${selectedTicket.id}/attachments`, {
         method: 'POST',
         headers: {},
@@ -767,48 +874,50 @@ export default function ITSMPage() {
                     <CardDescription className="text-xs">ID: {selectedTicket.id.slice(0, 12)}... · {selectedTicket.created_by} · {formatTime(selectedTicket.created_at)}</CardDescription>
                   </div>
                   <div className="flex gap-1">
-                    {!['rejected', 'rolled_back', 'closed', 'withdrawn'].includes(selectedTicket.status) && (
+                    {!['rejected', 'rolled_back', 'closed', 'withdrawn'].includes(selectedTicket.status) && stepAllows('assign') && (
                       <Button variant="outline" size="sm" onClick={() => { setAssignDialog(true); setAssigneeInput(selectedTicket.assignee || '') }} disabled={!canWrite}><UserPlus className="h-3 w-3" />指派</Button>
                     )}
-                    {selectedTicket.status === 'draft' && (
+                    {selectedTicket.status === 'draft' && stepAllows('submit') && (
                       <Button variant="outline" size="sm" onClick={handleSubmitTicket} disabled={!canWrite}><Send className="h-3 w-3" />提交</Button>
                     )}
-                    {selectedTicket.status === 'draft' && (
+                    {selectedTicket.status === 'draft' && stepAllows('withdraw') && (
                       <Button variant="outline" size="sm" onClick={handleWithdraw} disabled={!canWrite}><X className="h-3 w-3" />撤回</Button>
                     )}
-                    {selectedTicket.status === 'closed' && (
+                    {selectedTicket.status === 'closed' && stepAllows('reopen') && (
                       <Button variant="outline" size="sm" onClick={handleReopen} disabled={!canWrite}><RotateCcw className="h-3 w-3" />重开</Button>
                     )}
-                    {selectedTicket.status === 'pending_review' && (
-                      <><Button variant="outline" size="sm" onClick={() => { setApproveDialog(true); setApproveComment('') }} disabled={!canApprove}><Check className="h-3 w-3" />通过</Button>
-                        <Button variant="outline" size="sm" onClick={() => { setRejectDialog(true); setRejectReason('') }} disabled={!canApprove}><X className="h-3 w-3" />驳回</Button></>
+                    {selectedTicket.status === 'pending_review' && stepAllows('approve') && (
+                      <Button variant="outline" size="sm" onClick={() => { setApproveDialog(true); setApproveComment('') }} disabled={!canApprove}><Check className="h-3 w-3" />通过</Button>
                     )}
-                    {selectedTicket.status === 'approved' && (
+                    {selectedTicket.status === 'pending_review' && stepAllows('reject') && (
+                      <Button variant="outline" size="sm" onClick={() => { setRejectDialog(true); setRejectReason('') }} disabled={!canApprove}><X className="h-3 w-3" />驳回</Button>
+                    )}
+                    {selectedTicket.status === 'approved' && stepAllows('execute') && (
                       <Button variant="outline" size="sm" onClick={handleExecute} disabled={!canWrite}><Play className="h-3 w-3" />执行</Button>
                     )}
-                    {selectedTicket.status === 'executing' && (
+                    {selectedTicket.status === 'executing' && stepAllows('complete') && (
                       <Button variant="outline" size="sm" onClick={() => { setCompleteDialog(true); setCompleteComment('') }} disabled={!canWrite}>完成</Button>
                     )}
-                    {(selectedTicket.status === 'failed' || selectedTicket.status === 'succeeded') && (
+                    {(selectedTicket.status === 'failed' || selectedTicket.status === 'succeeded') && stepAllows('rollback') && (
                       <Button variant="outline" size="sm" onClick={() => { setRollbackDialog(true); setRollbackReason('') }} disabled={!canWrite}><RotateCcw className="h-3 w-3" />回滚</Button>
                     )}
-                    {selectedTicket.status === 'succeeded' && (
+                    {selectedTicket.status === 'succeeded' && stepAllows('close') && (
                       <Button variant="outline" size="sm" onClick={() => { setCloseDialog(true); setCloseComment(''); setCloseSatisfaction(0) }} disabled={!canWrite}><CheckCircle2 className="h-3 w-3" />关闭</Button>
                     )}
-                    {selectedTicket.status === 'succeeded' && (
+                    {selectedTicket.status === 'succeeded' && stepAllows('convert') && (
                       <Button variant="outline" size="sm" onClick={() => handleConvertToKnowledge(selectedTicket)} disabled={!canWrite}><BookOpen className="h-3 w-3 mr-1"/>转知识</Button>
                     )}
                     {!['rejected', 'rolled_back', 'closed', 'withdrawn'].includes(selectedTicket.status) && (
                       <>
                         {selectedTicket.on_hold ? (
-                          <Button variant="outline" size="sm" onClick={handleResume} disabled={!canWrite}><Play className="h-3 w-3" />恢复</Button>
+                          stepAllows('resume') && <Button variant="outline" size="sm" onClick={handleResume} disabled={!canWrite}><Play className="h-3 w-3" />恢复</Button>
                         ) : (
-                          <Button variant="outline" size="sm" onClick={handleHold} disabled={!canWrite}><Clock className="h-3 w-3" />挂起</Button>
+                          stepAllows('hold') && <Button variant="outline" size="sm" onClick={handleHold} disabled={!canWrite}><Clock className="h-3 w-3" />挂起</Button>
                         )}
-                        <Button variant="outline" size="sm" onClick={() => setRemindDialog(true)} disabled={!canWrite}><Bell className="h-3 w-3" />催办</Button>
-                        <Button variant="outline" size="sm" onClick={() => setRelateDialog(true)} disabled={!canWrite}><Link2 className="h-3 w-3" />关联</Button>
-                        <Button variant="outline" size="sm" onClick={() => router.push(`/itsm/change?ticket=${selectedTicket.id}`)} disabled={!canWrite}><FileText className="h-3 w-3" />变更</Button>
-                        <Button variant="outline" size="sm" onClick={() => router.push(`/knowledge/new?ticket=${selectedTicket.id}&title=${encodeURIComponent(selectedTicket.title)}`)} disabled={!canWrite}><BookOpen className="h-3 w-3" />转知识</Button>
+                        {stepAllows('remind') && <Button variant="outline" size="sm" onClick={() => setRemindDialog(true)} disabled={!canWrite}><Bell className="h-3 w-3" />催办</Button>}
+                        {stepAllows('relate') && <Button variant="outline" size="sm" onClick={() => setRelateDialog(true)} disabled={!canWrite}><Link2 className="h-3 w-3" />关联</Button>}
+                        {stepAllows('change') && <Button variant="outline" size="sm" onClick={() => router.push(`/itsm/change?ticket=${selectedTicket.id}`)} disabled={!canWrite}><FileText className="h-3 w-3" />变更</Button>}
+                        {stepAllows('convert') && <Button variant="outline" size="sm" onClick={() => router.push(`/knowledge/new?ticket=${selectedTicket.id}&title=${encodeURIComponent(selectedTicket.title)}`)} disabled={!canWrite}><BookOpen className="h-3 w-3" />转知识</Button>}
                       </>
                     )}
                   </div>
@@ -1049,16 +1158,31 @@ export default function ITSMPage() {
                     <div className="space-y-3">
                       <div className="border rounded-md p-3 bg-muted/30 space-y-2">
                         <div className="flex gap-2 items-center">
-                          <label className="text-xs text-muted-foreground shrink-0">用户:</label>
-                          <Input className="h-8 text-xs" value={commentAuthor} onChange={e => setCommentAuthor(e.target.value)} placeholder="用户名" />
+                          <label className="text-xs text-muted-foreground shrink-0">评论人:</label>
+                          <Badge variant="secondary" className="text-xs">{me?.username || 'anonymous'}</Badge>
+                          <span className="text-[10px] text-muted-foreground">（当前登录用户，不可修改）</span>
                         </div>
-                        <textarea
-                          className="flex h-16 w-full rounded-md border border-input bg-background px-3 py-2 text-sm resize-none"
-                          value={commentContent}
-                          onChange={e => setCommentContent(e.target.value)}
-                          placeholder="输入评论内容..."
-                          onKeyDown={e => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) handleAddComment() }}
-                        />
+                        <div className="relative">
+                          <textarea
+                            ref={commentRef}
+                            className="flex h-16 w-full rounded-md border border-input bg-background px-3 py-2 text-sm resize-none"
+                            value={commentContent}
+                            onChange={onCommentChange}
+                            placeholder="输入评论内容，输入 @ 可提及用户…"
+                            onKeyDown={e => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) handleAddComment() }}
+                          />
+                          {mentionOpen && mentionMatches.length > 0 && (
+                            <div className="absolute z-20 left-0 right-0 mt-1 max-h-48 overflow-y-auto rounded-md border bg-popover shadow-md">
+                              {mentionMatches.map(u => (
+                                <button type="button" key={u.id} onClick={() => pickMention(u.username)}
+                                  className="flex w-full items-center gap-2 px-3 py-1.5 text-xs text-left hover:bg-accent hover:text-accent-foreground">
+                                  <span className="font-medium">{u.username}</span>
+                                  {u.email && <span className="text-[10px] text-muted-foreground truncate">{u.email}</span>}
+                                </button>
+                              ))}
+                            </div>
+                          )}
+                        </div>
                         <div className="flex justify-end">
                           <Button size="sm" onClick={handleAddComment} disabled={!canWrite || !commentContent.trim() || commentLoading}>
                             {commentLoading ? '发送中...' : '发送评论'}
@@ -1099,7 +1223,7 @@ export default function ITSMPage() {
                         <span className="text-xs text-muted-foreground">
                           {subtasks.filter(s => s.status === 'done').length} / {subtasks.length} 已完成
                         </span>
-                        <Button variant="outline" size="sm" onClick={() => { setSubtaskDialog(true); setSubtaskTitle(''); setSubtaskDesc(''); setSubtaskAssignee(''); setSubtaskDue('') }} disabled={!canWrite}>
+                        <Button variant="outline" size="sm" onClick={() => { setSubtaskDialog(true); setSubtaskTitle(''); setSubtaskDesc(''); setSubtaskAssignee(''); setSubtaskDue(''); setSubtaskSync([]); setSubtaskCloseWithParent(true) }} disabled={!canWrite}>
                           <Plus className="h-3 w-3 mr-1" />新增子任务
                         </Button>
                       </div>
@@ -1113,11 +1237,18 @@ export default function ITSMPage() {
                                 <button onClick={() => handleToggleSubtask(st)} disabled={!canWrite} className="mt-0.5 shrink-0" aria-label={st.status === 'done' ? '标记未完成' : '标记完成'}>
                                   <CheckCircle2 className={`h-4 w-4 ${st.status === 'done' ? 'text-green-600' : 'text-muted-foreground/40'}`} />
                                 </button>
-                                <div className="flex-1 min-w-0">
+                                <div
+                                  className="flex-1 min-w-0 cursor-pointer"
+                                  onClick={() => openSubtaskDetail(st)}
+                                >
                                   <div className="flex items-center gap-2 flex-wrap">
                                     <span className={`text-sm font-medium ${st.status === 'done' ? 'line-through' : ''}`}>{st.title}</span>
+                                    {st.status === 'pending' && !st.viewed_at && st.assignee && (
+                                      <Badge variant="destructive" className="text-[10px]">待认领</Badge>
+                                    )}
                                     <select
                                       value={st.status}
+                                      onClick={e => e.stopPropagation()}
                                       onChange={e => handleSetSubtaskStatus(st, e.target.value)}
                                       disabled={!canWrite}
                                       className="h-6 text-[11px] rounded border border-input bg-background px-1"
@@ -1127,10 +1258,12 @@ export default function ITSMPage() {
                                     {st.due_at && <span className="text-[11px] text-muted-foreground">截止 {formatTime(st.due_at)}</span>}
                                   </div>
                                   {st.description && <p className="text-xs text-muted-foreground mt-1 whitespace-pre-wrap">{st.description}</p>}
+                                  {st.detail && <p className="text-xs mt-1 whitespace-pre-wrap text-foreground/80"><span className="text-muted-foreground">处理情况：</span>{st.detail}</p>}
                                   <div className="flex items-center gap-2 mt-1 text-[11px] text-muted-foreground">
                                     {st.assignee && <Badge variant="secondary" className="text-[10px]">{st.assignee}</Badge>}
                                     <span>{formatTime(st.created_at)}</span>
                                     {st.completed_at && <span className="text-green-600">完成于 {formatTime(st.completed_at)}</span>}
+                                    {st.close_with_parent === false && <span className="text-amber-600">不随主单关闭</span>}
                                   </div>
                                 </div>
                                 <Button
@@ -1219,15 +1352,8 @@ export default function ITSMPage() {
 
       <Dialog open={dialogOpen} onClose={() => setDialogOpen(false)} title={`新建工单${createScope !== 'ticket:default' ? ' · ' + createScope : ''}`}>
         <div className="space-y-3 max-h-[60vh] overflow-y-auto">
-          <div><label className="text-sm font-medium">标题 *</label><Input value={form.title} onChange={e => setForm(f => ({ ...f, title: e.target.value }))} placeholder="变更描述" /></div>
-          <div><label className="text-sm font-medium">描述</label><textarea className="flex h-20 w-full rounded-md border border-input bg-background px-3 py-2 text-sm" value={form.description} onChange={e => setForm(f => ({ ...f, description: e.target.value }))} /></div>
           <div className="grid grid-cols-2 gap-3">
-            <div><label className="text-sm font-medium">风险等级</label>
-              <select className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm" value={form.risk_level} onChange={e => setForm(f => ({ ...f, risk_level: e.target.value }))}>
-                <option value="low">Low - 数据只读</option><option value="medium">Medium - 单机无状态</option><option value="high">High - 核心配置修改</option><option value="critical">Critical - 数据库变更</option>
-              </select>
-            </div>
-            <div><label className="text-sm font-medium">流程模板</label>
+            <div className="col-span-2"><label className="text-sm font-medium">流程模板</label>
               <select className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm" value={form.process_id} onChange={e => {
                 const pid = e.target.value
                 setForm(f => ({ ...f, process_id: pid }))
@@ -1241,6 +1367,17 @@ export default function ITSMPage() {
               </select>
             </div>
           </div>
+          {/* 申请标题/说明/紧急程度 为内置字段，并入 DynamicForm 渲染（设计器中以锁定卡片呈现） */}
+          <DynamicForm
+            schema={withBuiltinFields(createSchema)}
+            values={{ title: form.title, description: form.description, risk_level: form.risk_level, ...customFields }}
+            context={form}
+            onChange={(key, value) => {
+              if (BUILTIN_KEYS.includes(key)) setForm(f => ({ ...f, [key]: value }))
+              else setCustomFields(c => ({ ...c, [key]: value }))
+            }}
+            loadOptions={loadOptions}
+          />
           <div><label className="text-sm font-medium">变更计划</label><textarea className="flex h-16 w-full rounded-md border border-input bg-background px-3 py-2 text-sm" value={form.change_plan} onChange={e => setForm(f => ({ ...f, change_plan: e.target.value }))} /></div>
           <div><label className="text-sm font-medium">回滚计划</label><textarea className="flex h-16 w-full rounded-md border border-input bg-background px-3 py-2 text-sm" value={form.rollback_plan} onChange={e => setForm(f => ({ ...f, rollback_plan: e.target.value }))} /></div>
           <div>
@@ -1252,16 +1389,6 @@ export default function ITSMPage() {
               <Input className="text-xs" value={ciIdInput} onChange={e => setCiIdInput(e.target.value)} placeholder="输入 CI ID" onKeyDown={e => e.key === 'Enter' && addCiId()} />
               <Button variant="outline" size="sm" onClick={addCiId}>添加</Button>
             </div>
-          </div>
-          <div className="border-t pt-3">
-            <h4 className="text-sm font-medium mb-2">自定义字段</h4>
-            <DynamicForm
-              schema={createSchema}
-              values={customFields}
-              context={{ risk_level: form.risk_level }}
-              onChange={(key, value) => setCustomFields(c => ({ ...c, [key]: value }))}
-              loadOptions={loadOptions}
-            />
           </div>
           {knowledgeRecs.length > 0 && <div className="mt-2 p-2 bg-amber-50 dark:bg-amber-950/20 rounded-md">
             <p className="text-xs font-medium text-amber-700 dark:text-amber-400 mb-1">相关文章推荐</p>
@@ -1352,12 +1479,80 @@ export default function ITSMPage() {
         <div className="space-y-3">
           <div><label className="text-sm font-medium">标题</label><Input className="mt-1" value={subtaskTitle} onChange={e => setSubtaskTitle(e.target.value)} placeholder="子任务标题" onKeyDown={e => e.key === 'Enter' && handleCreateSubtask()} /></div>
           <div className="grid grid-cols-2 gap-3">
-            <div><label className="text-sm font-medium">负责人</label><Input className="mt-1" value={subtaskAssignee} onChange={e => setSubtaskAssignee(e.target.value)} placeholder="负责人用户名" /></div>
+            <div><label className="text-sm font-medium">负责人</label>
+              <select className="flex h-9 w-full rounded-md border border-input bg-background px-2 text-sm mt-1"
+                value={subtaskAssignee} onChange={e => setSubtaskAssignee(e.target.value)}>
+                <option value="">选择处理人</option>
+                {(users || []).map(u => (
+                  <option key={u.id} value={u.username}>{u.username}{u.email ? `（${u.email}）` : ''}</option>
+                ))}
+              </select>
+            </div>
             <div><label className="text-sm font-medium">截止日期</label><Input type="date" className="mt-1" value={subtaskDue} onChange={e => setSubtaskDue(e.target.value)} /></div>
           </div>
           <div><label className="text-sm font-medium">描述</label><textarea className="flex h-20 w-full rounded-md border border-input bg-background px-3 py-2 text-sm mt-1 resize-none" value={subtaskDesc} onChange={e => setSubtaskDesc(e.target.value)} placeholder="描述（可选）" /></div>
+          <div>
+            <label className="text-sm font-medium">字段映射（同步主单字段到子任务）</label>
+            <div className="mt-1 max-h-32 overflow-y-auto rounded-md border border-input p-2 space-y-1">
+              {subtaskSyncOptions.length === 0 && <p className="text-xs text-muted-foreground">主单暂无可同步字段</p>}
+              {subtaskSyncOptions.map(o => (
+                <label key={o.key} className="flex items-center gap-2 text-sm cursor-pointer">
+                  <input
+                    type="checkbox"
+                    className="h-3.5 w-3.5"
+                    checked={subtaskSync.includes(o.key)}
+                    onChange={e => setSubtaskSync(prev => e.target.checked ? [...prev, o.key] : prev.filter(k => k !== o.key))}
+                  />
+                  {o.label}
+                </label>
+              ))}
+            </div>
+          </div>
+          <SwitchField
+            label="随主工单关闭而自动关闭"
+            description="主工单关闭时，该子任务若仍未完成将一并关闭（默认开启）"
+            checked={subtaskCloseWithParent}
+            onCheckedChange={setSubtaskCloseWithParent}
+          />
         </div>
         <DialogFooter><Button variant="outline" onClick={() => setSubtaskDialog(false)}>取消</Button><Button onClick={handleCreateSubtask} disabled={!canWrite || !subtaskTitle.trim() || subtaskSaving}>{subtaskSaving ? '创建中...' : '创建'}</Button></DialogFooter>
+      </Dialog>
+
+      <Dialog open={subtaskDetailOpen} onClose={() => setSubtaskDetailOpen(false)} title="子任务处理详情">
+        {subtaskDetail && (
+          <div className="space-y-3">
+            <div className="flex items-center gap-2 flex-wrap">
+              <span className="text-sm font-medium">{subtaskDetail.title}</span>
+              <Badge variant="secondary" className="text-[10px]">{subtaskLabels[subtaskDetail.status] || subtaskDetail.status}</Badge>
+              {subtaskDetail.viewed_at && <span className="text-[11px] text-muted-foreground">已认领 {formatTime(subtaskDetail.viewed_at)}</span>}
+            </div>
+            {subtaskDetail.description && <p className="text-xs text-muted-foreground whitespace-pre-wrap">{subtaskDetail.description}</p>}
+            <div>
+              <label className="text-sm font-medium">处理情况</label>
+              <textarea
+                className="flex h-28 w-full rounded-md border border-input bg-background px-3 py-2 text-sm mt-1 resize-none"
+                value={subtaskDetail.detail ?? ''}
+                onChange={e => setSubtaskDetail(d => d ? ({ ...d, detail: e.target.value }) : d)}
+                placeholder="填写处理过程、结论或阻塞点"
+                disabled={!canWrite}
+              />
+            </div>
+            <SwitchField
+              label="随主工单关闭而自动关闭"
+              description="主工单关闭时，该子任务若仍未完成将一并关闭"
+              checked={subtaskDetail.close_with_parent ?? true}
+              onCheckedChange={checked => setSubtaskDetail(d => d ? ({ ...d, close_with_parent: checked }) : d)}
+              disabled={!canWrite}
+            />
+            <p className="text-[11px] text-muted-foreground">
+              处理人首次查看即进入「处理中」（认领）；保存后更新最后处理人。
+            </p>
+          </div>
+        )}
+        <DialogFooter>
+          <Button variant="outline" onClick={() => setSubtaskDetailOpen(false)}>关闭</Button>
+          <Button onClick={handleSaveSubtaskDetail} disabled={!canWrite || subtaskDetailSaving}>{subtaskDetailSaving ? '保存中...' : '保存处理情况'}</Button>
+        </DialogFooter>
       </Dialog>
 
       <Dialog open={importDialog} onClose={() => setImportDialog(false)} title="导入结果">

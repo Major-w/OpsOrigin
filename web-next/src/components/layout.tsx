@@ -4,11 +4,14 @@ import { useState } from 'react'
 import Link from 'next/link'
 import { usePathname, useRouter } from 'next/navigation'
 import { cn } from '@/lib/utils'
-import { Server, TicketCheck, Activity, Bot, Shield, LayoutDashboard, Hexagon, LogOut, User, Terminal, Workflow, Clock, Search, BookOpen, Calendar, GitBranch, Package, Bell, Key, Blocks, Users, Settings, Sun, Moon, Scan, Bug, Download, PackagePlus, Network, AlertTriangle, History, FileText, Rocket, AppWindow, FileCheck2, Cloud, Play, Sparkles, Database, Radio, BarChart3, Building2, Radar, MessagesSquare, Gauge, FlaskConical, TrendingUp, Store, Cpu, Webhook, Mail, MessageSquare, Wrench, FolderOpen, type LucideIcon } from 'lucide-react'
+import { Server, TicketCheck, Activity, Bot, Shield, LayoutDashboard, Hexagon, LogOut, User, Terminal, Workflow, Clock, Search, BookOpen, Calendar, GitBranch, Package, Bell, Key, Blocks, Users, Settings, Sun, Moon, Scan, Bug, Download, PackagePlus, Network, AlertTriangle, History, FileText, Rocket, AppWindow, FileCheck2, Cloud, Play, Sparkles, Database, Radio, BarChart3, Building2, TrendingUp, Store, Cpu, Webhook, Mail, MessageSquare, FolderOpen, type LucideIcon } from 'lucide-react'
 import { useAuthStore } from '@/stores/auth'
+import { MessageBell } from '@/components/message-bell'
 import { useThemeStore } from '@/stores/theme'
 import { ScrollToTop } from '@/components/ui/scroll-to-top'
 import AIAssistant from '@/components/ai-assistant'
+import PureMode from '@/components/pure-mode'
+import { AI_ASSISTANT_NAV } from '@/components/ai-nav'
 
 interface NavItem {
   to: string
@@ -117,19 +120,7 @@ const navGroups: (NavItem | NavGroup)[] = [
     ]
   },
   {
-    label: 'AI 助手', icon: Bot, items: [
-      { to: '/ai', label: 'AI 对话', icon: MessagesSquare },
-      { to: '/ai/scenes', label: '场景包', icon: Package },
-      { to: '/ai/digital-employees', label: '数字员工', icon: Sparkles },
-      { to: '/ai/inspections', label: '主动巡检', icon: Radar },
-      { to: '/ai/teams', label: '智能体团队', icon: Users },
-      { to: '/ai/impact', label: '运营效果', icon: Gauge },
-      { to: '/ai/drills', label: '故障演练', icon: FlaskConical },
-      { to: '/ai/marketplace', label: '技能市场', icon: Store },
-      { to: '/ai/mcp', label: 'MCP 工具', icon: Wrench },
-      { to: '/ai/analytics', label: '使用分析', icon: BarChart3 },
-      { to: '/ai/settings', label: 'AI 设置', icon: Settings },
-    ]
+    label: 'AI 助手', icon: Bot, items: AI_ASSISTANT_NAV,
   },
   {
     label: '系统管理', icon: Users, items: [
@@ -291,9 +282,27 @@ export function Layout({ children }: { children: React.ReactNode }) {
     return init
   })
   const { theme, toggle } = useThemeStore()
+  // 纯净模式：优先读「登录后默认进入」偏好，否则读「本次会话是否纯静态」偏好
+  const [pureMode, setPureMode] = useState<boolean>(() => {
+    if (typeof window === 'undefined') return false
+    try {
+      if (localStorage.getItem('opsorigin_pure_default') === '1') return true
+      return localStorage.getItem('opsorigin_pure_mode') === '1'
+    } catch {
+      return false
+    }
+  })
+  const applyPure = (v: boolean) => {
+    setPureMode(v)
+    try { localStorage.setItem('opsorigin_pure_mode', v ? '1' : '0') } catch { /* ignore */ }
+  }
 
   const toggleGroup = (label: string) => {
     setCollapsed(prev => ({ ...prev, [label]: !prev[label] }))
+  }
+
+  if (pureMode) {
+    return <PureMode onExitPure={() => applyPure(false)} />
   }
 
   return (
@@ -349,6 +358,16 @@ export function Layout({ children }: { children: React.ReactNode }) {
           })}
         </nav>
 
+        <div className="px-3 pt-3 shrink-0">
+          <button
+            onClick={() => applyPure(true)}
+            className="w-full flex items-center justify-center gap-2 py-2 rounded-xl text-xs font-semibold text-white bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 shadow-md shadow-emerald-900/20 transition-all duration-200 hover:scale-[1.02]"
+            title="切换到纯净模式（AI 工作界面）"
+          >
+            <Sparkles className="h-4 w-4" /> 进入纯净模式
+          </button>
+        </div>
+
         <div className={cn("px-4 py-3 border-t space-y-2 sticky bottom-0 backdrop-blur-2xl", theme === 'dark' ? 'border-[rgba(255,255,255,0.04)] bg-[rgba(11,15,25,0.95)]' : 'border-gray-200 bg-white/95')}>
           {user && (
             <div className="flex items-center justify-between">
@@ -361,9 +380,12 @@ export function Layout({ children }: { children: React.ReactNode }) {
                   <p className="text-[10px] text-muted-foreground/60 font-mono uppercase">{user.role}</p>
                 </div>
               </div>
-              <button onClick={() => { logout(); router.push('/login') }} className="text-muted-foreground/40 hover:text-red-500 transition-colors p-1">
-                <LogOut className="w-3.5 h-3.5" />
-              </button>
+              <div className="flex items-center gap-1">
+                <MessageBell />
+                <button onClick={() => { logout(); router.push('/login') }} className="text-muted-foreground/40 hover:text-red-500 transition-colors p-1">
+                  <LogOut className="w-3.5 h-3.5" />
+                </button>
+              </div>
             </div>
           )}
           <div className="flex items-center gap-2">

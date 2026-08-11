@@ -1,0 +1,26 @@
+import {
+  MessagesSquare, Package, Sparkles, Radar, Users, Gauge, FlaskConical,
+  Store, Wrench, BarChart3, Settings, type LucideIcon,
+} from 'lucide-react'
+
+export interface AINavItem {
+  to: string
+  label: string
+  icon: LucideIcon
+}
+
+// 「AI 助手」分组菜单项。Layout 侧边栏与纯净模式左侧功能区共享此单一数据源，
+// 确保两处菜单永远一致：改动只在此一处。
+export const AI_ASSISTANT_NAV: AINavItem[] = [
+  { to: '/ai', label: 'AI 对话', icon: MessagesSquare },
+  { to: '/ai/scenes', label: '场景包', icon: Package },
+  { to: '/ai/digital-employees', label: '数字员工', icon: Sparkles },
+  { to: '/ai/inspections', label: '主动巡检', icon: Radar },
+  { to: '/ai/teams', label: '智能体团队', icon: Users },
+  { to: '/ai/impact', label: '运营效果', icon: Gauge },
+  { to: '/ai/drills', label: '故障演练', icon: FlaskConical },
+  { to: '/ai/marketplace', label: '技能市场', icon: Store },
+  { to: '/ai/mcp', label: 'MCP 工具', icon: Wrench },
+  { to: '/ai/analytics', label: '使用分析', icon: BarChart3 },
+  { to: '/ai/settings', label: 'AI 设置', icon: Settings },
+]

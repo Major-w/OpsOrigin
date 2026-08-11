@@ -51,6 +51,26 @@ const META: Record<ItStepType, { label: string; icon: any; color: string }> = {
   subflow:  { label: '子流程',   icon: FolderTree, color: '#8b5cf6' },
 }
 
+// 工单可操作按钮全集（key → 中文标签）。流程设计时在「人工任务」节点勾选本节点允许展示的按钮。
+const ACTION_OPTIONS: { key: string; label: string }[] = [
+  { key: 'submit', label: '提交' },
+  { key: 'withdraw', label: '撤回' },
+  { key: 'approve', label: '通过' },
+  { key: 'reject', label: '驳回' },
+  { key: 'execute', label: '执行' },
+  { key: 'complete', label: '完成' },
+  { key: 'rollback', label: '回滚' },
+  { key: 'close', label: '关闭' },
+  { key: 'hold', label: '挂起' },
+  { key: 'resume', label: '恢复' },
+  { key: 'reopen', label: '重开' },
+  { key: 'assign', label: '指派' },
+  { key: 'remind', label: '催办' },
+  { key: 'relate', label: '关联' },
+  { key: 'change', label: '变更' },
+  { key: 'convert', label: '转知识' },
+]
+
 // 横向 BPMN 泳道：新节点沿 X 轴顺次排布，超过 5 个折行，避免竖向堆叠
 function newStep(type: ItStepType, idx: number): ProcessStep {
   return {
@@ -515,6 +535,28 @@ function StepPanel({ step, steps, scripts, channels, mainForm, users, groups, on
           </p>
         </div>
         <div><label className="text-xs font-medium">审批消息</label><Input value={step.approval_msg||''} onChange={e=>onChange({approval_msg:e.target.value})} className="h-8 mt-1" placeholder="请审批此变更"/></div>
+        <div className="space-y-1">
+          <label className="text-xs font-medium">本节点可操作按钮</label>
+          <div className="flex flex-wrap gap-1">
+            {ACTION_OPTIONS.map(o => {
+              const on = (step.actions || []).includes(o.key)
+              return (
+                <button type="button" key={o.key}
+                  onClick={() => {
+                    const cur = step.actions || []
+                    const next = on ? cur.filter(k => k !== o.key) : [...cur, o.key]
+                    onChange({ actions: next })
+                  }}
+                  className={`text-[10px] px-2 py-1 rounded border transition-colors ${on ? 'bg-primary text-primary-foreground border-primary' : 'border-input text-muted-foreground hover:bg-muted/40'}`}>
+                  {o.label}
+                </button>
+              )
+            })}
+          </div>
+          <p className="text-[10px] text-muted-foreground mt-1">
+            勾选本节点允许展示的操作按钮；未勾选的按钮工单流转到本节点时不显示。全部留空表示沿用默认（全部显示），保持向后兼容。
+          </p>
+        </div>
         <div className="space-y-1">
           <div className="flex items-center justify-between gap-2">
             <label className="text-xs font-medium">表单字段权限</label>

@@ -412,6 +412,12 @@ export function FieldPropertyPanel({
 
   return (
     <div className="space-y-3">
+      {field.builtin && (
+        <div className="flex items-center gap-2 rounded-md border border-sky-500/30 bg-sky-500/10 px-2.5 py-1.5 text-xs text-sky-600 dark:text-sky-400">
+          <span className="rounded bg-sky-500/20 px-1 text-[10px] font-medium">内置</span>
+          系统内置字段（工单一等列）：标识与类型锁定，仅可调整显示名 / 必填 / 宽度 / 分区。
+        </div>
+      )}
       <Row>
         <Labeled label="字段标识 key">
           <div
@@ -511,7 +517,7 @@ export function FieldPropertyPanel({
         </Labeled>
       </div>
 
-      {supportsOptions && (
+      {supportsOptions && !field.builtin && (
         <Section title="选项来源">
           <Labeled label="动态来源（留空则用下方静态选项）">
             <div className="flex gap-1.5">

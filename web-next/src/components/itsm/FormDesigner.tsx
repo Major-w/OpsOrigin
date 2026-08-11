@@ -19,6 +19,7 @@ import { FIELD_TYPES, createField, defaultColSpan, FieldPropertyPanel } from './
 import {
   DynamicForm,
   normalizeColSpan,
+  withBuiltinFields,
   type FormSchema,
   type FormFieldDef,
   type FormFieldType,
@@ -57,10 +58,15 @@ export function FormDesigner({
   schema,
   onChange,
   sources = [],
-  systemFields = ['risk_level', 'status', 'created_by', 'process_id'],
+  systemFields = ['title', 'description', 'risk_level', 'status', 'created_by', 'process_id'],
   disabled,
 }: FormDesignerProps) {
-  const fields = useMemo(() => schema.fields || [], [schema.fields])
+  // 内置字段(title/description/risk_level)始终以锁定卡片呈现：排在自定义字段之前，
+  // 标识与类型不可改，但标签/必填/宽度/分区可配置。若 schema 已含同名 key 则以其配置为准。
+  const fields = useMemo(
+    () => (schema.fields ? withBuiltinFields(schema).fields : []),
+    [schema.fields],
+  )
 
   // 选中态用 key 而非下标：跨分区搬运/排序后下标会变，key 稳定
   const [activeKey, setActiveKey] = useState('')
@@ -147,6 +153,8 @@ export function FormDesigner({
   }
 
   const removeField = (key: string) => {
+    // 内置字段不可删除：拖拽/删除按钮已被禁用，这里再兜底一次防漏
+    if (fields.find(f => f.key === key)?.builtin) return
     commit(blocks.map(b => ({ ...b, items: b.items.filter(f => f.key !== key) })))
     if (activeKey === key) setActiveKey('')
   }
@@ -482,7 +490,7 @@ export function FormDesigner({
                         return (
                           <div
                             key={f.key}
-                            draggable={!disabled && !resizing}
+                            draggable={!disabled && !resizing && !f.builtin}
                             onDragStart={e => {
                               // 调宽过程中禁止触发 HTML5 拖拽，避免手柄拖动被误识别为搬运
                               if (resizing) {
@@ -505,6 +513,11 @@ export function FormDesigner({
                               <div className="truncate text-xs font-medium">
                                 {f.label || f.key}
                                 {f.required && <span className="ml-0.5 text-destructive">*</span>}
+                                {f.builtin && (
+                                  <span className="ml-1 rounded bg-sky-500/15 px-1 align-middle text-[9px] font-normal text-sky-600 dark:text-sky-400">
+                                    内置
+                                  </span>
+                                )}
                               </div>
                               <div className="truncate text-[10px] text-muted-foreground">
                                 {f.key} · {FIELD_TYPES.find(t => t.value === f.type)?.label || f.type}
@@ -517,15 +530,17 @@ export function FormDesigner({
                             >
                               {span}/12
                             </span>
-                            <IconBtn
-                              title="删除字段"
-                              danger
-                              disabled={disabled}
-                              onClick={() => removeField(f.key)}
-                              className="opacity-0 transition-opacity group-hover:opacity-100"
-                            >
-                              <Trash2 className="h-3 w-3" />
-                            </IconBtn>
+                            {!f.builtin && (
+                              <IconBtn
+                                title="删除字段"
+                                danger
+                                disabled={disabled}
+                                onClick={() => removeField(f.key)}
+                                className="opacity-0 transition-opacity group-hover:opacity-100"
+                              >
+                                <Trash2 className="h-3 w-3" />
+                              </IconBtn>
+                            )}
                             {/* 右缘调宽手柄：按住左右拖动，实时吸附到栅格 */}
                             <span
                               onPointerDown={e => beginResize(e, f.key, b.title, span)}

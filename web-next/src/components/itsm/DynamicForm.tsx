@@ -93,6 +93,9 @@ export interface FormFieldDef {
   order?: number
   validation?: FormFieldValidation
   readonly?: boolean
+  /** 内置字段标记：工单一等列(title/description/risk_level)以锁定卡片呈现在表单设计器中，
+   *  标识与类型不可改，但标签/必填/宽度/分区可配置。渲染时由页面通过 withBuiltinFields 并入。 */
+  builtin?: boolean
   /** 旧版单条表达式，如 "risk_level==critical"，保留兼容 */
   visible_when?: string
   /** 多规则显隐，优先于 visible_when */
@@ -131,6 +134,57 @@ export interface FormSchema {
   version: number
   scope: string
   fields: FormFieldDef[]
+}
+
+/** 内置字段：工单的一等列(title/description/risk_level)，在表单设计器中以锁定卡片呈现。
+ *  可配置标签/必填/宽度/分区，但标识与类型锁定。渲染时由页面用 withBuiltinFields 并入自定义字段，
+ *  提交时由 splitBuiltinValues 拆回一等列。order 取负值确保始终排在所有自定义字段之前。 */
+export const BUILTIN_FIELDS: FormFieldDef[] = [
+  { key: 'title', label: '申请标题', type: 'text', required: true, builtin: true, col_span: 12, order: -3 },
+  { key: 'description', label: '申请说明', type: 'textarea', builtin: true, col_span: 12, order: -2 },
+  {
+    key: 'risk_level',
+    label: '紧急程度',
+    type: 'select',
+    builtin: true,
+    col_span: 6,
+    order: -1,
+    options: [
+      { value: 'low', label: '低风险' },
+      { value: 'medium', label: '中风险' },
+      { value: 'high', label: '高风险' },
+      { value: 'critical', label: '紧急' },
+    ],
+  },
+]
+
+export const BUILTIN_KEYS: string[] = BUILTIN_FIELDS.map(f => f.key)
+
+/** 把内置字段并入 schema 用于渲染：内置字段排在最前；若 schema 已含同名 key 则以其配置为准(并补 builtin 标记)。 */
+export function withBuiltinFields(schema: FormSchema | null | undefined): FormSchema {
+  if (!schema) return { version: 1, scope: 'builtin', fields: BUILTIN_FIELDS.map(f => ({ ...f })) }
+  const have = new Map((schema.fields || []).map(f => [f.key, f]))
+  const out: FormFieldDef[] = []
+  for (const bf of BUILTIN_FIELDS) {
+    const ex = have.get(bf.key)
+    out.push(ex ? { ...bf, ...ex, builtin: true } : { ...bf })
+  }
+  for (const f of schema.fields || []) if (!BUILTIN_KEYS.includes(f.key)) out.push(f)
+  return { ...schema, fields: out }
+}
+
+/** 从渲染值(含内置字段)拆出内置字段与自定义字段，供提交时分别落一等列与 custom_fields。 */
+export function splitBuiltinValues(values: Record<string, unknown>): {
+  builtin: Record<string, unknown>
+  custom: Record<string, unknown>
+} {
+  const builtin: Record<string, unknown> = {}
+  const custom: Record<string, unknown> = {}
+  for (const [k, v] of Object.entries(values || {})) {
+    if (BUILTIN_KEYS.includes(k)) builtin[k] = v
+    else custom[k] = v
+  }
+  return { builtin, custom }
 }
 
 /** 把旧版 "key==value" / "key!=value" 表达式解析为规则列表（与后端 ParseVisibleWhen 对齐） */

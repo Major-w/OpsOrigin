@@ -17,11 +17,11 @@ const (
 	TypeMultiSelect FieldType = "multiselect" // 多选（options）
 	TypeNumber      FieldType = "number"
 	TypeDate        FieldType = "date"
-	TypeDatetime    FieldType = "datetime" // 日期时间(如 2026-08-05T18:30:00+08:00 / 2026-08-05 18:30)
-	TypeDuration    FieldType = "duration" // 时长(如 1h / 30m / 3d / 1h30m)
+	TypeDatetime    FieldType = "datetime"   // 日期时间(如 2026-08-05T18:30:00+08:00 / 2026-08-05 18:30)
+	TypeDuration    FieldType = "duration"   // 时长(如 1h / 30m / 3d / 1h30m)
 	TypeAttachment  FieldType = "attachment" // 附件(值为附件 ID 字符串数组)
-	TypeRichText    FieldType = "richtext" // 富文本(值为 HTML/纯文本字符串)
-	TypeTable       FieldType = "table"    // 表格(值为二维字符串数组 [][]string)
+	TypeRichText    FieldType = "richtext"   // 富文本(值为 HTML/纯文本字符串)
+	TypeTable       FieldType = "table"      // 表格(值为二维字符串数组 [][]string)
 	TypeBool        FieldType = "bool"
 	TypeUser        FieldType = "user"     // 选人（source=iam:user，前端下拉搜索）
 	TypeCI          FieldType = "ci"       // 选配置项（source=cmdb:<typeName>，前端下拉搜索）
@@ -91,6 +91,9 @@ type FieldDef struct {
 	Order       int              `json:"order"`
 	Validation  *FieldValidation `json:"validation,omitempty"`
 	ReadOnly    bool             `json:"readonly,omitempty"`
+	// Builtin 内置字段标记：工单一等列(title/description/risk_level)以锁定卡片呈现在设计器中，
+	// 标识与类型不可改，但标签/必填/宽度/分区可配置。仅作前端呈现与持久化标记，后端不强制。
+	Builtin bool `json:"builtin,omitempty"`
 
 	// 条件显隐（两种写法并存，以 VisibleWhenRules 优先）
 	// - VisibleWhen：旧版单条表达式，如 "risk_level==critical"，保留向后兼容
@@ -157,9 +160,9 @@ type TreeSourceResolver interface {
 type FieldDict struct {
 	ID          string     `json:"id"`
 	TenantID    string     `json:"tenant_id"`
-	Name        string     `json:"name"`        // 字典名(唯一)
+	Name        string     `json:"name"` // 字典名(唯一)
 	Description string     `json:"description,omitempty"`
-	Fields      []FieldDef `json:"fields"`      // 字段定义集(供 dict_ref 展开)
+	Fields      []FieldDef `json:"fields"` // 字段定义集(供 dict_ref 展开)
 }
 
 // DictStore 数据字典持久化能力(由 internal/itsm/store 的 PGStore / MemoryStore 实现)。
