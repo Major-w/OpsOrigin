@@ -551,19 +551,25 @@ func (s *Service) handleImpactAnalysis(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	tenantID := tenantFromCtx(r.Context())
 
+	var result *model.ImpactResult
 	if s.dg == nil {
-		result, _ := s.mem.impactAnalysis(tenantID, id, 3)
-		writeJSON(w, http.StatusOK, result)
-		return
-	}
-	result, err := s.dg.ImpactAnalysis(r.Context(), tenantID, id, 3)
-	if err != nil {
-		slog.Error("impact analysis failed", "error", err)
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
+		result, _ = s.mem.impactAnalysis(tenantID, id, 3)
+	} else {
+		var err error
+		result, err = s.dg.ImpactAnalysis(r.Context(), tenantID, id, 3)
+		if err != nil {
+			slog.Error("impact analysis failed", "error", err)
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
 	}
 
-	writeJSON(w, http.StatusOK, result)
+	// 业务视角富化：受影响 CI 明细 + 业务服务 + 综合影响等级。
+	enriched, err := s.enrichImpactWithBusiness(r.Context(), tenantID, result)
+	if err != nil {
+		slog.Warn("impact enrich failed, fallback to raw result", "error", err)
+	}
+	writeJSON(w, http.StatusOK, enriched)
 }
 
 func (s *Service) handleCIAudit(w http.ResponseWriter, r *http.Request) {
@@ -1732,14 +1738,62 @@ func (s *Service) handleListDiscoveryTypes(w http.ResponseWriter, r *http.Reques
 	writeJSON(w, 200, map[string]any{"types": out})
 }
 
-// EnsureDiscoveryModelTypes 在启动时确保自动发现插件产出的 CI 模型类型存在
-// （middleware 等目前未内置种子；server/switch/database/app 已由内置种子覆盖）。
-// 缺失则创建为内置模型类型，供发现结果落库与前端展示使用。
-func (s *Service) EnsureDiscoveryModelTypes(ctx context.Context, tenantID string) error {
-	want := []model.CIModelType{
+// buildBuiltinModelTypes 返回系统内置模型类型清单。
+// 前五类(server/switch/database/middleware/app)与自动发现插件产出的
+// CIType 对齐, 确保发现结果可直接落库; business_service 是服务建模层,
+// 承载业务服务→应用→技术组件的依赖链与业务关键性。
+// 纯函数, 便于单测; 幂等种子由 EnsureDiscoveryModelTypes 负责。
+func buildBuiltinModelTypes() []model.CIModelType {
+	return []model.CIModelType{
 		{
-			ID:          "middleware",
-			TenantID:    tenantID,
+			ID:          model.ModelTypeServer,
+			Name:        "服务器",
+			Description: "物理服务器 / 裸金属（自动发现 server 插件产出）",
+			Category:    model.ModelCategoryInfra,
+			Icon:        "server",
+			ShowInMenu:  true,
+			Builtin:     true,
+			Author:      model.BuiltinAuthor,
+			Schema: map[string]model.AttrDef{
+				"hostname":   {Type: "string", Description: "主机名"},
+				"ip_address": {Type: "string", Description: "管理 IP"},
+				"os":         {Type: "string", Description: "操作系统"},
+				"cpu_cores":  {Type: "int", Description: "CPU 核数"},
+				"memory_gb":  {Type: "int", Description: "内存(GB)"},
+			},
+		},
+		{
+			ID:          model.ModelTypeNetwork,
+			Name:        "网络设备",
+			Description: "交换机 / 路由器（自动发现 network 插件产出）",
+			Category:    model.ModelCategoryInfra,
+			Icon:        "network",
+			ShowInMenu:  true,
+			Builtin:     true,
+			Author:      model.BuiltinAuthor,
+			Schema: map[string]model.AttrDef{
+				"vendor":     {Type: "string", Description: "厂商"},
+				"model":      {Type: "string", Description: "型号"},
+				"ip_address": {Type: "string", Description: "管理 IP"},
+			},
+		},
+		{
+			ID:          model.ModelTypeDatabase,
+			Name:        "数据库",
+			Description: "数据库实例（自动发现 database 插件产出）",
+			Category:    model.ModelCategoryDatabase,
+			Icon:        "database",
+			ShowInMenu:  true,
+			Builtin:     true,
+			Author:      model.BuiltinAuthor,
+			Schema: map[string]model.AttrDef{
+				"engine":  {Type: "string", Description: "引擎（mysql/postgresql/oracle）"},
+				"version": {Type: "string", Description: "版本"},
+				"port":    {Type: "int", Description: "监听端口"},
+			},
+		},
+		{
+			ID:          model.ModelTypeMiddleware,
 			Name:        "中间件",
 			Description: "经自动发现探测的中间件实例（Redis/Nginx/ES/Kafka/ZK/RabbitMQ 等）",
 			Category:    model.ModelCategoryMiddleware,
@@ -1754,17 +1808,139 @@ func (s *Service) EnsureDiscoveryModelTypes(ctx context.Context, tenantID string
 				"role":            {Type: "string", Description: "角色（如 redis master/slave）"},
 			},
 		},
+		{
+			ID:          model.ModelTypeApp,
+			Name:        "应用",
+			Description: "应用服务实例（自动发现 application 插件产出）",
+			Category:    model.ModelCategoryApp,
+			Icon:        "app-window",
+			ShowInMenu:  true,
+			Builtin:     true,
+			Author:      model.BuiltinAuthor,
+			Schema: map[string]model.AttrDef{
+				"tech_stack": {Type: "string", Description: "技术栈（java/go/node/php）"},
+				"port":       {Type: "int", Description: "监听端口"},
+			},
+		},
+		{
+			ID:          model.ModelTypeBusinessService,
+			Name:        "业务服务",
+			Description: "面向业务的顶层服务（服务建模：业务服务依赖应用/数据库/中间件）",
+			Category:    model.ModelCategoryBusiness,
+			Icon:        "briefcase",
+			ShowInMenu:  true,
+			Builtin:     true,
+			Author:      model.BuiltinAuthor,
+			Schema: map[string]model.AttrDef{
+				model.AttrKeyCriticality: {Type: "string", Default: "medium", Description: "业务关键性（critical/high/medium/low）"},
+				"owner":                  {Type: "string", Description: "业务负责人"},
+				"department":             {Type: "string", Description: "所属部门"},
+			},
+		},
 	}
-	for _, mt := range want {
-		if _, err := s.pg.GetCIModelType(ctx, mt.ID, tenantID); err == nil {
+}
+
+// EnsureDiscoveryModelTypes 在启动时确保内置模型类型存在（幂等：已存在则跳过）。
+func (s *Service) EnsureDiscoveryModelTypes(ctx context.Context, tenantID string) error {
+	for _, mt := range buildBuiltinModelTypes() {
+		mt.TenantID = tenantID
+		// 注意: GetCIModelType 在记录不存在时返回 (nil, nil),
+		// 必须按返回值非 nil 判断"已存在", 而非 err==nil。
+		existing, err := s.pg.GetCIModelType(ctx, mt.ID, tenantID)
+		if err != nil {
+			return fmt.Errorf("check model type %q: %w", mt.ID, err)
+		}
+		if existing != nil {
 			continue // 已存在，跳过
 		}
 		if err := s.pg.CreateCIModelType(ctx, &mt); err != nil {
 			return fmt.Errorf("ensure model type %q: %w", mt.ID, err)
 		}
-		slog.Info("discovery model type ensured", "id", mt.ID, "tenant", tenantID)
+		slog.Info("builtin model type ensured", "id", mt.ID, "tenant", tenantID)
 	}
 	return nil
+}
+
+// enrichImpactWithBusiness 为影响分析结果补充业务视角：
+//   - AffectedCIDetails：受影响 CI 明细（名称/类型/业务关键性）；
+//   - BusinessServices：受影响的服务链顶层业务服务（按关键性降序）；
+//   - ImpactLevel：综合影响等级（取受影响业务服务最高关键性；无业务服务时
+//     按源 CI 类型推导，兜底 low）。
+//
+// 依赖 pg 查询 CI 明细；pg 不可用时仅保留底层结果（向后兼容）。
+func (s *Service) enrichImpactWithBusiness(ctx context.Context, tenantID string, base *model.ImpactResult) (*model.ImpactResult, error) {
+	if base == nil || s.pg == nil {
+		return base, nil
+	}
+	if len(base.AffectedCI) == 0 {
+		base.ImpactLevel = "low"
+		return base, nil
+	}
+
+	ids := make([]string, 0, len(base.AffectedCI)+1)
+	ids = append(ids, base.AffectedCI...)
+	if base.SourceCI != "" {
+		ids = append(ids, base.SourceCI)
+	}
+
+	seen := map[string]bool{}
+	var crits []string
+	for _, id := range ids {
+		if seen[id] {
+			continue
+		}
+		seen[id] = true
+		ci, err := s.pg.GetCI(ctx, id, tenantID)
+		if err != nil || ci == nil {
+			continue
+		}
+		detail := model.AffectedCIDetail{ID: ci.ID, Name: ci.Name, TypeID: ci.TypeID}
+		if c, ok := ci.Attributes[model.AttrKeyCriticality].(string); ok {
+			detail.Criticality = c
+		}
+		base.AffectedCIDetails = append(base.AffectedCIDetails, detail)
+
+		if ci.TypeID == model.ModelTypeBusinessService && id != base.SourceCI {
+			base.BusinessServices = append(base.BusinessServices, model.BusinessImpact{
+				CIID: ci.ID, Name: ci.Name, Criticality: detail.Criticality,
+			})
+			if detail.Criticality != "" {
+				crits = append(crits, detail.Criticality)
+			}
+		}
+	}
+
+	sortBusinessServices(base.BusinessServices)
+	base.ImpactLevel = businessImpactLevel(crits)
+	return base, nil
+}
+
+// businessImpactLevel 由受影响业务服务的关键性推导综合影响等级（最高级）。
+// 无业务服务时返回 "low"（调用方可按源 CI 类型再推导）。
+func businessImpactLevel(criticalities []string) string {
+	rank := map[string]int{string(model.CriticalityCritical): 0, string(model.CriticalityHigh): 1, string(model.CriticalityMedium): 2, string(model.CriticalityLow): 3}
+	best := ""
+	for _, c := range criticalities {
+		if r, ok := rank[c]; ok {
+			if best == "" || r < rank[best] {
+				best = c
+			}
+		}
+	}
+	if best == "" {
+		return string(model.CriticalityLow)
+	}
+	return best
+}
+
+// sortBusinessServices 按关键性降序排列业务服务（critical < high < medium < low）。
+func sortBusinessServices(services []model.BusinessImpact) {
+	rank := map[string]int{string(model.CriticalityCritical): 0, string(model.CriticalityHigh): 1, string(model.CriticalityMedium): 2, string(model.CriticalityLow): 3}
+	for i := 1; i < len(services); i++ {
+		for j := i; j > 0 && rank[services[j].Criticality] < rank[services[j-1].Criticality]; j-- {
+			services[j], services[j-1] = services[j-1], services[j]
+		}
+	}
 }
 
 // handleQualityScan 按需执行一次数据质量扫描（完整性/唯一性/一致性），返回质量报告。

@@ -25,11 +25,11 @@ const (
 // 分类由 cmdb_model_category 表承载（内置 5 类 + 用户自定义），
 // 此处常量仅作内置种子与默认值，不再作为白名单。
 const (
-	ModelCategoryBusiness    = "业务资源"
-	ModelCategoryApp         = "应用资源"
-	ModelCategoryMiddleware  = "中间件资源"
-	ModelCategoryDatabase    = "数据库资源"
-	ModelCategoryInfra       = "基础设施资源"
+	ModelCategoryBusiness   = "业务资源"
+	ModelCategoryApp        = "应用资源"
+	ModelCategoryMiddleware = "中间件资源"
+	ModelCategoryDatabase   = "数据库资源"
+	ModelCategoryInfra      = "基础设施资源"
 	// 兼容别名（旧代码引用）：platform≈基础设施资源，org≈业务资源
 	ModelCategoryPlatform = ModelCategoryInfra
 	ModelCategoryOrg      = ModelCategoryBusiness
@@ -44,6 +44,40 @@ func ModelCategories() []string {
 // 内置模型不可删除、不可导入导出、不可删除内置属性（仅可加属性）。
 const BuiltinAuthor = "anonymous"
 
+// 内置模型类型 ID（与 internal/cmdb/discovery/plugins 产出的 CIType 对齐，
+// 由 EnsureDiscoveryModelTypes 启动时确保存在，发现结果方可落库）。
+const (
+	ModelTypeServer          = "server"           // 基础设施：物理服务器 / 裸金属
+	ModelTypeNetwork         = "switch"           // 基础设施：网络设备（交换机/路由器）
+	ModelTypeDatabase        = "database"         // 数据库资源：数据库实例
+	ModelTypeMiddleware      = "middleware"       // 中间件资源：Redis/Nginx/ES/Kafka 等
+	ModelTypeApp             = "app"              // 应用资源：应用服务实例
+	ModelTypeBusinessService = "business_service" // 业务资源：业务服务（服务建模顶层）
+)
+
+// 预置关系类型（RelationType 仍为自由字符串，常量仅规范服务建模链语义）：
+//
+//	业务服务 -depends_on-> 应用服务 -hosts-> 服务器
+//	应用服务 -depends_on-> 数据库 / 中间件
+const (
+	RelationDependsOn = "depends_on" // 依赖：A 依赖 B，B 故障向上影响 A
+	RelationHosts     = "hosts"      // 承载：服务器承载应用/中间件
+	RelationConnects  = "connects"   // 连接：网络拓扑（服务器↔交换机）
+)
+
+// 业务关键性等级（服务建模标准字段 business_criticality 的取值）。
+type Criticality string
+
+const (
+	CriticalityCritical Criticality = "critical" // 核心业务，故障即业务中断
+	CriticalityHigh     Criticality = "high"
+	CriticalityMedium   Criticality = "medium"
+	CriticalityLow      Criticality = "low"
+)
+
+// AttrKeyCriticality 是业务服务等模型的标准关键性字段名。
+const AttrKeyCriticality = "business_criticality"
+
 type CIModelType struct {
 	ID          string             `json:"id"`
 	TenantID    string             `json:"tenant_id"`
@@ -53,8 +87,8 @@ type CIModelType struct {
 	Category    string             `json:"category,omitempty"`  // app|platform|infra|org，默认 platform
 	SubCategory string             `json:"sub_category,omitempty"`
 	Icon        string             `json:"icon,omitempty"`
-	ShowInMenu  bool               `json:"show_in_menu"` // 在顶部导航菜单显示
-	Builtin     bool               `json:"builtin"`      // 内置模型（不可删/导入导出）
+	ShowInMenu  bool               `json:"show_in_menu"`     // 在顶部导航菜单显示
+	Builtin     bool               `json:"builtin"`          // 内置模型（不可删/导入导出）
 	Author      string             `json:"author,omitempty"` // 模型作者，内置为 anonymous
 	Schema      map[string]AttrDef `json:"schema"`
 	CreatedAt   time.Time          `json:"created_at"`

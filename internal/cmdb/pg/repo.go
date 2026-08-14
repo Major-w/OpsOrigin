@@ -110,7 +110,11 @@ func (r *Repository) Migrate(ctx context.Context) error {
 }
 
 func (r *Repository) CreateCIModelType(ctx context.Context, mt *model.CIModelType) error {
-	mt.ID = uuid.New().String()
+	// 保留调用方指定的固定 ID(内置模型如 server/business_service 需固定 ID,
+	// 发现插件按 CIType 映射 type_id 落库); 未指定时生成 UUID(用户自建模型)。
+	if mt.ID == "" {
+		mt.ID = uuid.New().String()
+	}
 	now := time.Now()
 	mt.CreatedAt = now
 	mt.UpdatedAt = now

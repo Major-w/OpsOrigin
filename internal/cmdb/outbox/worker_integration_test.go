@@ -4,9 +4,12 @@ package outbox
 
 import (
 	"context"
+	"database/sql"
 	"os"
 	"testing"
 	"time"
+
+	_ "github.com/lib/pq"
 
 	"github.com/opsorigin/core/internal/cmdb/dgraph"
 	"github.com/opsorigin/core/internal/cmdb/model"
@@ -40,6 +43,17 @@ func TestOutboxSyncToDgraph(t *testing.T) {
 	}
 	if err := repo.Migrate(ctx); err != nil {
 		t.Fatalf("pg migrate: %v", err)
+	}
+
+	// 清理 outbox 表: 多次运行残留的未处理记录会挤占 GetUnprocessedOutbox
+	// 的 LIMIT 批次, 导致新记录查不到。测试环境需保证起点干净。
+	cleanupDB, err := sql.Open("postgres", dsn)
+	if err != nil {
+		t.Fatalf("open cleanup conn: %v", err)
+	}
+	defer cleanupDB.Close()
+	if _, err := cleanupDB.ExecContext(ctx, `DELETE FROM cmdb_outbox`); err != nil {
+		t.Fatalf("clean outbox: %v", err)
 	}
 
 	dg, err := dgraph.NewClient(target)
