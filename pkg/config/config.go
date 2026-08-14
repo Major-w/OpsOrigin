@@ -28,6 +28,9 @@ type Config struct {
 	Postgres      PostgresConfig  `json:"postgres"`
 	TaskQueue     TaskQueueConfig `json:"task_queue"`
 	Upgrade       UpgradeConfig   `json:"upgrade"`
+	// Env 运行环境: development | production (OPSORIGIN_ENV, 默认 development)。
+	// production 下启动时强制校验凭据强度, 默认/占位密钥直接拒绝启动 (fail-fast)。
+	Env string `json:"env"`
 }
 
 type LDAPConfig struct {
@@ -269,7 +272,58 @@ func Load() (*Config, error) {
 		}
 	}
 
+	cfg.Env = envStr("OPSORIGIN_ENV", "development")
+
+	// 生产环境凭据强度校验 (fail-fast): 默认/占位/弱密钥直接拒绝启动。
+	if err := cfg.ValidateSecrets(); err != nil {
+		return nil, err
+	}
+
 	return cfg, nil
+}
+
+// IsProduction 报告当前是否为生产环境 (OPSORIGIN_ENV=production)。
+func (c *Config) IsProduction() bool { return c.Env == "production" }
+
+// ValidateSecrets 校验凭据强度, 仅在生产环境生效。
+// 命中默认/占位/过短密钥时返回错误, 由调用方 (main) 以非零退出终止启动,
+// 防止带默认密钥上线后 JWT 可被伪造、隧道可被未授权节点接入。
+//
+// 校验策略分两档:
+//   - 必填主密钥 (OPSORIGIN_JWT_SECRET): 认证系统依赖, 空/占位/过短一律拒绝;
+//   - 可选通道密钥 (隧道/内部令牌/文件令牌): 空 = fail-closed (功能关闭, 安全),
+//     但一旦非空就必须是强随机密钥 —— 用可预测的占位密钥比不启用更危险。
+func (c *Config) ValidateSecrets() error {
+	if !c.IsProduction() {
+		return nil
+	}
+	if isWeakSecret(c.Auth.JWTSecret) {
+		return fmt.Errorf(
+			"production 环境必须显式配置强随机 JWT 密钥(至少 32 字节): OPSORIGIN_JWT_SECRET")
+	}
+	type secret struct{ name, value string }
+	optional := []secret{
+		{"OPSORIGIN_TUNNEL_AUTH_SECRET", c.Tunnel.AuthSecret},
+		{"OPSORIGIN_SERVICE_TOKEN", c.Auth.ServiceToken},
+		{"OPSORIGIN_FILE_TOKEN_SECRET", c.FileStore.TokenSecret},
+	}
+	for _, s := range optional {
+		if s.value != "" && isWeakSecret(s.value) {
+			return fmt.Errorf(
+				"production 环境禁止使用默认/占位/过短密钥: %s 必须显式配置强随机密钥(至少 32 字节)", s.name)
+		}
+	}
+	return nil
+}
+
+// isWeakSecret 判定一个密钥是否可被当作"未配置": 空、占位(change-me*)、
+// 内置默认(opsorigin-dev-* / do-not-use-in-production)或长度不足 32 字节。
+func isWeakSecret(v string) bool {
+	lower := strings.ToLower(v)
+	return v == "" ||
+		strings.HasPrefix(lower, "change-me") ||
+		strings.Contains(lower, "do-not-use-in-production") ||
+		len(v) < 32
 }
 
 func loadDotEnv() {
