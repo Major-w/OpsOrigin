@@ -1,0 +1,92 @@
+# OpsOrigin Proxy — 隔离区代理 Deployment
+# ---------------------------------------------------------------
+# Proxy 部署在隔离区(DMZ), 主动向 Core 建立 gRPC 反向隧道,
+# 为隔离区内的 Agent 提供注册与命令转发。边缘零入向端口原则下,
+# Proxy 对 Core 只做出向连接, 不对外暴露网络端口(FileListen 可
+# 按需关闭, 默认不启用)。
+#
+# 使用步骤:
+#   1) 构建并推送镜像:
+#        docker build -f deploy/Dockerfile.proxy -t <your-registry>/opsorigin-proxy:latest .
+#        docker push <your-registry>/opsorigin-proxy:latest
+#      然后修改下方 image。
+#   2) 创建密钥 Secret(与 Core 的 OPSORIGIN_TUNNEL_AUTH_SECRET 必须一致):
+#        kubectl -n opsorigin create secret generic opsorigin-proxy-secrets \
+#          --from-literal=OPSORIGIN_TUNNEL_AUTH_SECRET=<与Core相同的64字节随机串>
+#   3) 修改 ConfigMap 中 Core 服务地址后 apply:
+#        kubectl apply -f deploy/k8s/proxy.yaml
+# ---------------------------------------------------------------
+
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: opsorigin-proxy-config
+  namespace: opsorigin
+data:
+  OPSORIGIN_PROXY_ID: "proxy-001"
+  OPSORIGIN_PROXY_CORE_ADDR: "opsorigin-core:8080"
+  OPSORIGIN_PROXY_LISTEN: ":9090"
+  OPSORIGIN_PROXY_GRPC_LISTEN: ":9092"
+  # 文件分发代理监听地址; 留空 = 不启用(边缘不额外开端口)
+  OPSORIGIN_PROXY_FILE_LISTEN: ""
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: opsorigin-proxy
+  namespace: opsorigin
+  labels:
+    app.kubernetes.io/name: opsorigin-proxy
+    app.kubernetes.io/part-of: opsorigin
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: opsorigin-proxy
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: opsorigin-proxy
+        app.kubernetes.io/part-of: opsorigin
+    spec:
+      containers:
+        - name: proxy
+          image: <your-registry>/opsorigin-proxy:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: agent
+              containerPort: 9090
+            - name: grpc
+              containerPort: 9092
+          envFrom:
+            - configMapRef:
+                name: opsorigin-proxy-config
+            - secretRef:
+                name: opsorigin-proxy-secrets
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: "1"
+              memory: 512Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: opsorigin-proxy
+  namespace: opsorigin
+  labels:
+    app.kubernetes.io/name: opsorigin-proxy
+    app.kubernetes.io/part-of: opsorigin
+spec:
+  selector:
+    app.kubernetes.io/name: opsorigin-proxy
+  ports:
+    - name: agent
+      port: 9090
+      targetPort: agent
+    - name: grpc
+      port: 9092
+      targetPort: grpc
+  type: ClusterIP

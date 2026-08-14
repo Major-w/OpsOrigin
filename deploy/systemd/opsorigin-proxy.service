@@ -1,0 +1,28 @@
+# OpsOrigin Proxy — systemd unit 示例(隔离区代理, 自愈 + 开机自启)
+# ---------------------------------------------------------------
+# 安装:
+#   1) make build && sudo install -m 0755 bin/proxy /usr/local/bin/opsorigin-proxy
+#   2) sudo cp .env.example /etc/opsorigin/proxy.env
+#      sudoedit /etc/opsorigin/proxy.env
+#      # 必须设置: OPSORIGIN_PROXY_CORE_ADDR=<core 地址>,
+#      #           OPSORIGIN_TUNNEL_AUTH_SECRET=<与 Core 相同的密钥>
+#   3) sudo install -m 0644 deploy/systemd/opsorigin-proxy.service /etc/systemd/system/
+#      sudo systemctl daemon-reload && sudo systemctl enable --now opsorigin-proxy
+[Unit]
+Description=OpsOrigin Proxy (隔离区代理)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=opsorigin
+Group=opsorigin
+EnvironmentFile=/etc/opsorigin/proxy.env
+ExecStart=/usr/local/bin/opsorigin-proxy
+Restart=on-failure
+RestartSec=5s
+LimitNOFILE=65535
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target

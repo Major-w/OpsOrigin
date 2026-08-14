@@ -1,0 +1,27 @@
+# OpsOrigin Agent — systemd unit 示例(受控主机, 自愈 + 开机自启)
+# ---------------------------------------------------------------
+# 安装:
+#   1) make build && sudo install -m 0755 bin/agent /usr/local/bin/opsorigin-agent
+#   2) sudo cp .env.example /etc/opsorigin/agent.env
+#      sudoedit /etc/opsorigin/agent.env
+#      # 必须设置: OPSORIGIN_PROXY_ADDR=<proxy:9090>, OPSORIGIN_AGENT_NAME=<主机标识>
+#   3) sudo install -m 0644 deploy/systemd/opsorigin-agent.service /etc/systemd/system/
+#      sudo systemctl daemon-reload && sudo systemctl enable --now opsorigin-agent
+#
+# 设计: Agent 完全无状态(ASSERT 05), 无需本地持久化数据目录。
+[Unit]
+Description=OpsOrigin Agent (受控主机代理)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+EnvironmentFile=/etc/opsorigin/agent.env
+ExecStart=/usr/local/bin/opsorigin-agent
+Restart=on-failure
+RestartSec=5s
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target

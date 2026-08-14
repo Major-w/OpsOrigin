@@ -1,0 +1,128 @@
+# OpsOrigin Core — 中心控制面 Deployment
+# ---------------------------------------------------------------
+# Core 是平台中心(HTTP 控制面 + gRPC 隧道 + Outbox 旁路), 部署在
+# 管理网络侧。依赖 PostgreSQL / Dgraph / Redis(可用本目录外的
+# 共享依赖或 deploy/docker-compose.yml 中的部署)。
+#
+# 使用步骤:
+#   1) 构建并推送镜像:
+#        docker build -f deploy/Dockerfile -t <your-registry>/opsorigin-core:latest .
+#        docker push <your-registry>/opsorigin-core:latest
+#      然后修改下方 image。
+#   2) 创建密钥 Secret(切勿 commit 真实密钥):
+#        kubectl -n opsorigin create secret generic opsorigin-core-secrets \
+#          --from-literal=OPSORIGIN_JWT_SECRET=<64字节随机串> \
+#          --from-literal=OPSORIGIN_TUNNEL_AUTH_SECRET=<64字节随机串> \
+#          --from-literal=OPSORIGIN_POSTGRES_DSN='postgres://opsorigin:opsorigin@postgres:5432/opsorigin?sslmode=disable' \
+#          --from-literal=OPSORIGIN_FILE_TOKEN_SECRET=<32字节随机串>
+#      production 环境(下方 OPSORIGIN_ENV=production)启动时会强制校验
+#      上述密钥强度, 占位/过短密钥会直接拒绝启动(fail-fast)。
+#   3) kubectl apply -f deploy/k8s/core.yaml
+# ---------------------------------------------------------------
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: opsorigin-core
+  namespace: opsorigin
+  labels:
+    app.kubernetes.io/name: opsorigin-core
+    app.kubernetes.io/part-of: opsorigin
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: opsorigin-core
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: opsorigin-core
+        app.kubernetes.io/part-of: opsorigin
+    spec:
+      containers:
+        - name: core
+          image: <your-registry>/opsorigin-core:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8080
+            - name: grpc-tunnel
+              containerPort: 9091
+          env:
+            - name: OPSORIGIN_ENV
+              value: "production"
+            - name: OPSORIGIN_CORE_PORT
+              value: "8080"
+            - name: OPSORIGIN_CORE_GRPC_LISTEN
+              value: ":9091"
+            - name: OPSORIGIN_DGRAPH_TARGET
+              value: "dgraph-alpha:9080"
+            - name: OPSORIGIN_REDIS_ADDR
+              value: "redis:6379"
+            - name: OPSORIGIN_TUNNEL_INSECURE
+              value: "false"
+          envFrom:
+            - secretRef:
+                name: opsorigin-core-secrets
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 3
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 20
+            periodSeconds: 20
+            timeoutSeconds: 3
+          resources:
+            requests:
+              cpu: 250m
+              memory: 512Mi
+            limits:
+              cpu: "2"
+              memory: 2Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: opsorigin-core
+  namespace: opsorigin
+  labels:
+    app.kubernetes.io/name: opsorigin-core
+    app.kubernetes.io/part-of: opsorigin
+spec:
+  selector:
+    app.kubernetes.io/name: opsorigin-core
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
+    - name: grpc-tunnel
+      port: 9091
+      targetPort: grpc-tunnel
+  type: ClusterIP
+---
+# HPA: 需集群已安装 metrics-server。CPU 超过 80% 时水平扩容。
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: opsorigin-core
+  namespace: opsorigin
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: opsorigin-core
+  minReplicas: 1
+  maxReplicas: 3
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 80

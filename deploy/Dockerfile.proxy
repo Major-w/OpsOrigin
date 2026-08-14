@@ -1,0 +1,20 @@
+# 构建 OpsOrigin Proxy 镜像(隔离区代理, 经 go.work 聚合构建, 与
+# cmd/{agent,core,k8s-probe} 的镜像构建方式保持一致)。
+# 用法:
+#   docker build -f deploy/Dockerfile.proxy -t <your-registry>/opsorigin-proxy:latest .
+#   docker push <your-registry>/opsorigin-proxy:latest
+FROM golang:1.25-alpine AS builder
+
+WORKDIR /app
+# go.work 聚合根模块 + cmd/{agent,core,k8s-probe,proxy} 四个子模块
+COPY go.mod go.sum go.work go.work.sum ./
+COPY cmd/ ./cmd/
+COPY internal/ ./internal/
+COPY pkg/ ./pkg/
+
+RUN go mod download && CGO_ENABLED=0 go build -o /opsorigin-proxy ./cmd/proxy
+
+FROM alpine:3.21
+RUN apk add --no-cache ca-certificates tzdata
+COPY --from=builder /opsorigin-proxy /usr/local/bin/opsorigin-proxy
+ENTRYPOINT ["opsorigin-proxy"]
