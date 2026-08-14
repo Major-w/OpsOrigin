@@ -9,7 +9,7 @@ BINDIR := bin
 # ./... 只覆盖当前目录所在模块，因此构建 / 测试 / vet 需逐个模块执行。
 MODULES := . ./cmd/agent ./cmd/core ./cmd/k8s-probe ./cmd/proxy
 
-.PHONY: all build build-core build-proxy build-agent build-k8s-probe test test-integration lint fmt tidy generate clean
+.PHONY: all build build-core build-proxy build-agent build-k8s-probe test test-integration lint fmt tidy generate routes clean
 
 all: build
 
@@ -60,6 +60,11 @@ tidy:
 
 generate:
 	$(GO) generate ./internal/ent
+
+# 重新生成 API 路由清单文档与机器可读 JSON(tools/routes 扫描全部端点)。
+routes:
+	GOPROXY=$(GOPROXY) $(GO) run ./tools/routes -o docs/api-routes.md
+	GOPROXY=$(GOPROXY) $(GO) run ./tools/routes -json -o docs/api-routes.json
 
 clean:
 	rm -rf $(BINDIR) core proxy agent k8s-probe

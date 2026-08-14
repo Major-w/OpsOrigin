@@ -139,6 +139,21 @@ CI 的 `integration` job 会在每次 push / PR 时以干净环境自动执行�
 
 > 单元测试与集成测试分轨：日常 `make test` 不触碰外部依赖，保持秒级。
 
+### API 文档
+
+- **路由清单**（全量端点索引，509 个）：`docs/api-routes.md`（人读）/ `docs/api-routes.json`（机器读），由 `tools/routes` 扫描源码自动生成，变更后执行 `make routes` 重新生成。
+- **Swagger UI**：运行后访问 `http://localhost:8080/swagger/`（端点注解逐步积累中）。
+
+### 生产部署
+
+| 方式 | 位置 | 适用 |
+| --- | --- | --- |
+| docker-compose | `deploy/docker-compose.yml` + `start.sh` | 单机快速验证 |
+| systemd | `deploy/systemd/*.service` | 单机生产（自愈 + 开机自启） |
+| Kubernetes | `deploy/k8s/{core,proxy,opsorigin-k8s-gateway,probe-daemonset}.yaml` | 集群生产 |
+
+完整步骤、配置项与升级回滚见 `docs/deployment-guide.md`。生产环境须设 `OPSORIGIN_ENV=production` 并配置强随机密钥（默认/占位密钥会拒绝启动）。
+
 ## 模块
 
 | 模块 | 说明 | 状态 |
