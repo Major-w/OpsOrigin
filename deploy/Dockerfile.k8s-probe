@@ -1,4 +1,5 @@
-# 构建 K8s 探针镜像（cmd/k8s-probe 属于根模块，随 ./... 一并编译）。
+# 构建 K8s 探针镜像（cmd/k8s-probe 是独立子模块，经 go.work 聚合构建，
+# 与 cmd/agent、cmd/core、cmd/proxy 的构建方式保持一致）。
 # 用法：
 #   docker build -f deploy/Dockerfile.k8s-probe -t <your-registry>/opsorigin-k8s-probe:latest .
 #   docker push <your-registry>/opsorigin-k8s-probe:latest
@@ -6,7 +7,8 @@
 FROM golang:1.25-alpine AS builder
 
 WORKDIR /app
-COPY go.mod go.sum ./
+# go.work 聚合根模块 + cmd/{agent,core,k8s-probe,proxy} 四个子模块
+COPY go.mod go.sum go.work go.work.sum ./
 COPY cmd/ ./cmd/
 COPY internal/ ./internal/
 COPY pkg/ ./pkg/

@@ -4,5 +4,6 @@ use (
 	.
 	./cmd/agent
 	./cmd/core
+	./cmd/k8s-probe
 	./cmd/proxy
 )

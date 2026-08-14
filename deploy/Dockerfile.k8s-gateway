@@ -11,7 +11,7 @@
 FROM golang:1.25-alpine AS builder
 
 WORKDIR /app
-# go.work 聚合根模块 + cmd/{agent,core,proxy} 三个子模块
+# go.work 聚合根模块 + cmd/{agent,core,k8s-probe,proxy} 四个子模块
 COPY go.mod go.sum go.work go.work.sum ./
 COPY cmd/ ./cmd/
 COPY internal/ ./internal/
