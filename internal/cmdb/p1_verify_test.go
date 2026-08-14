@@ -1,3 +1,5 @@
+//go:build integration
+
 package cmdb
 
 import (
@@ -112,8 +114,8 @@ func TestP1CICSV(t *testing.T) {
 		t.Fatalf("import status %d body=%s", irec.Code, irec.Body.String())
 	}
 	var result struct {
-		Created int           `json:"created"`
-		Updated int           `json:"updated"`
+		Created int              `json:"created"`
+		Updated int              `json:"updated"`
 		Failed  []map[string]any `json:"failed"`
 	}
 	if err := json.Unmarshal(irec.Body.Bytes(), &result); err != nil {

@@ -1,3 +1,5 @@
+//go:build integration
+
 package agentic
 
 import (
@@ -40,25 +42,25 @@ func TestPGStoreInspectionRestore(t *testing.T) {
 		for _, r := range runs {
 			t.Logf("     run id=%s status=%s findings_len=%d", r.ID, r.Status, len(r.Findings))
 		}
-	// 再按空 tenant 试一次
-	runs2, rerr2 := s.ListInspectionRuns(ctx, in.ID, "")
-	if rerr2 != nil {
-		t.Fatalf("ListInspectionRuns(%s,\"\"): %v", in.ID, rerr2)
-	}
-	t.Logf("  -> runs(tenant=\"\"): %d", len(runs2))
+		// 再按空 tenant 试一次
+		runs2, rerr2 := s.ListInspectionRuns(ctx, in.ID, "")
+		if rerr2 != nil {
+			t.Fatalf("ListInspectionRuns(%s,\"\"): %v", in.ID, rerr2)
+		}
+		t.Logf("  -> runs(tenant=\"\"): %d", len(runs2))
 
-	// 直接 SELECT run 并尝试 Unmarshal, 定位 json 解析是否被吞
-	var body []byte
-	if err := db.QueryRowContext(ctx,
-		`SELECT run FROM ai_inspection_runs WHERE inspection_id=$1 AND tenant_id=$2 LIMIT 1`,
-		in.ID, in.TenantID).Scan(&body); err != nil {
-		t.Fatalf("direct SELECT run: %v", err)
+		// 直接 SELECT run 并尝试 Unmarshal, 定位 json 解析是否被吞
+		var body []byte
+		if err := db.QueryRowContext(ctx,
+			`SELECT run FROM ai_inspection_runs WHERE inspection_id=$1 AND tenant_id=$2 LIMIT 1`,
+			in.ID, in.TenantID).Scan(&body); err != nil {
+			t.Fatalf("direct SELECT run: %v", err)
+		}
+		t.Logf("  direct run bytes: %d", len(body))
+		r := &InspectionRun{}
+		if err := json.Unmarshal(body, r); err != nil {
+			t.Fatalf("json.Unmarshal run: %v\nraw: %s", err, string(body))
+		}
+		t.Logf("  unmarshal OK: run id=%s status=%s started=%s", r.ID, r.Status, r.StartedAt)
 	}
-	t.Logf("  direct run bytes: %d", len(body))
-	r := &InspectionRun{}
-	if err := json.Unmarshal(body, r); err != nil {
-		t.Fatalf("json.Unmarshal run: %v\nraw: %s", err, string(body))
-	}
-	t.Logf("  unmarshal OK: run id=%s status=%s started=%s", r.ID, r.Status, r.StartedAt)
-}
 }

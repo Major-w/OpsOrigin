@@ -43,6 +43,36 @@ jobs:
       - name: Build
         run: npm run build
 
+  integration:
+    name: Integration (PG + Dgraph + Redis)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: .
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.25"
+      - name: Start dependencies
+        run: |
+          docker compose -f deploy/docker-compose.yml up -d --wait postgres redis
+          docker compose -f deploy/docker-compose.yml up -d dgraph-zero dgraph-alpha
+          # Dgraph 无 healthcheck, 轮询 gRPC 端口(9080)等待就绪
+          for i in $(seq 1 60); do
+            if nc -z localhost 9080 2>/dev/null; then echo "dgraph ready"; break; fi
+            if [ "$i" = "60" ]; then echo "dgraph not ready, continuing (tests will skip)"; fi
+            sleep 2
+          done
+      - name: Integration tests
+        env:
+          OPSORIGIN_POSTGRES_DSN: postgres://opsorigin:opsorigin@localhost:5432/opsorigin?sslmode=disable
+          OPSORIGIN_DGRAPH_TARGET: localhost:9080
+        run: make test-integration
+      - name: Stop dependencies
+        if: always()
+        run: docker compose -f deploy/docker-compose.yml down -v
+
   docker:
     name: Docker
     runs-on: ubuntu-latest

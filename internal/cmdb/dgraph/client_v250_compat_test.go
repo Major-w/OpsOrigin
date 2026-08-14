@@ -1,18 +1,31 @@
+//go:build integration
+
 package dgraph
 
 import (
 	"context"
 	"encoding/json"
+	"os"
 	"testing"
 
 	"github.com/opsorigin/core/internal/cmdb/model"
 )
 
+// dgraphTestTarget 返回集成测试使用的 Dgraph alpha 地址:
+// 默认 localhost:9080(docker-compose 映射的 gRPC 端口), 可用
+// OPSORIGIN_DGRAPH_TARGET 环境变量覆盖。
+func dgraphTestTarget() string {
+	if v := os.Getenv("OPSORIGIN_DGRAPH_TARGET"); v != "" {
+		return v
+	}
+	return "localhost:9080"
+}
+
 // TestClientCompat_V250 用 dgo v250 客户端连真实 Dgraph 验证项目 client 完整路径。
-// 需要本地 docker 起了 dgraph alpha (localhost:19080, whitelist=0.0.0.0/0)。
+// 需要本地起了 dgraph alpha(默认 localhost:9080, 可用 OPSORIGIN_DGRAPH_TARGET 覆盖)。
 // 未起服务时跳过。
 func TestClientCompat_V250(t *testing.T) {
-	c, err := NewClient("localhost:19080")
+	c, err := NewClient(dgraphTestTarget())
 	if err != nil {
 		t.Skipf("dgraph not running: %v", err)
 	}

@@ -115,9 +115,29 @@ npm run dev
 
 ```bash
 make build        # 编译所有二进制
-make test         # 运行测试
+make test         # 运行单元测试(快, 无外部依赖)
+make test-integration  # 集成测试(需 PostgreSQL + Dgraph, 见下)
 make lint         # 代码检查
 ```
+
+### 集成测试
+
+集成测试（`//go:build integration` 标签）连接真实的 PostgreSQL / Dgraph，
+验证跨组件链路：CMDB 写库 → Outbox → Dgraph 拓扑同步（ASSERT-CMDB-01/02 载体）、
+ITSM 工单 PG 存取流转、Dgraph 客户端完整方法（拓扑/影响分析/环路检测）。
+
+```bash
+# 1. 拉起依赖（与本地开发一致）
+docker compose -f deploy/docker-compose.yml up -d postgres dgraph-zero dgraph-alpha redis
+
+# 2. 跑集成测试（未起的依赖对应用例自动 Skip，不会失败）
+make test-integration
+```
+
+依赖连接参数沿用 `.env` 的 `OPSORIGIN_POSTGRES_DSN` / `OPSORIGIN_DGRAPH_TARGET`。
+CI 的 `integration` job 会在每次 push / PR 时以干净环境自动执行。
+
+> 单元测试与集成测试分轨：日常 `make test` 不触碰外部依赖，保持秒级。
 
 ## 模块
 

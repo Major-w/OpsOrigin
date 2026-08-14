@@ -9,7 +9,7 @@ BINDIR := bin
 # ./... 只覆盖当前目录所在模块，因此构建 / 测试 / vet 需逐个模块执行。
 MODULES := . ./cmd/agent ./cmd/core ./cmd/k8s-probe ./cmd/proxy
 
-.PHONY: all build build-core build-proxy build-agent build-k8s-probe test lint fmt tidy generate clean
+.PHONY: all build build-core build-proxy build-agent build-k8s-probe test test-integration lint fmt tidy generate clean
 
 all: build
 
@@ -32,6 +32,15 @@ test:
 	@for m in $(MODULES); do \
 		echo "==> go test $$m"; \
 		GOPROXY=$(GOPROXY) $(GO) test -C "$$m" ./... || exit 1; \
+	done
+
+# 集成测试(仅 //go:build integration 标签的用例): 依赖 PostgreSQL + Dgraph,
+# 前置: docker compose -f deploy/docker-compose.yml up -d postgres dgraph-zero dgraph-alpha redis
+# 未起依赖时相关用例自动 Skip, 不会失败。
+test-integration:
+	@for m in $(MODULES); do \
+		echo "==> go test -tags integration $$m"; \
+		GOPROXY=$(GOPROXY) $(GO) test -C "$$m" -tags integration ./... || exit 1; \
 	done
 
 lint:
