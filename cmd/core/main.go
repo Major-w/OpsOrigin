@@ -67,6 +67,7 @@ import (
 	"github.com/opsorigin/core/pkg/auth"
 	"github.com/opsorigin/core/pkg/config"
 	entdbpkg "github.com/opsorigin/core/pkg/db"
+	"github.com/opsorigin/core/pkg/httputil"
 	"github.com/opsorigin/core/pkg/llm"
 	redisclient "github.com/opsorigin/core/pkg/redis"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
@@ -195,10 +196,14 @@ func main() {
 	server.RegisterService(&swaggerRegistrar{})
 
 	// T07: 给 Core http.Server 的 Handler 包一层 promhttp.InstrumentHandlerDuration
+	// P0: 最外层再包统一 panic recovery —— recover 贴近业务 handler, promhttp 在
+	// 外记录所有请求(含被恢复的 panic 请求, 状态码 500)。recovery 作用于整个
+	// final handler(bypass 前缀在内的全部端点), 任何 handler panic 不再拖垮进程。
 	server.WithHandlerWrapper(func(next http.Handler) http.Handler {
+		recovered := httputil.RecoverHandler(next, slog.Default())
 		return promhttp.InstrumentHandlerDuration(
 			metricsregistry.HttpRequestDuration,
-			next,
+			recovered,
 		)
 	})
 
