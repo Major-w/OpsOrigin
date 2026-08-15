@@ -38,6 +38,10 @@ type Service struct {
 	// 与 aggregator.OnNotify(WS 广播) 并存, 避免覆盖既有行为。
 	alertNotifiers []func(*model.AlertEvent)
 	alertMu        sync.Mutex
+
+	// cmdbEnricher CMDB 上下文富化器(SetCMDBEnricher 注入, nil 安全):
+	// 告警进入 aggregator 前按 SourceCIID 附加 owner/criticality 等上下文。
+	cmdbEnricher func(ctx context.Context, ciID, tenantID string) map[string]string
 }
 
 func NewService(cfg *config.Config, rdb *redis.Client) *Service {
@@ -66,6 +70,44 @@ func (s *Service) AddAlertNotifier(fn func(*model.AlertEvent)) {
 	s.alertMu.Lock()
 	s.alertNotifiers = append(s.alertNotifiers, fn)
 	s.alertMu.Unlock()
+}
+
+// SetCMDBEnricher 注入 CMDB 上下文富化器(由 cmd/core 装配, 与 cmdb 包零耦合):
+// 按告警关联的 CI 查 CMDB, 返回要附加到告警 Labels 的键值
+// (owner/business_criticality/environment/ci_name 等)。
+// nil 安全: 未注入时告警保持原样。
+func (s *Service) SetCMDBEnricher(fn func(ctx context.Context, ciID, tenantID string) map[string]string) {
+	s.cmdbEnricher = fn
+}
+
+// ingestAlert 是全部告警的统一入口: 先做 CMDB 上下文富化, 再进 aggregator
+// applyCMDBEnrichment 执行 CMDB 上下文富化(幂等, nil 安全)。
+// 抽成独立方法便于单测; 富化只补缺失键, 规则显式声明优先。
+func (s *Service) applyCMDBEnrichment(ctx context.Context, alert *model.AlertEvent) *model.AlertEvent {
+	if s.cmdbEnricher == nil || alert == nil || alert.SourceCIID == "" {
+		return alert
+	}
+	for k, v := range s.cmdbEnricher(ctx, alert.SourceCIID, alert.TenantID) {
+		if v == "" {
+			continue
+		}
+		if alert.Labels == nil {
+			alert.Labels = map[string]string{}
+		}
+		// 已有同键(规则自带)不覆盖, 规则显式声明优先。
+		if _, exists := alert.Labels[k]; !exists {
+			alert.Labels[k] = v
+		}
+	}
+	return alert
+}
+
+// ingestAlert 是全部告警的统一入口: 先做 CMDB 上下文富化, 再进 aggregator
+// (去重/聚类/抑制/通知)。所有评估路径(promql/threshold/采集)都必须经此进入,
+// 保证富化在落库与通知前完成, 告警从诞生起就携带责任人/关键性上下文。
+func (s *Service) ingestAlert(ctx context.Context, alert *model.AlertEvent) (*model.AlertEvent, error) {
+	s.applyCMDBEnrichment(ctx, alert)
+	return s.aggregator.Ingest(ctx, alert)
 }
 
 func (s *Service) Topology() *SimpleTopology {
@@ -127,7 +169,7 @@ func (s *Service) Start(ctx context.Context) error {
 				Title:       target.Name + " probe failed",
 				Description: string(target.Probes[0]) + " check to " + target.Address + " failed: " + result.ErrorMessage,
 			}
-			if _, err := s.aggregator.Ingest(ctx, alert); err != nil {
+			if _, err := s.ingestAlert(ctx, alert); err != nil {
 				slog.Error("ingest probe alert failed", "error", err)
 			}
 		}

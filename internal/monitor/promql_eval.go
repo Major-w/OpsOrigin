@@ -104,7 +104,7 @@ func (s *Service) promqlEvalLoop(ctx context.Context) {
 		case <-ticker.C:
 			alerts := eval.evaluateOnce(ctx, s.aggregator.GetRules())
 			for _, a := range alerts {
-				if _, err := s.aggregator.Ingest(ctx, a); err != nil {
+				if _, err := s.ingestAlert(ctx, a); err != nil {
 					slog.Warn("promql alert ingest failed", "rule", a.RuleName, "err", err)
 				}
 			}

@@ -267,6 +267,26 @@ func main() {
 	monitorSvc := monitor.NewService(cfg, rdb)
 	server.RegisterService(monitorSvc)
 
+	// 告警富化(消费之道-监控篇场景 2.1): 告警进入时按关联 CI 查 CMDB,
+	// 附加 owner/business_criticality/environment/ci_name 上下文,
+	// 缩短 MTTD —— 运维无需再去多系统查询责任人与业务影响。
+	monitorSvc.SetCMDBEnricher(func(ctx context.Context, ciID, tenantID string) map[string]string {
+		if pgRepo == nil {
+			return nil
+		}
+		ci, err := pgRepo.GetCI(ctx, ciID, tenantID)
+		if err != nil || ci == nil {
+			return nil
+		}
+		out := map[string]string{"ci_name": ci.Name, "ci_type": ci.TypeID}
+		for _, k := range []string{"owner", "business_criticality", "environment"} {
+			if v, ok := ci.Attributes[k].(string); ok && v != "" {
+				out[k] = v
+			}
+		}
+		return out
+	})
+
 	monitorSvc.Start(ctx)
 
 	// 全景可观测拓扑：把 monitor 数据快照注入 cmdb 服务（nil 安全）。
