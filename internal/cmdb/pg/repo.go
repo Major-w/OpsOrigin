@@ -83,6 +83,12 @@ func (r *Repository) Migrate(ctx context.Context) error {
 	if _, err := r.db.ExecContext(ctx, `UPDATE cmdb_ci_model_type SET category='platform' WHERE category IS NULL OR category=''`); err != nil {
 		return fmt.Errorf("backfill cmdb_ci_model_type category: %w", err)
 	}
+	// 方案 C 治理回填：存量大类(database/middleware)标记为抽象父类, 禁止直接实例化。
+	// 与 deploy/migrations/017 一致; 运行时走本路径(017 仅全新库/手动对齐用)。
+	if _, err := r.db.ExecContext(ctx, `UPDATE cmdb_ci_model_type SET abstract = TRUE
+		WHERE id IN ('database', 'middleware') AND abstract IS DISTINCT FROM TRUE`); err != nil {
+		return fmt.Errorf("backfill abstract model types: %w", err)
+	}
 	// 方案 C 存量迁移：把大类 CI 按 engine/middleware_type 属性下沉为具体引擎子类 TypeID。
 	// 幂等：仅作用于仍处于父类(database/middleware)的行；下沉后 type_id 不再命中，重复执行无副作用。
 	// 未知 engine 保留父类不迁移，避免制造孤儿类型。
