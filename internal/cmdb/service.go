@@ -125,6 +125,9 @@ func (s *Service) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/v1/cmdb/ci/{id}/audit", s.handleCIAudit)
 	mux.HandleFunc("GET /api/v1/cmdb/search", s.handleSearchCI)
 	mux.HandleFunc("POST /api/v1/cmdb/relation/batch", s.handleBatchCreateRelation) // 批量建关系
+	// 实体调解合并(IRE): 疑似重复识别 + 按渠道置信度合并
+	mux.HandleFunc("GET /api/v1/cmdb/reconcile/candidates", s.handleReconcileCandidates)
+	mux.HandleFunc("POST /api/v1/cmdb/reconcile/merge", s.handleReconcileMerge)
 
 	// 保存的查询策略（"我想查"，P1-3）
 	mux.HandleFunc("GET /api/v1/cmdb/saved-queries", s.handleListSavedQueries)
@@ -150,6 +153,8 @@ func (s *Service) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/v1/cmdb/model-type/{id}", s.handleGetModelType)
 	mux.HandleFunc("PUT /api/v1/cmdb/model-type/{id}", s.handleUpdateModelType)
 	mux.HandleFunc("DELETE /api/v1/cmdb/model-type/{id}", s.handleDeleteModelType)
+	mux.HandleFunc("GET /api/v1/cmdb/model-type/{id}/versions", s.handleListModelTypeVersions)
+	mux.HandleFunc("POST /api/v1/cmdb/model-type/{id}/rollback/{version}", s.handleRollbackModelType)
 	mux.HandleFunc("GET /api/v1/cmdb/model-type/export", s.handleExportModelTypes)
 	mux.HandleFunc("POST /api/v1/cmdb/model-type/import", s.handleImportModelTypes)
 
@@ -215,6 +220,7 @@ func (s *Service) RegisterRoutes(mux *http.ServeMux) {
 
 	// 数据质量中心
 	mux.HandleFunc("GET /api/v1/cmdb/quality", s.handleQualityScan)
+	mux.HandleFunc("POST /api/v1/cmdb/quality/fix", s.handleQualityFix)
 
 	// AI 模型注册表 / 本体服务（设计文档阶段 1）：类型解析、提案、晋升
 	mux.HandleFunc("POST /api/v1/cmdb/registry/resolve", s.handleRegistryResolve)
@@ -1226,6 +1232,17 @@ func (s *Service) handleUpdateModelType(w http.ResponseWriter, r *http.Request) 
 	mt.ID = existing.ID
 	mt.TenantID = existing.TenantID
 	mt.CreatedAt = existing.CreatedAt
+	mt.Version = existing.Version + 1
+
+	// 模型版本留痕: 更新前把旧状态存快照(可追溯/回滚)。
+	if err := s.pg.SaveModelTypeVersion(r.Context(), &model.ModelTypeVersion{
+		ModelTypeID: existing.ID, TenantID: existing.TenantID, Version: existing.Version,
+		Name: existing.Name, Description: existing.Description, ParentID: existing.ParentID,
+		Category: existing.Category, Icon: existing.Icon, Abstract: existing.Abstract,
+		Schema: existing.Schema, Operator: "admin", CreatedAt: time.Now(),
+	}); err != nil {
+		slog.Warn("save model type version failed", "error", err) // 版本留痕失败不阻断更新
+	}
 
 	if err := s.pg.UpdateCIModelType(r.Context(), &mt); err != nil {
 		slog.Error("update model type failed", "error", err)
@@ -1234,6 +1251,70 @@ func (s *Service) handleUpdateModelType(w http.ResponseWriter, r *http.Request) 
 	}
 
 	writeJSON(w, http.StatusOK, mt)
+}
+
+// handleListModelTypeVersions 模型版本历史(新→旧, 含 schema 快照供前端 diff)。
+func (s *Service) handleListModelTypeVersions(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	tenantID := tenantFromCtx(r.Context())
+	versions, err := s.pg.ListModelTypeVersions(r.Context(), id, tenantID, 100)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if versions == nil {
+		versions = []*model.ModelTypeVersion{}
+	}
+	writeJSON(w, http.StatusOK, versions)
+}
+
+// handleRollbackModelType 回滚模型到指定版本(恢复 schema/名称/分类等)。
+func (s *Service) handleRollbackModelType(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	id := r.PathValue("id")
+	versionStr := r.PathValue("version")
+	tenantID := tenantFromCtx(ctx)
+
+	version, err := strconv.Atoi(versionStr)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid version")
+		return
+	}
+	snap, err := s.pg.GetModelTypeVersion(ctx, id, tenantID, version)
+	if err != nil || snap == nil {
+		writeError(w, http.StatusNotFound, "version not found")
+		return
+	}
+	current, err := s.pg.GetCIModelType(ctx, id, tenantID)
+	if err != nil || current == nil {
+		writeError(w, http.StatusNotFound, "model type not found")
+		return
+	}
+
+	// 当前状态先留痕(回滚本身也是一次变更)。
+	if err := s.pg.SaveModelTypeVersion(ctx, &model.ModelTypeVersion{
+		ModelTypeID: current.ID, TenantID: current.TenantID, Version: current.Version,
+		Name: current.Name, Description: current.Description, ParentID: current.ParentID,
+		Category: current.Category, Icon: current.Icon, Abstract: current.Abstract,
+		Schema: current.Schema, Operator: "rollback", CreatedAt: time.Now(),
+	}); err != nil {
+		slog.Warn("save pre-rollback version failed", "error", err)
+	}
+
+	current.Name = snap.Name
+	current.Description = snap.Description
+	current.ParentID = snap.ParentID
+	current.Category = snap.Category
+	current.Icon = snap.Icon
+	current.Abstract = snap.Abstract
+	current.Schema = snap.Schema
+	current.Version = snap.Version + 1
+
+	if err := s.pg.UpdateCIModelType(ctx, current); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "model_type_id": id, "version": current.Version})
 }
 
 func (s *Service) handleDeleteModelType(w http.ResponseWriter, r *http.Request) {
@@ -2480,6 +2561,48 @@ func sortBusinessServices(services []model.BusinessImpact) {
 		for j := i; j > 0 && rank[services[j].Criticality] < rank[services[j-1].Criticality]; j-- {
 			services[j], services[j-1] = services[j-1], services[j]
 		}
+	}
+}
+
+// handleQualityFix 质量问题一键修复:
+//   - consistency(孤儿关系): 删除指向不存在 CI 的关系;
+//   - uniqueness(重复 IP/名称): 引导走调解合并(reconcile/merge), 此处返回指引。
+func (s *Service) handleQualityFix(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	tenantID := tenantFromCtx(ctx)
+	var req struct {
+		Dimension  string `json:"dimension"`
+		RelationID string `json:"relation_id"`
+		CIID       string `json:"ci_id"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+
+	switch req.Dimension {
+	case string(quality.DimConsistency):
+		if req.RelationID == "" {
+			writeError(w, http.StatusBadRequest, "relation_id is required for consistency fix")
+			return
+		}
+		if s.pg == nil {
+			writeError(w, http.StatusBadRequest, "requires pg backend")
+			return
+		}
+		if err := s.pg.DeleteRelation(ctx, req.RelationID, tenantID, "quality-fix"); err != nil {
+			if err.Error() == "relation not found" {
+				writeError(w, http.StatusNotFound, "relation not found")
+				return
+			}
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"fixed": true, "dimension": req.Dimension, "relation_id": req.RelationID})
+	case string(quality.DimUniqueness):
+		writeJSON(w, http.StatusOK, map[string]any{"fixed": false, "hint": "重复 IP/名称请使用「实体调解合并」按渠道置信度合并"})
+	default:
+		writeError(w, http.StatusBadRequest, "unsupported dimension: "+req.Dimension)
 	}
 }
 
