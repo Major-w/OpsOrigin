@@ -14,7 +14,7 @@ import { toast } from '@/stores/toast'
 import { useCan } from '@/stores/permissions'
 import TopologyGraph from '@/components/TopologyGraph'
 import { SourceBadge, ProvenanceSummary } from '@/components/cmdb/SourceBadge'
-import { Plus, Pencil, Trash2, Network, Search, ChevronLeft, ChevronRight, Link2, Unlink, AlertTriangle, Download, Upload, Archive, ArchiveRestore, Bookmark } from 'lucide-react'
+import { Plus, Pencil, Trash2, Network, Search, ChevronLeft, ChevronRight, Link2, Unlink, AlertTriangle, Download, Upload, Archive, ArchiveRestore, Bookmark, GitMerge } from 'lucide-react'
 
 interface TopologyNode { id: string; name: string; type: string }
 interface TopologyEdge { source: string; target: string; type: string }
@@ -78,6 +78,98 @@ export default function CMDBPage() {
   const [models, setModels] = useState<ModelInfo[]>([])
   // 引用型字段的目标模型实例缓存: ref_model -> CI 列表
   const [refOptions, setRefOptions] = useState<Record<string, { id: string; name: string }[]>>({})
+
+  // 批量操作: 勾选的 CI ID 集合 + 批量改属性/批量建关系弹窗状态
+  const [checked, setChecked] = useState<Set<string>>(new Set())
+  const [batchAttrOpen, setBatchAttrOpen] = useState(false)
+  const [batchAttrs, setBatchAttrs] = useState<Record<string, string>>({})
+  const [batchRelOpen, setBatchRelOpen] = useState(false)
+  const [batchRelForm, setBatchRelForm] = useState({ target_id: '', relation_type: 'depends_on' })
+
+  const toggleCheck = (id: string) => {
+    setChecked(prev => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id); else next.add(id)
+      return next
+    })
+  }
+
+  const checkedList = () => Array.from(checked)
+
+  // 批量删除(二次确认)
+  const handleBatchDelete = async () => {
+    const ids = checkedList()
+    if (!ids.length) return
+    if (!confirm(`确认删除选中的 ${ids.length} 个资产？此操作不可撤销。`)) return
+    try {
+      const res = await apiFetch<{ deleted: number; failed: { id: string; error: string }[] }>('/cmdb/ci/batch-delete', { method: 'POST', body: JSON.stringify({ ids }) })
+      toast.success(`已删除 ${res.deleted} 个资产${res.failed?.length ? `，${res.failed.length} 个失败` : ''}`)
+      setChecked(new Set()); loadData()
+    } catch (e: any) { toast.error('批量删除失败: ' + e.message) }
+  }
+
+  // 批量改属性
+  const handleBatchUpdate = async () => {
+    const ids = checkedList()
+    if (!ids.length) return
+    const attrs: Record<string, any> = {}
+    for (const [k, v] of Object.entries(batchAttrs)) {
+      if (!k.trim()) continue
+      try { attrs[k.trim()] = JSON.parse(v) } catch { attrs[k.trim()] = v }
+    }
+    if (!Object.keys(attrs).length) { toast.error('请至少填写一个属性'); return }
+    try {
+      const res = await apiFetch<{ updated: number; failed: { id: string; error: string }[] }>('/cmdb/ci/batch-update', { method: 'POST', body: JSON.stringify({ ids, attrs }) })
+      toast.success(`已更新 ${res.updated} 个资产${res.failed?.length ? `，${res.failed.length} 个失败` : ''}`)
+      setBatchAttrs({}); setBatchAttrOpen(false); setChecked(new Set()); loadData()
+    } catch (e: any) { toast.error('批量更新失败: ' + e.message) }
+  }
+
+  // 批量建关系(源 = 勾选集合)
+  const handleBatchCreateRel = async () => {
+    const ids = checkedList()
+    if (!ids.length || !batchRelForm.target_id) return
+    const relations = ids.map(source_id => ({ source_id, target_id: batchRelForm.target_id, relation_type: batchRelForm.relation_type }))
+    try {
+      const res = await apiFetch<{ created: number; failed: { source_id: string; target_id: string; error: string }[] }>('/cmdb/relation/batch', { method: 'POST', body: JSON.stringify({ relations }) })
+      toast.success(`已创建 ${res.created} 条关系${res.failed?.length ? `，${res.failed.length} 条失败(可能成环)` : ''}`)
+      setBatchRelOpen(false); fetchRelations(); loadData()
+    } catch (e: any) { toast.error('批量建关系失败: ' + e.message) }
+  }
+
+  // 实体调解合并(IRE): 疑似重复候选组 + 合并
+  const [reconcileOpen, setReconcileOpen] = useState(false)
+  const [reconcileLoading, setReconcileLoading] = useState(false)
+  const [reconcileGroups, setReconcileGroups] = useState<{
+    key: string; reason: string;
+    members: { ci_id: string; name: string; type_id: string; source: string; confidence: number; updated_at: string }[]
+  }[]>([])
+  // 每组选择的保留主体 ci_id
+  const [reconcileKeep, setReconcileKeep] = useState<Record<string, string>>({})
+
+  const openReconcile = async () => {
+    setReconcileOpen(true); setReconcileLoading(true)
+    try {
+      const groups = await apiFetch<typeof reconcileGroups>('/cmdb/reconcile/candidates')
+      setReconcileGroups(groups)
+      const keep: Record<string, string> = {}
+      for (const g of groups) if (g.members.length) keep[g.key] = g.members[0].ci_id
+      setReconcileKeep(keep)
+    } catch (e: any) { setReconcileGroups([]); toast.error('加载疑似重复失败: ' + e.message) }
+    finally { setReconcileLoading(false) }
+  }
+
+  const handleReconcileMerge = async (g: typeof reconcileGroups[number]) => {
+    const keep = reconcileKeep[g.key]
+    const mergeIds = g.members.map(m => m.ci_id).filter(id => id !== keep)
+    if (!keep || !mergeIds.length) return
+    if (!confirm(`合并「${g.reason}」：保留 ${g.members.find(m => m.ci_id === keep)?.name}，合并 ${mergeIds.length} 条为一条？（被合并的 CI 将删除）`)) return
+    try {
+      const res = await apiFetch<{ kept_id: string; merged_count: number; updated_fields: string[] }>('/cmdb/reconcile/merge', { method: 'POST', body: JSON.stringify({ keep_id: keep, merge_ids: mergeIds }) })
+      toast.success(`已合并 ${res.merged_count} 条，更新字段: ${res.updated_fields.join(', ') || '无'}`)
+      openReconcile(); loadData()
+    } catch (e: any) { toast.error('合并失败: ' + e.message) }
+  }
 
   useEffect(() => {
     apiList<ModelInfo>('/cmdb/model-type?limit=1000')
@@ -294,6 +386,7 @@ export default function CMDBPage() {
           <Button variant="outline" onClick={handleExport}><Download className="h-4 w-4" />导出 CSV</Button>
           <Button variant="outline" onClick={() => fileRef.current?.click()}><Upload className="h-4 w-4" />导入 CSV</Button>
           <Button variant="outline" onClick={() => setSqDialogOpen(true)}><Bookmark className="h-4 w-4" />保存查询</Button>
+          <Button variant="outline" onClick={openReconcile}><GitMerge className="h-4 w-4" />疑似重复</Button>
           <Button onClick={() => { setEditId(null); setForm({ name: '', type_id: 'server', description: '', attributes: {}, labels: {} }); setDialogOpen(true) }}><Plus className="h-4 w-4" />新建资产</Button>
         </div>
       </div>
@@ -326,11 +419,29 @@ export default function CMDBPage() {
             <CardContent className="p-0">
               {loading && items.length === 0 ? <p className="px-4 text-sm text-muted-foreground">加载中...</p> : items.length === 0 ? <p className="px-4 text-sm text-muted-foreground">暂无资产。</p> : (
                 <div className="flex flex-col">
+                  {/* 批量操作栏 */}
+                  <div className="flex items-center gap-1.5 px-3 py-2 border-b bg-muted/30">
+                    <input type="checkbox" className="rounded" checked={checked.size > 0 && checked.size === items.length}
+                      onChange={e => setChecked(e.target.checked ? new Set(items.map(i => i.id)) : new Set())} title="全选本页" />
+                    <span className="text-xs text-muted-foreground shrink-0">{checked.size > 0 ? `已选 ${checked.size} 项` : '勾选批量操作'}</span>
+                    {checked.size > 0 && (
+                      <div className="flex gap-1 ml-auto">
+                        <Button variant="outline" size="sm" className="h-6 text-xs" onClick={() => setBatchAttrOpen(true)}><Pencil className="h-3 w-3 mr-1" />改属性</Button>
+                        <Button variant="outline" size="sm" className="h-6 text-xs" onClick={() => setBatchRelOpen(true)}><Link2 className="h-3 w-3 mr-1" />建关系</Button>
+                        <Button variant="outline" size="sm" className="h-6 text-xs text-destructive" onClick={handleBatchDelete}><Trash2 className="h-3 w-3 mr-1" />删除</Button>
+                      </div>
+                    )}
+                  </div>
                   {items.map(item => (
                     <div key={item.id} onClick={() => handleSelectCI(item)}
                       className={`px-4 py-3 border-b last:border-0 cursor-pointer hover:bg-accent transition-colors ${selectedCI?.id === item.id ? 'bg-accent border-l-2 border-l-emerald-500' : ''}`}>
                       <div className="flex items-center justify-between">
-                        <span className="font-medium text-sm truncate">{item.name}</span>
+                        <div className="flex items-center gap-2 min-w-0">
+                          <input type="checkbox" className="rounded shrink-0" checked={checked.has(item.id)}
+                            onClick={e => e.stopPropagation()}
+                            onChange={() => toggleCheck(item.id)} title="选择以批量操作" />
+                          <span className="font-medium text-sm truncate">{item.name}</span>
+                        </div>
                         <div className="flex gap-1 shrink-0">
                           <Button variant="ghost" size="icon" className="h-6 w-6" onClick={e => { e.stopPropagation(); handleEdit(item) }}><Pencil className="h-3 w-3" /></Button>
                           {item.status === 'archived'
@@ -665,8 +776,7 @@ export default function CMDBPage() {
         <DialogFooter><Button variant="outline" onClick={() => setRelDialogOpen(false)}>取消</Button><Button onClick={handleCreateRel} disabled={!relForm.source_id || !relForm.target_id}>创建</Button></DialogFooter>
       </Dialog>
 
-      <Dialog open={editAttrsOpen} onClose={() => setEditAttrsOpen(false)} title="编辑自定义属性">
-        <div className="space-y-3 max-h-[60vh] overflow-y-auto">
+      <Dialog open={editAttrsOpen} onClose={() => setEditAttrsOpen(false)} title="编辑自定义属性">        <div className="space-y-3 max-h-[60vh] overflow-y-auto">
           {Object.entries(attrForm).map(([k, v]) => {
             const readonly = (selectedCI as any)?.field_access?.[k] === 'readonly'
             return (
@@ -689,7 +799,81 @@ export default function CMDBPage() {
         <DialogFooter><Button variant="outline" onClick={() => setEditAttrsOpen(false)}>取消</Button><Button onClick={handleSaveAttrs}>保存</Button></DialogFooter>
       </Dialog>
 
+      {/* 批量改属性 */}
+      <Dialog open={batchAttrOpen} onClose={() => setBatchAttrOpen(false)} title={`批量修改属性（${checked.size} 个资产）`}>
+        <div className="space-y-3 max-h-[60vh] overflow-y-auto">
+          <p className="text-xs text-muted-foreground">填写要覆盖的属性（key=value），未填写的属性保持不变；支持 JSON 值。</p>
+          {Object.entries(batchAttrs).map(([k, v]) => (
+            <div key={k} className="flex gap-2 items-center">
+              <Input className="flex-1 text-xs" value={k} disabled={!k} onChange={e => {
+                const next = { ...batchAttrs }; delete next[k]; next[e.target.value] = v; setBatchAttrs(next)
+              }} placeholder="属性名" />
+              <Input className="flex-1 text-xs" value={v} onChange={e => setBatchAttrs(f => ({ ...f, [k]: e.target.value }))} placeholder="值" />
+              <Button variant="ghost" size="icon" className="h-8 w-8 shrink-0" onClick={() => { const next = { ...batchAttrs }; delete next[k]; setBatchAttrs(next) }}><Trash2 className="h-3 w-3" /></Button>
+            </div>
+          ))}
+          <Button variant="outline" size="sm" onClick={() => setBatchAttrs(f => ({ ...f, '': '' }))}><Plus className="h-3 w-3 mr-1" />添加属性</Button>
+        </div>
+        <DialogFooter><Button variant="outline" onClick={() => setBatchAttrOpen(false)}>取消</Button><Button onClick={handleBatchUpdate}>批量更新</Button></DialogFooter>
+      </Dialog>
+
+      {/* 批量建关系 */}
+      <Dialog open={batchRelOpen} onClose={() => setBatchRelOpen(false)} title={`批量建关系（${checked.size} 个源资产 → 1 个目标）`}>
+        <div className="space-y-3">
+          <div><label className="text-sm font-medium">目标资产</label>
+            <select className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm" value={batchRelForm.target_id} onChange={e => setBatchRelForm(f => ({ ...f, target_id: e.target.value }))}>
+              <option value="">选择目标资产</option>
+              {items.map(i => <option key={i.id} value={i.id}>{i.name}</option>)}
+            </select>
+          </div>
+          <div><label className="text-sm font-medium">关联类型</label>
+            <select className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm" value={batchRelForm.relation_type} onChange={e => setBatchRelForm(f => ({ ...f, relation_type: e.target.value }))}>
+              <option value="depends_on">depends_on</option>
+              <option value="hosts">hosts</option>
+              <option value="connects">connects</option>
+            </select>
+          </div>
+          <p className="text-xs text-muted-foreground">将为每个勾选的资产创建一条指向该目标的关系（逐条环路检测，成环的会失败并跳过）。</p>
+        </div>
+        <DialogFooter><Button variant="outline" onClick={() => setBatchRelOpen(false)}>取消</Button><Button onClick={handleBatchCreateRel} disabled={!batchRelForm.target_id}>批量创建</Button></DialogFooter>
+      </Dialog>
+
       <input ref={fileRef} type="file" accept=".csv" className="hidden" onChange={handleImportFile} />
+
+      {/* 实体调解合并: 疑似重复候选组 */}
+      <Dialog open={reconcileOpen} onClose={() => setReconcileOpen(false)} title="实体调解（疑似重复）">
+        <div className="space-y-4 max-h-[60vh] overflow-y-auto">
+          {reconcileLoading && <p className="text-sm text-muted-foreground">扫描中...</p>}
+          {!reconcileLoading && reconcileGroups.length === 0 && (
+            <p className="text-sm text-muted-foreground py-6 text-center">未发现疑似重复的实体 🎉</p>
+          )}
+          {reconcileGroups.map(g => (
+            <div key={g.key} className="border rounded-md p-3 space-y-2">
+              <div className="flex items-center justify-between">
+                <p className="text-sm font-medium">{g.reason}</p>
+                <Button variant="outline" size="sm" className="h-6 text-xs" onClick={() => handleReconcileMerge(g)}><GitMerge className="h-3 w-3 mr-1" />合并</Button>
+              </div>
+              <div className="space-y-1">
+                {g.members.map(m => (
+                  <label key={m.ci_id} className="flex items-center gap-2 text-xs rounded px-2 py-1 hover:bg-accent cursor-pointer">
+                    <input type="radio" name={`keep-${g.key}`} className="rounded-full" checked={reconcileKeep[g.key] === m.ci_id}
+                      onChange={() => setReconcileKeep(k => ({ ...k, [g.key]: m.ci_id }))} />
+                    <span className="font-medium">{m.name}</span>
+                    <Badge variant="outline" className="text-[9px]">{m.type_id}</Badge>
+                    <span className="text-muted-foreground ml-auto flex items-center gap-2">
+                      <Badge variant="secondary" className="text-[9px]">{m.source}</Badge>
+                      <span className={m.confidence > 0.7 ? 'text-emerald-600' : m.confidence > 0.4 ? 'text-amber-600' : 'text-red-600'}>{(m.confidence * 100).toFixed(0)}%</span>
+                      <span>{m.updated_at}</span>
+                    </span>
+                  </label>
+                ))}
+              </div>
+              <p className="text-[10px] text-muted-foreground">选择要保留的主体（默认最高置信度），其余按渠道置信度合并后删除。</p>
+            </div>
+          ))}
+        </div>
+        <DialogFooter><Button variant="outline" onClick={() => setReconcileOpen(false)}>关闭</Button></DialogFooter>
+      </Dialog>
 
       <Dialog open={sqDialogOpen} onClose={() => setSqDialogOpen(false)} title="保存当前查询策略">
         <div className="space-y-3">
