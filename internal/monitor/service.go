@@ -72,6 +72,16 @@ func (s *Service) Topology() *SimpleTopology {
 	return s.topology
 }
 
+// SnapshotTargets 返回当前所有监控目标（供全景可观测拓扑按 CIID join 节点状态）。
+func (s *Service) SnapshotTargets() []*model.MonitorTarget {
+	return s.discovery.GetTargets()
+}
+
+// ActiveAlerts 返回当前活跃告警（供全景可观测拓扑告警 rollup）。
+func (s *Service) ActiveAlerts() []*model.AlertEvent {
+	return s.aggregator.GetActiveAlerts()
+}
+
 func (s *Service) SetWebSocketHub(hub interface{ BroadcastToTenant(interface{}, string) }) {
 	s.wsHub = hub
 }

@@ -19,6 +19,7 @@ import (
 	"github.com/opsorigin/core/internal/cmdb/model"
 	"github.com/opsorigin/core/internal/cmdb/pg"
 	"github.com/opsorigin/core/internal/cmdb/quality"
+	"github.com/opsorigin/core/internal/cmdb/registry"
 	"github.com/opsorigin/core/internal/ingest"
 	"github.com/opsorigin/core/pkg/config"
 	"github.com/opsorigin/core/pkg/validate"
@@ -42,6 +43,12 @@ type Service struct {
 
 	discoveryReg    *discovery.Registry    // 自动发现插件注册表（cmd/core 注入，Type → Discoverer）
 	discoveryRunner discovery.ScriptRunner // 探针 Agent 脚本执行通道（cmd/core 注入 agentSvc）
+
+	// monitor 是全景拓扑的监控快照提供者（cmd/core 注入 monitor.Service 适配器），nil 安全。
+	monitor model.MonitorSnapshotProvider
+
+	// typeRegistry 是 AI 模型注册表 / 本体服务（cmd/core 注入 registry.New(pgRepo)），nil 安全。
+	typeRegistry registry.TypeRegistry
 }
 
 func NewService(cfg *config.Config, pgRepo *pg.Repository, dgClient *dgraph.Client) *Service {
@@ -90,6 +97,18 @@ func (s *Service) OnCICreated(fn func(ctx context.Context, ciID, tenantID string
 	s.onCICreated = fn
 }
 
+// SetMonitorSnapshotProvider 注入全景拓扑所需的监控快照提供者（monitor.Service 适配器）。
+// 未注入时全景图仅呈现 CMDB 拓扑骨架，节点健康度全部为 unknown（nil 安全）。
+func (s *Service) SetMonitorSnapshotProvider(p model.MonitorSnapshotProvider) {
+	s.monitor = p
+}
+
+// SetTypeRegistry 注入 AI 模型注册表 / 本体服务（设计文档阶段 1）。
+// 未注入时相关端点直接返回 501，不影响其它能力。
+func (s *Service) SetTypeRegistry(r registry.TypeRegistry) {
+	s.typeRegistry = r
+}
+
 func (s *Service) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/v1/cmdb/ci", s.handleListCI)
 	mux.HandleFunc("GET /api/v1/cmdb/ci/export", s.handleExportCI)  // P1-1 CSV 导出
@@ -115,6 +134,9 @@ func (s *Service) RegisterRoutes(mux *http.ServeMux) {
 
 	mux.HandleFunc("GET /api/v1/cmdb/topology/{id}", s.handleGetTopology)
 	mux.HandleFunc("GET /api/v1/cmdb/impact/{id}", s.handleImpactAnalysis)
+	// 全景可观测拓扑（CMDB 拓扑 + 监控状态 + 告警 rollup 融合）：
+	// 纵向骨架 + 状态/告警叠加，调用链横向边按 layers 参数逐步启用。
+	mux.HandleFunc("GET /api/v1/panorama", s.handleGetPanorama)
 
 	mux.HandleFunc("GET /api/v1/cmdb/relation", s.handleListRelations)
 	mux.HandleFunc("POST /api/v1/cmdb/relation", s.handleCreateRelation)
@@ -193,6 +215,11 @@ func (s *Service) RegisterRoutes(mux *http.ServeMux) {
 
 	// 数据质量中心
 	mux.HandleFunc("GET /api/v1/cmdb/quality", s.handleQualityScan)
+
+	// AI 模型注册表 / 本体服务（设计文档阶段 1）：类型解析、提案、晋升
+	mux.HandleFunc("POST /api/v1/cmdb/registry/resolve", s.handleRegistryResolve)
+	mux.HandleFunc("POST /api/v1/cmdb/registry/propose", s.handleRegistryPropose)
+	mux.HandleFunc("POST /api/v1/cmdb/registry/promote", s.handleRegistryPromote)
 }
 
 // handleCreateCI godoc
@@ -1691,6 +1718,97 @@ func writeError(w http.ResponseWriter, status int, msg string) {
 }
 
 // ============================================================
+// AI 模型注册表 / 本体服务（设计文档阶段 1）
+// ============================================================
+
+// handleRegistryResolve 把 AI 特征解析为已有 leaf / 挂载 abstract 父类 / 新提案。
+func (s *Service) handleRegistryResolve(w http.ResponseWriter, r *http.Request) {
+	if s.typeRegistry == nil {
+		writeError(w, http.StatusNotImplemented, "类型注册表未启用")
+		return
+	}
+	ctx := r.Context()
+	tenantID := tenantFromCtx(ctx)
+
+	var req struct {
+		Features map[string]any `json:"features"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "请求体解析失败: "+err.Error())
+		return
+	}
+	if len(req.Features) == 0 {
+		writeError(w, http.StatusBadRequest, "features 不能为空")
+		return
+	}
+
+	res, err := s.typeRegistry.ResolveType(ctx, tenantID, req.Features)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "类型解析失败: "+err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, res)
+}
+
+// handleRegistryPropose 提交新类型提案（相似度去重 + 审核门控）。
+func (s *Service) handleRegistryPropose(w http.ResponseWriter, r *http.Request) {
+	if s.typeRegistry == nil {
+		writeError(w, http.StatusNotImplemented, "类型注册表未启用")
+		return
+	}
+	ctx := r.Context()
+	tenantID := tenantFromCtx(ctx)
+
+	var prop registry.AITypeProposal
+	if err := json.NewDecoder(r.Body).Decode(&prop); err != nil {
+		writeError(w, http.StatusBadRequest, "请求体解析失败: "+err.Error())
+		return
+	}
+	// 服务端托管的字段：租户来自上下文，状态/ID/时间戳由注册表内部生成。
+	prop.TenantID = tenantID
+	prop.Status = ""
+	prop.ID = ""
+	prop.CreatedAt = time.Time{}
+	prop.UpdatedAt = time.Time{}
+
+	id, status, err := s.typeRegistry.ProposeType(ctx, prop)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "提案提交失败: "+err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"id": id, "status": status})
+}
+
+// handleRegistryPromote 证据累积后晋升某提案类型（提升置信度，达阈值即视为激活）。
+func (s *Service) handleRegistryPromote(w http.ResponseWriter, r *http.Request) {
+	if s.typeRegistry == nil {
+		writeError(w, http.StatusNotImplemented, "类型注册表未启用")
+		return
+	}
+	ctx := r.Context()
+	tenantID := tenantFromCtx(ctx)
+
+	var req struct {
+		ID       string   `json:"id"`
+		Evidence []string `json:"evidence"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "请求体解析失败: "+err.Error())
+		return
+	}
+	if req.ID == "" {
+		writeError(w, http.StatusBadRequest, "id 不能为空")
+		return
+	}
+
+	if err := s.typeRegistry.PromoteType(ctx, tenantID, req.ID, req.Evidence); err != nil {
+		writeError(w, http.StatusInternalServerError, "晋升失败: "+err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"id": req.ID, "promoted": true})
+}
+
+// ============================================================
 // Version History Handlers
 // ============================================================
 
@@ -2029,32 +2147,205 @@ func buildBuiltinModelTypes() []model.CIModelType {
 		{
 			ID:          model.ModelTypeDatabase,
 			Name:        "数据库",
-			Description: "数据库实例（自动发现 database 插件产出）",
+			Description: "数据库抽象父类（mysql/oracle/postgresql 的共性承载，不可直接实例化）",
 			Category:    model.ModelCategoryDatabase,
 			Icon:        "database",
 			ShowInMenu:  true,
 			Builtin:     true,
+			Abstract:    true,
 			Author:      model.BuiltinAuthor,
 			Schema: map[string]model.AttrDef{
-				"engine":  {Type: "string", Description: "引擎（mysql/postgresql/oracle）"},
-				"version": {Type: "string", Description: "版本"},
-				"port":    {Type: "int", Description: "监听端口"},
+				"ip":       {Type: "string", Description: "监听地址"},
+				"port":     {Type: "int", Description: "监听端口"},
+				"version":  {Type: "string", Description: "版本"},
+				"engine":   {Type: "string", Description: "引擎（mysql/postgresql/oracle）"},
+				"account":  {Type: "string", Description: "连接账号"},
+				"password": {Type: "string", Description: "连接密码", Default: ""},
+				"charset":  {Type: "string", Description: "字符集"},
 			},
 		},
 		{
 			ID:          model.ModelTypeMiddleware,
 			Name:        "中间件",
-			Description: "经自动发现探测的中间件实例（Redis/Nginx/ES/Kafka/ZK/RabbitMQ 等）",
+			Description: "中间件抽象父类（redis/kafka/nginx/elasticsearch/zookeeper/rabbitmq 的共性承载，不可直接实例化）",
+			Category:    model.ModelCategoryMiddleware,
+			Icon:        "layers",
+			ShowInMenu:  true,
+			Builtin:     true,
+			Abstract:    true,
+			Author:      model.BuiltinAuthor,
+			Schema: map[string]model.AttrDef{
+				"ip":              {Type: "string", Description: "监听地址"},
+				"port":            {Type: "int", Description: "监听端口"},
+				"version":         {Type: "string", Description: "版本"},
+				"middleware_type": {Type: "string", Description: "中间件类型（redis/nginx/elasticsearch/kafka/zookeeper/rabbitmq）"},
+				"account":         {Type: "string", Description: "连接账号"},
+				"password":        {Type: "string", Description: "连接密码", Default: ""},
+				"role":            {Type: "string", Description: "角色（如 redis master/slave）"},
+			},
+		},
+		// ===== 数据库抽象父类的 leaf 子类（经 ParentID 继承 ip/port/version/engine/account/password/charset）=====
+		{
+			ID:          "mysql",
+			Name:        "MySQL",
+			Description: "MySQL 数据库实例（继承 database 父类，TypeID 下沉为具体引擎）",
+			ParentID:    model.ModelTypeDatabase,
+			Category:    model.ModelCategoryDatabase,
+			Icon:        "database",
+			ShowInMenu:  true,
+			Builtin:     true,
+			Author:      model.BuiltinAuthor,
+			Source:      "seed",
+			Schema: map[string]model.AttrDef{
+				"binlog_format":           {Type: "enum", Options: []string{"ROW", "STATEMENT", "MIXED"}, Description: "binlog 格式"},
+				"character_set_server":    {Type: "string", Description: "服务端字符集"},
+				"innodb_buffer_pool_size": {Type: "int", Description: "InnoDB 缓冲池大小(MB)"},
+				"replication_role":        {Type: "enum", Options: []string{"master", "slave"}, Description: "复制角色"},
+				"group_replication":       {Type: "bool", Description: "是否启用组复制(MGR)"},
+			},
+		},
+		{
+			ID:          "oracle",
+			Name:        "Oracle",
+			Description: "Oracle 数据库实例（继承 database 父类）",
+			ParentID:    model.ModelTypeDatabase,
+			Category:    model.ModelCategoryDatabase,
+			Icon:        "database",
+			ShowInMenu:  true,
+			Builtin:     true,
+			Author:      model.BuiltinAuthor,
+			Source:      "seed",
+			Schema: map[string]model.AttrDef{
+				"sid":             {Type: "string", Description: "Oracle SID"},
+				"service_name":    {Type: "string", Description: "服务名"},
+				"tablespace_list": {Type: "string", Description: "表空间列表"},
+				"rac":             {Type: "bool", Description: "是否 RAC 集群"},
+				"asm":             {Type: "bool", Description: "是否使用 ASM"},
+			},
+		},
+		{
+			ID:          "postgresql",
+			Name:        "PostgreSQL",
+			Description: "PostgreSQL 数据库实例（继承 database 父类）",
+			ParentID:    model.ModelTypeDatabase,
+			Category:    model.ModelCategoryDatabase,
+			Icon:        "database",
+			ShowInMenu:  true,
+			Builtin:     true,
+			Author:      model.BuiltinAuthor,
+			Source:      "seed",
+			Schema: map[string]model.AttrDef{
+				"default_schema":   {Type: "string", Description: "默认 schema"},
+				"wal_level":        {Type: "string", Description: "WAL 级别"},
+				"max_connections":  {Type: "int", Description: "最大连接数"},
+				"extension_list":   {Type: "string", Description: "已安装扩展列表"},
+				"replication_slot": {Type: "string", Description: "复制槽名称"},
+			},
+		},
+		// ===== 中间件抽象父类的 leaf 子类（经 ParentID 继承 ip/port/version/middleware_type/account/password/role）=====
+		{
+			ID:          "redis",
+			Name:        "Redis",
+			Description: "Redis 缓存/键值实例（继承 middleware 父类）",
+			ParentID:    model.ModelTypeMiddleware,
 			Category:    model.ModelCategoryMiddleware,
 			Icon:        "layers",
 			ShowInMenu:  true,
 			Builtin:     true,
 			Author:      model.BuiltinAuthor,
+			Source:      "seed",
 			Schema: map[string]model.AttrDef{
-				"middleware_type": {Type: "string", Description: "中间件类型（redis/nginx/elasticsearch/kafka/zookeeper/rabbitmq）"},
-				"version":         {Type: "string", Description: "版本"},
-				"port":            {Type: "int", Description: "监听端口"},
-				"role":            {Type: "string", Description: "角色（如 redis master/slave）"},
+				"mode":            {Type: "enum", Options: []string{"standalone", "sentinel", "cluster"}, Description: "部署模式"},
+				"maxmemory":       {Type: "int", Description: "最大内存(MB)"},
+				"persistence":     {Type: "enum", Options: []string{"rdb", "aof"}, Description: "持久化方式"},
+				"cluster_enabled": {Type: "bool", Description: "是否启用集群"},
+			},
+		},
+		{
+			ID:          "kafka",
+			Name:        "Kafka",
+			Description: "Kafka 消息队列实例（继承 middleware 父类）",
+			ParentID:    model.ModelTypeMiddleware,
+			Category:    model.ModelCategoryMiddleware,
+			Icon:        "layers",
+			ShowInMenu:  true,
+			Builtin:     true,
+			Author:      model.BuiltinAuthor,
+			Source:      "seed",
+			Schema: map[string]model.AttrDef{
+				"partitions_default": {Type: "int", Description: "默认分区数"},
+				"replication_factor": {Type: "int", Description: "默认副本因子"},
+				"zookeeper_connect":  {Type: "string", Description: "ZK 连接串"},
+			},
+		},
+		{
+			ID:          "nginx",
+			Name:        "Nginx",
+			Description: "Nginx 反向代理/Web 实例（继承 middleware 父类）",
+			ParentID:    model.ModelTypeMiddleware,
+			Category:    model.ModelCategoryMiddleware,
+			Icon:        "layers",
+			ShowInMenu:  true,
+			Builtin:     true,
+			Author:      model.BuiltinAuthor,
+			Source:      "seed",
+			Schema: map[string]model.AttrDef{
+				"worker_processes": {Type: "int", Description: "worker 进程数"},
+				"listen_ports":     {Type: "string", Description: "监听端口列表"},
+				"ssl_enabled":      {Type: "bool", Description: "是否启用 SSL"},
+				"upstream_list":    {Type: "string", Description: "upstream 列表"},
+			},
+		},
+		{
+			ID:          "elasticsearch",
+			Name:        "Elasticsearch",
+			Description: "Elasticsearch 搜索/分析实例（继承 middleware 父类）",
+			ParentID:    model.ModelTypeMiddleware,
+			Category:    model.ModelCategoryMiddleware,
+			Icon:        "layers",
+			ShowInMenu:  true,
+			Builtin:     true,
+			Author:      model.BuiltinAuthor,
+			Source:      "seed",
+			Schema: map[string]model.AttrDef{
+				"cluster_name": {Type: "string", Description: "集群名"},
+				"node_role":    {Type: "string", Description: "节点角色"},
+				"shard_count":  {Type: "int", Description: "分片数"},
+				"heap_size":    {Type: "string", Description: "堆内存大小"},
+			},
+		},
+		{
+			ID:          "zookeeper",
+			Name:        "ZooKeeper",
+			Description: "ZooKeeper 协调服务实例（继承 middleware 父类）",
+			ParentID:    model.ModelTypeMiddleware,
+			Category:    model.ModelCategoryMiddleware,
+			Icon:        "layers",
+			ShowInMenu:  true,
+			Builtin:     true,
+			Author:      model.BuiltinAuthor,
+			Source:      "seed",
+			Schema: map[string]model.AttrDef{
+				"tick_time":     {Type: "int", Description: "心跳 tick 毫秒"},
+				"data_dir":      {Type: "string", Description: "数据目录"},
+				"ensemble_size": {Type: "int", Description: "集群节点数"},
+			},
+		},
+		{
+			ID:          "rabbitmq",
+			Name:        "RabbitMQ",
+			Description: "RabbitMQ 消息队列实例（继承 middleware 父类）",
+			ParentID:    model.ModelTypeMiddleware,
+			Category:    model.ModelCategoryMiddleware,
+			Icon:        "layers",
+			ShowInMenu:  true,
+			Builtin:     true,
+			Author:      model.BuiltinAuthor,
+			Source:      "seed",
+			Schema: map[string]model.AttrDef{
+				"vhost_list":     {Type: "string", Description: "虚拟主机列表"},
+				"queue_count":    {Type: "int", Description: "队列数"},
+				"erlang_version": {Type: "string", Description: "Erlang 版本"},
 			},
 		},
 		{
@@ -2462,6 +2753,10 @@ func (s *Service) CreateCI(ctx context.Context, ci *model.CIModel, traceID strin
 		ci.Status = model.CIStatusActive
 	}
 	if s.pg != nil {
+		// 抽象父类（如 database/middleware）仅作继承基类，禁止直接实例化。
+		if mt, err := s.pg.GetCIModelType(ctx, ci.TypeID, ci.TenantID); err == nil && mt != nil && !mt.IsInstantiable() {
+			return fmt.Errorf("model type %q is abstract and cannot be instantiated directly", ci.TypeID)
+		}
 		if err := s.validateAttributes(ctx, ci.TypeID, ci.Attributes, ""); err != nil {
 			return err
 		}

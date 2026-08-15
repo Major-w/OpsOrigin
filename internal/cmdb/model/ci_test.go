@@ -5,6 +5,57 @@ import (
 	"time"
 )
 
+func TestCIModelType_IsInstantiable(t *testing.T) {
+	abstract := CIModelType{ID: "database", Abstract: true}
+	if abstract.IsInstantiable() {
+		t.Error("abstract type should not be instantiable")
+	}
+	leaf := CIModelType{ID: "mysql", Abstract: false}
+	if !leaf.IsInstantiable() {
+		t.Error("non-abstract type should be instantiable")
+	}
+}
+
+func TestCIModelType_EffectiveSchema(t *testing.T) {
+	all := map[string]CIModelType{
+		"database": {
+			ID:       "database",
+			ParentID: "",
+			Schema: map[string]AttrDef{
+				"ip":   {Type: "string"},
+				"port": {Type: "int"},
+			},
+		},
+		"mysql": {
+			ID:       "mysql",
+			ParentID: "database",
+			Schema: map[string]AttrDef{
+				"port":          {Type: "int", Required: true}, // 覆盖父类同名
+				"binlog_format": {Type: "enum"},                // 子类追加
+			},
+		},
+	}
+	eff := all["mysql"].EffectiveSchema(all)
+	if len(eff) != 3 {
+		t.Fatalf("effective schema size = %d, want 3 (ip/port/binlog_format)", len(eff))
+	}
+	if _, ok := eff["ip"]; !ok {
+		t.Error("missing inherited field ip")
+	}
+	// 子类覆盖父类 port 的定义（Required=true）
+	if !eff["port"].Required {
+		t.Error("port should be overridden by child (Required=true)")
+	}
+	if _, ok := eff["binlog_format"]; !ok {
+		t.Error("missing child-added field binlog_format")
+	}
+	// 缺失祖先安全跳过：孤立父类引用不产生 panic/错误
+	orphan := CIModelType{ID: "x", ParentID: "missing", Schema: map[string]AttrDef{"a": {Type: "string"}}}
+	if len(orphan.EffectiveSchema(all)) != 1 {
+		t.Error("orphan parent reference should yield only own schema")
+	}
+}
+
 func TestDefaultConfidence(t *testing.T) {
 	cases := map[SourceKind]float64{
 		SourceManual:     1.0,

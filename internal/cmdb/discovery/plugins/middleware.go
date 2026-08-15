@@ -9,14 +9,28 @@ import (
 
 // MiddlewareDiscoverer 探测常见中间件实例（Redis / Nginx / Elasticsearch / Kafka / ZooKeeper / RabbitMQ）。
 // 探针 Agent 需预装对应客户端或 curl/nc；类型由 Config.mtype 指定（redis/nginx/es/kafka/zk/rabbitmq/auto），
-// auto 按常见端口启发式尝试。CI 映射到模型类型 middleware（middleware_type/version/port）。
+// auto 按常见端口启发式尝试。方案 C：CI 的 TypeID 下沉为具体引擎（redis/nginx/elasticsearch/kafka/zookeeper/rabbitmq），
+// middleware_type 作为冗余兼容字段保留在 attributes 中。
 type MiddlewareDiscoverer struct{}
 
-func (d *MiddlewareDiscoverer) Types() []string { return []string{"middleware"} }
+// Types 返回该插件可承接的发现任务类型：具体引擎 leaf 子类 + middleware 别名（兼容既有任务）。
+func (d *MiddlewareDiscoverer) Types() []string {
+	return []string{"redis", "nginx", "elasticsearch", "kafka", "zookeeper", "rabbitmq", "middleware"}
+}
 
 func (d *MiddlewareDiscoverer) Discover(ctx context.Context, task *model.DiscoveryTask, runner discovery.ScriptRunner) ([]*discovery.Item, error) {
-	return wrapDiscover(ctx, task, runner, renderMiddlewareScript,
+	items, err := wrapDiscover(ctx, task, runner, renderMiddlewareScript,
 		[]string{"mtype", "port"}, "middleware")
+	if err != nil {
+		return nil, err
+	}
+	// 方案 C：TypeID 下沉为具体引擎；middleware_type 冗余保留。
+	for _, it := range items {
+		if mt, ok := it.Attributes["middleware_type"].(string); ok && mt != "" && mt != "unknown" {
+			it.CIType = mt
+		}
+	}
+	return items, nil
 }
 
 // renderMiddlewareScript 按 MTYPE 选择探测方式，输出对应中间件的版本/监听端口。

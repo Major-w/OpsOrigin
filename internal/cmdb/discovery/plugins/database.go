@@ -9,14 +9,28 @@ import (
 
 // DatabaseDiscoverer 经本地客户端探测数据库实例（MySQL / PostgreSQL / Oracle）。
 // 探针 Agent 需预装对应客户端（mysql / psql / sqlplus）；引擎由 Config.engine 指定，
-// 端口/账号/密码由 Config 透传。CI 映射到模型类型 database（engine/version/port）。
+// 端口/账号/密码由 Config 透传。方案 C：CI 的 TypeID 下沉为具体引擎（mysql/postgresql/oracle），
+// engine 作为冗余兼容字段保留在 attributes 中。
 type DatabaseDiscoverer struct{}
 
-func (d *DatabaseDiscoverer) Types() []string { return []string{"database"} }
+// Types 返回该插件可承接的发现任务类型：具体引擎 leaf 子类 + database 别名（兼容既有任务）。
+func (d *DatabaseDiscoverer) Types() []string {
+	return []string{"mysql", "postgresql", "oracle", "database"}
+}
 
 func (d *DatabaseDiscoverer) Discover(ctx context.Context, task *model.DiscoveryTask, runner discovery.ScriptRunner) ([]*discovery.Item, error) {
-	return wrapDiscover(ctx, task, runner, renderDatabaseScript,
+	items, err := wrapDiscover(ctx, task, runner, renderDatabaseScript,
 		[]string{"engine", "port", "db_user", "db_pass", "service"}, "database")
+	if err != nil {
+		return nil, err
+	}
+	// 方案 C：TypeID 下沉为具体引擎；engine 冗余保留。
+	for _, it := range items {
+		if eng, ok := it.Attributes["engine"].(string); ok && eng != "" && eng != "unknown" {
+			it.CIType = eng
+		}
+	}
+	return items, nil
 }
 
 // renderDatabaseScript 按 ENGINE 选择对应的本地客户端探测版本信息；版本字段脱双引号并截断，避免破坏 JSON。

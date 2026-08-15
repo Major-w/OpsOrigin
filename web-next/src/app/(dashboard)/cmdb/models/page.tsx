@@ -149,7 +149,6 @@ export default function CMDBModelsPage() {
   }
 
   const openEdit = (model: CIModel) => {
-    if (model.builtin) return
     setEditModel(model)
     setForm({
       name: model.name, description: model.description, icon: model.icon, category: model.category,
@@ -316,11 +315,13 @@ export default function CMDBModelsPage() {
                     <span className="text-lg">{model.icon}</span>
                     {model.name}
                   </CardTitle>
-                  {canAdmin && !model.builtin && (
+                  {canAdmin && (
                     <div className="flex">
                       <Button variant="ghost" size="sm" className="opacity-0 group-hover:opacity-100 h-7 w-7 p-0" title="字段权限" onClick={() => openFieldRules(model)}><Shield className="h-3.5 w-3.5" /></Button>
                       <Button variant="ghost" size="sm" className="opacity-0 group-hover:opacity-100 h-7 w-7 p-0" onClick={() => openEdit(model)}><Edit2 className="h-3.5 w-3.5" /></Button>
-                      <Button variant="ghost" size="sm" className="opacity-0 group-hover:opacity-100 h-7 w-7 p-0 text-destructive" onClick={() => handleDelete(model)}><Trash2 className="h-3.5 w-3.5" /></Button>
+                      {!model.builtin && (
+                        <Button variant="ghost" size="sm" className="opacity-0 group-hover:opacity-100 h-7 w-7 p-0 text-destructive" onClick={() => handleDelete(model)}><Trash2 className="h-3.5 w-3.5" /></Button>
+                      )}
                     </div>
                   )}
                 </div>

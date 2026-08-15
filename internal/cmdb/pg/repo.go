@@ -66,6 +66,13 @@ func (r *Repository) Migrate(ctx context.Context) error {
 		`show_in_menu BOOLEAN NOT NULL DEFAULT TRUE`,
 		`builtin BOOLEAN NOT NULL DEFAULT FALSE`,
 		`author TEXT`,
+		`abstract BOOLEAN NOT NULL DEFAULT FALSE`,
+		`source TEXT`,
+		`discovered_by TEXT`,
+		`confidence DOUBLE PRECISION NOT NULL DEFAULT 0`,
+		`evidence JSONB`,
+		`version INTEGER NOT NULL DEFAULT 1`,
+		`suggested_collectors JSONB`,
 	}
 	for _, c := range cols {
 		if _, err := r.db.ExecContext(ctx, `ALTER TABLE cmdb_ci_model_type ADD COLUMN IF NOT EXISTS `+c); err != nil {
@@ -75,6 +82,21 @@ func (r *Repository) Migrate(ctx context.Context) error {
 	// 存量模型回填默认分类（platform），空分类在展示时按 platform 处理。
 	if _, err := r.db.ExecContext(ctx, `UPDATE cmdb_ci_model_type SET category='platform' WHERE category IS NULL OR category=''`); err != nil {
 		return fmt.Errorf("backfill cmdb_ci_model_type category: %w", err)
+	}
+	// 方案 C 存量迁移：把大类 CI 按 engine/middleware_type 属性下沉为具体引擎子类 TypeID。
+	// 幂等：仅作用于仍处于父类(database/middleware)的行；下沉后 type_id 不再命中，重复执行无副作用。
+	// 未知 engine 保留父类不迁移，避免制造孤儿类型。
+	for _, stmt := range []string{
+		`UPDATE cmdb_ci SET type_id = attributes->>'engine'
+		 WHERE type_id = 'database' AND attributes ? 'engine'
+		   AND attributes->>'engine' IN ('mysql','oracle','postgresql')`,
+		`UPDATE cmdb_ci SET type_id = attributes->>'middleware_type'
+		 WHERE type_id = 'middleware' AND attributes ? 'middleware_type'
+		   AND attributes->>'middleware_type' IN ('redis','kafka','nginx','elasticsearch','zookeeper','rabbitmq')`,
+	} {
+		if _, err := r.db.ExecContext(ctx, stmt); err != nil {
+			return fmt.Errorf("sink legacy ci type_id to engine subclass: %w", err)
+		}
 	}
 	// 保存的查询策略表（P1-3「我想查」）+ 采集动态目标引用（P1-4）
 	if _, err := r.db.ExecContext(ctx, `
@@ -125,11 +147,13 @@ func (r *Repository) CreateCIModelType(ctx context.Context, mt *model.CIModelTyp
 	}
 
 	_, err = r.db.ExecContext(ctx, `
-		INSERT INTO cmdb_ci_model_type (id, tenant_id, name, description, parent_id, schema, category, sub_category, icon, show_in_menu, builtin, author, created_at, updated_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)`,
+		INSERT INTO cmdb_ci_model_type (id, tenant_id, name, description, parent_id, schema, category, sub_category, icon, show_in_menu, builtin, author, abstract, source, discovered_by, confidence, evidence, version, suggested_collectors, created_at, updated_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21)`,
 		mt.ID, mt.TenantID, mt.Name, nullIfEmpty(mt.Description), nullIfEmpty(mt.ParentID),
 		schemaJSON, nullIfEmpty(mt.Category), nullIfEmpty(mt.SubCategory), nullIfEmpty(mt.Icon),
 		mt.ShowInMenu, mt.Builtin, nullIfEmpty(mt.Author),
+		mt.Abstract, nullIfEmpty(mt.Source), nullIfEmpty(mt.DiscoveredBy),
+		mt.Confidence, toJSON(mt.Evidence), mt.Version, toJSON(mt.SuggestedCollectors),
 		mt.CreatedAt, mt.UpdatedAt)
 	if err != nil {
 		return fmt.Errorf("insert ci model type: %w", err)
@@ -140,13 +164,15 @@ func (r *Repository) CreateCIModelType(ctx context.Context, mt *model.CIModelTyp
 func (r *Repository) GetCIModelType(ctx context.Context, id, tenantID string) (*model.CIModelType, error) {
 	mt := &model.CIModelType{}
 	var schemaJSON []byte
-	var desc, parentID, category, subCategory, icon, author sql.NullString
-	var showInMenu, builtin sql.NullBool
+	var desc, parentID, category, subCategory, icon, author, source, discoveredBy, evidenceJSON, collectorsJSON sql.NullString
+	var showInMenu, builtin, abstract sql.NullBool
+	var confidence sql.NullFloat64
+	var version sql.NullInt64
 
 	err := r.db.QueryRowContext(ctx, `
-		SELECT id, tenant_id, name, description, parent_id, schema, category, sub_category, icon, show_in_menu, builtin, author, created_at, updated_at
+		SELECT id, tenant_id, name, description, parent_id, schema, category, sub_category, icon, show_in_menu, builtin, author, abstract, source, discovered_by, confidence, evidence, version, suggested_collectors, created_at, updated_at
 		FROM cmdb_ci_model_type WHERE id = $1 AND tenant_id = $2`, id, tenantID).Scan(
-		&mt.ID, &mt.TenantID, &mt.Name, &desc, &parentID, &schemaJSON, &category, &subCategory, &icon, &showInMenu, &builtin, &author, &mt.CreatedAt, &mt.UpdatedAt)
+		&mt.ID, &mt.TenantID, &mt.Name, &desc, &parentID, &schemaJSON, &category, &subCategory, &icon, &showInMenu, &builtin, &author, &abstract, &source, &discoveredBy, &confidence, &evidenceJSON, &version, &collectorsJSON, &mt.CreatedAt, &mt.UpdatedAt)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, nil
@@ -161,6 +187,17 @@ func (r *Repository) GetCIModelType(ctx context.Context, id, tenantID string) (*
 	mt.Author = author.String
 	mt.ShowInMenu = showInMenu.Bool
 	mt.Builtin = builtin.Bool
+	mt.Abstract = abstract.Bool
+	mt.Source = source.String
+	mt.DiscoveredBy = discoveredBy.String
+	mt.Confidence = confidence.Float64
+	mt.Version = int(version.Int64)
+	if evidenceJSON.Valid && evidenceJSON.String != "" {
+		_ = json.Unmarshal([]byte(evidenceJSON.String), &mt.Evidence)
+	}
+	if collectorsJSON.Valid && collectorsJSON.String != "" {
+		_ = json.Unmarshal([]byte(collectorsJSON.String), &mt.SuggestedCollectors)
+	}
 	if err := json.Unmarshal(schemaJSON, &mt.Schema); err != nil {
 		return nil, fmt.Errorf("unmarshal schema: %w", err)
 	}
@@ -930,7 +967,7 @@ func deepEqual(a, b any) bool {
 // ListCIModelTypes 列出所有CI模型类型
 func (r *Repository) ListCIModelTypes(ctx context.Context, tenantID string, limit, offset int) ([]*model.CIModelType, error) {
 	query := `
-		SELECT id, tenant_id, name, description, parent_id, schema, category, sub_category, icon, show_in_menu, builtin, author, created_at, updated_at
+		SELECT id, tenant_id, name, description, parent_id, schema, category, sub_category, icon, show_in_menu, builtin, author, abstract, source, discovered_by, confidence, evidence, version, suggested_collectors, created_at, updated_at
 		FROM cmdb_ci_model_type
 		WHERE tenant_id = $1
 		ORDER BY created_at DESC
@@ -946,10 +983,12 @@ func (r *Repository) ListCIModelTypes(ctx context.Context, tenantID string, limi
 	for rows.Next() {
 		mt := &model.CIModelType{}
 		var schemaJSON []byte
-		var desc, parentID, category, subCategory, icon, author sql.NullString
-		var showInMenu, builtin sql.NullBool
+		var desc, parentID, category, subCategory, icon, author, source, discoveredBy, evidenceJSON, collectorsJSON sql.NullString
+		var showInMenu, builtin, abstract sql.NullBool
+		var confidence sql.NullFloat64
+		var version sql.NullInt64
 
-		err := rows.Scan(&mt.ID, &mt.TenantID, &mt.Name, &desc, &parentID, &schemaJSON, &category, &subCategory, &icon, &showInMenu, &builtin, &author, &mt.CreatedAt, &mt.UpdatedAt)
+		err := rows.Scan(&mt.ID, &mt.TenantID, &mt.Name, &desc, &parentID, &schemaJSON, &category, &subCategory, &icon, &showInMenu, &builtin, &author, &abstract, &source, &discoveredBy, &confidence, &evidenceJSON, &version, &collectorsJSON, &mt.CreatedAt, &mt.UpdatedAt)
 		if err != nil {
 			return nil, fmt.Errorf("scan ci model type: %w", err)
 		}
@@ -961,6 +1000,17 @@ func (r *Repository) ListCIModelTypes(ctx context.Context, tenantID string, limi
 		mt.Author = author.String
 		mt.ShowInMenu = showInMenu.Bool
 		mt.Builtin = builtin.Bool
+		mt.Abstract = abstract.Bool
+		mt.Source = source.String
+		mt.DiscoveredBy = discoveredBy.String
+		mt.Confidence = confidence.Float64
+		mt.Version = int(version.Int64)
+		if evidenceJSON.Valid && evidenceJSON.String != "" {
+			_ = json.Unmarshal([]byte(evidenceJSON.String), &mt.Evidence)
+		}
+		if collectorsJSON.Valid && collectorsJSON.String != "" {
+			_ = json.Unmarshal([]byte(collectorsJSON.String), &mt.SuggestedCollectors)
+		}
 		if schemaJSON != nil {
 			json.Unmarshal(schemaJSON, &mt.Schema)
 		}
@@ -991,11 +1041,13 @@ func (r *Repository) UpdateCIModelType(ctx context.Context, mt *model.CIModelTyp
 
 	_, err = r.db.ExecContext(ctx, `
 		UPDATE cmdb_ci_model_type
-		SET name = $1, description = $2, parent_id = $3, schema = $4, category = $5, sub_category = $6, icon = $7, show_in_menu = $8, updated_at = $9
-		WHERE id = $10 AND tenant_id = $11`,
+		SET name = $1, description = $2, parent_id = $3, schema = $4, category = $5, sub_category = $6, icon = $7, show_in_menu = $8, abstract = $9, source = $10, discovered_by = $11, confidence = $12, evidence = $13, version = $14, suggested_collectors = $15, updated_at = $16
+		WHERE id = $17 AND tenant_id = $18`,
 		mt.Name, nullIfEmpty(mt.Description), nullIfEmpty(mt.ParentID),
 		schemaJSON, nullIfEmpty(mt.Category), nullIfEmpty(mt.SubCategory), nullIfEmpty(mt.Icon),
-		mt.ShowInMenu, mt.UpdatedAt, mt.ID, mt.TenantID)
+		mt.ShowInMenu, mt.Abstract, nullIfEmpty(mt.Source), nullIfEmpty(mt.DiscoveredBy),
+		mt.Confidence, toJSON(mt.Evidence), mt.Version, toJSON(mt.SuggestedCollectors),
+		mt.UpdatedAt, mt.ID, mt.TenantID)
 	if err != nil {
 		return fmt.Errorf("update ci model type: %w", err)
 	}
@@ -1006,13 +1058,15 @@ func (r *Repository) UpdateCIModelType(ctx context.Context, mt *model.CIModelTyp
 func (r *Repository) GetCIModelTypeByName(ctx context.Context, name, tenantID string) (*model.CIModelType, error) {
 	mt := &model.CIModelType{}
 	var schemaJSON []byte
-	var desc, parentID, category, subCategory, icon, author sql.NullString
-	var showInMenu, builtin sql.NullBool
+	var desc, parentID, category, subCategory, icon, author, source, discoveredBy, evidenceJSON, collectorsJSON sql.NullString
+	var showInMenu, builtin, abstract sql.NullBool
+	var confidence sql.NullFloat64
+	var version sql.NullInt64
 
 	err := r.db.QueryRowContext(ctx, `
-		SELECT id, tenant_id, name, description, parent_id, schema, category, sub_category, icon, show_in_menu, builtin, author, created_at, updated_at
+		SELECT id, tenant_id, name, description, parent_id, schema, category, sub_category, icon, show_in_menu, builtin, author, abstract, source, discovered_by, confidence, evidence, version, suggested_collectors, created_at, updated_at
 		FROM cmdb_ci_model_type WHERE name = $1 AND tenant_id = $2`, name, tenantID).Scan(
-		&mt.ID, &mt.TenantID, &mt.Name, &desc, &parentID, &schemaJSON, &category, &subCategory, &icon, &showInMenu, &builtin, &author, &mt.CreatedAt, &mt.UpdatedAt)
+		&mt.ID, &mt.TenantID, &mt.Name, &desc, &parentID, &schemaJSON, &category, &subCategory, &icon, &showInMenu, &builtin, &author, &abstract, &source, &discoveredBy, &confidence, &evidenceJSON, &version, &collectorsJSON, &mt.CreatedAt, &mt.UpdatedAt)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, nil
@@ -1027,6 +1081,17 @@ func (r *Repository) GetCIModelTypeByName(ctx context.Context, name, tenantID st
 	mt.Author = author.String
 	mt.ShowInMenu = showInMenu.Bool
 	mt.Builtin = builtin.Bool
+	mt.Abstract = abstract.Bool
+	mt.Source = source.String
+	mt.DiscoveredBy = discoveredBy.String
+	mt.Confidence = confidence.Float64
+	mt.Version = int(version.Int64)
+	if evidenceJSON.Valid && evidenceJSON.String != "" {
+		_ = json.Unmarshal([]byte(evidenceJSON.String), &mt.Evidence)
+	}
+	if collectorsJSON.Valid && collectorsJSON.String != "" {
+		_ = json.Unmarshal([]byte(collectorsJSON.String), &mt.SuggestedCollectors)
+	}
 	if schemaJSON != nil {
 		json.Unmarshal(schemaJSON, &mt.Schema)
 	}

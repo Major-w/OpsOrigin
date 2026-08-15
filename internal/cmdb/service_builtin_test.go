@@ -29,8 +29,10 @@ func TestBuildBuiltinModelTypes_AlignsWithDiscoveryPlugins(t *testing.T) {
 
 func TestBuildBuiltinModelTypes_AllBuiltinAndCategorized(t *testing.T) {
 	types := buildBuiltinModelTypes()
-	if len(types) != 6 {
-		t.Fatalf("应内置 6 类模型, got %d", len(types))
+	// 5 个顶层大类(server/switch/database/middleware/app) + business_service
+	// + 9 个 leaf 子类(mysql/oracle/postgresql/redis/kafka/nginx/elasticsearch/zookeeper/rabbitmq) = 15
+	if len(types) != 15 {
+		t.Fatalf("应内置 15 类模型(5 顶层 + business_service + 9 leaf 子类), got %d", len(types))
 	}
 	categorySeen := map[string]bool{}
 	for _, mt := range types {

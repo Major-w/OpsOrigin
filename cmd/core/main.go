@@ -34,6 +34,7 @@ import (
 	"github.com/opsorigin/core/internal/cmdb/discovery/plugins"
 	"github.com/opsorigin/core/internal/cmdb/outbox"
 	"github.com/opsorigin/core/internal/cmdb/pg"
+	"github.com/opsorigin/core/internal/cmdb/registry"
 	"github.com/opsorigin/core/internal/command"
 	"github.com/opsorigin/core/internal/deploy"
 	"github.com/opsorigin/core/internal/ent"
@@ -267,6 +268,13 @@ func main() {
 	server.RegisterService(monitorSvc)
 
 	monitorSvc.Start(ctx)
+
+	// 全景可观测拓扑：把 monitor 数据快照注入 cmdb 服务（nil 安全）。
+	cmdbSvc.SetMonitorSnapshotProvider(&monitorSnapshotAdapter{svc: monitorSvc})
+
+	// AI 模型注册表 / 本体服务（设计文档阶段 1）：以 pg.Repository 为目录存储，
+	// 由 registry.New 鸭子类型满足 TypeCatalog 窄接口，零耦合注入。
+	cmdbSvc.SetTypeRegistry(registry.New(pgRepo))
 
 	monitorTopo := monitorSvc.Topology()
 	cmdbSvc.OnCICreated(func(ctx context.Context, ciID, tenantID string) {

@@ -89,10 +89,47 @@ type CIModelType struct {
 	Icon        string             `json:"icon,omitempty"`
 	ShowInMenu  bool               `json:"show_in_menu"`     // 在顶部导航菜单显示
 	Builtin     bool               `json:"builtin"`          // 内置模型（不可删/导入导出）
+	Abstract    bool               `json:"abstract"`         // 抽象父类（不可直接实例化，仅作继承基类）
 	Author      string             `json:"author,omitempty"` // 模型作者，内置为 anonymous
 	Schema      map[string]AttrDef `json:"schema"`
-	CreatedAt   time.Time          `json:"created_at"`
-	UpdatedAt   time.Time          `json:"updated_at"`
+
+	// 类型级治理字段（为 AI 自动建模 / 类型注册表打底，与 ci.go 已有的
+	// 字段级治理 AttrMeta{Source,Confidence,LastSeenAt} 平行互补：
+	// 字段级管「值」的置信度，类型级管「归类」的置信度）。
+	Source              string   `json:"source,omitempty"`        // seed | discovered | ai_proposed
+	DiscoveredBy        string   `json:"discovered_by,omitempty"` // 发现 / 提案主体
+	Confidence          float64  `json:"confidence,omitempty"`    // 类型级置信度
+	Evidence            []string `json:"evidence,omitempty"`      // 证据（banner / 端口 / 指纹）
+	Version             int      `json:"version,omitempty"`
+	SuggestedCollectors []string `json:"suggested_collectors,omitempty"`
+
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+}
+
+// EffectiveSchema 返回该类型「含父类继承」的完整有效 schema。
+// 递归合并 ParentID 链上各代 Schema：父类字段先入，子类以同名覆盖、新字段追加。
+// all 必须是「类型 ID → CIModelType」的全集（至少覆盖从本类型到根的整条继承链），
+// 缺失的祖先会被安全跳过（仅返回已知部分）。
+func (t CIModelType) EffectiveSchema(all map[string]CIModelType) map[string]AttrDef {
+	eff := make(map[string]AttrDef)
+	if t.ParentID != "" {
+		if p, ok := all[t.ParentID]; ok {
+			for k, v := range p.EffectiveSchema(all) {
+				eff[k] = v
+			}
+		}
+	}
+	for k, v := range t.Schema {
+		eff[k] = v // 子类覆盖父类同名
+	}
+	return eff
+}
+
+// IsInstantiable 返回该类型是否可被直接实例化（建 CI）。
+// Abstract=true 的父类（如 database/middleware）仅作继承基类，禁止直接建实例。
+func (t CIModelType) IsInstantiable() bool {
+	return !t.Abstract
 }
 
 type AttrDef struct {
@@ -140,6 +177,7 @@ const (
 	SourceCloudAPI   SourceKind = "cloud_api"   // 云厂商 API 拉取
 	SourceAutoScript SourceKind = "auto_script" // 自动化脚本
 	SourceDiscovery  SourceKind = "discovery"   // 自动发现（含模拟）
+	SourceAIProposed SourceKind = "ai_proposed" // AI 自动建模提交的提案类型
 )
 
 // AttrMeta 是单个 CI 属性的数据来源与置信度元数据。
@@ -165,6 +203,8 @@ func DefaultConfidence(src SourceKind) float64 {
 		return 0.5
 	case SourceDiscovery:
 		return 0.3
+	case SourceAIProposed:
+		return 0.5
 	default:
 		return 0.5
 	}

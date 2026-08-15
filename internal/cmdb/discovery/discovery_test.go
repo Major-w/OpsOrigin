@@ -80,13 +80,13 @@ func TestPluginParse(t *testing.T) {
 			name:   "database",
 			task:   newTask("database", "10.0.0.2", "a1", map[string]any{"agent_id": "a1", "engine": "mysql"}),
 			out:    `{"name":"mysql-10.0.0.2:3306","ip":"10.0.0.2","attrs":{"engine":"mysql","version":"8.0.36"}}`,
-			wantCI: "database", wantIP: "10.0.0.2", wantKey: "version",
+			wantCI: "mysql", wantIP: "10.0.0.2", wantKey: "version",
 		},
 		{
 			name:   "middleware",
 			task:   newTask("middleware", "10.0.0.3", "a1", map[string]any{"agent_id": "a1", "mtype": "redis"}),
 			out:    `{"name":"redis-10.0.0.3:6379","ip":"10.0.0.3","attrs":{"middleware_type":"redis","version":"7.2"}}`,
-			wantCI: "middleware", wantIP: "10.0.0.3", wantKey: "middleware_type",
+			wantCI: "redis", wantIP: "10.0.0.3", wantKey: "middleware_type",
 		},
 		{
 			name:   "application",

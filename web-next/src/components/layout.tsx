@@ -77,6 +77,7 @@ const navGroups: (NavItem | NavGroup)[] = [
       { to: '/cmdb/instances', label: '实例管理', icon: Server },
       { to: '/cmdb/stats', label: '资源统计', icon: BarChart3 },
       { to: '/cmdb/topology', label: '拓扑可视化', icon: Network },
+      { to: '/cmdb/panorama', label: '可观测全景', icon: Activity },
       { to: '/cmdb/idc', label: '机房机柜', icon: Building2 },
       {
         label: '配置项设置', items: [
