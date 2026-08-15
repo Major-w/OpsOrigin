@@ -307,7 +307,7 @@ func (e *Engine) runOneMemberRound(ctx context.Context, m model.TeamMember, team
 	msgs = append(msgs, hist...)
 	msgs = append(msgs, llm.Message{Role: "user", Content: prompt})
 
-	tools := e.buildToolDefs("")
+	tools := e.buildToolDefs(m.AgentID)
 	var content string
 	for round := 0; round < maxToolRounds; round++ {
 		slot, ok := e.acquireLLMSlot(ctx)
@@ -339,7 +339,9 @@ func (e *Engine) runOneMemberRound(ctx context.Context, m model.TeamMember, team
 			content = choice.Content
 			break
 		}
-		// 执行每个工具调用(经 execToolChecked 做 RBAC / 限流 / 截断)
+		// 执行每个工具调用(经 execToolChecked 做 scope 隔离 / RBAC / 限流 / 截断)。
+		// 把成员 agentID 注入 ctx, 使 execToolChecked 的 scope 护栏能按"该成员所属 agent"裁决(团队实例隔离)。
+		toolCtx := withAgentID(ctx, m.AgentID)
 		for _, tc := range choice.ToolCalls {
 			var args map[string]any
 			if tc.Function.Arguments != "" {
@@ -347,7 +349,7 @@ func (e *Engine) runOneMemberRound(ctx context.Context, m model.TeamMember, team
 			}
 			emit(model.TeamStreamEvent{Type: "tool_call", AgentID: m.AgentID, AgentName: m.AgentName, Role: m.Role, ToolName: tc.Function.Name, ToolArgs: tc.Function.Arguments})
 			AIToolCalls.Inc()
-			result, _ := e.execToolChecked(ctx, tc)
+			result, _ := e.execToolChecked(toolCtx, tc)
 			resJSON, _ := json.Marshal(result)
 			emit(model.TeamStreamEvent{Type: "tool_result", AgentID: m.AgentID, AgentName: m.AgentName, Role: m.Role, ToolName: tc.Function.Name, ToolResult: string(resJSON)})
 			msgs = append(msgs, llm.Message{

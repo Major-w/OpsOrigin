@@ -34,8 +34,8 @@ type SkillPackage struct {
 	Description string              `json:"description,omitempty"`
 	Category    string              `json:"category,omitempty"` // 数据库/中间件/网络/安全/通用...
 	Tags        []string            `json:"tags,omitempty"`
-	Agent       AgentPayload        `json:"agent"`             // 数字员工配置
-	Tools       []CustomToolPayload `json:"tools,omitempty"`   // 依赖的自定义 MCP 工具(安装时按需重建)
+	Agent       AgentPayload        `json:"agent"`           // 数字员工配置
+	Tools       []CustomToolPayload `json:"tools,omitempty"` // 依赖的自定义 MCP 工具(安装时按需重建)
 	Downloads   int                 `json:"downloads"`
 	RatingAvg   float64             `json:"rating_avg"` // 同租户评分均值(1~5)
 	RatingCount int                 `json:"rating_count"`
@@ -82,7 +82,7 @@ type SkillPackageMeta struct {
 func (p *SkillPackage) checksum() string {
 	b, _ := json.Marshal(struct {
 		Agent AgentPayload        `json:"agent"`
-		Tools []CustomToolPayload  `json:"tools"`
+		Tools []CustomToolPayload `json:"tools"`
 	}{p.Agent, p.Tools})
 	return fmt.Sprintf("%x", sha256.Sum256(b))
 }
@@ -301,6 +301,51 @@ func (e *Engine) ImportSkill(ctx context.Context, tenantID string, data []byte) 
 	return &p, nil
 }
 
+// PublishSkillVersion 基于现有数字员工配置发布一个新版本技能包, 把补丁建议中提炼的
+// 经验沉淀(learned resolution)并入 system prompt, 实现"记忆回流驱动技能演化"(S1)。
+// 新版本复用同名(name)以进入同一版本序列, 生成新 ID, 保留原评分/下载统计。
+func (e *Engine) PublishSkillVersion(ctx context.Context, tenantID, agentID string, patch SkillPatchSuggestion) (*SkillPackage, error) {
+	ag, ok := e.GetAgent(agentID)
+	if !ok || ag.TenantID != tenantID {
+		return nil, fmt.Errorf("agent not found: %s", agentID)
+	}
+	now := time.Now()
+	pkg := &SkillPackage{
+		ID:          uuid.New().String(),
+		TenantID:    tenantID,
+		Name:        ag.Name,
+		Version:     patch.ToVersion,
+		Description: patch.Reason,
+		Tags:        []string{"auto-evolved"},
+		Agent: AgentPayload{
+			Name:                ag.Name,
+			ModelName:           ag.ModelName,
+			SystemPrompt:        patch.SuggestedSystemPrompt,
+			KnowledgeCategories: ag.KnowledgeCategories,
+			Tools:               ag.Tools,
+			Skills:              ag.Skills,
+		},
+		Downloads: 0,
+		CreatedAt: now,
+		UpdatedAt: now,
+	}
+	// 复用同名已有版本的评分/下载(若存在), 避免新版本从零统计。
+	if e.store != nil {
+		if prev, gerr := e.store.GetSkillPackageByNameVersion(ctx, tenantID, pkg.Name, pkg.Version); gerr == nil && prev != nil {
+			pkg.ID = prev.ID
+			pkg.Downloads = prev.Downloads
+			pkg.RatingAvg = prev.RatingAvg
+			pkg.RatingCount = prev.RatingCount
+			pkg.CreatedAt = prev.CreatedAt
+		}
+		if err := e.store.CreateSkillPackage(ctx, pkg); err != nil {
+			return nil, err
+		}
+	}
+	slog.Info("skill version evolved", "id", pkg.ID, "name", pkg.Name, "version", pkg.Version, "from", patch.FromVersion)
+	return pkg, nil
+}
+
 // ============================================================================
 // 评分 / 收藏 / 版本列表 (技能市场增强)
 // 评分与收藏均以「同租户 + 包 + 用户」去重, 用户身份由 handler 从请求上下文注入。
@@ -418,4 +463,51 @@ func fromToolPayload(tenantID string, t *CustomToolPayload) *CustomTool {
 		CreatedAt:   now,
 		UpdatedAt:   now,
 	}
+}
+
+// ============================================================================
+// 技能 overlay 组合 API (D, 参考 DeepSeek Harness Seam overlay)
+// 在 agent 既有技能之上叠加场景差异补丁, 渲染时合并、移除即还原; 不改动 agent 存储。
+// 详见 skill_overlay.go 中的 SkillOverlay / SkillOverlayRegistry 定义。
+// ============================================================================
+
+// ApplySkillOverlay 注册/更新一个技能 overlay(按 id 幂等替换); 非法补丁返回 error。
+func (e *Engine) ApplySkillOverlay(o *SkillOverlay) error {
+	if e.skillOverlays == nil {
+		e.skillOverlays = NewSkillOverlayRegistry()
+	}
+	if err := e.skillOverlays.Apply(o); err != nil {
+		return err
+	}
+	slog.Info("skill overlay applied", "id", o.ID, "target", o.TargetSkill, "priority", o.Priority)
+	return nil
+}
+
+// RemoveSkillOverlay 按 id 移除一个 overlay; 返回是否实际移除。
+func (e *Engine) RemoveSkillOverlay(overlayID string) bool {
+	if e.skillOverlays == nil {
+		return false
+	}
+	removed := e.skillOverlays.Remove(overlayID)
+	if removed {
+		slog.Info("skill overlay removed", "id", overlayID)
+	}
+	return removed
+}
+
+// ListSkillOverlays 返回某 base 技能下、按优先级排好的 overlay 列表。
+func (e *Engine) ListSkillOverlays(skillName string) []*SkillOverlay {
+	if e.skillOverlays == nil {
+		return nil
+	}
+	return e.skillOverlays.List(skillName)
+}
+
+// ClearSkillOverlays 移除某 base 技能下的全部 overlay(还原到 base)。
+func (e *Engine) ClearSkillOverlays(skillName string) {
+	if e.skillOverlays == nil {
+		return
+	}
+	e.skillOverlays.Clear(skillName)
+	slog.Info("skill overlays cleared", "skill", skillName)
 }

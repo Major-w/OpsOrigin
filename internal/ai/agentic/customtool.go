@@ -58,6 +58,12 @@ type CustomTool struct {
 	// —— CLI 工具配置 ——
 	CLICommand string `json:"cli_command,omitempty"` // shell 模板, 支持 {param}
 
+	// AllowedAgents 连接器可见的 Agent ID 白名单(参考 Harness 按 agent scope 隔离)。
+	// 为空表示对全部 Agent 可见(向后兼容); 非空时仅列表内的 Agent 可看到并调用该连接器。
+	// 与 Agent 自身的 Tools 白名单是"与"关系: 工具对某个 Agent 可见当且仅当
+	// (Agent 未限定工具 或 该工具在 Agent 白名单) 且 (工具未限定 Agent 或 该 Agent 在 AllowedAgents)。
+	AllowedAgents []string `json:"allowed_agents,omitempty"`
+
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
 }

@@ -190,9 +190,13 @@ func (s *PGStore) migrate() {
 		enabled BOOLEAN DEFAULT TRUE, parameters JSONB DEFAULT '[]',
 		http_method TEXT DEFAULT 'GET', http_url TEXT DEFAULT '', http_headers JSONB DEFAULT '{}',
 		timeout_sec INT DEFAULT 30, cli_command TEXT DEFAULT '',
+		allowed_agents JSONB NOT NULL DEFAULT '[]',
 		created_at TIMESTAMPTZ DEFAULT NOW(), updated_at TIMESTAMPTZ DEFAULT NOW(),
 		UNIQUE(tenant_id, name)
 	)`)
+	// 连接器按 agent scope 隔离(PRD 后续): 可见 Agent 白名单(JSONB 数组, 空=全部可见)。
+	// ADD COLUMN IF NOT EXISTS 幂等补齐旧表, 无需独立迁移文件。
+	s.db.Exec(`ALTER TABLE ai_custom_tools ADD COLUMN IF NOT EXISTS allowed_agents JSONB NOT NULL DEFAULT '[]'`)
 	// 主动巡检 Agent(P0): 巡检任务定义与运行记录(JSONB 持久化整对象, 与 ai_teams 同构但更紧凑)。
 	s.db.Exec(`CREATE TABLE IF NOT EXISTS ai_inspections (
 		id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL DEFAULT 'default',
@@ -253,10 +257,11 @@ func (s *PGStore) CreateCustomTool(ctx context.Context, t *CustomTool) error {
 	}
 	params, _ := json.Marshal(t.Parameters)
 	headers, _ := json.Marshal(t.HTTPHeaders)
+	allowed, _ := json.Marshal(t.AllowedAgents)
 	_, err := s.db.ExecContext(ctx,
-		`INSERT INTO ai_custom_tools(id,tenant_id,name,description,type,enabled,parameters,http_method,http_url,http_headers,timeout_sec,cli_command,created_at,updated_at)
-		 VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`,
-		t.ID, t.TenantID, t.Name, t.Description, t.Type, t.Enabled, params, t.HTTPMethod, t.HTTPURL, headers, t.TimeoutSec, t.CLICommand, t.CreatedAt, t.UpdatedAt)
+		`INSERT INTO ai_custom_tools(id,tenant_id,name,description,type,enabled,parameters,http_method,http_url,http_headers,timeout_sec,cli_command,allowed_agents,created_at,updated_at)
+		 VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)`,
+		t.ID, t.TenantID, t.Name, t.Description, t.Type, t.Enabled, params, t.HTTPMethod, t.HTTPURL, headers, t.TimeoutSec, t.CLICommand, allowed, t.CreatedAt, t.UpdatedAt)
 	return err
 }
 
@@ -264,9 +269,10 @@ func (s *PGStore) UpdateCustomTool(ctx context.Context, t *CustomTool) error {
 	t.UpdatedAt = time.Now()
 	params, _ := json.Marshal(t.Parameters)
 	headers, _ := json.Marshal(t.HTTPHeaders)
+	allowed, _ := json.Marshal(t.AllowedAgents)
 	_, err := s.db.ExecContext(ctx,
-		`UPDATE ai_custom_tools SET name=$1,description=$2,type=$3,enabled=$4,parameters=$5,http_method=$6,http_url=$7,http_headers=$8,timeout_sec=$9,cli_command=$10,updated_at=$11 WHERE id=$12 AND tenant_id=$13`,
-		t.Name, t.Description, t.Type, t.Enabled, params, t.HTTPMethod, t.HTTPURL, headers, t.TimeoutSec, t.CLICommand, t.UpdatedAt, t.ID, t.TenantID)
+		`UPDATE ai_custom_tools SET name=$1,description=$2,type=$3,enabled=$4,parameters=$5,http_method=$6,http_url=$7,http_headers=$8,timeout_sec=$9,cli_command=$10,allowed_agents=$11,updated_at=$12 WHERE id=$13 AND tenant_id=$14`,
+		t.Name, t.Description, t.Type, t.Enabled, params, t.HTTPMethod, t.HTTPURL, headers, t.TimeoutSec, t.CLICommand, allowed, t.UpdatedAt, t.ID, t.TenantID)
 	return err
 }
 
@@ -277,7 +283,7 @@ func (s *PGStore) DeleteCustomTool(ctx context.Context, id, tenantID string) err
 
 func (s *PGStore) ListCustomTools(ctx context.Context, tenantID string) ([]*CustomTool, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT id,tenant_id,name,description,type,enabled,parameters,http_method,http_url,http_headers,timeout_sec,cli_command,created_at,updated_at FROM ai_custom_tools WHERE tenant_id=$1 ORDER BY created_at`, tenantID)
+		`SELECT id,tenant_id,name,description,type,enabled,parameters,http_method,http_url,http_headers,timeout_sec,cli_command,allowed_agents,created_at,updated_at FROM ai_custom_tools WHERE tenant_id=$1 ORDER BY created_at`, tenantID)
 	if err != nil {
 		return nil, err
 	}
@@ -285,8 +291,8 @@ func (s *PGStore) ListCustomTools(ctx context.Context, tenantID string) ([]*Cust
 	var out []*CustomTool
 	for rows.Next() {
 		t := &CustomTool{}
-		var params, headers []byte
-		if err := rows.Scan(&t.ID, &t.TenantID, &t.Name, &t.Description, &t.Type, &t.Enabled, &params, &t.HTTPMethod, &t.HTTPURL, &headers, &t.TimeoutSec, &t.CLICommand, &t.CreatedAt, &t.UpdatedAt); err != nil {
+		var params, headers, allowed []byte
+		if err := rows.Scan(&t.ID, &t.TenantID, &t.Name, &t.Description, &t.Type, &t.Enabled, &params, &t.HTTPMethod, &t.HTTPURL, &headers, &t.TimeoutSec, &t.CLICommand, &allowed, &t.CreatedAt, &t.UpdatedAt); err != nil {
 			return nil, err
 		}
 		if len(params) > 0 {
@@ -294,6 +300,9 @@ func (s *PGStore) ListCustomTools(ctx context.Context, tenantID string) ([]*Cust
 		}
 		if len(headers) > 0 {
 			_ = json.Unmarshal(headers, &t.HTTPHeaders)
+		}
+		if len(allowed) > 0 {
+			_ = json.Unmarshal(allowed, &t.AllowedAgents)
 		}
 		out = append(out, t)
 	}
@@ -319,10 +328,10 @@ func (s *PGStore) CreateSkillPackage(ctx context.Context, p *SkillPackage) error
 
 func (s *PGStore) GetSkillPackage(ctx context.Context, tenantID, id string) (*SkillPackage, error) {
 	var (
-		data       []byte
-		downloads  int
-		ratingAvg  float64
-		ratingCnt  int
+		data      []byte
+		downloads int
+		ratingAvg float64
+		ratingCnt int
 	)
 	err := s.db.QueryRowContext(ctx,
 		`SELECT data, downloads, rating_avg, rating_count FROM ai_skill_packages WHERE id=$1 AND tenant_id=$2`, id, tenantID).

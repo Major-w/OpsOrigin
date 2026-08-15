@@ -48,7 +48,7 @@ type Engine struct {
 	llmClient atomic.Pointer[llm.Client] // 热更新场景下的并发安全读写(避免 data race)
 	// router 多模型路由池(P3, 可选): 非 nil 时聊天/流式调用走路由(权重+健康+失败降级),
 	// nil 时回退到 llmClient 单实例(行为与以往一致)。
-	router *ModelRouter
+	router    *ModelRouter
 	ready     bool
 	tokenRecs []model.TokenRecord
 	tokenMu   sync.Mutex
@@ -65,7 +65,7 @@ type Engine struct {
 
 	// remediations 自动修复动作(L1 分级处置闭环): 进程内存储。
 	// RemediationRunnerFunc 由 cmd/core 注入真实 Agent/脚本执行; nil=内置演示执行器。
-	remediations        map[string]*RemediationAction
+	remediations          map[string]*RemediationAction
 	RemediationRunnerFunc RemediationRunnerFunc
 
 	// memories Agent 长期记忆(P0-1): 进程内存储(与 agents/plans 同策略)。
@@ -116,6 +116,48 @@ type Engine struct {
 	// ——— 自定义 MCP 工具 (PRD 5.2.2) ———
 	// customTools 用户注册的自定义工具(ID -> 定义), enabled 的工具动态注册到 reg。
 	customTools map[string]*CustomTool
+
+	// ——— 连接器审批策略 / 受控创作模式 (参考 Harness 连接器 policy 插件化 + Creator 模式) ———
+	// toolPolicies 按工具名配置的审批策略(数据驱动、可插拔), 缺省回落 privilegedTools。
+	toolPolicies map[string]ToolPolicy
+	// controlledMode 受控创作模式: 开启后 agent 自造工具(custom tool)执行前需二次审批。
+	controlledMode bool
+
+	// ——— 引擎级运行模式 (参考 DeepSeek Harness minimal/standard/creative 分层) ———
+	// runMode 把"安全隔离/自治程度"抽象为一等公民, 经钩子链(dryRunGate/controlledGate)生效;
+	// 默认 standard, 不改变既有行为。
+	runMode RunMode
+
+	// ——— 轨迹回放 (参考 DeepSeek Harness append-only trajectory) ———
+	// traj 记录每次 agent 运行的 turn/step/tool 轨迹, 支持回放/复盘; nil=不记录。
+	traj TrajectoryRecorder
+
+	// ——— 钩子链 (参考 Harness agent/pre-step → tool/call → tool/result → step/end 扩展点) ———
+	// hookChain 承载审批闸门/护栏/观测等横切关注点, nil 安全。
+	hookChain *HookChain
+
+	// ——— 连接器生命周期钩子 (参考 Harness 插件 OnRegister/OnUnregister) ———
+	// connHooks 在连接器(自定义 MCP 工具)注册/反注册边界触发: 能力校验、策略自动播种、审计等; nil 安全。
+	connHooks *LifecycleHookChain
+	// autoSeededPolicies 记录由生命周期钩子自动播种的工具策略名, 反注册时仅清理这些、不误删人工覆盖。
+	autoSeededPolicies map[string]bool
+
+	// ——— 连接器按 agent scope 实例隔离 (参考 Harness isolate: fs: true 的 scope 隔离) ———
+	// toolScopes 记录每个连接器(工具名)可见的 Agent ID 白名单; 键不存在或值为空 = 对全部 Agent 可见。
+	// 与 Agent 自身 Tools 白名单是"与"关系(见 buildToolDefs), 形成"连接器只给指定 Agent 看"的实例隔离。
+	toolScopes map[string][]string
+	// autoSeededScopes 记录由生命周期钩子自动播种的 scope(来自 CustomTool.AllowedAgents),
+	// 反注册时仅清理这些、不误删人工经 SetToolScope 的覆盖。
+	autoSeededScopes map[string]bool
+
+	// ——— 记忆回流驱动技能演化 (参考 Harness dsh-memory-evolve, S1) ———
+	// skillEvolver 把每次运行结果回流: 成功蒸馏经验记忆, 失败累积触发技能补丁建议;
+	// nil=不演化。
+	skillEvolver SkillEvolver
+
+	// ——— 技能 overlay 组合 (参考 Harness Seam overlay, D) ———
+	// skillOverlays 按 id 叠加 base 技能的差异补丁(场景变体), 渲染时合并、移除即还原。
+	skillOverlays *SkillOverlayRegistry
 }
 
 // NewEngine 构造引擎并注册内建工具。
@@ -148,6 +190,26 @@ func NewEngine(reg *mcp.Registry, lim ratelimit.RateLimiter, llmClient *llm.Clie
 	}
 	// 自定义 MCP 工具(启动后由 Start/SyncCustomTools 从存储加载并注册)。
 	e.customTools = make(map[string]*CustomTool)
+	// 连接器审批策略表(按工具名), 数据驱动、可经 SetToolPolicy 热插拔。
+	e.toolPolicies = defaultToolPolicies()
+	// 钩子链: 注册内置 RBAC 审批闸门(复刻原 execToolChecked 特权校验) + 受控创作护栏;
+	// 后续护栏/观测/计费上限以 Hook 追加, 无需改动主循环。
+	e.hookChain = NewHookChain()
+	e.hookChain.Add(Hook{PreToolCall: e.rbacGate})
+	e.hookChain.Add(Hook{PreToolCall: e.controlledGate})
+	e.hookChain.Add(Hook{PreToolCall: e.dryRunGate})
+	// 连接器生命周期钩子链: 注册时先能力校验(fail-closed)再自动播种安全默认审批策略,
+	// 反注册时清理播种的策略(参考 Harness 插件生命周期 OnRegister/OnUnregister)。
+	e.connHooks = NewLifecycleHookChain()
+	e.autoSeededPolicies = make(map[string]bool)
+	e.toolScopes = make(map[string][]string)
+	e.autoSeededScopes = make(map[string]bool)
+	e.connHooks.Add(LifecycleHook{OnRegister: e.validationOnRegister})
+	e.connHooks.Add(LifecycleHook{OnRegister: e.policySeedOnRegister, OnUnregister: e.policySeedOnUnregister})
+	e.connHooks.Add(LifecycleHook{OnRegister: e.scopeSeedOnRegister, OnUnregister: e.scopeSeedOnUnregister})
+	e.skillOverlays = NewSkillOverlayRegistry()
+	// 引擎级运行模式默认 standard(既有行为); 可由 SetRunMode 切到 dry-run-safe/autonomous。
+	e.runMode = RunModeStandard
 	// 接入内置 LLM 历史摘要器(Token 预算压缩的"智能摘要"路径); 仅在客户端就绪时启用,
 	// 否则 compactHistory 自动回退到确定性压缩(保留原始意图 + 最近窗口)。
 	if llmClient != nil {
@@ -422,6 +484,15 @@ func (e *Engine) chatWithToolsConv(ctx context.Context, agentID, prompt string, 
 	// 把 AI agent 身份写入上下文, 工具执行链可据此读取 Agent 级审批策略
 	ctx = withAgentID(ctx, agentID)
 
+	// 轨迹: 本次运行起点(append-only, 支持回放/复盘)。
+	turn := &TrajectoryTurn{
+		AgentID:        agentID,
+		ConversationID: conversationID,
+		TenantID:       tenantOf(ctx),
+		StartedAt:      time.Now(),
+		Prompt:         prompt,
+	}
+
 	// 会话加载: 提供 conversationID 时优先用服务端持久历史(可信, 含 tool 消息), 否则用客户端 history。
 	var conv *Conversation
 	baseHistory := history
@@ -463,6 +534,20 @@ func (e *Engine) chatWithToolsConv(ctx context.Context, agentID, prompt string, 
 	var content, reasoningAcc string
 	var completed bool
 	var err error
+
+	// 运行 PreStep 钩子(如拒绝/改写); 短路则不调用 LLM, 仍记录本次轨迹。
+	if e.hookChain != nil {
+		if skip, perr := e.hookChain.RunPreStep(ctx, agentID, prompt); skip || perr != nil {
+			if perr != nil {
+				err = perr
+			}
+			turn.FinalContent = content
+			turn.Error = errString(err)
+			e.recordTrajectory(ctx, turn)
+			return content, reasoningAcc, invocations, conversationID, err
+		}
+	}
+
 	for round := 0; round < maxToolRounds; round++ {
 		slot, ok := e.acquireLLMSlot(ctx)
 		if !ok {
@@ -490,25 +575,37 @@ func (e *Engine) chatWithToolsConv(ctx context.Context, agentID, prompt string, 
 		choiceMsg := resp.Choices[0].Message
 		msgs = append(msgs, choiceMsg)
 
+		step := TrajectoryStep{Index: round, Model: e.modelForAgent(agentID), RequestMsgs: len(msgs)}
+		step.Assistant = choiceMsg.Content
+		step.Reasoning = choiceMsg.ReasoningContent
+
 		if len(choiceMsg.ToolCalls) == 0 {
+			step.Finished = true
+			turn.Steps = append(turn.Steps, step)
 			content = choiceMsg.Content
 			reasoningAcc = choiceMsg.ReasoningContent
 			completed = true
 			break
 		}
 
-		// 执行每个工具调用(经 execToolChecked 做 RBAC/限流/截断)
+		// 执行每个工具调用(经钩子链/RBAC/限流/截断)
 		for _, tc := range choiceMsg.ToolCalls {
 			var args map[string]any
 			if tc.Function.Arguments != "" {
 				_ = json.Unmarshal([]byte(tc.Function.Arguments), &args)
 			}
 			AIToolCalls.Inc()
-			result, _ := e.execToolChecked(ctx, tc)
+			result, execErr := e.execToolChecked(ctx, tc)
 			invocations = append(invocations, ToolInvocation{
 				Name:      tc.Function.Name,
 				Arguments: args,
 				Result:    result,
+			})
+			step.ToolCalls = append(step.ToolCalls, ToolCallRecord{
+				Name:   tc.Function.Name,
+				Args:   args,
+				Result: result,
+				Error:  execErr,
 			})
 			resBytes, _ := json.Marshal(result)
 			msgs = append(msgs, llm.Message{
@@ -518,9 +615,39 @@ func (e *Engine) chatWithToolsConv(ctx context.Context, agentID, prompt string, 
 				Name:       tc.Function.Name,
 			})
 		}
+		turn.Steps = append(turn.Steps, step)
+		if e.hookChain != nil {
+			e.hookChain.RunPostStep(ctx, agentID, round, false)
+		}
 	}
 	if !completed {
 		err = fmt.Errorf("function calling loop exceeded max rounds (%d)", maxToolRounds)
+	}
+
+	// 记录本次运行轨迹(供回放/复盘); nil 记录器时跳过。
+	turn.FinalContent = content
+	turn.Error = errString(err)
+	e.recordTrajectory(ctx, turn)
+
+	// 记忆回流: 把本次运行结果喂给技能演化器——成功蒸馏经验记忆, 失败累积触发补丁建议。
+	if e.skillEvolver != nil {
+		success := completed && err == nil
+		toolSeq := make([]string, 0, len(turn.Steps))
+		for _, step := range turn.Steps {
+			for _, tc := range step.ToolCalls {
+				toolSeq = append(toolSeq, tc.Name)
+			}
+		}
+		if rerr := e.skillEvolver.RecordOutcome(ctx, SkillUsageOutcome{
+			TenantID: tenantOf(ctx),
+			AgentID:  agentID,
+			Success:  success,
+			Context:  prompt,
+			ToolSeq:  toolSeq,
+			Error:    errString(err),
+		}); rerr != nil {
+			slog.Warn("ai: skill evolution record failed", "err", rerr)
+		}
 	}
 
 	// 持久化本轮(仅成功且 conv 已加载/新建时)
@@ -577,11 +704,16 @@ func (e *Engine) renderSkills(agentID string) string {
 		if name == "" {
 			continue
 		}
+		// 合成(base + 该技能的 active overlay 差异补丁), 渲染进 system prompt。
+		eff := sk
+		if e.skillOverlays != nil {
+			eff = e.skillOverlays.Compose(sk)
+		}
 		block := "### 技能: " + name
-		if d := strings.TrimSpace(sk.Description); d != "" {
+		if d := strings.TrimSpace(eff.Description); d != "" {
 			block += "\n用途: " + d
 		}
-		if ins := strings.TrimSpace(sk.Instructions); ins != "" {
+		if ins := strings.TrimSpace(eff.Instructions); ins != "" {
 			block += "\n使用说明: " + ins
 		}
 		parts = append(parts, block)
@@ -757,6 +889,10 @@ func (e *Engine) buildToolDefs(agentID string) []llm.ToolDef {
 		if allowlist != nil && !allowlist[d.Name] {
 			continue
 		}
+		// 连接器 scope 隔离: 声明了可见 Agent 白名单的连接器, 仅对白名单内 Agent 暴露给模型。
+		if !e.toolVisibleToAgent(d.Name, agentID) {
+			continue
+		}
 		props := map[string]any{}
 		required := []string{}
 		for pname, ps := range d.Parameters {
@@ -811,6 +947,7 @@ func truncateJSON(v any) string {
 // ——— 自定义 MCP 工具 (PRD 5.2.2) ———
 
 // CreateCustomTool 创建自定义工具并注册到 registry(启用时)。
+// 接入前先过连接器生命周期钩子(能力校验 / 策略播种); 任一钩子拒绝则 fail-closed 不注册。
 func (e *Engine) CreateCustomTool(ctx context.Context, t *CustomTool) error {
 	if t == nil {
 		return fmt.Errorf("custom tool is nil")
@@ -820,6 +957,10 @@ func (e *Engine) CreateCustomTool(ctx context.Context, t *CustomTool) error {
 	}
 	if t.TenantID == "" {
 		t.TenantID = "default"
+	}
+	// 先过注册钩子(校验/播种); 不在锁内调用, 钩子内部可能回读引擎。
+	if err := e.fireOnRegister(ctx, connectorInfoFromTool(t)); err != nil {
+		return fmt.Errorf("connector registration rejected: %w", err)
 	}
 	e.mu.Lock()
 	e.customTools[t.ID] = t
@@ -835,6 +976,7 @@ func (e *Engine) CreateCustomTool(ctx context.Context, t *CustomTool) error {
 }
 
 // UpdateCustomTool 更新自定义工具并同步 registry。
+// 接入前先过注册钩子(校验新定义 / 重播种策略); 拒绝则 fail-closed 不提交变更。
 func (e *Engine) UpdateCustomTool(ctx context.Context, t *CustomTool) error {
 	if t.ID == "" {
 		return fmt.Errorf("custom tool id is required")
@@ -844,10 +986,15 @@ func (e *Engine) UpdateCustomTool(ctx context.Context, t *CustomTool) error {
 	}
 	e.mu.Lock()
 	existing, ok := e.customTools[t.ID]
+	e.mu.Unlock()
 	if !ok {
-		e.mu.Unlock()
 		return fmt.Errorf("custom tool not found: %s", t.ID)
 	}
+	// 先过注册钩子(校验/播种); 不在锁内调用, 避免钩子内部回读引擎字段死锁。
+	if err := e.fireOnRegister(ctx, connectorInfoFromTool(t)); err != nil {
+		return fmt.Errorf("connector update rejected: %w", err)
+	}
+	e.mu.Lock()
 	// 反注册旧定义, 再按新定义注册
 	e.reg.Unregister(existing.Name)
 	t.TenantID = existing.TenantID
@@ -864,13 +1011,19 @@ func (e *Engine) UpdateCustomTool(ctx context.Context, t *CustomTool) error {
 }
 
 // DeleteCustomTool 删除自定义工具并从 registry 反注册。
+// 拆除前先过反注册钩子(如清理自动播种的策略); 钩子失败仅告警, 不阻断删除。
 func (e *Engine) DeleteCustomTool(ctx context.Context, id, tenantID string) error {
 	e.mu.Lock()
 	existing, ok := e.customTools[id]
+	e.mu.Unlock()
 	if !ok {
-		e.mu.Unlock()
 		return fmt.Errorf("custom tool not found: %s", id)
 	}
+	// 反注册钩子(拆除阶段, 不持锁, 失败不阻断)。
+	if err := e.fireOnUnregister(ctx, connectorInfoFromTool(existing)); err != nil {
+		slog.Warn("connector unregister hook failed", "id", id, "name", existing.Name, "err", err)
+	}
+	e.mu.Lock()
 	e.reg.Unregister(existing.Name)
 	delete(e.customTools, id)
 	e.mu.Unlock()
@@ -897,26 +1050,50 @@ func (e *Engine) ListCustomTools(tenantID string) []*CustomTool {
 }
 
 // SyncCustomTools 从持久化存储全量同步自定义工具到 registry(启动/热刷新时调用)。
+// 重新同步视为"先拆除旧集合再接入新集合": 反注册阶段触发 OnUnregister, 接入阶段触发 OnRegister;
+// 校验失败的连接器被跳过(隔离坏连接器, 不阻断其余同步)。
 func (e *Engine) SyncCustomTools(ctx context.Context) error {
+	// 收集现有连接器快照并在持锁内完成反注册(仅读+反注册, 不触发钩子, 防死锁)。
 	e.mu.Lock()
-	defer e.mu.Unlock()
-	// 反注册全部现有自定义工具
+	oldInfos := make([]ConnectorInfo, 0, len(e.customTools))
 	for _, t := range e.customTools {
+		oldInfos = append(oldInfos, connectorInfoFromTool(t))
 		e.reg.Unregister(t.Name)
 	}
 	e.customTools = make(map[string]*CustomTool)
 	if e.store == nil {
+		e.mu.Unlock()
+		// 反注册阶段仍触发 OnUnregister(清理播种策略), 不持锁。
+		for _, info := range oldInfos {
+			if err := e.fireOnUnregister(ctx, info); err != nil {
+				slog.Warn("custom tool unregister hook failed", "name", info.Name, "err", err)
+			}
+		}
 		return nil
 	}
 	tools, err := e.store.ListCustomTools(ctx, "default")
+	e.mu.Unlock()
 	if err != nil {
 		return err
 	}
+	// 反注册阶段: 触发 OnUnregister(不持锁, 失败不阻断)。
+	for _, info := range oldInfos {
+		if err := e.fireOnUnregister(ctx, info); err != nil {
+			slog.Warn("custom tool unregister hook failed", "name", info.Name, "err", err)
+		}
+	}
+	// 接入阶段: 校验通过才注册; 失败的隔离跳过。
 	for _, t := range tools {
+		if err := e.fireOnRegister(ctx, connectorInfoFromTool(t)); err != nil {
+			slog.Warn("custom tool register hook failed during sync, skipped", "name", t.Name, "err", err)
+			continue
+		}
+		e.mu.Lock()
 		e.customTools[t.ID] = t
 		if t.Enabled {
 			e.reg.Register(t.toToolDefinition())
 		}
+		e.mu.Unlock()
 	}
 	slog.Info("custom tools synced", "count", len(tools))
 	return nil
@@ -1022,6 +1199,58 @@ var privilegedTools = map[string]bool{
 	"ticket_create": true,
 }
 
+// ToolPolicy 描述某连接器/工具的审批策略级别, 经 #404 钩子链的 PreToolCall 闸门生效。
+// 把"每个连接器的审批策略"做成数据驱动、可插拔的配置(参考 Harness 把 approval policy 做成插件)。
+type ToolPolicy int
+
+const (
+	// PolicyAllow 只读/低风险, 免审批直接放行(如 cmdb_query / knowledge_search)。
+	PolicyAllow ToolPolicy = iota
+	// PolicyRBAC 需 ai:tool:exec 权限(默认高危操作)。
+	PolicyRBAC
+	// PolicyApproval 需二次确认/外部审批(如 script_run), 在 RBAC 基础上叠加异步审批(见 MCPToolSet)。
+	PolicyApproval
+)
+
+// defaultToolPolicies 连接器审批策略种子表: 只读工具免审, 写/执行类需审批;
+// 未在此表且不在 privilegedTools 的工具按缺省放行(向后兼容)。
+func defaultToolPolicies() map[string]ToolPolicy {
+	return map[string]ToolPolicy{
+		"cmdb_query":        PolicyAllow,
+		"knowledge_search":  PolicyAllow,
+		"script_list":       PolicyAllow,
+		"script_detail":     PolicyAllow,
+		"script_executions": PolicyAllow,
+		"script_run":        PolicyApproval,
+		"ticket_create":     PolicyApproval,
+	}
+}
+
+// RunMode 引擎级运行模式(参考 DeepSeek Harness 的 minimal/standard/creative 模式分层)。
+// 把"安全隔离/自治程度"抽象为一等公民, 而非散落在各工具的局部开关。
+type RunMode int
+
+const (
+	// RunModeStandard 默认模式: 所有闸门按既有策略生效(审批/受控/限流)。
+	RunModeStandard RunMode = iota
+	// RunModeDryRun 隔离预览模式: 仅执行可安全预览的工具, 绝不触碰生产(参考 Harness minimal)。
+	RunModeDryRun
+	// RunModeAutonomous 自治模式: 放宽受控创作闸门, 自造工具免二次审批(最高自治, 仍需 RBAC 特权校验)。
+	RunModeAutonomous
+)
+
+// drySafeTools dry-run 模式下允许执行的工具清单: 只读或原生支持 dry_run 预览。
+// 其余工具在 dry-run 模式下被拒绝, 以防误触生产(对应 Harness minimal 的隔离哲学)。
+var drySafeTools = map[string]bool{
+	"script_run":        true,
+	"script_create":     true,
+	"cmdb_query":        true,
+	"knowledge_search":  true,
+	"script_list":       true,
+	"script_detail":     true,
+	"script_executions": true,
+}
+
 // maxToolResultLen 工具结果回填上下文前的最大长度; 超出则截断并标注, 防止大输出撑爆上下文窗口。
 const maxToolResultLen = 4096
 
@@ -1033,23 +1262,31 @@ const maxToolResultLen = 4096
 // 返回 (结果, 是否真的发生了执行错误)。越权/限流属于"已受控", 以结构化错误结果返回而非 panic。
 func (e *Engine) execToolChecked(ctx context.Context, tc llm.ToolCall) (any, bool) {
 	name := tc.Function.Name
-	if privilegedTools[name] {
-		role := auth.RoleFromContext(ctx)
-		if role == "" || !auth.HasPermission(role, auth.PermissionAIToolExec) {
-			AIToolExecDenied.Inc()
-			slog.Warn("ai tool exec denied by RBAC", "tool", name, "role", role)
-			return map[string]any{"error": fmt.Sprintf("permission denied: tool %q requires permission %s", name, auth.PermissionAIToolExec)}, false
+	var args map[string]any
+	if tc.Function.Arguments != "" {
+		_ = json.Unmarshal([]byte(tc.Function.Arguments), &args)
+	}
+
+	// 运行时 scope 护栏(纵深防御, 参考 Harness isolate 实例隔离):
+	// 即便调用方拿到了不在其可见范围的工具名, 也拒绝执行——一个 agent 无法触达 scope 外的连接器。
+	// 置于 RBAC/策略闸门之前, 属于"可见性"而非"审批"语义。
+	if !e.toolVisibleToAgent(name, agentIDFrom(ctx)) {
+		return map[string]any{"error": fmt.Sprintf("tool %q is not visible to agent %q (scope isolation)", name, agentIDFrom(ctx))}, false
+	}
+
+	// 运行 PreToolCall 钩子链(含内置 RBAC 审批闸门); 任一拒绝即短路返回(不再执行)。
+	if e.hookChain != nil {
+		if allow, ov, msg := e.hookChain.RunPreToolCall(ctx, agentIDFrom(ctx), name, args); !allow {
+			return map[string]any{"error": msg}, false
+		} else if ov != nil {
+			args = ov
 		}
 	}
+
 	if e.lim != nil && !e.lim.Allow("tool:"+name) {
 		AIToolExecDenied.Inc()
 		slog.Warn("ai tool exec rate limited", "tool", name)
 		return map[string]any{"error": "rate limit exceeded for tool execution: " + name}, false
-	}
-
-	var args map[string]any
-	if tc.Function.Arguments != "" {
-		_ = json.Unmarshal([]byte(tc.Function.Arguments), &args)
 	}
 
 	// 工具结果缓存: 仅对幂等/只读工具生效, 跨请求复用, 减少重复后端/LLM 工具往返。
@@ -1064,12 +1301,6 @@ func (e *Engine) execToolChecked(ctx context.Context, tc llm.ToolCall) (any, boo
 		}
 	}
 
-	if e.lim != nil && !e.lim.Allow("tool:"+name) {
-		AIToolExecDenied.Inc()
-		slog.Warn("ai tool exec rate limited", "tool", name)
-		return map[string]any{"error": "rate limit exceeded for tool execution: " + name}, false
-	}
-
 	result, execErr := e.reg.Execute(ctx, name, args)
 	if execErr != nil {
 		slog.Warn("ai tool execution failed", "tool", name, "error", execErr)
@@ -1080,7 +1311,166 @@ func (e *Engine) execToolChecked(ctx context.Context, tc llm.ToolCall) (any, boo
 		ckey := name + "\x1f" + tenantOf(ctx) + "\x1f" + canonicalArgsKey(args)
 		e.toolCache.set(ckey, truncated)
 	}
+	if e.hookChain != nil {
+		e.hookChain.RunPostTool(ctx, agentIDFrom(ctx), name, truncated, execErr != nil)
+	}
 	return truncated, false
+}
+
+// rbacGate 内置 PreToolCall 钩子: 复刻原 execToolChecked 的特权工具 RBAC 校验(即"审批闸门")。
+// 注册进默认钩子链后, 任何工具执行前都会过此关; 后续新增护栏只需再 Add 一个 Hook。
+// rbacGate 内置 PreToolCall 钩子(参考 Harness 把 approval policy 做成插件):
+// 按 toolPolicies 策略表裁决工具执行权——只读(PolicyAllow)免审、写/执行类(PolicyRBAC/PolicyApproval)需 ai:tool:exec;
+// 未显式配置时回落 privilegedTools(向后兼容)。
+func (e *Engine) rbacGate(ctx context.Context, _ string, name string, _ map[string]any) (bool, map[string]any, string) {
+	pol, ok := e.policyOf(name)
+	if !ok {
+		return true, nil, "" // 未配置策略: 缺省放行(与改造前一致)
+	}
+	switch pol {
+	case PolicyAllow:
+		return true, nil, "" // 只读/低风险连接器免审
+	case PolicyRBAC, PolicyApproval:
+		return e.requireExecPerm(ctx, name)
+	default:
+		return true, nil, ""
+	}
+}
+
+// policyOf 读取工具策略, 未显式配置时回落 privilegedTools 集合。
+func (e *Engine) policyOf(name string) (ToolPolicy, bool) {
+	e.mu.Lock()
+	pol, ok := e.toolPolicies[name]
+	e.mu.Unlock()
+	if ok {
+		return pol, true
+	}
+	if privilegedTools[name] {
+		return PolicyRBAC, true
+	}
+	return PolicyAllow, false
+}
+
+// requireExecPerm 校验 ai:tool:exec 权限; 无权限或上下文无角色则拒绝。
+func (e *Engine) requireExecPerm(ctx context.Context, name string) (bool, map[string]any, string) {
+	role := auth.RoleFromContext(ctx)
+	if role == "" || !auth.HasPermission(role, auth.PermissionAIToolExec) {
+		AIToolExecDenied.Inc()
+		slog.Warn("ai tool exec denied by RBAC hook", "tool", name, "role", role)
+		return false, nil, fmt.Sprintf("permission denied: tool %q requires permission %s", name, auth.PermissionAIToolExec)
+	}
+	return true, nil, ""
+}
+
+// controlledGate 内置 PreToolCall 钩子: 受控创作模式(Creator 模式)护栏。
+// 开启 controlledMode 后, agent 自造工具(custom tool)执行前需 ai:tool:exec 权限——即自造工具必须过审批才能真跑;
+// 非自造(平台内置/连接器)工具不受影响。受控模式关闭时整体放行(不影响既有行为)。
+func (e *Engine) controlledGate(ctx context.Context, _ string, name string, _ map[string]any) (bool, map[string]any, string) {
+	if e.runMode == RunModeAutonomous {
+		return true, nil, "" // 自治模式: 自造工具免二次审批(最高自治, 仍需 RBAC 特权校验)
+	}
+	if !e.controlledMode {
+		return true, nil, ""
+	}
+	if !e.isCustomTool(name) {
+		return true, nil, ""
+	}
+	return e.requireExecPerm(ctx, name)
+}
+
+// isCustomTool 判断某工具名是否属于 agent/用户自造的 custom tool(按注册名匹配)。
+func (e *Engine) isCustomTool(name string) bool {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	for _, t := range e.customTools {
+		if t.Name == name {
+			return true
+		}
+	}
+	return false
+}
+
+// SetToolPolicy 热插拔单个工具的连接器审批策略(参考 Harness 把 policy 做成可配置插件)。
+// 人工覆盖会清除该名的"自动播种"标记, 使其反注册时不再被生命周期清理钩子误删。
+func (e *Engine) SetToolPolicy(name string, pol ToolPolicy) {
+	e.mu.Lock()
+	if e.toolPolicies == nil {
+		e.toolPolicies = map[string]ToolPolicy{}
+	}
+	e.toolPolicies[name] = pol
+	if e.autoSeededPolicies != nil {
+		delete(e.autoSeededPolicies, name)
+	}
+	e.mu.Unlock()
+}
+
+// SetToolPolicies 批量热插拔工具审批策略。
+func (e *Engine) SetToolPolicies(p map[string]ToolPolicy) {
+	e.mu.Lock()
+	if e.toolPolicies == nil {
+		e.toolPolicies = map[string]ToolPolicy{}
+	}
+	for k, v := range p {
+		e.toolPolicies[k] = v
+		if e.autoSeededPolicies != nil {
+			delete(e.autoSeededPolicies, k)
+		}
+	}
+	e.mu.Unlock()
+}
+
+// SetControlledMode 开关受控创作模式(Creator 模式): 开启后 agent 自造工具执行前需二次审批。
+func (e *Engine) SetControlledMode(on bool) { e.controlledMode = on }
+
+// dryRunGate 内置 PreToolCall 钩子: 引擎级运行模式(参考 Harness minimal 隔离模式)。
+// RunModeDryRun 下只做安全预览——只读/支持预览的工具注入 dry_run=true, 无法安全预览的写操作直接拒绝(不碰生产);
+// 其余模式(RunModeStandard/RunModeAutonomous)放行, 不改变既有行为。
+func (e *Engine) dryRunGate(_ context.Context, _ string, name string, args map[string]any) (bool, map[string]any, string) {
+	if e.runMode != RunModeDryRun {
+		return true, nil, ""
+	}
+	if drySafeTools[name] {
+		if args == nil {
+			args = map[string]any{}
+		}
+		args["dry_run"] = true // 注入预览: 工具内部按 dry_run 仅回显计划不真正执行
+		return true, args, ""
+	}
+	return false, nil, fmt.Sprintf("dry-run mode: tool %q is not safe to preview and will not execute (no production impact)", name)
+}
+
+// SetRunMode 设置引擎级运行模式: standard(默认) / dry-run-safe(仅安全预览) / autonomous(最高自治)。
+func (e *Engine) SetRunMode(m RunMode) { e.runMode = m }
+
+// SetTrajectoryRecorder 注入轨迹记录器(nil=关闭记录)。生产可接 PG 实现(复用 ai_conversations 同库)。
+func (e *Engine) SetTrajectoryRecorder(r TrajectoryRecorder) { e.traj = r }
+
+// RegisterHook 向钩子链追加一组钩子(审批/护栏/观测/计费上限等横切能力)。
+func (e *Engine) RegisterHook(h Hook) {
+	if e.hookChain == nil {
+		e.hookChain = NewHookChain()
+	}
+	e.hookChain.Add(h)
+}
+
+// SetSkillEvolver 注入技能演化器(nil=关闭记忆回流演化)。
+func (e *Engine) SetSkillEvolver(ev SkillEvolver) { e.skillEvolver = ev }
+
+// recordTrajectory 安全记录一次运行轨迹(nil 记录器时跳过)。
+func (e *Engine) recordTrajectory(ctx context.Context, t *TrajectoryTurn) {
+	if e.traj != nil {
+		if terr := e.traj.RecordTurn(ctx, t); terr != nil {
+			slog.Warn("ai: record trajectory failed", "err", terr)
+		}
+	}
+}
+
+// errString 将 error 转为可序列化字符串(nil→空)。
+func errString(err error) string {
+	if err == nil {
+		return ""
+	}
+	return err.Error()
 }
 
 // truncateToolResult 对工具结果做长度上限截断, 避免大输出(如脚本日志)撑爆上下文窗口。
