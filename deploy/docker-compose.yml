@@ -101,3 +101,15 @@ volumes:
   dgraph_zero:
   dgraph_alpha:
   redis_data:
+
+# 固定网络子网: dgraph alpha 的 security whitelist 写死了宿主机 bridge 网关
+# 172.19.0.1, 若不固定 subnet, 不同 compose project(或重装) 会分到 172.18.x 等
+# 网段, 宿主机直连 dgraph(go run core / 集成测试)会被 "unauthorized ip" 拒绝。
+networks:
+  default:
+    name: opsorigin-net
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.19.0.0/16
+          gateway: 172.19.0.1

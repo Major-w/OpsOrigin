@@ -144,8 +144,11 @@ start_backend() {
     warn "后端已在运行（PID $(cat "$BACKEND_PID_FILE")）"
     return 0
   fi
-  info "启动后端（Core，端口 $BACKEND_PORT）..."
+  info "启动后端（Core，端口 ${BACKEND_PORT}）..."
   cd "$ROOT_DIR"
+  # GOCACHE 默认指向系统缓存目录, 部分受限环境下不可写会导致 go run 失败;
+  # 统一落到项目内 .run/go-cache(已 gitignore), 保证任何环境可启动。
+  export GOCACHE="${GOCACHE:-$ROOT_DIR/.run/go-cache}"
   nohup go run ./cmd/core >"$BACKEND_LOG" 2>&1 &
   echo $! >"$BACKEND_PID_FILE"
   sleep 2
@@ -167,7 +170,7 @@ stop_backend() {
       kill "$pid" 2>/dev/null || true
       sleep 1
       kill -9 "$pid" 2>/dev/null || true
-      log "后端已停止（PID $pid）"
+      log "后端已停止（PID ${pid}）"
     else
       dim "后端进程已不存在"
     fi
@@ -191,7 +194,7 @@ start_frontend() {
     warn "前端已在运行（PID $(cat "$FRONTEND_PID_FILE")）"
     return 0
   fi
-  info "启动前端（web-next，端口 $FRONTEND_PORT）..."
+  info "启动前端（web-next，端口 ${FRONTEND_PORT}）..."
   cd "$ROOT_DIR/web-next"
   if [[ ! -d node_modules ]]; then
     info "首次运行，安装依赖..."
@@ -219,7 +222,7 @@ stop_frontend() {
       kill -- "-$pid" 2>/dev/null || kill "$pid" 2>/dev/null || true
       sleep 1
       kill -9 "$pid" 2>/dev/null || true
-      log "前端已停止（PID $pid）"
+      log "前端已停止（PID ${pid}）"
     else
       dim "前端进程已不存在"
     fi
