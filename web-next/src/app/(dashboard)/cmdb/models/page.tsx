@@ -367,8 +367,13 @@ export default function CMDBModelsPage() {
       )}
 
       {/* 模型编辑对话框 */}
-      <Dialog open={dialogOpen} onClose={() => setDialogOpen(false)} title={editModel ? '编辑模型' : '新建模型'}>
+      <Dialog open={dialogOpen} onClose={() => setDialogOpen(false)} title={editModel ? `编辑模型：${editModel.name}` : '新建模型'}>
         <div className="space-y-4">
+          {editModel?.builtin && (
+            <p className="text-[11px] text-amber-600 bg-amber-50 dark:bg-amber-500/10 border border-amber-200 dark:border-amber-500/20 rounded-md px-2 py-1.5">
+              内置模型：可修改描述/分类与增补字段；不可删除，内置字段建议保留（仅可加属性）
+            </p>
+          )}
           <div className="grid grid-cols-2 gap-3">
             <div><label className="text-sm font-medium">名称 *</label><Input value={form.name} onChange={e => setForm(f => ({ ...f, name: e.target.value }))} placeholder="server" disabled={!!editModel} /></div>
             <div><label className="text-sm font-medium">图标</label>
