@@ -807,7 +807,7 @@
     "method": "GET",
     "path": "/api/v1/cmdb/app-topology",
     "file": "internal/cmdb/service.go",
-    "line": 150
+    "line": 153
   },
   {
     "method": "GET",
@@ -852,6 +852,18 @@
     "line": 98
   },
   {
+    "method": "POST",
+    "path": "/api/v1/cmdb/ci/batch-delete",
+    "file": "internal/cmdb/service.go",
+    "line": 100
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/cmdb/ci/batch-update",
+    "file": "internal/cmdb/service.go",
+    "line": 99
+  },
+  {
     "method": "GET",
     "path": "/api/v1/cmdb/ci/export",
     "file": "internal/cmdb/service.go",
@@ -867,397 +879,403 @@
     "method": "DELETE",
     "path": "/api/v1/cmdb/ci/{id}",
     "file": "internal/cmdb/service.go",
-    "line": 101
+    "line": 103
   },
   {
     "method": "GET",
     "path": "/api/v1/cmdb/ci/{id}",
     "file": "internal/cmdb/service.go",
-    "line": 99
+    "line": 101
   },
   {
     "method": "PUT",
     "path": "/api/v1/cmdb/ci/{id}",
     "file": "internal/cmdb/service.go",
-    "line": 100
+    "line": 102
   },
   {
     "method": "POST",
     "path": "/api/v1/cmdb/ci/{id}/archive",
     "file": "internal/cmdb/service.go",
-    "line": 102
+    "line": 104
   },
   {
     "method": "GET",
     "path": "/api/v1/cmdb/ci/{id}/audit",
     "file": "internal/cmdb/service.go",
-    "line": 104
+    "line": 106
   },
   {
     "method": "POST",
     "path": "/api/v1/cmdb/ci/{id}/restore",
     "file": "internal/cmdb/service.go",
-    "line": 103
+    "line": 105
   },
   {
     "method": "GET",
     "path": "/api/v1/cmdb/collection-policy",
     "file": "internal/cmdb/service.go",
-    "line": 182
+    "line": 185
   },
   {
     "method": "PUT",
     "path": "/api/v1/cmdb/collection-policy",
     "file": "internal/cmdb/service.go",
-    "line": 183
+    "line": 186
   },
   {
     "method": "GET",
     "path": "/api/v1/cmdb/collection-tasks",
     "file": "internal/cmdb/service.go",
-    "line": 184
+    "line": 187
   },
   {
     "method": "POST",
     "path": "/api/v1/cmdb/collection-tasks",
     "file": "internal/cmdb/service.go",
-    "line": 185
+    "line": 188
   },
   {
     "method": "DELETE",
     "path": "/api/v1/cmdb/collection-tasks/{id}",
     "file": "internal/cmdb/service.go",
-    "line": 187
+    "line": 190
   },
   {
     "method": "PUT",
     "path": "/api/v1/cmdb/collection-tasks/{id}",
     "file": "internal/cmdb/service.go",
-    "line": 186
+    "line": 189
   },
   {
     "method": "POST",
     "path": "/api/v1/cmdb/collection-tasks/{id}/run",
     "file": "internal/cmdb/service.go",
-    "line": 188
+    "line": 191
   },
   {
     "method": "GET",
     "path": "/api/v1/cmdb/collectors",
     "file": "internal/cmdb/service.go",
-    "line": 121
+    "line": 124
   },
   {
     "method": "GET",
     "path": "/api/v1/cmdb/discovery",
     "file": "internal/cmdb/service.go",
-    "line": 171
+    "line": 174
   },
   {
     "method": "POST",
     "path": "/api/v1/cmdb/discovery",
     "file": "internal/cmdb/service.go",
-    "line": 172
+    "line": 175
   },
   {
     "method": "GET",
     "path": "/api/v1/cmdb/discovery/types",
     "file": "internal/cmdb/service.go",
-    "line": 175
+    "line": 178
   },
   {
     "method": "DELETE",
     "path": "/api/v1/cmdb/discovery/{id}",
     "file": "internal/cmdb/service.go",
-    "line": 174
+    "line": 177
   },
   {
     "method": "PUT",
     "path": "/api/v1/cmdb/discovery/{id}",
     "file": "internal/cmdb/service.go",
-    "line": 173
+    "line": 176
   },
   {
     "method": "GET",
     "path": "/api/v1/cmdb/discovery/{id}/results",
     "file": "internal/cmdb/service.go",
-    "line": 177
+    "line": 180
   },
   {
     "method": "POST",
     "path": "/api/v1/cmdb/discovery/{id}/run",
     "file": "internal/cmdb/service.go",
-    "line": 176
+    "line": 179
   },
   {
     "method": "POST",
     "path": "/api/v1/cmdb/discovery/{resultId}/sync",
     "file": "internal/cmdb/service.go",
-    "line": 178
+    "line": 181
   },
   {
     "method": "POST",
     "path": "/api/v1/cmdb/discovery/{taskId}/sync-all",
     "file": "internal/cmdb/service.go",
-    "line": 179
+    "line": 182
   },
   {
     "method": "GET",
     "path": "/api/v1/cmdb/field-rules",
     "file": "internal/cmdb/service.go",
-    "line": 153
+    "line": 156
   },
   {
     "method": "POST",
     "path": "/api/v1/cmdb/field-rules",
     "file": "internal/cmdb/service.go",
-    "line": 154
+    "line": 157
   },
   {
     "method": "DELETE",
     "path": "/api/v1/cmdb/field-rules/{id}",
     "file": "internal/cmdb/service.go",
-    "line": 155
+    "line": 158
   },
   {
     "method": "GET",
     "path": "/api/v1/cmdb/history",
     "file": "internal/cmdb/service.go",
-    "line": 166
+    "line": 169
   },
   {
     "method": "GET",
     "path": "/api/v1/cmdb/history/detail/{id}",
     "file": "internal/cmdb/service.go",
-    "line": 168
+    "line": 171
   },
   {
     "method": "GET",
     "path": "/api/v1/cmdb/history/{ciId}",
     "file": "internal/cmdb/service.go",
-    "line": 167
+    "line": 170
   },
   {
     "method": "GET",
     "path": "/api/v1/cmdb/idc",
-    "file": "internal/cmdb/service.go",
-    "line": 140
-  },
-  {
-    "method": "POST",
-    "path": "/api/v1/cmdb/idc",
-    "file": "internal/cmdb/service.go",
-    "line": 141
-  },
-  {
-    "method": "GET",
-    "path": "/api/v1/cmdb/idc/{idcId}/racks",
     "file": "internal/cmdb/service.go",
     "line": 143
   },
   {
     "method": "POST",
-    "path": "/api/v1/cmdb/idc/{idcId}/racks",
+    "path": "/api/v1/cmdb/idc",
     "file": "internal/cmdb/service.go",
     "line": 144
   },
   {
-    "method": "DELETE",
-    "path": "/api/v1/cmdb/idc/{id}",
-    "file": "internal/cmdb/service.go",
-    "line": 142
-  },
-  {
     "method": "GET",
-    "path": "/api/v1/cmdb/impact/{id}",
-    "file": "internal/cmdb/service.go",
-    "line": 114
-  },
-  {
-    "method": "GET",
-    "path": "/api/v1/cmdb/model-categories",
-    "file": "internal/cmdb/service.go",
-    "line": 132
-  },
-  {
-    "method": "POST",
-    "path": "/api/v1/cmdb/model-categories",
-    "file": "internal/cmdb/service.go",
-    "line": 133
-  },
-  {
-    "method": "DELETE",
-    "path": "/api/v1/cmdb/model-categories/{id}",
-    "file": "internal/cmdb/service.go",
-    "line": 134
-  },
-  {
-    "method": "GET",
-    "path": "/api/v1/cmdb/model-type",
-    "file": "internal/cmdb/service.go",
-    "line": 124
-  },
-  {
-    "method": "POST",
-    "path": "/api/v1/cmdb/model-type",
-    "file": "internal/cmdb/service.go",
-    "line": 123
-  },
-  {
-    "method": "GET",
-    "path": "/api/v1/cmdb/model-type/export",
-    "file": "internal/cmdb/service.go",
-    "line": 128
-  },
-  {
-    "method": "POST",
-    "path": "/api/v1/cmdb/model-type/import",
-    "file": "internal/cmdb/service.go",
-    "line": 129
-  },
-  {
-    "method": "DELETE",
-    "path": "/api/v1/cmdb/model-type/{id}",
-    "file": "internal/cmdb/service.go",
-    "line": 127
-  },
-  {
-    "method": "GET",
-    "path": "/api/v1/cmdb/model-type/{id}",
-    "file": "internal/cmdb/service.go",
-    "line": 125
-  },
-  {
-    "method": "PUT",
-    "path": "/api/v1/cmdb/model-type/{id}",
-    "file": "internal/cmdb/service.go",
-    "line": 126
-  },
-  {
-    "method": "POST",
-    "path": "/api/v1/cmdb/onboard",
-    "file": "internal/cmdb/service.go",
-    "line": 189
-  },
-  {
-    "method": "GET",
-    "path": "/api/v1/cmdb/quality",
-    "file": "internal/cmdb/service.go",
-    "line": 192
-  },
-  {
-    "method": "DELETE",
-    "path": "/api/v1/cmdb/racks/{id}",
-    "file": "internal/cmdb/service.go",
-    "line": 145
-  },
-  {
-    "method": "GET",
-    "path": "/api/v1/cmdb/racks/{id}/units",
+    "path": "/api/v1/cmdb/idc/{idcId}/racks",
     "file": "internal/cmdb/service.go",
     "line": 146
   },
   {
     "method": "POST",
-    "path": "/api/v1/cmdb/racks/{id}/units",
+    "path": "/api/v1/cmdb/idc/{idcId}/racks",
     "file": "internal/cmdb/service.go",
     "line": 147
   },
   {
-    "method": "GET",
-    "path": "/api/v1/cmdb/relation",
+    "method": "DELETE",
+    "path": "/api/v1/cmdb/idc/{id}",
     "file": "internal/cmdb/service.go",
-    "line": 116
+    "line": 145
   },
   {
-    "method": "POST",
-    "path": "/api/v1/cmdb/relation",
+    "method": "GET",
+    "path": "/api/v1/cmdb/impact/{id}",
     "file": "internal/cmdb/service.go",
     "line": 117
   },
   {
-    "method": "DELETE",
-    "path": "/api/v1/cmdb/relation/{id}",
-    "file": "internal/cmdb/service.go",
-    "line": 118
-  },
-  {
     "method": "GET",
-    "path": "/api/v1/cmdb/saved-queries",
+    "path": "/api/v1/cmdb/model-categories",
     "file": "internal/cmdb/service.go",
-    "line": 108
+    "line": 135
   },
   {
     "method": "POST",
-    "path": "/api/v1/cmdb/saved-queries",
+    "path": "/api/v1/cmdb/model-categories",
     "file": "internal/cmdb/service.go",
-    "line": 109
+    "line": 136
   },
   {
     "method": "DELETE",
-    "path": "/api/v1/cmdb/saved-queries/{id}",
-    "file": "internal/cmdb/service.go",
-    "line": 111
-  },
-  {
-    "method": "GET",
-    "path": "/api/v1/cmdb/saved-queries/{id}/resolve",
-    "file": "internal/cmdb/service.go",
-    "line": 110
-  },
-  {
-    "method": "GET",
-    "path": "/api/v1/cmdb/search",
-    "file": "internal/cmdb/service.go",
-    "line": 105
-  },
-  {
-    "method": "GET",
-    "path": "/api/v1/cmdb/stats",
+    "path": "/api/v1/cmdb/model-categories/{id}",
     "file": "internal/cmdb/service.go",
     "line": 137
   },
   {
     "method": "GET",
+    "path": "/api/v1/cmdb/model-type",
+    "file": "internal/cmdb/service.go",
+    "line": 127
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/cmdb/model-type",
+    "file": "internal/cmdb/service.go",
+    "line": 126
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/cmdb/model-type/export",
+    "file": "internal/cmdb/service.go",
+    "line": 131
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/cmdb/model-type/import",
+    "file": "internal/cmdb/service.go",
+    "line": 132
+  },
+  {
+    "method": "DELETE",
+    "path": "/api/v1/cmdb/model-type/{id}",
+    "file": "internal/cmdb/service.go",
+    "line": 130
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/cmdb/model-type/{id}",
+    "file": "internal/cmdb/service.go",
+    "line": 128
+  },
+  {
+    "method": "PUT",
+    "path": "/api/v1/cmdb/model-type/{id}",
+    "file": "internal/cmdb/service.go",
+    "line": 129
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/cmdb/onboard",
+    "file": "internal/cmdb/service.go",
+    "line": 192
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/cmdb/quality",
+    "file": "internal/cmdb/service.go",
+    "line": 195
+  },
+  {
+    "method": "DELETE",
+    "path": "/api/v1/cmdb/racks/{id}",
+    "file": "internal/cmdb/service.go",
+    "line": 148
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/cmdb/racks/{id}/units",
+    "file": "internal/cmdb/service.go",
+    "line": 149
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/cmdb/racks/{id}/units",
+    "file": "internal/cmdb/service.go",
+    "line": 150
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/cmdb/relation",
+    "file": "internal/cmdb/service.go",
+    "line": 119
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/cmdb/relation",
+    "file": "internal/cmdb/service.go",
+    "line": 120
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/cmdb/relation/batch",
+    "file": "internal/cmdb/service.go",
+    "line": 108
+  },
+  {
+    "method": "DELETE",
+    "path": "/api/v1/cmdb/relation/{id}",
+    "file": "internal/cmdb/service.go",
+    "line": 121
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/cmdb/saved-queries",
+    "file": "internal/cmdb/service.go",
+    "line": 111
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/cmdb/saved-queries",
+    "file": "internal/cmdb/service.go",
+    "line": 112
+  },
+  {
+    "method": "DELETE",
+    "path": "/api/v1/cmdb/saved-queries/{id}",
+    "file": "internal/cmdb/service.go",
+    "line": 114
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/cmdb/saved-queries/{id}/resolve",
+    "file": "internal/cmdb/service.go",
+    "line": 113
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/cmdb/search",
+    "file": "internal/cmdb/service.go",
+    "line": 107
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/cmdb/stats",
+    "file": "internal/cmdb/service.go",
+    "line": 140
+  },
+  {
+    "method": "GET",
     "path": "/api/v1/cmdb/subscription-deliveries",
     "file": "internal/cmdb/service.go",
-    "line": 163
+    "line": 166
   },
   {
     "method": "GET",
     "path": "/api/v1/cmdb/subscriptions",
     "file": "internal/cmdb/service.go",
-    "line": 158
+    "line": 161
   },
   {
     "method": "POST",
     "path": "/api/v1/cmdb/subscriptions",
     "file": "internal/cmdb/service.go",
-    "line": 159
+    "line": 162
   },
   {
     "method": "DELETE",
     "path": "/api/v1/cmdb/subscriptions/{id}",
     "file": "internal/cmdb/service.go",
-    "line": 161
+    "line": 164
   },
   {
     "method": "PUT",
     "path": "/api/v1/cmdb/subscriptions/{id}",
     "file": "internal/cmdb/service.go",
-    "line": 160
+    "line": 163
   },
   {
     "method": "POST",
     "path": "/api/v1/cmdb/subscriptions/{id}/test",
     "file": "internal/cmdb/service.go",
-    "line": 162
+    "line": 165
   },
   {
     "method": "GET",
     "path": "/api/v1/cmdb/topology/{id}",
     "file": "internal/cmdb/service.go",
-    "line": 113
+    "line": 116
   },
   {
     "method": "GET",

@@ -14,10 +14,13 @@ import { toast } from '@/stores/toast'
 
 interface SchemaField {
   name: string
-  type: 'string' | 'number' | 'boolean' | 'enum' | 'date' | 'json'
+  type: 'string' | 'number' | 'boolean' | 'enum' | 'date' | 'json' | 'ref'
   required: boolean
   description: string
   options?: string[]
+  unique?: boolean
+  ref_model?: string
+  ref_display?: string
 }
 
 interface CIModel {
@@ -66,13 +69,22 @@ function schemaToFields(schema: Record<string, any> = {}): SchemaField[] {
     required: !!def?.required,
     description: def?.description || '',
     options: def?.options,
+    unique: !!def?.unique,
+    ref_model: def?.ref_model,
+    ref_display: def?.ref_display,
   }))
 }
 
 function fieldsToSchema(fields: SchemaField[]) {
   return fields.reduce((acc, f) => ({
     ...acc,
-    [f.name]: { type: f.type, required: f.required, description: f.description, ...(f.options ? { options: f.options } : {}) },
+    [f.name]: {
+      type: f.type, required: f.required, description: f.description,
+      ...(f.options ? { options: f.options } : {}),
+      ...(f.unique ? { unique: true } : {}),
+      ...(f.ref_model ? { ref_model: f.ref_model } : {}),
+      ...(f.ref_display ? { ref_display: f.ref_display } : {}),
+    },
   }), {} as Record<string, any>)
 }
 
@@ -421,13 +433,26 @@ export default function CMDBModelsPage() {
         <div className="space-y-3">
           <div><label className="text-sm font-medium">字段名 *</label><Input value={fieldForm.name} onChange={e => setFieldForm(f => ({ ...f, name: e.target.value }))} placeholder="ip_address" /></div>
           <div><label className="text-sm font-medium">类型</label>
-            <div className="flex gap-1 mt-1">
-              {(['string', 'number', 'boolean', 'enum', 'date', 'json'] as const).map(t => (
+            <div className="flex gap-1 mt-1 flex-wrap">
+              {(['string', 'number', 'boolean', 'enum', 'date', 'json', 'ref'] as const).map(t => (
                 <button key={t} className={cn("px-2 py-1 rounded text-xs border", fieldForm.type === t ? "border-emerald-500 bg-emerald-50 dark:bg-emerald-500/10 text-emerald-600" : "border-gray-200 dark:border-gray-700")} onClick={() => setFieldForm(f => ({ ...f, type: t }))}>{t}</button>
               ))}
             </div>
           </div>
+          {fieldForm.type === 'ref' && (
+            <div><label className="text-sm font-medium">引用目标模型 *</label>
+              <select value={fieldForm.ref_model || ''} onChange={e => setFieldForm(f => ({ ...f, ref_model: e.target.value }))} className="w-full h-8 text-xs border rounded-md bg-background px-2">
+                <option value="">选择目标模型...</option>
+                {models.map(m => <option key={m.id} value={m.id}>{m.name}（{m.id}）</option>)}
+              </select>
+              <p className="text-[10px] text-muted-foreground mt-1">引用型字段的值取自目标模型的 CI 实例，写入时校验存在性</p>
+            </div>
+          )}
+          {fieldForm.type === 'enum' && (
+            <div><label className="text-sm font-medium">枚举选项（逗号分隔）</label><Input value={(fieldForm.options || []).join(',')} onChange={e => setFieldForm(f => ({ ...f, options: e.target.value.split(',').map(s => s.trim()).filter(Boolean) }))} placeholder="prod,dev,test" /></div>
+          )}
           <div className="flex items-center gap-2"><input type="checkbox" id="field-required" checked={fieldForm.required} onChange={e => setFieldForm(f => ({ ...f, required: e.target.checked }))} className="rounded" /><label htmlFor="field-required" className="text-sm font-medium">必填</label></div>
+          <div className="flex items-center gap-2"><input type="checkbox" id="field-unique" checked={!!fieldForm.unique} onChange={e => setFieldForm(f => ({ ...f, unique: e.target.checked }))} className="rounded" /><label htmlFor="field-unique" className="text-sm font-medium">唯一（同类型内该字段值不可重复，写入时拦截）</label></div>
           <div><label className="text-sm font-medium">描述</label><Input value={fieldForm.description} onChange={e => setFieldForm(f => ({ ...f, description: e.target.value }))} /></div>
         </div>
         <DialogFooter><Button variant="outline" onClick={() => setFieldDialogOpen(false)}>取消</Button><Button onClick={saveField} disabled={!fieldForm.name}>保存</Button></DialogFooter>

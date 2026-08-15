@@ -95,7 +95,9 @@ func (s *Service) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/v1/cmdb/ci/export", s.handleExportCI)  // P1-1 CSV 导出
 	mux.HandleFunc("POST /api/v1/cmdb/ci/import", s.handleImportCI) // P1-1 CSV 导入
 	mux.HandleFunc("POST /api/v1/cmdb/ci", s.handleCreateCI)
-	mux.HandleFunc("POST /api/v1/cmdb/ci/batch", s.handleBatchCreateCI) // F4-B 批量 + D2 修复
+	mux.HandleFunc("POST /api/v1/cmdb/ci/batch", s.handleBatchCreateCI)        // F4-B 批量 + D2 修复
+	mux.HandleFunc("POST /api/v1/cmdb/ci/batch-update", s.handleBatchUpdateCI) // 批量改属性
+	mux.HandleFunc("POST /api/v1/cmdb/ci/batch-delete", s.handleBatchDeleteCI) // 批量删除
 	mux.HandleFunc("GET /api/v1/cmdb/ci/{id}", s.handleGetCI)
 	mux.HandleFunc("PUT /api/v1/cmdb/ci/{id}", s.handleUpdateCI)
 	mux.HandleFunc("DELETE /api/v1/cmdb/ci/{id}", s.handleDeleteCI)
@@ -103,6 +105,7 @@ func (s *Service) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/v1/cmdb/ci/{id}/restore", s.handleRestoreCI) // P1-2 恢复
 	mux.HandleFunc("GET /api/v1/cmdb/ci/{id}/audit", s.handleCIAudit)
 	mux.HandleFunc("GET /api/v1/cmdb/search", s.handleSearchCI)
+	mux.HandleFunc("POST /api/v1/cmdb/relation/batch", s.handleBatchCreateRelation) // 批量建关系
 
 	// 保存的查询策略（"我想查"，P1-3）
 	mux.HandleFunc("GET /api/v1/cmdb/saved-queries", s.handleListSavedQueries)
@@ -235,7 +238,7 @@ func (s *Service) handleCreateCI(w http.ResponseWriter, r *http.Request) {
 
 	traceID := traceIDFromCtx(ctx)
 	if s.pg != nil {
-		if err := s.validateAttributes(ctx, ci.TypeID, ci.Attributes); err != nil {
+		if err := s.validateAttributes(ctx, ci.TypeID, ci.Attributes, ""); err != nil {
 			writeError(w, http.StatusBadRequest, err.Error())
 			return
 		}
@@ -416,6 +419,11 @@ func (s *Service) handleUpdateCI(w http.ResponseWriter, r *http.Request) {
 	traceID := traceIDFromCtx(ctx)
 
 	if s.pg != nil {
+		// 更新路径同样校验(必填/类型/唯一/引用), exclude 自身避免自撞。
+		if err := s.validateAttributes(ctx, ci.TypeID, ci.Attributes, id); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
 		if err := s.pg.UpdateCI(ctx, ci, channel, traceID); err != nil {
 			if errors.Is(err, pg.ErrAntiFlapping) {
 				writeError(w, http.StatusConflict, err.Error())
@@ -667,7 +675,9 @@ func (s *Service) handleSearchCI(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, cis)
 }
 
-func (s *Service) validateAttributes(ctx context.Context, typeID string, attrs map[string]any) error {
+// validateAttributes 校验 CI 属性: 必填 / 类型 / 枚举选项 / 引用目标存在 /
+// 模型唯一性约束(Unique 写入拦截)。excludeCIID 用于更新场景排除自身。
+func (s *Service) validateAttributes(ctx context.Context, typeID string, attrs map[string]any, excludeCIID string) error {
 	mt, err := s.ResolveModelType(ctx, typeID, "default")
 	if err != nil {
 		return nil
@@ -677,18 +687,68 @@ func (s *Service) validateAttributes(ctx context.Context, typeID string, attrs m
 	}
 
 	for name, def := range mt.Schema {
+		val, hasVal := attrs[name]
 		if def.Required {
-			if _, ok := attrs[name]; !ok {
+			if !hasVal {
 				return fmt.Errorf("required attribute '%s' is missing for CI type '%s'", name, typeID)
 			}
 		}
-		if val, ok := attrs[name]; ok && def.Type != "" {
+		if !hasVal {
+			continue
+		}
+		if def.Type != "" {
 			if !validateAttrType(def.Type, val) {
 				return fmt.Errorf("attribute '%s' expected type '%s', got %T", name, def.Type, val)
 			}
 		}
+		// 枚举选项校验: select/enum 类型声明了 Options 时, 值必须在选项内。
+		if len(def.Options) > 0 && def.Type != "ref" {
+			s, ok := val.(string)
+			if ok && s != "" && !containsStr(def.Options, s) {
+				return fmt.Errorf("attribute '%s' value %q not in options %v", name, s, def.Options)
+			}
+		}
+		// 引用型字段: 校验目标 CI 存在(RefModel 声明)。
+		if def.Type == "ref" {
+			if def.RefModel == "" {
+				return fmt.Errorf("attribute '%s' is ref type but ref_model not configured", name)
+			}
+			if s.pg != nil {
+				if sval, ok := val.(string); ok && sval != "" {
+					target, err := s.pg.GetCI(ctx, sval, "default")
+					if err != nil {
+						return fmt.Errorf("attribute '%s' ref lookup failed: %w", name, err)
+					}
+					if target == nil {
+						return fmt.Errorf("attribute '%s' references non-existent CI '%s'", name, sval)
+					}
+				}
+			}
+		}
+		// 唯一性约束: 同租户同类型下该字段值已存在(且非自身)则拦截。
+		if def.Unique && s.pg != nil {
+			if sval, ok := val.(string); ok && sval != "" {
+				n, err := s.pg.CountCIByAttrValue(ctx, "default", typeID, name, sval, excludeCIID)
+				if err != nil {
+					return fmt.Errorf("attribute '%s' uniqueness check failed: %w", name, err)
+				}
+				if n > 0 {
+					return fmt.Errorf("attribute '%s' must be unique: value %q already exists for model '%s'", name, sval, typeID)
+				}
+			}
+		}
 	}
 	return nil
+}
+
+// containsStr 判断字符串切片是否包含目标值。
+func containsStr(xs []string, s string) bool {
+	for _, x := range xs {
+		if x == s {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *Service) handleListRelations(w http.ResponseWriter, r *http.Request) {
@@ -764,6 +824,195 @@ func (s *Service) handleCreateRelation(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusCreated, rel)
+}
+
+// handleBatchUpdateCI 批量更新多个 CI 的属性(合并写), 逐个过 validateAttributes
+// (唯一/引用/类型校验)。返回成功数与逐条失败明细, 不因单条失败中断整体。
+func (s *Service) handleBatchUpdateCI(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	tenantID := tenantFromCtx(ctx)
+
+	var req struct {
+		IDs   []string       `json:"ids"`
+		Attrs map[string]any `json:"attrs"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if len(req.IDs) == 0 || len(req.Attrs) == 0 {
+		writeError(w, http.StatusBadRequest, "ids and attrs are required")
+		return
+	}
+
+	traceID := traceIDFromCtx(ctx)
+	type failure struct {
+		ID    string `json:"id"`
+		Error string `json:"error"`
+	}
+	var failed []failure
+	updated := 0
+
+	for _, id := range req.IDs {
+		var ci *model.CIModel
+		if s.pg != nil {
+			var err error
+			ci, err = s.pg.GetCI(ctx, id, tenantID)
+			if err != nil {
+				failed = append(failed, failure{id, err.Error()})
+				continue
+			}
+		} else {
+			ci = s.mem.getCI(id, tenantID)
+		}
+		if ci == nil {
+			failed = append(failed, failure{id, "ci not found"})
+			continue
+		}
+		// 合并属性(批量只改给定字段, 不动其余)
+		merged := map[string]any{}
+		for k, v := range ci.Attributes {
+			merged[k] = v
+		}
+		for k, v := range req.Attrs {
+			merged[k] = v
+		}
+		ci.Attributes = merged
+
+		if s.pg != nil {
+			if err := s.validateAttributes(ctx, ci.TypeID, ci.Attributes, id); err != nil {
+				failed = append(failed, failure{id, err.Error()})
+				continue
+			}
+			if err := s.pg.UpdateCI(ctx, ci, model.WeightHuman, traceID); err != nil {
+				failed = append(failed, failure{id, err.Error()})
+				continue
+			}
+		} else {
+			s.mem.updateCI(ci)
+		}
+		updated++
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{"updated": updated, "failed": failed})
+}
+
+// handleBatchDeleteCI 批量删除 CI(含订阅事件分发), 返回成功数与失败明细。
+func (s *Service) handleBatchDeleteCI(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	tenantID := tenantFromCtx(ctx)
+
+	var req struct {
+		IDs []string `json:"ids"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if len(req.IDs) == 0 {
+		writeError(w, http.StatusBadRequest, "ids are required")
+		return
+	}
+
+	traceID := traceIDFromCtx(ctx)
+	type failure struct {
+		ID    string `json:"id"`
+		Error string `json:"error"`
+	}
+	var failed []failure
+	deleted := 0
+
+	for _, id := range req.IDs {
+		if s.pg == nil {
+			if !s.mem.deleteCI(id, tenantID) {
+				failed = append(failed, failure{id, "ci not found"})
+			} else {
+				deleted++
+			}
+			continue
+		}
+		before, _ := s.pg.GetCI(ctx, id, tenantID)
+		if before == nil {
+			failed = append(failed, failure{id, "ci not found"})
+			continue
+		}
+		if err := s.pg.DeleteCI(ctx, id, tenantID, traceID); err != nil {
+			failed = append(failed, failure{id, err.Error()})
+			continue
+		}
+		s.dispatchCIEvent(ctx, tenantID, "ci_deleted", before)
+		deleted++
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{"deleted": deleted, "failed": failed})
+}
+
+// handleBatchCreateRelation 批量创建关系(逐条环路检测, ASSERT-CMDB-02)。
+func (s *Service) handleBatchCreateRelation(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	tenantID := tenantFromCtx(ctx)
+
+	var req struct {
+		Relations []struct {
+			SourceID     string         `json:"source_id"`
+			TargetID     string         `json:"target_id"`
+			RelationType string         `json:"relation_type"`
+			Properties   map[string]any `json:"properties,omitempty"`
+		} `json:"relations"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if len(req.Relations) == 0 {
+		writeError(w, http.StatusBadRequest, "relations are required")
+		return
+	}
+
+	traceID := traceIDFromCtx(ctx)
+	type failure struct {
+		SourceID string `json:"source_id"`
+		TargetID string `json:"target_id"`
+		Error    string `json:"error"`
+	}
+	var failed []failure
+	created := 0
+
+	for _, item := range req.Relations {
+		// 环路检测(与单条创建一致)
+		hasCycle := false
+		if s.dg != nil {
+			var err error
+			hasCycle, err = s.dg.DetectCycle(ctx, item.SourceID, item.TargetID, tenantID)
+			if err != nil {
+				slog.Error("cycle detection failed", "error", err)
+			}
+		} else {
+			hasCycle = s.mem.detectCycle(tenantID, item.SourceID, item.TargetID)
+		}
+		if hasCycle {
+			failed = append(failed, failure{item.SourceID, item.TargetID, "would create a topological cycle [ASSERT-CMDB-02]"})
+			continue
+		}
+		rel := &model.CIRelation{
+			TenantID:     tenantID,
+			SourceID:     item.SourceID,
+			TargetID:     item.TargetID,
+			RelationType: item.RelationType,
+			Properties:   item.Properties,
+		}
+		if s.pg != nil {
+			if err := s.pg.CreateRelation(ctx, rel, traceID); err != nil {
+				failed = append(failed, failure{item.SourceID, item.TargetID, err.Error()})
+				continue
+			}
+		} else {
+			s.mem.createRelation(rel)
+		}
+		created++
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{"created": created, "failed": failed})
 }
 
 func (s *Service) handleDeleteRelation(w http.ResponseWriter, r *http.Request) {
@@ -2213,7 +2462,7 @@ func (s *Service) CreateCI(ctx context.Context, ci *model.CIModel, traceID strin
 		ci.Status = model.CIStatusActive
 	}
 	if s.pg != nil {
-		if err := s.validateAttributes(ctx, ci.TypeID, ci.Attributes); err != nil {
+		if err := s.validateAttributes(ctx, ci.TypeID, ci.Attributes, ""); err != nil {
 			return err
 		}
 		if err := s.pg.CreateCI(ctx, ci, traceID); err != nil {

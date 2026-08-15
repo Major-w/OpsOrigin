@@ -600,6 +600,26 @@ func (r *Repository) ListCI(ctx context.Context, tenantID string, typeID string)
 	return r.ListCIPaginated(ctx, tenantID, typeID, "", "", 0, 0)
 }
 
+// CountCIByAttrValue 统计「同租户 + 同模型类型」下某属性字段取指定值的 CI 数,
+// 用于模型唯一性约束(Unique)的写入拦截。excludeID 非空时排除自身(更新场景)。
+func (r *Repository) CountCIByAttrValue(ctx context.Context, tenantID, typeID, attrKey, value, excludeID string) (int, error) {
+	var n int
+	err := r.db.QueryRowContext(ctx, `
+		SELECT count(*) FROM cmdb_ci
+		WHERE tenant_id = $1 AND type_id = $2 AND status <> 'deleted'
+		  AND attributes->>$3 = $4 AND id <> $5`,
+		tenantID, typeID, attrKey, value, excludeID).Scan(&n)
+	if err != nil {
+		return 0, fmt.Errorf("count ci by attr: %w", err)
+	}
+	return n, nil
+}
+
+// GetCIByID 按 ID 取 CI(供引用型字段校验目标 CI 存在性), 与 GetCI 等价。
+func (r *Repository) GetCIByID(ctx context.Context, id, tenantID string) (*model.CIModel, error) {
+	return r.GetCI(ctx, id, tenantID)
+}
+
 // ListCIByQuery lists CIs filtered by optional type and a free-text query,
 // pushing the filter down to SQL (ILIKE) instead of loading the whole table
 // into memory and filtering in Go (see report issue 3.3).
@@ -617,10 +637,11 @@ func (r *Repository) ListCIByQuery(ctx context.Context, tenantID, typeID, q stri
 	if q != "" {
 		// ILIKE gives case-insensitive substring matching. The pattern is a
 		// bound parameter, so user input cannot break out of the clause.
-		query += fmt.Sprintf(` AND (name ILIKE $%d OR description ILIKE $%d OR type_id ILIKE $%d)`, argIdx, argIdx+1, argIdx+2)
+		// attributes::text 将 JSONB 序列化为文本参与匹配, 支持按属性值检索。
+		query += fmt.Sprintf(` AND (name ILIKE $%d OR description ILIKE $%d OR type_id ILIKE $%d OR attributes::text ILIKE $%d)`, argIdx, argIdx+1, argIdx+2, argIdx+3)
 		like := "%" + q + "%"
-		args = append(args, like, like, like)
-		argIdx += 3
+		args = append(args, like, like, like, like)
+		argIdx += 4
 	}
 
 	query += ` ORDER BY created_at DESC LIMIT 100`

@@ -1,6 +1,6 @@
 # OpsOrigin API 路由清单
 
-> 由 `tools/routes` 自动生成(`make routes` 重新生成), 共 **509** 个端点。
+> 由 `tools/routes` 自动生成(`make routes` 重新生成), 共 **512** 个端点。
 > 方法与路径为 Go 1.22 ServeMux 注册形态。
 
 ## `/api/v1/agent-tasks` (1)
@@ -421,7 +421,7 @@
 
 | Method | Path | 位置 |
 | --- | --- | --- |
-| GET | `/api/v1/cmdb/app-topology` | `internal/cmdb/service.go:150` |
+| GET | `/api/v1/cmdb/app-topology` | `internal/cmdb/service.go:153` |
 
 ## `/api/v1/cmdb/change-requests` (4)
 
@@ -438,18 +438,30 @@
 | --- | --- | --- |
 | GET | `/api/v1/cmdb/ci` | `internal/cmdb/service.go:94` |
 | POST | `/api/v1/cmdb/ci` | `internal/cmdb/service.go:97` |
-| DELETE | `/api/v1/cmdb/ci/{id}` | `internal/cmdb/service.go:101` |
-| GET | `/api/v1/cmdb/ci/{id}` | `internal/cmdb/service.go:99` |
-| PUT | `/api/v1/cmdb/ci/{id}` | `internal/cmdb/service.go:100` |
-| POST | `/api/v1/cmdb/ci/{id}/archive` | `internal/cmdb/service.go:102` |
-| GET | `/api/v1/cmdb/ci/{id}/audit` | `internal/cmdb/service.go:104` |
-| POST | `/api/v1/cmdb/ci/{id}/restore` | `internal/cmdb/service.go:103` |
+| DELETE | `/api/v1/cmdb/ci/{id}` | `internal/cmdb/service.go:103` |
+| GET | `/api/v1/cmdb/ci/{id}` | `internal/cmdb/service.go:101` |
+| PUT | `/api/v1/cmdb/ci/{id}` | `internal/cmdb/service.go:102` |
+| POST | `/api/v1/cmdb/ci/{id}/archive` | `internal/cmdb/service.go:104` |
+| GET | `/api/v1/cmdb/ci/{id}/audit` | `internal/cmdb/service.go:106` |
+| POST | `/api/v1/cmdb/ci/{id}/restore` | `internal/cmdb/service.go:105` |
 
 ## `/api/v1/cmdb/ci/batch` (1)
 
 | Method | Path | 位置 |
 | --- | --- | --- |
 | POST | `/api/v1/cmdb/ci/batch` | `internal/cmdb/service.go:98` |
+
+## `/api/v1/cmdb/ci/batch-delete` (1)
+
+| Method | Path | 位置 |
+| --- | --- | --- |
+| POST | `/api/v1/cmdb/ci/batch-delete` | `internal/cmdb/service.go:100` |
+
+## `/api/v1/cmdb/ci/batch-update` (1)
+
+| Method | Path | 位置 |
+| --- | --- | --- |
+| POST | `/api/v1/cmdb/ci/batch-update` | `internal/cmdb/service.go:99` |
 
 ## `/api/v1/cmdb/ci/export` (1)
 
@@ -467,181 +479,187 @@
 
 | Method | Path | 位置 |
 | --- | --- | --- |
-| GET | `/api/v1/cmdb/collection-policy` | `internal/cmdb/service.go:182` |
-| PUT | `/api/v1/cmdb/collection-policy` | `internal/cmdb/service.go:183` |
+| GET | `/api/v1/cmdb/collection-policy` | `internal/cmdb/service.go:185` |
+| PUT | `/api/v1/cmdb/collection-policy` | `internal/cmdb/service.go:186` |
 
 ## `/api/v1/cmdb/collection-tasks` (5)
 
 | Method | Path | 位置 |
 | --- | --- | --- |
-| GET | `/api/v1/cmdb/collection-tasks` | `internal/cmdb/service.go:184` |
-| POST | `/api/v1/cmdb/collection-tasks` | `internal/cmdb/service.go:185` |
-| DELETE | `/api/v1/cmdb/collection-tasks/{id}` | `internal/cmdb/service.go:187` |
-| PUT | `/api/v1/cmdb/collection-tasks/{id}` | `internal/cmdb/service.go:186` |
-| POST | `/api/v1/cmdb/collection-tasks/{id}/run` | `internal/cmdb/service.go:188` |
+| GET | `/api/v1/cmdb/collection-tasks` | `internal/cmdb/service.go:187` |
+| POST | `/api/v1/cmdb/collection-tasks` | `internal/cmdb/service.go:188` |
+| DELETE | `/api/v1/cmdb/collection-tasks/{id}` | `internal/cmdb/service.go:190` |
+| PUT | `/api/v1/cmdb/collection-tasks/{id}` | `internal/cmdb/service.go:189` |
+| POST | `/api/v1/cmdb/collection-tasks/{id}/run` | `internal/cmdb/service.go:191` |
 
 ## `/api/v1/cmdb/collectors` (1)
 
 | Method | Path | 位置 |
 | --- | --- | --- |
-| GET | `/api/v1/cmdb/collectors` | `internal/cmdb/service.go:121` |
+| GET | `/api/v1/cmdb/collectors` | `internal/cmdb/service.go:124` |
 
 ## `/api/v1/cmdb/discovery` (8)
 
 | Method | Path | 位置 |
 | --- | --- | --- |
-| GET | `/api/v1/cmdb/discovery` | `internal/cmdb/service.go:171` |
-| POST | `/api/v1/cmdb/discovery` | `internal/cmdb/service.go:172` |
-| DELETE | `/api/v1/cmdb/discovery/{id}` | `internal/cmdb/service.go:174` |
-| PUT | `/api/v1/cmdb/discovery/{id}` | `internal/cmdb/service.go:173` |
-| GET | `/api/v1/cmdb/discovery/{id}/results` | `internal/cmdb/service.go:177` |
-| POST | `/api/v1/cmdb/discovery/{id}/run` | `internal/cmdb/service.go:176` |
-| POST | `/api/v1/cmdb/discovery/{resultId}/sync` | `internal/cmdb/service.go:178` |
-| POST | `/api/v1/cmdb/discovery/{taskId}/sync-all` | `internal/cmdb/service.go:179` |
+| GET | `/api/v1/cmdb/discovery` | `internal/cmdb/service.go:174` |
+| POST | `/api/v1/cmdb/discovery` | `internal/cmdb/service.go:175` |
+| DELETE | `/api/v1/cmdb/discovery/{id}` | `internal/cmdb/service.go:177` |
+| PUT | `/api/v1/cmdb/discovery/{id}` | `internal/cmdb/service.go:176` |
+| GET | `/api/v1/cmdb/discovery/{id}/results` | `internal/cmdb/service.go:180` |
+| POST | `/api/v1/cmdb/discovery/{id}/run` | `internal/cmdb/service.go:179` |
+| POST | `/api/v1/cmdb/discovery/{resultId}/sync` | `internal/cmdb/service.go:181` |
+| POST | `/api/v1/cmdb/discovery/{taskId}/sync-all` | `internal/cmdb/service.go:182` |
 
 ## `/api/v1/cmdb/discovery/types` (1)
 
 | Method | Path | 位置 |
 | --- | --- | --- |
-| GET | `/api/v1/cmdb/discovery/types` | `internal/cmdb/service.go:175` |
+| GET | `/api/v1/cmdb/discovery/types` | `internal/cmdb/service.go:178` |
 
 ## `/api/v1/cmdb/field-rules` (3)
 
 | Method | Path | 位置 |
 | --- | --- | --- |
-| GET | `/api/v1/cmdb/field-rules` | `internal/cmdb/service.go:153` |
-| POST | `/api/v1/cmdb/field-rules` | `internal/cmdb/service.go:154` |
-| DELETE | `/api/v1/cmdb/field-rules/{id}` | `internal/cmdb/service.go:155` |
+| GET | `/api/v1/cmdb/field-rules` | `internal/cmdb/service.go:156` |
+| POST | `/api/v1/cmdb/field-rules` | `internal/cmdb/service.go:157` |
+| DELETE | `/api/v1/cmdb/field-rules/{id}` | `internal/cmdb/service.go:158` |
 
 ## `/api/v1/cmdb/history` (2)
 
 | Method | Path | 位置 |
 | --- | --- | --- |
-| GET | `/api/v1/cmdb/history` | `internal/cmdb/service.go:166` |
-| GET | `/api/v1/cmdb/history/{ciId}` | `internal/cmdb/service.go:167` |
+| GET | `/api/v1/cmdb/history` | `internal/cmdb/service.go:169` |
+| GET | `/api/v1/cmdb/history/{ciId}` | `internal/cmdb/service.go:170` |
 
 ## `/api/v1/cmdb/history/detail` (1)
 
 | Method | Path | 位置 |
 | --- | --- | --- |
-| GET | `/api/v1/cmdb/history/detail/{id}` | `internal/cmdb/service.go:168` |
+| GET | `/api/v1/cmdb/history/detail/{id}` | `internal/cmdb/service.go:171` |
 
 ## `/api/v1/cmdb/idc` (5)
 
 | Method | Path | 位置 |
 | --- | --- | --- |
-| GET | `/api/v1/cmdb/idc` | `internal/cmdb/service.go:140` |
-| POST | `/api/v1/cmdb/idc` | `internal/cmdb/service.go:141` |
-| GET | `/api/v1/cmdb/idc/{idcId}/racks` | `internal/cmdb/service.go:143` |
-| POST | `/api/v1/cmdb/idc/{idcId}/racks` | `internal/cmdb/service.go:144` |
-| DELETE | `/api/v1/cmdb/idc/{id}` | `internal/cmdb/service.go:142` |
+| GET | `/api/v1/cmdb/idc` | `internal/cmdb/service.go:143` |
+| POST | `/api/v1/cmdb/idc` | `internal/cmdb/service.go:144` |
+| GET | `/api/v1/cmdb/idc/{idcId}/racks` | `internal/cmdb/service.go:146` |
+| POST | `/api/v1/cmdb/idc/{idcId}/racks` | `internal/cmdb/service.go:147` |
+| DELETE | `/api/v1/cmdb/idc/{id}` | `internal/cmdb/service.go:145` |
 
 ## `/api/v1/cmdb/impact` (1)
 
 | Method | Path | 位置 |
 | --- | --- | --- |
-| GET | `/api/v1/cmdb/impact/{id}` | `internal/cmdb/service.go:114` |
+| GET | `/api/v1/cmdb/impact/{id}` | `internal/cmdb/service.go:117` |
 
 ## `/api/v1/cmdb/model-categories` (3)
 
 | Method | Path | 位置 |
 | --- | --- | --- |
-| GET | `/api/v1/cmdb/model-categories` | `internal/cmdb/service.go:132` |
-| POST | `/api/v1/cmdb/model-categories` | `internal/cmdb/service.go:133` |
-| DELETE | `/api/v1/cmdb/model-categories/{id}` | `internal/cmdb/service.go:134` |
+| GET | `/api/v1/cmdb/model-categories` | `internal/cmdb/service.go:135` |
+| POST | `/api/v1/cmdb/model-categories` | `internal/cmdb/service.go:136` |
+| DELETE | `/api/v1/cmdb/model-categories/{id}` | `internal/cmdb/service.go:137` |
 
 ## `/api/v1/cmdb/model-type` (5)
 
 | Method | Path | 位置 |
 | --- | --- | --- |
-| GET | `/api/v1/cmdb/model-type` | `internal/cmdb/service.go:124` |
-| POST | `/api/v1/cmdb/model-type` | `internal/cmdb/service.go:123` |
-| DELETE | `/api/v1/cmdb/model-type/{id}` | `internal/cmdb/service.go:127` |
-| GET | `/api/v1/cmdb/model-type/{id}` | `internal/cmdb/service.go:125` |
-| PUT | `/api/v1/cmdb/model-type/{id}` | `internal/cmdb/service.go:126` |
+| GET | `/api/v1/cmdb/model-type` | `internal/cmdb/service.go:127` |
+| POST | `/api/v1/cmdb/model-type` | `internal/cmdb/service.go:126` |
+| DELETE | `/api/v1/cmdb/model-type/{id}` | `internal/cmdb/service.go:130` |
+| GET | `/api/v1/cmdb/model-type/{id}` | `internal/cmdb/service.go:128` |
+| PUT | `/api/v1/cmdb/model-type/{id}` | `internal/cmdb/service.go:129` |
 
 ## `/api/v1/cmdb/model-type/export` (1)
 
 | Method | Path | 位置 |
 | --- | --- | --- |
-| GET | `/api/v1/cmdb/model-type/export` | `internal/cmdb/service.go:128` |
+| GET | `/api/v1/cmdb/model-type/export` | `internal/cmdb/service.go:131` |
 
 ## `/api/v1/cmdb/model-type/import` (1)
 
 | Method | Path | 位置 |
 | --- | --- | --- |
-| POST | `/api/v1/cmdb/model-type/import` | `internal/cmdb/service.go:129` |
+| POST | `/api/v1/cmdb/model-type/import` | `internal/cmdb/service.go:132` |
 
 ## `/api/v1/cmdb/onboard` (1)
 
 | Method | Path | 位置 |
 | --- | --- | --- |
-| POST | `/api/v1/cmdb/onboard` | `internal/cmdb/service.go:189` |
+| POST | `/api/v1/cmdb/onboard` | `internal/cmdb/service.go:192` |
 
 ## `/api/v1/cmdb/quality` (1)
 
 | Method | Path | 位置 |
 | --- | --- | --- |
-| GET | `/api/v1/cmdb/quality` | `internal/cmdb/service.go:192` |
+| GET | `/api/v1/cmdb/quality` | `internal/cmdb/service.go:195` |
 
 ## `/api/v1/cmdb/racks` (3)
 
 | Method | Path | 位置 |
 | --- | --- | --- |
-| DELETE | `/api/v1/cmdb/racks/{id}` | `internal/cmdb/service.go:145` |
-| GET | `/api/v1/cmdb/racks/{id}/units` | `internal/cmdb/service.go:146` |
-| POST | `/api/v1/cmdb/racks/{id}/units` | `internal/cmdb/service.go:147` |
+| DELETE | `/api/v1/cmdb/racks/{id}` | `internal/cmdb/service.go:148` |
+| GET | `/api/v1/cmdb/racks/{id}/units` | `internal/cmdb/service.go:149` |
+| POST | `/api/v1/cmdb/racks/{id}/units` | `internal/cmdb/service.go:150` |
 
 ## `/api/v1/cmdb/relation` (3)
 
 | Method | Path | 位置 |
 | --- | --- | --- |
-| GET | `/api/v1/cmdb/relation` | `internal/cmdb/service.go:116` |
-| POST | `/api/v1/cmdb/relation` | `internal/cmdb/service.go:117` |
-| DELETE | `/api/v1/cmdb/relation/{id}` | `internal/cmdb/service.go:118` |
+| GET | `/api/v1/cmdb/relation` | `internal/cmdb/service.go:119` |
+| POST | `/api/v1/cmdb/relation` | `internal/cmdb/service.go:120` |
+| DELETE | `/api/v1/cmdb/relation/{id}` | `internal/cmdb/service.go:121` |
+
+## `/api/v1/cmdb/relation/batch` (1)
+
+| Method | Path | 位置 |
+| --- | --- | --- |
+| POST | `/api/v1/cmdb/relation/batch` | `internal/cmdb/service.go:108` |
 
 ## `/api/v1/cmdb/saved-queries` (4)
 
 | Method | Path | 位置 |
 | --- | --- | --- |
-| GET | `/api/v1/cmdb/saved-queries` | `internal/cmdb/service.go:108` |
-| POST | `/api/v1/cmdb/saved-queries` | `internal/cmdb/service.go:109` |
-| DELETE | `/api/v1/cmdb/saved-queries/{id}` | `internal/cmdb/service.go:111` |
-| GET | `/api/v1/cmdb/saved-queries/{id}/resolve` | `internal/cmdb/service.go:110` |
+| GET | `/api/v1/cmdb/saved-queries` | `internal/cmdb/service.go:111` |
+| POST | `/api/v1/cmdb/saved-queries` | `internal/cmdb/service.go:112` |
+| DELETE | `/api/v1/cmdb/saved-queries/{id}` | `internal/cmdb/service.go:114` |
+| GET | `/api/v1/cmdb/saved-queries/{id}/resolve` | `internal/cmdb/service.go:113` |
 
 ## `/api/v1/cmdb/search` (1)
 
 | Method | Path | 位置 |
 | --- | --- | --- |
-| GET | `/api/v1/cmdb/search` | `internal/cmdb/service.go:105` |
+| GET | `/api/v1/cmdb/search` | `internal/cmdb/service.go:107` |
 
 ## `/api/v1/cmdb/stats` (1)
 
 | Method | Path | 位置 |
 | --- | --- | --- |
-| GET | `/api/v1/cmdb/stats` | `internal/cmdb/service.go:137` |
+| GET | `/api/v1/cmdb/stats` | `internal/cmdb/service.go:140` |
 
 ## `/api/v1/cmdb/subscription-deliveries` (1)
 
 | Method | Path | 位置 |
 | --- | --- | --- |
-| GET | `/api/v1/cmdb/subscription-deliveries` | `internal/cmdb/service.go:163` |
+| GET | `/api/v1/cmdb/subscription-deliveries` | `internal/cmdb/service.go:166` |
 
 ## `/api/v1/cmdb/subscriptions` (5)
 
 | Method | Path | 位置 |
 | --- | --- | --- |
-| GET | `/api/v1/cmdb/subscriptions` | `internal/cmdb/service.go:158` |
-| POST | `/api/v1/cmdb/subscriptions` | `internal/cmdb/service.go:159` |
-| DELETE | `/api/v1/cmdb/subscriptions/{id}` | `internal/cmdb/service.go:161` |
-| PUT | `/api/v1/cmdb/subscriptions/{id}` | `internal/cmdb/service.go:160` |
-| POST | `/api/v1/cmdb/subscriptions/{id}/test` | `internal/cmdb/service.go:162` |
+| GET | `/api/v1/cmdb/subscriptions` | `internal/cmdb/service.go:161` |
+| POST | `/api/v1/cmdb/subscriptions` | `internal/cmdb/service.go:162` |
+| DELETE | `/api/v1/cmdb/subscriptions/{id}` | `internal/cmdb/service.go:164` |
+| PUT | `/api/v1/cmdb/subscriptions/{id}` | `internal/cmdb/service.go:163` |
+| POST | `/api/v1/cmdb/subscriptions/{id}/test` | `internal/cmdb/service.go:165` |
 
 ## `/api/v1/cmdb/topology` (1)
 
 | Method | Path | 位置 |
 | --- | --- | --- |
-| GET | `/api/v1/cmdb/topology/{id}` | `internal/cmdb/service.go:113` |
+| GET | `/api/v1/cmdb/topology/{id}` | `internal/cmdb/service.go:116` |
 
 ## `/api/v1/collect-metrics` (1)
 

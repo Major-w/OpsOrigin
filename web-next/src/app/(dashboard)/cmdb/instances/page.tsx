@@ -19,6 +19,18 @@ import { Plus, Pencil, Trash2, Network, Search, ChevronLeft, ChevronRight, Link2
 interface TopologyNode { id: string; name: string; type: string }
 interface TopologyEdge { source: string; target: string; type: string }
 interface SavedQuery { id: string; name: string; type_id?: string; query: { q?: string; status?: string; attrs?: Record<string, string> } }
+// 模型字段定义(与后端 AttrDef 对齐, 驱动 ref/enum/unique 渲染)
+interface ModelFieldDef {
+  name: string
+  type: string
+  required?: boolean
+  description?: string
+  options?: string[]
+  unique?: boolean
+  ref_model?: string
+  ref_display?: string
+}
+interface ModelInfo { id: string; name: string; fields?: ModelFieldDef[] }
 
 const CI_TYPES = ['server', 'web-server', 'database', 'switch', 'loadbalancer', 'dns-server', 'firewall', 'storage']
 const PAGE_SIZE = 20
@@ -62,6 +74,17 @@ export default function CMDBPage() {
   const [importOpen, setImportOpen] = useState(false)
   const [importResult, setImportResult] = useState<{ created: number; updated: number; failed: { row: number; error: string }[] } | null>(null)
 
+  // 模型列表(类型下拉与 schema 驱动渲染), 替代硬编码 CI_TYPES
+  const [models, setModels] = useState<ModelInfo[]>([])
+  // 引用型字段的目标模型实例缓存: ref_model -> CI 列表
+  const [refOptions, setRefOptions] = useState<Record<string, { id: string; name: string }[]>>({})
+
+  useEffect(() => {
+    apiList<ModelInfo>('/cmdb/model-type?limit=1000')
+      .then(list => setModels(list))
+      .catch(() => setModels([]))
+  }, [])
+
   useEffect(() => {
     fetch({ limit: PAGE_SIZE, offset: page * PAGE_SIZE, sort_by: 'updated_at', sort_order: 'desc' })
     fetchRelations()
@@ -79,6 +102,15 @@ export default function CMDBPage() {
 
   const loadSavedQueries = async () => {
     try { setSavedQueries(await apiList<SavedQuery>('/cmdb/saved-queries')) } catch { setSavedQueries([]) }
+  }
+
+  // 引用型字段: 按需加载目标模型实例作为下拉选项(缓存, 避免重复请求)
+  const ensureRefOptions = async (refModel: string) => {
+    if (!refModel || refOptions[refModel]) return
+    try {
+      const list = await apiList<{ id: string; name: string }>(`/cmdb/ci?type_id=${refModel}&limit=200`)
+      setRefOptions(s => ({ ...s, [refModel]: list }))
+    } catch { /* 忽略加载失败, 下拉保持空 */ }
   }
 
   const handleArchive = async (id: string) => {
@@ -528,10 +560,61 @@ export default function CMDBPage() {
           <div><label className="text-sm font-medium">名称 *</label><Input value={form.name} onChange={e => setForm(f => ({ ...f, name: e.target.value }))} /></div>
           <div><label className="text-sm font-medium">类型</label>
             <select className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm" value={form.type_id} onChange={e => setForm(f => ({ ...f, type_id: e.target.value }))}>
-              {CI_TYPES.map(t => <option key={t} value={t}>{t}</option>)}
+              {(models.length ? models : CI_TYPES.map(t => ({ id: t, name: t }))).map(m => <option key={m.id} value={m.id}>{m.name || m.id}</option>)}
             </select>
           </div>
           <div><label className="text-sm font-medium">描述</label><textarea className="flex h-16 w-full rounded-md border border-input bg-background px-3 py-2 text-sm" value={form.description} onChange={e => setForm(f => ({ ...f, description: e.target.value }))} /></div>
+
+          {/* schema 驱动字段渲染: ref → 引用选择器 / enum → 选项下拉 / unique → 唯一提示 */}
+          {(() => {
+            const schema = models.find(m => m.id === form.type_id)?.fields || []
+            if (schema.length === 0) return null
+            return (
+              <div className="space-y-2 border rounded-md p-3 bg-muted/20">
+                <p className="text-xs font-medium text-muted-foreground">模型字段（{form.type_id}）</p>
+                {schema.map(f => {
+                  const setAttr = (v: any) => setForm(fm => ({ ...fm, attributes: { ...fm.attributes, [f.name]: v } }))
+                  if (f.type === 'ref' && f.ref_model) {
+                    const opts = refOptions[f.ref_model] || []
+                    return (
+                      <div key={f.name}>
+                        <label className="text-xs font-medium">{f.name}{f.required && ' *'}{f.unique && '（唯一）'}</label>
+                        <select className="flex h-9 w-full rounded-md border border-input bg-background px-2 py-1 text-xs mt-1"
+                          value={(form.attributes[f.name] as string) || ''}
+                          onChange={e => { setAttr(e.target.value); if (f.ref_model) ensureRefOptions(f.ref_model) }}>
+                          <option value="">选择 {f.ref_model} 实例...</option>
+                          {opts.map(o => <option key={o.id} value={o.id}>{o.name || o.id}</option>)}
+                        </select>
+                        <p className="text-[10px] text-muted-foreground mt-0.5">引用 {f.ref_model} 模型实例（{f.description || ''}）</p>
+                      </div>
+                    )
+                  }
+                  if (f.type === 'enum' && f.options?.length) {
+                    return (
+                      <div key={f.name}>
+                        <label className="text-xs font-medium">{f.name}{f.required && ' *'}{f.unique && '（唯一）'}</label>
+                        <select className="flex h-9 w-full rounded-md border border-input bg-background px-2 py-1 text-xs mt-1"
+                          value={(form.attributes[f.name] as string) || ''}
+                          onChange={e => setAttr(e.target.value)}>
+                          <option value="">选择...</option>
+                          {(f.options || []).map(o => <option key={o} value={o}>{o}</option>)}
+                        </select>
+                      </div>
+                    )
+                  }
+                  return (
+                    <div key={f.name}>
+                      <label className="text-xs font-medium">{f.name}{f.required && ' *'}{f.unique && '（唯一，不可重复）'}</label>
+                      <Input className="mt-1 h-9 text-xs" value={(form.attributes[f.name] as string) || ''}
+                        onChange={e => setAttr(f.type === 'number' ? Number(e.target.value) : e.target.value)}
+                        placeholder={f.description || ''} />
+                    </div>
+                  )
+                })}
+              </div>
+            )
+          })()}
+
           <div>
             <label className="text-sm font-medium">自定义属性 (JSON)</label>
             <textarea className="flex h-24 w-full rounded-md border border-input bg-background px-3 py-2 text-sm font-mono"

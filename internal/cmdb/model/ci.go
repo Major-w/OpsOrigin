@@ -100,6 +100,16 @@ type AttrDef struct {
 	Required    bool   `json:"required"`
 	Description string `json:"description,omitempty"`
 	Default     any    `json:"default,omitempty"`
+	// Unique 声明该字段在「同一模型类型 + 租户」内取值唯一,
+	// 写入/更新时由 validateAttributes 拦截重复(而非仅质量中心事后报告)。
+	Unique bool `json:"unique,omitempty"`
+	// RefModel 引用型字段: Type=="ref" 时指向目标模型类型 ID,
+	// 前端渲染为从该模型 CI 实例取选项的下拉选择器, 写入时校验目标 CI 存在。
+	RefModel string `json:"ref_model,omitempty"`
+	// RefDisplay 引用型字段的展示属性(默认 name)。
+	RefDisplay string `json:"ref_display,omitempty"`
+	// Options 枚举选项(select/enum 类型), 前端展示为下拉。
+	Options []string `json:"options,omitempty"`
 }
 
 type CIModel struct {
