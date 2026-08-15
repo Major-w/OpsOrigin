@@ -7,7 +7,7 @@ import { Badge } from '@/components/ui/badge'
 import { Input } from '@/components/ui/input'
 import { Dialog, DialogFooter } from '@/components/ui/dialog'
 import { apiFetch, apiList } from '@/lib/utils'
-import { Plus, Trash2, GripVertical, Edit2, Download, Upload, Settings2, Shield } from 'lucide-react'
+import { Plus, Trash2, GripVertical, Edit2, Download, Upload, Settings2, Shield, History } from 'lucide-react'
 import { useCan } from '@/stores/permissions'
 import { cn } from '@/lib/utils'
 import { toast } from '@/stores/toast'
@@ -105,6 +105,28 @@ export default function CMDBModelsPage() {
   const [fieldForm, setFieldForm] = useState<SchemaField>({ name: '', type: 'string', required: false, description: '' })
   const [catDialogOpen, setCatDialogOpen] = useState(false)
   const [newCatName, setNewCatName] = useState('')
+
+  // 模型版本历史(快照/回滚)
+  const [verDialogOpen, setVerDialogOpen] = useState(false)
+  const [verModel, setVerModel] = useState<CIModel | null>(null)
+  const [versions, setVersions] = useState<{ version: number; name: string; created_at: string; schema: Record<string, any> }[]>([])
+
+  const openVersions = async (model: CIModel) => {
+    setVerModel(model); setVerDialogOpen(true)
+    try {
+      setVersions(await apiList<{ version: number; name: string; created_at: string; schema: Record<string, any> }>(`/cmdb/model-type/${model.id}/versions`))
+    } catch (e: any) { setVersions([]); toast.error('加载版本失败: ' + e.message) }
+  }
+
+  const handleRollback = async (v: { version: number }) => {
+    if (!verModel) return
+    if (!confirm(`回滚「${verModel.name}」到 v${v.version}？当前 schema 会留痕为下一个版本。`)) return
+    try {
+      await apiFetch(`/cmdb/model-type/${verModel.id}/rollback/${v.version}`, { method: 'POST' })
+      toast.success(`已回滚到 v${v.version}`)
+      setVerDialogOpen(false); loadModels()
+    } catch (e: any) { toast.error('回滚失败: ' + e.message) }
+  }
   // P2-4 字段级规则权限
   const [ruleDialogOpen, setRuleDialogOpen] = useState(false)
   const [ruleModel, setRuleModel] = useState<CIModel | null>(null)
@@ -284,11 +306,27 @@ export default function CMDBModelsPage() {
         <div className="flex gap-2">
           <Button variant="outline" onClick={handleExport}><Download className="h-4 w-4" />导出</Button>
           <Button variant="outline" onClick={() => fileRef.current?.click()}><Upload className="h-4 w-4" />导入</Button>
-          <input ref={fileRef} type="file" accept="application/json" className="hidden" onChange={handleImportFile} />
           {canAdmin && <Button variant="outline" onClick={() => setCatDialogOpen(true)}><Settings2 className="h-4 w-4" />管理分类</Button>}
           {canAdmin && <Button onClick={openCreate}><Plus className="h-4 w-4" />新建模型</Button>}
         </div>
       </div>
+
+      {/* 模型版本历史 */}
+      <Dialog open={verDialogOpen} onClose={() => setVerDialogOpen(false)} title={`版本历史：${verModel?.name || ''}`}>
+        <div className="space-y-3 max-h-[60vh] overflow-y-auto">
+          {versions.length === 0 && <p className="text-sm text-muted-foreground py-4 text-center">暂无版本快照（模型更新时会自动留痕）</p>}
+          {versions.map(v => (
+            <div key={v.version} className="border rounded-md p-3 flex items-center justify-between">
+              <div>
+                <p className="text-sm font-medium">v{v.version} · {v.name}</p>
+                <p className="text-xs text-muted-foreground">{v.created_at?.slice(0, 19)?.replace('T', ' ') || ''} · {Object.keys(v.schema || {}).length} 个字段</p>
+              </div>
+              <Button variant="outline" size="sm" className="h-6 text-xs" onClick={() => handleRollback(v)}>回滚</Button>
+            </div>
+          ))}
+        </div>
+        <DialogFooter><Button variant="outline" onClick={() => setVerDialogOpen(false)}>关闭</Button></DialogFooter>
+      </Dialog>
 
       {/* 分类过滤（动态，含自定义） */}
       <div className="flex gap-2 flex-wrap items-center">
@@ -318,6 +356,7 @@ export default function CMDBModelsPage() {
                   {canAdmin && (
                     <div className="flex">
                       <Button variant="ghost" size="sm" className="opacity-0 group-hover:opacity-100 h-7 w-7 p-0" title="字段权限" onClick={() => openFieldRules(model)}><Shield className="h-3.5 w-3.5" /></Button>
+                      <Button variant="ghost" size="sm" className="opacity-0 group-hover:opacity-100 h-7 w-7 p-0" title="版本历史" onClick={() => openVersions(model)}><History className="h-3.5 w-3.5" /></Button>
                       <Button variant="ghost" size="sm" className="opacity-0 group-hover:opacity-100 h-7 w-7 p-0" onClick={() => openEdit(model)}><Edit2 className="h-3.5 w-3.5" /></Button>
                       {!model.builtin && (
                         <Button variant="ghost" size="sm" className="opacity-0 group-hover:opacity-100 h-7 w-7 p-0 text-destructive" onClick={() => handleDelete(model)}><Trash2 className="h-3.5 w-3.5" /></Button>
@@ -523,6 +562,8 @@ export default function CMDBModelsPage() {
         </div>
         <DialogFooter><Button onClick={() => setCatDialogOpen(false)}>关闭</Button></DialogFooter>
       </Dialog>
+
+      <input ref={fileRef} type="file" accept="application/json" className="hidden" onChange={handleImportFile} />
     </div>
   )
 }

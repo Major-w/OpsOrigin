@@ -4,7 +4,7 @@ import { useState } from 'react'
 import Link from 'next/link'
 import { usePathname, useRouter } from 'next/navigation'
 import { cn } from '@/lib/utils'
-import { Server, TicketCheck, Activity, Bot, Shield, LayoutDashboard, Hexagon, LogOut, User, Terminal, Workflow, Clock, Search, BookOpen, Calendar, GitBranch, Package, Bell, Key, Blocks, Users, Settings, Sun, Moon, Scan, Bug, Download, PackagePlus, Network, AlertTriangle, History, FileText, Rocket, AppWindow, FileCheck2, Cloud, Play, Sparkles, Database, Radio, BarChart3, Building2, TrendingUp, Store, Cpu, Webhook, Mail, MessageSquare, FolderOpen, type LucideIcon } from 'lucide-react'
+import { Server, TicketCheck, Activity, Bot, Shield, LayoutDashboard, Hexagon, LogOut, User, Terminal, Workflow, Clock, Search, BookOpen, Calendar, GitBranch, Package, Bell, Key, Blocks, Users, Settings, Sun, Moon, Scan, Bug, Download, PackagePlus, Network, AlertTriangle, History, FileText, Rocket, AppWindow, FileCheck2, Cloud, Play, Sparkles, Database, Radio, BarChart3, Building2, TrendingUp, Store, Cpu, Webhook, Mail, MessageSquare, FolderOpen, ShieldAlert, type LucideIcon } from 'lucide-react'
 import { useAuthStore } from '@/stores/auth'
 import { MessageBell } from '@/components/message-bell'
 import { useThemeStore } from '@/stores/theme'
@@ -78,6 +78,7 @@ const navGroups: (NavItem | NavGroup)[] = [
       { to: '/cmdb/stats', label: '资源统计', icon: BarChart3 },
       { to: '/cmdb/topology', label: '拓扑可视化', icon: Network },
       { to: '/cmdb/panorama', label: '可观测全景', icon: Activity },
+      { to: '/cmdb/quality', label: '数据质量', icon: ShieldAlert },
       { to: '/cmdb/idc', label: '机房机柜', icon: Building2 },
       {
         label: '配置项设置', items: [

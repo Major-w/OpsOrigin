@@ -82,3 +82,20 @@ func (r *DiscoveryResult) MarshalAttributes() ([]byte, error) {
 func (r *DiscoveryResult) UnmarshalAttributes(data []byte) error {
 	return json.Unmarshal(data, &r.Attributes)
 }
+
+// ModelTypeVersion 模型类型的版本快照(方案 C 治理: 模型是契约, 变更可追溯/回滚)。
+type ModelTypeVersion struct {
+	ID          string             `json:"id"`
+	ModelTypeID string             `json:"model_type_id"`
+	TenantID    string             `json:"tenant_id"`
+	Version     int                `json:"version"`
+	Name        string             `json:"name"`
+	Description string             `json:"description,omitempty"`
+	ParentID    string             `json:"parent_id,omitempty"`
+	Category    string             `json:"category,omitempty"`
+	Icon        string             `json:"icon,omitempty"`
+	Abstract    bool               `json:"abstract"`
+	Schema      map[string]AttrDef `json:"schema"`
+	Operator    string             `json:"operator,omitempty"`
+	CreatedAt   time.Time          `json:"created_at"`
+}

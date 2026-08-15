@@ -89,6 +89,28 @@ func (r *Repository) Migrate(ctx context.Context) error {
 		WHERE id IN ('database', 'middleware') AND abstract IS DISTINCT FROM TRUE`); err != nil {
 		return fmt.Errorf("backfill abstract model types: %w", err)
 	}
+	// 模型类型版本快照表(更新留痕/回滚)。
+	if _, err := r.db.ExecContext(ctx, `
+		CREATE TABLE IF NOT EXISTS cmdb_model_type_version (
+			id            TEXT PRIMARY KEY,
+			model_type_id TEXT NOT NULL,
+			tenant_id     TEXT NOT NULL DEFAULT 'default',
+			version       INTEGER NOT NULL DEFAULT 1,
+			name          TEXT NOT NULL,
+			description   TEXT,
+			parent_id     TEXT,
+			category      TEXT,
+			icon          TEXT,
+			abstract      BOOLEAN NOT NULL DEFAULT FALSE,
+			schema        JSONB NOT NULL DEFAULT '{}',
+			operator      TEXT,
+			created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW()
+		)`); err != nil {
+		return fmt.Errorf("create cmdb_model_type_version table: %w", err)
+	}
+	if _, err := r.db.ExecContext(ctx, `CREATE INDEX IF NOT EXISTS idx_mtv_model ON cmdb_model_type_version(model_type_id, version)`); err != nil {
+		return fmt.Errorf("create model type version index: %w", err)
+	}
 	// 方案 C 存量迁移：把大类 CI 按 engine/middleware_type 属性下沉为具体引擎子类 TypeID。
 	// 幂等：仅作用于仍处于父类(database/middleware)的行；下沉后 type_id 不再命中，重复执行无副作用。
 	// 未知 engine 保留父类不迁移，避免制造孤儿类型。
@@ -1037,6 +1059,91 @@ func (r *Repository) CountCIModelTypes(ctx context.Context, tenantID string) (in
 }
 
 // UpdateCIModelType 更新CI模型类型
+// SaveModelTypeVersion 保存模型类型的版本快照(更新前调用, 用于历史追溯与回滚)。
+func (r *Repository) SaveModelTypeVersion(ctx context.Context, v *model.ModelTypeVersion) error {
+	if v.ID == "" {
+		v.ID = uuid.New().String()
+	}
+	schemaJSON, err := json.Marshal(v.Schema)
+	if err != nil {
+		return fmt.Errorf("marshal model type version schema: %w", err)
+	}
+	_, err = r.db.ExecContext(ctx, `
+		INSERT INTO cmdb_model_type_version
+			(id, model_type_id, tenant_id, version, name, description, parent_id, category, icon, abstract, schema, operator, created_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)`,
+		v.ID, v.ModelTypeID, v.TenantID, v.Version, v.Name, nullIfEmpty(v.Description),
+		nullIfEmpty(v.ParentID), nullIfEmpty(v.Category), nullIfEmpty(v.Icon),
+		v.Abstract, schemaJSON, nullIfEmpty(v.Operator), v.CreatedAt)
+	if err != nil {
+		return fmt.Errorf("insert model type version: %w", err)
+	}
+	return nil
+}
+
+// ListModelTypeVersions 列出模型类型的版本快照(新→旧)。
+func (r *Repository) ListModelTypeVersions(ctx context.Context, modelTypeID, tenantID string, limit int) ([]*model.ModelTypeVersion, error) {
+	rows, err := r.db.QueryContext(ctx, `
+		SELECT id, model_type_id, tenant_id, version, name, description, parent_id, category, icon, abstract, schema, operator, created_at
+		FROM cmdb_model_type_version
+		WHERE model_type_id = $1 AND tenant_id = $2
+		ORDER BY version DESC LIMIT $3`, modelTypeID, tenantID, limit)
+	if err != nil {
+		return nil, fmt.Errorf("list model type versions: %w", err)
+	}
+	defer rows.Close()
+
+	var out []*model.ModelTypeVersion
+	for rows.Next() {
+		v := &model.ModelTypeVersion{}
+		var schemaJSON []byte
+		var desc, parentID, category, icon, operator sql.NullString
+		if err := rows.Scan(&v.ID, &v.ModelTypeID, &v.TenantID, &v.Version, &v.Name,
+			&desc, &parentID, &category, &icon, &v.Abstract, &schemaJSON, &operator, &v.CreatedAt); err != nil {
+			return nil, fmt.Errorf("scan model type version: %w", err)
+		}
+		v.Description = desc.String
+		v.ParentID = parentID.String
+		v.Category = category.String
+		v.Icon = icon.String
+		v.Operator = operator.String
+		if len(schemaJSON) > 0 {
+			json.Unmarshal(schemaJSON, &v.Schema)
+		}
+		out = append(out, v)
+	}
+	return out, rows.Err()
+}
+
+// GetModelTypeVersion 取指定版本的模型快照(回滚用)。
+func (r *Repository) GetModelTypeVersion(ctx context.Context, modelTypeID, tenantID string, version int) (*model.ModelTypeVersion, error) {
+	v := &model.ModelTypeVersion{}
+	var schemaJSON []byte
+	var desc, parentID, category, icon, operator sql.NullString
+	err := r.db.QueryRowContext(ctx, `
+		SELECT id, model_type_id, tenant_id, version, name, description, parent_id, category, icon, abstract, schema, operator, created_at
+		FROM cmdb_model_type_version
+		WHERE model_type_id = $1 AND tenant_id = $2 AND version = $3`,
+		modelTypeID, tenantID, version).Scan(
+		&v.ID, &v.ModelTypeID, &v.TenantID, &v.Version, &v.Name,
+		&desc, &parentID, &category, &icon, &v.Abstract, &schemaJSON, &operator, &v.CreatedAt)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("get model type version: %w", err)
+	}
+	v.Description = desc.String
+	v.ParentID = parentID.String
+	v.Category = category.String
+	v.Icon = icon.String
+	v.Operator = operator.String
+	if len(schemaJSON) > 0 {
+		json.Unmarshal(schemaJSON, &v.Schema)
+	}
+	return v, nil
+}
+
 func (r *Repository) UpdateCIModelType(ctx context.Context, mt *model.CIModelType) error {
 	mt.UpdatedAt = time.Now()
 

@@ -44,6 +44,8 @@ type Issue struct {
 	Dimension Dimension `json:"dimension"`
 	Severity  Severity  `json:"severity"`
 	Message   string    `json:"message"`
+	// RelationID 一致性(孤儿关系)问题携带的关系 ID, 供一键修复定位删除目标。
+	RelationID string `json:"relation_id,omitempty"`
 }
 
 // TypeReport 是单个模型类型的质量报告。
@@ -166,9 +168,10 @@ func (e *Engine) Scan(ctx context.Context, tenantID string) (*Report, error) {
 	for _, rel := range relations {
 		if !allIDs[rel.SourceID] || !allIDs[rel.TargetID] {
 			report.Issues = append(report.Issues, Issue{
-				Dimension: DimConsistency,
-				Severity:  SeverityMedium,
-				Message:   "孤儿关系 " + rel.ID + "（" + rel.RelationType + "）：端点 " + rel.SourceID + "→" + rel.TargetID + " 指向已不存在的 CI",
+				Dimension:  DimConsistency,
+				Severity:   SeverityMedium,
+				Message:    "孤儿关系 " + rel.ID + "（" + rel.RelationType + "）：端点 " + rel.SourceID + "→" + rel.TargetID + " 指向已不存在的 CI",
+				RelationID: rel.ID,
 			})
 			orphan++
 		}
