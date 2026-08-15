@@ -426,15 +426,18 @@ func (e *Engine) loadFromStore() error {
 
 // Chat 执行一次单轮(可带历史)的 LLM 推理,供 AI 助手聊天端点使用。
 // 支持 Function Calling:模型可自主调用已注册的运维工具(CMDB查询/工单/脚本执行/知识库检索)。
-func (e *Engine) Chat(ctx context.Context, agentID, prompt string, history []llm.Message, conversationID string) (content string, convID string, err error) {
-	content, _, _, convID, err = e.chatWithToolsConv(ctx, agentID, prompt, history, false, conversationID)
+// Chat 执行一次单轮(可带历史)的 LLM 推理,供 AI 助手聊天端点使用。
+// model 为可选的运行级模型覆盖(按会话/请求指定);为空时回退 agent 配置模型,再回退引擎默认。
+// 支持 Function Calling:模型可自主调用已注册的运维工具(CMDB查询/工单/脚本执行/知识库检索)。
+func (e *Engine) Chat(ctx context.Context, agentID, prompt string, history []llm.Message, conversationID, model string) (content string, convID string, err error) {
+	content, _, _, convID, err = e.chatWithToolsConv(ctx, agentID, prompt, history, false, conversationID, model)
 	return
 }
 
 // ChatReasoning 思维链模式:返回思考过程和最终答案。
 // 优先返回模型原生 reasoning_content(DeepSeek-R1/Qwen 等),缺失时降级到 prompt 伪思维链。
-func (e *Engine) ChatReasoning(ctx context.Context, agentID, prompt string, history []llm.Message, conversationID string) (thinking string, answer string, convID string, err error) {
-	answer, reasoning, _, convID, err := e.chatWithToolsConv(ctx, agentID, prompt, history, true, conversationID)
+func (e *Engine) ChatReasoning(ctx context.Context, agentID, prompt string, history []llm.Message, conversationID, model string) (thinking string, answer string, convID string, err error) {
+	answer, reasoning, _, convID, err := e.chatWithToolsConv(ctx, agentID, prompt, history, true, conversationID, model)
 	if err != nil {
 		return "", "", "", err
 	}
@@ -454,8 +457,8 @@ type ToolInvocation struct {
 
 // ChatWithTools 执行带 Function Calling 的对话,返回最终答案与本次触发的所有工具调用。
 // 供需要审计/展示工具使用情况的调用方使用(如团队编排后的汇总)。
-func (e *Engine) ChatWithTools(ctx context.Context, agentID, prompt string, history []llm.Message, reasoning bool, conversationID string) (out string, inv []ToolInvocation, convID string, err error) {
-	out, _, inv, convID, err = e.chatWithToolsConv(ctx, agentID, prompt, history, reasoning, conversationID)
+func (e *Engine) ChatWithTools(ctx context.Context, agentID, prompt string, history []llm.Message, reasoning bool, conversationID, model string) (out string, inv []ToolInvocation, convID string, err error) {
+	out, _, inv, convID, err = e.chatWithToolsConv(ctx, agentID, prompt, history, reasoning, conversationID, model)
 	return out, inv, convID, err
 }
 
@@ -473,7 +476,7 @@ func (e *Engine) ChatWithTools(ctx context.Context, agentID, prompt string, hist
 //   - 对话成功后把本轮回合(用户问题 + assistant + tool 结果)增量追加回该会话并落库。
 //
 // 返回 (最终答案, 原生推理内容, 工具调用记录, 会话ID, error)。
-func (e *Engine) chatWithToolsConv(ctx context.Context, agentID, prompt string, history []llm.Message, reasoning bool, conversationID string) (string, string, []ToolInvocation, string, error) {
+func (e *Engine) chatWithToolsConv(ctx context.Context, agentID, prompt string, history []llm.Message, reasoning bool, conversationID, model string) (string, string, []ToolInvocation, string, error) {
 	if prompt == "" {
 		return "", "", nil, "", fmt.Errorf("prompt is required")
 	}
@@ -555,7 +558,7 @@ func (e *Engine) chatWithToolsConv(ctx context.Context, agentID, prompt string, 
 			break
 		}
 		resp, cerr := e.chatLLM(ctx, llm.ChatRequest{
-			Model:       e.modelForAgent(agentID),
+			Model:       e.modelForAgent(agentID, model),
 			Messages:    msgs,
 			Tools:       tools,
 			MaxTokens:   e.genMaxTokensVal(),
@@ -575,7 +578,7 @@ func (e *Engine) chatWithToolsConv(ctx context.Context, agentID, prompt string, 
 		choiceMsg := resp.Choices[0].Message
 		msgs = append(msgs, choiceMsg)
 
-		step := TrajectoryStep{Index: round, Model: e.modelForAgent(agentID), RequestMsgs: len(msgs)}
+		step := TrajectoryStep{Index: round, Model: e.modelForAgent(agentID, model), RequestMsgs: len(msgs)}
 		step.Assistant = choiceMsg.Content
 		step.Reasoning = choiceMsg.ReasoningContent
 
@@ -1960,7 +1963,11 @@ func ExtractCitations(text string) []string {
 
 // modelForAgent 按 agentID 查找该 Agent 配置的目标模型; 未配置时返回空串,
 // 由底层 llm.Client 回退到全局默认模型。用于在多 Agent 场景下让不同 Agent 走不同 LLM。
-func (e *Engine) modelForAgent(agentID string) string {
+// modelForAgent 解析本次运行使用的模型: 运行级覆盖(reqModel) > agent 配置模型 > 引擎默认(空串, 由 router 选最高权重 provider)。
+func (e *Engine) modelForAgent(agentID, reqModel string) string {
+	if reqModel != "" {
+		return reqModel
+	}
 	if agentID != "" {
 		e.mu.RLock()
 		a, ok := e.agents[agentID]
@@ -2180,7 +2187,11 @@ func (e *Engine) ListTeams(tenantID string) []*model.AgentTeam {
 // ChatStream 流式输出(SSE)。service 在 req.stream=true 时调用本方法, 返回的文本块经 SSE 推给前端。
 // 基于 llmClient.StreamChat 实现真实流式: 文本/推理逐 token 推送, 工具调用在发生时实时发射 🔧/↳ 标记,
 // 循环内边收边发(与团队模式一致), 而非先跑完整个循环再按词切分(伪流式)。
-func (e *Engine) ChatStream(ctx context.Context, agentID, prompt string, history []llm.Message, reasoning bool, conversationID string, explore bool) (<-chan StreamChunk, string, error) {
+// ChatStream 流式输出(SSE)。service 在 req.stream=true 时调用本方法, 返回的文本块经 SSE 推给前端。
+// model 为可选运行级模型覆盖(按会话/请求指定);为空时回退 agent 配置模型,再回退引擎默认。
+// 基于 llmClient.StreamChat 实现真实流式: 文本/推理逐 token 推送, 工具调用在发生时实时发射 🔧/↳ 标记,
+// 循环内边收边发(与团队模式一致), 而非先跑完整个循环再按词切分(伪流式)。
+func (e *Engine) ChatStream(ctx context.Context, agentID, prompt string, history []llm.Message, reasoning bool, conversationID string, explore bool, model string) (<-chan StreamChunk, string, error) {
 	if prompt == "" {
 		return nil, "", fmt.Errorf("prompt is required")
 	}
@@ -2191,7 +2202,7 @@ func (e *Engine) ChatStream(ctx context.Context, agentID, prompt string, history
 	out := make(chan StreamChunk, 64)
 	go func() {
 		defer close(out)
-		err := e.chatWithToolsStream(ctx, agentID, prompt, history, reasoning, conversationID, explore, func(typ string, text string) {
+		err := e.chatWithToolsStream(ctx, agentID, prompt, history, reasoning, conversationID, explore, model, func(typ string, text string) {
 			out <- StreamChunk{Type: typ, Content: text}
 		})
 		if err != nil {
@@ -2208,7 +2219,7 @@ func (e *Engine) ChatStream(ctx context.Context, agentID, prompt string, history
 //  3. 回到步骤 1, 直至模型不再请求工具(终轮,答案已流式推送)或达到最大轮次。
 //
 // 与 chatWithTools 共享 execToolChecked, 因此同样受 RBAC / 限流 / 结果截断约束。
-func (e *Engine) chatWithToolsStream(ctx context.Context, agentID, prompt string, history []llm.Message, reasoning bool, conversationID string, explore bool, emit func(typ string, text string)) error {
+func (e *Engine) chatWithToolsStream(ctx context.Context, agentID, prompt string, history []llm.Message, reasoning bool, conversationID string, explore bool, model string, emit func(typ string, text string)) error {
 	if e.lim != nil && agentID != "" && !e.lim.Allow(agentID) {
 		return fmt.Errorf("rate limit exceeded for agent %s", agentID)
 	}
@@ -2295,7 +2306,7 @@ func (e *Engine) chatWithToolsStream(ctx context.Context, agentID, prompt string
 			return fmt.Errorf("llm concurrency limit reached")
 		}
 		ch, eerr := e.streamLLM(ctx, llm.ChatRequest{
-			Model:       e.modelForAgent(agentID),
+			Model:       e.modelForAgent(agentID, model),
 			Messages:    msgs,
 			Tools:       tools,
 			MaxTokens:   e.genMaxTokensVal(),
@@ -2326,7 +2337,7 @@ func (e *Engine) chatWithToolsStream(ctx context.Context, agentID, prompt string
 
 		msgs = append(msgs, llm.Message{Role: "assistant", Content: content, ReasoningContent: reasoningAcc, ToolCalls: toolCalls})
 
-		step := TrajectoryStep{Index: round, Model: e.modelForAgent(agentID), RequestMsgs: len(msgs)}
+		step := TrajectoryStep{Index: round, Model: e.modelForAgent(agentID, model), RequestMsgs: len(msgs)}
 		step.Assistant = content
 		step.Reasoning = reasoningAcc
 

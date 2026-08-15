@@ -563,7 +563,7 @@ func (e *Engine) modelForMember(m model.TeamMember) string {
 	if m.ModelName != "" {
 		return m.ModelName
 	}
-	return e.modelForAgent(m.AgentID)
+	return e.modelForAgent(m.AgentID, "")
 }
 
 // useTools 判断某成员本轮是否可调用工具(成员级或团队级任一开启即可)。

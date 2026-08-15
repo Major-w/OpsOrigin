@@ -278,7 +278,7 @@ func TestConversationPersistence(t *testing.T) {
 	ctx := context.Background()
 	const convID = "conv-p2-test"
 
-	out, gotConvID, err := e.Chat(ctx, "agent1", "你好", nil, convID)
+	out, gotConvID, err := e.Chat(ctx, "agent1", "你好", nil, convID, "")
 	if err != nil {
 		t.Fatalf("chat1: %v", err)
 	}
@@ -302,7 +302,7 @@ func TestConversationPersistence(t *testing.T) {
 	}
 
 	// 第二轮: 同一会话, 模型上下文应含首轮历史
-	out2, gotConvID2, err := e.Chat(ctx, "agent1", "再问一次", nil, convID)
+	out2, gotConvID2, err := e.Chat(ctx, "agent1", "再问一次", nil, convID, "")
 	if err != nil {
 		t.Fatalf("chat2: %v", err)
 	}
@@ -339,7 +339,7 @@ func TestConversationNotPersistedWithoutID(t *testing.T) {
 	e, closeFn := newTestEngineWithLLM(t, &captured)
 	defer closeFn()
 
-	out, convID, err := e.Chat(context.Background(), "agent1", "一次性提问", nil, "")
+	out, convID, err := e.Chat(context.Background(), "agent1", "一次性提问", nil, "", "")
 	if err != nil {
 		t.Fatalf("chat: %v", err)
 	}

@@ -252,6 +252,7 @@ func (s *Service) handleChat(w http.ResponseWriter, r *http.Request) {
 		Stream         bool          `json:"stream"`
 		Reasoning      bool          `json:"reasoning"`
 		Explore        bool          `json:"explore"` // 自主模式: AI 自主规划-执行-总结
+		Model          string        `json:"model"`   // 可选运行级模型覆盖(按会话/请求指定); 空=回退 agent/引擎默认
 		ConversationID string        `json:"conversation_id"`
 		MessageID      string        `json:"message_id"` // 前端为本次 assistant 回复生成的稳定 ID, 反馈时用于精确关联
 	}
@@ -285,7 +286,7 @@ func (s *Service) handleChat(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if req.Reasoning && !req.Stream {
-		thinking, answer, convID, err := s.Engine.ChatReasoning(r.Context(), req.AgentID, req.Prompt, req.History, req.ConversationID)
+		thinking, answer, convID, err := s.Engine.ChatReasoning(r.Context(), req.AgentID, req.Prompt, req.History, req.ConversationID, req.Model)
 		if err != nil {
 			writeError(w, http.StatusBadGateway, chatFriendlyError(err.Error()))
 			return
@@ -301,7 +302,7 @@ func (s *Service) handleChat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	out, convID, err := s.Engine.Chat(r.Context(), req.AgentID, req.Prompt, req.History, req.ConversationID)
+	out, convID, err := s.Engine.Chat(r.Context(), req.AgentID, req.Prompt, req.History, req.ConversationID, req.Model)
 	if err != nil {
 		writeError(w, http.StatusBadGateway, chatFriendlyError(err.Error()))
 		return
@@ -323,6 +324,7 @@ func (s *Service) handleChatStream(w http.ResponseWriter, r *http.Request, req *
 	Stream         bool          `json:"stream"`
 	Reasoning      bool          `json:"reasoning"`
 	Explore        bool          `json:"explore"`
+	Model          string        `json:"model"`
 	ConversationID string        `json:"conversation_id"`
 	MessageID      string        `json:"message_id"`
 }) {
@@ -350,7 +352,7 @@ func (s *Service) handleChatStream(w http.ResponseWriter, r *http.Request, req *
 		flusher.Flush()
 	})
 
-	ch, convID, err := s.Engine.ChatStream(ctx, req.AgentID, req.Prompt, req.History, req.Reasoning, req.ConversationID, req.Explore)
+	ch, convID, err := s.Engine.ChatStream(ctx, req.AgentID, req.Prompt, req.History, req.Reasoning, req.ConversationID, req.Explore, req.Model)
 	if err != nil {
 		fmt.Fprintf(w, "event: error\ndata: %s\n\n", err.Error())
 		flusher.Flush()

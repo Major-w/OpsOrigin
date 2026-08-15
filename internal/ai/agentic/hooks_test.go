@@ -105,7 +105,7 @@ func TestEngineTrajectoryRecorded(t *testing.T) {
 	e.SetTrajectoryRecorder(rec)
 
 	convID := "traj-conv-1"
-	out, _, retConv, err := e.ChatWithTools(context.Background(), "agent-x", "hello", nil, false, convID)
+	out, _, retConv, err := e.ChatWithTools(context.Background(), "agent-x", "hello", nil, false, convID, "")
 	if err != nil {
 		t.Fatalf("ChatWithTools err: %v", err)
 	}
