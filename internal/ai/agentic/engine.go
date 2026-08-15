@@ -2215,6 +2215,16 @@ func (e *Engine) chatWithToolsStream(ctx context.Context, agentID, prompt string
 	// 把 AI agent 身份写入上下文, 工具执行链可据此读取 Agent 级审批策略
 	ctx = withAgentID(ctx, agentID)
 
+	// 轨迹: 本次运行起点(append-only, 支持回放/复盘)。与非流式 chatWithToolsConv 对齐,
+	// 保证纯净模式/流式对话同样具备运行级可观测能力。
+	turn := &TrajectoryTurn{
+		AgentID:        agentID,
+		ConversationID: conversationID,
+		TenantID:       tenantOf(ctx),
+		StartedAt:      time.Now(),
+		Prompt:         prompt,
+	}
+
 	// 会话加载: 提供 conversationID 时优先用服务端持久历史(可信, 含 tool 消息), 否则用客户端 history。
 	var conv *Conversation
 	baseHistory := history
@@ -2258,6 +2268,22 @@ func (e *Engine) chatWithToolsStream(ctx context.Context, agentID, prompt string
 
 	var err error
 	completed := false
+	var content string // 跨轮保留最终回答(终轮 content), 供循环后记录轨迹。
+
+	// 运行 PreStep 钩子(如拒绝/改写); 短路则不调用 LLM。与非流式 chatWithToolsConv 对齐。
+	if e.hookChain != nil {
+		if skip, perr := e.hookChain.RunPreStep(ctx, agentID, prompt); skip || perr != nil {
+			if perr != nil {
+				err = perr
+				emit("error", perr.Error())
+			}
+			turn.FinalContent = ""
+			turn.Error = errString(err)
+			e.recordTrajectory(ctx, turn)
+			return err
+		}
+	}
+
 	// 自主模式需要更长的工具循环上限(多步规划执行), 普通对话保持原上限。
 	maxRounds := maxToolRounds
 	if explore {
@@ -2280,7 +2306,7 @@ func (e *Engine) chatWithToolsStream(ctx context.Context, agentID, prompt string
 			return eerr
 		}
 
-		var content, reasoningAcc string
+		var reasoningAcc string
 		var toolCalls []llm.ToolCall
 		for sc := range ch {
 			if sc.Content != "" {
@@ -2300,9 +2326,15 @@ func (e *Engine) chatWithToolsStream(ctx context.Context, agentID, prompt string
 
 		msgs = append(msgs, llm.Message{Role: "assistant", Content: content, ReasoningContent: reasoningAcc, ToolCalls: toolCalls})
 
+		step := TrajectoryStep{Index: round, Model: e.modelForAgent(agentID), RequestMsgs: len(msgs)}
+		step.Assistant = content
+		step.Reasoning = reasoningAcc
+
 		if len(toolCalls) == 0 {
 			// 终轮: 答案已通过流式推送给前端
 			e.recordStreamTokens(agentID, content)
+			step.Finished = true
+			turn.Steps = append(turn.Steps, step)
 			completed = true
 			break
 		}
@@ -2321,7 +2353,7 @@ func (e *Engine) chatWithToolsStream(ctx context.Context, agentID, prompt string
 					emit("tool", "```json\n"+string(b)+"\n```\n")
 				}
 			}
-			result, _ := e.execToolChecked(ctx, tc)
+			result, execErr := e.execToolChecked(ctx, tc)
 			emit("tool", fmt.Sprintf("\n↳ **结果**: %s\n\n", summarizeToolResult(result)))
 
 			resBytes, _ := json.Marshal(result)
@@ -2331,11 +2363,48 @@ func (e *Engine) chatWithToolsStream(ctx context.Context, agentID, prompt string
 				ToolCallID: tc.ID,
 				Name:       tc.Function.Name,
 			})
+			step.ToolCalls = append(step.ToolCalls, ToolCallRecord{
+				Name:   tc.Function.Name,
+				Args:   args,
+				Result: result,
+				Error:  execErr,
+			})
+		}
+		turn.Steps = append(turn.Steps, step)
+		if e.hookChain != nil {
+			e.hookChain.RunPostStep(ctx, agentID, round, false)
 		}
 	}
 	if !completed {
 		if err == nil {
 			err = fmt.Errorf("function calling loop exceeded max rounds (%d)", maxRounds)
+		}
+	}
+
+	// 记录本次运行轨迹(供回放/复盘); nil 记录器时跳过。与非流式 chatWithToolsConv 对齐,
+	// 保证纯净模式/流式对话同样具备运行级可观测与记忆回流能力。
+	turn.FinalContent = content
+	turn.Error = errString(err)
+	e.recordTrajectory(ctx, turn)
+
+	// 记忆回流: 把本次运行结果喂给技能演化器——成功蒸馏经验记忆, 失败累积触发补丁建议。
+	if e.skillEvolver != nil {
+		success := completed && err == nil
+		toolSeq := make([]string, 0, len(turn.Steps))
+		for _, st := range turn.Steps {
+			for _, tc := range st.ToolCalls {
+				toolSeq = append(toolSeq, tc.Name)
+			}
+		}
+		if rerr := e.skillEvolver.RecordOutcome(ctx, SkillUsageOutcome{
+			TenantID: tenantOf(ctx),
+			AgentID:  agentID,
+			Success:  success,
+			Context:  prompt,
+			ToolSeq:  toolSeq,
+			Error:    errString(err),
+		}); rerr != nil {
+			slog.Warn("ai: skill evolution record failed", "err", rerr)
 		}
 	}
 
