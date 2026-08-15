@@ -99,3 +99,17 @@ type ModelTypeVersion struct {
 	Operator    string             `json:"operator,omitempty"`
 	CreatedAt   time.Time          `json:"created_at"`
 }
+
+// CMDBDrift 配置漂移记录: 发现/采集的实际值 vs CMDB 期望值不一致。
+// 漂移是环境变化的信号(机器不打盹, 变更没有经过流程就发生了),
+// 由发现同步时对比产生, 人工处理后标记解决。
+type CMDBDrift struct {
+	ID         string     `json:"id"`
+	CIID       string     `json:"ci_id"`
+	TenantID   string     `json:"tenant_id"`
+	Field      string     `json:"field"`
+	Expected   string     `json:"expected,omitempty"` // CMDB 中的值
+	Actual     string     `json:"actual,omitempty"`   // 发现的实际值
+	CreatedAt  time.Time  `json:"created_at"`
+	ResolvedAt *time.Time `json:"resolved_at,omitempty"`
+}

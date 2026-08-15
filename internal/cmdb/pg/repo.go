@@ -111,6 +111,23 @@ func (r *Repository) Migrate(ctx context.Context) error {
 	if _, err := r.db.ExecContext(ctx, `CREATE INDEX IF NOT EXISTS idx_mtv_model ON cmdb_model_type_version(model_type_id, version)`); err != nil {
 		return fmt.Errorf("create model type version index: %w", err)
 	}
+	// 配置漂移记录表(发现值 vs CMDB 值差异)。
+	if _, err := r.db.ExecContext(ctx, `
+		CREATE TABLE IF NOT EXISTS cmdb_drift (
+			id         TEXT PRIMARY KEY,
+			ci_id      TEXT NOT NULL,
+			tenant_id  TEXT NOT NULL DEFAULT 'default',
+			field      TEXT NOT NULL,
+			expected   TEXT,
+			actual     TEXT,
+			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			resolved_at TIMESTAMPTZ
+		)`); err != nil {
+		return fmt.Errorf("create cmdb_drift table: %w", err)
+	}
+	if _, err := r.db.ExecContext(ctx, `CREATE INDEX IF NOT EXISTS idx_drift_ci ON cmdb_drift(ci_id, resolved_at)`); err != nil {
+		return fmt.Errorf("create drift index: %w", err)
+	}
 	// 方案 C 存量迁移：把大类 CI 按 engine/middleware_type 属性下沉为具体引擎子类 TypeID。
 	// 幂等：仅作用于仍处于父类(database/middleware)的行；下沉后 type_id 不再命中，重复执行无副作用。
 	// 未知 engine 保留父类不迁移，避免制造孤儿类型。
@@ -678,6 +695,108 @@ func (r *Repository) CountCIByAttrValue(ctx context.Context, tenantID, typeID, a
 		return 0, fmt.Errorf("count ci by attr: %w", err)
 	}
 	return n, nil
+}
+
+// ListFormSchemaFields 读取全部 ITSM 表单 schema 的字段定义(跨模块只读,
+// 供字段消费度/MVD 统计: 模型字段被哪些表单引用)。
+func (r *Repository) ListFormSchemaFields(ctx context.Context, tenantID string) ([]map[string]any, error) {
+	rows, err := r.db.QueryContext(ctx, `
+		SELECT fields FROM itsm_form_schemas WHERE tenant_id = $1`, tenantID)
+	if err != nil {
+		return nil, fmt.Errorf("list form schema fields: %w", err)
+	}
+	defer rows.Close()
+	var out []map[string]any
+	for rows.Next() {
+		var raw []byte
+		if err := rows.Scan(&raw); err != nil {
+			return nil, fmt.Errorf("scan form schema fields: %w", err)
+		}
+		var fields []map[string]any
+		if len(raw) > 0 && json.Unmarshal(raw, &fields) == nil {
+			out = append(out, fields...)
+		}
+	}
+	return out, rows.Err()
+}
+
+// FindCIByIP 按 IP 属性查找租户内已有 CI(漂移检测/调解合并用),
+// 兼容 ip / ip_address / management_ip / private_ip 多键。
+func (r *Repository) FindCIByIP(ctx context.Context, tenantID, ip string) (*model.CIModel, error) {
+	if ip == "" {
+		return nil, nil
+	}
+	row := r.db.QueryRowContext(ctx, `
+		SELECT id, type_id, tenant_id, name, description, status, attributes, labels, channel, created_at, updated_at, attribute_meta
+		FROM cmdb_ci
+		WHERE tenant_id = $1 AND status <> 'deleted'
+		  AND (attributes->>'ip_address' = $2 OR attributes->>'ip' = $2
+		       OR attributes->>'management_ip' = $2 OR attributes->>'private_ip' = $2)
+		LIMIT 1`, tenantID, ip)
+	ci, err := scanCI(row)
+	if err != nil {
+		return nil, fmt.Errorf("find ci by ip: %w", err)
+	}
+	return ci, nil
+}
+
+// SaveDrift 记录一条配置漂移(发现值 vs CMDB 期望值)。
+func (r *Repository) SaveDrift(ctx context.Context, d *model.CMDBDrift) error {
+	if d.ID == "" {
+		d.ID = uuid.New().String()
+	}
+	_, err := r.db.ExecContext(ctx, `
+		INSERT INTO cmdb_drift (id, ci_id, tenant_id, field, expected, actual, created_at)
+		VALUES ($1, $2, $3, $4, $5, $6, NOW())`,
+		d.ID, d.CIID, d.TenantID, d.Field, d.Expected, d.Actual)
+	if err != nil {
+		return fmt.Errorf("insert drift: %w", err)
+	}
+	return nil
+}
+
+// ListDrifts 列出漂移记录(默认未解决, resolved=false 全部)。
+func (r *Repository) ListDrifts(ctx context.Context, tenantID, ciID string, includeResolved bool, limit int) ([]*model.CMDBDrift, error) {
+	q := `SELECT id, ci_id, tenant_id, field, expected, actual, created_at, resolved_at
+		FROM cmdb_drift WHERE tenant_id = $1`
+	args := []any{tenantID}
+	if ciID != "" {
+		q += ` AND ci_id = $` + fmt.Sprint(len(args)+1)
+		args = append(args, ciID)
+	}
+	if !includeResolved {
+		q += ` AND resolved_at IS NULL`
+	}
+	q += ` ORDER BY created_at DESC LIMIT $` + fmt.Sprint(len(args)+1)
+	args = append(args, limit)
+
+	rows, err := r.db.QueryContext(ctx, q, args...)
+	if err != nil {
+		return nil, fmt.Errorf("list drifts: %w", err)
+	}
+	defer rows.Close()
+	var out []*model.CMDBDrift
+	for rows.Next() {
+		d := &model.CMDBDrift{}
+		var resolvedAt sql.NullTime
+		if err := rows.Scan(&d.ID, &d.CIID, &d.TenantID, &d.Field, &d.Expected, &d.Actual, &d.CreatedAt, &resolvedAt); err != nil {
+			return nil, fmt.Errorf("scan drift: %w", err)
+		}
+		if resolvedAt.Valid {
+			d.ResolvedAt = &resolvedAt.Time
+		}
+		out = append(out, d)
+	}
+	return out, rows.Err()
+}
+
+// ResolveDrift 标记漂移已解决。
+func (r *Repository) ResolveDrift(ctx context.Context, id, tenantID string) error {
+	_, err := r.db.ExecContext(ctx, `UPDATE cmdb_drift SET resolved_at = NOW() WHERE id = $1 AND tenant_id = $2`, id, tenantID)
+	if err != nil {
+		return fmt.Errorf("resolve drift: %w", err)
+	}
+	return nil
 }
 
 // GetCIByID 按 ID 取 CI(供引用型字段校验目标 CI 存在性), 与 GetCI 等价。

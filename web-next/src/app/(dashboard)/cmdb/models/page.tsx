@@ -7,7 +7,7 @@ import { Badge } from '@/components/ui/badge'
 import { Input } from '@/components/ui/input'
 import { Dialog, DialogFooter } from '@/components/ui/dialog'
 import { apiFetch, apiList } from '@/lib/utils'
-import { Plus, Trash2, GripVertical, Edit2, Download, Upload, Settings2, Shield, History } from 'lucide-react'
+import { Plus, Trash2, GripVertical, Edit2, Download, Upload, Settings2, Shield, History, Gauge } from 'lucide-react'
 import { useCan } from '@/stores/permissions'
 import { cn } from '@/lib/utils'
 import { toast } from '@/stores/toast'
@@ -116,6 +116,18 @@ export default function CMDBModelsPage() {
     try {
       setVersions(await apiList<{ version: number; name: string; created_at: string; schema: Record<string, any> }>(`/cmdb/model-type/${model.id}/versions`))
     } catch (e: any) { setVersions([]); toast.error('加载版本失败: ' + e.message) }
+  }
+
+  // 字段消费度(MVD): 保存查询/表单引用统计
+  const [usageOpen, setUsageOpen] = useState(false)
+  const [usageModel, setUsageModel] = useState<CIModel | null>(null)
+  const [fieldUsage, setFieldUsage] = useState<{ field: string; type: string; required: boolean; saved_queries: number; itsm_forms: number; total: number; unused: boolean }[]>([])
+  const openUsage = async (model: CIModel) => {
+    setUsageModel(model); setUsageOpen(true)
+    try {
+      const data = await apiFetch<{ fields: typeof fieldUsage; unused_count: number }>(`/cmdb/model-type/${model.id}/field-usage`)
+      setFieldUsage(data.fields)
+    } catch (e: any) { setFieldUsage([]); toast.error('加载字段消费度失败: ' + e.message) }
   }
 
   const handleRollback = async (v: { version: number }) => {
@@ -328,6 +340,24 @@ export default function CMDBModelsPage() {
         <DialogFooter><Button variant="outline" onClick={() => setVerDialogOpen(false)}>关闭</Button></DialogFooter>
       </Dialog>
 
+      {/* 字段消费度(MVD) */}
+      <Dialog open={usageOpen} onClose={() => setUsageOpen(false)} title={`字段消费度：${usageModel?.name || ''}`}>
+        <div className="space-y-2 max-h-[60vh] overflow-y-auto">
+          <p className="text-xs text-muted-foreground">扫描保存查询与 ITSM 表单对该模型字段的引用（无消费 = 僵尸字段，可考虑下线）</p>
+          {fieldUsage.map(f => (
+            <div key={f.field} className={cn("border rounded-md px-3 py-2 text-xs flex items-center gap-2", f.unused && "opacity-50")}>
+              <span className="font-medium w-32 truncate">{f.field}</span>
+              <Badge variant="outline" className="text-[9px]">{f.type}</Badge>
+              {f.unused
+                ? <Badge variant="destructive" className="text-[9px]">无消费</Badge>
+                : <span className="text-muted-foreground flex items-center gap-2 ml-auto">查询 {f.saved_queries} · 表单 {f.itsm_forms}</span>}
+            </div>
+          ))}
+          {fieldUsage.length === 0 && <p className="text-sm text-muted-foreground py-4 text-center">无字段数据</p>}
+        </div>
+        <DialogFooter><Button variant="outline" onClick={() => setUsageOpen(false)}>关闭</Button></DialogFooter>
+      </Dialog>
+
       {/* 分类过滤（动态，含自定义） */}
       <div className="flex gap-2 flex-wrap items-center">
         <button onClick={() => setCategoryFilter('all')} className={cn("px-3 py-1 rounded-full text-xs border", categoryFilter === 'all' ? "border-emerald-500 bg-emerald-50 dark:bg-emerald-500/10 text-emerald-600" : "border-gray-200 dark:border-gray-700")}>全部 {models.length}</button>
@@ -357,6 +387,7 @@ export default function CMDBModelsPage() {
                     <div className="flex">
                       <Button variant="ghost" size="sm" className="opacity-0 group-hover:opacity-100 h-7 w-7 p-0" title="字段权限" onClick={() => openFieldRules(model)}><Shield className="h-3.5 w-3.5" /></Button>
                       <Button variant="ghost" size="sm" className="opacity-0 group-hover:opacity-100 h-7 w-7 p-0" title="版本历史" onClick={() => openVersions(model)}><History className="h-3.5 w-3.5" /></Button>
+                      <Button variant="ghost" size="sm" className="opacity-0 group-hover:opacity-100 h-7 w-7 p-0" title="字段消费度" onClick={() => openUsage(model)}><Gauge className="h-3.5 w-3.5" /></Button>
                       <Button variant="ghost" size="sm" className="opacity-0 group-hover:opacity-100 h-7 w-7 p-0" onClick={() => openEdit(model)}><Edit2 className="h-3.5 w-3.5" /></Button>
                       {!model.builtin && (
                         <Button variant="ghost" size="sm" className="opacity-0 group-hover:opacity-100 h-7 w-7 p-0 text-destructive" onClick={() => handleDelete(model)}><Trash2 className="h-3.5 w-3.5" /></Button>

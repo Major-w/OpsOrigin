@@ -128,6 +128,9 @@ func (s *Service) RegisterRoutes(mux *http.ServeMux) {
 	// 实体调解合并(IRE): 疑似重复识别 + 按渠道置信度合并
 	mux.HandleFunc("GET /api/v1/cmdb/reconcile/candidates", s.handleReconcileCandidates)
 	mux.HandleFunc("POST /api/v1/cmdb/reconcile/merge", s.handleReconcileMerge)
+	// 配置漂移: 发现值 vs CMDB 期望值
+	mux.HandleFunc("GET /api/v1/cmdb/drift", s.handleListDrifts)
+	mux.HandleFunc("POST /api/v1/cmdb/drift/{id}/resolve", s.handleResolveDrift)
 
 	// 保存的查询策略（"我想查"，P1-3）
 	mux.HandleFunc("GET /api/v1/cmdb/saved-queries", s.handleListSavedQueries)
@@ -151,6 +154,7 @@ func (s *Service) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/v1/cmdb/model-type", s.handleCreateModelType)
 	mux.HandleFunc("GET /api/v1/cmdb/model-type", s.handleListModelTypes)
 	mux.HandleFunc("GET /api/v1/cmdb/model-type/{id}", s.handleGetModelType)
+	mux.HandleFunc("GET /api/v1/cmdb/model-type/{id}/field-usage", s.handleFieldUsage)
 	mux.HandleFunc("PUT /api/v1/cmdb/model-type/{id}", s.handleUpdateModelType)
 	mux.HandleFunc("DELETE /api/v1/cmdb/model-type/{id}", s.handleDeleteModelType)
 	mux.HandleFunc("GET /api/v1/cmdb/model-type/{id}/versions", s.handleListModelTypeVersions)
@@ -1139,6 +1143,84 @@ func (s *Service) handleCreateModelType(w http.ResponseWriter, r *http.Request) 
 	}
 
 	writeJSON(w, http.StatusCreated, mt)
+}
+
+// fieldUsage 模型字段消费度(保存查询/表单引用计数)。
+type fieldUsage struct {
+	Field        string `json:"field"`
+	Type         string `json:"type"`
+	Required     bool   `json:"required"`
+	SavedQueries int    `json:"saved_queries"`
+	ITSMForms    int    `json:"itsm_forms"`
+	Total        int    `json:"total"`
+	Unused       bool   `json:"unused"`
+}
+
+func countUnused(fields []fieldUsage) int {
+	n := 0
+	for _, f := range fields {
+		if f.Unused {
+			n++
+		}
+	}
+	return n
+}
+
+// handleFieldUsage 字段消费度统计(以流定库/MVD 的执行依据):
+// 扫描保存查询与 ITSM 表单 schema 对模型字段的引用, 产出每字段的
+// 消费来源与次数; 无任何消费的字段标 unused(僵尸字段, 可考虑下线)。
+func (s *Service) handleFieldUsage(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	id := r.PathValue("id")
+	tenantID := tenantFromCtx(ctx)
+
+	mt, err := s.pg.GetCIModelType(ctx, id, tenantID)
+	if err != nil || mt == nil {
+		writeError(w, http.StatusNotFound, "model type not found")
+		return
+	}
+
+	// 收集消费引用: 保存查询 attrs + ITSM 表单字段 key
+	saved := map[string]int{}
+	savedQueries, err := s.pg.ListSavedQueries(ctx, tenantID)
+	if err == nil {
+		for _, q := range savedQueries {
+			if attrs, ok := q.Query["attrs"].(map[string]any); ok {
+				for k := range attrs {
+					saved[k]++
+				}
+			}
+		}
+	}
+	form := map[string]int{}
+	formFields, err := s.pg.ListFormSchemaFields(ctx, tenantID)
+	if err == nil {
+		for _, f := range formFields {
+			if k, ok := f["key"].(string); ok && k != "" {
+				form[k]++
+			}
+		}
+	}
+
+	fields := make([]fieldUsage, 0, len(mt.Schema))
+	for name, def := range mt.Schema {
+		u := fieldUsage{Field: name, Type: def.Type, Required: def.Required,
+			SavedQueries: saved[name], ITSMForms: form[name]}
+		u.Total = u.SavedQueries + u.ITSMForms
+		u.Unused = u.Total == 0
+		fields = append(fields, u)
+	}
+	sort.Slice(fields, func(i, j int) bool {
+		if fields[i].Unused != fields[j].Unused {
+			return !fields[i].Unused // unused 排后
+		}
+		return fields[i].Total > fields[j].Total
+	})
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"model_type_id": id, "model_name": mt.Name,
+		"fields": fields, "unused_count": countUnused(fields),
+	})
 }
 
 func (s *Service) handleGetModelType(w http.ResponseWriter, r *http.Request) {
@@ -2669,6 +2751,21 @@ func (s *Service) handleSyncDiscoveryResult(w http.ResponseWriter, r *http.Reque
 	}
 	ci.Attributes["ip_address"] = target.IPAddress
 
+	// 漂移检测: 按 IP 找已有 CI —— 有则对比差异生成漂移记录(不改 CI, 信号先行),
+	// 无则按发现结果创建新 CI。
+	if existing, err := s.pg.FindCIByIP(r.Context(), tenantID, target.IPAddress); err == nil && existing != nil {
+		drifts := detectDrifts(existing, ci)
+		for _, d := range drifts {
+			if err := s.pg.SaveDrift(r.Context(), d); err != nil {
+				slog.Warn("save drift failed", "error", err)
+			}
+		}
+		// 标记已同步(指向已有 CI, 不重复创建)。
+		s.pg.MarkDiscoveryResultSynced(r.Context(), resultID, existing.ID)
+		writeJSON(w, 200, map[string]any{"status": "drift_detected", "ci_id": existing.ID, "drifts": len(drifts)})
+		return
+	}
+
 	if err := s.pg.CreateCI(r.Context(), ci, "discovery"); err != nil {
 		slog.Error("sync discovery result failed", "err", err)
 		writeError(w, http.StatusInternalServerError, "failed to create CI")
@@ -2679,6 +2776,56 @@ func (s *Service) handleSyncDiscoveryResult(w http.ResponseWriter, r *http.Reque
 	s.pg.MarkDiscoveryResultSynced(r.Context(), resultID, ci.ID)
 
 	writeJSON(w, 200, map[string]any{"status": "synced", "ci_id": ci.ID})
+}
+
+// detectDrifts 对比已有 CI(期望)与发现 CI(实际)的差异, 生成漂移记录。
+// 只报告发现中出现的字段; 相同值不报。字符串化对比, 忽略类型差异。
+func detectDrifts(existing, discovered *model.CIModel) []*model.CMDBDrift {
+	var out []*model.CMDBDrift
+	for k, v := range discovered.Attributes {
+		ev, has := existing.Attributes[k]
+		if !has {
+			continue // 新字段不算漂移(可能是新增属性), 由采集合并处理
+		}
+		if fmt.Sprint(ev) != fmt.Sprint(v) {
+			out = append(out, &model.CMDBDrift{
+				CIID: existing.ID, TenantID: existing.TenantID,
+				Field: k, Expected: fmt.Sprint(ev), Actual: fmt.Sprint(v),
+			})
+		}
+	}
+	return out
+}
+
+// handleListDrifts 漂移清单(可按 CI 过滤, 默认未解决)。
+func (s *Service) handleListDrifts(w http.ResponseWriter, r *http.Request) {
+	tenantID := tenantFromCtx(r.Context())
+	ciID := r.URL.Query().Get("ci_id")
+	includeResolved := r.URL.Query().Get("resolved") == "true"
+	if s.pg == nil {
+		writeJSON(w, http.StatusOK, []*model.CMDBDrift{})
+		return
+	}
+	drifts, err := s.pg.ListDrifts(r.Context(), tenantID, ciID, includeResolved, 500)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if drifts == nil {
+		drifts = []*model.CMDBDrift{}
+	}
+	writeJSON(w, http.StatusOK, drifts)
+}
+
+// handleResolveDrift 标记漂移已解决。
+func (s *Service) handleResolveDrift(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	tenantID := tenantFromCtx(r.Context())
+	if err := s.pg.ResolveDrift(r.Context(), id, tenantID); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"resolved": true, "id": id})
 }
 
 func (s *Service) handleSyncAllDiscoveryResults(w http.ResponseWriter, r *http.Request) {

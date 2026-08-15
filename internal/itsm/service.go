@@ -93,6 +93,14 @@ type Service struct {
 	messages MessageSender
 	// catalogStore 由 cmd/core 注入: 从服务目录发起申请时套用目录项配置的流程/表单。
 	catalogStore catalogGetter
+	// ciQualityChecker 流程门禁: 由 cmd/core 注入, 返回 CI 列表的 CMDB 数据质量分
+	// (0~100)。工单创建关联 CI 时校验, 低分记录警告事件(与 cmdb 包零耦合)。
+	ciQualityChecker func(ctx context.Context, tenantID string, ciIDs []string) map[string]float64
+}
+
+// SetCIQualityChecker 注入 CMDB 数据质量检查器(流程门禁)。
+func (s *Service) SetCIQualityChecker(fn func(ctx context.Context, tenantID string, ciIDs []string) map[string]float64) {
+	s.ciQualityChecker = fn
 }
 
 // catalogGetter 服务目录项读取能力(由 catalog.Store 实现; 接口化便于测试注入)。
@@ -436,6 +444,17 @@ func (s *Service) CreateTicket(ctx context.Context, req model.CreateTicketReques
 		TraceID:       traceIDFromCtx(ctx),
 		ScheduledAt:   req.ScheduledAt,
 		DeadlineAt:    req.DeadlineAt,
+	}
+	// 流程门禁(数据质量): 关联 CI 质量分低于阈值的, 记录警告并通知(不阻断创建)。
+	if len(ticket.CIIDs) > 0 && s.ciQualityChecker != nil {
+		scores := s.ciQualityChecker(ctx, tenantID, ticket.CIIDs)
+		for id, score := range scores {
+			if score < 60 {
+				msg := fmt.Sprintf("关联资产 %s 数据质量分 %.0f 低于 60，建议先修复 CMDB 数据再推进", id, score)
+				slog.Warn("itsm quality gate", "ticket", ticket.Title, "warning", msg)
+				s.recordEvent(ctx, ticket, "", "", "", msg)
+			}
+		}
 	}
 	if ticket.DeadlineAt == nil {
 		if s.slaStore != nil {

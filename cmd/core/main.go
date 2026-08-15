@@ -34,6 +34,7 @@ import (
 	"github.com/opsorigin/core/internal/cmdb/discovery/plugins"
 	"github.com/opsorigin/core/internal/cmdb/outbox"
 	"github.com/opsorigin/core/internal/cmdb/pg"
+	"github.com/opsorigin/core/internal/cmdb/quality"
 	"github.com/opsorigin/core/internal/cmdb/registry"
 	"github.com/opsorigin/core/internal/command"
 	"github.com/opsorigin/core/internal/deploy"
@@ -317,6 +318,32 @@ func main() {
 	itsmSvc := itsm.NewService(cfg, db)
 	server.RegisterService(itsmSvc)
 	itsmSvc.SetWebSocketHub(wsHub)
+	// 流程门禁: 工单关联 CI 时校验 CMDB 数据质量(低分记录警告事件)。
+	itsmSvc.SetCIQualityChecker(func(ctx context.Context, tenantID string, ciIDs []string) map[string]float64 {
+		if pgRepo == nil {
+			return nil
+		}
+		// 一次性扫描租户质量报告, 按模型类型取完整性作为 CI 质量近似(门禁低频, 全量可接受)。
+		report, err := quality.NewEngine(pgRepo).Scan(ctx, tenantID)
+		if err != nil || report == nil {
+			return nil
+		}
+		byType := map[string]float64{}
+		for _, tr := range report.ByType {
+			byType[tr.TypeID] = tr.Completeness
+		}
+		out := map[string]float64{}
+		for _, id := range ciIDs {
+			ci, err := pgRepo.GetCI(ctx, id, tenantID)
+			if err != nil || ci == nil {
+				continue
+			}
+			if v, ok := byType[ci.TypeID]; ok {
+				out[id] = v
+			}
+		}
+		return out
+	})
 	itsmSvc.StartSLAChecker(ctx)
 	itsmSvc.StartOLAChecker(ctx)
 

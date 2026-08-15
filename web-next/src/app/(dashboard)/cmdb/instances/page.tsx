@@ -68,6 +68,19 @@ export default function CMDBPage() {
   const [relDialogOpen, setRelDialogOpen] = useState(false)
   const [relForm, setRelForm] = useState({ source_id: '', target_id: '', relation_type: 'depends_on' })
   const [impactResult, setImpactResult] = useState<{ source_ci: string; affected_ci: string[]; has_cycle: boolean } | null>(null)
+  // 配置漂移
+  const [driftList, setDriftList] = useState<{ id: string; field: string; expected: string; actual: string; created_at: string }[]>([])
+  const handleDrift = async (ciID: string) => {
+    try { setDriftList(await apiList<{ id: string; field: string; expected: string; actual: string; created_at: string }>(`/cmdb/drift?ci_id=${ciID}`)) }
+    catch { setDriftList([]) }
+  }
+  const resolveDrift = async (id: string) => {
+    try {
+      await apiFetch(`/cmdb/drift/${id}/resolve`, { method: 'POST' })
+      toast.success('已标记解决')
+      if (selectedCI) handleDrift(selectedCI.id)
+    } catch (e: any) { toast.error('操作失败: ' + e.message) }
+  }
   const [editAttrsOpen, setEditAttrsOpen] = useState(false)
   const [attrForm, setAttrForm] = useState<Record<string, string>>({})
   const fileRef = useRef<HTMLInputElement>(null)
@@ -543,6 +556,7 @@ export default function CMDBPage() {
                     <TabsTrigger value="audit">审计 ({auditLog.length})</TabsTrigger>
                     <TabsTrigger value="topo" onClick={() => handleTopology(selectedCI.id)}>拓扑</TabsTrigger>
                     <TabsTrigger value="impact" onClick={() => handleImpact(selectedCI.id)}><AlertTriangle className="w-3 h-3 mr-1" />影响</TabsTrigger>
+                    <TabsTrigger value="drift" onClick={() => handleDrift(selectedCI.id)}>漂移 ({driftList.length})</TabsTrigger>
                   </TabsList>
 
                   <TabsContent value="attrs" className="mt-4 space-y-3">
@@ -650,6 +664,23 @@ export default function CMDBPage() {
                             return <Badge key={ciId} variant="outline" className="text-xs">{ci?.name || ciId.slice(0, 8)}</Badge>
                           })}
                         </div>
+                      </div>
+                    )}
+                  </TabsContent>
+
+                  <TabsContent value="drift" className="mt-4">
+                    {driftList.length === 0 ? <p className="text-sm text-muted-foreground">无配置漂移（发现值均与 CMDB 一致）</p> : (
+                      <div className="space-y-2">
+                        {driftList.map(d => (
+                          <div key={d.id} className="border rounded-md p-3 text-xs flex items-center gap-3">
+                            <div className="flex-1 min-w-0">
+                              <p className="font-medium">{d.field}</p>
+                              <p className="text-muted-foreground truncate">CMDB: <span className="text-emerald-600">{d.expected}</span> → 发现: <span className="text-amber-600">{d.actual}</span></p>
+                              <p className="text-[10px] text-muted-foreground">{d.created_at?.slice(0, 19)?.replace('T', ' ')}</p>
+                            </div>
+                            <Button variant="outline" size="sm" className="h-6 text-xs shrink-0" onClick={() => resolveDrift(d.id)}>已处理</Button>
+                          </div>
+                        ))}
                       </div>
                     )}
                   </TabsContent>
