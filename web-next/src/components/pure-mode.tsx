@@ -119,10 +119,14 @@ export default function PureMode({ onExitPure }: { onExitPure: () => void }) {
   const fetchAgents = useAIStore(s => s.fetchAgents)
   const loadConversations = useAIStore(s => s.loadConversations)
   const submitFeedback = useAIStore(s => s.submitFeedback)
+  const models = useAIStore(s => s.models)
+  const fetchModels = useAIStore(s => s.fetchModels)
   // —— 团队模式数据流 ——
   const { teams, loading: teamsLoading, loadTeams, streamTeamChat } = useTeams()
 
   const [mode, setMode] = useState<PureMode>('normal')
+  // —— 运行级模型选择(按会话/请求覆盖; 空=回退 agent/引擎默认) ——
+  const [selectedModel, setSelectedModel] = useState('')
   const [showThinking, setShowThinking] = useState(true)
   const [messages, setMessages] = useState<PureMessage[]>(() =>
     typeof window !== 'undefined' ? loadSession() : [WELCOME],
@@ -156,7 +160,8 @@ export default function PureMode({ onExitPure }: { onExitPure: () => void }) {
 
   useEffect(() => {
     fetchAgents()
-  }, [fetchAgents])
+    fetchModels()
+  }, [fetchAgents, fetchModels])
 
   useEffect(() => {
     if (mode === 'team') loadTeams()
@@ -236,6 +241,7 @@ export default function PureMode({ onExitPure }: { onExitPure: () => void }) {
       onAsk,
       cid,
       abortRef.current.signal,
+      selectedModel,
     )
   }
 
@@ -705,6 +711,24 @@ export default function PureMode({ onExitPure }: { onExitPure: () => void }) {
                       {q.label}
                     </button>
                   ))}
+                </div>
+              )}
+              {models.length > 1 && (
+                <div className="flex items-center gap-2 mb-2">
+                  <span className="text-xs text-muted-foreground shrink-0">模型</span>
+                  <select
+                    value={selectedModel}
+                    onChange={e => setSelectedModel(e.target.value)}
+                    className={cn(
+                      'flex-1 h-9 rounded-md border px-2 text-sm focus:outline-none focus:ring-1 focus:ring-emerald-500',
+                      isDark ? 'border-white/10 bg-white/[0.03] text-white' : 'border-gray-200 bg-white text-gray-900',
+                    )}
+                  >
+                    <option value="">默认（{models.find(m => m.name === 'default')?.model || '引擎默认'}）</option>
+                    {models.map(m => (
+                      <option key={`${m.name}-${m.model}`} value={m.model}>{m.name} · {m.model}</option>
+                    ))}
+                  </select>
                 </div>
               )}
               <div className="flex items-end gap-2">

@@ -62,6 +62,15 @@ export interface ChatMessage {
   content: string
 }
 
+/** 可用模型信息(对应后端 GET /api/v1/ai/models 的 ModelStatus)。 */
+export interface ModelInfo {
+  name: string
+  model: string
+  base_url?: string
+  weight?: number
+  healthy?: boolean
+}
+
 /** 创建 / 更新团队的请求体（两者字段一致，均为全量） */
 export interface CreateTeamPayload {
   name: string
@@ -208,7 +217,11 @@ interface AIState {
     onAsk?: (approval: PendingApproval) => void,
     serverConvId?: string,
     signal?: AbortSignal,
+    model?: string,
   ) => Promise<void>
+  /** 拉取可用模型池(供对话窗模型选择器; 单模型时前端可隐藏下拉)。 */
+  fetchModels: () => Promise<ModelInfo[]>
+  models: ModelInfo[]
   loadConversations: (agentId?: string) => Promise<any[]>
   saveConversation: (conv: any) => Promise<any | null>
   submitFeedback: (params: { conversation_id?: string; message_id?: string; rating: 'up' | 'down'; comment?: string }) => Promise<boolean>
@@ -243,6 +256,7 @@ interface AIState {
 export const useAIStore = create<AIState>((set, get) => ({
   agents: [], tools: [], plans: [], loading: false, error: null,
   teams: [], teamsLoading: false, teamsError: null,
+  models: [],
   assistantOpen: false,
 
   // ----------------------- 既有 AI 能力 -----------------------
@@ -310,7 +324,16 @@ export const useAIStore = create<AIState>((set, get) => ({
       return null
     }
   },
-  streamChat: async (prompt, onToken, onDone, history = [], agentId, reasoning, onThinking, explore, onAsk, serverConvId, signal) => {
+  fetchModels: async () => {
+    try {
+      const models = await apiList<ModelInfo>('/ai/models')
+      set({ models: models || [] })
+      return models || []
+    } catch {
+      return []
+    }
+  },
+  streamChat: async (prompt, onToken, onDone, history = [], agentId, reasoning, onThinking, explore, onAsk, serverConvId, signal, model) => {
     try {
       // 为本次 AI 回复生成稳定的 message_id, 反馈时用于精确关联
       const messageId = `msg_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`
@@ -318,6 +341,8 @@ export const useAIStore = create<AIState>((set, get) => ({
       if (agentId) body.agent_id = agentId
       if (reasoning) body.reasoning = true
       if (explore) body.explore = true
+      // 运行级模型覆盖(按会话/请求指定): 非空时后端优先于 agent/引擎默认模型。
+      if (model) body.model = model
       // 显式携带 conversation_id 时, 后端按该 ID 续接/新建持久化会话(SSE 返回 event:conversation 确认)。
       if (serverConvId) body.conversation_id = serverConvId
       const resp = await fetch(`${window.location.origin}/api/v1/ai/chat`, {

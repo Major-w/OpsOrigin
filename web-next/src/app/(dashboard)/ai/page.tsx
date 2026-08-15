@@ -82,12 +82,14 @@ const teamRoleLabel: Record<string, string> = {
 // ============================================================================
 
 export default function AIPage() {
-  const { agents, fetchAgents, streamChat, loadConversations, submitFeedback: submitFB } = useAIStore()
+  const { agents, fetchAgents, streamChat, loadConversations, submitFeedback: submitFB, models, fetchModels } = useAIStore()
   const { teams, loading: teamsLoading, loadTeams, streamTeamChat } = useTeams()
   const router = useRouter()
   const { theme } = useThemeStore()
 
   const [mode, setMode] = useState<AIMode>('normal')
+  // —— 运行级模型选择(按会话/请求覆盖; 空=回退 agent/引擎默认) ——
+  const [selectedModel, setSelectedModel] = useState('')
 
   // —— 全局思考过程开关(localStorage 持久化) ——
   const [showThinking, setShowThinking] = useState<boolean>(() => {
@@ -128,8 +130,9 @@ export default function AIPage() {
 
   useEffect(() => {
     fetchAgents()
+    fetchModels()
     if (mode === 'team') loadTeams()
-  }, [fetchAgents, mode, loadTeams])
+  }, [fetchAgents, fetchModels, mode, loadTeams])
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
@@ -215,7 +218,7 @@ export default function AIPage() {
     }, history, selectedAgent?.id, showThinking, showThinking ? (t) => {
       thinkingAcc += t
       setMessages(prev => prev.map(m => m.id === aiId ? { ...m, thinking: thinkingAcc } : m))
-    } : undefined, undefined, (approval) => setPendingApproval(approval), cid)
+    } : undefined, undefined, (approval) => setPendingApproval(approval), cid, undefined, selectedModel)
   }
 
   // ----------------------- 团队模式 -----------------------
@@ -543,6 +546,21 @@ export default function AIPage() {
             </div>
 
             <div className="border-t p-4">
+              {models.length > 1 && (
+                <div className="flex items-center gap-2 mb-2">
+                  <span className="text-xs text-muted-foreground shrink-0">模型</span>
+                  <select
+                    value={selectedModel}
+                    onChange={e => setSelectedModel(e.target.value)}
+                    className="flex-1 h-9 rounded-md border border-input bg-background px-2 text-sm text-foreground focus:outline-none focus:ring-1 focus:ring-emerald-500"
+                  >
+                    <option value="">默认（{models.find(m => m.name === 'default')?.model || '引擎默认'}）</option>
+                    {models.map(m => (
+                      <option key={`${m.name}-${m.model}`} value={m.model}>{m.name} · {m.model}</option>
+                    ))}
+                  </select>
+                </div>
+              )}
               <div className="flex gap-2">
                 <Input
                   value={input}
