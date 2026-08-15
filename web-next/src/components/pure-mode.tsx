@@ -6,7 +6,7 @@ import { useAIStore, useTeams, type PendingApproval, type ChatMessage, type Team
 import { renderMarkdown, renderExploreContent } from '@/lib/ai-render'
 import {
   Bot, X, Send, Loader2, Trash2, AlertTriangle, CheckCircle2, XCircle, Sparkles, Square,
-  PanelLeftClose, ThumbsUp, ThumbsDown, History, BarChart3, Settings, Users,
+  PanelLeftClose, ThumbsUp, ThumbsDown, History, BarChart3, Settings, Users, ChevronDown,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { useThemeStore } from '@/stores/theme'
@@ -713,22 +713,22 @@ export default function PureMode({ onExitPure }: { onExitPure: () => void }) {
                   ))}
                 </div>
               )}
-              {models.length > 1 && (
-                <div className="flex items-center gap-2 mb-2">
-                  <span className="text-xs text-muted-foreground shrink-0">模型</span>
+              {models.length > 0 && (
+                <div className="relative mb-2 inline-block">
                   <select
                     value={selectedModel}
                     onChange={e => setSelectedModel(e.target.value)}
                     className={cn(
-                      'flex-1 h-9 rounded-md border px-2 text-sm focus:outline-none focus:ring-1 focus:ring-emerald-500',
+                      'appearance-none h-7 pl-2.5 pr-7 rounded-full border text-xs cursor-pointer focus:outline-none focus:ring-1 focus:ring-emerald-500',
                       isDark ? 'border-white/10 bg-white/[0.03] text-white' : 'border-gray-200 bg-white text-gray-900',
                     )}
                   >
-                    <option value="">默认（{models.find(m => m.name === 'default')?.model || '引擎默认'}）</option>
+                    <option value="">默认</option>
                     {models.map(m => (
-                      <option key={`${m.name}-${m.model}`} value={m.model}>{m.name} · {m.model}</option>
+                      <option key={`${m.name}-${m.model}`} value={m.model}>{m.name !== 'default' ? `${m.name} · ${m.model}` : m.model}</option>
                     ))}
                   </select>
+                  <ChevronDown className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 h-3 w-3 text-muted-foreground" />
                 </div>
               )}
               <div className="flex items-end gap-2">

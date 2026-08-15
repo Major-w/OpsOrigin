@@ -9,7 +9,7 @@ import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { Input } from '@/components/ui/input'
 import { Dialog, DialogFooter } from '@/components/ui/dialog'
-import { Bot, Send, History, Settings, Sparkles, Terminal, FileText, Server, ChevronRight, Loader2, User, BarChart3, Users, ThumbsUp, ThumbsDown, Rocket, Target, AlertTriangle, CheckCircle, XCircle } from 'lucide-react'
+import { Bot, Send, History, Settings, Sparkles, Terminal, FileText, Server, ChevronRight, Loader2, User, BarChart3, Users, ThumbsUp, ThumbsDown, Rocket, Target, AlertTriangle, CheckCircle, XCircle, ChevronDown } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { useThemeStore } from '@/stores/theme'
 import { renderMarkdown, renderExploreContent } from '@/lib/ai-render'
@@ -546,19 +546,21 @@ export default function AIPage() {
             </div>
 
             <div className="border-t p-4">
-              {models.length > 1 && (
+              {models.length > 0 && (
                 <div className="flex items-center gap-2 mb-2">
-                  <span className="text-xs text-muted-foreground shrink-0">模型</span>
-                  <select
-                    value={selectedModel}
-                    onChange={e => setSelectedModel(e.target.value)}
-                    className="flex-1 h-9 rounded-md border border-input bg-background px-2 text-sm text-foreground focus:outline-none focus:ring-1 focus:ring-emerald-500"
-                  >
-                    <option value="">默认（{models.find(m => m.name === 'default')?.model || '引擎默认'}）</option>
-                    {models.map(m => (
-                      <option key={`${m.name}-${m.model}`} value={m.model}>{m.name} · {m.model}</option>
-                    ))}
-                  </select>
+                  <div className="relative">
+                    <select
+                      value={selectedModel}
+                      onChange={e => setSelectedModel(e.target.value)}
+                      className="appearance-none h-7 pl-2.5 pr-7 rounded-full border border-input bg-background text-xs text-foreground hover:bg-accent focus:outline-none focus:ring-1 focus:ring-emerald-500 cursor-pointer"
+                    >
+                      <option value="">默认</option>
+                      {models.map(m => (
+                        <option key={`${m.name}-${m.model}`} value={m.model}>{m.name !== 'default' ? `${m.name} · ${m.model}` : m.model}</option>
+                      ))}
+                    </select>
+                    <ChevronDown className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 h-3 w-3 text-muted-foreground" />
+                  </div>
                 </div>
               )}
               <div className="flex gap-2">
