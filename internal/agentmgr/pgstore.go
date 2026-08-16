@@ -40,6 +40,9 @@ func (s *pgStore) init(ctx context.Context) {
 			channels TEXT DEFAULT '[]',
 			last_seen TIMESTAMPTZ, last_heartbeat TIMESTAMPTZ, first_seen TIMESTAMPTZ,
 			created_at TIMESTAMPTZ NOT NULL, updated_at TIMESTAMPTZ NOT NULL)`,
+		// 自愈: 旧表由早期 CREATE TABLE IF NOT EXISTS 建立, 后续新增列不会自动补;
+		// 此处幂等补齐, 否则下方 idx_agent_hosts_fingerprint 建索引会因缺列失败并中断 init。
+		`ALTER TABLE IF EXISTS agent_hosts ADD COLUMN IF NOT EXISTS fingerprint TEXT`,
 		`CREATE INDEX IF NOT EXISTS idx_agent_hosts_tenant ON agent_hosts(tenant_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_agent_hosts_fingerprint ON agent_hosts(fingerprint)`,
 		`CREATE TABLE IF NOT EXISTS agent_proxies (

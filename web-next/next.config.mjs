@@ -6,7 +6,8 @@ const nextConfig = {
     return [
       {
         source: '/api/:path*',
-        destination: 'http://localhost:8080/api/:path*',
+        // 本地直跑 go run 走 localhost:8080；容器内(docker compose)经 BACKEND_URL=core:8080 转发
+        destination: `${process.env.BACKEND_URL || 'http://localhost:8080'}/api/:path*`,
       },
     ]
   },

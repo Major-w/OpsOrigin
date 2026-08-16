@@ -94,7 +94,7 @@ export default function CMDBStatsPage() {
         <Card>
           <CardHeader className="py-3"><CardTitle className="text-sm flex items-center gap-2"><Server className="h-4 w-4" />按实例状态</CardTitle></CardHeader>
           <CardContent className="flex gap-3 flex-wrap">
-            {!stats || stats.by_status.length === 0 ? <p className="text-sm text-muted-foreground">暂无数据</p> : stats.by_status.map(s => (
+            {!stats || (stats.by_status?.length ?? 0) === 0 ? <p className="text-sm text-muted-foreground">暂无数据</p> : stats.by_status.map(s => (
               <div key={s.status} className="flex-1 min-w-[120px] border rounded-lg p-3">
                 <p className="text-2xl font-bold">{s.count}</p>
                 <Badge variant={s.status === 'active' ? 'success' : 'secondary'}>{STATUS_LABELS[s.status] || s.status}</Badge>
@@ -123,7 +123,7 @@ export default function CMDBStatsPage() {
         <Card>
           <CardHeader className="py-3"><CardTitle className="text-sm flex items-center gap-2"><BarChart3 className="h-4 w-4" />按属性聚合（Top 属性值）</CardTitle></CardHeader>
           <CardContent className="space-y-2">
-            {!stats || stats.by_attr.length === 0 ? <p className="text-sm text-muted-foreground">暂无数据</p> : stats.by_attr.map(a => (
+            {!stats || (stats.by_attr?.length ?? 0) === 0 ? <p className="text-sm text-muted-foreground">暂无数据</p> : stats.by_attr.map(a => (
               <div key={a.key + a.value} className="flex items-center gap-2 text-xs">
                 <Badge variant="outline" className="w-24 justify-center shrink-0 text-[10px]">{a.key}</Badge>
                 <span className="w-40 truncate">{a.value}</span>

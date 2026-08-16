@@ -86,15 +86,34 @@ services:
     environment:
       OPSORIGIN_CORE_PORT: 8080
       OPSORIGIN_POSTGRES_DSN: postgres://opsorigin:opsorigin@postgres:5432/opsorigin?sslmode=disable
-      OPSORIGIN_DGRAPH_TARGET: dgraph-alpha:9080
       OPSORIGIN_REDIS_ADDR: redis:6379
     depends_on:
       postgres:
         condition: service_healthy
-      dgraph-alpha:
-        condition: service_started
       redis:
         condition: service_healthy
+
+  frontend:
+    build:
+      context: ../web-next
+      dockerfile: Dockerfile.web
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+          cpus: "1.0"
+    ports:
+      - "3000:3000"
+    environment:
+      # 容器内前端 next 代理转发到 core 服务名; 与 go run 本地直跑(默认 localhost:8080)解耦
+      BACKEND_URL: http://core:8080
+    volumes:
+      # 源码挂载热重载; node_modules 用匿名卷隔离, 避免被 bind 覆盖
+      - ../web-next:/app
+      - /app/node_modules
+    depends_on:
+      core:
+        condition: service_started
 
 volumes:
   pg_data:

@@ -1,0 +1,14 @@
+FROM node:22-alpine
+
+WORKDIR /app
+
+# 先拷包管理文件以利用层缓存
+COPY package.json package-lock.json* ./
+RUN npm install
+
+# 源码通过 compose 的 bind mount 覆盖, 实现热重载
+COPY . .
+
+# 绑定 0.0.0.0 以便容器外(宿主)可访问; BACKEND_URL 由 compose 注入
+EXPOSE 3000
+CMD ["npm", "run", "dev", "--", "-H", "0.0.0.0"]

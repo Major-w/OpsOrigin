@@ -88,7 +88,14 @@ func (r *Repository) migrateP2(ctx context.Context) error {
 
 // Stats 聚合 IT 资源统计（模型/实例/关系/分类/状态/属性）。
 func (r *Repository) Stats(ctx context.Context, tenantID string) (*model.CMDBStats, error) {
-	st := &model.CMDBStats{}
+	// 预初始化各聚合切片为空数组(非 nil), 避免无数据时序列化为 JSON null,
+	// 否则前端直接访问 .length 会抛 TypeError 导致整页崩溃(资源统计页报错)。
+	st := &model.CMDBStats{
+		ByCategory: []model.CategoryStat{},
+		ByStatus:   []model.StatusStat{},
+		ByType:     []model.TypeStat{},
+		ByAttr:     []model.AttrStat{},
+	}
 	row := r.db.QueryRowContext(ctx, `SELECT
 		(SELECT COUNT(*) FROM cmdb_ci_model_type WHERE tenant_id=$1),
 		(SELECT COUNT(*) FROM cmdb_ci WHERE tenant_id=$1 AND status<>'deleted'),

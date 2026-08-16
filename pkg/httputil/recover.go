@@ -1,7 +1,10 @@
 package httputil
 
 import (
+	"bufio"
+	"errors"
 	"log/slog"
+	"net"
 	"net/http"
 	"runtime/debug"
 )
@@ -57,4 +60,14 @@ func (w *trackedWriter) Flush() {
 	if f, ok := w.ResponseWriter.(http.Flusher); ok {
 		f.Flush()
 	}
+}
+
+// Hijack 透传给底层 writer, 使 WebSocket Upgrade 握手在经过 RecoverHandler
+// 包装后依然能拿到 http.Hijacker 能力; 否则 websocket.Accept 会因
+// ResponseWriter 未实现 Hijacker 而返回 501 (does not implement http.Hijacker)。
+func (w *trackedWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	if hj, ok := w.ResponseWriter.(http.Hijacker); ok {
+		return hj.Hijack()
+	}
+	return nil, nil, errors.New("underlying ResponseWriter does not implement http.Hijacker")
 }

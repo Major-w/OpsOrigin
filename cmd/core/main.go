@@ -96,6 +96,16 @@ import (
 // @name Authorization
 // @description 输入格式: "Bearer {token}"
 
+// wsHubRegistrar 把用户通知 WebSocket hub 直接挂到主网关的 mux 上。
+// 必须绕过 auth/audit 等中间件的 ResponseWriter 包装(它们不实现 http.Hijacker),
+// 否则 coder/websocket 的 Upgrade 握手会因拿不到 Hijacker 而失败(返回 501)。
+// WS 自身的 JWT 鉴权由 wsHub.SetAuthenticator 在握手阶段完成。
+type wsHubRegistrar struct{ hub *ws.Hub }
+
+func (r *wsHubRegistrar) RegisterRoutes(mux *http.ServeMux) {
+	mux.Handle("/api/v1/ws", r.hub)
+}
+
 func main() {
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
 	slog.SetDefault(logger)
@@ -192,7 +202,7 @@ func main() {
 	server.WithMiddleware(auditSvc.Middleware)
 
 	// T03: 注册 bypass 前缀 — /metrics /healthz /readyz /api/v1/health /swagger 跳过认证/审计/RBAC 中间件
-	server.WithBypassPrefixes("/metrics", "/healthz", "/readyz", "/api/v1/health", "/swagger/")
+	server.WithBypassPrefixes("/metrics", "/healthz", "/readyz", "/api/v1/health", "/api/v1/ws", "/swagger/")
 
 	// Swagger UI 路由
 	server.RegisterService(&swaggerRegistrar{})
@@ -303,15 +313,10 @@ func main() {
 	})
 
 	wsHub := ws.NewHub()
-	server.WithMiddleware(func(next http.Handler) http.Handler {
-		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if r.URL.Path == "/api/v1/ws" {
-				wsHub.ServeHTTP(w, r)
-				return
-			}
-			next.ServeHTTP(w, r)
-		})
-	})
+	// 用户通知 WebSocket 直接注册到主网关 mux(见 wsHubRegistrar), 并已在
+	// WithBypassPrefixes 中把 /api/v1/ws 设为旁路前缀, 跳过 auth/audit 中间件包装,
+	// 保留原始 ResponseWriter 的 Hijacker 能力, 否则 Upgrade 握手会失败(501)。
+	server.RegisterService(&wsHubRegistrar{hub: wsHub})
 
 	monitorSvc.SetWebSocketHub(wsHub)
 
