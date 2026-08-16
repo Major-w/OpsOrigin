@@ -153,7 +153,7 @@ export default function MCPToolsPage() {
         <div>
           <h1 className="text-xl font-semibold flex items-center gap-2"><Wrench className="h-5 w-5 text-emerald-500" />MCP 工具</h1>
           <p className="text-sm text-muted-foreground mt-1">
-            统一维护 AI 可调用的工具能力。数字员工在「AI 设置」中只做勾选，工具的注册、启停与删除都在本页完成。
+            统一维护 AI 可调用的工具能力。数字员工在「智能体工作台」中只做勾选，工具的注册、启停与删除都在本页完成。
           </p>
         </div>
         <Button variant="outline" size="sm" onClick={load} disabled={loading}>

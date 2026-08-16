@@ -561,7 +561,7 @@ export default function PureMode({ onExitPure }: { onExitPure: () => void }) {
             <button onClick={() => goto('/ai/analytics')} className="p-1.5 rounded-md transition-colors text-muted-foreground hover:text-foreground hover:bg-black/5 dark:hover:bg-white/10" title="AI 分析">
               <BarChart3 className="h-3.5 w-3.5" />
             </button>
-            <button onClick={() => goto('/ai/settings')} className="p-1.5 rounded-md transition-colors text-muted-foreground hover:text-foreground hover:bg-black/5 dark:hover:bg-white/10" title="AI 设置">
+            <button onClick={() => goto('/ai/settings')} className="p-1.5 rounded-md transition-colors text-muted-foreground hover:text-foreground hover:bg-black/5 dark:hover:bg-white/10" title="智能体工作台">
               <Settings className="h-3.5 w-3.5" />
             </button>
             {/* 思考过程开关（团队模式不展示） */}

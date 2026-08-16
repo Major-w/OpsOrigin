@@ -30,6 +30,7 @@ type Service struct {
 	cfg           *config.Config
 	Engine        *agentic.Engine
 	Registry      *mcp.Registry
+	MCPManager    *mcp.Manager // 外部 MCP server 接入与工具 proxy 管理
 	limiter       ratelimit.RateLimiter
 	ragFn         func(ctx context.Context, query, agentID string) string // RAG上下文注入(按 Agent 绑定分类过滤)
 	feedbackStore agentic.FeedbackStore                                   // 点赞/点踩反馈持久化(P2-Eval)
@@ -83,6 +84,7 @@ func NewService(cfg *config.Config, llmClient *llm.Client, redisClient *rediscli
 		cfg:           cfg,
 		Engine:        eng,
 		Registry:      reg,
+		MCPManager:    mcp.NewManager(reg),
 		limiter:       lim,
 		feedbackStore: feedbackStore,
 		llmClient:     llmClient,
@@ -110,6 +112,7 @@ func (s *Service) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("PUT /api/v1/ai/agents/{id}", s.handleUpdateAgent)
 	mux.HandleFunc("DELETE /api/v1/ai/agents/{id}", s.handleDeleteAgent)
 	mux.HandleFunc("GET /api/v1/ai/tools", s.handleListTools)
+	mux.HandleFunc("GET /api/v1/ai/mcp/servers", s.handleMCPServers)
 	mux.HandleFunc("POST /api/v1/ai/tools/{name}/execute", s.handleExecuteTool)
 	// 自定义 MCP 工具注册 (PRD 5.2.2)
 	mux.HandleFunc("POST /api/v1/ai/tools/custom", s.handleCreateCustomTool)
@@ -526,6 +529,30 @@ func (s *Service) handleListTools(w http.ResponseWriter, r *http.Request) {
 		tools = []mcp.ToolDefinition{}
 	}
 	writeJSON(w, http.StatusOK, tools)
+}
+
+// StartExternalMCP 从环境变量加载外部 MCP server 配置并接入。
+// 应在 AI 服务初始化、内置工具注册完成后调用(Manager 会把远端工具
+// proxy 进 s.Registry,与内置工具共享同一注册表)。
+// 无配置时安全空转,不影响既有功能。
+func (s *Service) StartExternalMCP(ctx context.Context) {
+	cfgs, err := mcp.LoadServersFromEnv()
+	if err != nil {
+		slog.Error("load external mcp servers failed", "error", err)
+		return
+	}
+	if len(cfgs) == 0 {
+		slog.Info("no external mcp servers configured, skip")
+		return
+	}
+	if err := s.MCPManager.Start(ctx, cfgs); err != nil {
+		slog.Error("start external mcp manager failed", "error", err)
+	}
+}
+
+// handleMCPServers 返回外部 MCP server 的运行时状态(连接/工具数/错误)。
+func (s *Service) handleMCPServers(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, s.MCPManager.Status())
 }
 
 func (s *Service) handleExecuteTool(w http.ResponseWriter, r *http.Request) {

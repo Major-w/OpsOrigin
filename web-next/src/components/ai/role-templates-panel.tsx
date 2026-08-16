@@ -49,7 +49,7 @@ function themeOf(role: string) {
   return ROLE_THEME[role] || DEFAULT_THEME
 }
 
-export default function DigitalEmployeesPage() {
+export default function RoleTemplatesPanel() {
   const { templates, loading, loadTemplates, instantiateTemplate } = useAgentTemplates()
   const agents = useAIStore(s => s.agents)
   const fetchAgents = useAIStore(s => s.fetchAgents)
@@ -179,7 +179,8 @@ export default function DigitalEmployeesPage() {
             数字员工
           </h1>
           <p className="text-sm text-muted-foreground mt-1">
-            预置岗位 Agent 矩阵，一键上岗即可在对话与团队编排中使用，无需从空白开始搭建
+            预置岗位 Agent 矩阵，一键上岗即可在对话与团队编排中使用，无需从空白开始搭建。
+            <span className="text-primary/80">「上岗」本质是按模板创建一个 Agent，与「智能体工作台 → 我的智能体」从空白创建的入口殊途同归，上岗后的员工可在我的智能体页继续编辑。</span>
           </p>
         </div>
         <div className="flex items-center gap-2">

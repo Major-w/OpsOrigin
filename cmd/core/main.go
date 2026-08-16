@@ -1053,6 +1053,9 @@ func main() {
 		slog.Info("ai script approval allowlist loaded", "count", len(ids))
 	}
 	toolSet.Register(aiSvc.Registry)
+	// 外部 MCP server 接入:把远端工具 proxy 进同一 Registry,与内置工具共享。
+	// 无配置(未设 OPSORIGIN_MCP_SERVERS / OPSORIGIN_MCP_CONFIG)时安全空转。
+	aiSvc.StartExternalMCP(context.Background())
 	aiSvc.SetRAGFunc(toolSet.RAGContext)
 	ai.LLMConfigHook = func(cfg2 llm.Config) { aiSvc.UpdateLLMConfig(cfg2) }
 

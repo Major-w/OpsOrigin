@@ -12,6 +12,7 @@ import { Bot, Plus, Trash2, Save, Wrench, Brain, Settings2, Terminal, Wand2, Ale
 import { cn, apiFetch, apiList } from '@/lib/utils'
 import { useThemeStore } from '@/stores/theme'
 import { useAIStore, type ApprovalMode } from '@/stores/ai'
+import RoleTemplatesPanel from '@/components/ai/role-templates-panel'
 const APPROVAL_MODES: { value: ApprovalMode; label: string; desc: string }[] = [
   { value: 'sensitive_only', label: '仅敏感操作询问', desc: '默认安全策略：script_run 等写/执行类操作弹窗确认，只读操作直接执行' },
   { value: 'always_ask', label: '每次询问', desc: '所有 AI 操作执行前都须人工确认，最严格' },
@@ -503,7 +504,8 @@ export default function AISettingsPage() {
       </datalist>
       <Tabs value={activeTab} onValueChange={setActiveTab} className="flex-1 flex flex-col min-h-0">
         <TabsList className="mb-4">
-          <TabsTrigger value="agents"><Bot className="h-4 w-4 mr-1.5" />智能体</TabsTrigger>
+          <TabsTrigger value="agents"><Bot className="h-4 w-4 mr-1.5" />我的智能体</TabsTrigger>
+          <TabsTrigger value="digital"><Sparkles className="h-4 w-4 mr-1.5" />数字员工</TabsTrigger>
           <TabsTrigger value="prompts"><Wand2 className="h-4 w-4 mr-1.5" />提示词</TabsTrigger>
           <TabsTrigger value="model"><Brain className="h-4 w-4 mr-1.5" />模型</TabsTrigger>
           <TabsTrigger value="approval"><ShieldCheck className="h-4 w-4 mr-1.5" />审批策略</TabsTrigger>
@@ -743,6 +745,11 @@ export default function AISettingsPage() {
               ))
             )}
           </div>
+        </TabsContent>
+
+        {/* 数字员工：岗位模板集市 + 一键上岗 + 关联巡检 + 长期记忆 + 发布到市场 */}
+        <TabsContent value="digital" className="flex-1 overflow-auto">
+          <RoleTemplatesPanel />
         </TabsContent>
 
         {/* 提示词库 */}

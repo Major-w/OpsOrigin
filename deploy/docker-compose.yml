@@ -3,6 +3,7 @@ version: "3.9"
 services:
   postgres:
     image: postgres:16-alpine
+    restart: unless-stopped
     environment:
       POSTGRES_DB: opsorigin
       POSTGRES_USER: opsorigin
@@ -25,6 +26,7 @@ services:
 
   dgraph-zero:
     image: dgraph/dgraph:v25.4.0
+    restart: unless-stopped
     # v25.4.0 起 Zero admin HTTP 端点(6080)默认仅放行 loopback, 显式声明
     # whitelist 保持与 alpha 一致的信任域(compose 服务网络)。
     command: dgraph zero --my=dgraph-zero:5080 --security "whitelist=127.0.0.1,dgraph-zero,dgraph-alpha"
@@ -36,6 +38,7 @@ services:
 
   dgraph-alpha:
     image: dgraph/dgraph:v25.4.0
+    restart: unless-stopped
     # Restrict the Dgraph security whitelist to loopback and the compose service
     # network names. 0.0.0.0/0 exposed the entire cluster to any host that
     # could reach the port (see report issue 1.6).
@@ -57,6 +60,7 @@ services:
 
   redis:
     image: redis:7-alpine
+    restart: unless-stopped
     deploy:
       resources:
         limits:
@@ -76,6 +80,7 @@ services:
     build:
       context: ..
       dockerfile: deploy/Dockerfile
+    restart: unless-stopped
     deploy:
       resources:
         limits:
@@ -97,6 +102,7 @@ services:
     build:
       context: ../web-next
       dockerfile: Dockerfile.web
+    restart: unless-stopped
     deploy:
       resources:
         limits:

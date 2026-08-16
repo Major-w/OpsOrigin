@@ -1,6 +1,6 @@
 module github.com/opsorigin/core
 
-go 1.25.0
+go 1.25.5
 
 require (
 	entgo.io/ent v0.14.6
@@ -41,6 +41,7 @@ require (
 	github.com/hhrutter/pkcs7 v0.2.2 // indirect
 	github.com/hhrutter/tiff v1.0.3 // indirect
 	github.com/inconshreveable/mousetrap v1.1.0 // indirect
+	github.com/mark3labs/mcp-go v0.58.0
 	github.com/mattn/go-colorable v0.1.14 // indirect
 	github.com/mattn/go-isatty v0.0.20 // indirect
 	github.com/mattn/go-runewidth v0.0.24 // indirect
