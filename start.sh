@@ -178,6 +178,10 @@ stop_backend() {
   else
     dim "后端未运行"
   fi
+  # go run 会派生编译产物子进程(exe/core), PID 文件只记了 go run 父进程,
+  # 子进程可能残留并占用端口 —— 按 go 编译产物路径兜底清理。
+  pkill -f "go-build.*/exe/core" 2>/dev/null || true
+  pkill -f "/exe/core" 2>/dev/null || true
 }
 
 status_backend() {
