@@ -23,6 +23,26 @@ export default function CMDBIDCPage() {
   const [selectedRack, setSelectedRack] = useState<Rack | null>(null)
   const [units, setUnits] = useState<Record<number, RackUnit>>({})
   const [cis, setCis] = useState<CIModel[]>([])
+  // 2D 视图(模型驱动): rack CI + 设备按 rack_id/rack_unit 落位
+  const [view2D, setView2D] = useState(false)
+  const [panorama, setPanorama] = useState<{ racks: any[]; devices: any[] }>({ racks: [], devices: [] })
+  const [panoRoom, setPanoRoom] = useState('')       // 选中的机房(idc_room CI)
+  const [panoRack, setPanoRack] = useState<any>(null) // 选中的机柜(rack CI)
+  const loadPanorama = async () => {
+    try {
+      const data = await apiFetch<{ racks: any[]; devices: any[] }>('/cmdb/idc/panorama')
+      setPanorama(data)
+    } catch { setPanorama({ racks: [], devices: [] }) }
+  }
+  const rackDevices = (rackID: string) => panorama.devices.filter(d => d.attributes?.rack_id === rackID)
+  const deviceColor = (t: string) =>
+    t === 'server' || t === 'virtual_machine' ? 'bg-sky-500' :
+    t === 'database' || t === 'middleware' ? 'bg-violet-500' :
+    t === 'storage' ? 'bg-amber-500' :
+    t === 'firewall' || t === 'load_balancer' || t === 'router' || t === 'switch' ? 'bg-emerald-500' : 'bg-slate-400'
+  const roomRacks = () => panorama.racks.filter(r => !panoRoom || r.attributes?.room_id === panoRoom)
+  const panoRooms = panorama.racks
+    .map(r => r.attributes?.room_id).filter((v, i, a) => v && a.indexOf(v) === i)
   const [roomDialog, setRoomDialog] = useState(false)
   const [roomForm, setRoomForm] = useState({ name: '', location: '', description: '' })
   const [rackDialog, setRackDialog] = useState(false)
@@ -121,10 +141,96 @@ export default function CMDBIDCPage() {
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-2xl font-bold">机房机柜视图</h1>
-          <p className="text-sm text-muted-foreground">IDC 机房 / 机柜 / U 位可视化管理与设备占用</p>
+          <p className="text-sm text-muted-foreground">{view2D ? '2D 效果图（模型驱动：录入 rack 与设备 rack_id/rack_unit 自动成图）' : 'IDC 机房 / 机柜 / U 位可视化管理与设备占用'}</p>
         </div>
-        <Button variant="outline" onClick={() => { loadRooms(); if (selectedRoom) loadRacks(selectedRoom.id); if (selectedRack) loadUnits(selectedRack.id) }}><RefreshCw className="h-4 w-4" />刷新</Button>
+        <div className="flex gap-2">
+          <Button variant={view2D ? 'default' : 'outline'} size="sm" onClick={() => { setView2D(true); loadPanorama() }}><Rows3 className="h-3.5 w-3.5 mr-1" />2D 视图</Button>
+          <Button variant={!view2D ? 'default' : 'outline'} size="sm" onClick={() => setView2D(false)}><Building2 className="h-3.5 w-3.5 mr-1" />管理</Button>
+          {!view2D && <Button variant="outline" size="sm" onClick={() => { loadRooms(); if (selectedRoom) loadRacks(selectedRoom.id); if (selectedRack) loadUnits(selectedRack.id) }}><RefreshCw className="h-4 w-4" />刷新</Button>}
+        </div>
       </div>
+
+      {view2D ? (
+        /* ============ 2D 效果图(模型驱动) ============ */
+        <div className="space-y-4">
+          {/* 机房选择 */}
+          <div className="flex items-center gap-2 flex-wrap">
+            <span className="text-xs text-muted-foreground">机房:</span>
+            <button onClick={() => { setPanoRoom(''); setPanoRack(null) }} className={cn('px-3 py-1 rounded-full text-xs border', panoRoom === '' ? 'border-emerald-500 bg-emerald-50 dark:bg-emerald-500/10 text-emerald-600' : 'border-gray-200 dark:border-gray-700')}>全部</button>
+            {panoRooms.map(rid => (
+              <button key={rid} onClick={() => { setPanoRoom(rid); setPanoRack(null) }} className={cn('px-3 py-1 rounded-full text-xs border', panoRoom === rid ? 'border-emerald-500 bg-emerald-50 dark:bg-emerald-500/10 text-emerald-600' : 'border-gray-200 dark:border-gray-700')}>{rid.slice(0, 12)}</button>
+            ))}
+            <span className="text-xs text-muted-foreground ml-auto">机柜 {roomRacks().length} · 设备 {panorama.devices.length}</span>
+          </div>
+
+          {panoRack ? (
+            /* 机柜正视图: U 位从下到上 */
+            <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+              <Card className="lg:col-span-1">
+                <CardHeader className="py-3"><CardTitle className="text-sm">机柜 {panoRack.name || panoRack.id} 正视图</CardTitle></CardHeader>
+                <CardContent>
+                  <div className="space-y-0.5">
+                    {(() => {
+                      const maxU = Number(panoRack.attributes?.max_units || 42)
+                      const devs = rackDevices(panoRack.id)
+                      const unitOf = (d: any) => Number(d.attributes?.rack_unit || 0)
+                      return Array.from({ length: maxU }, (_, i) => maxU - i).map(u => {
+                        const d = devs.find(x => unitOf(x) === u)
+                        return (
+                          <div key={u} className={cn('flex items-center gap-2 px-2 py-0.5 rounded text-[10px] border', d ? 'border-transparent text-white' : 'border-dashed border-gray-200 dark:border-gray-700 text-muted-foreground')}>
+                            <span className="w-6 text-right shrink-0">{u}</span>
+                            <div className={cn('flex-1 rounded px-1.5 py-0.5 truncate', d ? deviceColor(d.type_id) : 'bg-muted/40')}>
+                              {d ? `${d.name} · ${d.type_id}` : '空'}
+                            </div>
+                          </div>
+                        )
+                      })
+                    })()}
+                  </div>
+                  <Button variant="outline" size="sm" className="mt-3" onClick={() => setPanoRack(null)}>返回平面图</Button>
+                </CardContent>
+              </Card>
+              <div className="lg:col-span-2 space-y-2">
+                <p className="text-xs text-muted-foreground">该机柜内设备（{rackDevices(panoRack.id).length}）</p>
+                {rackDevices(panoRack.id).map(d => (
+                  <div key={d.id} className="border rounded-md px-3 py-2 text-xs flex items-center gap-2">
+                    <span className={cn('h-2 w-2 rounded-full', deviceColor(d.type_id))} />
+                    <span className="font-medium">{d.name}</span>
+                    <Badge variant="outline" className="text-[9px]">{d.type_id}</Badge>
+                    <span className="text-muted-foreground ml-auto">U{d.attributes?.rack_unit}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          ) : (
+            /* 机房平面图: 机柜按 row/col 网格 */
+            <Card>
+              <CardHeader className="py-3"><CardTitle className="text-sm">机房平面图（机柜位置）</CardTitle></CardHeader>
+              <CardContent>
+                {roomRacks().length === 0 ? (
+                  <p className="text-sm text-muted-foreground py-8 text-center">暂无机柜数据。请在模型管理中录入 rack 配置项（属性：room_id / row / col / max_units），并为设备设置 rack_id / rack_unit 后自动成图。</p>
+                ) : (
+                  <div className="grid gap-2" style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(56px, 1fr))' }}>
+                    {roomRacks().map(rk => {
+                      const devs = rackDevices(rk.id)
+                      const usage = rk.attributes?.max_units ? Math.round(devs.length / Number(rk.attributes.max_units) * 100) : 0
+                      return (
+                        <button key={rk.id} onClick={() => setPanoRack(rk)} title={`${rk.name || rk.id} · ${devs.length} 台设备`}
+                          className={cn('border rounded p-1.5 text-center hover:border-emerald-500 transition-colors', usage >= 80 ? 'bg-red-50 border-red-300 dark:bg-red-500/10' : usage > 0 ? 'bg-amber-50 border-amber-300 dark:bg-amber-500/10' : 'bg-muted/30')}>
+                          <Rows3 className="h-4 w-4 mx-auto text-muted-foreground" />
+                          <p className="text-[9px] font-medium truncate mt-0.5">{rk.name || rk.id.slice(0, 8)}</p>
+                          <p className="text-[8px] text-muted-foreground">{devs.length}台{usage > 0 ? ` ${usage}%` : ''}</p>
+                        </button>
+                      )
+                    })}
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+          )}
+        </div>
+      ) : (
+      <>
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
         {/* 机房列表 */}
@@ -240,6 +346,8 @@ export default function CMDBIDCPage() {
           <Button onClick={assignUnit}>保存</Button>
         </DialogFooter>
       </Dialog>
+      </>
+      )}
     </div>
   )
 }
