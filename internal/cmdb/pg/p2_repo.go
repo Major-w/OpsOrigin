@@ -570,3 +570,68 @@ func (r *Repository) ListSubscriptionDeliveries(ctx context.Context, tenantID st
 	}
 	return out, rows.Err()
 }
+
+// —— 行级数据权限(P2-6) ——
+
+// SaveDataPolicy 保存一条数据权限规则。
+func (r *Repository) SaveDataPolicy(ctx context.Context, p *model.DataPolicy) error {
+	if p.ID == "" {
+		p.ID = uuid.New().String()
+	}
+	condJSON, err := json.Marshal(p.Condition)
+	if err != nil {
+		return fmt.Errorf("marshal policy condition: %w", err)
+	}
+	_, err = r.db.ExecContext(ctx, `
+		INSERT INTO cmdb_data_policy (id, tenant_id, role, model_type_id, condition, action, created_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7)
+		ON CONFLICT (tenant_id, role, model_type_id, action) DO UPDATE
+		SET condition = EXCLUDED.condition`,
+		p.ID, p.TenantID, p.Role, p.ModelTypeID, condJSON, p.Action, time.Now())
+	if err != nil {
+		return fmt.Errorf("save data policy: %w", err)
+	}
+	return nil
+}
+
+// ListDataPolicies 列出数据权限规则(可按角色/模型过滤)。
+func (r *Repository) ListDataPolicies(ctx context.Context, tenantID, role, modelTypeID string) ([]*model.DataPolicy, error) {
+	q := `SELECT id, tenant_id, role, model_type_id, condition, action, created_at
+		FROM cmdb_data_policy WHERE tenant_id = $1`
+	args := []any{tenantID}
+	if role != "" {
+		q += ` AND role = $` + fmt.Sprint(len(args)+1)
+		args = append(args, role)
+	}
+	if modelTypeID != "" {
+		q += ` AND model_type_id = $` + fmt.Sprint(len(args)+1)
+		args = append(args, modelTypeID)
+	}
+	rows, err := r.db.QueryContext(ctx, q, args...)
+	if err != nil {
+		return nil, fmt.Errorf("list data policies: %w", err)
+	}
+	defer rows.Close()
+	var out []*model.DataPolicy
+	for rows.Next() {
+		p := &model.DataPolicy{}
+		var condJSON []byte
+		if err := rows.Scan(&p.ID, &p.TenantID, &p.Role, &p.ModelTypeID, &condJSON, &p.Action, &p.CreatedAt); err != nil {
+			return nil, fmt.Errorf("scan data policy: %w", err)
+		}
+		if len(condJSON) > 0 {
+			json.Unmarshal(condJSON, &p.Condition)
+		}
+		out = append(out, p)
+	}
+	return out, rows.Err()
+}
+
+// DeleteDataPolicy 删除数据权限规则。
+func (r *Repository) DeleteDataPolicy(ctx context.Context, id, tenantID string) error {
+	_, err := r.db.ExecContext(ctx, `DELETE FROM cmdb_data_policy WHERE id = $1 AND tenant_id = $2`, id, tenantID)
+	if err != nil {
+		return fmt.Errorf("delete data policy: %w", err)
+	}
+	return nil
+}

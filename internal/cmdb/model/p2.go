@@ -7,9 +7,9 @@ import "time"
 // ============================================================
 
 type CategoryStat struct {
-	Category string `json:"category"`
-	Models   int    `json:"models"`
-	Instances int   `json:"instances"`
+	Category  string `json:"category"`
+	Models    int    `json:"models"`
+	Instances int    `json:"instances"`
 }
 
 type StatusStat struct {
@@ -58,7 +58,7 @@ type Rack struct {
 	ID        string    `json:"id"`
 	TenantID  string    `json:"tenant_id"`
 	IDCRoomID string    `json:"idc_id"`
-	Name      string    `json:"name"`      // 机柜编号，如 R01
+	Name      string    `json:"name"` // 机柜编号，如 R01
 	Row       string    `json:"row,omitempty"`
 	Col       string    `json:"col,omitempty"`
 	MaxUnits  int       `json:"max_units"` // U 位总数，默认 42
@@ -122,7 +122,7 @@ const (
 type SubscriptionChannel string
 
 const (
-	SubChannelWebhook     SubscriptionChannel = "webhook"     // POST JSON 到 target URL
+	SubChannelWebhook      SubscriptionChannel = "webhook"      // POST JSON 到 target URL
 	SubChannelNotification SubscriptionChannel = "notification" // 走平台通知中心（注入回调）
 )
 
@@ -149,4 +149,27 @@ type SubscriptionDelivery struct {
 	Status    string    `json:"status"` // success | failed
 	Error     string    `json:"error,omitempty"`
 	CreatedAt time.Time `json:"created_at"`
+}
+
+// ============================================================
+// P2-6 行级数据权限(we-cmdb 细粒度数据权限借鉴)
+// 某角色对某模型类型的 CI, 仅可访问/操作满足条件的数据。
+// ============================================================
+
+// PolicyCondition 一条数据权限条件(AND 语义)。
+type PolicyCondition struct {
+	Attr  string `json:"attr"`  // CI 属性名
+	Op    string `json:"op"`    // eq | in
+	Value string `json:"value"` // 值或逗号分隔列表(in)
+}
+
+// DataPolicy 行级数据权限规则。
+type DataPolicy struct {
+	ID          string            `json:"id"`
+	TenantID    string            `json:"tenant_id"`
+	Role        string            `json:"role"`          // 主体角色(如 admin/operator/viewer)
+	ModelTypeID string            `json:"model_type_id"` // 目标模型类型
+	Condition   []PolicyCondition `json:"condition"`     // AND 条件, 空=全部
+	Action      string            `json:"action"`        // query | update | delete(空=query)
+	CreatedAt   time.Time         `json:"created_at"`
 }

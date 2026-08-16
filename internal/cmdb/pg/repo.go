@@ -128,6 +128,20 @@ func (r *Repository) Migrate(ctx context.Context) error {
 	if _, err := r.db.ExecContext(ctx, `CREATE INDEX IF NOT EXISTS idx_drift_ci ON cmdb_drift(ci_id, resolved_at)`); err != nil {
 		return fmt.Errorf("create drift index: %w", err)
 	}
+	// 行级数据权限规则表(角色 → 模型 → 属性条件)。
+	if _, err := r.db.ExecContext(ctx, `
+		CREATE TABLE IF NOT EXISTS cmdb_data_policy (
+			id            TEXT PRIMARY KEY,
+			tenant_id     TEXT NOT NULL DEFAULT 'default',
+			role          TEXT NOT NULL,
+			model_type_id TEXT NOT NULL,
+			condition     JSONB NOT NULL DEFAULT '[]',
+			action        TEXT NOT NULL DEFAULT 'query',
+			created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			UNIQUE (tenant_id, role, model_type_id, action)
+		)`); err != nil {
+		return fmt.Errorf("create cmdb_data_policy table: %w", err)
+	}
 	// 方案 C 存量迁移：把大类 CI 按 engine/middleware_type 属性下沉为具体引擎子类 TypeID。
 	// 幂等：仅作用于仍处于父类(database/middleware)的行；下沉后 type_id 不再命中，重复执行无副作用。
 	// 未知 engine 保留父类不迁移，避免制造孤儿类型。
