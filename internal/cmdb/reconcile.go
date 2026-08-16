@@ -28,13 +28,13 @@ type ReconcileCandidate struct {
 
 // ReconcileMember 候选组中的一个 CI。
 type ReconcileMember struct {
-	CIID       string             `json:"ci_id"`
-	Name       string             `json:"name"`
-	TypeID     string             `json:"type_id"`
-	Source     model.SourceKind   `json:"source"`
-	Confidence float64            `json:"confidence"`
-	UpdatedAt  string             `json:"updated_at"`
-	Attrs      map[string]any     `json:"-"`
+	CIID       string                    `json:"ci_id"`
+	Name       string                    `json:"name"`
+	TypeID     string                    `json:"type_id"`
+	Source     model.SourceKind          `json:"source"`
+	Confidence float64                   `json:"confidence"`
+	UpdatedAt  string                    `json:"updated_at"`
+	Attrs      map[string]any            `json:"-"`
 	Meta       map[string]model.AttrMeta `json:"-"`
 }
 
