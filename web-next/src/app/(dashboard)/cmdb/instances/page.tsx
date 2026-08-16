@@ -30,7 +30,7 @@ interface ModelFieldDef {
   ref_model?: string
   ref_display?: string
 }
-interface ModelInfo { id: string; name: string; fields?: ModelFieldDef[] }
+interface ModelInfo { id: string; name: string; category: string; parent_id?: string; abstract?: boolean; fields?: ModelFieldDef[] }
 
 const CI_TYPES = ['server', 'web-server', 'database', 'switch', 'loadbalancer', 'dns-server', 'firewall', 'storage']
 const PAGE_SIZE = 20
@@ -394,13 +394,13 @@ export default function CMDBPage() {
   return (
     <div className="p-6 space-y-4">
       <div className="flex items-center justify-between">
-        <div><h1 className="text-2xl font-bold">CMDB 资产</h1><p className="text-sm text-muted-foreground">配置项管理与拓扑</p></div>
+        <div><h1 className="text-2xl font-bold">配置项管理</h1><p className="text-sm text-muted-foreground">按模型树浏览配置项实例，点击模型查看其下实例</p></div>
         <div className="flex gap-2">
           <Button variant="outline" onClick={handleExport}><Download className="h-4 w-4" />导出 CSV</Button>
           <Button variant="outline" onClick={() => fileRef.current?.click()}><Upload className="h-4 w-4" />导入 CSV</Button>
           <Button variant="outline" onClick={() => setSqDialogOpen(true)}><Bookmark className="h-4 w-4" />保存查询</Button>
           <Button variant="outline" onClick={openReconcile}><GitMerge className="h-4 w-4" />疑似重复</Button>
-          <Button onClick={() => { setEditId(null); setForm({ name: '', type_id: 'server', description: '', attributes: {}, labels: {} }); setDialogOpen(true) }}><Plus className="h-4 w-4" />新建资产</Button>
+          <Button onClick={() => { setEditId(null); setForm({ name: '', type_id: 'server', description: '', attributes: {}, labels: {} }); setDialogOpen(true) }}><Plus className="h-4 w-4" />新建配置项</Button>
         </div>
       </div>
 
@@ -425,12 +425,56 @@ export default function CMDBPage() {
         )}
       </div>
 
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+      <div className="grid grid-cols-1 lg:grid-cols-4 gap-4">
+        {/* 左栏: 模型树(分类 → 模型 → 子模型) */}
         <div className="lg:col-span-1 space-y-4">
           <Card>
-            <CardHeader className="py-3"><CardTitle className="text-sm">资产列表 ({items.length})</CardTitle></CardHeader>
+            <CardHeader className="py-3"><CardTitle className="text-sm">模型结构</CardTitle></CardHeader>
+            <CardContent className="p-0 max-h-[70vh] overflow-y-auto">
+              {(() => {
+                const roots = models.filter(m => !m.parent_id)
+                const childrenOf = (id: string) => models.filter(m => m.parent_id === id)
+                const byCat = new Map<string, ModelInfo[]>()
+                for (const m of roots) {
+                  const arr = byCat.get(m.category) || []
+                  arr.push(m); byCat.set(m.category, arr)
+                }
+                const catOrder = ['基础设施资源', '数据库资源', '中间件资源', '应用资源', '业务资源']
+                const cats = catOrder.filter(c => byCat.has(c)).concat(Array.from(byCat.keys()).filter(c => !catOrder.includes(c)))
+                return (
+                  <div className="text-xs">
+                    {cats.map(cat => (
+                      <div key={cat}>
+                        <p className="px-3 py-1.5 text-[10px] font-semibold text-muted-foreground uppercase tracking-wide bg-muted/40">{cat}</p>
+                        {(byCat.get(cat) || []).map(m => (
+                          <div key={m.id}>
+                            <button onClick={() => { setTypeFilter(m.id); setPage(0) }}
+                              className={`w-full text-left px-3 py-1.5 flex items-center gap-1.5 hover:bg-accent ${typeFilter === m.id ? 'bg-accent text-emerald-600 font-medium' : ''}`}>
+                              <ChevronRight className="h-3 w-3 text-muted-foreground shrink-0" />
+                              <span className="truncate">{m.name}</span>
+                              <span className="text-[9px] text-muted-foreground ml-auto">{m.id}</span>
+                            </button>
+                            {childrenOf(m.id).map(c => (
+                              <button key={c.id} onClick={() => { setTypeFilter(c.id); setPage(0) }}
+                                className={`w-full text-left pl-7 pr-3 py-1 flex items-center gap-1.5 hover:bg-accent ${typeFilter === c.id ? 'bg-accent text-emerald-600 font-medium' : ''}`}>
+                                <span className="text-muted-foreground shrink-0">└</span>
+                                <span className="truncate">{c.name}</span>
+                              </button>
+                            ))}
+                          </div>
+                        ))}
+                      </div>
+                    ))}
+                  </div>
+                )
+              })()}
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardHeader className="py-3"><CardTitle className="text-sm">实例列表 ({items.length})</CardTitle></CardHeader>
             <CardContent className="p-0">
-              {loading && items.length === 0 ? <p className="px-4 text-sm text-muted-foreground">加载中...</p> : items.length === 0 ? <p className="px-4 text-sm text-muted-foreground">暂无资产。</p> : (
+              {loading && items.length === 0 ? <p className="px-4 text-sm text-muted-foreground">加载中...</p> : items.length === 0 ? <p className="px-4 text-sm text-muted-foreground">暂无实例。</p> : (
                 <div className="flex flex-col">
                   {/* 批量操作栏 */}
                   <div className="flex items-center gap-1.5 px-3 py-2 border-b bg-muted/30">
@@ -697,7 +741,7 @@ export default function CMDBPage() {
         </div>
       </div>
 
-      <Dialog open={dialogOpen} onClose={() => setDialogOpen(false)} title={editId ? '编辑资产' : '新建资产'}>
+      <Dialog open={dialogOpen} onClose={() => setDialogOpen(false)} title={editId ? '编辑资产' : '新建配置项'}>
         <div className="space-y-3 max-h-[60vh] overflow-y-auto">
           <div><label className="text-sm font-medium">名称 *</label><Input value={form.name} onChange={e => setForm(f => ({ ...f, name: e.target.value }))} /></div>
           <div><label className="text-sm font-medium">类型</label>
