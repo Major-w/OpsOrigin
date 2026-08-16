@@ -470,7 +470,10 @@ export default function CMDBPage() {
               })()}
             </CardContent>
           </Card>
+        </div>
 
+        {/* 中间栏: 所选模型的实例列表 */}
+        <div className="lg:col-span-1 space-y-4">
           <Card>
             <CardHeader className="py-3"><CardTitle className="text-sm">实例列表 ({items.length})</CardTitle></CardHeader>
             <CardContent className="p-0">
@@ -521,54 +524,6 @@ export default function CMDBPage() {
                   </div>
                 </div>
               )}
-            </CardContent>
-          </Card>
-
-          <Card>
-            <CardHeader className="py-3"><CardTitle className="text-sm">关联关系</CardTitle></CardHeader>
-            <CardContent className="p-0">
-              {relations.length === 0 ? <p className="px-4 py-2 text-sm text-muted-foreground">暂无关系。</p> : (
-                <div className="flex flex-col">
-                  {relations.slice(0, 10).map(rel => {
-                    const src = items.find(i => i.id === rel.source_id)
-                    const tgt = items.find(i => i.id === rel.target_id)
-                    return (
-                      <div key={rel.id} className="px-4 py-2 border-b last:border-0 flex items-center justify-between text-xs">
-                        <span>{src?.name || rel.source_id.slice(0, 8)} <Badge variant="outline" className="text-[10px] px-1">{rel.relation_type}</Badge> {tgt?.name || rel.target_id.slice(0, 8)}</span>
-                        {canDelete && <Button variant="ghost" size="icon" className="h-5 w-5" onClick={() => handleDeleteRel(rel.id)}><Unlink className="h-3 w-3" /></Button>}
-                      </div>
-                    )
-                  })}
-                </div>
-              )}
-              <div className="px-4 py-2 border-t">
-                <Button variant="outline" size="sm" className="w-full" onClick={() => { setRelForm({ source_id: selectedCI?.id || '', target_id: '', relation_type: 'depends_on' }); setRelDialogOpen(true) }}><Link2 className="h-3 w-3 mr-1" />新建关联</Button>
-              </div>
-            </CardContent>
-          </Card>
-
-          <Card>
-            <CardHeader className="py-3"><CardTitle className="text-sm">拓扑总览</CardTitle></CardHeader>
-            <CardContent>
-              <Tabs defaultValue="list">
-                <TabsList className="w-full">
-                  <TabsTrigger value="list" className="flex-1">列表</TabsTrigger>
-                  <TabsTrigger value="topology" className="flex-1"><Network className="w-3 h-3 mr-1" />拓扑</TabsTrigger>
-                </TabsList>
-                <TabsContent value="list" className="mt-2 max-h-64 overflow-auto">
-                  {items.slice(0, 20).map(item => (
-                    <div key={item.id} className="flex items-center justify-between py-1 text-xs">
-                      <span>{item.name}</span>
-                      <Badge variant="secondary" className="text-[10px]">{item.type_id}</Badge>
-                    </div>
-                  ))}
-                </TabsContent>
-                <TabsContent value="topology" className="mt-2">
-                  <div className="border rounded-lg bg-muted/20" style={{ minHeight: 200 }}>
-                    <TopologyGraph data={topology} width={300} height={200} />
-                  </div>
-                </TabsContent>
-              </Tabs>
             </CardContent>
           </Card>
         </div>
