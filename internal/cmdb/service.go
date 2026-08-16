@@ -779,25 +779,88 @@ func (s *Service) handleGetTopology(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	tenantID := tenantFromCtx(r.Context())
 
-	if s.dg == nil {
-		nodes, edges := s.mem.queryTopology(tenantID, id, 3)
-		writeJSON(w, http.StatusOK, map[string]any{
-			"nodes": nodes,
-			"edges": edges,
-		})
-		return
-	}
-	nodes, edges, err := s.dg.QueryTopology(r.Context(), tenantID, id, 3)
-	if err != nil {
-		slog.Error("query topology failed", "error", err)
-		writeError(w, http.StatusInternalServerError, err.Error())
+	// 优先 dgraph(图库原生能力)
+	if s.dg != nil {
+		nodes, edges, err := s.dg.QueryTopology(r.Context(), tenantID, id, 3)
+		if err != nil {
+			slog.Error("query topology failed", "error", err)
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"nodes": nodes, "edges": edges})
 		return
 	}
 
-	writeJSON(w, http.StatusOK, map[string]any{
-		"nodes": nodes,
-		"edges": edges,
-	})
+	// 轻量部署(dg 不在): 优先用 pg 关系表做 BFS 主源, 富化节点名称/类型;
+	// 仅当 pg 也不在时才退回 memStore(纯内存模式)。
+	if s.pg != nil {
+		rels, err := s.pg.ListRelations(r.Context(), tenantID)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		nodes, edges := buildTopologyFromRelations(tenantID, id, rels, 3)
+		if cis, cerr := s.pg.ListCI(r.Context(), tenantID, ""); cerr == nil {
+			ciMap := make(map[string]*model.CIModel, len(cis))
+			for _, ci := range cis {
+				ciMap[ci.ID] = ci
+			}
+			for i := range nodes {
+				if ci, ok := ciMap[nodes[i].ID]; ok {
+					nodes[i].Name = ci.Name
+					nodes[i].Type = ci.TypeID
+				}
+			}
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"nodes": nodes, "edges": edges})
+		return
+	}
+
+	nodes, edges := s.mem.queryTopology(tenantID, id, 3)
+	writeJSON(w, http.StatusOK, map[string]any{"nodes": nodes, "edges": edges})
+}
+
+// buildTopologyFromRelations 以 rootID 为起点, 在关系切片上做双向 BFS(深度 maxDepth),
+// 返回拓扑节点与边。节点名称/类型由调用方按需富化(pg 模式用 ListCI 映射)。
+func buildTopologyFromRelations(tenantID, rootID string, rels []*model.CIRelation, maxDepth int) ([]model.TopologyNode, []model.TopologyEdge) {
+	visited := map[string]bool{rootID: true}
+	var nodes []model.TopologyNode
+	var edges []model.TopologyEdge
+
+	frontier := []string{rootID}
+	for depth := 0; depth < maxDepth && len(frontier) > 0; depth++ {
+		var next []string
+		for _, cid := range frontier {
+			for _, rel := range rels {
+				if rel.TenantID != tenantID {
+					continue
+				}
+				var neighbor string
+				if rel.SourceID == cid {
+					neighbor = rel.TargetID
+				} else if rel.TargetID == cid {
+					neighbor = rel.SourceID
+				} else {
+					continue
+				}
+				if !edgeExists(edges, rel.SourceID, rel.TargetID, rel.RelationType) {
+					edges = append(edges, model.TopologyEdge{
+						SourceID: rel.SourceID, TargetID: rel.TargetID, RelationType: rel.RelationType,
+					})
+				}
+				if !visited[neighbor] {
+					visited[neighbor] = true
+					next = append(next, neighbor)
+				}
+			}
+		}
+		frontier = next
+	}
+
+	for id := range visited {
+		nodes = append(nodes, model.TopologyNode{ID: id, TenantID: tenantID})
+	}
+	return nodes, edges
 }
 
 func (s *Service) handleImpactAnalysis(w http.ResponseWriter, r *http.Request) {
@@ -1000,16 +1063,35 @@ func containsStr(xs []string, s string) bool {
 
 func (s *Service) handleListRelations(w http.ResponseWriter, r *http.Request) {
 	tenantID := tenantFromCtx(r.Context())
+	ciID := r.URL.Query().Get("ci_id")
 
 	if s.pg == nil {
 		rels := s.mem.listRelations(tenantID)
+		if ciID != "" {
+			filtered := make([]*model.CIRelation, 0, len(rels))
+			for _, rel := range rels {
+				if rel.SourceID == ciID || rel.TargetID == ciID {
+					filtered = append(filtered, rel)
+				}
+			}
+			rels = filtered
+		}
 		if rels == nil {
 			rels = []*model.CIRelation{}
 		}
 		writeJSON(w, http.StatusOK, rels)
 		return
 	}
-	rels, err := s.pg.ListRelations(r.Context(), tenantID)
+
+	var (
+		rels []*model.CIRelation
+		err  error
+	)
+	if ciID != "" {
+		rels, err = s.pg.ListRelationsByCI(r.Context(), tenantID, ciID)
+	} else {
+		rels, err = s.pg.ListRelations(r.Context(), tenantID)
+	}
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return

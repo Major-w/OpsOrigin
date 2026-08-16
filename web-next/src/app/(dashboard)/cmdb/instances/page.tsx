@@ -312,9 +312,11 @@ export default function CMDBPage() {
     setImpactResult(null)
     try {
       // 拉详情(含聚合字段 aggregates)合并到选中项
+      // 关系页签按实例按需过滤(?ci_id=), 避免拉取整租户全量关系;
+      // 末尾 .filter 为防御性兜底(兼容旧后端忽略该参数)。
       const [audit, rels, detail] = await Promise.all([
         getAudit(item.id),
-        apiList<CIRelation>('/cmdb/relation'),
+        apiList<CIRelation>('/cmdb/relation?ci_id=' + encodeURIComponent(item.id)),
         apiFetch<CIModel>('/cmdb/ci/' + item.id).catch(() => null),
       ])
       if (detail) setSelectedCI(detail)

@@ -968,6 +968,32 @@ func (r *Repository) DeleteRelation(ctx context.Context, id, tenantID, traceID s
 	return tx.Commit()
 }
 
+// ListRelationsByCI 返回租户内与指定 CI 相关的全部关系(source 或 target 命中)。
+// 用于实例详情「关系」页签的按需过滤, 避免拉取整租户全量关系再前端过滤。
+func (r *Repository) ListRelationsByCI(ctx context.Context, tenantID, ciID string) ([]*model.CIRelation, error) {
+	rows, err := r.db.QueryContext(ctx, `
+		SELECT id, tenant_id, source_id, target_id, relation_type, properties, created_at
+		FROM cmdb_ci_relation WHERE tenant_id = $1 AND (source_id = $2 OR target_id = $2) ORDER BY created_at`, tenantID, ciID)
+	if err != nil {
+		return nil, fmt.Errorf("list relations by ci: %w", err)
+	}
+	defer rows.Close()
+
+	var rels []*model.CIRelation
+	for rows.Next() {
+		rel := &model.CIRelation{}
+		var propsJSON []byte
+		if err := rows.Scan(&rel.ID, &rel.TenantID, &rel.SourceID, &rel.TargetID, &rel.RelationType, &propsJSON, &rel.CreatedAt); err != nil {
+			return nil, fmt.Errorf("scan relation: %w", err)
+		}
+		if propsJSON != nil {
+			json.Unmarshal(propsJSON, &rel.Properties)
+		}
+		rels = append(rels, rel)
+	}
+	return rels, rows.Err()
+}
+
 func (r *Repository) ListRelations(ctx context.Context, tenantID string) ([]*model.CIRelation, error) {
 	rows, err := r.db.QueryContext(ctx, `
 		SELECT id, tenant_id, source_id, target_id, relation_type, properties, created_at

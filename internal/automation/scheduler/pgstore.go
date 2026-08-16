@@ -54,6 +54,22 @@ func (s *PGStore) init(ctx context.Context) {
 			return
 		}
 	}
+
+	// 兼容旧表: 早期版本的 init() 建表时尚未包含下列列,
+	// CREATE TABLE IF NOT EXISTS 不会为已存在的表补列, 故用 ADD COLUMN IF NOT EXISTS 自愈。
+	// 新部署(表本就含这些列)下为 no-op。
+	alterStmts := []string{
+		`ALTER TABLE automation_scheduled_tasks ADD COLUMN IF NOT EXISTS max_retries INTEGER DEFAULT 0`,
+		`ALTER TABLE automation_scheduled_tasks ADD COLUMN IF NOT EXISTS retry_delay_secs INTEGER DEFAULT 60`,
+		`ALTER TABLE automation_scheduled_tasks ADD COLUMN IF NOT EXISTS retry_count INTEGER DEFAULT 0`,
+		`ALTER TABLE automation_scheduled_tasks ADD COLUMN IF NOT EXISTS last_error TEXT DEFAULT ''`,
+		`ALTER TABLE automation_scheduled_tasks ADD COLUMN IF NOT EXISTS alert_on_failure BOOLEAN DEFAULT FALSE`,
+	}
+	for _, st := range alterStmts {
+		if _, err := s.db.ExecContext(ctx, st); err != nil {
+			slog.Warn("automation scheduler store init ALTER failed", "err", err)
+		}
+	}
 }
 
 func toJSON(v any) []byte {

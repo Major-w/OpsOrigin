@@ -167,7 +167,8 @@ stop_backend() {
     local pid
     pid="$(cat "$BACKEND_PID_FILE")"
     if kill -0 "$pid" 2>/dev/null; then
-      kill "$pid" 2>/dev/null || true
+      # go run 会派生子进程(exe/core), 杀整个进程组更可靠
+      kill -- "-$pid" 2>/dev/null || kill "$pid" 2>/dev/null || true
       sleep 1
       kill -9 "$pid" 2>/dev/null || true
       log "后端已停止（PID ${pid}）"
@@ -178,10 +179,19 @@ stop_backend() {
   else
     dim "后端未运行"
   fi
-  # go run 会派生编译产物子进程(exe/core), PID 文件只记了 go run 父进程,
-  # 子进程可能残留并占用端口 —— 按 go 编译产物路径兜底清理。
+  # go run 子进程(exe/core)与 PID 文件进程不同, 且 pkill 偶发漏杀 ——
+  # 按编译产物路径 + 端口双重兜底清理, 确保端口释放。
   pkill -f "go-build.*/exe/core" 2>/dev/null || true
-  pkill -f "/exe/core" 2>/dev/null || true
+  pkill -f "go run ./cmd/core" 2>/dev/null || true
+  sleep 1
+  local port_pids
+  port_pids="$(lsof -tiTCP:${BACKEND_PORT} -sTCP:LISTEN 2>/dev/null || true)"
+  if [ -n "$port_pids" ]; then
+    for pp in $port_pids; do
+      kill -9 "$pp" 2>/dev/null || true
+    done
+    log "已清理占用端口 ${BACKEND_PORT} 的残留进程"
+  fi
 }
 
 status_backend() {
@@ -233,6 +243,16 @@ stop_frontend() {
     rm -f "$FRONTEND_PID_FILE"
   else
     dim "前端未运行"
+  fi
+  # 端口兜底: 清理占用 3000 的残留(next dev 子进程)
+  sleep 1
+  local port_pids
+  port_pids="$(lsof -tiTCP:${FRONTEND_PORT} -sTCP:LISTEN 2>/dev/null || true)"
+  if [ -n "$port_pids" ]; then
+    for pp in $port_pids; do
+      kill -9 "$pp" 2>/dev/null || true
+    done
+    log "已清理占用端口 ${FRONTEND_PORT} 的残留进程"
   fi
 }
 
