@@ -11,6 +11,7 @@ import { Plus, Trash2, GripVertical, Edit2, Download, Upload, Settings2, Shield,
 import { useCan } from '@/stores/permissions'
 import { cn } from '@/lib/utils'
 import { toast } from '@/stores/toast'
+import TopologyGraph from '@/components/TopologyGraph'
 
 interface SchemaField {
   name: string
@@ -21,6 +22,7 @@ interface SchemaField {
   unique?: boolean
   ref_model?: string
   ref_display?: string
+  autofill?: string[]
 }
 
 interface CIModel {
@@ -72,6 +74,7 @@ function schemaToFields(schema: Record<string, any> = {}): SchemaField[] {
     unique: !!def?.unique,
     ref_model: def?.ref_model,
     ref_display: def?.ref_display,
+    autofill: def?.autofill,
   }))
 }
 
@@ -84,6 +87,7 @@ function fieldsToSchema(fields: SchemaField[]) {
       ...(f.unique ? { unique: true } : {}),
       ...(f.ref_model ? { ref_model: f.ref_model } : {}),
       ...(f.ref_display ? { ref_display: f.ref_display } : {}),
+      ...(f.autofill?.length ? { autofill: f.autofill } : {}),
     },
   }), {} as Record<string, any>)
 }
@@ -104,6 +108,7 @@ export default function CMDBModelsPage() {
   const [editFieldIdx, setEditFieldIdx] = useState<number | null>(null)
   const [fieldForm, setFieldForm] = useState<SchemaField>({ name: '', type: 'string', required: false, description: '' })
   const [catDialogOpen, setCatDialogOpen] = useState(false)
+  const [viewMode, setViewMode] = useState<'list' | 'graph'>('list')
   const [newCatName, setNewCatName] = useState('')
 
   // 模型版本历史(快照/回滚)
@@ -316,6 +321,8 @@ export default function CMDBModelsPage() {
           <p className="text-sm text-muted-foreground">定义 CI 类型、分类、继承关系及属性 Schema</p>
         </div>
         <div className="flex gap-2">
+          <Button variant={viewMode === 'list' ? 'default' : 'outline'} size="sm" onClick={() => setViewMode('list')}>列表</Button>
+          <Button variant={viewMode === 'graph' ? 'default' : 'outline'} size="sm" onClick={() => setViewMode('graph')}>模型关系图</Button>
           <Button variant="outline" onClick={handleExport}><Download className="h-4 w-4" />导出</Button>
           <Button variant="outline" onClick={() => fileRef.current?.click()}><Upload className="h-4 w-4" />导入</Button>
           {canAdmin && <Button variant="outline" onClick={() => setCatDialogOpen(true)}><Settings2 className="h-4 w-4" />管理分类</Button>}
@@ -357,6 +364,29 @@ export default function CMDBModelsPage() {
         </div>
         <DialogFooter><Button variant="outline" onClick={() => setUsageOpen(false)}>关闭</Button></DialogFooter>
       </Dialog>
+
+      {viewMode === 'graph' && (
+        <Card>
+          <CardHeader className="py-3"><CardTitle className="text-sm">模型关系图（继承边 = 父类→子类；引用边 = ref 字段 → 目标模型）</CardTitle></CardHeader>
+          <CardContent>
+            {models.length === 0 ? <p className="text-sm text-muted-foreground py-8 text-center">暂无模型数据</p> : (
+              <TopologyGraph
+                data={{
+                  nodes: models.map(m => ({ id: m.id, name: m.name, type: m.category || 'other' })),
+                  edges: [
+                    ...models.filter(m => m.parent_id).map(m => ({ source: m.parent_id!, target: m.id, type: '继承' })),
+                    ...models.flatMap(m =>
+                      (m.fields || []).filter(f => f.type === 'ref' && f.ref_model)
+                        .map(f => ({ source: m.id, target: f.ref_model!, type: '引用' }))
+                    ),
+                  ],
+                }}
+                width={720} height={420}
+              />
+            )}
+          </CardContent>
+        </Card>
+      )}
 
       {/* 分类过滤（动态，含自定义） */}
       <div className="flex gap-2 flex-wrap items-center">
@@ -522,6 +552,12 @@ export default function CMDBModelsPage() {
                 {models.map(m => <option key={m.id} value={m.id}>{m.name}（{m.id}）</option>)}
               </select>
               <p className="text-[10px] text-muted-foreground mt-1">引用型字段的值取自目标模型的 CI 实例，写入时校验存在性</p>
+            </div>
+          )}
+          {fieldForm.type === 'ref' && (
+            <div><label className="text-sm font-medium">自动填充（目标属性，逗号分隔）</label>
+              <Input value={(fieldForm.autofill || []).join(',')} onChange={e => setFieldForm(f => ({ ...f, autofill: e.target.value.split(',').map(x => x.trim()).filter(Boolean) }))} placeholder="room_id,data_center_id" />
+              <p className="text-[10px] text-muted-foreground mt-1">选中目标实例后，自动把目标 CI 的这些属性值填入本 CI（如选机柜自动带出机房/数据中心）</p>
             </div>
           )}
           {fieldForm.type === 'enum' && (
