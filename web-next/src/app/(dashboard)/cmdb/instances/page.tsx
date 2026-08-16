@@ -90,7 +90,7 @@ export default function CMDBPage() {
   // 模型列表(类型下拉与 schema 驱动渲染), 替代硬编码 CI_TYPES
   const [models, setModels] = useState<ModelInfo[]>([])
   // 引用型字段的目标模型实例缓存: ref_model -> CI 列表
-  const [refOptions, setRefOptions] = useState<Record<string, { id: string; name: string }[]>>({})
+  const [refOptions, setRefOptions] = useState<Record<string, { id: string; name: string; attributes?: Record<string, any> }[]>>({})
 
   // 批量操作: 勾选的 CI ID 集合 + 批量改属性/批量建关系弹窗状态
   const [checked, setChecked] = useState<Set<string>>(new Set())
@@ -213,7 +213,7 @@ export default function CMDBPage() {
   const ensureRefOptions = async (refModel: string) => {
     if (!refModel || refOptions[refModel]) return
     try {
-      const list = await apiList<{ id: string; name: string }>(`/cmdb/ci?type_id=${refModel}&limit=200`)
+      const list = await apiList<{ id: string; name: string; attributes?: Record<string, any> }>(`/cmdb/ci?type_id=${refModel}&limit=200`)
       setRefOptions(s => ({ ...s, [refModel]: list }))
     } catch { /* 忽略加载失败, 下拉保持空 */ }
   }
@@ -311,7 +311,13 @@ export default function CMDBPage() {
     setDetailTab('attrs')
     setImpactResult(null)
     try {
-      const [audit, rels] = await Promise.all([getAudit(item.id), apiList<CIRelation>('/cmdb/relation')])
+      // 拉详情(含聚合字段 aggregates)合并到选中项
+      const [audit, rels, detail] = await Promise.all([
+        getAudit(item.id),
+        apiList<CIRelation>('/cmdb/relation'),
+        apiFetch<CIModel>('/cmdb/ci/' + item.id).catch(() => null),
+      ])
+      if (detail) setSelectedCI(detail)
       setAuditLog(audit || [])
       setCiRelations((rels || []).filter((r: CIRelation) => r.source_id === item.id || r.target_id === item.id))
     } catch { setAuditLog([]); setCiRelations([]) }
@@ -568,6 +574,16 @@ export default function CMDBPage() {
                       <div className="col-span-2"><span className="text-muted-foreground">创建:</span> {formatTime(selectedCI.created_at)}</div>
                       <div className="col-span-2"><span className="text-muted-foreground">更新:</span> {formatTime(selectedCI.updated_at)}</div>
                     </div>
+                    {(selectedCI as any)?.aggregates && Object.keys((selectedCI as any).aggregates).length > 0 && (
+                      <div className="border rounded-md p-3 bg-muted/20 space-y-1">
+                        <p className="text-xs font-medium text-muted-foreground">聚合统计（自动计算）</p>
+                        <div className="flex flex-wrap gap-2">
+                          {Object.entries((selectedCI as any).aggregates).map(([k, v]) => (
+                            <span key={k} className="text-xs"><span className="text-muted-foreground">{k}:</span> <strong>{String(v)}</strong></span>
+                          ))}
+                        </div>
+                      </div>
+                    )}
                     <ProvenanceSummary meta={selectedCI.attribute_meta} />
                     {Object.keys(selectedCI.attributes || {}).length > 0 && (
                       <div>
@@ -722,7 +738,24 @@ export default function CMDBPage() {
                         <label className="text-xs font-medium">{f.name}{f.required && ' *'}{f.unique && '（唯一）'}</label>
                         <select className="flex h-9 w-full rounded-md border border-input bg-background px-2 py-1 text-xs mt-1"
                           value={(form.attributes[f.name] as string) || ''}
-                          onChange={e => { setAttr(e.target.value); if (f.ref_model) ensureRefOptions(f.ref_model) }}>
+                          onChange={e => {
+                            setAttr(e.target.value)
+                            if (f.ref_model) ensureRefOptions(f.ref_model)
+                            // 自动填充: 选中目标实例后, 把声明的目标属性值填入本 CI
+                            if ((f as any).autofill?.length && f.ref_model) {
+                              const target = refOptions[f.ref_model]?.find(o => o.id === e.target.value)
+                              if (target?.attributes) {
+                                setForm(fm => {
+                                  const attrs = { ...fm.attributes }
+                                  const tattrs = target.attributes || {}
+                                  for (const k of (f as any).autofill as string[]) {
+                                    if (tattrs[k] !== undefined) attrs[k] = tattrs[k]
+                                  }
+                                  return { ...fm, attributes: attrs }
+                                })
+                              }
+                            }
+                          }}>
                           <option value="">选择 {f.ref_model} 实例...</option>
                           {opts.map(o => <option key={o.id} value={o.id}>{o.name || o.id}</option>)}
                         </select>

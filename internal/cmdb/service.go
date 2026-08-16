@@ -124,10 +124,16 @@ func (s *Service) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/v1/cmdb/ci/{id}/restore", s.handleRestoreCI) // P1-2 恢复
 	mux.HandleFunc("GET /api/v1/cmdb/ci/{id}/audit", s.handleCIAudit)
 	mux.HandleFunc("GET /api/v1/cmdb/search", s.handleSearchCI)
+	// 跨模型关联查询(综合查询): 沿关系链分层展开
+	mux.HandleFunc("POST /api/v1/cmdb/query/chain", s.handleChainQuery)
 	mux.HandleFunc("POST /api/v1/cmdb/relation/batch", s.handleBatchCreateRelation) // 批量建关系
 	// 实体调解合并(IRE): 疑似重复识别 + 按渠道置信度合并
 	mux.HandleFunc("GET /api/v1/cmdb/reconcile/candidates", s.handleReconcileCandidates)
 	mux.HandleFunc("POST /api/v1/cmdb/reconcile/merge", s.handleReconcileMerge)
+	// 行级数据权限(角色 → 模型 → 属性条件)
+	mux.HandleFunc("GET /api/v1/cmdb/data-policies", s.handleListDataPolicies)
+	mux.HandleFunc("POST /api/v1/cmdb/data-policies", s.handleSaveDataPolicy)
+	mux.HandleFunc("DELETE /api/v1/cmdb/data-policies/{id}", s.handleDeleteDataPolicy)
 	// 配置漂移: 发现值 vs CMDB 期望值
 	mux.HandleFunc("GET /api/v1/cmdb/drift", s.handleListDrifts)
 	mux.HandleFunc("GET /api/v1/cmdb/idc/panorama", s.handleIDCPanorama) // 机房机柜 2D 数据
@@ -353,6 +359,85 @@ func (s *Service) handleBatchCreateCI(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleGetCI godoc
+// applyAggregateOp 聚合计算纯函数(count/sum/avg), 便于单测。
+func applyAggregateOp(op, target string, related []*model.CIModel) any {
+	switch op {
+	case "count":
+		return len(related)
+	case "sum", "avg":
+		var sum float64
+		for _, c := range related {
+			if v, ok := c.Attributes[target].(float64); ok {
+				sum += v
+			}
+		}
+		if op == "avg" && len(related) > 0 {
+			sum /= float64(len(related))
+		}
+		return sum
+	}
+	return nil
+}
+
+// computeAggregates 对单个 CI 计算其模型 schema 中声明的聚合字段
+// (count/sum/avg, 沿关系链统计关联 CI)。结果写入 ci.Aggregates。
+// 关系量小时直接全量 ListRelations 内存过滤; 数据量大后可改 dgraph 查询。
+func (s *Service) computeAggregates(ctx context.Context, tenantID string, ci *model.CIModel) {
+	if s.pg == nil || ci == nil {
+		return
+	}
+	mt, err := s.pg.GetCIModelType(ctx, ci.TypeID, tenantID)
+	if err != nil || mt == nil {
+		return
+	}
+	var hasAgg bool
+	for _, def := range mt.Schema {
+		if def.Aggregate != nil {
+			hasAgg = true
+			break
+		}
+	}
+	if !hasAgg {
+		return
+	}
+	rels, err := s.pg.ListRelations(ctx, tenantID)
+	if err != nil {
+		return
+	}
+
+	out := map[string]any{}
+	for name, def := range mt.Schema {
+		agg := def.Aggregate
+		if agg == nil {
+			continue
+		}
+		// 收集关联 CI(按方向 + 关系类型过滤)
+		var related []*model.CIModel
+		for _, rel := range rels {
+			var otherID string
+			if agg.Direction == "in" {
+				if rel.TargetID == ci.ID {
+					otherID = rel.SourceID
+				}
+			} else if rel.SourceID == ci.ID {
+				otherID = rel.TargetID
+			}
+			if otherID == "" || (agg.Relation != "" && rel.RelationType != agg.Relation) {
+				continue
+			}
+			c, err := s.pg.GetCI(ctx, otherID, tenantID)
+			if err == nil && c != nil {
+				related = append(related, c)
+			}
+		}
+
+		out[name] = applyAggregateOp(agg.Op, agg.Target, related)
+	}
+	if len(out) > 0 {
+		ci.Aggregates = out
+	}
+}
+
 // @Summary 获取 CI 详情
 // @Description 根据 ID 获取配置项详情
 // @Tags CMDB
@@ -364,6 +449,112 @@ func (s *Service) handleBatchCreateCI(w http.ResponseWriter, r *http.Request) {
 // @Failure 500 {object} map[string]string
 // @Router /api/v1/cmdb/ci/{id} [get]
 // @Security BearerAuth
+// handleChainQuery 跨模型关联查询(we-cmdb 综合查询借鉴):
+// 从起点模型出发, 沿关系链逐跳展开, 返回分层结果。
+// 请求: {start_type, path:[{relation, direction}], max_depth}
+// 响应: {layers:[{depth, type_id, cis:[...]}]}
+func (s *Service) handleChainQuery(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	tenantID := tenantFromCtx(ctx)
+
+	var req struct {
+		StartType string `json:"start_type"`
+		Path      []struct {
+			Relation  string `json:"relation"`
+			Direction string `json:"direction"` // out(默认) | in
+		} `json:"path"`
+		MaxDepth int `json:"max_depth"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if req.StartType == "" {
+		writeError(w, http.StatusBadRequest, "start_type is required")
+		return
+	}
+	if req.MaxDepth <= 0 || req.MaxDepth > 5 {
+		req.MaxDepth = 3
+	}
+	if s.pg == nil {
+		writeError(w, http.StatusBadRequest, "requires pg backend")
+		return
+	}
+
+	rels, err := s.pg.ListRelations(ctx, tenantID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	// relation → 邻接表(源→目标 与 目标→源)
+	type edge struct{ from, to string }
+	adjOut := map[string][]string{} // from → tos
+	adjIn := map[string][]string{}  // to → froms
+	for _, rel := range rels {
+		adjOut[rel.SourceID] = append(adjOut[rel.SourceID], rel.TargetID)
+		adjIn[rel.TargetID] = append(adjIn[rel.TargetID], rel.SourceID)
+	}
+
+	// 起点 CI
+	start, err := s.pg.ListCI(ctx, tenantID, req.StartType)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	type layer struct {
+		Depth  int              `json:"depth"`
+		TypeID string           `json:"type_id"`
+		CIs    []*model.CIModel `json:"cis"`
+	}
+	layers := []layer{{Depth: 0, TypeID: req.StartType, CIs: start}}
+
+	current := map[string]bool{}
+	for _, ci := range start {
+		current[ci.ID] = true
+	}
+
+	for depth := 1; depth <= req.MaxDepth; depth++ {
+		step := req.Path[depth-1]
+		nextIDs := map[string]bool{}
+		for id := range current {
+			if step.Direction == "in" {
+				for _, n := range adjIn[id] {
+					nextIDs[n] = true
+				}
+			} else {
+				for _, n := range adjOut[id] {
+					nextIDs[n] = true
+				}
+			}
+		}
+		if len(nextIDs) == 0 {
+			break
+		}
+		var next []*model.CIModel
+		typeByID := map[string]string{}
+		for id := range nextIDs {
+			ci, err := s.pg.GetCI(ctx, id, tenantID)
+			if err == nil && ci != nil {
+				next = append(next, ci)
+				typeByID[id] = ci.TypeID
+			}
+		}
+		// 层类型取多数(简化为首个)
+		layerType := req.StartType
+		for id := range nextIDs {
+			if t, ok := typeByID[id]; ok {
+				layerType = t
+				break
+			}
+		}
+		layers = append(layers, layer{Depth: depth, TypeID: layerType, CIs: next})
+		current = nextIDs
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{"layers": layers, "total_layers": len(layers)})
+}
+
 func (s *Service) handleGetCI(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	tenantID := tenantFromCtx(r.Context())
@@ -390,6 +581,8 @@ func (s *Service) handleGetCI(w http.ResponseWriter, r *http.Request) {
 	if rules, rerr := s.pg.ListFieldRules(r.Context(), tenantID, ci.TypeID); rerr == nil {
 		applyFieldRules([]*model.CIModel{ci}, rules, subjectFromRequest(r))
 	}
+	// 聚合字段: 模型声明 Aggregate 时按关系链实时计算(count/sum/avg)。
+	s.computeAggregates(r.Context(), tenantID, ci)
 	writeJSON(w, http.StatusOK, ci)
 }
 
@@ -462,6 +655,11 @@ func (s *Service) handleUpdateCI(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, err.Error())
 			return
 		}
+		// P2-6 写拦截: 角色 update 策略下目标 CI 必须满足条件
+		if err := s.checkDataPolicyWrite(ctx, tenantID, ci.TypeID, ci, "update"); err != nil {
+			writeError(w, http.StatusForbidden, err.Error())
+			return
+		}
 		if err := s.pg.UpdateCI(ctx, ci, channel, traceID); err != nil {
 			if errors.Is(err, pg.ErrAntiFlapping) {
 				writeError(w, http.StatusConflict, err.Error())
@@ -496,6 +694,13 @@ func (s *Service) handleDeleteCI(w http.ResponseWriter, r *http.Request) {
 	}
 	// 删除前取快照，用于订阅分发（P2-5）
 	before, _ := s.pg.GetCI(r.Context(), id, tenantID)
+	// P2-6 写拦截: 角色 delete 策略下目标 CI 必须满足条件
+	if before != nil {
+		if err := s.checkDataPolicyWrite(r.Context(), tenantID, before.TypeID, before, "delete"); err != nil {
+			writeError(w, http.StatusForbidden, err.Error())
+			return
+		}
+	}
 	if err := s.pg.DeleteCI(r.Context(), id, tenantID, traceID); err != nil {
 		if err.Error() == "ci not found" {
 			writeError(w, http.StatusNotFound, "ci not found")
@@ -565,6 +770,8 @@ func (s *Service) handleListCI(w http.ResponseWriter, r *http.Request) {
 	if rules, rerr := s.pg.ListFieldRules(r.Context(), tenantID, typeID); rerr == nil {
 		applyFieldRules(cis, rules, subjectFromRequest(r))
 	}
+	// P2-6 行级数据权限: 角色策略过滤可见范围
+	cis = filterByDataPolicy(cis, s.loadDataPolicies(r.Context(), tenantID), roleFromContext(r.Context()))
 	writeJSON(w, http.StatusOK, cis)
 }
 
@@ -710,6 +917,8 @@ func (s *Service) handleSearchCI(w http.ResponseWriter, r *http.Request) {
 	if rules, rerr := s.pg.ListFieldRules(r.Context(), tenantID, typeID); rerr == nil {
 		applyFieldRules(cis, rules, subjectFromRequest(r))
 	}
+	// P2-6 行级数据权限: 角色策略过滤可见范围(搜索与列表一致)
+	cis = filterByDataPolicy(cis, s.loadDataPolicies(r.Context(), tenantID), roleFromContext(r.Context()))
 	writeJSON(w, http.StatusOK, cis)
 }
 

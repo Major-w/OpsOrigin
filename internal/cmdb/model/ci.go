@@ -145,8 +145,26 @@ type AttrDef struct {
 	RefModel string `json:"ref_model,omitempty"`
 	// RefDisplay 引用型字段的展示属性(默认 name)。
 	RefDisplay string `json:"ref_display,omitempty"`
+	// AutoFill 自动填充规则(we-cmdb autofillRule 借鉴): ref 字段选中目标 CI 后,
+	// 自动把目标 CI 的这些属性值填入本 CI(如选机柜自动带出机房/数据中心)。
+	AutoFill []string `json:"autofill,omitempty"`
 	// Options 枚举选项(select/enum 类型), 前端展示为下拉。
 	Options []string `json:"options,omitempty"`
+	// Aggregate 聚合字段(we-cmdb count/sum/avg 借鉴):
+	// 读取 CI 时按关系链对关联 CI 实时统计, 结果写入响应 CIModel.Aggregates。
+	// 例: 机柜 rack 声明 {op:count, relation:hosts} → 自动统计该机柜下设备数。
+	Aggregate *AttrAggregate `json:"aggregate,omitempty"`
+}
+
+// AttrAggregate 聚合字段定义。
+type AttrAggregate struct {
+	Op string `json:"op"` // count | sum | avg
+	// Target sum/avg 时统计的关联 CI 属性名(count 忽略)。
+	Target string `json:"target,omitempty"`
+	// Relation 沿哪条关系统计(空=任意关系)。
+	Relation string `json:"relation,omitempty"`
+	// Direction 关系方向: out=从本 CI 指向目标(默认), in=其他 CI 指向本 CI。
+	Direction string `json:"direction,omitempty"`
 }
 
 type CIModel struct {
@@ -158,8 +176,10 @@ type CIModel struct {
 	Status        CIStatus            `json:"status"`
 	Attributes    map[string]any      `json:"attributes"`
 	AttributeMeta map[string]AttrMeta `json:"attribute_meta,omitempty"`
-	Labels        map[string]string   `json:"labels,omitempty"`
-	Channel       ChannelWeight       `json:"channel"`
+	// Aggregates 聚合字段计算结果(模型 schema 声明 Aggregate 时, 读取 CI 填充)。
+	Aggregates map[string]any    `json:"aggregates,omitempty"`
+	Labels     map[string]string `json:"labels,omitempty"`
+	Channel    ChannelWeight     `json:"channel"`
 	// FieldAccess 字段级规则权限结果：field → hidden|readonly|visible（P2-4）。
 	// hidden 字段已从 attributes/attribute_meta 中剔除，前端据此渲染只读/隐藏。
 	FieldAccess map[string]string `json:"field_access,omitempty"`
