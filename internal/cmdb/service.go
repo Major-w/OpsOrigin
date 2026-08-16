@@ -130,6 +130,7 @@ func (s *Service) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/v1/cmdb/reconcile/merge", s.handleReconcileMerge)
 	// 配置漂移: 发现值 vs CMDB 期望值
 	mux.HandleFunc("GET /api/v1/cmdb/drift", s.handleListDrifts)
+	mux.HandleFunc("GET /api/v1/cmdb/idc/panorama", s.handleIDCPanorama) // 机房机柜 2D 数据
 	mux.HandleFunc("POST /api/v1/cmdb/drift/{id}/resolve", s.handleResolveDrift)
 
 	// 保存的查询策略（"我想查"，P1-3）
@@ -2540,6 +2541,134 @@ func buildBuiltinModelTypes() []model.CIModelType {
 				"department":             {Type: "string", Description: "所属部门"},
 			},
 		},
+		{
+			ID:          "storage",
+			Name:        "存储设备",
+			Description: "存储阵列 / 分布式存储（SAN/NAS/Ceph 等）",
+			Category:    model.ModelCategoryInfra,
+			Icon:        "hard-drive",
+			ShowInMenu:  true,
+			Builtin:     true,
+			Author:      model.BuiltinAuthor,
+			Schema: map[string]model.AttrDef{
+				"storage_type": {Type: "string", Description: "类型（san/nas/distributed）"},
+				"capacity_tb":  {Type: "number", Description: "总容量(TB)"},
+				"vendor":       {Type: "string", Description: "厂商"},
+				"ip_address":   {Type: "string", Description: "管理 IP"},
+			},
+		},
+		{
+			ID:          "virtual_machine",
+			Name:        "虚拟机",
+			Description: "虚拟机实例（VMware/KVM/OpenStack 等虚拟化平台）",
+			Category:    model.ModelCategoryInfra,
+			Icon:        "cpu",
+			ShowInMenu:  true,
+			Builtin:     true,
+			Author:      model.BuiltinAuthor,
+			Schema: map[string]model.AttrDef{
+				"hypervisor": {Type: "string", Description: "虚拟化平台（vmware/kvm/openstack）"},
+				"vcpu":       {Type: "int", Description: "vCPU 数"},
+				"memory_gb":  {Type: "int", Description: "内存(GB)"},
+				"host_name":  {Type: "string", Description: "宿主机"},
+				"ip_address": {Type: "string", Description: "IP 地址"},
+				"rack_id":    {Type: "string", Description: "所在机柜(rack 模型 CI ID)"},
+				"rack_unit":  {Type: "int", Description: "占用 U 位"},
+			},
+		},
+		{
+			ID:          "firewall",
+			Name:        "防火墙",
+			Description: "安全防护设备（硬件/云防火墙）",
+			Category:    model.ModelCategoryInfra,
+			Icon:        "shield",
+			ShowInMenu:  true,
+			Builtin:     true,
+			Author:      model.BuiltinAuthor,
+			Schema: map[string]model.AttrDef{
+				"vendor":     {Type: "string", Description: "厂商"},
+				"model":      {Type: "string", Description: "型号"},
+				"ip_address": {Type: "string", Description: "管理 IP"},
+			},
+		},
+		{
+			ID:          "load_balancer",
+			Name:        "负载均衡",
+			Description: "负载均衡设备（硬件 LB / 云 SLB）",
+			Category:    model.ModelCategoryInfra,
+			Icon:        "scale",
+			ShowInMenu:  true,
+			Builtin:     true,
+			Author:      model.BuiltinAuthor,
+			Schema: map[string]model.AttrDef{
+				"vendor":     {Type: "string", Description: "厂商"},
+				"mode":       {Type: "string", Description: "模式（l4/l7）"},
+				"ip_address": {Type: "string", Description: "管理 IP"},
+			},
+		},
+		{
+			ID:          "router",
+			Name:        "路由器",
+			Description: "路由器（核心/接入路由）",
+			Category:    model.ModelCategoryInfra,
+			Icon:        "route",
+			ShowInMenu:  true,
+			Builtin:     true,
+			Author:      model.BuiltinAuthor,
+			Schema: map[string]model.AttrDef{
+				"vendor":     {Type: "string", Description: "厂商"},
+				"model":      {Type: "string", Description: "型号"},
+				"ip_address": {Type: "string", Description: "管理 IP"},
+			},
+		},
+		// —— 数据中心设施（机房机柜 2D 视图的数据底座, 录入即成图）——
+		{
+			ID:          "data_center",
+			Name:        "数据中心",
+			Description: "数据中心（物理机房建筑，含多个机房）",
+			Category:    model.ModelCategoryInfra,
+			Icon:        "building",
+			ShowInMenu:  true,
+			Builtin:     true,
+			Author:      model.BuiltinAuthor,
+			Schema: map[string]model.AttrDef{
+				"location": {Type: "string", Description: "地理位置"},
+				"owner":    {Type: "string", Description: "负责人"},
+			},
+		},
+		{
+			ID:          "idc_room",
+			Name:        "机房",
+			Description: "数据中心内的机房/楼层（含机柜）",
+			Category:    model.ModelCategoryInfra,
+			Icon:        "warehouse",
+			ShowInMenu:  true,
+			Builtin:     true,
+			Author:      model.BuiltinAuthor,
+			Schema: map[string]model.AttrDef{
+				"data_center_id": {Type: "string", Description: "所属数据中心(data_center CI ID)"},
+				"floor":          {Type: "string", Description: "楼层/区域"},
+				"rows":           {Type: "int", Description: "机柜行数(平面图)"},
+				"cols":           {Type: "int", Description: "机柜列数(平面图)"},
+			},
+		},
+		{
+			ID:          "rack",
+			Name:        "机柜",
+			Description: "标准机柜（42U），设备按 rack_id + rack_unit 属性落位",
+			Category:    model.ModelCategoryInfra,
+			Icon:        "rows",
+			ShowInMenu:  true,
+			Builtin:     true,
+			Author:      model.BuiltinAuthor,
+			Schema: map[string]model.AttrDef{
+				"room_id":   {Type: "string", Description: "所属机房(idc_room CI ID)"},
+				"row":       {Type: "int", Description: "平面图行号(从 1 起)"},
+				"col":       {Type: "int", Description: "平面图列号(从 1 起)"},
+				"max_units": {Type: "int", Default: "42", Description: "U 位总数"},
+				"rack_type": {Type: "string", Description: "类型（标准/高密/网络）"},
+			},
+		},
 	}
 }
 
@@ -2795,6 +2924,43 @@ func detectDrifts(existing, discovered *model.CIModel) []*model.CMDBDrift {
 		}
 	}
 	return out
+}
+
+// handleIDCPanorama 机房机柜 2D 视图数据(模型驱动):
+// 返回 rack 机柜 CI 与所有带 rack_id 属性的设备 CI, 前端据此渲染
+// 机房平面图 + 机柜正视图 —— 录入模型数据即成图。
+func (s *Service) handleIDCPanorama(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	tenantID := tenantFromCtx(ctx)
+	if s.pg == nil {
+		writeJSON(w, http.StatusOK, map[string]any{"racks": []*model.CIModel{}, "devices": []*model.CIModel{}})
+		return
+	}
+	racks, err := s.pg.ListCI(ctx, tenantID, "rack")
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	// 设备: 各类型中带 rack_id 属性的(占用机柜 U 位)。
+	var devices []*model.CIModel
+	for _, t := range []string{"server", "virtual_machine", "storage", "firewall", "load_balancer", "router", "switch", "database", "middleware", "app"} {
+		list, err := s.pg.ListCI(ctx, tenantID, t)
+		if err != nil {
+			continue
+		}
+		for _, ci := range list {
+			if rackID, ok := ci.Attributes["rack_id"].(string); ok && rackID != "" {
+				devices = append(devices, ci)
+			}
+		}
+	}
+	if racks == nil {
+		racks = []*model.CIModel{}
+	}
+	if devices == nil {
+		devices = []*model.CIModel{}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"racks": racks, "devices": devices})
 }
 
 // handleListDrifts 漂移清单(可按 CI 过滤, 默认未解决)。
