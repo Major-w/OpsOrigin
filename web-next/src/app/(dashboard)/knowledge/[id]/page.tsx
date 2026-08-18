@@ -1,12 +1,12 @@
 'use client'
 
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useParams, useRouter } from 'next/navigation'
 import { useKnowledgeStore, type ArticleVersion } from '@/stores/knowledge'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
-import { formatTime } from '@/lib/utils'
+import { formatTime, apiFetch, apiFetchRaw } from '@/lib/utils'
 import { MarkdownViewer } from '@/components/markdown-viewer'
 import {
   ArrowLeft,
@@ -25,11 +25,31 @@ import {
   ChevronDown,
   ChevronRight,
   EyeOff,
+  Paperclip,
+  FileText,
+  Download,
+  Upload,
 } from 'lucide-react'
 import { toast } from '@/stores/toast'
 import { useAuthStore } from '@/stores/auth'
 
 const getCurrentUser = () => useAuthStore.getState().user?.username || 'anonymous'
+
+interface ArticleAttachment {
+  id: number
+  article_id: string
+  file_name: string
+  file_size: number
+  file_type: string
+  uploaded_by: string
+  object_key?: string
+  created_at: string
+}
+
+const fmtSize = (n: number) =>
+  n >= 1048576 ? (n / 1048576).toFixed(1) + ' MB'
+    : n >= 1024 ? (n / 1024).toFixed(1) + ' KB'
+    : n + ' B'
 
 export default function KnowledgeDetailPage() {
   const params = useParams()
@@ -38,6 +58,7 @@ export default function KnowledgeDetailPage() {
 
   const {
     articles,
+    loading,
     fetch: fetchArticles,
     update,
     remove,
@@ -69,6 +90,66 @@ export default function KnowledgeDetailPage() {
 
   const [bookmarked, setBookmarked] = useState(false)
   const [followed, setFollowed] = useState(false)
+
+  // —— 附件 ——
+  const [attachments, setAttachments] = useState<ArticleAttachment[]>([])
+  const [uploading, setUploading] = useState(false)
+  const attInputRef = useRef<HTMLInputElement>(null)
+
+  const loadAttachments = async () => {
+    try {
+      const list = await apiFetch<ArticleAttachment[]>(`/knowledge/${articleId}/attachments`)
+      setAttachments(list || [])
+    } catch { /* 附件接口不可用时不阻塞页面 */ }
+  }
+
+  useEffect(() => { loadAttachments() }, [articleId])
+
+  const handleUploadAtt = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const f = e.target.files?.[0]
+    if (e.target) e.target.value = ''
+    if (!f) return
+    setUploading(true)
+    try {
+      const fd = new FormData()
+      fd.append('file', f)
+      fd.append('uploaded_by', getCurrentUser())
+      const res = await apiFetchRaw(`/knowledge/${articleId}/attachments`, { method: 'POST', body: fd })
+      if (!res.ok) throw new Error(`上传失败(${res.status})`)
+      toast.success('附件已上传')
+      loadAttachments()
+    } catch (err: any) {
+      toast.error('上传失败: ' + err.message)
+    }
+    setUploading(false)
+  }
+
+  const handleDownloadAtt = async (a: ArticleAttachment) => {
+    try {
+      const res = await apiFetchRaw(`/knowledge/${articleId}/attachments/${a.id}`)
+      if (!res.ok) { toast.error('下载失败'); return }
+      const blob = await res.blob()
+      const url = URL.createObjectURL(blob)
+      const link = document.createElement('a')
+      link.href = url
+      link.download = a.file_name
+      link.click()
+      URL.revokeObjectURL(url)
+    } catch (err: any) {
+      toast.error('下载失败: ' + err.message)
+    }
+  }
+
+  const handleDeleteAtt = async (a: ArticleAttachment) => {
+    if (!confirm(`删除附件「${a.file_name}」？`)) return
+    try {
+      await apiFetch(`/knowledge/${articleId}/attachments/${a.id}`, { method: 'DELETE' })
+      toast.success('已删除')
+      loadAttachments()
+    } catch (err: any) {
+      toast.error('删除失败: ' + err.message)
+    }
+  }
 
   useEffect(() => {
     fetchArticles()
@@ -169,10 +250,19 @@ export default function KnowledgeDetailPage() {
   }
 
   if (!article) {
+    // 列表仍在加载: 显示加载中; 加载完成仍找不到: 显示"不存在", 避免死链 URL 无限转圈
+    if (loading) {
+      return (
+        <div className="p-6 flex flex-col items-center justify-center min-h-[400px] text-muted-foreground">
+          <Loader2 className="h-6 w-6 animate-spin mb-2" />
+          <p className="text-sm">加载文章中…</p>
+        </div>
+      )
+    }
     return (
       <div className="p-6 flex flex-col items-center justify-center min-h-[400px] text-muted-foreground">
-        <Loader2 className="h-6 w-6 animate-spin mb-2" />
-        <p className="text-sm">加载文章中…</p>
+        <p className="text-sm mb-3">文章不存在或已删除</p>
+        <Button size="sm" variant="outline" onClick={() => router.push('/knowledge')}>返回文章列表</Button>
       </div>
     )
   }
@@ -350,6 +440,51 @@ export default function KnowledgeDetailPage() {
           <MarkdownViewer content={article.content} className="mt-4" />
         </article>
       )}
+
+      {/* 附件 */}
+      <Card>
+        <CardHeader className="pb-3">
+          <div className="w-full flex items-center justify-between">
+            <CardTitle className="flex items-center gap-2 text-sm">
+              <Paperclip className="h-4 w-4 text-muted-foreground" />
+              附件 ({attachments.length})
+            </CardTitle>
+            <Button
+              variant="outline"
+              size="sm"
+              className="h-7 text-xs"
+              onClick={() => attInputRef.current?.click()}
+              disabled={uploading}
+            >
+              {uploading ? <Loader2 className="h-3.5 w-3.5 mr-1 animate-spin" /> : <Upload className="h-3.5 w-3.5 mr-1" />}
+              {uploading ? '上传中…' : '上传附件'}
+            </Button>
+            <input ref={attInputRef} type="file" className="hidden" onChange={handleUploadAtt} />
+          </div>
+        </CardHeader>
+        <CardContent className="pt-0 space-y-2">
+          {attachments.length === 0 ? (
+            <p className="text-xs text-muted-foreground py-3 text-center">暂无附件</p>
+          ) : attachments.map(a => (
+            <div key={a.id} className="flex items-center justify-between px-3 py-2 rounded-lg border border-gray-200 dark:border-gray-800 hover:bg-muted/50 transition-colors">
+              <div className="min-w-0 flex-1 flex items-center gap-2">
+                <FileText className="h-4 w-4 text-muted-foreground shrink-0" />
+                <span className="text-xs truncate">{a.file_name}</span>
+                <span className="text-[10px] text-muted-foreground shrink-0">{fmtSize(a.file_size)}</span>
+                <span className="text-[10px] text-muted-foreground shrink-0">{formatTime(a.created_at)}</span>
+              </div>
+              <div className="flex items-center gap-1 shrink-0">
+                <Button variant="ghost" size="icon" className="h-6 w-6" title="下载" onClick={() => handleDownloadAtt(a)}>
+                  <Download className="h-3.5 w-3.5" />
+                </Button>
+                <Button variant="ghost" size="icon" className="h-6 w-6 text-red-400" title="删除" onClick={() => handleDeleteAtt(a)}>
+                  <Trash2 className="h-3.5 w-3.5" />
+                </Button>
+              </div>
+            </div>
+          ))}
+        </CardContent>
+      </Card>
 
       {/* Version History */}
       <Card>

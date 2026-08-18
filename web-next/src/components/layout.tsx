@@ -66,7 +66,6 @@ const navGroups: (NavItem | NavGroup)[] = [
   {
     label: '知识库', icon: BookOpen, items: [
       { to: '/knowledge', label: '文章列表', icon: BookOpen },
-      { to: '/knowledge/new', label: 'AI 写作', icon: Sparkles },
       { to: '/knowledge/categories', label: '分类管理', icon: FolderOpen },
     ]
   },

@@ -917,7 +917,6 @@ export default function ITSMPage() {
                         {stepAllows('remind') && <Button variant="outline" size="sm" onClick={() => setRemindDialog(true)} disabled={!canWrite}><Bell className="h-3 w-3" />催办</Button>}
                         {stepAllows('relate') && <Button variant="outline" size="sm" onClick={() => setRelateDialog(true)} disabled={!canWrite}><Link2 className="h-3 w-3" />关联</Button>}
                         {stepAllows('change') && <Button variant="outline" size="sm" onClick={() => router.push(`/itsm/change?ticket=${selectedTicket.id}`)} disabled={!canWrite}><FileText className="h-3 w-3" />变更</Button>}
-                        {stepAllows('convert') && <Button variant="outline" size="sm" onClick={() => router.push(`/knowledge/new?ticket=${selectedTicket.id}&title=${encodeURIComponent(selectedTicket.title)}`)} disabled={!canWrite}><BookOpen className="h-3 w-3" />转知识</Button>}
                       </>
                     )}
                   </div>

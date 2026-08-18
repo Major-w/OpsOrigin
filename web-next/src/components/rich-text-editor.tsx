@@ -1,17 +1,20 @@
 'use client'
 
-import { useEffect, useRef, type CSSProperties } from 'react'
+import { useEffect, useRef, useState, type CSSProperties } from 'react'
 import { useEditor, EditorContent } from '@tiptap/react'
 import StarterKit from '@tiptap/starter-kit'
 import UnderlineExt from '@tiptap/extension-underline'
 import TaskList from '@tiptap/extension-task-list'
 import TaskItem from '@tiptap/extension-task-item'
 import Link from '@tiptap/extension-link'
+import Image from '@tiptap/extension-image'
 import { Markdown } from 'tiptap-markdown'
 import { cn } from '@/lib/utils'
+import { fileToCompressedDataUrl } from '@/lib/image-utils'
 import {
   Bold, Italic, Strikethrough, Underline, Code, Heading1, Heading2, Heading3,
   Quote, List, ListOrdered, ListChecks, Link as LinkIcon, Minus, Undo2, Redo2,
+  Image as ImageIcon, Upload, Link2,
 } from 'lucide-react'
 
 interface RichTextEditorProps {
@@ -31,6 +34,9 @@ interface RichTextEditorProps {
  */
 export function RichTextEditor({ value, onChange, className, readOnly = false, minHeight = '400px' }: RichTextEditorProps) {
   const lastValueRef = useRef(value)
+  // —— 图片插入菜单状态(hooks 必须在条件 return 之前声明) ——
+  const [imgMenu, setImgMenu] = useState(false)
+  const imgInputRef = useRef<HTMLInputElement>(null)
 
   const editor = useEditor({
     editable: !readOnly,
@@ -40,6 +46,8 @@ export function RichTextEditor({ value, onChange, className, readOnly = false, m
       TaskList,
       TaskItem.configure({ nested: true }),
       Link.configure({ openOnClick: false, autolink: true, linkOnPaste: true }),
+      // allowBase64 开启后支持 data URL 内嵌图片(本地图压缩为 Base64 插入, 零后端依赖)
+      Image.configure({ inline: false, allowBase64: true }),
       Markdown.configure({
         html: false,
         tightLists: true,
@@ -98,6 +106,30 @@ export function RichTextEditor({ value, onChange, className, readOnly = false, m
     editor.chain().focus().extendMarkRange('link').setLink({ href: url }).run()
   }
 
+  // —— 图片插入: 本地上传(压缩为 Base64) 或 直接贴 URL ——
+  const insertImageSrc = (src: string) => {
+    editor.chain().focus().setImage({ src }).run()
+    setImgMenu(false)
+  }
+
+  const onPickImage = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const f = e.target.files?.[0]
+    if (e.target) e.target.value = ''
+    if (!f) return
+    try {
+      const src = await fileToCompressedDataUrl(f)
+      insertImageSrc(src)
+    } catch (err: any) {
+      window.alert('图片插入失败: ' + err.message)
+    }
+  }
+
+  const insertImageByUrl = () => {
+    setImgMenu(false)
+    const url = window.prompt('图片URL')
+    if (url) insertImageSrc(url)
+  }
+
   return (
     <div className={cn('rounded-md border border-input bg-background', readOnly && 'bg-muted/30', className)}>
       <div className={cn('flex flex-wrap items-center gap-0.5 border-b border-border px-2 py-1.5', readOnly && 'hidden')}>
@@ -116,6 +148,16 @@ export function RichTextEditor({ value, onChange, className, readOnly = false, m
         <button type="button" title="有序列表" className={btnCls(active('orderedList'))} onClick={run(() => editor.chain().toggleOrderedList().run())}><ListOrdered className="h-4 w-4" /></button>
         <button type="button" title="任务列表" className={btnCls(active('taskList'))} onClick={run(() => editor.chain().toggleTaskList().run())}><ListChecks className="h-4 w-4" /></button>
         <button type="button" title="代码块" className={btnCls(active('codeBlock'))} onClick={run(() => editor.chain().toggleCodeBlock().run())}><Code className="h-4 w-4" /></button>
+        <div className="relative">
+          <button type="button" title="插入图片" className={btnCls(false)} onClick={() => setImgMenu(v => !v)}><ImageIcon className="h-4 w-4" /></button>
+          {imgMenu && (
+            <div className="absolute left-0 top-full z-20 mt-1 w-44 rounded-md border border-border bg-background shadow-lg p-1">
+              <button type="button" className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-xs hover:bg-muted" onClick={() => { setImgMenu(false); imgInputRef.current?.click() }}><Upload className="h-3.5 w-3.5" />上传图片</button>
+              <button type="button" className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-xs hover:bg-muted" onClick={insertImageByUrl}><Link2 className="h-3.5 w-3.5" />图片URL</button>
+            </div>
+          )}
+          <input ref={imgInputRef} type="file" accept="image/*" className="hidden" onChange={onPickImage} />
+        </div>
         <button type="button" title="链接" className={btnCls(active('link'))} onClick={setLink}><LinkIcon className="h-4 w-4" /></button>
         <button type="button" title="分割线" className={btnCls(false)} onClick={run(() => editor.chain().setHorizontalRule().run())}><Minus className="h-4 w-4" /></button>
         <span className="mx-1 h-5 w-px bg-border" />

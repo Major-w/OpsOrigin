@@ -256,6 +256,13 @@
     max-width: 100%;
     border-radius: var(--radius);
   }
+  /* 富文本编辑器内图片: 不超出容器, 留上下间距 */
+  .rich-editor img {
+    max-width: 100%;
+    height: auto;
+    border-radius: var(--radius);
+    margin: 0.5em 0;
+  }
   .markdown-body input[type='checkbox'] {
     margin-right: 0.4em;
     accent-color: var(--primary);

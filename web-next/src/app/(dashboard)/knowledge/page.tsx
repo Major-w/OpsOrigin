@@ -3,17 +3,14 @@
 import { useEffect, useRef, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { useKnowledgeStore, type Category, type PrecipitationRule } from '@/stores/knowledge'
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
+import { Card, CardContent } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { Input } from '@/components/ui/input'
-import { formatTime, apiFetch } from '@/lib/utils'
+import { formatTime } from '@/lib/utils'
 import { toast } from '@/stores/toast'
-import { Plus, Trash2, BookOpen, Pencil, Sparkles, FolderPlus, Upload, Loader2, CheckCircle2, Bookmark, Bell, Settings2, Eye, PenLine, AlignLeft } from 'lucide-react'
+import { Plus, Trash2, BookOpen, Pencil, FolderPlus, Upload, Loader2, CheckCircle2, Bookmark, Bell, Settings2 } from 'lucide-react'
 import { cn } from '@/lib/utils'
-import { MarkdownViewer } from '@/components/markdown-viewer'
-import { RichTextEditor } from '@/components/rich-text-editor'
-import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { useAuthStore } from '@/stores/auth'
 
 const getKBUser = () => useAuthStore.getState().user?.username || 'anonymous'
@@ -48,15 +45,13 @@ export default function KnowledgeListPage() {
   const router = useRouter()
   const store = useKnowledgeStore()
   const {
-    articles, fetch, create, remove, categories, categoryList, fetchCategories,
+    articles, fetch, remove, categories, categoryList, fetchCategories,
     saveCategory, updateCategory, deleteCategory, importFile,
     listBookmarks, listFollows, listFollowUpdates, markFollowUpdateRead,
     listPrecipitationRules, savePrecipitationRule, deletePrecipitationRule, runPrecipitationRule,
   } = store
-  const [dialogOpen, setDialogOpen] = useState(false)
   const [catDialog, setCatDialog] = useState(false)
   const [catForm, setCatForm] = useState({ id: '', name: '', description: '', sort_order: 0, color: '' })
-  const [form, setForm] = useState({ title: '', content: '', category: '', tags: '', author: '', status: 'draft' })
   const [filterCat, setFilterCat] = useState('')
   const [searchQ, setSearchQ] = useState('')
   const [importing, setImporting] = useState(false)
@@ -67,12 +62,6 @@ export default function KnowledgeListPage() {
   const [bookmarkIds, setBookmarkIds] = useState<string[]>([])
   const [followIds, setFollowIds] = useState<string[]>([])
   const [followUpdateIds, setFollowUpdateIds] = useState<string[]>([])
-
-  // 新建文章弹窗: 增强编辑器状态 (实时分栏预览, 不再用 编辑/预览 Tab 切换)
-  const [dialogInputMode, setDialogInputMode] = useState<'markdown' | 'rich'>('markdown')
-  const [dialogAiPrompt, setDialogAiPrompt] = useState('')
-  const [dialogAiGen, setDialogAiGen] = useState(false)
-  const [formError, setFormError] = useState('')
 
   // 自动沉淀策略
   const [precipOpen, setPrecipOpen] = useState(false)
@@ -103,18 +92,6 @@ export default function KnowledgeListPage() {
   }
   useEffect(() => { if (precipOpen) loadPrecip() }, [precipOpen, listPrecipitationRules])
 
-  const handleSave = async () => {
-    if (!form.title.trim()) { setFormError('请填写文章标题'); return }
-    if (!form.content.trim()) { setFormError('请填写文章内容'); return }
-    const data = { ...form, tags: form.tags.split(',').map((t: string) => t.trim()).filter(Boolean) }
-    const ok = await create(data)
-    if (ok) {
-      setDialogOpen(false)
-      setForm({ title: '', content: '', category: categories[0] || '', tags: '', author: getKBUser(), status: 'draft' })
-      setFormError('')
-    }
-  }
-
   const handleSaveCategory = async () => {
     if (!catForm.name.trim()) return toast.warning('请输入分类名称')
     if (catForm.id) {
@@ -130,37 +107,13 @@ export default function KnowledgeListPage() {
     await deleteCategory(c.id)
   }
 
-  const handleDialogAIGenerate = async () => {
-    if (!dialogAiPrompt.trim()) { toast.error('请输入AI提示词'); return }
-    setDialogAiGen(true)
-    try {
-      const res = await apiFetch<{ content: string }>('/ai/chat', {
-        method: 'POST',
-        body: JSON.stringify({
-          prompt: `写一篇运维知识库文章,题目是"${form.title || dialogAiPrompt}"。请生成Markdown格式的完整文章,包含背景、步骤、注意事项等。直接输出文章正文,不要加任何前缀说明。`,
-          stream: false,
-        }),
-      })
-      const content = res.content || ''
-      if (content) {
-        setForm(f => ({ ...f, content: f.content ? f.content + '\n\n' + content : content }))
-        toast.success('AI 内容已生成')
-      } else {
-        toast.error('AI 未返回内容')
-      }
-    } catch (e: any) {
-      toast.error('AI生成失败: ' + e.message)
-    }
-    setDialogAiGen(false)
-  }
-
   const handleImportFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0]
     if (e.target) e.target.value = ''
     if (!file) return
     setImporting(true)
     try {
-      const res = await importFile(file, form.category || categories[0] || '')
+      const res = await importFile(file, categories[0] || '')
       if (res.imported > 0) toast.success(`成功导入 ${res.imported} 篇`)
       if (res.errors.length > 0) toast.error(`导入错误 ${res.errors.length} 条: ${res.errors[0]}`)
     } catch (err: any) {
@@ -208,8 +161,7 @@ export default function KnowledgeListPage() {
         </Button>
         <Button size="sm" variant="outline" onClick={() => setCatDialog(true)}><FolderPlus className="h-4 w-4 mr-1" />分类管理</Button>
         <Button size="sm" variant="outline" onClick={() => setPrecipOpen(true)}><Settings2 className="h-4 w-4 mr-1" />沉淀策略</Button>
-        <Button size="sm" onClick={() => setDialogOpen(true)}><Plus className="h-4 w-4 mr-1" />新建文章</Button>
-        <Button size="sm" variant="outline" onClick={() => router.push('/knowledge/new')}><Sparkles className="h-4 w-4 mr-1" />AI写作</Button>
+        <Button size="sm" onClick={() => router.push('/knowledge/new')}><Plus className="h-4 w-4 mr-1" />新建文章</Button>
       </div>
     </div>
 
@@ -257,75 +209,6 @@ export default function KnowledgeListPage() {
           </Card>
         })}
     </div>
-
-    {/* 新建文章弹窗(升级版: 宽屏 + Markdown/富文本 + 实时预览 + 格式校验 + AI 伴写) */}
-    {dialogOpen && <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
-      <div className="fixed inset-0 bg-black/50" onClick={() => setDialogOpen(false)} />
-      <div className="relative z-50 w-full max-w-5xl max-h-[92vh] overflow-y-auto bg-white dark:bg-gray-900 rounded-xl border p-6 shadow-lg">
-        <div className="flex items-center justify-between mb-4">
-          <h2 className="text-lg font-semibold">新建文章</h2>
-          <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => setDialogOpen(false)}>✕</Button>
-        </div>
-        <div className="grid md:grid-cols-3 gap-4">
-          <div className="md:col-span-2 space-y-3">
-            <Input placeholder="文章标题 *" value={form.title} onChange={e => { setForm({ ...form, title: e.target.value }); if (formError) setFormError('') }} className={cn(!form.title && formError && 'border-red-500')} />
-            <div className="flex gap-2">
-              <select className="flex h-10 flex-1 rounded-md border border-input bg-background px-3 py-2 text-sm" value={form.category} onChange={e => setForm({ ...form, category: e.target.value })}>
-                {categories.map(c => <option key={c} value={c}>{c}</option>)}
-              </select>
-              <select className="flex h-10 rounded-md border border-input bg-background px-3 py-2 text-sm" value={form.status} onChange={e => setForm({ ...form, status: e.target.value })}>
-                <option value="draft">草稿</option>
-                <option value="published">发布</option>
-              </select>
-            </div>
-            <Input placeholder="标签,逗号分隔" value={form.tags} onChange={e => setForm({ ...form, tags: e.target.value })} />
-            <div className="flex flex-wrap items-center gap-2">
-              <Tabs value={dialogInputMode} onValueChange={v => setDialogInputMode(v as 'markdown' | 'rich')}>
-                <TabsList className="h-8">
-                  <TabsTrigger value="markdown" className="text-xs py-1"><PenLine className="h-3 w-3 mr-1" />Markdown</TabsTrigger>
-                  <TabsTrigger value="rich" className="text-xs py-1"><AlignLeft className="h-3 w-3 mr-1" />富文本</TabsTrigger>
-                </TabsList>
-              </Tabs>
-              <div className="flex-1" />
-              <span className="text-[10px] text-muted-foreground flex items-center gap-1"><Eye className="h-3 w-3" />右侧实时预览</span>
-            </div>
-            {/* 编辑 + 实时预览 分栏: 始终可见, 避免切到预览页才看到、且像"没渲染"的困惑 */}
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-              {/* 左: 编辑区 */}
-              <div className="border rounded-md overflow-hidden">
-                {dialogInputMode === 'rich'
-                  ? <RichTextEditor value={form.content} onChange={md => setForm(f => ({ ...f, content: md }))} minHeight="360px" />
-                  : <textarea className={cn('flex min-h-[360px] w-full bg-background px-3 py-2 text-sm font-mono focus-visible:outline-none', !form.content && formError && 'border border-red-500')} value={form.content} onChange={e => { setForm({ ...form, content: e.target.value }); if (formError) setFormError('') }} placeholder="文章正文 (Markdown, 支持表格/任务列表等 GFM 语法)" />}
-              </div>
-              {/* 右: 预览区, 兼容 Markdown / 富文本两种录入模式 */}
-              <div className="rounded-md border border-border bg-background p-4 md:p-6 overflow-y-auto max-h-[480px]">
-                {dialogInputMode === 'rich'
-                  ? <RichTextEditor value={form.content} onChange={() => {}} readOnly minHeight="360px" />
-                  : (form.content.trim() ? <MarkdownViewer content={form.content} /> : <p className="text-xs text-muted-foreground italic">（空内容）</p>)}
-              </div>
-            </div>
-            {formError && <p className="text-xs text-red-500">{formError}</p>}
-          </div>
-
-          <Card><CardContent className="p-4 space-y-3">
-            <h3 className="text-sm font-medium flex items-center gap-1"><Sparkles className="h-4 w-4 text-amber-500" />AI 伴写</h3>
-            <p className="text-xs text-muted-foreground">输入提示词让AI帮你生成文章内容, 会替换当前正文</p>
-            <textarea className="flex h-24 w-full rounded-md border border-input bg-background px-2 py-1 text-xs mt-1" value={dialogAiPrompt} onChange={e => setDialogAiPrompt(e.target.value)} placeholder="例如: 介绍一下Linux磁盘空间清理的步骤和注意事项" />
-            <Button size="sm" className="w-full" onClick={handleDialogAIGenerate} disabled={dialogAiGen}>
-              {dialogAiGen ? <Loader2 className="h-3.5 w-3.5 mr-1 animate-spin" /> : <Sparkles className="h-3.5 w-3.5 mr-1" />}
-              {dialogAiGen ? '生成中...' : 'AI 生成内容'}
-            </Button>
-            <div className="text-[10px] text-muted-foreground pt-2 border-t">
-              <p>提示: 先写好标题, 再让AI根据标题生成正文。可多次生成持续补充。</p>
-            </div>
-          </CardContent></Card>
-        </div>
-        <div className="flex justify-end gap-2 mt-4">
-          <Button variant="outline" onClick={() => setDialogOpen(false)}>取消</Button>
-          <Button onClick={handleSave} disabled={!form.title}>保存</Button>
-        </div>
-      </div>
-    </div>}
 
     {/* 分类管理弹窗 */}
     {catDialog && <div className="fixed inset-0 z-50 flex items-center justify-center"><div className="fixed inset-0 bg-black/50" onClick={() => setCatDialog(false)} />
