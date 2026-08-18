@@ -10,6 +10,7 @@ import {
   AlertTriangle,
   Lightbulb,
   Loader2,
+  Download,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
@@ -116,6 +117,19 @@ export function AIWorkspace({ onSaved }: { onSaved?: () => void }) {
 
   const widgets = draft?.dashboard.widgets || []
 
+  // 下载草稿为 JSON(未保存的看板也可留档)
+  const downloadDraftJson = () => {
+    if (!draft) return
+    const blob = new Blob([JSON.stringify(draft, null, 2)], { type: 'application/json;charset=utf-8' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `dashboard-draft-${Date.now()}.json`
+    a.click()
+    URL.revokeObjectURL(url)
+    toast.success('草稿已导出为 JSON')
+  }
+
   return (
     <div className="space-y-4">
       {/* —— 提示词输入区 —— */}
@@ -208,6 +222,10 @@ export function AIWorkspace({ onSaved }: { onSaved?: () => void }) {
                   <Input value={name} onChange={(e) => setName(e.target.value)} />
                 </div>
                 <div className="flex items-end gap-2 pb-[1px]">
+                  <Button variant="outline" onClick={downloadDraftJson} disabled={!draft}>
+                    <Download className="mr-1.5 h-4 w-4" />
+                    下载草稿
+                  </Button>
                   <Button variant="outline" onClick={handleGenerate} disabled={generating}>
                     <RotateCcw className="mr-1.5 h-4 w-4" />
                     重新生成

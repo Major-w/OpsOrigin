@@ -9,8 +9,9 @@ import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { Input } from '@/components/ui/input'
 import { Dialog, DialogFooter } from '@/components/ui/dialog'
-import { Bot, Send, History, Settings, Sparkles, Terminal, FileText, Server, ChevronRight, Loader2, User, BarChart3, Users, ThumbsUp, ThumbsDown, Rocket, Target, AlertTriangle, CheckCircle, XCircle, ChevronDown, Trash2 } from 'lucide-react'
+import { Bot, Send, History, Settings, Sparkles, Terminal, FileText, Server, ChevronRight, Loader2, User, BarChart3, Users, ThumbsUp, ThumbsDown, Rocket, Target, AlertTriangle, CheckCircle, XCircle, ChevronDown, Trash2, Bookmark, Download, Save, Paperclip } from 'lucide-react'
 import { cn } from '@/lib/utils'
+import { apiFetchRaw } from '@/lib/utils'
 import { toast } from '@/stores/toast'
 import { useThemeStore } from '@/stores/theme'
 import { renderMarkdown, renderExploreContent } from '@/lib/ai-render'
@@ -112,6 +113,10 @@ export default function AIPage() {
   const [conversations, setConversations] = useState<any[]>([])
   // 当前会话 ID: 加载历史后指向该会话, 继续发送时携带以续接服务端持久历史
   const [convId, setConvId] = useState('')
+  // 对话产物(MinIO 归档): 本会话已保存的文件列表
+  const [artifacts, setArtifacts] = useState<{ id: string; message_id: string; file_name: string; file_type: string; file_size: number; created_at: string }[]>([])
+  // 会话工作区(工具产物自动收集): script_run 等工具输出
+  const [workspaceFiles, setWorkspaceFiles] = useState<{ id: string; tool_name: string; file_name: string; file_size: number; created_at: string }[]>([])
   const messagesEndRef = useRef<HTMLDivElement>(null)
 
   // —— 团队模式状态 ——
@@ -141,6 +146,8 @@ export default function AIPage() {
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [messages])
+  // 切换会话时加载该会话的归档产物与工作区文件
+  useEffect(() => { loadArtifacts(convId); loadWorkspace(convId) }, [convId])
   useEffect(() => {
     teamMessagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [teamTurns])
@@ -204,6 +211,122 @@ export default function AIPage() {
   // submitFeedback 上报点赞/点踩
   const submitFeedback = async (msg: Message, rating: 'up' | 'down' = 'up') => {
     await submitFB({ message_id: msg.id, rating })
+  }
+
+  // 保存 AI 回复为知识库文章(分类不存在自动创建)
+  const saveMsgToKnowledge = async (msg: Message) => {
+    if (!msg.content.trim()) return
+    const title = msg.content.replace(/[#*`>\-\n\r]+/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 40) || 'AI 对话沉淀'
+    try {
+      const r = await fetch('/api/v1/knowledge', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          title, content: msg.content, category: 'AI 对话沉淀', tags: ['ai', 'conversation'], status: 'published',
+        }),
+      })
+      if (!r.ok) throw new Error(`保存失败(${r.status})`)
+      toast.success('已保存到知识库（分类「AI 对话沉淀」）')
+    } catch (e: any) { toast.error('保存失败: ' + e.message) }
+  }
+
+  // 下载 AI 回复为 Markdown 文件
+  const downloadMsgAsMd = (msg: Message) => {
+    if (!msg.content.trim()) return
+    const blob = new Blob([msg.content], { type: 'text/markdown;charset=utf-8' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `ai-${msg.id}.md`
+    a.click()
+    URL.revokeObjectURL(url)
+  }
+
+  // —— 对话产物归档(MinIO) ——
+  const authHeaders = (): Record<string, string> => {
+    const token = localStorage.getItem('opsorigin_token')
+    return token ? { Authorization: `Bearer ${token}` } : {}
+  }
+
+  const loadArtifacts = async (id: string) => {
+    if (!id) { setArtifacts([]); return }
+    try {
+      const r = await fetch(`/api/v1/ai/conversations/${id}/artifacts`, { headers: authHeaders() })
+      if (r.ok) setArtifacts(await r.json())
+    } catch {}
+  }
+
+  // 保存 AI 回复为归档文件(落 MinIO)
+  const saveMsgAsArtifact = async (msg: Message) => {
+    if (!msg.content.trim()) return
+    if (!convId) { toast.error('请先新建或选择对话会话'); return }
+    try {
+      const r = await fetch(`/api/v1/ai/conversations/${convId}/artifacts`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json', ...authHeaders() },
+        body: JSON.stringify({ message_id: msg.id, file_name: `ai-${msg.id}.md`, content: msg.content }),
+      })
+      if (!r.ok) throw new Error(`保存失败(${r.status})`)
+      toast.success('已归档到对象存储（本会话产物区可下载）')
+      loadArtifacts(convId)
+    } catch (e: any) { toast.error('归档失败: ' + e.message) }
+  }
+
+  const downloadArtifact = async (aid: string) => {
+    try {
+      const r = await apiFetchRaw(`/api/v1/ai/conversations/${convId}/artifacts/${aid}`)
+      if (!r.ok) throw new Error(`下载失败(${r.status})`)
+      const blob = await r.blob()
+      const cd = r.headers.get('Content-Disposition') || ''
+      const name = cd.match(/filename="?([^";]+)/)?.[1] || `artifact-${aid}.md`
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = decodeURIComponent(name)
+      a.click()
+      URL.revokeObjectURL(url)
+    } catch (e: any) { toast.error('下载失败: ' + e.message) }
+  }
+
+  const deleteArtifact = async (aid: string) => {
+    if (!confirm('删除该产物文件？')) return
+    try {
+      await fetch(`/api/v1/ai/conversations/${convId}/artifacts/${aid}`, { method: 'DELETE', headers: authHeaders() })
+      toast.success('已删除')
+      loadArtifacts(convId)
+    } catch (e: any) { toast.error('删除失败: ' + e.message) }
+  }
+
+  // —— 会话工作区(工具产物自动收集) ——
+  const loadWorkspace = async (id: string) => {
+    if (!id) { setWorkspaceFiles([]); return }
+    try {
+      const r = await fetch(`/api/v1/ai/conversations/${id}/workspace`, { headers: authHeaders() })
+      if (r.ok) setWorkspaceFiles(await r.json())
+    } catch {}
+  }
+
+  const downloadWorkspaceFile = async (fid: string) => {
+    try {
+      const r = await apiFetchRaw(`/api/v1/ai/conversations/${convId}/workspace/${fid}`)
+      if (!r.ok) throw new Error(`下载失败(${r.status})`)
+      const blob = await r.blob()
+      const cd = r.headers.get('Content-Disposition') || ''
+      const name = cd.match(/filename="?([^";]+)/)?.[1] || `workspace-${fid}.json`
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = decodeURIComponent(name)
+      a.click()
+      URL.revokeObjectURL(url)
+    } catch (e: any) { toast.error('下载失败: ' + e.message) }
+  }
+
+  const deleteWorkspaceFile = async (fid: string) => {
+    if (!confirm('删除该工作区文件？')) return
+    try {
+      await fetch(`/api/v1/ai/conversations/${convId}/workspace/${fid}`, { method: 'DELETE', headers: authHeaders() })
+      toast.success('已删除')
+      loadWorkspace(convId)
+    } catch (e: any) { toast.error('删除失败: ' + e.message) }
   }
 
   const sendMessage = async (text: string) => {
@@ -544,7 +667,7 @@ export default function AIPage() {
                               </details>
                             )}
 
-                            {/* 反馈按钮 */}
+                            {/* 反馈按钮 + 产物操作 */}
                             {msg.id !== '0' && (
                               <div className="flex items-center gap-1 mt-2 pt-1.5 border-t border-gray-200 dark:border-[rgba(255,255,255,0.04)]">
                                 <button
@@ -570,6 +693,28 @@ export default function AIPage() {
                                   title="没帮助"
                                 >
                                   <ThumbsDown className="h-3 w-3" />
+                                </button>
+                                <span className="w-px h-3 bg-gray-200 dark:bg-gray-700 mx-0.5" />
+                                <button
+                                  onClick={() => saveMsgToKnowledge(msg)}
+                                  className="p-1 rounded text-[10px] text-muted-foreground hover:text-amber-500 transition-colors"
+                                  title="保存到知识库"
+                                >
+                                  <Bookmark className="h-3 w-3" />
+                                </button>
+                                <button
+                                  onClick={() => downloadMsgAsMd(msg)}
+                                  className="p-1 rounded text-[10px] text-muted-foreground hover:text-blue-500 transition-colors"
+                                  title="下载为 Markdown"
+                                >
+                                  <Download className="h-3 w-3" />
+                                </button>
+                                <button
+                                  onClick={() => saveMsgAsArtifact(msg)}
+                                  className="p-1 rounded text-[10px] text-muted-foreground hover:text-indigo-500 transition-colors"
+                                  title="归档到对象存储"
+                                >
+                                  <Save className="h-3 w-3" />
                                 </button>
                               </div>
                             )}
@@ -645,6 +790,44 @@ export default function AIPage() {
                   {ctxPct >= 85 ? ' · 上下文偏满，建议新开对话' : ''}
                 </p>
               </div>
+
+              {/* 会话工作区(工具产物自动收集) */}
+              {workspaceFiles.length > 0 && (
+                <div className="mt-2 rounded-lg border border-violet-200 dark:border-violet-500/30 p-2 space-y-1">
+                  <p className="text-[10px] text-muted-foreground flex items-center gap-1">
+                    <Terminal className="h-3 w-3" />会话工作区（{workspaceFiles.length}）— 工具产物自动沉淀
+                  </p>
+                  {workspaceFiles.map(f => (
+                    <div key={f.id} className="flex items-center justify-between gap-2 text-xs">
+                      <span className="truncate font-mono text-[11px]">{f.file_name}</span>
+                      <span className="text-[10px] text-muted-foreground shrink-0">{f.tool_name} · {(f.file_size / 1024).toFixed(1)} KB</span>
+                      <span className="flex gap-2 shrink-0">
+                        <button onClick={() => downloadWorkspaceFile(f.id)} className="text-[10px] text-blue-500 hover:underline">下载</button>
+                        <button onClick={() => deleteWorkspaceFile(f.id)} className="text-[10px] text-red-400 hover:underline">删除</button>
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {/* 本会话产物(对象存储归档) */}
+              {artifacts.length > 0 && (
+                <div className="mt-2 rounded-lg border border-border p-2 space-y-1">
+                  <p className="text-[10px] text-muted-foreground flex items-center gap-1">
+                    <Paperclip className="h-3 w-3" />本会话产物（{artifacts.length}）— 已归档对象存储
+                  </p>
+                  {artifacts.map(a => (
+                    <div key={a.id} className="flex items-center justify-between gap-2 text-xs">
+                      <span className="truncate font-medium">{a.file_name}</span>
+                      <span className="text-[10px] text-muted-foreground shrink-0">{(a.file_size / 1024).toFixed(1)} KB</span>
+                      <span className="flex gap-2 shrink-0">
+                        <button onClick={() => downloadArtifact(a.id)} className="text-[10px] text-blue-500 hover:underline">下载</button>
+                        <button onClick={() => deleteArtifact(a.id)} className="text-[10px] text-red-400 hover:underline">删除</button>
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              )}
 
               <div className="flex gap-2 mt-2">
                 <p className="text-[10px] text-muted-foreground">
