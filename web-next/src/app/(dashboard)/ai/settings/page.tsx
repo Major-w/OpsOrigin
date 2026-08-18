@@ -8,7 +8,18 @@ import { Input } from '@/components/ui/input'
 import { Badge } from '@/components/ui/badge'
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs'
 import { toast } from '@/stores/toast'
-import { Bot, Plus, Trash2, Save, Wrench, Brain, Settings2, Terminal, Wand2, AlertCircle, CheckCircle2, Loader2, ChevronRight, ShieldCheck, Database, Download, RefreshCw, Sparkles, Copy, Pencil, Star, Search, Package, Eye } from 'lucide-react'
+import { Bot, Plus, Trash2, Save, Wrench, Brain, Settings2, Terminal, Wand2, AlertCircle, CheckCircle2, Loader2, ChevronRight, ShieldCheck, Database, Download, RefreshCw, Sparkles, Copy, Pencil, Star, Search, Package, Eye, Rocket } from 'lucide-react'
+
+// 主流模型服务预设(填入新 provider 行, base_url 均为 OpenAI 兼容端点)
+const MODEL_PRESETS = [
+  { label: 'OpenAI', name: 'openai', model: 'gpt-4o-mini', base_url: 'https://api.openai.com/v1', weight: 60 },
+  { label: 'DeepSeek', name: 'deepseek', model: 'deepseek-chat', base_url: 'https://api.deepseek.com', weight: 60 },
+  { label: '通义千问', name: 'qwen', model: 'qwen-plus', base_url: 'https://dashscope.aliyuncs.com/compatible-mode/v1', weight: 60 },
+  { label: '智谱 GLM', name: 'zhipu', model: 'glm-4-flash', base_url: 'https://open.bigmodel.cn/api/paas/v4', weight: 60 },
+  { label: 'Kimi', name: 'kimi', model: 'moonshot-v1-8k', base_url: 'https://api.moonshot.cn/v1', weight: 60 },
+  { label: '硅基流动', name: 'siliconflow', model: 'Qwen/Qwen2.5-7B-Instruct', base_url: 'https://api.siliconflow.cn/v1', weight: 60 },
+  { label: 'Ollama 本地', name: 'ollama', model: 'qwen2.5', base_url: 'http://host.docker.internal:11434/v1', weight: 60 },
+]
 import { cn, apiFetch, apiList } from '@/lib/utils'
 import { useThemeStore } from '@/stores/theme'
 import { useAIStore, type ApprovalMode } from '@/stores/ai'
@@ -149,6 +160,16 @@ export default function AISettingsPage() {
   const [sysConfig, setSysConfig] = useState<any>(null)
   const [llmForm, setLlmForm] = useState({ api_key: '', model: '', base_url: '', timeout: 60 })
   const [modelPool, setModelPool] = useState<{ name: string; model: string; base_url: string; weight: number; healthy: boolean }[]>([])
+  // 模型池 provider 编辑草稿(含 key, 从 sysconfig OPSORIGIN_LLM_PROVIDERS 加载)
+  const [poolProviders, setPoolProviders] = useState<{ name: string; model: string; base_url: string; api_key: string; weight: number }[]>([])
+  const [poolSaving, setPoolSaving] = useState(false)
+  // 进化闭环概览
+  const [evoStats, setEvoStats] = useState<{ feedback_up: number; feedback_down: number; memories: number; disposal_cases: number } | null>(null)
+  // 主动进化: 数据源 + 手动执行
+  const [evoSources, setEvoSources] = useState<{ id: string; name: string; type: string; source: string; enabled: boolean; created_at: string }[]>([])
+  const [evoForm, setEvoForm] = useState({ name: '', type: 'rss', source: '', enabled: true })
+  const [evoFetching, setEvoFetching] = useState(false)
+  const [evoResults, setEvoResults] = useState<{ name: string; type: string; source: string; status: string; message: string }[] | null>(null)
   const [datasetStats, setDatasetStats] = useState<{ total: number; preference_up: number; preference_down: number; disposal_cases: number } | null>(null)
   const [datasetLoading, setDatasetLoading] = useState(false)
   const [editing, setEditing] = useState<string | null>(null)
@@ -172,7 +193,7 @@ export default function AISettingsPage() {
   const [approvalScope, setApprovalScope] = useState<'global' | 'agent'>('global')
   const [approvalAgentId, setApprovalAgentId] = useState('')
 
-  useEffect(() => { fetchAgents(); loadTools(); loadSysConfig(); loadApprovalPolicy(); loadKbCategories(); loadModelPool(); loadFinetuneTasks(); loadPrompts() }, [])
+  useEffect(() => { fetchAgents(); loadTools(); loadSysConfig(); loadApprovalPolicy(); loadKbCategories(); loadModelPool(); loadFinetuneTasks(); loadPrompts(); loadEvolutionStats(); loadEvoSources() }, [])
   const loadModelPool = async () => {
     try {
       const r = await fetch('/api/v1/ai/models')
@@ -270,6 +291,56 @@ export default function AISettingsPage() {
     const k = promptKeyword.trim().toLowerCase()
     return [p.name, p.description, p.scene, p.content].some(x => (x || '').toLowerCase().includes(k))
   })
+
+  const loadEvolutionStats = async () => {
+    try {
+      const r = await fetch('/api/v1/ai/evolution/stats')
+      if (r.ok) setEvoStats(await r.json())
+    } catch {}
+  }
+
+  const loadEvoSources = async () => {
+    try {
+      const r = await fetch('/api/v1/ai/evolution/sources')
+      if (r.ok) setEvoSources(await r.json())
+    } catch {}
+  }
+
+  const saveEvoSource = async () => {
+    if (!evoForm.name.trim() || !evoForm.source.trim()) { toast.error('请填写名称与源地址'); return }
+    try {
+      const r = await fetch('/api/v1/ai/evolution/sources', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(evoForm),
+      })
+      if (!r.ok) throw new Error(`保存失败(${r.status})`)
+      toast.success('数据源已添加')
+      setEvoForm({ name: '', type: 'rss', source: '', enabled: true })
+      loadEvoSources()
+    } catch (e: any) { toast.error('添加失败: ' + e.message) }
+  }
+
+  const deleteEvoSource = async (id: string) => {
+    if (!confirm('删除该数据源？')) return
+    try {
+      await fetch(`/api/v1/ai/evolution/sources/${id}`, { method: 'DELETE' })
+      toast.success('已删除')
+      loadEvoSources()
+    } catch (e: any) { toast.error('删除失败: ' + e.message) }
+  }
+
+  const runEvoFetch = async () => {
+    setEvoFetching(true)
+    setEvoResults(null)
+    try {
+      const r = await fetch('/api/v1/ai/evolution/fetch', { method: 'POST' })
+      const d = await r.json()
+      if (!r.ok) throw new Error(d.error || `执行失败(${r.status})`)
+      setEvoResults(d.results || [])
+      toast.success('主动进化执行完成')
+    } catch (e: any) { toast.error('执行失败: ' + e.message) }
+    setEvoFetching(false)
+  }
 
   const loadPrompts = async () => {
     setPromptLoading(true)
@@ -392,7 +463,22 @@ export default function AISettingsPage() {
   const loadSysConfig = async () => {
     try {
       const r = await fetch('/api/v1/system/config')
-      if (r.ok) { const d = await r.json(); setSysConfig(d?.config || d) }
+      if (r.ok) {
+        const d = await r.json()
+        const cfgArr = d?.config || d // [{category, label, items:[{key,current_value,...}]}]
+        setSysConfig(cfgArr)
+        // 模型池 providers 随配置加载(含已存 key), 供可视化编辑回写
+        let provVal: string | undefined
+        if (Array.isArray(cfgArr)) {
+          for (const cat of cfgArr) {
+            const item = (cat?.items || []).find((k: any) => k.key === 'OPSORIGIN_LLM_PROVIDERS')
+            if (item) { provVal = item.current_value; break }
+          }
+        }
+        if (provVal && provVal !== '[]') {
+          try { const parsed = JSON.parse(provVal); if (Array.isArray(parsed)) setPoolProviders(parsed) } catch {}
+        }
+      }
     } catch {}
   }
   
@@ -470,6 +556,35 @@ export default function AISettingsPage() {
     setSaving(false); setEditing(null); fetchAgents()
   }
 
+  // —— 模型池 provider 编辑 ——
+  const addPoolProvider = (preset?: typeof MODEL_PRESETS[number]) => {
+    setPoolProviders(ps => [...ps, preset
+      ? { name: preset.name, model: preset.model, base_url: preset.base_url, api_key: '', weight: preset.weight }
+      : { name: '', model: '', base_url: '', api_key: '', weight: 50 }])
+  }
+  const updatePoolProvider = (i: number, patch: Partial<{ name: string; model: string; base_url: string; api_key: string; weight: number }>) => {
+    setPoolProviders(ps => ps.map((p, idx) => (idx === i ? { ...p, ...patch } : p)))
+  }
+  const removePoolProvider = (i: number) => setPoolProviders(ps => ps.filter((_, idx) => idx !== i))
+  const saveModelPool = async () => {
+    const clean = poolProviders.filter(p => p.name.trim() && p.model.trim() && p.base_url.trim())
+    setPoolSaving(true)
+    try {
+      const r = await fetch('/api/v1/system/config', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ updates: { OPSORIGIN_LLM_PROVIDERS: JSON.stringify(clean) } }),
+      })
+      if (!r.ok) throw new Error(`保存失败(${r.status})`)
+      toast.success('模型池已保存，即时生效')
+      loadSysConfig()
+      loadModelPool()
+    } catch (e: any) {
+      toast.error('保存模型池失败: ' + e.message)
+    }
+    setPoolSaving(false)
+  }
+
   const handleUpdateLLM = async (key: string, value: string) => {
     setSaving(true)
     try {
@@ -509,6 +624,7 @@ export default function AISettingsPage() {
           <TabsTrigger value="prompts"><Wand2 className="h-4 w-4 mr-1.5" />提示词</TabsTrigger>
           <TabsTrigger value="model"><Brain className="h-4 w-4 mr-1.5" />模型</TabsTrigger>
           <TabsTrigger value="approval"><ShieldCheck className="h-4 w-4 mr-1.5" />审批策略</TabsTrigger>
+          <TabsTrigger value="evolution"><RefreshCw className="h-4 w-4 mr-1.5" />进化</TabsTrigger>
         </TabsList>
 
         {/* 智能体管理 */}
@@ -975,6 +1091,46 @@ export default function AISettingsPage() {
                 </div>
               )}
               <p className="text-[11px] text-muted-foreground pt-2">修改下方 LLM 配置后热生效：模型池随之热更新，故障中的 provider 保留降级状态，不会因配置刷新而误恢复。</p>
+
+              {/* Provider 可视化编辑 */}
+              <div className="mt-3 border-t pt-3 space-y-2">
+                <div className="flex items-center justify-between flex-wrap gap-2">
+                  <h4 className="text-sm font-medium">Provider 列表（多模型路由）</h4>
+                  <div className="flex items-center gap-2">
+                    <select
+                      className="flex h-9 rounded-md border border-input bg-background px-2 text-xs"
+                      defaultValue=""
+                      onChange={e => { const p = MODEL_PRESETS.find(x => x.label === e.target.value); if (p) addPoolProvider(p); e.target.value = '' }}
+                    >
+                      <option value="" disabled>+ 预设模板…</option>
+                      {MODEL_PRESETS.map(p => <option key={p.label} value={p.label}>{p.label}</option>)}
+                    </select>
+                    <Button size="sm" variant="outline" onClick={() => addPoolProvider()}>
+                      <Plus className="h-3.5 w-3.5 mr-1" />添加 Provider
+                    </Button>
+                  </div>
+                </div>
+                {poolProviders.length === 0 ? (
+                  <p className="text-xs text-muted-foreground py-2">暂无附加 provider。可从预设模板添加，或点「添加 Provider」自定义接入（OpenAI 兼容端点均可）。</p>
+                ) : (
+                  <div className="space-y-2">
+                    {poolProviders.map((p, i) => (
+                      <div key={i} className="grid grid-cols-12 gap-2 items-center rounded-lg border border-border p-2">
+                        <Input className="col-span-2 h-8 text-xs" placeholder="名称(唯一)" value={p.name} onChange={e => updatePoolProvider(i, { name: e.target.value })} />
+                        <Input className="col-span-2 h-8 text-xs" placeholder="模型" value={p.model} onChange={e => updatePoolProvider(i, { model: e.target.value })} />
+                        <Input className="col-span-3 h-8 text-xs font-mono" placeholder="Base URL" value={p.base_url} onChange={e => updatePoolProvider(i, { base_url: e.target.value })} />
+                        <Input className="col-span-1 h-8 text-xs" type="number" placeholder="权重" value={String(p.weight)} onChange={e => updatePoolProvider(i, { weight: parseInt(e.target.value) || 0 })} />
+                        <Input className="col-span-3 h-8 text-xs font-mono" type="password" placeholder={p.api_key ? '已配置(留空不变)' : 'API Key'} value={p.api_key} onChange={e => updatePoolProvider(i, { api_key: e.target.value })} />
+                        <Button variant="ghost" size="icon" className="col-span-1 h-8 w-8 text-red-400" onClick={() => removePoolProvider(i)} title="删除"><Trash2 className="h-3.5 w-3.5" /></Button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+                <Button size="sm" onClick={saveModelPool} disabled={poolSaving} className="mt-1">
+                  {poolSaving ? <Loader2 className="h-3.5 w-3.5 mr-1 animate-spin" /> : <Save className="h-3.5 w-3.5 mr-1" />}
+                  {poolSaving ? '保存中…' : '保存模型池'}
+                </Button>
+              </div>
             </CardContent>
           </Card>
 
@@ -1232,6 +1388,105 @@ export default function AISettingsPage() {
                   <p className="text-muted-foreground mt-0.5">AI 请求执行脚本 → 不在免审批白名单时触发本策略 → 需要确认时聊天界面弹出确认框 → 批准后执行 / 拒绝或超时则停止并向 AI 说明。未获交互式确认的脚本仍会创建 ITSM 变更单兜底。</p>
                 </div>
               </div>
+            </CardContent>
+          </Card>
+        </TabsContent>
+
+        {/* 进化闭环 */}
+        <TabsContent value="evolution" className="flex-1 overflow-auto space-y-4">
+          <Card>
+            <CardHeader className="pb-2">
+              <CardTitle className="text-base flex items-center gap-2"><RefreshCw className="h-4 w-4" />进化闭环</CardTitle>
+              <CardDescription>经验 → 记忆 → 知识/技能 → 更好回答 的自循环，反馈（点赞/点踩）作为回路信号。</CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-3">
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
+                <div className="rounded-lg border p-3 text-center"><p className="text-2xl font-bold">{evoStats?.feedback_up ?? '-'}</p><p className="text-xs text-muted-foreground">👍 点赞反馈</p></div>
+                <div className="rounded-lg border p-3 text-center"><p className="text-2xl font-bold">{evoStats?.feedback_down ?? '-'}</p><p className="text-xs text-muted-foreground">👎 点踩反馈</p></div>
+                <div className="rounded-lg border p-3 text-center"><p className="text-2xl font-bold">{evoStats?.memories ?? '-'}</p><p className="text-xs text-muted-foreground">🧠 长期记忆</p></div>
+                <div className="rounded-lg border p-3 text-center"><p className="text-2xl font-bold">{evoStats?.disposal_cases ?? '-'}</p><p className="text-xs text-muted-foreground">📚 处置案例沉淀</p></div>
+              </div>
+              <div className="rounded-lg bg-muted/40 p-3 text-xs space-y-1.5">
+                <p className="font-medium">闭环链路</p>
+                <p>① 工单完成 → 处置经验写入长期记忆（experienceSink）</p>
+                <p>② 知识沉淀策略将高价值会话/工单自动沉淀为知识库文章</p>
+                <p>③ 记忆/知识在对话中注入 → 更好回答（记忆 top-K 命中即复用）</p>
+                <p>④ 反馈（👍/👎）入库 → 参与训练数据集导出（微调）与闭环评估</p>
+                <p className="text-muted-foreground">注：长期记忆当前为进程内存态、重启清空；需要持久化可加 DB 落盘（后续增强）。</p>
+              </div>
+            </CardContent>
+          </Card>
+
+          {/* 主动进化 */}
+          <Card>
+            <CardHeader className="pb-2">
+              <CardTitle className="text-base flex items-center gap-2"><Rocket className="h-4 w-4" />主动进化（互联网 → 本地知识）</CardTitle>
+              <CardDescription>定期从 RSS/URL 数据源抓取内容，经 LLM 提炼有价值知识后自动沉淀为本地知识库文章（每 6 小时自动执行；需已配置模型 API Key）。</CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-3">
+              <div className="flex items-end gap-2 flex-wrap">
+                <div className="space-y-1">
+                  <p className="text-xs text-muted-foreground">名称</p>
+                  <Input className="w-36 h-9 text-xs" placeholder="如: 运维博客" value={evoForm.name} onChange={e => setEvoForm({ ...evoForm, name: e.target.value })} />
+                </div>
+                <div className="space-y-1">
+                  <p className="text-xs text-muted-foreground">类型</p>
+                  <select className="flex h-9 rounded-md border border-input bg-background px-2 text-xs" value={evoForm.type} onChange={e => setEvoForm({ ...evoForm, type: e.target.value })}>
+                    <option value="rss">RSS</option>
+                    <option value="url">URL</option>
+                    <option value="keyword">关键词(暂不支持)</option>
+                  </select>
+                </div>
+                <div className="space-y-1 flex-1 min-w-[240px]">
+                  <p className="text-xs text-muted-foreground">源地址</p>
+                  <Input className="h-9 text-xs font-mono" placeholder="https://example.com/feed.xml" value={evoForm.source} onChange={e => setEvoForm({ ...evoForm, source: e.target.value })} />
+                </div>
+                <label className="flex items-center gap-1.5 text-xs pb-2.5 cursor-pointer">
+                  <input type="checkbox" checked={evoForm.enabled} onChange={e => setEvoForm({ ...evoForm, enabled: e.target.checked })} />启用
+                </label>
+                <Button size="sm" variant="outline" onClick={saveEvoSource}><Plus className="h-3.5 w-3.5 mr-1" />添加数据源</Button>
+              </div>
+
+              {evoSources.length === 0 ? (
+                <p className="text-xs text-muted-foreground py-2">暂无数据源。添加后（需 LLM 已配置）每 6 小时自动提炼，也可点「立即执行」手动触发。</p>
+              ) : (
+                <div className="space-y-2">
+                  {evoSources.map(s => (
+                    <div key={s.id} className="flex items-center justify-between gap-2 rounded-lg border border-border p-2.5">
+                      <div className="min-w-0 flex-1 flex items-center gap-2">
+                        <Badge variant={s.enabled ? 'success' : 'outline'} className="text-[10px]">{s.enabled ? '启用' : '停用'}</Badge>
+                        <Badge variant="outline" className="text-[10px]">{s.type}</Badge>
+                        <span className="text-xs font-medium truncate">{s.name}</span>
+                        <span className="text-[11px] text-muted-foreground truncate">{s.source}</span>
+                      </div>
+                      <Button variant="ghost" size="icon" className="h-6 w-6 text-red-400" onClick={() => deleteEvoSource(s.id)} title="删除"><Trash2 className="h-3.5 w-3.5" /></Button>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              <div className="flex items-center gap-2">
+                <Button size="sm" onClick={runEvoFetch} disabled={evoFetching}>
+                  {evoFetching ? <Loader2 className="h-3.5 w-3.5 mr-1 animate-spin" /> : <RefreshCw className="h-3.5 w-3.5 mr-1" />}
+                  {evoFetching ? '执行中…' : '立即执行'}
+                </Button>
+                <p className="text-[11px] text-muted-foreground">提炼结果自动入知识库（分类「知识获取」，tag: evolution）</p>
+              </div>
+
+              {evoResults && (
+                <div className="space-y-1.5">
+                  {evoResults.length === 0 && <p className="text-xs text-muted-foreground">无启用的数据源</p>}
+                  {evoResults.map((r, i) => (
+                    <div key={i} className="flex items-start gap-2 text-xs rounded-lg border border-border p-2">
+                      <Badge variant={r.status === 'ok' ? 'success' : 'destructive'} className="text-[10px] shrink-0 mt-0.5">{r.status === 'ok' ? '成功' : '失败'}</Badge>
+                      <div className="min-w-0">
+                        <p className="font-medium">{r.name} <span className="text-muted-foreground font-normal">({r.type})</span></p>
+                        <p className="text-muted-foreground break-all">{r.message}</p>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
             </CardContent>
           </Card>
         </TabsContent>

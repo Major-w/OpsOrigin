@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/opsorigin/core/internal/ai"
+	"github.com/opsorigin/core/pkg/auth"
 	"github.com/opsorigin/core/pkg/config"
 	"github.com/opsorigin/core/pkg/llm"
 
@@ -113,6 +114,7 @@ func (s *Service) buildConfigItems() []ConfigGroup {
 			Label:    "认证安全",
 			Items: []ConfigItem{
 				{Key: "OPSORIGIN_JWT_SECRET", Category: "auth", Label: "JWT 密钥", Description: "JWT Token 签名密钥,修改后所有已登录用户需重新登录", Type: "secret", CurrentValue: maskSensitive(cfg.Auth.JWTSecret), DefaultValue: "opsorigin-dev-secret-do-not-use-in-production", RequiresRestart: true, Sensitive: true},
+				{Key: "OPSORIGIN_MULTI_TENANT", Category: "auth", Label: "多租户模式", Description: "关闭(默认)=单租户, 所有请求强制租户 default; 开启后按 JWT/请求头区分租户。建议部署初始化时设置, 热生效。", Type: "bool", CurrentValue: fmt.Sprintf("%t", cfg.MultiTenant), DefaultValue: "false", RequiresRestart: false},
 			},
 		},
 		{
@@ -123,6 +125,7 @@ func (s *Service) buildConfigItems() []ConfigGroup {
 				{Key: "OPSORIGIN_LLM_MODEL", Category: "llm", Label: "LLM 模型", Description: "大模型名称", Type: "string", CurrentValue: cfg.LLM.Model, DefaultValue: "deepseek-chat", RequiresRestart: false},
 				{Key: "OPSORIGIN_LLM_BASE_URL", Category: "llm", Label: "LLM Base URL", Description: "大模型 API 基础地址", Type: "string", CurrentValue: cfg.LLM.BaseURL, DefaultValue: "https://api.deepseek.com", RequiresRestart: false},
 				{Key: "OPSORIGIN_LLM_TIMEOUT", Category: "llm", Label: "LLM 超时(秒)", Description: "大模型请求超时时间", Type: "int", CurrentValue: fmt.Sprintf("%d", cfg.LLM.Timeout), DefaultValue: "60", RequiresRestart: false},
+				{Key: "OPSORIGIN_LLM_PROVIDERS", Category: "llm", Label: "模型池 Providers (JSON)", Description: "多模型路由池 JSON 数组, 如 [{\"name\":\"aliyun\",\"api_key\":\"sk-xxx\",\"model\":\"qwen-max\",\"base_url\":\"https://dashscope.aliyuncs.com/compatible-mode/v1\",\"weight\":80}]。推荐在「智能体工作台→模型」页可视化维护。", Type: "json", CurrentValue: marshalProviders(cfg.LLM.Providers), DefaultValue: "[]", RequiresRestart: false},
 			},
 		},
 		{
@@ -297,6 +300,17 @@ func (s *Service) applyUpdate(key, value string) {
 	case "OPSORIGIN_LLM_TIMEOUT":
 		cfg.LLM.Timeout = atoiSafe(value, 60)
 		pushLLMUpdate(cfg)
+	case "OPSORIGIN_LLM_PROVIDERS":
+		var ps []config.LLMProviderConfig
+		if err := json.Unmarshal([]byte(value), &ps); err != nil {
+			slog.Warn("invalid OPSORIGIN_LLM_PROVIDERS json, ignored", "err", err)
+		} else {
+			cfg.LLM.Providers = ps
+			pushLLMUpdate(cfg)
+		}
+	case "OPSORIGIN_MULTI_TENANT":
+		cfg.MultiTenant = value == "true" || value == "1"
+		auth.SetMultiTenant(cfg.MultiTenant)
 	case "OPSORIGIN_OUTBOX_POLL_INTERVAL":
 		cfg.Outbox.PollInterval = parseDurationSafe(value)
 	case "OPSORIGIN_OUTBOX_BATCH_SIZE":
@@ -335,8 +349,23 @@ func pushLLMUpdate(cfg *config.Config) {
 			Model:   cfg.LLM.Model,
 			BaseURL: cfg.LLM.BaseURL,
 			Timeout: time.Duration(cfg.LLM.Timeout) * time.Second,
+			// 语义检索 embedding 端点随配置一起热替换, 避免改 LLM 配置后向量化失效。
+			EmbeddingModel:   cfg.LLM.EmbeddingModel,
+			EmbeddingBaseURL: cfg.LLM.EmbeddingBaseURL,
 		})
 	}
+}
+
+// marshalProviders 将模型池 provider 序列化为 JSON 字符串(供 sysconfig 展示/回写)。
+func marshalProviders(ps []config.LLMProviderConfig) string {
+	if len(ps) == 0 {
+		return "[]"
+	}
+	b, err := json.Marshal(ps)
+	if err != nil {
+		return "[]"
+	}
+	return string(b)
 }
 
 // persistToEnvFile 将更新的配置项写入 .env 文件(保留已有项,更新或追加)。

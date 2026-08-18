@@ -32,6 +32,9 @@ type Config struct {
 	// Env 运行环境: development | production (OPSORIGIN_ENV, 默认 development)。
 	// production 下启动时强制校验凭据强度, 默认/占位密钥直接拒绝启动 (fail-fast)。
 	Env string `json:"env"`
+	// MultiTenant 多租户模式开关(OPSORIGIN_MULTI_TENANT, 默认 false=单租户)。
+	// 关闭时所有请求强制租户 "default"; 开启后按 JWT/请求头区分租户。
+	MultiTenant bool `json:"multi_tenant"`
 }
 
 type LDAPConfig struct {
@@ -293,6 +296,7 @@ func Load() (*Config, error) {
 	}
 
 	cfg.Env = envStr("OPSORIGIN_ENV", "development")
+	cfg.MultiTenant = envBool("OPSORIGIN_MULTI_TENANT", false)
 
 	// 生产环境凭据强度校验 (fail-fast): 默认/占位/弱密钥直接拒绝启动。
 	if err := cfg.ValidateSecrets(); err != nil {

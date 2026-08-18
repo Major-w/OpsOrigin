@@ -34,6 +34,7 @@ type Service struct {
 	limiter       ratelimit.RateLimiter
 	ragFn         func(ctx context.Context, query, agentID string) string // RAG上下文注入(按 Agent 绑定分类过滤)
 	feedbackStore agentic.FeedbackStore                                   // 点赞/点踩反馈持久化(P2-Eval)
+	db            *sql.DB                                                 // 统计/管理查询直连(会话删除、进化闭环等)
 
 	// llmClient 供"非对话式"结构化生成场景直连模型(如 AI 生成报表看板),
 	// 不走 Engine 的对话/工具循环。sysconfig 改配置时随 UpdateLLMConfig 一起热替换。
@@ -80,7 +81,7 @@ func NewService(cfg *config.Config, llmClient *llm.Client, redisClient *rediscli
 		slog.Info("ai team conversation store: using postgres backend")
 	}
 
-	return &Service{
+	svc := &Service{
 		cfg:           cfg,
 		Engine:        eng,
 		Registry:      reg,
@@ -88,7 +89,10 @@ func NewService(cfg *config.Config, llmClient *llm.Client, redisClient *rediscli
 		limiter:       lim,
 		feedbackStore: feedbackStore,
 		llmClient:     llmClient,
+		db:            db,
 	}
+	svc.initEvolutionDDL(context.Background())
+	return svc
 }
 
 // LLMClient 返回当前生效的 LLM 客户端(可能为 nil，表示尚未配置模型)。
@@ -128,6 +132,13 @@ func (s *Service) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/v1/ai/conversations", s.handleListConversations)
 	mux.HandleFunc("GET /api/v1/ai/conversations/{id}", s.handleGetConversation)
 	mux.HandleFunc("POST /api/v1/ai/conversations", s.handleSaveConversation)
+	mux.HandleFunc("DELETE /api/v1/ai/conversations/{id}", s.handleDeleteConversation)
+	mux.HandleFunc("GET /api/v1/ai/evolution/stats", s.handleEvolutionStats)
+	// —— 主动进化: 数据源管理 + 手动触发 ——
+	mux.HandleFunc("GET /api/v1/ai/evolution/sources", s.handleEvolutionSources)
+	mux.HandleFunc("POST /api/v1/ai/evolution/sources", s.handleEvolutionSources)
+	mux.HandleFunc("DELETE /api/v1/ai/evolution/sources/{id}", s.handleDeleteEvolutionSource)
+	mux.HandleFunc("POST /api/v1/ai/evolution/fetch", s.handleEvolutionFetch)
 	mux.HandleFunc("POST /api/v1/ai/feedback", s.handleSubmitFeedback)
 	mux.HandleFunc("GET /api/v1/ai/feedback", s.handleListFeedback)
 	mux.HandleFunc("GET /api/v1/ai/feedback/stats", s.handleFeedbackStats)
@@ -452,6 +463,42 @@ func (s *Service) handleGetConversation(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	writeJSON(w, http.StatusOK, conv)
+}
+
+// handleDeleteConversation 删除会话(按租户隔离)。
+func (s *Service) handleDeleteConversation(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	tenantID := tenantFromCtx(r.Context())
+	if err := s.Engine.DeleteConversation(id, tenantID); err != nil {
+		writeError(w, http.StatusNotFound, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
+}
+
+// ——— 进化闭环概览 ———
+
+// KnowledgeStatsHook 由 cmd/core 注入: 返回知识库侧闭环统计(处置案例数)。nil=未注入。
+var KnowledgeStatsHook func(ctx context.Context) (disposalCases int)
+
+// handleEvolutionStats 进化闭环统计: 反馈(点赞/点踩) + 长期记忆 + 处置案例沉淀。
+func (s *Service) handleEvolutionStats(w http.ResponseWriter, r *http.Request) {
+	tenantID := tenantFromCtx(r.Context())
+	stats := struct {
+		FeedbackUp    int `json:"feedback_up"`
+		FeedbackDown  int `json:"feedback_down"`
+		Memories      int `json:"memories"`
+		DisposalCases int `json:"disposal_cases"`
+	}{Memories: s.Engine.CountMemories(tenantID)}
+	if s.db != nil {
+		_ = s.db.QueryRowContext(r.Context(),
+			`SELECT COUNT(*) FILTER (WHERE rating='up'), COUNT(*) FILTER (WHERE rating='down') FROM ai_message_feedback WHERE tenant_id=$1`,
+			tenantID).Scan(&stats.FeedbackUp, &stats.FeedbackDown)
+	}
+	if KnowledgeStatsHook != nil {
+		stats.DisposalCases = KnowledgeStatsHook(r.Context())
+	}
+	writeJSON(w, http.StatusOK, stats)
 }
 
 // handleCreateAgent godoc

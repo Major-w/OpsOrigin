@@ -9,8 +9,9 @@ import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { Input } from '@/components/ui/input'
 import { Dialog, DialogFooter } from '@/components/ui/dialog'
-import { Bot, Send, History, Settings, Sparkles, Terminal, FileText, Server, ChevronRight, Loader2, User, BarChart3, Users, ThumbsUp, ThumbsDown, Rocket, Target, AlertTriangle, CheckCircle, XCircle, ChevronDown } from 'lucide-react'
+import { Bot, Send, History, Settings, Sparkles, Terminal, FileText, Server, ChevronRight, Loader2, User, BarChart3, Users, ThumbsUp, ThumbsDown, Rocket, Target, AlertTriangle, CheckCircle, XCircle, ChevronDown, Trash2 } from 'lucide-react'
 import { cn } from '@/lib/utils'
+import { toast } from '@/stores/toast'
 import { useThemeStore } from '@/stores/theme'
 import { renderMarkdown, renderExploreContent } from '@/lib/ai-render'
 
@@ -101,6 +102,9 @@ export default function AIPage() {
   const [messages, setMessages] = useState<Message[]>([
     { id: '0', role: 'assistant', content: '你好！我是 OpsOrigin AI 助手，可以帮你完成运维任务。\n\n👉 **快速开始：** 点击右上角「设置」→「模型」配置 LLM API Key 即可使用。\n\n配置完成后可直接提问，或选择右侧快捷操作。', timestamp: new Date() },
   ])
+  // 上下文用量估算: 中文约 1 token/1.5 字符, 英文约 1 token/4 字符, 折中按 1 token/2 字符粗算
+  const estTokens = messages.reduce((n, m) => n + Math.ceil((m.content?.length || 0) / 2), 0)
+  const ctxPct = Math.min(100, Math.round((estTokens / 32000) * 100))
   const [input, setInput] = useState('')
   const [loading, setLoading] = useState(false)
   const [selectedAgent, setSelectedAgent] = useState<any>(null)
@@ -174,6 +178,29 @@ export default function AIPage() {
     } catch {}
   }
 
+  // 删除会话(不可恢复)
+  const handleDeleteConversation = async (id: string) => {
+    if (!confirm('删除该会话？此操作不可恢复。')) return
+    try {
+      const token = localStorage.getItem('opsorigin_token')
+      const resp = await fetch(`${window.location.origin}/api/v1/ai/conversations/${id}`, {
+        method: 'DELETE',
+        headers: token ? { Authorization: `Bearer ${token}` } : undefined,
+      })
+      if (!resp.ok) throw new Error(`删除失败(${resp.status})`)
+      toast.success('会话已删除')
+      if (id === convId) {
+        // 删的是当前会话: 重置为新对话
+        setConvId('')
+        setMessages([{ id: Date.now().toString(), role: 'assistant', content: '已删除该会话，开始新对话吧。', timestamp: new Date() }])
+      }
+      const convs = await loadConversations(selectedAgent?.id)
+      setConversations(convs)
+    } catch (e: any) {
+      toast.error('删除失败: ' + e.message)
+    }
+  }
+
   // submitFeedback 上报点赞/点踩
   const submitFeedback = async (msg: Message, rating: 'up' | 'down' = 'up') => {
     await submitFB({ message_id: msg.id, rating })
@@ -193,10 +220,29 @@ export default function AIPage() {
     const aiMsg: Message = { id: aiId, role: 'assistant', content: '', timestamp: new Date() }
     setMessages(prev => [...prev, aiMsg])
 
-    const history = next
+    let history = next
       .filter(m => m.role === 'user' || m.role === 'assistant')
       .slice(-20)
       .map(m => ({ role: m.role, content: m.content }))
+
+    // 超长自动压缩: 历史估算 token 超过预算时从最新往前裁剪, 避免上下文爆炸
+    const HIST_BUDGET = 24000 // 约 24k token 预算给历史
+    let histTokens = history.reduce((n, m) => n + Math.ceil((m.content?.length || 0) / 2), 0)
+    if (histTokens > HIST_BUDGET && history.length > 4) {
+      const trimmed: typeof history = []
+      let acc = 0
+      for (let i = history.length - 1; i >= 0; i--) {
+        const t = Math.ceil((history[i].content?.length || 0) / 2)
+        if (acc + t > HIST_BUDGET && trimmed.length > 0) break
+        trimmed.unshift(history[i])
+        acc += t
+      }
+      const omitted = history.length - trimmed.length
+      if (omitted > 0) {
+        history = [{ role: 'assistant', content: `⚠️ 上下文过长，更早的 ${omitted} 条消息已自动省略（估算约 ${(histTokens / 1000).toFixed(1)}k tokens）。如需完整上下文请新开对话。` }, ...trimmed]
+        toast.info('上下文过长，已自动压缩早期消息')
+      }
+    }
 
     // 会话续接: 已有会话(点历史加载)则携带其 ID; 否则本地生成新会话 ID, 后端按 ID 自动创建持久化
     let cid = convId
@@ -440,14 +486,22 @@ export default function AIPage() {
                     <p className="text-xs text-muted-foreground">暂无对话记录</p>
                   ) : (
                     conversations.map(c => (
-                      <button
-                        key={c.id}
-                        onClick={() => handleLoadConversation(c.id)}
-                        className="w-full text-left p-3 rounded-lg bg-gray-50 dark:bg-gray-800 hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors"
-                      >
-                        <p className="text-sm font-medium truncate">{c.title || '新对话'}</p>
-                        <p className="text-xs text-muted-foreground mt-0.5">{new Date(c.updated_at || c.UpdatedAt).toLocaleString('zh-CN')}</p>
-                      </button>
+                      <div key={c.id} className="group flex items-center gap-1">
+                        <button
+                          onClick={() => handleLoadConversation(c.id)}
+                          className="flex-1 text-left p-3 rounded-lg bg-gray-50 dark:bg-gray-800 hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors"
+                        >
+                          <p className="text-sm font-medium truncate">{c.title || '新对话'}</p>
+                          <p className="text-xs text-muted-foreground mt-0.5">{new Date(c.updated_at || c.UpdatedAt).toLocaleString('zh-CN')}</p>
+                        </button>
+                        <button
+                          onClick={() => handleDeleteConversation(c.id)}
+                          className="opacity-0 group-hover:opacity-100 p-1.5 rounded-md text-red-400 hover:bg-red-500/10 transition-opacity"
+                          title="删除会话"
+                        >
+                          <Trash2 className="h-3.5 w-3.5" />
+                        </button>
+                      </div>
                     ))
                   )}
                 </div>
@@ -554,9 +608,11 @@ export default function AIPage() {
                       onChange={e => setSelectedModel(e.target.value)}
                       className="appearance-none h-7 pl-2.5 pr-7 rounded-full border border-input bg-background text-xs text-foreground hover:bg-accent focus:outline-none focus:ring-1 focus:ring-emerald-500 cursor-pointer"
                     >
-                      <option value="">默认</option>
+                      <option value="">⚡ 自动（按权重/健康度路由）</option>
                       {models.map(m => (
-                        <option key={`${m.name}-${m.model}`} value={m.model}>{m.name !== 'default' ? `${m.name} · ${m.model}` : m.model}</option>
+                        <option key={`${m.name}-${m.model}`} value={m.model}>
+                          {m.healthy === false ? '⚠️ ' : ''}{m.name !== 'default' ? `${m.name} · ${m.model}` : m.model}{m.healthy === false ? '（降级）' : ''}
+                        </option>
                       ))}
                     </select>
                     <ChevronDown className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 h-3 w-3 text-muted-foreground" />
@@ -574,6 +630,20 @@ export default function AIPage() {
                 <Button onClick={() => sendMessage(input)} disabled={!input.trim() || loading}>
                   <Send className="h-4 w-4" />
                 </Button>
+              </div>
+
+              {/* 上下文用量估算条 */}
+              <div className="flex items-center gap-2 mt-2">
+                <div className="flex-1 h-1 rounded-full bg-muted overflow-hidden">
+                  <div
+                    className={cn('h-full rounded-full transition-all', ctxPct > 85 ? 'bg-red-500' : ctxPct > 60 ? 'bg-amber-500' : 'bg-emerald-500')}
+                    style={{ width: `${ctxPct}%` }}
+                  />
+                </div>
+                <p className="text-[10px] text-muted-foreground whitespace-nowrap">
+                  {estTokens >= 1000 ? `≈ ${(estTokens / 1000).toFixed(1)}k tokens` : `≈ ${estTokens} tokens`}
+                  {ctxPct >= 85 ? ' · 上下文偏满，建议新开对话' : ''}
+                </p>
               </div>
 
               <div className="flex gap-2 mt-2">

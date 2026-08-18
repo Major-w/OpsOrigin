@@ -2516,6 +2516,37 @@ func (e *Engine) GetConversation(id string) (*Conversation, error) {
 	return c, nil
 }
 
+// DeleteConversation 删除会话(按租户隔离)。
+func (e *Engine) DeleteConversation(id, tenantID string) error {
+	if e.convStore != nil {
+		return e.convStore.Delete(context.Background(), id, tenantID)
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	c, ok := e.convs[id]
+	if !ok || c.TenantID != tenantID {
+		return fmt.Errorf("conversation not found")
+	}
+	delete(e.convs, id)
+	return nil
+}
+
+// CountMemories 统计记忆条数(进化闭环概览用)。tenantID 为空时统计全部。
+func (e *Engine) CountMemories(tenantID string) int {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	if tenantID == "" {
+		return len(e.memories)
+	}
+	n := 0
+	for _, m := range e.memories {
+		if m.TenantID == tenantID {
+			n++
+		}
+	}
+	return n
+}
+
 // parseCoT 从 CoT 格式的回复中提取思考过程和最终答案。
 func parseCoT(full string) (thinking string, answer string) {
 	// 尝试解析 <think>...</think> 和 <answer>...</answer>

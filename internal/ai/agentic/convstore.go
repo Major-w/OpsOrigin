@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"strconv"
 )
@@ -13,6 +14,7 @@ type ConversationStore interface {
 	Save(ctx context.Context, c *Conversation) error
 	List(ctx context.Context, tenantID, agentID string, limit int) ([]*Conversation, error)
 	Get(ctx context.Context, id string) (*Conversation, error)
+	Delete(ctx context.Context, id, tenantID string) error
 }
 
 // ——— PG 实现 ———
@@ -108,4 +110,16 @@ func (s *pgConvStore) Get(ctx context.Context, id string) (*Conversation, error)
 	}
 	_ = json.Unmarshal(msgs, &c.Messages)
 	return c, nil
+}
+
+// Delete 删除会话(按租户隔离, 防止跨租户删)。返回是否真正删除。
+func (s *pgConvStore) Delete(ctx context.Context, id, tenantID string) error {
+	res, err := s.db.ExecContext(ctx, `DELETE FROM ai_conversations WHERE id=$1 AND tenant_id=$2`, id, tenantID)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return fmt.Errorf("conversation not found")
+	}
+	return nil
 }
