@@ -5,11 +5,13 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"time"
@@ -109,11 +111,6 @@ func (r *wsHubRegistrar) RegisterRoutes(mux *http.ServeMux) {
 }
 
 func main() {
-	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
-	// 自监控日志环形缓冲: 在默认 handler 外再包一层, 所有 slog 日志同时进缓冲。
-	monRing := systemmon.NewLogRing(600)
-	slog.SetDefault(slog.New(systemmon.NewRingHandler(logger.Handler(), monRing)))
-
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -124,6 +121,20 @@ func main() {
 	if err != nil {
 		log.Fatalf("failed to load config: %v", err)
 	}
+
+	// 日志: 默认 stdout(JSON); 配置 OPSORIGIN_CORE_LOG_FILE 时同时写固定文件(追加, 目录自动建)。
+	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
+	if cfg.Core.LogFile != "" {
+		if f, ferr := openLogFile(cfg.Core.LogFile); ferr == nil {
+			logger = slog.New(slog.NewJSONHandler(io.MultiWriter(os.Stdout, f), nil))
+			logger.Info("core log file enabled", "file", cfg.Core.LogFile)
+		} else {
+			logger.Warn("core log file open failed, fallback to stdout", "file", cfg.Core.LogFile, "err", ferr)
+		}
+	}
+	// 自监控日志环形缓冲: 在默认 handler 外再包一层, 所有 slog 日志同时进缓冲。
+	monRing := systemmon.NewLogRing(600)
+	slog.SetDefault(slog.New(systemmon.NewRingHandler(logger.Handler(), monRing)))
 
 	pgRepo, err := pg.NewRepository(cfg.CMDB.PostgresDSN)
 	if err != nil {
@@ -1428,4 +1439,14 @@ func (a messageInboxSender) SendToUsers(ctx context.Context, tenantID string, us
 		Actor:    m.Actor,
 	}
 	return a.svc.DeliverTo(ctx, recips, tpl)
+}
+
+// openLogFile 以追加模式打开日志文件(自动创建目录)。供日志固定输出使用。
+func openLogFile(path string) (*os.File, error) {
+	if dir := filepath.Dir(path); dir != "" && dir != "." {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			return nil, err
+		}
+	}
+	return os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
 }

@@ -132,3 +132,203 @@ kubectl apply -f deploy/k8s/probe-daemonset.yaml          # 节点探针 DaemonS
   继续运行（Postgres 仍是源真相），恢复后自动补同步。
 - **迁移失败恢复**：迁移为增量幂等（`CREATE TABLE IF NOT EXISTS` / `ADD COLUMN IF NOT EXISTS`），
   失败多为权限问题；确认 DSN 用户有 DDL 权限后重试即可。
+
+## 8. 日志与存储持久化（各组件）
+
+### 8.1 总览
+
+`deploy/docker-compose.yml` 为有状态组件声明了 5 个 **Docker 命名卷**；Core / 前端
+**无状态**（数据全部落在依赖组件中），日志输出到容器 stdout。
+
+| 组件 | 状态 | 数据卷 | 数据内容 | 日志去向 |
+| --- | --- | --- | --- | --- |
+| PostgreSQL | 有状态 | `pg_data` → `/var/lib/postgresql/data` | 全量业务数据（第一事实源） | 容器 stdout |
+| Redis | 有状态 | `redis_data` → `/data` | 限流/熔断/会话缓存/心跳 | 容器 stdout |
+| MinIO | 有状态 | `minio_data` → `/data` | 附件与对话产物（ITSM/知识库/工作区） | 容器 stdout |
+| Dgraph Zero | 有状态（可选） | `dgraph_zero` → `/data` | 图数据（拓扑读路径，PG 为源真相） | 容器 stdout |
+| Dgraph Alpha | 有状态（可选） | `dgraph_alpha` → `/data` | 图数据 | 容器 stdout |
+| Core | **无状态** | 无（只读 docker.sock + `opsorigin_logs` 日志卷） | — | stdout（JSON）+ 固定文件 `/var/log/opsorigin/core.log` |
+| 前端 | **无状态** | `opsorigin_logs` 日志卷 | — | stdout 重定向 `/var/log/opsorigin/frontend.log` |
+
+命名卷默认存放在 Docker 数据目录（Linux 通常 `/var/lib/docker/volumes/`）。生产环境
+建议：**① 大文件/数据库改 bind mount 到独立磁盘；② 配置日志轮转；③ 定期备份**。
+
+### 8.2 卷持久化位置与改 bind mount
+
+命名卷路径（Linux 默认）：
+
+```bash
+/var/lib/docker/volumes/deploy_pg_data/_data      # 注意卷名带 compose 项目前缀 deploy_
+/var/lib/docker/volumes/deploy_redis_data/_data
+/var/lib/docker/volumes/deploy_minio_data/_data
+/var/lib/docker/volumes/deploy_dgraph_zero/_data
+/var/lib/docker/volumes/deploy_dgraph_alpha/_data
+```
+
+改 bind mount（把数据放到宿主机固定目录，便于备份/迁移），修改
+`deploy/docker-compose.yml` 对应服务：
+
+```yaml
+  postgres:
+    volumes:
+      # - pg_data:/var/lib/postgresql/data   # 原命名卷
+      - /srv/opsorigin/pgdata:/var/lib/postgresql/data   # 改为 bind mount
+      - ./migrations/001_init.sql:/docker-entrypoint-initdb.d/001_init.sql
+```
+
+> **首次切换注意事项**：bind mount 目录需先赋权（`chown -R 999:999` 或按镜像
+> USER 配置），且**空目录首次启动会重新初始化**（001_init.sql 会重灌）；已有数据
+> 迁移请先用 `docker run --rm -v deploy_pg_data:/src -v /srv/opsorigin/pgdata:/dst
+> alpine cp -a /src/. /dst/` 拷贝，再切挂载。
+
+### 8.3 PostgreSQL：备份与恢复
+
+```bash
+# 逻辑备份（推荐日常）：全库导出
+docker compose -f deploy/docker-compose.yml exec -T postgres \
+  pg_dump -U opsorigin -d opsorigin -Fc -f /tmp/opsorigin.dump
+docker compose -f deploy/docker-compose.yml cp postgres:/tmp/opsorigin.dump ./backup-$(date +%F).dump
+
+# 恢复（新建库）
+docker compose -f deploy/docker-compose.yml exec -T postgres \
+  pg_restore -U opsorigin -d opsorigin --clean --if-exists /tmp/opsorigin.dump
+
+# 任意时刻的一致性快照（PG 需与逻辑备份结合判断点）
+docker compose -f deploy/docker-compose.yml exec -T postgres \
+  pg_basebackup -D /tmp/pgbase -U opsorigin -h 127.0.0.1   # 需要足够权限，见 PG 文档
+```
+
+数据迁移（换机/换盘）：停 postgres → 卷整体拷贝（见 §8.2）→ 启 postgres。
+
+### 8.4 Redis：持久化与备份
+
+默认配置为 **RDB 快照**（`redis:7-alpine` 默认 save 策略，数据写入 `/data/dump.rdb`，
+重启不丢）。如需更高可靠性开启 AOF：
+
+```bash
+# 临时验证（直接改命令参数）
+docker compose -f deploy/docker-compose.yml exec redis \
+  redis-cli CONFIG SET appendonly yes
+
+# 持久化配置：compose 中 redis 服务加 command 或在 redis.conf 挂载
+  redis:
+    command: ["redis-server", "--appendonly", "yes", "--appendfsync", "everysec"]
+```
+
+备份：
+
+```bash
+docker compose -f deploy/docker-compose.yml exec redis redis-cli SAVE   # 触发快照
+docker compose -f deploy/docker-compose.yml cp redis:/data/dump.rdb ./redis-$(date +%F).rdb
+```
+
+### 8.5 MinIO：对象存储备份（附件与对话产物）
+
+MinIO 存有：ITSM 附件、知识库附件、对话产物归档（`chat/` 前缀）。备份用官方客户端：
+
+```bash
+docker compose -f deploy/docker-compose.yml exec minio sh -c \
+  'mc alias set local http://localhost:9000 opsorigin opsorigin123 >/dev/null && \
+   mc mirror local/opsorigin /backup/minio-$(date +%F)'
+```
+
+> 生产应修改 `OPSORIGIN_S3_ACCESS_KEY / SECRET_KEY`（compose 中 `opsorigin`/`opsorigin123`
+> 为开发默认值）；MinIO 自身也支持 `mc mirror` 双活/异地同步。
+
+### 8.6 Dgraph：备份（可选组件）
+
+Dgraph 为可选组件（拓扑读路径；Postgres 是源真相，重建可回放）。备份：
+
+```bash
+# 方式一：卷快照（最简单，需停机一致点）
+docker compose -f deploy/docker-compose.yml stop dgraph-alpha dgraph-zero
+tar czf dgraph-$(date +%F).tgz /var/lib/docker/volumes/deploy_dgraph_*/_data
+docker compose -f deploy/docker-compose.yml start dgraph-alpha dgraph-zero
+
+# 方式二：dgraph live backup（在线，alpha 内执行）
+docker compose -f deploy/docker-compose.yml exec dgraph-alpha \
+  dgraph live --alpha 127.0.0.1:9080 --backup /data/backup --namespace 0
+```
+
+> 重建后 Core 的 Outbox 会自动补同步拓扑（PG → Dgraph），无需手工对账。
+
+### 8.7 日志持久化与轮转
+
+**固定日志文件（compose 已内置）**：所有组件日志落到共享卷 `opsorigin_logs`
+（容器内 `/var/log/opsorigin/`）：
+
+| 组件 | 日志文件 | 机制 |
+| --- | --- | --- |
+| Core | `/var/log/opsorigin/core.log` | 代码级：`OPSORIGIN_CORE_LOG_FILE` 配置后 slog 双写（stdout + 文件，JSON，追加模式，目录自动创建） |
+| 前端 | `/var/log/opsorigin/frontend.log` | compose `command` 将 stdout/stderr 重定向到文件 |
+| 其他依赖（pg/redis/minio/dgraph） | 容器 stdout | 见下方 json-file 轮转 |
+
+宿主机查看（命名卷默认路径）：
+
+```bash
+tail -f /var/lib/docker/volumes/deploy_opsorigin_logs/_data/core.log
+```
+
+日志卷改 bind mount（compose `opsorigin_logs` 命名卷 → 宿主机目录，便于 ELK/审计）：
+
+```yaml
+volumes:
+  opsorigin_logs:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: /srv/opsorigin/logs    # 宿主机固定目录
+```
+
+**实时/界面查看**：
+- `docker compose -f deploy/docker-compose.yml logs -f core`（stdout 通道）
+- `系统管理 → 自监控`（`/system/health`）内置日志查看器
+  （Core 内存环形缓冲 600 条 + 其他容器经 docker socket 读取）
+
+**文件轮转**（`core.log` / `frontend.log` 为追加模式，靠外部 logrotate）：
+
+```bash
+# /etc/logrotate.d/opsorigin
+/srv/opsorigin/logs/*.log {
+    daily
+    rotate 14
+    compress
+    delaycompress
+    missingok
+    copytruncate
+}
+```
+
+**容器 stdout 轮转**（依赖组件日志，compose 顶层或按服务）：
+
+```yaml
+  core:
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"      # 单文件上限
+        max-file: "5"        # 保留 5 个文件（共 ~250MB）
+        compress: "true"
+```
+
+### 8.8 备份策略建议
+
+| 组件 | 频率建议 | 保留 | 命令 |
+| --- | --- | --- | --- |
+| PostgreSQL | 每日全量 + 每 6h WAL（可选 PITR） | 7–30 天 | §8.3 |
+| MinIO | 每日增量/全量 `mc mirror` | 7–30 天 | §8.5 |
+| Redis | 每日 SAVE 快照 | 3–7 天 | §8.4 |
+| Dgraph | 每周（可选组件） | 30 天 | §8.6 |
+
+> **恢复演练**：至少每月一次在测试环境执行 pg_restore + minio mirror 回灌验证，
+> 备份是否可恢复只有演练过才算数。
+
+### 8.9 常见问题
+
+- **容器重建后数据还在吗**：只要卷未删（`docker compose down` 不删卷，
+  `docker compose down -v` 才删），数据都在；
+- **误删卷如何恢复**：卷被删后数据不可逆，只能从备份恢复——务必先 §8.8 备份；
+- **`docker compose up -d` 后 Postgres 数据为空**：检查是否误加 `-v`（volumes 清除）
+  或 bind mount 指向了空目录（§8.2 首次切换会重灌）。
+

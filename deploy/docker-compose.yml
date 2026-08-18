@@ -126,6 +126,8 @@ services:
       OPSORIGIN_S3_REGION: us-east-1
       # 图数据库(dgraph 为可选组件): 容器网络内地址, 供自监控探活
       OPSORIGIN_DGRAPH_TARGET: dgraph-alpha:9080
+      # 日志固定输出文件(挂载卷 opsorigin_logs; 轮转由外部 logrotate)
+      OPSORIGIN_CORE_LOG_FILE: /var/log/opsorigin/core.log
     depends_on:
       postgres:
         condition: service_healthy
@@ -136,12 +138,16 @@ services:
     volumes:
       # 系统自监控: 只读挂载 docker socket, 供 core 读取其他容器日志(docker logs)
       - /var/run/docker.sock:/var/run/docker.sock:ro
+      # 日志持久化: 固定目录(宿主机可 bind mount 该命名卷到独立磁盘)
+      - opsorigin_logs:/var/log/opsorigin
 
   frontend:
     build:
       context: ../web-next
       dockerfile: Dockerfile.web
     restart: unless-stopped
+    # 日志固定输出文件: stdout 重定向到挂载卷内 frontend.log
+    command: ["sh", "-c", "npm run dev -- -H 0.0.0.0 >> /var/log/opsorigin/frontend.log 2>&1"]
     deploy:
       resources:
         limits:
@@ -156,6 +162,8 @@ services:
       # 源码挂载热重载; node_modules 用匿名卷隔离, 避免被 bind 覆盖
       - ../web-next:/app
       - /app/node_modules
+      # 日志持久化: 固定目录(与 core 共用 opsorigin_logs)
+      - opsorigin_logs:/var/log/opsorigin
     depends_on:
       core:
         condition: service_started
@@ -166,6 +174,7 @@ volumes:
   dgraph_alpha:
   redis_data:
   minio_data:
+  opsorigin_logs:
 
 # 固定网络子网: dgraph alpha 的 security whitelist 写死了宿主机 bridge 网关
 # 172.19.0.1, 若不固定 subnet, 不同 compose project(或重装) 会分到 172.18.x 等

@@ -63,6 +63,9 @@ type CoreConfig struct {
 	// VMAddr VictoriaMetrics 时序库地址(如 http://localhost:8428)。
 	// 配置后监控指标写入 VM(高频 monitor), 未配置时回退内存 sink(仅演示/测试)。
 	VMAddr string `json:"vm_addr"`
+	// LogFile 日志固定输出文件(如 /var/log/opsorigin/core.log)。
+	// 配置后日志同时写 stdout 与该文件(追加模式, 目录自动创建, 轮转由外部 logrotate)。
+	LogFile string `json:"log_file"`
 }
 
 type ProxyConfig struct {
@@ -184,6 +187,7 @@ func Load() (*Config, error) {
 			GRPCListen: envStr("OPSORIGIN_CORE_GRPC_LISTEN", ":9091"),
 			PublicURL:  envStr("OPSORIGIN_CORE_PUBLIC_URL", ""),
 			VMAddr:     envStr("OPSORIGIN_CORE_VM_ADDR", ""),
+			LogFile:    envStr("OPSORIGIN_CORE_LOG_FILE", ""),
 		},
 		Proxy: ProxyConfig{
 			ID:         envStr("OPSORIGIN_PROXY_ID", "proxy-001"),
