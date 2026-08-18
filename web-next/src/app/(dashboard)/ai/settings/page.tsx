@@ -165,11 +165,15 @@ export default function AISettingsPage() {
   const [poolSaving, setPoolSaving] = useState(false)
   // 进化闭环概览
   const [evoStats, setEvoStats] = useState<{ feedback_up: number; feedback_down: number; memories: number; disposal_cases: number } | null>(null)
-  // 主动进化: 数据源 + 手动执行
-  const [evoSources, setEvoSources] = useState<{ id: string; name: string; type: string; source: string; enabled: boolean; created_at: string }[]>([])
-  const [evoForm, setEvoForm] = useState({ name: '', type: 'rss', source: '', enabled: true })
+  // 主动进化: 全局策略 + 数据源 + 手动执行
+  const [evoSources, setEvoSources] = useState<{ id: string; name: string; type: string; source: string; enabled: boolean; interval_hours: number; target_category: string; min_score: number; last_run_at: string | null; created_at: string }[]>([])
+  const [evoForm, setEvoForm] = useState({ name: '', type: 'rss', source: '', enabled: true, interval_hours: 0, target_category: '', min_score: 0 })
   const [evoFetching, setEvoFetching] = useState(false)
   const [evoResults, setEvoResults] = useState<{ name: string; type: string; source: string; status: string; message: string }[] | null>(null)
+  const [evoPolicy, setEvoPolicy] = useState<{ enabled: boolean; interval_hours: number; target_category: string; min_score: number; blacklist: string[]; updated_at: string } | null>(null)
+  const [policyForm, setPolicyForm] = useState({ enabled: true, interval_hours: '6', target_category: '知识获取', min_score: '0.5', blacklist: '' })
+  const [editingSrc, setEditingSrc] = useState<string | null>(null)
+  const [srcDraft, setSrcDraft] = useState({ interval_hours: '', target_category: '', min_score: '', enabled: true })
   const [datasetStats, setDatasetStats] = useState<{ total: number; preference_up: number; preference_down: number; disposal_cases: number } | null>(null)
   const [datasetLoading, setDatasetLoading] = useState(false)
   const [editing, setEditing] = useState<string | null>(null)
@@ -193,7 +197,7 @@ export default function AISettingsPage() {
   const [approvalScope, setApprovalScope] = useState<'global' | 'agent'>('global')
   const [approvalAgentId, setApprovalAgentId] = useState('')
 
-  useEffect(() => { fetchAgents(); loadTools(); loadSysConfig(); loadApprovalPolicy(); loadKbCategories(); loadModelPool(); loadFinetuneTasks(); loadPrompts(); loadEvolutionStats(); loadEvoSources() }, [])
+  useEffect(() => { fetchAgents(); loadTools(); loadSysConfig(); loadApprovalPolicy(); loadKbCategories(); loadModelPool(); loadFinetuneTasks(); loadPrompts(); loadEvolutionStats(); loadEvoSources(); loadEvoPolicy() }, [])
   const loadModelPool = async () => {
     try {
       const r = await fetch('/api/v1/ai/models')
@@ -306,6 +310,69 @@ export default function AISettingsPage() {
     } catch {}
   }
 
+  const loadEvoPolicy = async () => {
+    try {
+      const r = await fetch('/api/v1/ai/evolution/policy')
+      if (r.ok) {
+        const p = await r.json()
+        setEvoPolicy(p)
+        setPolicyForm({
+          enabled: p.enabled,
+          interval_hours: String(p.interval_hours || 6),
+          target_category: p.target_category || '知识获取',
+          min_score: String(p.min_score ?? 0.5),
+          blacklist: (p.blacklist || []).join(', '),
+        })
+      }
+    } catch {}
+  }
+
+  const saveEvoPolicy = async () => {
+    try {
+      const r = await fetch('/api/v1/ai/evolution/policy', {
+        method: 'PUT', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          enabled: policyForm.enabled,
+          interval_hours: parseInt(policyForm.interval_hours) || 6,
+          target_category: policyForm.target_category.trim(),
+          min_score: parseFloat(policyForm.min_score) || 0,
+          blacklist: policyForm.blacklist.split(/[,，]/).map(s => s.trim()).filter(Boolean),
+        }),
+      })
+      if (!r.ok) throw new Error(`保存失败(${r.status})`)
+      toast.success('全局策略已保存，即时生效')
+      loadEvoPolicy()
+    } catch (e: any) { toast.error('保存失败: ' + e.message) }
+  }
+
+  const startEditSource = (s: typeof evoSources[number]) => {
+    setEditingSrc(s.id)
+    setSrcDraft({
+      interval_hours: String(s.interval_hours || 0),
+      target_category: s.target_category || '',
+      min_score: String(s.min_score || 0),
+      enabled: s.enabled,
+    })
+  }
+
+  const saveSourceEdit = async (id: string) => {
+    try {
+      const r = await fetch(`/api/v1/ai/evolution/sources/${id}`, {
+        method: 'PUT', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          enabled: srcDraft.enabled,
+          interval_hours: parseInt(srcDraft.interval_hours) || 0,
+          target_category: srcDraft.target_category.trim(),
+          min_score: parseFloat(srcDraft.min_score) || 0,
+        }),
+      })
+      if (!r.ok) throw new Error(`保存失败(${r.status})`)
+      toast.success('已更新')
+      setEditingSrc(null)
+      loadEvoSources()
+    } catch (e: any) { toast.error('更新失败: ' + e.message) }
+  }
+
   const saveEvoSource = async () => {
     if (!evoForm.name.trim() || !evoForm.source.trim()) { toast.error('请填写名称与源地址'); return }
     try {
@@ -315,7 +382,7 @@ export default function AISettingsPage() {
       })
       if (!r.ok) throw new Error(`保存失败(${r.status})`)
       toast.success('数据源已添加')
-      setEvoForm({ name: '', type: 'rss', source: '', enabled: true })
+      setEvoForm({ name: '', type: 'rss', source: '', enabled: true, interval_hours: 0, target_category: '', min_score: 0 })
       loadEvoSources()
     } catch (e: any) { toast.error('添加失败: ' + e.message) }
   }
@@ -1417,11 +1484,49 @@ export default function AISettingsPage() {
             </CardContent>
           </Card>
 
+          {/* 主动进化全局策略 */}
+          <Card>
+            <CardHeader className="pb-2">
+              <CardTitle className="text-base flex items-center gap-2"><Settings2 className="h-4 w-4" />主动进化策略（全局默认）</CardTitle>
+              <CardDescription>各数据源可独立覆盖下列默认值（留空/0 即继承全局）。黑名单命中任一关键词的提炼结果直接丢弃。</CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-3">
+              <div className="flex items-center gap-2">
+                <label className="flex items-center gap-1.5 text-xs cursor-pointer">
+                  <input type="checkbox" checked={policyForm.enabled} onChange={e => setPolicyForm({ ...policyForm, enabled: e.target.checked })} />
+                  启用主动进化（关闭后自动循环与手动执行均跳过）
+                </label>
+              </div>
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                <div className="space-y-1">
+                  <p className="text-xs text-muted-foreground">默认执行频率（小时）</p>
+                  <Input className="h-9 text-xs" type="number" min={1} value={policyForm.interval_hours} onChange={e => setPolicyForm({ ...policyForm, interval_hours: e.target.value })} />
+                </div>
+                <div className="space-y-1">
+                  <p className="text-xs text-muted-foreground">默认目标分类</p>
+                  <Input className="h-9 text-xs" placeholder="知识获取" value={policyForm.target_category} onChange={e => setPolicyForm({ ...policyForm, target_category: e.target.value })} />
+                </div>
+                <div className="space-y-1">
+                  <p className="text-xs text-muted-foreground">最低提炼分数（0~1）</p>
+                  <Input className="h-9 text-xs" type="number" min={0} max={1} step={0.05} value={policyForm.min_score} onChange={e => setPolicyForm({ ...policyForm, min_score: e.target.value })} />
+                </div>
+              </div>
+              <div className="space-y-1">
+                <p className="text-xs text-muted-foreground">黑名单关键词（逗号分隔，命中标题或正文即丢弃）</p>
+                <Input className="h-9 text-xs font-mono" placeholder="如: 广告, 招聘, 营销" value={policyForm.blacklist} onChange={e => setPolicyForm({ ...policyForm, blacklist: e.target.value })} />
+              </div>
+              <div className="flex items-center gap-2">
+                <Button size="sm" variant="outline" onClick={saveEvoPolicy}><Save className="h-3.5 w-3.5 mr-1" />保存全局策略</Button>
+                {evoPolicy?.updated_at && <p className="text-[11px] text-muted-foreground">上次更新 {new Date(evoPolicy.updated_at).toLocaleString('zh-CN')}</p>}
+              </div>
+            </CardContent>
+          </Card>
+
           {/* 主动进化 */}
           <Card>
             <CardHeader className="pb-2">
               <CardTitle className="text-base flex items-center gap-2"><Rocket className="h-4 w-4" />主动进化（互联网 → 本地知识）</CardTitle>
-              <CardDescription>定期从 RSS/URL 数据源抓取内容，经 LLM 提炼有价值知识后自动沉淀为本地知识库文章（每 6 小时自动执行；需已配置模型 API Key）。</CardDescription>
+              <CardDescription>定期从 RSS/URL 数据源抓取内容，经 LLM 提炼（按分数与黑名单过滤）后自动沉淀为本地知识库文章（需已配置模型 API Key）。</CardDescription>
             </CardHeader>
             <CardContent className="space-y-3">
               <div className="flex items-end gap-2 flex-wrap">
@@ -1441,6 +1546,14 @@ export default function AISettingsPage() {
                   <p className="text-xs text-muted-foreground">源地址</p>
                   <Input className="h-9 text-xs font-mono" placeholder="https://example.com/feed.xml" value={evoForm.source} onChange={e => setEvoForm({ ...evoForm, source: e.target.value })} />
                 </div>
+                <div className="space-y-1">
+                  <p className="text-xs text-muted-foreground">覆盖频率(h)/分类/分数(留空继承全局)</p>
+                  <div className="flex items-center gap-1">
+                    <Input className="w-16 h-9 text-xs" type="number" min={0} placeholder="6" value={evoForm.interval_hours || ''} onChange={e => setEvoForm({ ...evoForm, interval_hours: parseInt(e.target.value) || 0 })} />
+                    <Input className="w-24 h-9 text-xs" placeholder="分类" value={evoForm.target_category} onChange={e => setEvoForm({ ...evoForm, target_category: e.target.value })} />
+                    <Input className="w-16 h-9 text-xs" type="number" min={0} max={1} step={0.05} placeholder="0.5" value={evoForm.min_score || ''} onChange={e => setEvoForm({ ...evoForm, min_score: parseFloat(e.target.value) || 0 })} />
+                  </div>
+                </div>
                 <label className="flex items-center gap-1.5 text-xs pb-2.5 cursor-pointer">
                   <input type="checkbox" checked={evoForm.enabled} onChange={e => setEvoForm({ ...evoForm, enabled: e.target.checked })} />启用
                 </label>
@@ -1448,18 +1561,51 @@ export default function AISettingsPage() {
               </div>
 
               {evoSources.length === 0 ? (
-                <p className="text-xs text-muted-foreground py-2">暂无数据源。添加后（需 LLM 已配置）每 6 小时自动提炼，也可点「立即执行」手动触发。</p>
+                <p className="text-xs text-muted-foreground py-2">暂无数据源。添加后（需 LLM 已配置）按策略频率自动提炼，也可点「立即执行」手动触发。</p>
               ) : (
                 <div className="space-y-2">
                   {evoSources.map(s => (
-                    <div key={s.id} className="flex items-center justify-between gap-2 rounded-lg border border-border p-2.5">
-                      <div className="min-w-0 flex-1 flex items-center gap-2">
-                        <Badge variant={s.enabled ? 'success' : 'outline'} className="text-[10px]">{s.enabled ? '启用' : '停用'}</Badge>
-                        <Badge variant="outline" className="text-[10px]">{s.type}</Badge>
-                        <span className="text-xs font-medium truncate">{s.name}</span>
-                        <span className="text-[11px] text-muted-foreground truncate">{s.source}</span>
+                    <div key={s.id} className="rounded-lg border border-border p-2.5 space-y-2">
+                      <div className="flex items-center justify-between gap-2">
+                        <div className="min-w-0 flex-1 flex items-center gap-2">
+                          <Badge variant={s.enabled ? 'success' : 'outline'} className="text-[10px]">{s.enabled ? '启用' : '停用'}</Badge>
+                          <Badge variant="outline" className="text-[10px]">{s.type}</Badge>
+                          <span className="text-xs font-medium truncate">{s.name}</span>
+                          <span className="text-[11px] text-muted-foreground truncate">{s.source}</span>
+                        </div>
+                        <div className="flex items-center gap-1 shrink-0">
+                          <Button variant="ghost" size="icon" className="h-6 w-6" onClick={() => startEditSource(s)} title="编辑策略"><Pencil className="h-3.5 w-3.5" /></Button>
+                          <Button variant="ghost" size="icon" className="h-6 w-6 text-red-400" onClick={() => deleteEvoSource(s.id)} title="删除"><Trash2 className="h-3.5 w-3.5" /></Button>
+                        </div>
                       </div>
-                      <Button variant="ghost" size="icon" className="h-6 w-6 text-red-400" onClick={() => deleteEvoSource(s.id)} title="删除"><Trash2 className="h-3.5 w-3.5" /></Button>
+                      {editingSrc === s.id ? (
+                        <div className="flex items-end gap-2 flex-wrap">
+                          <div className="space-y-1">
+                            <p className="text-[10px] text-muted-foreground">频率(h, 0=全局)</p>
+                            <Input className="w-20 h-8 text-xs" type="number" min={0} value={srcDraft.interval_hours} onChange={e => setSrcDraft({ ...srcDraft, interval_hours: e.target.value })} />
+                          </div>
+                          <div className="space-y-1">
+                            <p className="text-[10px] text-muted-foreground">目标分类</p>
+                            <Input className="w-28 h-8 text-xs" placeholder="继承全局" value={srcDraft.target_category} onChange={e => setSrcDraft({ ...srcDraft, target_category: e.target.value })} />
+                          </div>
+                          <div className="space-y-1">
+                            <p className="text-[10px] text-muted-foreground">最低分(0=全局)</p>
+                            <Input className="w-20 h-8 text-xs" type="number" min={0} max={1} step={0.05} value={srcDraft.min_score} onChange={e => setSrcDraft({ ...srcDraft, min_score: e.target.value })} />
+                          </div>
+                          <label className="flex items-center gap-1.5 text-xs pb-2 cursor-pointer">
+                            <input type="checkbox" checked={srcDraft.enabled} onChange={e => setSrcDraft({ ...srcDraft, enabled: e.target.checked })} />启用
+                          </label>
+                          <Button size="sm" className="h-8" onClick={() => saveSourceEdit(s.id)}><Save className="h-3.5 w-3.5 mr-1" />保存</Button>
+                          <Button size="sm" variant="ghost" className="h-8" onClick={() => setEditingSrc(null)}>取消</Button>
+                        </div>
+                      ) : (
+                        <div className="flex items-center gap-2 text-[11px] text-muted-foreground">
+                          <span>频率: {s.interval_hours > 0 ? `${s.interval_hours}h` : '全局'}</span>
+                          <span>分类: {s.target_category || '全局'}</span>
+                          <span>最低分: {s.min_score > 0 ? s.min_score : '全局'}</span>
+                          {s.last_run_at && <span className="ml-auto">上次执行 {new Date(s.last_run_at).toLocaleString('zh-CN')}</span>}
+                        </div>
+                      )}
                     </div>
                   ))}
                 </div>
@@ -1470,7 +1616,7 @@ export default function AISettingsPage() {
                   {evoFetching ? <Loader2 className="h-3.5 w-3.5 mr-1 animate-spin" /> : <RefreshCw className="h-3.5 w-3.5 mr-1" />}
                   {evoFetching ? '执行中…' : '立即执行'}
                 </Button>
-                <p className="text-[11px] text-muted-foreground">提炼结果自动入知识库（分类「知识获取」，tag: evolution）</p>
+                <p className="text-[11px] text-muted-foreground">按策略沉淀至目标分类（tag: evolution），低于最低分或命中黑名单的内容自动丢弃</p>
               </div>
 
               {evoResults && (

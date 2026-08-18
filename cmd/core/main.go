@@ -1055,7 +1055,9 @@ func main() {
 	if db != nil {
 		aiSvc.Engine.SetStore(agentic.NewPGStore(db))
 	}
-	aiSvc.Engine.SetModelRouter(llmRouter) // 多模型路由池(权重+健康+失败降级)
+	aiSvc.SetObjectStore(osClient)                         // 对话产物归档(MinIO), nil 时产物仅存元数据
+	aiSvc.Engine.SetWorkspaceSink(aiSvc.SaveWorkspaceFile) // 会话工作区: 工具产物自动沉淀
+	aiSvc.Engine.SetModelRouter(llmRouter)                 // 多模型路由池(权重+健康+失败降级)
 	// 生成参数热更新:仅当配置显式给定时才覆盖引擎内置默认(温度0.7/上限1024/并发32)。
 	if cfg.LLM.GenTemperature > 0 {
 		aiSvc.Engine.SetGenParams(cfg.LLM.GenMaxTokens, cfg.LLM.GenTemperature)
@@ -1176,6 +1178,12 @@ func main() {
 	ai.KnowledgeCreateHook = func(ctx context.Context, title, content, category string, tags []string) error {
 		if knowledgeSvc == nil {
 			return fmt.Errorf("knowledge service unavailable")
+		}
+		// 目标分类不存在时自动创建, 保证分类路由闭环
+		if category != "" {
+			if _, err := knowledgeSvc.EnsureCategory(ctx, "default", category); err != nil {
+				slog.Warn("evolution ensure category failed", "category", category, "err", err)
+			}
 		}
 		return knowledgeSvc.CreateArticle(ctx, &knowledge.Article{
 			Title: title, Content: content, Category: category,

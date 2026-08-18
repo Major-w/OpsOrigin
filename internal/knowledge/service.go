@@ -314,6 +314,31 @@ func (s *Service) CreateArticle(ctx context.Context, a *Article) error {
 	return s.store.Create(ctx, a)
 }
 
+// EnsureCategory 确保分类存在: 不存在则创建, 返回分类 ID(供外部模块如主动进化路由使用)。
+func (s *Service) EnsureCategory(ctx context.Context, tenantID, name string) (string, error) {
+	if name == "" {
+		return "", fmt.Errorf("category name required")
+	}
+	if tenantID == "" {
+		tenantID = "default"
+	}
+	items, err := s.store.ListCategories(ctx, tenantID)
+	if err == nil {
+		for _, c := range items {
+			if c.Name == name {
+				return c.ID, nil
+			}
+		}
+	}
+	c := &Category{
+		ID: uuid.New().String(), TenantID: tenantID, Name: name, CreatedAt: time.Now(),
+	}
+	if err := s.store.CreateCategory(ctx, c); err != nil {
+		return "", err
+	}
+	return c.ID, nil
+}
+
 func tenantFromCtx(ctx context.Context) string {
 	if t, ok := ctx.Value("tenant_id").(string); ok && t != "" {
 		return t
@@ -403,7 +428,16 @@ func (s *Service) handleCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	a.TenantID = tenantFromCtx(r.Context())
-	s.store.Create(r.Context(), &a)
+	// 分类路由闭环: 目标分类不存在时自动创建(与主动进化沉淀一致)
+	if a.Category != "" {
+		if _, err := s.EnsureCategory(r.Context(), a.TenantID, a.Category); err != nil {
+			slog.Warn("knowledge create ensure category failed", "category", a.Category, "err", err)
+		}
+	}
+	if err := s.store.Create(r.Context(), &a); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
 	writeJSON(w, http.StatusCreated, a)
 }
 

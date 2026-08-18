@@ -18,6 +18,7 @@ import (
 	"github.com/opsorigin/core/internal/ai/mcp"
 	"github.com/opsorigin/core/internal/ai/model"
 	"github.com/opsorigin/core/internal/ai/ratelimit"
+	"github.com/opsorigin/core/internal/objectstore"
 	"github.com/opsorigin/core/pkg/auth"
 	"github.com/opsorigin/core/pkg/config"
 	"github.com/opsorigin/core/pkg/llm"
@@ -35,6 +36,7 @@ type Service struct {
 	ragFn         func(ctx context.Context, query, agentID string) string // RAG上下文注入(按 Agent 绑定分类过滤)
 	feedbackStore agentic.FeedbackStore                                   // 点赞/点踩反馈持久化(P2-Eval)
 	db            *sql.DB                                                 // 统计/管理查询直连(会话删除、进化闭环等)
+	objStore      *objectstore.Client                                     // 对话产物/文件归档(MinIO), 未配置为 nil
 
 	// llmClient 供"非对话式"结构化生成场景直连模型(如 AI 生成报表看板),
 	// 不走 Engine 的对话/工具循环。sysconfig 改配置时随 UpdateLLMConfig 一起热替换。
@@ -92,8 +94,13 @@ func NewService(cfg *config.Config, llmClient *llm.Client, redisClient *rediscli
 		db:            db,
 	}
 	svc.initEvolutionDDL(context.Background())
+	svc.initArtifactDDL(context.Background())
+	svc.initWorkspaceDDL(context.Background())
 	return svc
 }
+
+// SetObjectStore 注入对象存储(对话产物归档; 未注入则产物仅存元数据)。
+func (s *Service) SetObjectStore(os *objectstore.Client) { s.objStore = os }
 
 // LLMClient 返回当前生效的 LLM 客户端(可能为 nil，表示尚未配置模型)。
 func (s *Service) LLMClient() *llm.Client {
@@ -134,11 +141,23 @@ func (s *Service) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/v1/ai/conversations", s.handleSaveConversation)
 	mux.HandleFunc("DELETE /api/v1/ai/conversations/{id}", s.handleDeleteConversation)
 	mux.HandleFunc("GET /api/v1/ai/evolution/stats", s.handleEvolutionStats)
-	// —— 主动进化: 数据源管理 + 手动触发 ——
+	// —— 主动进化: 策略配置 + 数据源管理 + 手动触发 ——
+	mux.HandleFunc("GET /api/v1/ai/evolution/policy", s.handleEvolutionPolicy)
+	mux.HandleFunc("PUT /api/v1/ai/evolution/policy", s.handleEvolutionPolicy)
 	mux.HandleFunc("GET /api/v1/ai/evolution/sources", s.handleEvolutionSources)
 	mux.HandleFunc("POST /api/v1/ai/evolution/sources", s.handleEvolutionSources)
+	mux.HandleFunc("PUT /api/v1/ai/evolution/sources/{id}", s.handleUpdateEvolutionSource)
 	mux.HandleFunc("DELETE /api/v1/ai/evolution/sources/{id}", s.handleDeleteEvolutionSource)
 	mux.HandleFunc("POST /api/v1/ai/evolution/fetch", s.handleEvolutionFetch)
+	// —— 对话产物归档(MinIO) ——
+	mux.HandleFunc("POST /api/v1/ai/conversations/{id}/artifacts", s.handleSaveArtifact)
+	mux.HandleFunc("GET /api/v1/ai/conversations/{id}/artifacts", s.handleListArtifacts)
+	mux.HandleFunc("GET /api/v1/ai/conversations/{id}/artifacts/{aid}", s.handleDownloadArtifact)
+	mux.HandleFunc("DELETE /api/v1/ai/conversations/{id}/artifacts/{aid}", s.handleDeleteArtifact)
+	// —— 会话工作区(工具产物自动沉淀) ——
+	mux.HandleFunc("GET /api/v1/ai/conversations/{id}/workspace", s.handleListWorkspace)
+	mux.HandleFunc("GET /api/v1/ai/conversations/{id}/workspace/{fid}", s.handleDownloadWorkspace)
+	mux.HandleFunc("DELETE /api/v1/ai/conversations/{id}/workspace/{fid}", s.handleDeleteWorkspace)
 	mux.HandleFunc("POST /api/v1/ai/feedback", s.handleSubmitFeedback)
 	mux.HandleFunc("GET /api/v1/ai/feedback", s.handleListFeedback)
 	mux.HandleFunc("GET /api/v1/ai/feedback/stats", s.handleFeedbackStats)

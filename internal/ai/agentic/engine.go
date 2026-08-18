@@ -107,6 +107,9 @@ type Engine struct {
 	CreateCatalogItemFunc func(ctx context.Context, tenantID, name, description, category string) error
 	// disposalCaseProvider 由 cmd/core 注入的知识库处置案例回调(nil=训练集不导出处置案例)。
 	disposalCaseProvider DisposalCaseProvider
+	// workspaceSink 由 cmd/core 注入的会话工作区写入回调(nil=不收集工具产物)。
+	// 工具执行产生文件类输出(script_run/script_detail)时自动沉淀到会话工作区, 供前端展示/下载。
+	workspaceSink func(ctx context.Context, conversationID, toolName, fileName string, content []byte) error
 
 	// ——— 敏感操作审批 (PRD 5.2.5) ———
 	approvals *ApprovalManager
@@ -604,6 +607,10 @@ func (e *Engine) chatWithToolsConv(ctx context.Context, agentID, prompt string, 
 				Arguments: args,
 				Result:    result,
 			})
+			// 会话工作区: 产物型工具输出自动沉淀(script_run/script_detail/cmdb_query 等)
+			if !execErr {
+				e.collectToolArtifact(ctx, conversationID, tc.Function.Name, args, result)
+			}
 			step.ToolCalls = append(step.ToolCalls, ToolCallRecord{
 				Name:   tc.Function.Name,
 				Args:   args,
