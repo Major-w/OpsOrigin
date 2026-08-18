@@ -63,6 +63,7 @@ import (
 	"github.com/opsorigin/core/internal/report"
 	"github.com/opsorigin/core/internal/report/datasets"
 	"github.com/opsorigin/core/internal/sysconfig"
+	"github.com/opsorigin/core/internal/systemmon"
 	"github.com/opsorigin/core/internal/tunnel"
 	"github.com/opsorigin/core/internal/user"
 	"github.com/opsorigin/core/internal/vuln"
@@ -109,7 +110,9 @@ func (r *wsHubRegistrar) RegisterRoutes(mux *http.ServeMux) {
 
 func main() {
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
-	slog.SetDefault(logger)
+	// 自监控日志环形缓冲: 在默认 handler 外再包一层, 所有 slog 日志同时进缓冲。
+	monRing := systemmon.NewLogRing(600)
+	slog.SetDefault(slog.New(systemmon.NewRingHandler(logger.Handler(), monRing)))
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -173,6 +176,11 @@ func main() {
 	}
 
 	authProvider := auth.NewProvider(cfg.Auth.JWTSecret, ldapProv, ssoProv)
+	// 多租户开关: OPSORIGIN_MULTI_TENANT=false(默认)时强制单租户 "default"。
+	auth.SetMultiTenant(cfg.MultiTenant)
+	if !cfg.MultiTenant {
+		slog.Info("running in single-tenant mode (OPSORIGIN_MULTI_TENANT=false), tenant forced to default")
+	}
 	// P0.5 可信边界:仅携带此密钥的内部服务调用才被允许用 X-Principal-* 断言主体;
 	// 留空 = 断言头通道关闭(fail-closed),浏览器请求一律从 JWT 派生身份。
 	authProvider.SetServiceToken(cfg.Auth.ServiceToken)
@@ -536,6 +544,11 @@ func main() {
 	// 系统配置管理服务
 	sysconfigSvc := sysconfig.NewService(cfg)
 	server.RegisterService(sysconfigSvc)
+
+	// 系统自监控: 组件状态探活 + 日志查看(docker socket 读取其他容器日志)。
+	monSvc := systemmon.New(db, rdbClient, osClient, cfg.CMDB.DgraphTarget, cfg.LLM.APIKey != "")
+	monSvc.SetRing(monRing)
+	server.RegisterService(monSvc)
 
 	var scriptSvc *script.Service
 	var workflowSvc *workflow.Service
@@ -1148,6 +1161,32 @@ func main() {
 		}
 		return out, nil
 	})
+	// 进化闭环概览: 知识库侧统计(处置案例沉淀数)注入 AI 模块。
+	ai.KnowledgeStatsHook = func(ctx context.Context) (disposalCases int) {
+		if knowledgeSvc == nil {
+			return 0
+		}
+		cases, err := knowledgeSvc.ListDisposalCases(ctx, "default")
+		if err != nil {
+			return 0
+		}
+		return len(cases)
+	}
+	// 主动进化: LLM 提炼的知识写入本地知识库。
+	ai.KnowledgeCreateHook = func(ctx context.Context, title, content, category string, tags []string) error {
+		if knowledgeSvc == nil {
+			return fmt.Errorf("knowledge service unavailable")
+		}
+		return knowledgeSvc.CreateArticle(ctx, &knowledge.Article{
+			Title: title, Content: content, Category: category,
+			Tags: tags, Author: "system", Status: "published",
+		})
+	}
+	// 主动进化定时循环(默认每 6 小时; LLM 未配置时自动跳过)。
+	if db != nil {
+		aiSvc.StartEvolutionLoop(ctx, 6*time.Hour)
+		slog.Info("ai evolution loop started", "interval", "6h")
+	}
 	server.RegisterService(aiSvc)
 	aiSvc.Start(ctx)
 

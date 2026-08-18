@@ -7,10 +7,33 @@ import (
 	"log/slog"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/opsorigin/core/pkg/principal"
 )
+
+// ——— 多租户开关 ———
+// OPSORIGIN_MULTI_TENANT=false(默认)时全局单租户, 所有请求强制租户 "default";
+// 开启后按 JWT/请求头区分租户。由 cmd/core 在启动时注入。
+var (
+	mtMu        sync.RWMutex
+	multiTenant bool
+)
+
+// SetMultiTenant 设置多租户模式(启动时/运行时热切换)。
+func SetMultiTenant(v bool) {
+	mtMu.Lock()
+	multiTenant = v
+	mtMu.Unlock()
+}
+
+// MultiTenantEnabled 返回当前是否多租户模式。
+func MultiTenantEnabled() bool {
+	mtMu.RLock()
+	defer mtMu.RUnlock()
+	return multiTenant
+}
 
 const defaultTokenTTL = 24 * time.Hour
 
@@ -339,6 +362,10 @@ func UserIDFromContext(ctx context.Context) string {
 }
 
 func TenantIDFromContext(ctx context.Context) string {
+	// 单租户模式(默认): 一律强制 "default", 无视上下文/主体租户。
+	if !MultiTenantEnabled() {
+		return "default"
+	}
 	// 裸 key 优先:业务代码常用 WithValue("tenant_id") 做临时租户切换(如机器人入站建单),
 	// 这类派生上下文必须能覆盖主体自带的租户。
 	if v, ok := ctx.Value(legacyKeyTenantID).(string); ok && v != "" {

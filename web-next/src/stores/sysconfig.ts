@@ -38,7 +38,8 @@ export const useSysConfigStore = create<SysConfigState>((set, get) => ({
     set({ loading: true })
     try {
       const groups = await apiList<ConfigGroup>('/system/config')
-      set({ groups, loading: false })
+      // AI 模型配置收敛: LLM 相关入口统一在「智能体工作台 → 模型」管理, 系统管理不再展示 llm 分类。
+      set({ groups: groups.filter(g => g.category !== 'llm'), loading: false })
     } catch (e: any) {
       set({ loading: false })
       toast.error(`加载系统配置失败: ${e.message}`)
