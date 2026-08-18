@@ -130,6 +130,24 @@ func (s *pgStore) init(ctx context.Context) {
 	}
 	s.db.ExecContext(ctx, `CREATE INDEX IF NOT EXISTS idx_knowledge_versions_article ON knowledge_article_versions(article_id, version)`)
 
+	// —— 文章附件: 元数据在库, 二进制在对象存储(object_key)或回退 data(bytea) ——
+	if _, err := s.db.ExecContext(ctx, `
+		CREATE TABLE IF NOT EXISTS kb_attachments (
+			id BIGSERIAL PRIMARY KEY,
+			article_id TEXT NOT NULL,
+			tenant_id TEXT NOT NULL,
+			file_name TEXT NOT NULL,
+			file_size BIGINT NOT NULL,
+			file_type TEXT NOT NULL,
+			uploaded_by TEXT NOT NULL,
+			object_key TEXT,
+			data BYTEA,
+			created_at TIMESTAMPTZ NOT NULL
+		)`); err != nil {
+		slog.Warn("knowledge: create kb_attachments table failed", "err", err)
+	}
+	s.db.ExecContext(ctx, `CREATE INDEX IF NOT EXISTS idx_kb_attachments_article ON kb_attachments(article_id, tenant_id)`)
+
 	s.vectorEnabled = true
 	slog.Info("knowledge: pgvector semantic search enabled (chunk-level)")
 }
@@ -635,6 +653,63 @@ func (s *pgStore) RollbackToVersion(ctx context.Context, articleID, tenantID str
 	}
 	// 回滚后重建分块索引
 	return s.reindexArticle(ctx, cur)
+}
+
+// —— 文章附件 ——
+
+func (s *pgStore) AddAttachment(ctx context.Context, a *ArticleAttachment) error {
+	a.CreatedAt = time.Now()
+	return s.db.QueryRowContext(ctx, `
+		INSERT INTO kb_attachments (article_id, tenant_id, file_name, file_size, file_type, uploaded_by, object_key, data, created_at)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING id`,
+		a.ArticleID, a.TenantID, a.FileName, a.FileSize, a.FileType, a.UploadedBy, a.ObjectKey, a.Data, a.CreatedAt,
+	).Scan(&a.ID)
+}
+
+func (s *pgStore) ListAttachments(ctx context.Context, articleID, tenantID string) ([]*ArticleAttachment, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT id, article_id, tenant_id, file_name, file_size, file_type, uploaded_by, object_key, created_at
+		FROM kb_attachments WHERE article_id=$1 AND tenant_id=$2 ORDER BY created_at DESC`, articleID, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make([]*ArticleAttachment, 0)
+	for rows.Next() {
+		a := &ArticleAttachment{}
+		if err := rows.Scan(&a.ID, &a.ArticleID, &a.TenantID, &a.FileName, &a.FileSize, &a.FileType, &a.UploadedBy, &a.ObjectKey, &a.CreatedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, a)
+	}
+	return out, rows.Err()
+}
+
+func (s *pgStore) GetAttachment(ctx context.Context, aid int64, articleID, tenantID string) (*ArticleAttachment, error) {
+	a := &ArticleAttachment{}
+	err := s.db.QueryRowContext(ctx, `
+		SELECT id, article_id, tenant_id, file_name, file_size, file_type, uploaded_by, object_key, data, created_at
+		FROM kb_attachments WHERE id=$1 AND article_id=$2 AND tenant_id=$3`, aid, articleID, tenantID).
+		Scan(&a.ID, &a.ArticleID, &a.TenantID, &a.FileName, &a.FileSize, &a.FileType, &a.UploadedBy, &a.ObjectKey, &a.Data, &a.CreatedAt)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return nil, ErrNotFound
+		}
+		return nil, err
+	}
+	return a, nil
+}
+
+func (s *pgStore) DeleteAttachment(ctx context.Context, aid int64, articleID, tenantID string) error {
+	res, err := s.db.ExecContext(ctx,
+		`DELETE FROM kb_attachments WHERE id=$1 AND article_id=$2 AND tenant_id=$3`, aid, articleID, tenantID)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return ErrNotFound
+	}
+	return nil
 }
 
 // reindexArticle 重建单篇文章的分块(供回滚后调用, 不改变版本号)。

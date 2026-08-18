@@ -58,6 +58,7 @@ import (
 	metricsregistry "github.com/opsorigin/core/internal/monitor/metrics"
 	monitormodel "github.com/opsorigin/core/internal/monitor/model"
 	"github.com/opsorigin/core/internal/notification"
+	"github.com/opsorigin/core/internal/objectstore"
 	"github.com/opsorigin/core/internal/ops"
 	"github.com/opsorigin/core/internal/report"
 	"github.com/opsorigin/core/internal/report/datasets"
@@ -323,6 +324,19 @@ func main() {
 	itsmSvc := itsm.NewService(cfg, db)
 	server.RegisterService(itsmSvc)
 	itsmSvc.SetWebSocketHub(wsHub)
+	// 对象存储(MinIO/COS/OSS): 附件二进制迁出数据库。endpoint 为空则保持 DB bytea。
+	// 客户端全局共享: ITSM 附件 + 知识库文章附件共用。
+	var osClient *objectstore.Client
+	if cfg.S3.Endpoint != "" {
+		osClient, err = objectstore.New(cfg.S3.Endpoint, cfg.S3.AccessKey, cfg.S3.SecretKey, cfg.S3.Bucket, cfg.S3.Region, cfg.S3.UseSSL)
+		if err != nil {
+			slog.Warn("objectstore init failed, attachments fallback to db storage", "err", err)
+			osClient = nil
+		} else {
+			itsmSvc.SetObjectStore(osClient)
+			slog.Info("itsm attachment object store enabled", "endpoint", cfg.S3.Endpoint, "bucket", cfg.S3.Bucket)
+		}
+	}
 	// 流程门禁: 工单关联 CI 时校验 CMDB 数据质量(低分记录警告事件)。
 	itsmSvc.SetCIQualityChecker(func(ctx context.Context, tenantID string, ciIDs []string) map[string]float64 {
 		if pgRepo == nil {
@@ -581,6 +595,10 @@ func main() {
 
 		knowledgeSvc = knowledge.NewService(db)
 		server.RegisterService(knowledgeSvc)
+		if osClient != nil {
+			knowledgeSvc.SetObjectStore(osClient)
+			slog.Info("knowledge attachment object store enabled")
+		}
 
 		// 统一报表模块: 注册内置数据集 + 装配控制面 REST(看板持久化、统一查询)。
 		if err := datasets.Install(db, report.Default()); err != nil {

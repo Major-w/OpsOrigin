@@ -25,6 +25,7 @@ type Config struct {
 	SSO           SSOConfig       `json:"sso"`
 	Tunnel        TunnelConfig    `json:"tunnel"`
 	FileStore     FileStoreConfig `json:"file_store"` // §5 文件分发中心存储配置
+	S3            S3Config        `json:"s3"`         // 对象存储(MinIO/COS/OSS/S3): ITSM 附件等二进制落对象存储
 	Postgres      PostgresConfig  `json:"postgres"`
 	TaskQueue     TaskQueueConfig `json:"task_queue"`
 	Upgrade       UpgradeConfig   `json:"upgrade"`
@@ -75,6 +76,17 @@ type ProxyConfig struct {
 type FileStoreConfig struct {
 	Dir         string `json:"dir"`
 	TokenSecret string `json:"token_secret"`
+}
+
+// S3Config 是对象存储配置(S3 协议兼容: MinIO/腾讯云COS/阿里OSS/亚马逊S3 通用)。
+// Endpoint 为空时关闭对象存储, 附件等二进制回退数据库存储。
+type S3Config struct {
+	Endpoint  string `json:"endpoint"`   // 如 minio:9000 或 s3.xxx.com
+	AccessKey string `json:"access_key"` // AccessKey / MINIO_ROOT_USER
+	SecretKey string `json:"secret_key"` // SecretKey / MINIO_ROOT_PASSWORD
+	Bucket    string `json:"bucket"`     // 桶名(不存在自动创建)
+	UseSSL    bool   `json:"use_ssl"`    // 走 HTTPS(云端对象存储一般为 true)
+	Region    string `json:"region"`     // 区域(自建 MinIO 填 us-east-1 即可)
 }
 
 type AgentConfig struct {
@@ -237,6 +249,14 @@ func Load() (*Config, error) {
 		FileStore: FileStoreConfig{
 			Dir:         envStr("OPSORIGIN_FILE_STORE_DIR", "./data/files"),
 			TokenSecret: envStr("OPSORIGIN_FILE_TOKEN_SECRET", ""),
+		},
+		S3: S3Config{
+			Endpoint:  envStr("OPSORIGIN_S3_ENDPOINT", ""),
+			AccessKey: envStr("OPSORIGIN_S3_ACCESS_KEY", ""),
+			SecretKey: envStr("OPSORIGIN_S3_SECRET_KEY", ""),
+			Bucket:    envStr("OPSORIGIN_S3_BUCKET", "opsorigin"),
+			UseSSL:    envBool("OPSORIGIN_S3_USE_SSL", false),
+			Region:    envStr("OPSORIGIN_S3_REGION", "us-east-1"),
 		},
 	}
 

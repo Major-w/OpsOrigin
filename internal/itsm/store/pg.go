@@ -145,10 +145,15 @@ func (s *PGStore) Init(ctx context.Context) error {
 			file_type   TEXT NOT NULL,
 			uploaded_by TEXT NOT NULL,
 			data        BYTEA,
+			object_key  TEXT,
 			created_at  TIMESTAMPTZ NOT NULL
 		)`)
 	if err != nil {
 		return fmt.Errorf("init itsm_attachments table: %w", err)
+	}
+	// 存量库补列(幂等): 对象存储迁移后二进制走 object_key, data 保留历史数据。
+	if _, err := s.db.ExecContext(ctx, `ALTER TABLE itsm_attachments ADD COLUMN IF NOT EXISTS object_key TEXT`); err != nil {
+		return fmt.Errorf("migrate itsm_attachments.object_key: %w", err)
 	}
 	_, err = s.db.ExecContext(ctx, `
 		CREATE INDEX IF NOT EXISTS idx_itsm_attachments_ticket ON itsm_attachments(ticket_id, tenant_id)`)
@@ -865,9 +870,9 @@ func (s *PGStore) DeleteSubtask(ctx context.Context, id int64, ticketID, tenantI
 func (s *PGStore) AddAttachment(ctx context.Context, att *model.Attachment) error {
 	att.CreatedAt = time.Now()
 	err := s.db.QueryRowContext(ctx, `
-		INSERT INTO itsm_attachments (ticket_id, tenant_id, file_name, file_size, file_type, uploaded_by, data, created_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING id`,
-		att.TicketID, att.TenantID, att.FileName, att.FileSize, att.FileType, att.UploadedBy, att.Data, att.CreatedAt).Scan(&att.ID)
+		INSERT INTO itsm_attachments (ticket_id, tenant_id, file_name, file_size, file_type, uploaded_by, data, object_key, created_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING id`,
+		att.TicketID, att.TenantID, att.FileName, att.FileSize, att.FileType, att.UploadedBy, att.Data, att.ObjectKey, att.CreatedAt).Scan(&att.ID)
 	return err
 }
 
@@ -894,9 +899,9 @@ func (s *PGStore) ListAttachments(ctx context.Context, ticketID, tenantID string
 func (s *PGStore) GetAttachment(ctx context.Context, id int64, ticketID, tenantID string) (*model.Attachment, error) {
 	a := &model.Attachment{}
 	err := s.db.QueryRowContext(ctx, `
-		SELECT id, ticket_id, tenant_id, file_name, file_size, file_type, uploaded_by, data, created_at
+		SELECT id, ticket_id, tenant_id, file_name, file_size, file_type, uploaded_by, data, object_key, created_at
 		FROM itsm_attachments WHERE id = $1 AND ticket_id = $2 AND tenant_id = $3`, id, ticketID, tenantID).Scan(
-		&a.ID, &a.TicketID, &a.TenantID, &a.FileName, &a.FileSize, &a.FileType, &a.UploadedBy, &a.Data, &a.CreatedAt)
+		&a.ID, &a.TicketID, &a.TenantID, &a.FileName, &a.FileSize, &a.FileType, &a.UploadedBy, &a.Data, &a.ObjectKey, &a.CreatedAt)
 	if err != nil {
 		if err == sql.ErrNoRows {
 			return nil, ErrNotFound

@@ -24,9 +24,11 @@ import (
 	"github.com/opsorigin/core/internal/itsm/sla"
 	"github.com/opsorigin/core/internal/itsm/store"
 	"github.com/opsorigin/core/internal/itsm/webhook"
+	"github.com/opsorigin/core/internal/objectstore"
 	"github.com/opsorigin/core/pkg/auth"
 	"github.com/opsorigin/core/pkg/config"
 
+	"github.com/google/uuid"
 	"github.com/opsorigin/core/pkg/httputil"
 )
 
@@ -82,6 +84,8 @@ type Service struct {
 	wsHub        interface{ BroadcastToTenant(interface{}, string) }
 	stopCh       chan struct{}
 	stopOnce     sync.Once
+	// objStore 对象存储(MinIO/COS/OSS): 附件二进制落对象存储; nil = 关闭, 二进制回退数据库。
+	objStore *objectstore.Client
 	// knowledgeArchiver 由 cmd/core 注入: 工单完成后将处置案例沉淀到知识库(nil=关闭)。
 	knowledgeArchiver func(ctx context.Context, tenantID, title, content string, tags []string) (string, error)
 	// experienceSink 由 cmd/core 注入(P0-1 长期记忆): 工单完成后将处置经验沉淀到 AI 记忆库(nil=关闭)。
@@ -97,6 +101,10 @@ type Service struct {
 	// (0~100)。工单创建关联 CI 时校验, 低分记录警告事件(与 cmdb 包零耦合)。
 	ciQualityChecker func(ctx context.Context, tenantID string, ciIDs []string) map[string]float64
 }
+
+// SetObjectStore 注入对象存储(MinIO/COS/OSS)。注入后新上传附件二进制进对象存储, DB 只存 object_key。
+// 不注入(或注入失败)时保持原行为: 二进制存数据库 bytea。
+func (s *Service) SetObjectStore(os *objectstore.Client) { s.objStore = os }
 
 // SetCIQualityChecker 注入 CMDB 数据质量检查器(流程门禁)。
 func (s *Service) SetCIQualityChecker(fn func(ctx context.Context, tenantID string, ciIDs []string) map[string]float64) {
@@ -2094,6 +2102,16 @@ func (s *Service) handleUploadAttachment(w http.ResponseWriter, r *http.Request)
 		UploadedBy: uploadedBy,
 		Data:       data,
 	}
+	// 对象存储已配置: 二进制进对象存储, DB 只存 object_key; 否则回退数据库 bytea。
+	if s.objStore != nil {
+		key := fmt.Sprintf("itsm/%s/%s", tenantID, uuid.NewString())
+		if err := s.objStore.Put(r.Context(), key, bytes.NewReader(data), int64(len(data)), header.Header.Get("Content-Type")); err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to store attachment: "+err.Error())
+			return
+		}
+		att.ObjectKey = key
+		att.Data = nil
+	}
 	if err := s.store.AddAttachment(r.Context(), att); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to save attachment")
 		return
@@ -2142,6 +2160,14 @@ func (s *Service) handleDownloadAttachment(w http.ResponseWriter, r *http.Reques
 		w.Header().Set("Content-Type", att.FileType)
 	}
 	w.Header().Set("Content-Length", strconv.FormatInt(att.FileSize, 10))
+	// 对象存储模式: 从对象存储流式输出; 否则输出数据库 bytea。
+	if att.ObjectKey != "" && s.objStore != nil {
+		if err := s.objStore.Get(r.Context(), w, att.ObjectKey); err != nil {
+			slog.Warn("attachment object read failed", "key", att.ObjectKey, "err", err)
+			return
+		}
+		return
+	}
 	w.Write(att.Data)
 }
 
@@ -2156,6 +2182,21 @@ func (s *Service) handleDeleteAttachment(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
+	// 先取元数据: 对象存储模式下需一并删除对象, 避免孤儿文件。
+	att, err := s.store.GetAttachment(r.Context(), aid, id, tenantID)
+	if err != nil {
+		if err == store.ErrNotFound {
+			writeError(w, http.StatusNotFound, "attachment not found")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if att.ObjectKey != "" && s.objStore != nil {
+		if err := s.objStore.Remove(r.Context(), att.ObjectKey); err != nil {
+			slog.Warn("attachment object remove failed", "key", att.ObjectKey, "err", err)
+		}
+	}
 	if err := s.store.DeleteAttachment(r.Context(), aid, id, tenantID); err != nil {
 		if err == store.ErrNotFound {
 			writeError(w, http.StatusNotFound, "attachment not found")

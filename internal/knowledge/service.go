@@ -8,8 +8,10 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"encoding/xml"
+	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"path/filepath"
 	"regexp"
@@ -22,8 +24,12 @@ import (
 	pdfapi "github.com/pdfcpu/pdfcpu/pkg/api"
 	pdfmodel "github.com/pdfcpu/pdfcpu/pkg/pdfcpu/model"
 
+	"github.com/opsorigin/core/internal/objectstore"
 	"github.com/opsorigin/core/pkg/httputil"
 )
+
+// ErrNotFound 附件/资源不存在(与 ITSM store.ErrNotFound 同语义, 包内自用)。
+var ErrNotFound = errors.New("knowledge: not found")
 
 type Store interface {
 	Create(ctx context.Context, a *Article) error
@@ -40,15 +46,37 @@ type Store interface {
 	DeleteCategory(ctx context.Context, id, tenantID string) error
 	ListVersions(ctx context.Context, articleID, tenantID string) ([]*ArticleVersion, error)
 	RollbackToVersion(ctx context.Context, articleID, tenantID string, version int) error
+
+	// —— 文章附件 ——
+	AddAttachment(ctx context.Context, a *ArticleAttachment) error
+	ListAttachments(ctx context.Context, articleID, tenantID string) ([]*ArticleAttachment, error)
+	GetAttachment(ctx context.Context, aid int64, articleID, tenantID string) (*ArticleAttachment, error)
+	DeleteAttachment(ctx context.Context, aid int64, articleID, tenantID string) error
+}
+
+// ArticleAttachment 知识文章附件元数据。二进制在对象存储(MinIO/COS/OSS), ObjectKey 为空时回退 Data(bytea)。
+type ArticleAttachment struct {
+	ID         int64     `json:"id"`
+	ArticleID  string    `json:"article_id"`
+	TenantID   string    `json:"tenant_id"`
+	FileName   string    `json:"file_name"`
+	FileSize   int64     `json:"file_size"`
+	FileType   string    `json:"file_type"`
+	UploadedBy string    `json:"uploaded_by"`
+	ObjectKey  string    `json:"object_key"`
+	Data       []byte    `json:"-"`
+	CreatedAt  time.Time `json:"created_at"`
 }
 
 type MemoryStore struct {
-	mu       sync.RWMutex
-	articles map[string]*Article
+	mu          sync.RWMutex
+	articles    map[string]*Article
+	attachments map[int64]*ArticleAttachment
+	nextAttID   int64
 }
 
 func NewMemoryStore() *MemoryStore {
-	return &MemoryStore{articles: make(map[string]*Article)}
+	return &MemoryStore{articles: make(map[string]*Article), attachments: make(map[int64]*ArticleAttachment)}
 }
 
 func (s *MemoryStore) Create(ctx context.Context, a *Article) error {
@@ -164,9 +192,55 @@ func (s *MemoryStore) RollbackToVersion(ctx context.Context, articleID, tenantID
 	return nil
 }
 
+// —— 附件: 内存实现 ——
+
+func (s *MemoryStore) AddAttachment(ctx context.Context, a *ArticleAttachment) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.nextAttID++
+	a.ID = s.nextAttID
+	if a.CreatedAt.IsZero() {
+		a.CreatedAt = time.Now()
+	}
+	s.attachments[a.ID] = a
+	return nil
+}
+
+func (s *MemoryStore) ListAttachments(ctx context.Context, articleID, tenantID string) ([]*ArticleAttachment, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	out := make([]*ArticleAttachment, 0)
+	for _, a := range s.attachments {
+		if a.ArticleID == articleID && a.TenantID == tenantID {
+			out = append(out, a)
+		}
+	}
+	return out, nil
+}
+
+func (s *MemoryStore) GetAttachment(ctx context.Context, aid int64, articleID, tenantID string) (*ArticleAttachment, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if a, ok := s.attachments[aid]; ok && a.ArticleID == articleID && a.TenantID == tenantID {
+		return a, nil
+	}
+	return nil, ErrNotFound
+}
+
+func (s *MemoryStore) DeleteAttachment(ctx context.Context, aid int64, articleID, tenantID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if a, ok := s.attachments[aid]; ok && a.ArticleID == articleID && a.TenantID == tenantID {
+		delete(s.attachments, aid)
+		return nil
+	}
+	return ErrNotFound
+}
+
 type Service struct {
-	store  Store
-	social *SocialStore
+	store    Store
+	social   *SocialStore
+	objStore *objectstore.Client // 附件二进制落对象存储; nil = 回退数据库 bytea
 }
 
 func NewService(db *sql.DB) *Service {
@@ -176,6 +250,9 @@ func NewService(db *sql.DB) *Service {
 	}
 	return &Service{store: st}
 }
+
+// SetObjectStore 注入对象存储(MinIO/COS/OSS)。注入后附件二进制进对象存储, DB 只存 object_key。
+func (s *Service) SetObjectStore(os *objectstore.Client) { s.objStore = os }
 
 // CreateArticle 创建一篇知识库文章(供内部模块如 ITSM 工单案例沉淀复用)。
 // 未指定 ID/Status/Author 时自动补全, 默认直接发布。
@@ -215,7 +292,8 @@ func (s *Service) ListDisposalCases(ctx context.Context, tenantID string) ([]str
 	return out, nil
 }
 
-func (s *Service) CreateArticle(ctx context.Context, a *Article) error {	if a == nil {
+func (s *Service) CreateArticle(ctx context.Context, a *Article) error {
+	if a == nil {
 		return fmt.Errorf("article is nil")
 	}
 	if a.Title == "" {
@@ -260,6 +338,11 @@ func (s *Service) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/v1/knowledge/import", s.handleImport)
 	// P1 文件导入: 后端解析 .md/.txt/.json/.pdf/.docx → 建文章
 	mux.HandleFunc("POST /api/v1/knowledge/import-file", s.handleImportFile)
+	// —— 文章附件 ——
+	mux.HandleFunc("POST /api/v1/knowledge/{id}/attachments", s.handleUploadAttachment)
+	mux.HandleFunc("GET /api/v1/knowledge/{id}/attachments", s.handleListAttachments)
+	mux.HandleFunc("GET /api/v1/knowledge/{id}/attachments/{aid}", s.handleDownloadAttachment)
+	mux.HandleFunc("DELETE /api/v1/knowledge/{id}/attachments/{aid}", s.handleDeleteAttachment)
 }
 
 // SetEmbedder 注入向量生成器,使新建/更新文章自动写入 embedding 以支持语义检索。
@@ -738,6 +821,136 @@ func extractDocxTextFromXML(raw []byte) string {
 		}
 	}
 	return strings.TrimRight(sb.String(), "\n")
+}
+
+// —— 文章附件: 上传/列表/下载/删除 ——
+
+// handleUploadAttachment 上传附件。对象存储已配置时二进制进对象存储(key=kb/<article>/<uuid>),
+// DB 只存 object_key; 否则回退数据库 bytea。
+func (s *Service) handleUploadAttachment(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	tenantID := tenantFromCtx(r.Context())
+	if err := r.ParseMultipartForm(64 << 20); err != nil {
+		writeError(w, http.StatusBadRequest, "failed to parse form")
+		return
+	}
+	file, header, err := r.FormFile("file")
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "file is required")
+		return
+	}
+	defer file.Close()
+	data, err := io.ReadAll(file)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to read file")
+		return
+	}
+	uploadedBy := r.FormValue("uploaded_by")
+	if uploadedBy == "" {
+		uploadedBy = "anonymous"
+	}
+	att := &ArticleAttachment{
+		ArticleID:  id,
+		TenantID:   tenantID,
+		FileName:   header.Filename,
+		FileSize:   header.Size,
+		FileType:   header.Header.Get("Content-Type"),
+		UploadedBy: uploadedBy,
+		Data:       data,
+	}
+	if s.objStore != nil {
+		key := fmt.Sprintf("kb/%s/%s", id, uuid.NewString())
+		if err := s.objStore.Put(r.Context(), key, bytes.NewReader(data), int64(len(data)), header.Header.Get("Content-Type")); err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to store attachment: "+err.Error())
+			return
+		}
+		att.ObjectKey = key
+		att.Data = nil
+	}
+	if err := s.store.AddAttachment(r.Context(), att); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to save attachment: "+err.Error())
+		return
+	}
+	writeJSON(w, http.StatusCreated, att)
+}
+
+func (s *Service) handleListAttachments(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	tenantID := tenantFromCtx(r.Context())
+	list, err := s.store.ListAttachments(r.Context(), id, tenantID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, list)
+}
+
+func (s *Service) handleDownloadAttachment(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	aidStr := r.PathValue("aid")
+	tenantID := tenantFromCtx(r.Context())
+	aid, err := strconv.ParseInt(aidStr, 10, 64)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid attachment id")
+		return
+	}
+	att, err := s.store.GetAttachment(r.Context(), aid, id, tenantID)
+	if err != nil {
+		if err == ErrNotFound {
+			writeError(w, http.StatusNotFound, "attachment not found")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	w.Header().Set("Content-Disposition", "attachment; filename=\""+att.FileName+"\"")
+	if att.FileType != "" {
+		w.Header().Set("Content-Type", att.FileType)
+	}
+	w.Header().Set("Content-Length", strconv.FormatInt(att.FileSize, 10))
+	if att.ObjectKey != "" && s.objStore != nil {
+		if err := s.objStore.Get(r.Context(), w, att.ObjectKey); err != nil {
+			slog.Warn("kb attachment object read failed", "key", att.ObjectKey, "err", err)
+			return
+		}
+		return
+	}
+	w.Write(att.Data)
+}
+
+func (s *Service) handleDeleteAttachment(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	aidStr := r.PathValue("aid")
+	tenantID := tenantFromCtx(r.Context())
+	aid, err := strconv.ParseInt(aidStr, 10, 64)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid attachment id")
+		return
+	}
+	// 先取元数据: 对象存储模式下需一并删除对象, 避免孤儿文件。
+	att, err := s.store.GetAttachment(r.Context(), aid, id, tenantID)
+	if err != nil {
+		if err == ErrNotFound {
+			writeError(w, http.StatusNotFound, "attachment not found")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if att.ObjectKey != "" && s.objStore != nil {
+		if err := s.objStore.Remove(r.Context(), att.ObjectKey); err != nil {
+			slog.Warn("kb attachment object remove failed", "key", att.ObjectKey, "err", err)
+		}
+	}
+	if err := s.store.DeleteAttachment(r.Context(), aid, id, tenantID); err != nil {
+		if err == ErrNotFound {
+			writeError(w, http.StatusNotFound, "attachment not found")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {
