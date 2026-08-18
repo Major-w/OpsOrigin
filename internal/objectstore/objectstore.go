@@ -41,6 +41,12 @@ func New(endpoint, accessKey, secretKey, bucket, region string, useSSL bool) (*C
 // Bucket 返回当前桶名(调试用)。
 func (c *Client) Bucket() string { return c.bucket }
 
+// Health 检查桶可访问性(系统自监控探活用)。
+func (c *Client) Health(ctx context.Context) error {
+	_, err := c.mc.BucketExists(ctx, c.bucket)
+	return err
+}
+
 // Put 上传对象; key 建议带业务前缀(如 itsm/<ticket>/<uuid>-<name>), size 传 -1 由 SDK 分片自动处理。
 func (c *Client) Put(ctx context.Context, key string, r io.Reader, size int64, contentType string) error {
 	_, err := c.mc.PutObject(ctx, c.bucket, key, r, size, minio.PutObjectOptions{ContentType: contentType})

@@ -133,6 +133,7 @@ const navGroups: (NavItem | NavGroup)[] = [
       { to: '/system/auth', label: '认证设置', icon: Key },
       { to: '/system/notifications', label: '消息通知设置', icon: Bell },
       { to: '/system/settings', label: '全局参数', icon: Settings },
+      { to: '/system/health', label: '自监控', icon: Activity },
       { to: '/system/collection-policy', label: '采集策略', icon: Database },
       { to: '/audit', label: '审计日志', icon: Shield },
     ]

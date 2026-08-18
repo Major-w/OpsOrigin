@@ -124,6 +124,8 @@ services:
       OPSORIGIN_S3_BUCKET: opsorigin
       OPSORIGIN_S3_USE_SSL: "false"
       OPSORIGIN_S3_REGION: us-east-1
+      # 图数据库(dgraph 为可选组件): 容器网络内地址, 供自监控探活
+      OPSORIGIN_DGRAPH_TARGET: dgraph-alpha:9080
     depends_on:
       postgres:
         condition: service_healthy
@@ -131,6 +133,9 @@ services:
         condition: service_healthy
       minio:
         condition: service_started
+    volumes:
+      # 系统自监控: 只读挂载 docker socket, 供 core 读取其他容器日志(docker logs)
+      - /var/run/docker.sock:/var/run/docker.sock:ro
 
   frontend:
     build:

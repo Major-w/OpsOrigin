@@ -57,6 +57,12 @@ func (c *Client) Conn() *redis.Client {
 	return c.client
 }
 
+// Ping 探活。注意: Conn() 返回的是共享的底层 client, 调用方不得对其 Close,
+// 否则会毒化所有共享该 client 的服务(限流/心跳/缓存)。探活请用 Ping。
+func (c *Client) Ping(ctx context.Context) error {
+	return c.client.Ping(ctx).Err()
+}
+
 func (c *Client) StreamExists(ctx context.Context, stream string) (bool, error) {
 	exists, err := c.client.Exists(ctx, stream).Result()
 	if err != nil {
