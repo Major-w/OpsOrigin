@@ -49,6 +49,10 @@ lint:
 		GOPROXY=$(GOPROXY) $(GO) vet -C "$$m" ./... || exit 1; \
 	done
 
+# 开发契约一键校验（docs/contracts/* 配套执行器，见 workflow.md）
+contract:
+	@bash scripts/contract-check.sh
+
 fmt:
 	@for m in $(MODULES); do \
 		$(GO) fmt -C "$$m" ./...; \
