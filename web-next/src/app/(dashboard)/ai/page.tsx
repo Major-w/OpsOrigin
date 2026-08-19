@@ -3,15 +3,17 @@
 import { useEffect, useState, useRef } from 'react'
 import { useRouter } from 'next/navigation'
 import { useAIStore } from '@/stores/ai'
+import { useCan } from '@/stores/permissions'
 import { useTeams, type ChatMessage, type TeamStreamEvent } from '@/stores/ai'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { Input } from '@/components/ui/input'
 import { Dialog, DialogFooter } from '@/components/ui/dialog'
-import { Bot, Send, History, Settings, Sparkles, Terminal, FileText, Server, ChevronRight, Loader2, User, BarChart3, Users, ThumbsUp, ThumbsDown, Rocket, Target, AlertTriangle, CheckCircle, XCircle, ChevronDown, Trash2, Bookmark, Download, Save, Paperclip } from 'lucide-react'
+import { Bot, Send, History, Settings, Sparkles, Terminal, FileText, Server, ChevronRight, Loader2, User, BarChart3, Users, ThumbsUp, ThumbsDown, Rocket, Target, AlertTriangle, CheckCircle, XCircle, ChevronDown, Trash2, Bookmark, Download, Save, Paperclip, Brain, Share2, Lock } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { apiFetchRaw } from '@/lib/utils'
+import { AiMarkdown } from '@/components/ai-markdown'
 import { toast } from '@/stores/toast'
 import { useThemeStore } from '@/stores/theme'
 import { renderMarkdown, renderExploreContent } from '@/lib/ai-render'
@@ -27,6 +29,8 @@ interface Message {
   thinking?: string
   citations?: string[]
   feedback_rating?: 'up' | 'down'
+  status?: 'streaming' | 'done' | 'error'
+  errorText?: string
   timestamp: Date
 }
 
@@ -113,6 +117,13 @@ export default function AIPage() {
   const [conversations, setConversations] = useState<any[]>([])
   // 当前会话 ID: 加载历史后指向该会话, 继续发送时携带以续接服务端持久历史
   const [convId, setConvId] = useState('')
+  // 当前会话权限(用户隔离): owner=自己创建 / edit=共享可继续 / view=共享只读
+  const [convPerm, setConvPerm] = useState<'owner' | 'edit' | 'view' | ''>('')
+  // 共享弹窗
+  const [shareConv, setShareConv] = useState<{ id: string; title: string } | null>(null)
+  const [shareForm, setShareForm] = useState({ target_type: 'user', target_id: '', permission: 'view' })
+  // AI 工具执行权限门禁: 无权限时禁发消息(加载完成前乐观放行)
+  const canUseAI = useCan('ai:tool:exec')
   // 对话产物(MinIO 归档): 本会话已保存的文件列表
   const [artifacts, setArtifacts] = useState<{ id: string; message_id: string; file_name: string; file_type: string; file_size: number; created_at: string }[]>([])
   // 会话工作区(工具产物自动收集): script_run 等工具输出
@@ -170,6 +181,8 @@ export default function AIPage() {
       const resp = await fetch(`${window.location.origin}/api/v1/ai/conversations/${id}`)
       if (!resp.ok) return
       const conv = await resp.json()
+      // 记录当前会话权限: view=只读(禁发), owner/edit=可继续对话
+      setConvPerm(conv?.permission === 'view' ? 'view' : conv?.permission === 'edit' ? 'edit' : conv?.permission === 'owner' ? 'owner' : '')
       if (conv?.messages) {
         const msgs: Message[] = conv.messages.map((m: any, i: number) => ({
           id: `${id}-${i}`,
@@ -210,7 +223,7 @@ export default function AIPage() {
 
   // submitFeedback 上报点赞/点踩
   const submitFeedback = async (msg: Message, rating: 'up' | 'down' = 'up') => {
-    await submitFB({ message_id: msg.id, rating })
+    await submitFB({ message_id: msg.id, rating, conversation_id: convId || undefined })
   }
 
   // 保存 AI 回复为知识库文章(分类不存在自动创建)
@@ -329,6 +342,54 @@ export default function AIPage() {
     } catch (e: any) { toast.error('删除失败: ' + e.message) }
   }
 
+  // 记住这条: 保存为长期记忆(重启不丢, 新开对话自动注入相关记忆)
+  const saveMsgToMemory = async (msg: Message) => {
+    if (!msg.content.trim()) return
+    const idx = messages.findIndex(m => m.id === msg.id)
+    let problem = '对话要点'
+    for (let i = idx - 1; i >= 0; i--) {
+      if (messages[i].role === 'user') {
+        problem = messages[i].content.replace(/\s+/g, ' ').slice(0, 40) || '对话要点'
+        break
+      }
+    }
+    try {
+      const r = await fetch('/api/v1/ai/memories', {
+        method: 'POST', headers: { 'Content-Type': 'application/json', ...authHeaders() },
+        body: JSON.stringify({ agent_id: selectedAgent?.id || '', category: '对话要点', problem, resolution: msg.content.slice(0, 500) }),
+      })
+      if (!r.ok) throw new Error(`保存失败(${r.status})`)
+      toast.success('已记住（长期记忆，重启不丢）')
+    } catch (e: any) { toast.error('保存失败: ' + e.message) }
+  }
+
+  // 重试失败消息: 重新发送该错误消息之前的最后一条用户消息
+  const retryMessage = (errMsg: Message) => {
+    const idx = messages.findIndex(m => m.id === errMsg.id)
+    if (idx < 0) return
+    for (let i = idx - 1; i >= 0; i--) {
+      if (messages[i].role === 'user') {
+        sendMessage(messages[i].content)
+        return
+      }
+    }
+  }
+
+  // 分享会话(仅属主): 目标用户/组 + 权限 view/edit
+  const saveShare = async () => {
+    if (!shareConv || !shareForm.target_id.trim()) { toast.error('请填写目标用户/组 ID'); return }
+    try {
+      const r = await fetch(`/api/v1/ai/conversations/${shareConv.id}/shares`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json', ...authHeaders() },
+        body: JSON.stringify(shareForm),
+      })
+      if (!r.ok) throw new Error(`共享失败(${r.status})`)
+      toast.success(shareForm.permission === 'edit' ? '已共享（可继续对话）' : '已共享（仅查看）')
+      setShareConv(null)
+      setShareForm({ target_type: 'user', target_id: '', permission: 'view' })
+    } catch (e: any) { toast.error('共享失败: ' + e.message) }
+  }
+
   const sendMessage = async (text: string) => {
     const content = text.trim()
     if (!content || loading) return
@@ -340,7 +401,7 @@ export default function AIPage() {
     setLoading(true)
 
     const aiId = (Date.now() + 1).toString()
-    const aiMsg: Message = { id: aiId, role: 'assistant', content: '', timestamp: new Date() }
+    const aiMsg: Message = { id: aiId, role: 'assistant', content: '', status: 'streaming', timestamp: new Date() }
     setMessages(prev => [...prev, aiMsg])
 
     let history = next
@@ -380,6 +441,10 @@ export default function AIPage() {
       full += token
       setMessages(prev => prev.map(m => m.id === aiId ? { ...m, content: full } : m))
     }, (meta) => {
+      // 成功结束: 标注 done(meta 为 undefined 表示失败分支, 由 onError 标注 error)
+      if (meta) {
+        setMessages(prev => prev.map(m => m.id === aiId ? { ...m, status: 'done' as const } : m))
+      }
       if (meta?.citations && meta.citations.length > 0) {
         setMessages(prev => prev.map(m => m.id === aiId ? { ...m, content: full, citations: meta.citations } : m))
       }
@@ -387,7 +452,9 @@ export default function AIPage() {
     }, history, selectedAgent?.id, showThinking, showThinking ? (t) => {
       thinkingAcc += t
       setMessages(prev => prev.map(m => m.id === aiId ? { ...m, thinking: thinkingAcc } : m))
-    } : undefined, undefined, (approval) => setPendingApproval(approval), cid, undefined, selectedModel)
+    } : undefined, undefined, (approval) => setPendingApproval(approval), cid, undefined, selectedModel, (errMsg) => {
+      setMessages(prev => prev.map(m => m.id === aiId ? { ...m, status: 'error' as const, errorText: errMsg } : m))
+    })
   }
 
   // ----------------------- 团队模式 -----------------------
@@ -614,16 +681,31 @@ export default function AIPage() {
                           onClick={() => handleLoadConversation(c.id)}
                           className="flex-1 text-left p-3 rounded-lg bg-gray-50 dark:bg-gray-800 hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors"
                         >
-                          <p className="text-sm font-medium truncate">{c.title || '新对话'}</p>
+                          <p className="text-sm font-medium truncate flex items-center gap-1">
+                            {c.title || '新对话'}
+                            {c.permission === 'edit' && <Badge variant="outline" className="text-[9px] h-4">共享·可编辑</Badge>}
+                            {c.permission === 'view' && <Badge variant="outline" className="text-[9px] h-4"><Lock className="h-2.5 w-2.5 mr-0.5" />共享·只读</Badge>}
+                          </p>
                           <p className="text-xs text-muted-foreground mt-0.5">{new Date(c.updated_at || c.UpdatedAt).toLocaleString('zh-CN')}</p>
                         </button>
-                        <button
-                          onClick={() => handleDeleteConversation(c.id)}
-                          className="opacity-0 group-hover:opacity-100 p-1.5 rounded-md text-red-400 hover:bg-red-500/10 transition-opacity"
-                          title="删除会话"
-                        >
-                          <Trash2 className="h-3.5 w-3.5" />
-                        </button>
+                        {(!c.permission || c.permission === 'owner') && (
+                          <button
+                            onClick={() => { setShareConv({ id: c.id, title: c.title || '新对话' }); setShareForm({ target_type: 'user', target_id: '', permission: 'view' }) }}
+                            className="opacity-0 group-hover:opacity-100 p-1.5 rounded-md text-muted-foreground hover:text-violet-500 hover:bg-violet-500/10 transition-opacity"
+                            title="分享会话"
+                          >
+                            <Share2 className="h-3.5 w-3.5" />
+                          </button>
+                        )}
+                        {(!c.permission || c.permission === 'owner') && (
+                          <button
+                            onClick={() => handleDeleteConversation(c.id)}
+                            className="opacity-0 group-hover:opacity-100 p-1.5 rounded-md text-red-400 hover:bg-red-500/10 transition-opacity"
+                            title="删除会话"
+                          >
+                            <Trash2 className="h-3.5 w-3.5" />
+                          </button>
+                        )}
                       </div>
                     ))
                   )}
@@ -651,7 +733,7 @@ export default function AIPage() {
                                 <div className="mt-1 p-2 rounded bg-gray-200 dark:bg-gray-700 text-xs whitespace-pre-wrap text-muted-foreground">{msg.thinking}</div>
                               </details>
                             )}
-                            <div dangerouslySetInnerHTML={{ __html: renderMarkdown(msg.content) }} />
+                            <AiMarkdown content={msg.content} />
 
                             {/* RAG 引用来源 */}
                             {msg.citations && msg.citations.length > 0 && (
@@ -665,6 +747,22 @@ export default function AIPage() {
                                   ))}
                                 </div>
                               </details>
+                            )}
+
+                            {/* 失败态: 错误提示 + 重试 */}
+                            {msg.status === 'error' && (
+                              <div className="mt-2 rounded-md border border-red-300 dark:border-red-500/40 bg-red-50 dark:bg-red-500/10 p-2">
+                                <p className="text-[11px] text-red-600 dark:text-red-400 flex items-center gap-1">
+                                  <AlertTriangle className="h-3 w-3 shrink-0" />
+                                  {msg.errorText || 'AI 响应失败'}
+                                </p>
+                                <button
+                                  onClick={() => retryMessage(msg)}
+                                  className="mt-1.5 text-[11px] text-red-600 dark:text-red-400 hover:underline font-medium"
+                                >
+                                  ↻ 重试
+                                </button>
+                              </div>
                             )}
 
                             {/* 反馈按钮 + 产物操作 */}
@@ -695,6 +793,13 @@ export default function AIPage() {
                                   <ThumbsDown className="h-3 w-3" />
                                 </button>
                                 <span className="w-px h-3 bg-gray-200 dark:bg-gray-700 mx-0.5" />
+                                <button
+                                  onClick={() => saveMsgToMemory(msg)}
+                                  className="p-1 rounded text-[10px] text-muted-foreground hover:text-violet-500 transition-colors"
+                                  title="记住（存长期记忆，跨会话复用）"
+                                >
+                                  <Brain className="h-3 w-3" />
+                                </button>
                                 <button
                                   onClick={() => saveMsgToKnowledge(msg)}
                                   className="p-1 rounded text-[10px] text-muted-foreground hover:text-amber-500 transition-colors"
@@ -768,14 +873,25 @@ export default function AIPage() {
                 <Input
                   value={input}
                   onChange={e => setInput(e.target.value)}
-                  onKeyDown={e => e.key === 'Enter' && !e.shiftKey && sendMessage(input)}
-                  placeholder="输入你的问题..."
+                  onKeyDown={e => e.key === 'Enter' && !e.shiftKey && canUseAI && convPerm !== 'view' && sendMessage(input)}
+                  placeholder={!canUseAI ? '当前账号无 AI 工具执行权限（ai:tool:exec）' : convPerm === 'view' ? '此会话为只读共享，无法继续对话' : '输入你的问题...'}
+                  disabled={!canUseAI || convPerm === 'view'}
                   className="flex-1"
                 />
-                <Button onClick={() => sendMessage(input)} disabled={!input.trim() || loading}>
+                <Button onClick={() => sendMessage(input)} disabled={!input.trim() || loading || !canUseAI || convPerm === 'view'}>
                   <Send className="h-4 w-4" />
                 </Button>
               </div>
+              {!canUseAI && (
+                <p className="text-[10px] text-amber-600 dark:text-amber-400 flex items-center gap-1">
+                  <AlertTriangle className="h-3 w-3" />无 AI 工具执行权限，仅可查看历史对话。请联系管理员在角色中授予 ai:tool:exec。
+                </p>
+              )}
+              {canUseAI && convPerm === 'view' && (
+                <p className="text-[10px] text-violet-600 dark:text-violet-400 flex items-center gap-1">
+                  <Lock className="h-3 w-3" />此会话由他人共享（仅查看）。如需继续对话，请向属主申请「可编辑」权限。
+                </p>
+              )}
 
               {/* 上下文用量估算条 */}
               <div className="flex items-center gap-2 mt-2">
@@ -1192,6 +1308,45 @@ export default function AIPage() {
             {approvalBusy ? <Loader2 className="h-4 w-4 mr-1 animate-spin" /> : <CheckCircle className="h-4 w-4 mr-1" />}
             批准执行
           </Button>
+        </DialogFooter>
+      </Dialog>
+
+      {/* 会话共享弹窗 */}
+      <Dialog open={!!shareConv} onClose={() => setShareConv(null)} title={`分享会话：${shareConv?.title || ''}`}>
+        <div className="space-y-3 py-1">
+          <p className="text-xs text-muted-foreground">默认对话仅自己可见；共享后指定用户/组成员可见。目标 ID 为用户名或用户组 ID。</p>
+          <div className="grid grid-cols-2 gap-2">
+            <div className="space-y-1">
+              <p className="text-xs text-muted-foreground">目标类型</p>
+              <select
+                value={shareForm.target_type}
+                onChange={e => setShareForm({ ...shareForm, target_type: e.target.value })}
+                className="w-full h-9 rounded-md border border-input bg-background px-2 text-xs"
+              >
+                <option value="user">用户</option>
+                <option value="group">用户组</option>
+              </select>
+            </div>
+            <div className="space-y-1">
+              <p className="text-xs text-muted-foreground">权限</p>
+              <select
+                value={shareForm.permission}
+                onChange={e => setShareForm({ ...shareForm, permission: e.target.value })}
+                className="w-full h-9 rounded-md border border-input bg-background px-2 text-xs"
+              >
+                <option value="view">仅查看</option>
+                <option value="edit">可继续对话</option>
+              </select>
+            </div>
+          </div>
+          <div className="space-y-1">
+            <p className="text-xs text-muted-foreground">目标 ID（用户名 / 用户组 ID）</p>
+            <Input className="h-9 text-xs font-mono" placeholder="如: zhangsan 或 group-001" value={shareForm.target_id} onChange={e => setShareForm({ ...shareForm, target_id: e.target.value })} />
+          </div>
+        </div>
+        <DialogFooter>
+          <Button variant="outline" onClick={() => setShareConv(null)}>取消</Button>
+          <Button onClick={saveShare}><Share2 className="h-4 w-4 mr-1" />共享</Button>
         </DialogFooter>
       </Dialog>
     </div>

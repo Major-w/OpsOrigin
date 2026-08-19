@@ -218,6 +218,7 @@ interface AIState {
     serverConvId?: string,
     signal?: AbortSignal,
     model?: string,
+    onError?: (msg: string) => void,
   ) => Promise<void>
   /** 拉取可用模型池(供对话窗模型选择器; 单模型时前端可隐藏下拉)。 */
   fetchModels: () => Promise<ModelInfo[]>
@@ -333,7 +334,7 @@ export const useAIStore = create<AIState>((set, get) => ({
       return []
     }
   },
-  streamChat: async (prompt, onToken, onDone, history = [], agentId, reasoning, onThinking, explore, onAsk, serverConvId, signal, model) => {
+  streamChat: async (prompt, onToken, onDone, history = [], agentId, reasoning, onThinking, explore, onAsk, serverConvId, signal, model, onError) => {
     try {
       // 为本次 AI 回复生成稳定的 message_id, 反馈时用于精确关联
       const messageId = `msg_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`
@@ -352,7 +353,9 @@ export const useAIStore = create<AIState>((set, get) => ({
         signal,
       })
       if (!resp.ok) {
-        toast.error(`AI 响应失败: ${resp.status}`)
+        const errMsg = `AI 响应失败: ${resp.status}`
+        toast.error(errMsg)
+        onError?.(errMsg)
         onDone()
         return
       }
@@ -420,6 +423,7 @@ export const useAIStore = create<AIState>((set, get) => ({
         return
       }
       toast.error(`AI 流式响应失败: ${e.message}`)
+      onError?.(`AI 流式响应失败: ${e.message}`)
       onDone()
     }
   },
