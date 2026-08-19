@@ -4,12 +4,14 @@ import (
 	"database/sql"
 	"encoding/json"
 	"net/http"
+	"os"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/opsorigin/core/internal/user/model"
 	"github.com/opsorigin/core/internal/user/store"
 	"github.com/opsorigin/core/pkg/auth"
+	"golang.org/x/crypto/bcrypt"
 
 	"github.com/opsorigin/core/pkg/httputil"
 )
@@ -17,6 +19,21 @@ import (
 type Service struct {
 	store    *store.PostgresStore
 	authProv *auth.Provider
+}
+
+// defaultAdminCreds 返回数据库不可用时的兜底管理员凭据。
+// 可通过环境变量覆盖（OPSORIGIN_DEFAULT_ADMIN_USERNAME / OPSORIGIN_DEFAULT_ADMIN_PASSWORD），
+// 默认 admin/admin123（仅本地开发与单租户演示使用，公网部署必须通过环境变量修改）。
+func defaultAdminCreds() (username, password string) {
+	username = os.Getenv("OPSORIGIN_DEFAULT_ADMIN_USERNAME")
+	if username == "" {
+		username = "admin"
+	}
+	password = os.Getenv("OPSORIGIN_DEFAULT_ADMIN_PASSWORD")
+	if password == "" {
+		password = "admin123"
+	}
+	return username, password
 }
 
 func NewService(db *sql.DB, authProv *auth.Provider) *Service {
@@ -60,14 +77,20 @@ func (s *Service) handleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 如果数据库不可用，使用默认admin用户
+	// 如果数据库不可用，使用默认admin用户（凭据可由环境变量覆盖）
 	if user == nil && s.store.IsNil() {
-		if req.Username == "admin" && req.Password == "admin123" {
+		defUser, defPass := defaultAdminCreds()
+		if req.Username == defUser && req.Password == defPass {
+			hash, err := bcrypt.GenerateFromPassword([]byte(defPass), bcrypt.DefaultCost)
+			if err != nil {
+				httputil.WriteError(w, http.StatusInternalServerError, "password hashing failed")
+				return
+			}
 			user = &model.User{
 				ID:       "admin-001",
 				TenantID: "default",
-				Username: "admin",
-				Password: "$2a$10$z1zhCyKMAPr4k6.7Cjk77eVyoZEKxPCLMcXuJx5q9iiBxj22Fa1Li", // admin123
+				Username: defUser,
+				Password: string(hash),
 				Role:     model.RoleAdmin,
 				Status:   "active",
 			}

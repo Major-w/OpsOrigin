@@ -2,6 +2,7 @@ package store
 
 import (
 	"fmt"
+	"os"
 	"sync"
 	"time"
 
@@ -24,8 +25,16 @@ func NewMemoryStore() *MemoryStore {
 
 func (s *MemoryStore) seed() {
 	now := time.Now()
+	adminUser := os.Getenv("OPSORIGIN_DEFAULT_ADMIN_USERNAME")
+	if adminUser == "" {
+		adminUser = "admin"
+	}
+	adminPass := os.Getenv("OPSORIGIN_DEFAULT_ADMIN_PASSWORD")
+	if adminPass == "" {
+		adminPass = "admin123"
+	}
 	for _, u := range []model.User{
-		{ID: uuid.NewString(), TenantID: "default", Username: "admin", Password: "admin123", Role: model.RoleAdmin, Status: "active", CreatedAt: now, UpdatedAt: now},
+		{ID: uuid.NewString(), TenantID: "default", Username: adminUser, Password: adminPass, Role: model.RoleAdmin, Status: "active", CreatedAt: now, UpdatedAt: now},
 		{ID: uuid.NewString(), TenantID: "default", Username: "ops", Password: "ops123", Role: model.RoleOperator, Status: "active", CreatedAt: now, UpdatedAt: now},
 	} {
 		s.users[u.Username] = &u
