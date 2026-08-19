@@ -112,6 +112,12 @@ func withTenant(req *http.Request, tenant string) *http.Request {
 // 以 resolver 返回的权限为准(而非写死的 RolePermissions),使角色管理页的编辑实时生效。
 // 这里用一个内存 map 模拟 IAM 角色库,无需 PG。
 func TestAutoPermissionMiddleware_Resolver(t *testing.T) {
+	// "unknown tenant falls back" 子用例依赖多租户语义(未带租户时应回落写死映射),
+	// 单租户模式会强制 "default" 使该路径不可达,故在此启用多租户。
+	prev := MultiTenantEnabled()
+	SetMultiTenant(true)
+	defer SetMultiTenant(prev)
+
 	// 模拟 IAM 角色库:operator 被收窄为仅 cmdb:read(不再有 cmdb:write)
 	iamRoles := map[string][]string{
 		"operator": {PermissionCMDBRead},

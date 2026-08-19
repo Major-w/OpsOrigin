@@ -201,6 +201,12 @@ func TestEnricherFillsPermissionsAndDisplayName(t *testing.T) {
 }
 
 func TestLegacyContextHelpersStillWork(t *testing.T) {
+	// 本用例验证多租户语义(令牌租户 t-acme 应透传、裸 key 可临时切换),
+	// 必须在多租户模式下运行;单租户模式会强制 "default" 覆盖令牌租户。
+	prev := MultiTenantEnabled()
+	SetMultiTenant(true)
+	defer SetMultiTenant(prev)
+
 	p, token := newTestProvider(t)
 
 	var ctx context.Context
