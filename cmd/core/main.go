@@ -1068,7 +1068,34 @@ func main() {
 	}
 	aiSvc.SetObjectStore(osClient)                         // 对话产物归档(MinIO), nil 时产物仅存元数据
 	aiSvc.Engine.SetWorkspaceSink(aiSvc.SaveWorkspaceFile) // 会话工作区: 工具产物自动沉淀
-	aiSvc.Engine.SetModelRouter(llmRouter)                 // 多模型路由池(权重+健康+失败降级)
+	// 长期记忆持久化: AddMemory 落库 + 启动时从 DB 灌回内存(重启不丢)
+	aiSvc.Engine.SetMemoryPersist(aiSvc.PersistMemory)
+	// 会话共享按组匹配: 注入用户组查询(iam 组模型 UserIDs 成员列表)
+	aiSvc.SetUserGroupsProvider(func(ctx context.Context, userID string) []string {
+		if iamSvc == nil || userID == "" {
+			return nil
+		}
+		groups, err := iamSvc.ListGroups(ctx, "default")
+		if err != nil {
+			return nil
+		}
+		var out []string
+		for _, g := range groups {
+			for _, uid := range g.UserIDs {
+				if uid == userID {
+					out = append(out, g.ID)
+					break
+				}
+			}
+		}
+		return out
+	})
+	if db != nil {
+		if err := aiSvc.Engine.LoadMemories(ctx, "default", aiSvc.LoadMemoriesFromDB); err != nil {
+			slog.Warn("ai memories load failed", "err", err)
+		}
+	}
+	aiSvc.Engine.SetModelRouter(llmRouter) // 多模型路由池(权重+健康+失败降级)
 	// 生成参数热更新:仅当配置显式给定时才覆盖引擎内置默认(温度0.7/上限1024/并发32)。
 	if cfg.LLM.GenTemperature > 0 {
 		aiSvc.Engine.SetGenParams(cfg.LLM.GenMaxTokens, cfg.LLM.GenTemperature)

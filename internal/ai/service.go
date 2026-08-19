@@ -37,6 +37,7 @@ type Service struct {
 	feedbackStore agentic.FeedbackStore                                   // 点赞/点踩反馈持久化(P2-Eval)
 	db            *sql.DB                                                 // 统计/管理查询直连(会话删除、进化闭环等)
 	objStore      *objectstore.Client                                     // 对话产物/文件归档(MinIO), 未配置为 nil
+	userGroupsFn  UserGroupsFn                                            // 用户组查询(会话共享按组匹配), nil=不支持组共享
 
 	// llmClient 供"非对话式"结构化生成场景直连模型(如 AI 生成报表看板),
 	// 不走 Engine 的对话/工具循环。sysconfig 改配置时随 UpdateLLMConfig 一起热替换。
@@ -96,6 +97,7 @@ func NewService(cfg *config.Config, llmClient *llm.Client, redisClient *rediscli
 	svc.initEvolutionDDL(context.Background())
 	svc.initArtifactDDL(context.Background())
 	svc.initWorkspaceDDL(context.Background())
+	svc.initMemoryDDL(context.Background())
 	return svc
 }
 
@@ -140,6 +142,10 @@ func (s *Service) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/v1/ai/conversations/{id}", s.handleGetConversation)
 	mux.HandleFunc("POST /api/v1/ai/conversations", s.handleSaveConversation)
 	mux.HandleFunc("DELETE /api/v1/ai/conversations/{id}", s.handleDeleteConversation)
+	// —— 会话共享(用户隔离: 默认私有, 共享后可见) ——
+	mux.HandleFunc("POST /api/v1/ai/conversations/{id}/shares", s.handleAddShare)
+	mux.HandleFunc("GET /api/v1/ai/conversations/{id}/shares", s.handleListShares)
+	mux.HandleFunc("DELETE /api/v1/ai/conversations/{id}/shares/{sid}", s.handleDeleteShare)
 	mux.HandleFunc("GET /api/v1/ai/evolution/stats", s.handleEvolutionStats)
 	// —— 主动进化: 策略配置 + 数据源管理 + 手动触发 ——
 	mux.HandleFunc("GET /api/v1/ai/evolution/policy", s.handleEvolutionPolicy)
@@ -158,6 +164,10 @@ func (s *Service) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/v1/ai/conversations/{id}/workspace", s.handleListWorkspace)
 	mux.HandleFunc("GET /api/v1/ai/conversations/{id}/workspace/{fid}", s.handleDownloadWorkspace)
 	mux.HandleFunc("DELETE /api/v1/ai/conversations/{id}/workspace/{fid}", s.handleDeleteWorkspace)
+	// —— 长期记忆(持久化) ——
+	mux.HandleFunc("GET /api/v1/ai/memories", s.handleListMemories)
+	mux.HandleFunc("POST /api/v1/ai/memories", s.handleAddMemory)
+	mux.HandleFunc("DELETE /api/v1/ai/memories/{id}", s.handleDeleteMemory)
 	mux.HandleFunc("POST /api/v1/ai/feedback", s.handleSubmitFeedback)
 	mux.HandleFunc("GET /api/v1/ai/feedback", s.handleListFeedback)
 	mux.HandleFunc("GET /api/v1/ai/feedback/stats", s.handleFeedbackStats)
@@ -296,6 +306,15 @@ func (s *Service) handleChat(w http.ResponseWriter, r *http.Request) {
 	if req.Prompt == "" {
 		writeError(w, http.StatusBadRequest, "prompt is required")
 		return
+	}
+
+	// 会话权限: 续接已有会话时, 非属主且无 edit 共享 → 拒绝(用户隔离); view 共享只读不能继续对话。
+	if req.ConversationID != "" {
+		tenantID := tenantFromCtx(r.Context())
+		userID := currentUserID(r.Context())
+		if !s.requireConvWrite(r.Context(), tenantID, req.ConversationID, userID, s.userGroups(r.Context(), userID), w) {
+			return
+		}
 	}
 
 	// P0-1: 清洗客户端提交的对话历史, 丢弃 system/tool 角色与注入的 tool_calls, 防止提示注入绕过 RBAC。
@@ -467,30 +486,25 @@ func (s *Service) handleSaveConversation(w http.ResponseWriter, r *http.Request)
 	writeJSON(w, http.StatusOK, conv)
 }
 
-func (s *Service) handleListConversations(w http.ResponseWriter, r *http.Request) {
-	tenantID := tenantFromCtx(r.Context())
-	agentID := r.URL.Query().Get("agent_id")
-	convs := s.Engine.LoadConversations(tenantID, agentID, 50)
-	writeJSON(w, http.StatusOK, convs)
-}
-
-func (s *Service) handleGetConversation(w http.ResponseWriter, r *http.Request) {
-	id := r.PathValue("id")
-	conv, err := s.Engine.GetConversation(id)
-	if err != nil {
-		writeError(w, http.StatusNotFound, err.Error())
-		return
-	}
-	writeJSON(w, http.StatusOK, conv)
-}
-
-// handleDeleteConversation 删除会话(按租户隔离)。
+// handleDeleteConversation 删除会话(属主可删)。
 func (s *Service) handleDeleteConversation(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	tenantID := tenantFromCtx(r.Context())
+	userID := currentUserID(r.Context())
+	if s.convAccess(r.Context(), tenantID, id, userID, s.userGroups(r.Context(), userID)) != "owner" {
+		writeError(w, http.StatusForbidden, "only the owner can delete this conversation")
+		return
+	}
 	if err := s.Engine.DeleteConversation(id, tenantID); err != nil {
 		writeError(w, http.StatusNotFound, err.Error())
 		return
+	}
+	// 连带清理共享记录(防孤儿)
+	if s.db != nil {
+		if _, err := s.db.ExecContext(r.Context(),
+			`DELETE FROM ai_conversation_shares WHERE conversation_id=$1`, id); err != nil {
+			slog.Warn("conversation shares cleanup failed", "id", id, "err", err)
+		}
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
 }
@@ -983,7 +997,59 @@ func (s *Service) handleSubmitFeedback(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "failed to save feedback")
 		return
 	}
+	// 反馈回流(非阻断): 点赞→正向经验 / 点踩→反例, 沉淀为长期记忆(自动落库)
+	s.reflowFeedback(r.Context(), tenant, f)
 	writeJSON(w, http.StatusOK, map[string]any{"id": f.ID, "ok": true})
+}
+
+// reflowFeedback 把赞踩反馈回流为长期记忆: 取该会话最新一轮问答,
+// 点赞沉淀正向经验(source=feedback_up), 点踩沉淀反例(source=feedback_down)。
+// 失败仅记录日志, 不影响反馈主流程。
+func (s *Service) reflowFeedback(ctx context.Context, tenant string, f *agentic.Feedback) {
+	if f.ConversationID == "" || s.Engine == nil {
+		return
+	}
+	conv, err := s.Engine.GetConversation(f.ConversationID)
+	if err != nil || conv == nil {
+		return
+	}
+	var lastUser, lastAssistant string
+	for _, m := range conv.Messages {
+		if m.Role == "user" {
+			lastUser = m.Content
+		}
+		if m.Role == "assistant" {
+			lastAssistant = m.Content
+		}
+	}
+	if lastUser == "" || lastAssistant == "" {
+		return
+	}
+	source := agentic.MemorySourceFeedbackUp
+	outcome := "succeeded"
+	if f.Rating == "down" {
+		source = agentic.MemorySourceFeedbackDown
+		outcome = "false_positive"
+	}
+	if _, err := s.Engine.AddMemory(&agentic.ExperienceMemory{
+		TenantID:   tenant,
+		Category:   "对话反馈",
+		Problem:    truncateRunes(lastUser, 80),
+		Resolution: truncateRunes(lastAssistant, 500),
+		Outcome:    outcome,
+		Source:     source,
+	}); err != nil {
+		slog.Warn("feedback reflow to memory failed", "err", err)
+	}
+}
+
+// truncateRunes 按字符数截断(中文安全)。
+func truncateRunes(s string, n int) string {
+	r := []rune(s)
+	if len(r) <= n {
+		return s
+	}
+	return string(r[:n])
 }
 
 // handleListFeedback 返回当前租户的反馈列表(可按 conversation_id 过滤)。

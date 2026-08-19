@@ -33,6 +33,10 @@ func (s *Service) handleAddMemory(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	req.TenantID = tenantFromCtx(r.Context())
+	// 手动记录默认来源: 对话要点(与反馈回流/工单沉淀区分)
+	if req.Source == "" {
+		req.Source = agentic.MemorySourceConversation
+	}
 	m, err := s.Engine.AddMemory(&req)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())

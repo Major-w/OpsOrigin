@@ -1,6 +1,7 @@
 package agentic
 
 import (
+	"context"
 	"fmt"
 	"log/slog"
 	"sort"
@@ -8,6 +9,23 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+)
+
+// MemoryPersist 记忆持久化回调(由 cmd/core 注入 DB 实现, nil=仅内存态)。
+// AddMemory 新增/更新成功后调用, 保证"重启不丢"。
+type MemoryPersist func(ctx context.Context, m *ExperienceMemory) error
+
+// MemoryLoad 记忆全量加载回调(由 cmd/core 注入, 启动时灌入内存 map)。
+type MemoryLoad func(ctx context.Context, tenantID string) ([]*ExperienceMemory, error)
+
+// 记忆来源: disposal_case(工单沉淀) | manual(手动) | conversation(对话要点)
+// | feedback_up(点赞回流) | feedback_down(点踩反例)。
+const (
+	MemorySourceDisposalCase = "disposal_case"
+	MemorySourceManual       = "manual"
+	MemorySourceConversation = "conversation"
+	MemorySourceFeedbackUp   = "feedback_up"
+	MemorySourceFeedbackDown = "feedback_down"
 )
 
 // ExperienceMemory Agent 长期记忆条目(P0-1): 一条"问题特征 + 处置方案 + 结果"的经验,
@@ -20,23 +38,23 @@ import (
 // 检索: 对话/巡检时按问题关键词匹配该 Agent 的记忆, top-K 注入 system prompt,
 // 命中后 HitCount+1 并刷新 LastHitAt。
 type ExperienceMemory struct {
-	ID        string   `json:"id"`
-	TenantID  string   `json:"tenant_id"`
-	AgentID   string   `json:"agent_id,omitempty"` // 空=全 Agent 通用经验
-	Category  string   `json:"category,omitempty"` // 问题类型(如 "数据库"/"网络"/"容量")
-	Keywords  []string `json:"keywords"`           // 问题特征关键词(检索匹配用)
-	Problem   string   `json:"problem"`            // 问题描述(简短)
-	Resolution string  `json:"resolution"`         // 处置方案(可操作步骤)
-	Outcome   string   `json:"outcome"`            // 处置结果: succeeded | false_positive
-	Source    string   `json:"source,omitempty"`   // disposal_case(工单沉淀) | manual
-	HitCount  int      `json:"hit_count"`          // 命中复用次数
-	CreatedAt time.Time `json:"created_at"`
-	LastHitAt *time.Time `json:"last_hit_at,omitempty"`
+	ID         string     `json:"id"`
+	TenantID   string     `json:"tenant_id"`
+	AgentID    string     `json:"agent_id,omitempty"` // 空=全 Agent 通用经验
+	Category   string     `json:"category,omitempty"` // 问题类型(如 "数据库"/"网络"/"容量")
+	Keywords   []string   `json:"keywords"`           // 问题特征关键词(检索匹配用)
+	Problem    string     `json:"problem"`            // 问题描述(简短)
+	Resolution string     `json:"resolution"`         // 处置方案(可操作步骤)
+	Outcome    string     `json:"outcome"`            // 处置结果: succeeded | false_positive
+	Source     string     `json:"source,omitempty"`   // disposal_case(工单沉淀) | manual
+	HitCount   int        `json:"hit_count"`          // 命中复用次数
+	CreatedAt  time.Time  `json:"created_at"`
+	LastHitAt  *time.Time `json:"last_hit_at,omitempty"`
 }
 
 // MemoryFilter 记忆查询过滤条件。
 type MemoryFilter struct {
-	AgentID string
+	AgentID  string
 	Category string
 }
 
@@ -44,6 +62,7 @@ type MemoryFilter struct {
 const memoryTopK = 3
 
 // AddMemory 记录一条长期记忆(幂等: 同 agent+problem 已存在则更新并返回原条)。
+// 新增/更新成功后经 memoryPersist 回调落库(重启不丢)。
 func (e *Engine) AddMemory(m *ExperienceMemory) (*ExperienceMemory, error) {
 	if m == nil || strings.TrimSpace(m.Problem) == "" || strings.TrimSpace(m.Resolution) == "" {
 		return nil, fmt.Errorf("memory problem and resolution are required")
@@ -64,7 +83,9 @@ func (e *Engine) AddMemory(m *ExperienceMemory) (*ExperienceMemory, error) {
 			existing.Category = m.Category
 			existing.Outcome = m.Outcome
 			existing.Keywords = m.Keywords
+			existing.Source = m.Source
 			slog.Info("memory updated", "id", existing.ID, "agent", existing.AgentID)
+			e.persistMemory(existing)
 			return existing, nil
 		}
 	}
@@ -76,7 +97,47 @@ func (e *Engine) AddMemory(m *ExperienceMemory) (*ExperienceMemory, error) {
 	}
 	e.memories[m.ID] = m
 	slog.Info("memory added", "id", m.ID, "agent", m.AgentID, "category", m.Category)
+	e.persistMemory(m)
 	return m, nil
+}
+
+// persistMemory 记忆落库回调(失败仅记录, 不阻断内存写入)。
+func (e *Engine) persistMemory(m *ExperienceMemory) {
+	if e.memoryPersist == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := e.memoryPersist(ctx, m); err != nil {
+		slog.Warn("memory persist failed", "id", m.ID, "err", err)
+	}
+}
+
+// SetMemoryPersist 注入记忆持久化回调(DB 落库)。
+func (e *Engine) SetMemoryPersist(p MemoryPersist) { e.memoryPersist = p }
+
+// LoadMemories 从 DB 全量加载记忆进内存(启动时调用, 幂等覆盖)。
+func (e *Engine) LoadMemories(ctx context.Context, tenantID string, load MemoryLoad) error {
+	if load == nil {
+		return nil
+	}
+	items, err := load(ctx, tenantID)
+	if err != nil {
+		return err
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.memories == nil {
+		e.memories = map[string]*ExperienceMemory{}
+	}
+	for _, it := range items {
+		if it == nil || it.ID == "" {
+			continue
+		}
+		e.memories[it.ID] = it
+	}
+	slog.Info("memories loaded from db", "tenant", tenantID, "count", len(items))
+	return nil
 }
 
 // defaultKeywords 从问题描述抽取默认关键词(英文词优先, 中文按 2-4 字滑窗)。

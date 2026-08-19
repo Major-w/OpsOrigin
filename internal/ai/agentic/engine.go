@@ -19,6 +19,7 @@ import (
 	"github.com/opsorigin/core/internal/ai/ratelimit"
 	"github.com/opsorigin/core/pkg/auth"
 	"github.com/opsorigin/core/pkg/llm"
+	"github.com/opsorigin/core/pkg/principal"
 )
 
 // StreamChunk SSE 流式事件单元。用于区分思考过程(token 或 thinking)与工具标注(tool/error),
@@ -70,6 +71,8 @@ type Engine struct {
 
 	// memories Agent 长期记忆(P0-1): 进程内存储(与 agents/plans 同策略)。
 	memories map[string]*ExperienceMemory
+	// memoryPersist 记忆落库回调(由 cmd/core 注入 DB 实现, nil=仅内存态重启清空)。
+	memoryPersist MemoryPersist
 
 	// defaultSystemPrompt 是未配置 Agent 级 system_prompt 时的全局默认提示词(外置化,见 SetDefaultSystemPrompt)。
 	defaultSystemPrompt string
@@ -1877,7 +1880,8 @@ func (e *Engine) agentCount() int {
 // DefaultSystemPrompt 是全局默认 system prompt 的内置常量(外置化的兜底值)。
 // 运维可通过 LLMConfig.DefaultSystemPrompt(环境变量 OPSORIGIN_LLM_DEFAULT_SYSTEM_PROMPT)覆盖,
 // 实现"提示词外置/版本化": 不必改代码即可调整助手人设与行为边界。
-const DefaultSystemPrompt = "你是 OpsOrigin 智能运维助手,帮助用户完成主机巡检、故障排查、报告生成等运维任务。回答应简洁、专业、可操作。"
+const DefaultSystemPrompt = "你是 OpsOrigin 智能运维助手,帮助用户完成主机巡检、故障排查、报告生成等运维任务。回答应简洁、专业、可操作。" +
+	"\n\n【图表输出】当需要表达架构、拓扑、依赖、流程、时序关系时, 使用 mermaid 语法输出(```mermaid 代码块), 例如 flowchart/sequenceDiagram/graph 等; 其余回答正常使用 Markdown。"
 
 // citationGuidance 注入到 system prompt 的引用标注指引(实现 RAG grounding)。
 // 要求模型在引用知识库/工具结果时用 [^<id>] 标注,并在文末列出引用来源。
@@ -2448,16 +2452,25 @@ type Conversation struct {
 	ID        string        `json:"id"`
 	TenantID  string        `json:"tenant_id"`
 	AgentID   string        `json:"agent_id"`
+	OwnerID   string        `json:"owner_id"` // 创建者 user_id; 空=老数据/系统
 	Title     string        `json:"title"`
 	Messages  []llm.Message `json:"messages"`
 	CreatedAt time.Time     `json:"created_at"`
 	UpdatedAt time.Time     `json:"updated_at"`
+	// Permission 当前请求主体对该会话的权限(Service 层填充, 不入库): owner|edit|view
+	Permission string `json:"permission,omitempty"`
 }
 
 // SaveConversation 保存/更新对话。ID 为空时自动生成; title 取首条 user 消息前 40 字。
 func (e *Engine) SaveConversation(ctx context.Context, conv *Conversation) error {
 	if conv.TenantID == "" {
 		conv.TenantID = "default"
+	}
+	// 归属: 优先显式指定, 否则取当前请求主体(用户隔离)
+	if conv.OwnerID == "" {
+		if pr, ok := principal.FromContext(ctx); ok && pr.ID != "" {
+			conv.OwnerID = pr.ID
+		}
 	}
 	now := time.Now()
 	if conv.ID == "" {

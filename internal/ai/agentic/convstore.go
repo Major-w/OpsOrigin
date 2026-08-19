@@ -35,6 +35,7 @@ func (s *pgConvStore) init(ctx context.Context) {
 			id TEXT PRIMARY KEY,
 			tenant_id TEXT NOT NULL,
 			agent_id TEXT,
+			owner_id TEXT NOT NULL DEFAULT '',
 			title TEXT,
 			messages TEXT DEFAULT '[]',
 			created_at TIMESTAMPTZ NOT NULL,
@@ -44,21 +45,35 @@ func (s *pgConvStore) init(ctx context.Context) {
 		slog.Warn("ai conversation store init DDL failed", "err", err)
 		return
 	}
+	// 存量库幂等补列(用户隔离: 归属人)
+	s.db.ExecContext(ctx, `ALTER TABLE ai_conversations ADD COLUMN IF NOT EXISTS owner_id TEXT NOT NULL DEFAULT ''`)
+	// 会话共享表: 目标用户或用户组, 权限 view(仅查看)/edit(可继续对话)
+	s.db.ExecContext(ctx, `
+		CREATE TABLE IF NOT EXISTS ai_conversation_shares (
+			id TEXT PRIMARY KEY,
+			conversation_id TEXT NOT NULL,
+			target_type TEXT NOT NULL,
+			target_id TEXT NOT NULL,
+			permission TEXT NOT NULL DEFAULT 'view',
+			shared_by TEXT NOT NULL DEFAULT '',
+			created_at TIMESTAMPTZ NOT NULL
+		)`)
+	s.db.ExecContext(ctx, `CREATE UNIQUE INDEX IF NOT EXISTS idx_ai_conv_share_uniq ON ai_conversation_shares(conversation_id, target_type, target_id)`)
 	s.db.ExecContext(ctx, `CREATE INDEX IF NOT EXISTS idx_ai_conversations_tenant ON ai_conversations(tenant_id, updated_at DESC)`)
 }
 
 func (s *pgConvStore) Save(ctx context.Context, c *Conversation) error {
 	b, _ := json.Marshal(c.Messages)
 	_, err := s.db.ExecContext(ctx, `
-		INSERT INTO ai_conversations (id, tenant_id, agent_id, title, messages, created_at, updated_at)
-		VALUES ($1,$2,$3,$4,$5,$6,$7)
-		ON CONFLICT (id) DO UPDATE SET title=$4, messages=$5, updated_at=$7`,
-		c.ID, c.TenantID, c.AgentID, c.Title, b, c.CreatedAt, c.UpdatedAt)
+		INSERT INTO ai_conversations (id, tenant_id, agent_id, owner_id, title, messages, created_at, updated_at)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
+		ON CONFLICT (id) DO UPDATE SET title=$5, messages=$6, updated_at=$8`,
+		c.ID, c.TenantID, c.AgentID, c.OwnerID, c.Title, b, c.CreatedAt, c.UpdatedAt)
 	return err
 }
 
 func (s *pgConvStore) List(ctx context.Context, tenantID, agentID string, limit int) ([]*Conversation, error) {
-	query := `SELECT id, tenant_id, agent_id, title, messages, created_at, updated_at FROM ai_conversations WHERE tenant_id=$1`
+	query := `SELECT id, tenant_id, agent_id, owner_id, title, messages, created_at, updated_at FROM ai_conversations WHERE tenant_id=$1`
 	args := []any{tenantID}
 	if agentID != "" {
 		query += ` AND agent_id=$2`
@@ -78,12 +93,15 @@ func (s *pgConvStore) List(ctx context.Context, tenantID, agentID string, limit 
 	for rows.Next() {
 		c := &Conversation{}
 		var msgs []byte
-		var agentID sql.NullString
-		if err := rows.Scan(&c.ID, &c.TenantID, &agentID, &c.Title, &msgs, &c.CreatedAt, &c.UpdatedAt); err != nil {
+		var agentID, ownerID sql.NullString
+		if err := rows.Scan(&c.ID, &c.TenantID, &agentID, &ownerID, &c.Title, &msgs, &c.CreatedAt, &c.UpdatedAt); err != nil {
 			return nil, err
 		}
 		if agentID.Valid {
 			c.AgentID = agentID.String
+		}
+		if ownerID.Valid {
+			c.OwnerID = ownerID.String
 		}
 		_ = json.Unmarshal(msgs, &c.Messages)
 		out = append(out, c)
@@ -94,11 +112,11 @@ func (s *pgConvStore) List(ctx context.Context, tenantID, agentID string, limit 
 func (s *pgConvStore) Get(ctx context.Context, id string) (*Conversation, error) {
 	c := &Conversation{}
 	var msgs []byte
-	var agentID sql.NullString
+	var agentID, ownerID sql.NullString
 	err := s.db.QueryRowContext(ctx, `
-		SELECT id, tenant_id, agent_id, title, messages, created_at, updated_at
+		SELECT id, tenant_id, agent_id, owner_id, title, messages, created_at, updated_at
 		FROM ai_conversations WHERE id=$1`, id).
-		Scan(&c.ID, &c.TenantID, &agentID, &c.Title, &msgs, &c.CreatedAt, &c.UpdatedAt)
+		Scan(&c.ID, &c.TenantID, &agentID, &ownerID, &c.Title, &msgs, &c.CreatedAt, &c.UpdatedAt)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -107,6 +125,9 @@ func (s *pgConvStore) Get(ctx context.Context, id string) (*Conversation, error)
 	}
 	if agentID.Valid {
 		c.AgentID = agentID.String
+	}
+	if ownerID.Valid {
+		c.OwnerID = ownerID.String
 	}
 	_ = json.Unmarshal(msgs, &c.Messages)
 	return c, nil
