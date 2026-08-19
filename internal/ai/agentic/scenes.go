@@ -22,11 +22,11 @@ var ErrCatalogItemExists = errors.New("catalog item already exists")
 // (供前端展示, 不自动写入租户的知识分类体系), 服务目录项仅作元数据展示
 // (建议的标准化工单类型, 不自动建到 itsm_catalog)。
 type SceneTemplate struct {
-	ID          string   `json:"id"`
-	Name        string   `json:"name"`
-	Category    string   `json:"category"`            // 安全合规 / 容量规划 / 故障定位 ...
-	Description string   `json:"description"`
-	Icon        string   `json:"icon"`                // lucide 图标名
+	ID          string `json:"id"`
+	Name        string `json:"name"`
+	Category    string `json:"category"` // 安全合规 / 容量规划 / 故障定位 ...
+	Description string `json:"description"`
+	Icon        string `json:"icon"` // lucide 图标名
 	// AgentTemplateID 场景对应的岗位模板 ID(必填, InstantiateScene 据此创建数字员工)。
 	AgentTemplateID string `json:"agent_template_id"`
 	// InspectionTemplateIDs 场景内额外要创建的巡检模板 ID 列表(空=仅依赖岗位模板自带巡检)。
@@ -35,7 +35,7 @@ type SceneTemplate struct {
 	KnowledgeCategories []string `json:"knowledge_categories,omitempty"`
 	// SuggestedCatalog 场景推荐的标准化工单类型(仅元数据展示, 不自动落库)。
 	SuggestedCatalog []SceneCatalogItem `json:"suggested_catalog,omitempty"`
-	Tags             []string            `json:"tags,omitempty"`
+	Tags             []string           `json:"tags,omitempty"`
 }
 
 // SceneCatalogItem 场景推荐的标准化工单类型(前端展示场景包时一并列出,
@@ -50,12 +50,12 @@ type SceneCatalogItem struct {
 // 与 AgentTemplate/InspectionTemplate 同构, 按业务场景聚合"数字员工 + 主动巡检"。
 var PresetSceneTemplates = []*SceneTemplate{
 	{
-		ID:               "scene-security",
-		Name:             "安全合规",
-		Category:         "安全",
-		Description:      "安全合规官 + 安全基线巡检 + 推荐的标准合规处置工单类型, 让安全合规一键开箱即用。",
-		Icon:             "Shield",
-		AgentTemplateID:  "tpl-security",
+		ID:                    "scene-security",
+		Name:                  "安全合规",
+		Category:              "安全",
+		Description:           "安全合规官 + 安全基线巡检 + 推荐的标准合规处置工单类型, 让安全合规一键开箱即用。",
+		Icon:                  "Shield",
+		AgentTemplateID:       "tpl-security",
 		InspectionTemplateIDs: []string{"insp-security-baseline"},
 		KnowledgeCategories:   []string{"安全", "合规", "运维手册"},
 		SuggestedCatalog: []SceneCatalogItem{
@@ -66,12 +66,12 @@ var PresetSceneTemplates = []*SceneTemplate{
 		Tags: []string{"安全", "合规", "基线"},
 	},
 	{
-		ID:               "scene-capacity",
-		Name:             "容量规划",
-		Category:         "容量",
-		Description:      "成本优化分析师 + 容量水位巡检 + 推荐的扩容/降配/回收工单类型, 提前预警容量瓶颈并量化降本空间。",
-		Icon:             "TrendingDown",
-		AgentTemplateID:  "tpl-cost",
+		ID:                    "scene-capacity",
+		Name:                  "容量规划",
+		Category:              "容量",
+		Description:           "成本优化分析师 + 容量水位巡检 + 推荐的扩容/降配/回收工单类型, 提前预警容量瓶颈并量化降本空间。",
+		Icon:                  "TrendingDown",
+		AgentTemplateID:       "tpl-cost",
 		InspectionTemplateIDs: []string{"insp-capacity"},
 		KnowledgeCategories:   []string{"成本", "运维手册"},
 		SuggestedCatalog: []SceneCatalogItem{
@@ -82,12 +82,12 @@ var PresetSceneTemplates = []*SceneTemplate{
 		Tags: []string{"容量", "成本", "FinOps"},
 	},
 	{
-		ID:               "scene-incident",
-		Name:             "故障定位",
-		Category:         "应急",
-		Description:      "故障应急指挥官 + 主机健康巡检 + 推荐的故障应急/复盘工单类型, 让故障定位与止血动作标准化。",
-		Icon:             "Siren",
-		AgentTemplateID:  "tpl-sre",
+		ID:                    "scene-incident",
+		Name:                  "故障定位",
+		Category:              "应急",
+		Description:           "故障应急指挥官 + 主机健康巡检 + 推荐的故障应急/复盘工单类型, 让故障定位与止血动作标准化。",
+		Icon:                  "Siren",
+		AgentTemplateID:       "tpl-sre",
 		InspectionTemplateIDs: []string{"insp-host-health"},
 		KnowledgeCategories:   []string{"故障", "运维手册"},
 		SuggestedCatalog: []SceneCatalogItem{
@@ -98,12 +98,27 @@ var PresetSceneTemplates = []*SceneTemplate{
 		Tags: []string{"故障", "应急", "SRE"},
 	},
 	{
-		ID:               "scene-alert",
-		Name:             "告警分级",
-		Category:         "监控",
-		Description:      "值班 SRE + 主机健康巡检 + 推荐的告警升级/值班交接工单类型, 让告警降噪与分级响应闭环。",
-		Icon:             "Bell",
-		AgentTemplateID:  "tpl-sre",
+		ID:                    "scene-rca",
+		Name:                  "故障复盘 RCA",
+		Category:              "应急",
+		Description:           "故障复盘分析师 + 主机健康巡检 + 标准 RCA 六段报告模板(时间线/影响/根因/证据/处置/预防), 一键产出可沉淀的复盘报告。",
+		Icon:                  "FileSearch",
+		AgentTemplateID:       "tpl-rca",
+		InspectionTemplateIDs: []string{"insp-host-health"},
+		KnowledgeCategories:   []string{"故障", "复盘", "运维手册"},
+		SuggestedCatalog: []SceneCatalogItem{
+			{Name: "故障复盘", Description: "故障恢复后做根因分析并输出复盘", Category: "problem"},
+			{Name: "预防措施落地", Description: "将复盘改进项转为可执行的变更或任务", Category: "change"},
+		},
+		Tags: []string{"RCA", "复盘", "根因"},
+	},
+	{
+		ID:                    "scene-alert",
+		Name:                  "告警分级",
+		Category:              "监控",
+		Description:           "值班 SRE + 主机健康巡检 + 推荐的告警升级/值班交接工单类型, 让告警降噪与分级响应闭环。",
+		Icon:                  "Bell",
+		AgentTemplateID:       "tpl-sre",
 		InspectionTemplateIDs: []string{"insp-host-health"},
 		KnowledgeCategories:   []string{"监控", "值班", "运维手册"},
 		SuggestedCatalog: []SceneCatalogItem{
@@ -114,12 +129,12 @@ var PresetSceneTemplates = []*SceneTemplate{
 		Tags: []string{"告警", "值班", "降噪"},
 	},
 	{
-		ID:               "scene-remediation",
-		Name:             "自动修复",
-		Category:         "应急",
-		Description:      "处置自动化 Agent + 主机健康巡检 + 推荐的修复授权/回滚预案工单, 让低风险故障自动止血。",
-		Icon:             "Wrench",
-		AgentTemplateID:  "tpl-sre",
+		ID:                    "scene-remediation",
+		Name:                  "自动修复",
+		Category:              "应急",
+		Description:           "处置自动化 Agent + 主机健康巡检 + 推荐的修复授权/回滚预案工单, 让低风险故障自动止血。",
+		Icon:                  "Wrench",
+		AgentTemplateID:       "tpl-sre",
 		InspectionTemplateIDs: []string{"insp-host-health"},
 		KnowledgeCategories:   []string{"自动化", "运维手册"},
 		SuggestedCatalog: []SceneCatalogItem{
@@ -130,12 +145,12 @@ var PresetSceneTemplates = []*SceneTemplate{
 		Tags: []string{"自动修复", "自治", "SRE"},
 	},
 	{
-		ID:               "scene-incident-resp",
-		Name:             "应急响应",
-		Category:         "应急",
-		Description:      "应急指挥官 + 主机健康巡检 + 推荐的应急预案/协同/复盘工单, 让故障响应动作标准化可复盘。",
-		Icon:             "LifeBuoy",
-		AgentTemplateID:  "tpl-sre",
+		ID:                    "scene-incident-resp",
+		Name:                  "应急响应",
+		Category:              "应急",
+		Description:           "应急指挥官 + 主机健康巡检 + 推荐的应急预案/协同/复盘工单, 让故障响应动作标准化可复盘。",
+		Icon:                  "LifeBuoy",
+		AgentTemplateID:       "tpl-sre",
 		InspectionTemplateIDs: []string{"insp-host-health"},
 		KnowledgeCategories:   []string{"应急", "SRE", "运维手册"},
 		SuggestedCatalog: []SceneCatalogItem{
@@ -146,12 +161,12 @@ var PresetSceneTemplates = []*SceneTemplate{
 		Tags: []string{"应急", "预案", "协同"},
 	},
 	{
-		ID:               "scene-resource",
-		Name:             "资源运营",
-		Category:         "容量",
-		Description:      "成本分析师 + 容量水位巡检 + 推荐的资源回收/规格调整/成本分摊工单, 让闲置资源变回钱。",
-		Icon:             "Boxes",
-		AgentTemplateID:  "tpl-cost",
+		ID:                    "scene-resource",
+		Name:                  "资源运营",
+		Category:              "容量",
+		Description:           "成本分析师 + 容量水位巡检 + 推荐的资源回收/规格调整/成本分摊工单, 让闲置资源变回钱。",
+		Icon:                  "Boxes",
+		AgentTemplateID:       "tpl-cost",
 		InspectionTemplateIDs: []string{"insp-capacity"},
 		KnowledgeCategories:   []string{"成本", "资源", "FinOps"},
 		SuggestedCatalog: []SceneCatalogItem{
@@ -162,12 +177,12 @@ var PresetSceneTemplates = []*SceneTemplate{
 		Tags: []string{"资源", "FinOps", "成本"},
 	},
 	{
-		ID:               "scene-config",
-		Name:             "配置漂移",
-		Category:         "变更",
-		Description:      "网络运维专家 + 配置漂移巡检 + 推荐的配置回滚/基线修复工单, 让配置变更可审计可回退。",
-		Icon:             "GitBranch",
-		AgentTemplateID:  "tpl-netops",
+		ID:                    "scene-config",
+		Name:                  "配置漂移",
+		Category:              "变更",
+		Description:           "网络运维专家 + 配置漂移巡检 + 推荐的配置回滚/基线修复工单, 让配置变更可审计可回退。",
+		Icon:                  "GitBranch",
+		AgentTemplateID:       "tpl-netops",
 		InspectionTemplateIDs: []string{"insp-config-drift"},
 		KnowledgeCategories:   []string{"配置", "网络", "运维手册"},
 		SuggestedCatalog: []SceneCatalogItem{
@@ -208,11 +223,11 @@ func (e *Engine) SetSceneCatalogCreator(fn func(ctx context.Context, tenantID, n
 
 // SceneInstantiateResult 一键启用场景的结果(用于 HTTP 响应一次性展示)。
 type SceneInstantiateResult struct {
-	Agent       *model.AgentInstance `json:"agent,omitempty"`       // 创建的数字员工
-	Inspection  *Inspection          `json:"inspection,omitempty"`  // 岗位模板自带的关联巡检(若有)
-	Inspections []*Inspection        `json:"inspections,omitempty"` // 场景额外创建的巡检(含 Inspection)
-	Catalog     []SceneCatalogItem   `json:"catalog,omitempty"`     // 建议服务目录(元数据; autoCreateTickets=true 时已落库)
-	CreatedCatalog int               `json:"created_catalog"`       // 实际创建的目录项数(autoCreateTickets=true 且回调已装配时 >0)
+	Agent          *model.AgentInstance `json:"agent,omitempty"`       // 创建的数字员工
+	Inspection     *Inspection          `json:"inspection,omitempty"`  // 岗位模板自带的关联巡检(若有)
+	Inspections    []*Inspection        `json:"inspections,omitempty"` // 场景额外创建的巡检(含 Inspection)
+	Catalog        []SceneCatalogItem   `json:"catalog,omitempty"`     // 建议服务目录(元数据; autoCreateTickets=true 时已落库)
+	CreatedCatalog int                  `json:"created_catalog"`       // 实际创建的目录项数(autoCreateTickets=true 且回调已装配时 >0)
 }
 
 // InstantiateScene 一键启用场景包: 创建数字员工 + 场景自带巡检 + 额外巡检。

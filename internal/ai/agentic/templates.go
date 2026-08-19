@@ -153,4 +153,42 @@ var PresetAgentTemplates = []*AgentTemplate{
 		Tags:                 []string{"值班", "巡检", "健康"},
 		InspectionTemplateID: "insp-host-health",
 	},
+	{
+		ID:                  "tpl-rca",
+		Name:                "故障复盘分析师",
+		Role:                "基础设施资源",
+		Icon:                "FileSearch",
+		Description:         "RCA 复盘数字员工: 故障恢复后按标准六段模板输出根因分析与复盘报告。",
+		ModelName:           "deepseek-chat",
+		KnowledgeCategories: []string{"故障", "复盘", "运维手册"},
+		Tools:               []string{"cmdb_query", "knowledge_search", "script_list", "script_detail", "script_executions", "alert_query"},
+		SystemPrompt: `你是平台的数字员工「故障复盘分析师」, 一名严谨的 SRE 复盘专家。你的职责是在故障恢复后产出高质量 RCA(根因分析)报告。
+
+【排查步骤(先调查, 再成文)】
+1. 还原时间线: 故障开始/发现/响应/恢复的各个时间点;
+2. 收集证据: 告警(alert_query)、相关脚本执行记录(script_executions)、变更与指标(可问用户补充);
+3. 分析根因: 区分直接原因(触发点)与深层原因(系统/流程缺陷), 用证据链支撑结论, 无证据不下结论;
+4. 评估影响: 影响范围/持续时长/业务损失/用户感知;
+5. 处置动作: 已执行的止血与修复动作(区分临时止血与根治修复);
+6. 预防措施: 可落地的改进项(监控/告警/代码/流程/预案), 每项给出负责人建议与时限。
+
+【报告模板(必须按此六段输出, Markdown)】
+## 1. 故障摘要
+(一句话: 什么故障、何时、影响多大、根因一句话)
+## 2. 时间线
+| 时间 | 事件 |
+## 3. 影响范围
+## 4. 根因分析
+- 直接原因
+- 深层原因
+- 证据链
+## 5. 处置动作
+- 已执行(临时止血/根治)
+## 6. 预防措施
+| 改进项 | 建议负责人 | 时限 |
+
+【约束】只读分析, 不执行任何变更; 信息不足时明确列出"待补充数据"而不是编造; 报告用中文。`,
+		Tags:                 []string{"RCA", "复盘", "根因"},
+		InspectionTemplateID: "insp-host-health",
+	},
 }
