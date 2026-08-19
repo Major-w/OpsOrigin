@@ -6,8 +6,11 @@ import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { apiFetch } from '@/lib/utils'
 import { toast } from '@/stores/toast'
+import { useCan } from '@/stores/permissions'
 import { RefreshCw, ShieldAlert, CheckCircle2, GitMerge, Trash2 } from 'lucide-react'
 import { cn } from '@/lib/utils'
+import { ConfirmDialog } from '@/components/ui/confirm-dialog'
+import { ErrorState } from '@/components/ui/error-state'
 
 interface QualityIssue {
   ci_id?: string
@@ -36,37 +39,62 @@ const sevColor: Record<string, string> = {
 const dimLabel: Record<string, string> = { completeness: '完整性', uniqueness: '唯一性', consistency: '一致性' }
 
 export default function CMDBQualityPage() {
+  const canRead = useCan('cmdb:read')
+  const canWrite = useCan('cmdb:write')
   const [report, setReport] = useState<QualityReport | null>(null)
   const [loading, setLoading] = useState(false)
+  const [loadError, setLoadError] = useState<string | null>(null)
+  const [fixTarget, setFixTarget] = useState<QualityIssue | null>(null)
+  const [fixSubmitting, setFixSubmitting] = useState(false)
 
   const load = async () => {
-    setLoading(true)
+    setLoading(true); setLoadError(null)
     try {
       setReport(await apiFetch<QualityReport>('/cmdb/quality'))
     } catch (e: any) {
+      setLoadError(e.message || '质量扫描失败')
       toast.error('质量扫描失败: ' + e.message)
     } finally { setLoading(false) }
   }
 
   useEffect(() => { load() }, [])
 
-  const fix = async (issue: QualityIssue) => {
+  const openFix = (issue: QualityIssue) => {
     if (issue.dimension === 'uniqueness') {
       toast.info('重复 IP/名称请使用实例管理的「疑似重复」做调解合并')
       return
     }
     if (!issue.relation_id) return
-    if (!confirm(`修复：${issue.message}？`)) return
+    setFixTarget(issue)
+  }
+
+  const confirmFix = async () => {
+    const issue = fixTarget
+    if (!issue || !issue.relation_id) return
+    setFixSubmitting(true)
     try {
       const res = await apiFetch<{ fixed: boolean; dimension: string }>('/cmdb/quality/fix', {
         method: 'POST', body: JSON.stringify({ dimension: issue.dimension, relation_id: issue.relation_id }),
       })
       toast.success(res.fixed ? '已修复孤儿关系' : '无需处理')
+      setFixTarget(null)
       load()
-    } catch (e: any) { toast.error('修复失败: ' + e.message) }
+    } catch (e: any) { toast.error('修复失败: ' + e.message) } finally { setFixSubmitting(false) }
   }
 
   const scoreColor = (s: number) => s >= 85 ? 'text-emerald-600' : s >= 60 ? 'text-amber-600' : 'text-red-600'
+
+  if (!canRead) {
+    return (
+      <div className="p-6">
+        <Card><CardContent className="flex flex-col items-center justify-center gap-2 py-16 text-center">
+          <ShieldAlert className="h-8 w-8 text-muted-foreground" />
+          <p className="text-sm font-medium">无访问权限</p>
+          <p className="text-xs text-muted-foreground">当前账号缺少「查看 CMDB 资源（cmdb:read）」权限，无法查看数据质量中心。</p>
+        </CardContent></Card>
+      </div>
+    )
+  }
 
   return (
     <div className="p-6 space-y-4">
@@ -77,6 +105,8 @@ export default function CMDBQualityPage() {
         </div>
         <Button variant="outline" onClick={load} disabled={loading}><RefreshCw className={cn('h-4 w-4 mr-1', loading && 'animate-spin')} />重新扫描</Button>
       </div>
+
+      {loadError && !report && <ErrorState message={`质量扫描失败：${loadError}`} onRetry={load} />}
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
         {/* 综合分 */}
@@ -128,10 +158,12 @@ export default function CMDBQualityPage() {
                     <td className="px-4 py-2"><Badge className={cn('text-[10px]', sevColor[issue.severity] || sevColor.low)}>{issue.severity}</Badge></td>
                     <td className="px-4 py-2 text-xs">{issue.message}</td>
                     <td className="px-4 py-2">
-                      {issue.dimension === 'consistency' && issue.relation_id ? (
-                        <Button variant="outline" size="sm" className="h-6 text-xs" onClick={() => fix(issue)}><Trash2 className="h-3 w-3 mr-1" />删除</Button>
+                      {!canWrite ? (
+                        <span className="text-xs text-muted-foreground">需写权限</span>
+                      ) : issue.dimension === 'consistency' && issue.relation_id ? (
+                        <Button variant="outline" size="sm" className="h-6 text-xs" onClick={() => openFix(issue)}><Trash2 className="h-3 w-3 mr-1" />删除</Button>
                       ) : issue.dimension === 'uniqueness' ? (
-                        <Button variant="outline" size="sm" className="h-6 text-xs" onClick={() => fix(issue)}><GitMerge className="h-3 w-3 mr-1" />合并</Button>
+                        <Button variant="outline" size="sm" className="h-6 text-xs" onClick={() => openFix(issue)}><GitMerge className="h-3 w-3 mr-1" />合并</Button>
                       ) : (
                         <span className="text-xs text-muted-foreground flex items-center gap-1"><CheckCircle2 className="h-3 w-3" />自动</span>
                       )}
@@ -146,6 +178,16 @@ export default function CMDBQualityPage() {
           </div>
         </CardContent>
       </Card>
+
+      <ConfirmDialog
+        open={!!fixTarget}
+        onClose={() => setFixTarget(null)}
+        onConfirm={confirmFix}
+        title="确认修复"
+        description={fixTarget ? `修复：${fixTarget.message}？` : ''}
+        confirmLabel="修复"
+        loading={fixSubmitting}
+      />
     </div>
   )
 }

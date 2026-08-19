@@ -8,6 +8,7 @@ import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { Input } from '@/components/ui/input'
 import PanoramaGraph, { type PanoramaGraphNode, type PanoramaGraphEdge } from '@/components/cmdb/PanoramaGraph'
+import { HEALTH_COLOR } from '@/lib/graph-colors'
 import {
   Activity, RefreshCw, Search, Network, AlertTriangle, Server, Database, Globe, Boxes,
 } from 'lucide-react'
@@ -44,10 +45,6 @@ const TYPE_ICON: Record<string, any> = {
 const HEALTH_BADGE: Record<string, 'destructive' | 'warning' | 'success' | 'secondary'> = {
   critical: 'destructive', warning: 'warning', healthy: 'success', unknown: 'secondary',
 }
-const HEALTH_COLOR: Record<string, string> = {
-  critical: '#ef4444', warning: '#f59e0b', healthy: '#22c55e', unknown: '#94a3b8',
-}
-
 export default function PanoramaPage() {
   const { items, fetch } = useCMDBStore()
   const [scope, setScope] = useState('')

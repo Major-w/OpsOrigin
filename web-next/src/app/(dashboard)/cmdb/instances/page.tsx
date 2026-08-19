@@ -1,7 +1,7 @@
 'use client'
 
 import { useEffect, useState, useRef } from 'react'
-import { useSearchParams } from 'next/navigation'
+import { useSearchParams, useRouter } from 'next/navigation'
 import { useCMDBStore, type CIModel, type AttributeChange, type CIRelation } from '@/stores/cmdb'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
@@ -12,6 +12,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { formatTime, apiFetch, apiList, apiBase, apiFetchRaw } from '@/lib/utils'
 import { toast } from '@/stores/toast'
 import { useCan } from '@/stores/permissions'
+import { ConfirmDialog } from '@/components/ui/confirm-dialog'
 import TopologyGraph from '@/components/TopologyGraph'
 import { SourceBadge, ProvenanceSummary } from '@/components/cmdb/SourceBadge'
 import { Plus, Pencil, Trash2, Network, Search, ChevronLeft, ChevronRight, Link2, Unlink, AlertTriangle, Download, Upload, Archive, ArchiveRestore, Bookmark, GitMerge } from 'lucide-react'
@@ -45,15 +46,18 @@ function statusVariant(s: string): 'success' | 'destructive' | 'outline' | 'seco
 export default function CMDBPage() {
   const { items, relations, loading, fetch, search, create, update, remove, getAudit, fetchRelations, createRelation, deleteRelation } = useCMDBStore()
   const canDelete = useCan('cmdb:delete')
+  const canWrite = useCan('cmdb:write')
   const searchParams = useSearchParams()
+  const router = useRouter()
   // CMDB 概览页/搜索结果通过 ?ci=<id> 深链进来，需要直接展开对应配置项详情
   const deepLinkCI = searchParams.get('ci')
   const deepLinkDone = useRef<string | null>(null)
   const [dialogOpen, setDialogOpen] = useState(false)
   const [editId, setEditId] = useState<string | null>(null)
   const [form, setForm] = useState<{ name: string; type_id: string; description: string; attributes: Record<string, any>; labels: Record<string, string> }>({ name: '', type_id: 'server', description: '', attributes: {}, labels: {} })
-  const [searchQ, setSearchQ] = useState('')
-  const [typeFilter, setTypeFilter] = useState('')
+  // 筛选条件与 URL query 双向同步（?q= 关键字 / ?type= 模型类型），支持深链与跨页状态延续
+  const [searchQ, setSearchQ] = useState(() => searchParams.get('q') || '')
+  const [typeFilter, setTypeFilter] = useState(() => searchParams.get('type') || '')
   const [archivedView, setArchivedView] = useState(false)
   const [savedQueries, setSavedQueries] = useState<SavedQuery[]>([])
   const [sqDialogOpen, setSqDialogOpen] = useState(false)
@@ -98,6 +102,11 @@ export default function CMDBPage() {
   const [batchAttrs, setBatchAttrs] = useState<Record<string, string>>({})
   const [batchRelOpen, setBatchRelOpen] = useState(false)
   const [batchRelForm, setBatchRelForm] = useState({ target_id: '', relation_type: 'depends_on' })
+  // 提交防重: 各写操作按钮在请求进行中锁定, 防止双击重复提交
+  const [submitting, setSubmitting] = useState(false)
+  const [relSubmitting, setRelSubmitting] = useState(false)
+  const [batchRelSubmitting, setBatchRelSubmitting] = useState(false)
+  const [sqSubmitting, setSqSubmitting] = useState(false)
 
   const toggleCheck = (id: string) => {
     setChecked(prev => {
@@ -110,15 +119,23 @@ export default function CMDBPage() {
   const checkedList = () => Array.from(checked)
 
   // 批量删除(二次确认)
-  const handleBatchDelete = async () => {
+  const [batchDeleteOpen, setBatchDeleteOpen] = useState(false)
+  const [batchDeleteSubmitting, setBatchDeleteSubmitting] = useState(false)
+  const openBatchDelete = () => {
     const ids = checkedList()
     if (!ids.length) return
-    if (!confirm(`确认删除选中的 ${ids.length} 个资产？此操作不可撤销。`)) return
+    setBatchDeleteOpen(true)
+  }
+  const confirmBatchDelete = async () => {
+    const ids = checkedList()
+    if (!ids.length) return
+    setBatchDeleteSubmitting(true)
     try {
       const res = await apiFetch<{ deleted: number; failed: { id: string; error: string }[] }>('/cmdb/ci/batch-delete', { method: 'POST', body: JSON.stringify({ ids }) })
       toast.success(`已删除 ${res.deleted} 个资产${res.failed?.length ? `，${res.failed.length} 个失败` : ''}`)
       setChecked(new Set()); loadData()
-    } catch (e: any) { toast.error('批量删除失败: ' + e.message) }
+      setBatchDeleteOpen(false)
+    } catch (e: any) { toast.error('批量删除失败: ' + e.message) } finally { setBatchDeleteSubmitting(false) }
   }
 
   // 批量改属性
@@ -141,13 +158,14 @@ export default function CMDBPage() {
   // 批量建关系(源 = 勾选集合)
   const handleBatchCreateRel = async () => {
     const ids = checkedList()
-    if (!ids.length || !batchRelForm.target_id) return
-    const relations = ids.map(source_id => ({ source_id, target_id: batchRelForm.target_id, relation_type: batchRelForm.relation_type }))
+    if (batchRelSubmitting || !ids.length || !batchRelForm.target_id) return
+    setBatchRelSubmitting(true)
     try {
+      const relations = ids.map(source_id => ({ source_id, target_id: batchRelForm.target_id, relation_type: batchRelForm.relation_type }))
       const res = await apiFetch<{ created: number; failed: { source_id: string; target_id: string; error: string }[] }>('/cmdb/relation/batch', { method: 'POST', body: JSON.stringify({ relations }) })
       toast.success(`已创建 ${res.created} 条关系${res.failed?.length ? `，${res.failed.length} 条失败(可能成环)` : ''}`)
       setBatchRelOpen(false); fetchRelations(); loadData()
-    } catch (e: any) { toast.error('批量建关系失败: ' + e.message) }
+    } catch (e: any) { toast.error('批量建关系失败: ' + e.message) } finally { setBatchRelSubmitting(false) }
   }
 
   // 实体调解合并(IRE): 疑似重复候选组 + 合并
@@ -172,16 +190,22 @@ export default function CMDBPage() {
     finally { setReconcileLoading(false) }
   }
 
-  const handleReconcileMerge = async (g: typeof reconcileGroups[number]) => {
+  // 实体调解合并(IRE): 二次确认
+  const [mergeTarget, setMergeTarget] = useState<typeof reconcileGroups[number] | null>(null)
+  const [mergeSubmitting, setMergeSubmitting] = useState(false)
+  const openReconcileMerge = (g: typeof reconcileGroups[number]) => setMergeTarget(g)
+  const confirmReconcileMerge = async () => {
+    const g = mergeTarget
+    if (!g) return
     const keep = reconcileKeep[g.key]
     const mergeIds = g.members.map(m => m.ci_id).filter(id => id !== keep)
     if (!keep || !mergeIds.length) return
-    if (!confirm(`合并「${g.reason}」：保留 ${g.members.find(m => m.ci_id === keep)?.name}，合并 ${mergeIds.length} 条为一条？（被合并的 CI 将删除）`)) return
+    setMergeSubmitting(true)
     try {
       const res = await apiFetch<{ kept_id: string; merged_count: number; updated_fields: string[] }>('/cmdb/reconcile/merge', { method: 'POST', body: JSON.stringify({ keep_id: keep, merge_ids: mergeIds }) })
       toast.success(`已合并 ${res.merged_count} 条，更新字段: ${res.updated_fields.join(', ') || '无'}`)
-      openReconcile(); loadData()
-    } catch (e: any) { toast.error('合并失败: ' + e.message) }
+      setMergeTarget(null); openReconcile(); loadData()
+    } catch (e: any) { toast.error('合并失败: ' + e.message) } finally { setMergeSubmitting(false) }
   }
 
   useEffect(() => {
@@ -235,7 +259,8 @@ export default function CMDBPage() {
   }
 
   const handleSaveQuery = async () => {
-    if (!sqName.trim()) { toast.error('请输入查询名称'); return }
+    if (sqSubmitting || !sqName.trim()) { if (!sqName.trim()) toast.error('请输入查询名称'); return }
+    setSqSubmitting(true)
     try {
       await apiFetch('/cmdb/saved-queries', {
         method: 'POST',
@@ -244,7 +269,7 @@ export default function CMDBPage() {
       toast.success('已保存查询策略')
       setSqDialogOpen(false); setSqName('')
       loadSavedQueries()
-    } catch (e: any) { toast.error('保存失败: ' + e.message) }
+    } catch (e: any) { toast.error('保存失败: ' + e.message) } finally { setSqSubmitting(false) }
   }
 
   const handleApplySavedQuery = (sq: SavedQuery) => {
@@ -254,9 +279,18 @@ export default function CMDBPage() {
     loadData()
   }
 
+  // 筛选条件写入 URL（?q= / ?type=），便于深链与跨页延续
+  const syncUrl = (q: string, t: string) => {
+    const p = new URLSearchParams()
+    if (q) p.set('q', q)
+    if (t) p.set('type', t)
+    router.replace(`/cmdb/instances?${p.toString()}`, { scroll: false })
+  }
+
   const handleSearch = () => {
     if (searchQ) search(searchQ, typeFilter, archivedView ? 'true' : 'false')
     else loadData()
+    syncUrl(searchQ, typeFilter)
   }
 
   const handleExport = async () => {
@@ -294,10 +328,14 @@ export default function CMDBPage() {
   }
 
   const handleSubmit = async () => {
-    if (editId) await update(editId, form)
-    else await create(form)
-    setDialogOpen(false); setEditId(null); setForm({ name: '', type_id: 'server', description: '', attributes: {}, labels: {} })
-    loadData()
+    if (submitting) return
+    setSubmitting(true)
+    try {
+      if (editId) await update(editId, form)
+      else await create(form)
+      setDialogOpen(false); setEditId(null); setForm({ name: '', type_id: 'server', description: '', attributes: {}, labels: {} })
+      loadData()
+    } finally { setSubmitting(false) }
   }
 
   const handleEdit = (item: CIModel) => {
@@ -365,10 +403,14 @@ export default function CMDBPage() {
   }
 
   const handleCreateRel = async () => {
-    await createRelation(relForm)
-    setRelDialogOpen(false)
-    fetchRelations()
-    if (selectedCI) handleSelectCI(selectedCI)
+    if (relSubmitting || !relForm.source_id || !relForm.target_id) return
+    setRelSubmitting(true)
+    try {
+      await createRelation(relForm)
+      setRelDialogOpen(false)
+      fetchRelations()
+      if (selectedCI) handleSelectCI(selectedCI)
+    } finally { setRelSubmitting(false) }
   }
 
   const handleDeleteRel = async (id: string) => {
@@ -417,7 +459,7 @@ export default function CMDBPage() {
           <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground" />
           <Input className="pl-8" placeholder="搜索资产名称..." value={searchQ} onChange={e => setSearchQ(e.target.value)} onKeyDown={e => e.key === 'Enter' && handleSearch()} />
         </div>
-        <select className="h-10 rounded-md border border-input bg-background px-3 py-2 text-sm" value={typeFilter} onChange={e => { setTypeFilter(e.target.value); setPage(0) }}>
+        <select className="h-10 rounded-md border border-input bg-background px-3 py-2 text-sm" value={typeFilter} onChange={e => { setTypeFilter(e.target.value); setPage(0); syncUrl(searchQ, e.target.value) }}>
           <option value="">所有类型</option>
           {CI_TYPES.map(t => <option key={t} value={t}>{t}</option>)}
         </select>
@@ -485,7 +527,21 @@ export default function CMDBPage() {
           <Card>
             <CardHeader className="py-3"><CardTitle className="text-sm">实例列表 ({items.length})</CardTitle></CardHeader>
             <CardContent className="p-0">
-              {loading && items.length === 0 ? <p className="px-4 text-sm text-muted-foreground">加载中...</p> : items.length === 0 ? <p className="px-4 text-sm text-muted-foreground">暂无实例。</p> : (
+              {loading && items.length === 0 ? <p className="px-4 text-sm text-muted-foreground">加载中...</p> : items.length === 0 ? (
+                <div className="flex flex-col items-center justify-center gap-2 py-12 text-center">
+                  <p className="text-sm text-muted-foreground">
+                    {typeFilter ? '当前筛选条件下' : '当前'}暂无配置项实例。
+                  </p>
+                  <p className="text-xs text-muted-foreground/70">
+                    配置项（CI）是 CMDB 的最小管理单元，可手动新建或从「自动发现」接入。
+                  </p>
+                  {canWrite && (
+                    <Button className="mt-2" size="sm" onClick={() => { setEditId(null); setForm({ name: '', type_id: typeFilter || 'server', description: '', attributes: {}, labels: {} }); setDialogOpen(true) }}>
+                      <Plus className="h-4 w-4 mr-1" />新建配置项
+                    </Button>
+                  )}
+                </div>
+              ) : (
                 <div className="flex flex-col">
                   {/* 批量操作栏 */}
                   <div className="flex items-center gap-1.5 px-3 py-2 border-b bg-muted/30">
@@ -496,7 +552,7 @@ export default function CMDBPage() {
                       <div className="flex gap-1 ml-auto">
                         <Button variant="outline" size="sm" className="h-6 text-xs" onClick={() => setBatchAttrOpen(true)}><Pencil className="h-3 w-3 mr-1" />改属性</Button>
                         <Button variant="outline" size="sm" className="h-6 text-xs" onClick={() => setBatchRelOpen(true)}><Link2 className="h-3 w-3 mr-1" />建关系</Button>
-                        <Button variant="outline" size="sm" className="h-6 text-xs text-destructive" onClick={handleBatchDelete}><Trash2 className="h-3 w-3 mr-1" />删除</Button>
+                        <Button variant="outline" size="sm" className="h-6 text-xs text-destructive" onClick={openBatchDelete}><Trash2 className="h-3 w-3 mr-1" />删除</Button>
                       </div>
                     )}
                   </div>
@@ -812,7 +868,7 @@ export default function CMDBPage() {
               placeholder="env=prod,region=us-east-1" />
           </div>
         </div>
-        <DialogFooter><Button variant="outline" onClick={() => setDialogOpen(false)}>取消</Button><Button onClick={handleSubmit} disabled={!form.name}>{editId ? '保存' : '创建'}</Button></DialogFooter>
+        <DialogFooter><Button variant="outline" onClick={() => setDialogOpen(false)} disabled={submitting}>取消</Button><Button onClick={handleSubmit} disabled={!form.name || submitting}>{editId ? '保存' : '创建'}{submitting ? '…' : ''}</Button></DialogFooter>
       </Dialog>
 
       <Dialog open={relDialogOpen} onClose={() => setRelDialogOpen(false)} title="新建关联">
@@ -838,7 +894,7 @@ export default function CMDBPage() {
             </select>
           </div>
         </div>
-        <DialogFooter><Button variant="outline" onClick={() => setRelDialogOpen(false)}>取消</Button><Button onClick={handleCreateRel} disabled={!relForm.source_id || !relForm.target_id}>创建</Button></DialogFooter>
+        <DialogFooter><Button variant="outline" onClick={() => setRelDialogOpen(false)} disabled={relSubmitting}>取消</Button><Button onClick={handleCreateRel} disabled={!relForm.source_id || !relForm.target_id || relSubmitting}>创建{relSubmitting ? '…' : ''}</Button></DialogFooter>
       </Dialog>
 
       <Dialog open={editAttrsOpen} onClose={() => setEditAttrsOpen(false)} title="编辑自定义属性">        <div className="space-y-3 max-h-[60vh] overflow-y-auto">
@@ -900,7 +956,7 @@ export default function CMDBPage() {
           </div>
           <p className="text-xs text-muted-foreground">将为每个勾选的资产创建一条指向该目标的关系（逐条环路检测，成环的会失败并跳过）。</p>
         </div>
-        <DialogFooter><Button variant="outline" onClick={() => setBatchRelOpen(false)}>取消</Button><Button onClick={handleBatchCreateRel} disabled={!batchRelForm.target_id}>批量创建</Button></DialogFooter>
+        <DialogFooter><Button variant="outline" onClick={() => setBatchRelOpen(false)} disabled={batchRelSubmitting}>取消</Button><Button onClick={handleBatchCreateRel} disabled={!batchRelForm.target_id || batchRelSubmitting}>批量创建{batchRelSubmitting ? '…' : ''}</Button></DialogFooter>
       </Dialog>
 
       <input ref={fileRef} type="file" accept=".csv" className="hidden" onChange={handleImportFile} />
@@ -916,7 +972,7 @@ export default function CMDBPage() {
             <div key={g.key} className="border rounded-md p-3 space-y-2">
               <div className="flex items-center justify-between">
                 <p className="text-sm font-medium">{g.reason}</p>
-                <Button variant="outline" size="sm" className="h-6 text-xs" onClick={() => handleReconcileMerge(g)}><GitMerge className="h-3 w-3 mr-1" />合并</Button>
+                <Button variant="outline" size="sm" className="h-6 text-xs" onClick={() => openReconcileMerge(g)}><GitMerge className="h-3 w-3 mr-1" />合并</Button>
               </div>
               <div className="space-y-1">
                 {g.members.map(m => (
@@ -945,7 +1001,7 @@ export default function CMDBPage() {
           <p className="text-sm text-muted-foreground">将当前筛选条件（类型：{typeFilter || '全部'}{searchQ ? `，关键字：${searchQ}` : ''}）存为可复用查询（"我想查"）。</p>
           <div><label className="text-sm font-medium">查询名称 *</label><Input value={sqName} onChange={e => setSqName(e.target.value)} placeholder="例如：华东区 Web 服务器" /></div>
         </div>
-        <DialogFooter><Button variant="outline" onClick={() => setSqDialogOpen(false)}>取消</Button><Button onClick={handleSaveQuery} disabled={!sqName.trim()}><Bookmark className="h-4 w-4 mr-1" />保存</Button></DialogFooter>
+        <DialogFooter><Button variant="outline" onClick={() => setSqDialogOpen(false)} disabled={sqSubmitting}>取消</Button><Button onClick={handleSaveQuery} disabled={!sqName.trim() || sqSubmitting}><Bookmark className="h-4 w-4 mr-1" />保存{sqSubmitting ? '…' : ''}</Button></DialogFooter>
       </Dialog>
 
       <Dialog open={importOpen} onClose={() => setImportOpen(false)} title="导入结果">
@@ -970,6 +1026,26 @@ export default function CMDBPage() {
         </div>
         <DialogFooter><Button onClick={() => setImportOpen(false)}>关闭</Button></DialogFooter>
       </Dialog>
+
+      <ConfirmDialog
+        open={batchDeleteOpen}
+        onClose={() => setBatchDeleteOpen(false)}
+        onConfirm={confirmBatchDelete}
+        title="确认批量删除"
+        description={`将永久删除选中的 ${checkedList().length} 个配置项，此操作不可撤销。`}
+        confirmLabel="删除"
+        loading={batchDeleteSubmitting}
+      />
+
+      <ConfirmDialog
+        open={!!mergeTarget}
+        onClose={() => setMergeTarget(null)}
+        onConfirm={confirmReconcileMerge}
+        title="确认实体调解合并"
+        description={mergeTarget ? `合并「${mergeTarget.reason}」：保留 ${mergeTarget.members.find(m => m.ci_id === (reconcileKeep[mergeTarget.key]))?.name}，将其余 ${mergeTarget.members.filter(m => m.ci_id !== (reconcileKeep[mergeTarget.key])).length} 条合并为一条（被合并的 CI 将删除）。` : ''}
+        confirmLabel="合并"
+        loading={mergeSubmitting}
+      />
     </div>
   )
 }

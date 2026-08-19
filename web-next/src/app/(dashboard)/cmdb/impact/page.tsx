@@ -6,6 +6,7 @@ import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { Input } from '@/components/ui/input'
 import { apiFetch, apiList } from '@/lib/utils'
+import { useCan } from '@/stores/permissions'
 import { AlertTriangle, Search, Server, ArrowRight, RefreshCw } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { useThemeStore } from '@/stores/theme'
@@ -50,6 +51,7 @@ const levelLabel: Record<string, string> = {
 }
 
 export default function CMDBImpactPage() {
+  const canRead = useCan('cmdb:read')
   const [ciList, setCiList] = useState<CIRow[]>([])
   const [loading, setLoading] = useState(true)
   const [selectedCI, setSelectedCI] = useState('')
@@ -93,6 +95,18 @@ export default function CMDBImpactPage() {
   const filteredCIs = ciList.filter(c => !search
     || c.name?.toLowerCase().includes(search.toLowerCase())
     || c.type_id?.toLowerCase().includes(search.toLowerCase()))
+
+  if (!canRead) {
+    return (
+      <div className="p-6">
+        <Card><CardContent className="flex flex-col items-center justify-center gap-2 py-16 text-center">
+          <AlertTriangle className="h-8 w-8 text-muted-foreground" />
+          <p className="text-sm font-medium">无访问权限</p>
+          <p className="text-xs text-muted-foreground">当前账号缺少「查看 CMDB 资源（cmdb:read）」权限，无法使用影响分析。</p>
+        </CardContent></Card>
+      </div>
+    )
+  }
 
   return (
     <div className="p-6 space-y-4">

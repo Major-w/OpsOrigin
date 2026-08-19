@@ -13,6 +13,9 @@ import {
   Server, Database, Cloud, Globe, Boxes, Shield, Layers,
 } from 'lucide-react'
 import { cn, formatTime } from '@/lib/utils'
+import { useCan } from '@/stores/permissions'
+import { RELATION_COLORS, GRAPH_DEFAULT_COLOR } from '@/lib/graph-colors'
+import { ErrorState } from '@/components/ui/error-state'
 
 // CI 类型 -> 图标 + 颜色映射
 const TYPE_META: Record<string, { icon: any; color: string; bg: string; border: string }> = {
@@ -28,18 +31,7 @@ const TYPE_META: Record<string, { icon: any; color: string; bg: string; border: 
 }
 const DEFAULT_META = { icon: Server, color: 'text-gray-600', bg: 'bg-gray-50 dark:bg-gray-500/10', border: 'border-gray-300 dark:border-gray-500/30' }
 
-// 关系类型 -> 颜色映射
-const RELATION_COLORS: Record<string, string> = {
-  depends_on: '#ef4444',
-  connects_to: '#3b82f6',
-  contains: '#10b981',
-  backup_of: '#f59e0b',
-  deployed_on: '#8b5cf6',
-  calls: '#06b6d4',
-  belongs_to: '#ec4899',
-  part_of: '#6366f1',
-}
-
+// 关系类型 -> 颜色映射（集中维护于 lib/graph-colors.ts）
 const RELATION_LABELS: Record<string, string> = {
   depends_on: '依赖于',
   connects_to: '连接到',
@@ -73,6 +65,7 @@ function layoutNodes(nodes: TopologyNode[], rootId: string): Record<string, { x:
 }
 
 export default function TopologyPage() {
+  const canRead = useCan('cmdb:read')
   const { items, topology, impactResult, fetch, fetchTopology, fetchImpact } = useCMDBStore()
   const [selectedCI, setSelectedCI] = useState<string>('')
   const [searchQ, setSearchQ] = useState('')
@@ -88,10 +81,20 @@ export default function TopologyPage() {
   const draggingRef = useRef<string | null>(null)
   const dragOffsetRef = useRef({ x: 0, y: 0 })
   const canvasRef = useRef<HTMLDivElement>(null)
+  const [loadError, setLoadError] = useState<string | null>(null)
+
+  const loadInitial = useCallback(async () => {
+    setLoadError(null)
+    try {
+      await fetch({ limit: 200 })
+    } catch (e: any) {
+      setLoadError(e.message || '加载实例列表失败')
+    }
+  }, [fetch])
 
   useEffect(() => {
-    fetch({ limit: 200 })
-  }, [])
+    loadInitial()
+  }, [loadInitial])
 
   // 首次加载后默认选中第一个 CI
   useEffect(() => {
@@ -208,8 +211,21 @@ export default function TopologyPage() {
     return stats
   }, [topology])
 
+  if (!canRead) {
+    return (
+      <div className="p-6">
+        <Card><CardContent className="flex flex-col items-center justify-center gap-2 py-16 text-center">
+          <Network className="h-8 w-8 text-muted-foreground" />
+          <p className="text-sm font-medium">无访问权限</p>
+          <p className="text-xs text-muted-foreground">当前账号缺少「查看 CMDB 资源（cmdb:read）」权限，无法查看拓扑可视化。</p>
+        </CardContent></Card>
+      </div>
+    )
+  }
+
   return (
     <div className="p-6 space-y-4">
+      {loadError && items.length === 0 && <ErrorState message={`拓扑数据加载失败：${loadError}`} onRetry={loadInitial} />}
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-2xl font-bold">拓扑可视化</h1>
@@ -296,7 +312,7 @@ export default function TopologyPage() {
                   <div className="flex flex-wrap gap-1">
                     {Object.entries(relStats).map(([type, count]) => (
                       <Badge key={type} variant="outline" className="text-[10px]">
-                        <span style={{ color: RELATION_COLORS[type] || '#666' }}>●</span>
+                        <span style={{ color: RELATION_COLORS[type] || GRAPH_DEFAULT_COLOR }}>●</span>
                         {RELATION_LABELS[type] || type}: {count}
                       </Badge>
                     ))}
@@ -410,7 +426,7 @@ export default function TopologyPage() {
                         const src = positions[edge.source_id]
                         const tgt = positions[edge.target_id]
                         if (!src || !tgt) return null
-                        const color = RELATION_COLORS[edge.relation_type] || '#666'
+                        const color = RELATION_COLORS[edge.relation_type] || GRAPH_DEFAULT_COLOR
                         // 贝塞尔曲线控制点
                         const mx = (src.x + tgt.x) / 2
                         const my = (src.y + tgt.y) / 2

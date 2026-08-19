@@ -8,6 +8,7 @@ import { Input } from '@/components/ui/input'
 import { Dialog, DialogFooter } from '@/components/ui/dialog'
 import { FileText, Search, AlertTriangle, CheckCircle, Clock, GitBranch, ArrowRight, Link2 } from 'lucide-react'
 import { apiFetch, apiList } from '@/lib/utils'
+import { useCan } from '@/stores/permissions'
 import { toast } from '@/stores/toast'
 import { cn } from '@/lib/utils'
 
@@ -25,6 +26,8 @@ function computeRisk(impact?: ImpactResult): number {
 }
 
 export default function CMDBChangeAssessPage() {
+  const canRead = useCan('cmdb:read')
+  const canWrite = useCan('cmdb:write')
   const [changes, setChanges] = useState<ChangeRequest[]>([])
   const [cis, setCis] = useState<CI[]>([])
   const [ciNames, setCiNames] = useState<Record<string, string>>({})
@@ -111,6 +114,18 @@ export default function CMDBChangeAssessPage() {
   }
   const getRiskColor = (score: number) => score >= 80 ? 'text-red-600' : score >= 60 ? 'text-orange-600' : score >= 40 ? 'text-yellow-600' : 'text-green-600'
 
+  if (!canRead) {
+    return (
+      <div className="p-6">
+        <Card><CardContent className="flex flex-col items-center justify-center gap-2 py-16 text-center">
+          <FileText className="h-8 w-8 text-muted-foreground" />
+          <p className="text-sm font-medium">无访问权限</p>
+          <p className="text-xs text-muted-foreground">当前账号缺少「查看 CMDB 资源（cmdb:read）」权限，无法使用变更影响评估。</p>
+        </CardContent></Card>
+      </div>
+    )
+  }
+
   return (
     <div className="p-6 space-y-4">
       <div className="flex items-center justify-between">
@@ -118,7 +133,7 @@ export default function CMDBChangeAssessPage() {
           <h1 className="text-2xl font-bold">变更影响评估</h1>
           <p className="text-sm text-muted-foreground">基于 CMDB 真实拓扑关系评估变更影响范围，联动 ITSM 变更流程</p>
         </div>
-        <Button onClick={() => setDialogOpen(true)}><FileText className="h-4 w-4" />新建变更</Button>
+        {canWrite && <Button onClick={() => setDialogOpen(true)}><FileText className="h-4 w-4" />新建变更</Button>}
       </div>
 
       <div className="grid grid-cols-4 gap-4">
@@ -151,7 +166,7 @@ export default function CMDBChangeAssessPage() {
                     </div>
                     <div className="flex items-center gap-1 shrink-0">
                       <Badge className={cn("text-[10px] mr-1", sc.color)}>{sc.label}</Badge>
-                      <button className="text-red-400 hover:text-red-600" onClick={(e) => { e.stopPropagation(); handleDelete(change.id) }}><AlertTriangle className="h-3 w-3" /></button>
+                      {canWrite && <button className="text-red-400 hover:text-red-600" onClick={(e) => { e.stopPropagation(); handleDelete(change.id) }}><AlertTriangle className="h-3 w-3" /></button>}
                     </div>
                   </div>
                   <div className="flex items-center justify-between">
@@ -198,7 +213,7 @@ export default function CMDBChangeAssessPage() {
                   )}
 
                   <div className="flex gap-2 pt-2">
-                    {selected.status === 'draft' && (
+                    {canWrite && selected.status === 'draft' && (
                       <Button onClick={() => handleAssess(selected.id)} disabled={assessing}><AlertTriangle className="h-4 w-4" />{assessing ? '评估中...' : '开始评估'}</Button>
                     )}
                     {selected.status === 'approved' && (
@@ -234,7 +249,7 @@ export default function CMDBChangeAssessPage() {
             </select>
           </div>
         </div>
-        <DialogFooter><Button variant="outline" onClick={() => setDialogOpen(false)}>取消</Button><Button onClick={handleCreate} disabled={!form.title || !form.source_ci}>创建</Button></DialogFooter>
+        <DialogFooter><Button variant="outline" onClick={() => setDialogOpen(false)}>取消</Button><Button onClick={handleCreate} disabled={!form.title || !form.source_ci || !canWrite}>创建</Button></DialogFooter>
       </Dialog>
     </div>
   )

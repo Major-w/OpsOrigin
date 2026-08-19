@@ -72,11 +72,11 @@
   }
   ::selection {
     background: rgba(16, 185, 129, 0.2);
-    color: #059669;
+    color: var(--accent-foreground);
   }
   .dark ::selection {
     background: rgba(52, 211, 153, 0.2);
-    color: #34D399;
+    color: var(--accent-foreground);
   }
   ::-webkit-scrollbar {
     width: 6px;
