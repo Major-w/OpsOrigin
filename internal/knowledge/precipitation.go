@@ -3,7 +3,6 @@ package knowledge
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"github.com/opsorigin/core/pkg/httputil"
 	"net/http"
 	"strings"
@@ -144,7 +143,7 @@ func (s *PrecipitationStore) handleList(w http.ResponseWriter, r *http.Request) 
 
 func (s *PrecipitationStore) handleCreate(w http.ResponseWriter, r *http.Request) {
 	var rule PrecipitationRule
-	json.NewDecoder(r.Body).Decode(&rule)
+	httputil.BindJSON(r, &rule)
 	if rule.Name == "" {
 		httputil.WriteError(w, 400, "name is required")
 		return
@@ -155,7 +154,7 @@ func (s *PrecipitationStore) handleCreate(w http.ResponseWriter, r *http.Request
 
 func (s *PrecipitationStore) handleUpdate(w http.ResponseWriter, r *http.Request) {
 	var rule PrecipitationRule
-	json.NewDecoder(r.Body).Decode(&rule)
+	httputil.BindJSON(r, &rule)
 	rule.ID = r.PathValue("id")
 	s.Save(r.Context(), &rule)
 	httputil.WriteJSON(w, 200, rule)
@@ -175,7 +174,7 @@ func (s *PrecipitationStore) handleRun(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		Vars map[string]string `json:"vars"`
 	}
-	json.NewDecoder(r.Body).Decode(&body)
+	httputil.BindJSON(r, &body)
 	if body.Vars == nil {
 		body.Vars = map[string]string{}
 	}

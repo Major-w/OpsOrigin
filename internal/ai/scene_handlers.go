@@ -1,7 +1,6 @@
 package ai
 
 import (
-	"encoding/json"
 	"github.com/opsorigin/core/pkg/httputil"
 	"net/http"
 
@@ -42,9 +41,9 @@ func (s *Service) handleInstantiateScene(w http.ResponseWriter, r *http.Request)
 		Name              string `json:"name"`
 		AutoCreateTickets bool   `json:"auto_create_tickets"`
 	}
-	_ = json.NewDecoder(r.Body).Decode(&req)
+	_ = httputil.BindJSON(r, &req)
 
-	result, err := s.Engine.InstantiateScene(tenantFromCtx(r.Context()), r.PathValue("id"), req.Name, req.AutoCreateTickets)
+	result, err := s.Engine.InstantiateScene(auth.TenantFromContext(r.Context()), r.PathValue("id"), req.Name, req.AutoCreateTickets)
 	if err != nil {
 		httputil.WriteError(w, http.StatusBadRequest, err.Error())
 		return

@@ -3,7 +3,6 @@ package iam
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"net/http"
 	"sync"
 	"time"
@@ -384,13 +383,6 @@ func mergeUnique(a, b []string) []string {
 	return out
 }
 
-func tenantFromCtx(ctx context.Context) string {
-	if t, ok := ctx.Value("tenant_id").(string); ok && t != "" {
-		return t
-	}
-	return "default"
-}
-
 // RegisterRoutes 注册所有 IAM 路由。注意 "permissions" / "roles" / "groups"
 // 都是字面量段,在 Go 1.22+ ServeMux 中优先于 {id} 通配符匹配。
 func (s *Service) RegisterRoutes(mux *http.ServeMux) {
@@ -424,7 +416,7 @@ func (s *Service) handleListPermissions(w http.ResponseWriter, r *http.Request) 
 // ---------- 角色 ----------
 
 func (s *Service) handleListRoles(w http.ResponseWriter, r *http.Request) {
-	tenantID := tenantFromCtx(r.Context())
+	tenantID := auth.TenantFromContext(r.Context())
 	roles, err := s.store.ListRoles(r.Context(), tenantID)
 	if err != nil {
 		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
@@ -437,9 +429,9 @@ func (s *Service) handleListRoles(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Service) handleCreateRole(w http.ResponseWriter, r *http.Request) {
-	tenantID := tenantFromCtx(r.Context())
+	tenantID := auth.TenantFromContext(r.Context())
 	var req CreateRoleRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := httputil.BindJSON(r, &req); err != nil {
 		httputil.WriteError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
@@ -474,7 +466,7 @@ func (s *Service) handleCreateRole(w http.ResponseWriter, r *http.Request) {
 
 func (s *Service) handleGetRole(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	tenantID := tenantFromCtx(r.Context())
+	tenantID := auth.TenantFromContext(r.Context())
 	role, err := s.store.GetRole(r.Context(), id, tenantID)
 	if err != nil || role == nil {
 		httputil.WriteError(w, http.StatusNotFound, "role not found")
@@ -485,14 +477,14 @@ func (s *Service) handleGetRole(w http.ResponseWriter, r *http.Request) {
 
 func (s *Service) handleUpdateRole(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	tenantID := tenantFromCtx(r.Context())
+	tenantID := auth.TenantFromContext(r.Context())
 	existing, err := s.store.GetRole(r.Context(), id, tenantID)
 	if err != nil || existing == nil {
 		httputil.WriteError(w, http.StatusNotFound, "role not found")
 		return
 	}
 	var req UpdateRoleRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := httputil.BindJSON(r, &req); err != nil {
 		httputil.WriteError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
@@ -514,7 +506,7 @@ func (s *Service) handleUpdateRole(w http.ResponseWriter, r *http.Request) {
 
 func (s *Service) handleDeleteRole(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	tenantID := tenantFromCtx(r.Context())
+	tenantID := auth.TenantFromContext(r.Context())
 	existing, err := s.store.GetRole(r.Context(), id, tenantID)
 	if err != nil || existing == nil {
 		httputil.WriteError(w, http.StatusNotFound, "role not found")
@@ -535,7 +527,7 @@ func (s *Service) handleDeleteRole(w http.ResponseWriter, r *http.Request) {
 // ---------- 用户组 ----------
 
 func (s *Service) handleListGroups(w http.ResponseWriter, r *http.Request) {
-	tenantID := tenantFromCtx(r.Context())
+	tenantID := auth.TenantFromContext(r.Context())
 	groups, err := s.store.ListGroups(r.Context(), tenantID)
 	if err != nil {
 		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
@@ -548,9 +540,9 @@ func (s *Service) handleListGroups(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Service) handleCreateGroup(w http.ResponseWriter, r *http.Request) {
-	tenantID := tenantFromCtx(r.Context())
+	tenantID := auth.TenantFromContext(r.Context())
 	var req CreateGroupRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := httputil.BindJSON(r, &req); err != nil {
 		httputil.WriteError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
@@ -576,7 +568,7 @@ func (s *Service) handleCreateGroup(w http.ResponseWriter, r *http.Request) {
 
 func (s *Service) handleGetGroup(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	tenantID := tenantFromCtx(r.Context())
+	tenantID := auth.TenantFromContext(r.Context())
 	group, err := s.store.GetGroup(r.Context(), id, tenantID)
 	if err != nil || group == nil {
 		httputil.WriteError(w, http.StatusNotFound, "group not found")
@@ -587,14 +579,14 @@ func (s *Service) handleGetGroup(w http.ResponseWriter, r *http.Request) {
 
 func (s *Service) handleUpdateGroup(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	tenantID := tenantFromCtx(r.Context())
+	tenantID := auth.TenantFromContext(r.Context())
 	existing, err := s.store.GetGroup(r.Context(), id, tenantID)
 	if err != nil || existing == nil {
 		httputil.WriteError(w, http.StatusNotFound, "group not found")
 		return
 	}
 	var req UpdateGroupRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := httputil.BindJSON(r, &req); err != nil {
 		httputil.WriteError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
@@ -614,7 +606,7 @@ func (s *Service) handleUpdateGroup(w http.ResponseWriter, r *http.Request) {
 
 func (s *Service) handleDeleteGroup(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	tenantID := tenantFromCtx(r.Context())
+	tenantID := auth.TenantFromContext(r.Context())
 	if err := s.store.DeleteGroup(r.Context(), id, tenantID); err != nil {
 		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -626,7 +618,7 @@ func (s *Service) handleDeleteGroup(w http.ResponseWriter, r *http.Request) {
 
 func (s *Service) handleGetUserRoles(w http.ResponseWriter, r *http.Request) {
 	userID := r.PathValue("user_id")
-	tenantID := tenantFromCtx(r.Context())
+	tenantID := auth.TenantFromContext(r.Context())
 	roleIDs, err := s.store.GetUserRoles(r.Context(), userID, tenantID)
 	if err != nil {
 		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
@@ -647,9 +639,9 @@ func (s *Service) handleGetUserRoles(w http.ResponseWriter, r *http.Request) {
 
 func (s *Service) handleAssignUserRoles(w http.ResponseWriter, r *http.Request) {
 	userID := r.PathValue("user_id")
-	tenantID := tenantFromCtx(r.Context())
+	tenantID := auth.TenantFromContext(r.Context())
 	var req AssignUserRolesRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := httputil.BindJSON(r, &req); err != nil {
 		httputil.WriteError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}

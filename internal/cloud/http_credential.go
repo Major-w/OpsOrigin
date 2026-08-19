@@ -1,7 +1,6 @@
 package cloud
 
 import (
-	"encoding/json"
 	"github.com/opsorigin/core/pkg/httputil"
 	"net/http"
 	"strings"
@@ -91,7 +90,7 @@ func (s *Service) handleCreateCredential(w http.ResponseWriter, r *http.Request)
 		EnableCMDBCollect    *bool             `json:"enable_cmdb_collect,omitempty"`
 		EnableMonitorCollect *bool             `json:"enable_monitor_collect,omitempty"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := httputil.BindJSON(r, &req); err != nil {
 		httputil.WriteError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}

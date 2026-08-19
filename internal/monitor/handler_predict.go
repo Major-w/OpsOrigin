@@ -1,7 +1,6 @@
 package monitor
 
 import (
-	"encoding/json"
 	"github.com/opsorigin/core/pkg/httputil"
 	"net/http"
 
@@ -24,7 +23,7 @@ func (s *Service) handlePredict(w http.ResponseWriter, r *http.Request) {
 		Threshold float64   `json:"threshold"`
 		StepHours float64   `json:"step_hours"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := httputil.BindJSON(r, &req); err != nil {
 		httputil.WriteError(w, http.StatusBadRequest, "invalid request: "+err.Error())
 		return
 	}

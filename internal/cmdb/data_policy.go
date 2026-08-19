@@ -2,8 +2,8 @@ package cmdb
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
+	"github.com/opsorigin/core/pkg/auth"
 	"github.com/opsorigin/core/pkg/httputil"
 	"log/slog"
 	"net/http"
@@ -134,7 +134,7 @@ func (s *Service) loadDataPolicies(ctx context.Context, tenantID string) []*mode
 
 // handleListDataPolicies 数据权限规则列表。
 func (s *Service) handleListDataPolicies(w http.ResponseWriter, r *http.Request) {
-	tenantID := tenantFromCtx(r.Context())
+	tenantID := auth.TenantFromContext(r.Context())
 	if s.pg == nil {
 		httputil.WriteJSON(w, http.StatusOK, []*model.DataPolicy{})
 		return
@@ -152,9 +152,9 @@ func (s *Service) handleListDataPolicies(w http.ResponseWriter, r *http.Request)
 
 // handleSaveDataPolicy 新建/更新(按 role+model+action upsert)。
 func (s *Service) handleSaveDataPolicy(w http.ResponseWriter, r *http.Request) {
-	tenantID := tenantFromCtx(r.Context())
+	tenantID := auth.TenantFromContext(r.Context())
 	var p model.DataPolicy
-	if err := json.NewDecoder(r.Body).Decode(&p); err != nil {
+	if err := httputil.BindJSON(r, &p); err != nil {
 		httputil.WriteError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
@@ -176,7 +176,7 @@ func (s *Service) handleSaveDataPolicy(w http.ResponseWriter, r *http.Request) {
 // handleDeleteDataPolicy 删除规则。
 func (s *Service) handleDeleteDataPolicy(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	tenantID := tenantFromCtx(r.Context())
+	tenantID := auth.TenantFromContext(r.Context())
 	if err := s.pg.DeleteDataPolicy(r.Context(), id, tenantID); err != nil {
 		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 		return

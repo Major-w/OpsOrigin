@@ -202,7 +202,7 @@ func (s *Store) handleUpdate(w http.ResponseWriter, r *http.Request) {
 		tenant = "default"
 	}
 	var p Policy
-	if err := json.NewDecoder(r.Body).Decode(&p); err != nil {
+	if err := httputil.BindJSON(r, &p); err != nil {
 		httputil.WriteJSON(w, 400, map[string]string{"error": "invalid body"})
 		return
 	}
@@ -221,7 +221,7 @@ func (s *Store) handleCreate(w http.ResponseWriter, r *http.Request) {
 		tenant = "default"
 	}
 	var p Policy
-	if err := json.NewDecoder(r.Body).Decode(&p); err != nil {
+	if err := httputil.BindJSON(r, &p); err != nil {
 		httputil.WriteJSON(w, 400, map[string]string{"error": "invalid body"})
 		return
 	}

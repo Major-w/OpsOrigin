@@ -6,7 +6,7 @@ import (
 	"database/sql"
 	"encoding/base64"
 	"encoding/hex"
-	"encoding/json"
+	"github.com/opsorigin/core/pkg/auth"
 	"net/http"
 	"sync"
 	"time"
@@ -131,13 +131,6 @@ func NewService(db *sql.DB) *Service {
 	return &Service{store: st}
 }
 
-func tenantFromCtx(ctx context.Context) string {
-	if t, ok := ctx.Value("tenant_id").(string); ok && t != "" {
-		return t
-	}
-	return "default"
-}
-
 func (s *Service) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/v1/keys", s.handleCreate)
 	mux.HandleFunc("GET /api/v1/keys", s.handleList)
@@ -149,11 +142,11 @@ func (s *Service) RegisterRoutes(mux *http.ServeMux) {
 
 func (s *Service) handleCreate(w http.ResponseWriter, r *http.Request) {
 	var key KeyEntry
-	if err := json.NewDecoder(r.Body).Decode(&key); err != nil {
+	if err := httputil.BindJSON(r, &key); err != nil {
 		httputil.WriteError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
-	key.TenantID = tenantFromCtx(r.Context())
+	key.TenantID = auth.TenantFromContext(r.Context())
 
 	if key.Type == KeyTypeSSHPrivate || key.Type == KeyTypeSSHPublic {
 		key.Fingerprint = computeFingerprint(key.Content)
@@ -181,7 +174,7 @@ func (s *Service) handleCreate(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Service) handleList(w http.ResponseWriter, r *http.Request) {
-	tenantID := tenantFromCtx(r.Context())
+	tenantID := auth.TenantFromContext(r.Context())
 	keyType := KeyType(r.URL.Query().Get("type"))
 	keys, err := s.store.List(r.Context(), tenantID, keyType)
 	if err != nil {
@@ -196,7 +189,7 @@ func (s *Service) handleList(w http.ResponseWriter, r *http.Request) {
 
 func (s *Service) handleGet(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	tenantID := tenantFromCtx(r.Context())
+	tenantID := auth.TenantFromContext(r.Context())
 	key, err := s.store.Get(r.Context(), id, tenantID)
 	if err != nil || key == nil {
 		httputil.WriteError(w, http.StatusNotFound, "key not found")
@@ -207,7 +200,7 @@ func (s *Service) handleGet(w http.ResponseWriter, r *http.Request) {
 
 func (s *Service) handleUpdate(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	tenantID := tenantFromCtx(r.Context())
+	tenantID := auth.TenantFromContext(r.Context())
 	key, err := s.store.Get(r.Context(), id, tenantID)
 	if err != nil || key == nil {
 		httputil.WriteError(w, http.StatusNotFound, "key not found")
@@ -221,7 +214,7 @@ func (s *Service) handleUpdate(w http.ResponseWriter, r *http.Request) {
 		Host     string  `json:"host,omitempty"`
 		Port     string  `json:"port,omitempty"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := httputil.BindJSON(r, &req); err != nil {
 		httputil.WriteError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
@@ -259,7 +252,7 @@ func (s *Service) handleUpdate(w http.ResponseWriter, r *http.Request) {
 
 func (s *Service) handleDelete(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	tenantID := tenantFromCtx(r.Context())
+	tenantID := auth.TenantFromContext(r.Context())
 	s.store.Delete(r.Context(), id, tenantID)
 	httputil.WriteJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
 }
@@ -268,11 +261,11 @@ func (s *Service) handleBatchDelete(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		IDs []string `json:"ids"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := httputil.BindJSON(r, &req); err != nil {
 		httputil.WriteError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
-	tenantID := tenantFromCtx(r.Context())
+	tenantID := auth.TenantFromContext(r.Context())
 	if err := s.store.BatchDelete(r.Context(), tenantID, req.IDs); err != nil {
 		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 		return

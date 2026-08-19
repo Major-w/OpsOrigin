@@ -92,12 +92,6 @@ func (s *Service) RegisterRoutes(mux *http.ServeMux) {
 }
 
 // tenantFromCtx 从 context 取租户 ID，缺省返回 "default"。
-func tenantFromCtx(ctx context.Context) string {
-	if t, ok := ctx.Value("tenant_id").(string); ok && t != "" {
-		return t
-	}
-	return "default"
-}
 
 // traceIDFromCtx 从 context 取链路追踪 ID，缺省返回 "unknown"。
 func traceIDFromCtx(ctx context.Context) string {

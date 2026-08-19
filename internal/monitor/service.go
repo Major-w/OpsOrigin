@@ -2,7 +2,7 @@ package monitor
 
 import (
 	"context"
-	"encoding/json"
+	"github.com/opsorigin/core/pkg/auth"
 	"log/slog"
 	"net/http"
 	"strconv"
@@ -251,7 +251,7 @@ func (s *Service) Start(ctx context.Context) error {
 }
 
 func (s *Service) handleListTargets(w http.ResponseWriter, r *http.Request) {
-	tenantID := tenantFromCtx(r.Context())
+	tenantID := auth.TenantFromContext(r.Context())
 	targets := s.discovery.GetTargets()
 	filtered := make([]*model.MonitorTarget, 0)
 	for _, t := range targets {
@@ -274,7 +274,7 @@ type pluginWithUsage struct {
 }
 
 func (s *Service) handleListPlugins(w http.ResponseWriter, r *http.Request) {
-	tenantID := tenantFromCtx(r.Context())
+	tenantID := auth.TenantFromContext(r.Context())
 
 	// 统计各插件的接入目标：绑定关系记录在 target.Labels["plugin"]，复用既有目标存储。
 	usage := make(map[string][]string)
@@ -298,7 +298,7 @@ func (s *Service) handleListPlugins(w http.ResponseWriter, r *http.Request) {
 
 func (s *Service) handleGetTarget(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	tenantID := tenantFromCtx(r.Context())
+	tenantID := auth.TenantFromContext(r.Context())
 	target := s.discovery.GetTarget(id)
 	if target == nil || target.TenantID != tenantID {
 		httputil.WriteError(w, http.StatusNotFound, "target not found")
@@ -315,7 +315,7 @@ func (s *Service) handleAddTarget(w http.ResponseWriter, r *http.Request) {
 		Probes  []model.ProbeProtocol `json:"probes,omitempty"`
 		CIID    string                `json:"ci_id,omitempty"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := httputil.BindJSON(r, &req); err != nil {
 		httputil.WriteError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
@@ -333,7 +333,7 @@ func (s *Service) handleAddTarget(w http.ResponseWriter, r *http.Request) {
 	}
 	target := &model.MonitorTarget{
 		ID:        "manual-" + req.Name,
-		TenantID:  tenantFromCtx(r.Context()),
+		TenantID:  auth.TenantFromContext(r.Context()),
 		CIID:      ciID,
 		Name:      req.Name,
 		Address:   req.Address,
@@ -362,7 +362,7 @@ func (s *Service) handleRunProbe(w http.ResponseWriter, r *http.Request) {
 		Protocol model.ProbeProtocol `json:"protocol"`
 		Timeout  string              `json:"timeout,omitempty"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := httputil.BindJSON(r, &req); err != nil {
 		httputil.WriteError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
@@ -377,14 +377,14 @@ func (s *Service) handleRunProbe(w http.ResponseWriter, r *http.Request) {
 		Port:     req.Port,
 		Protocol: req.Protocol,
 		Timeout:  timeout,
-		TenantID: tenantFromCtx(r.Context()),
+		TenantID: auth.TenantFromContext(r.Context()),
 	}
 	result := s.prober.Probe(r.Context(), task)
 	httputil.WriteJSON(w, http.StatusOK, result)
 }
 
 func (s *Service) handleListAlerts(w http.ResponseWriter, r *http.Request) {
-	tenantID := tenantFromCtx(r.Context())
+	tenantID := auth.TenantFromContext(r.Context())
 	// status=history 返回已确认/已解决的处理历史; 其余返回活跃告警
 	if r.URL.Query().Get("status") == "history" {
 		history := s.aggregator.GetAlertHistory()
@@ -420,7 +420,7 @@ func (s *Service) handleAlertStats(w http.ResponseWriter, r *http.Request) {
 // handleAlertRCA 返回活跃告警的启发式根因分析(P0 补短板: 对标 Dynatrace Davis / AISWare RCA)。
 // 基于拓扑 + 严重度 + 触发时序评分, 输出根因候选列表。
 func (s *Service) handleAlertRCA(w http.ResponseWriter, r *http.Request) {
-	tenantID := tenantFromCtx(r.Context())
+	tenantID := auth.TenantFromContext(r.Context())
 	alerts := s.aggregator.GetActiveAlerts()
 	filtered := make([]*model.AlertEvent, 0, len(alerts))
 	for _, a := range alerts {
@@ -446,7 +446,7 @@ func (s *Service) handleAckAlert(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		AcknowledgedBy string `json:"acknowledged_by"`
 	}
-	json.NewDecoder(r.Body).Decode(&req)
+	httputil.BindJSON(r, &req)
 	if req.AcknowledgedBy == "" {
 		req.AcknowledgedBy = "admin"
 	}
@@ -476,11 +476,11 @@ func (s *Service) handleListRules(w http.ResponseWriter, r *http.Request) {
 
 func (s *Service) handleCreateRule(w http.ResponseWriter, r *http.Request) {
 	var rule model.AlertRule
-	if err := json.NewDecoder(r.Body).Decode(&rule); err != nil {
+	if err := httputil.BindJSON(r, &rule); err != nil {
 		httputil.WriteError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
-	rule.TenantID = tenantFromCtx(r.Context())
+	rule.TenantID = auth.TenantFromContext(r.Context())
 	rule.Enabled = true
 	s.aggregator.AddRule(&rule)
 	httputil.WriteJSON(w, http.StatusCreated, rule)
@@ -521,22 +521,15 @@ func (s *Service) handleSetParent(w http.ResponseWriter, r *http.Request) {
 		CIID     string `json:"ci_id"`
 		ParentID string `json:"parent_id"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := httputil.BindJSON(r, &req); err != nil {
 		httputil.WriteError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
-	tenantID := tenantFromCtx(r.Context())
+	tenantID := auth.TenantFromContext(r.Context())
 	if !s.topology.VerifyTenant(r.Context(), req.CIID, tenantID) {
 		httputil.WriteError(w, http.StatusNotFound, "ci not found in tenant")
 		return
 	}
 	s.topology.SetParent(r.Context(), req.CIID, req.ParentID)
 	httputil.WriteJSON(w, http.StatusOK, map[string]string{"status": "ok"})
-}
-
-func tenantFromCtx(ctx context.Context) string {
-	if t, ok := ctx.Value("tenant_id").(string); ok && t != "" {
-		return t
-	}
-	return "default"
 }

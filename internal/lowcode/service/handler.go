@@ -1,7 +1,6 @@
 package service
 
 import (
-	"encoding/json"
 	"net/http"
 	"strconv"
 
@@ -54,7 +53,7 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 
 func (h *Handler) handleCreateModel(w http.ResponseWriter, r *http.Request) {
 	var m model.DataModel
-	if err := json.NewDecoder(r.Body).Decode(&m); err != nil {
+	if err := httputil.BindJSON(r, &m); err != nil {
 		httputil.WriteError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
@@ -127,7 +126,7 @@ func (h *Handler) handleUpdateModel(w http.ResponseWriter, r *http.Request) {
 
 	// 解析更新数据
 	var m model.DataModel
-	if err := json.NewDecoder(r.Body).Decode(&m); err != nil {
+	if err := httputil.BindJSON(r, &m); err != nil {
 		httputil.WriteError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
@@ -161,7 +160,7 @@ func (h *Handler) handleDeleteModel(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) handleCreateInstance(w http.ResponseWriter, r *http.Request) {
 	var inst model.ModelInstance
-	if err := json.NewDecoder(r.Body).Decode(&inst); err != nil {
+	if err := httputil.BindJSON(r, &inst); err != nil {
 		httputil.WriteError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
@@ -235,7 +234,7 @@ func (h *Handler) handleUpdateInstance(w http.ResponseWriter, r *http.Request) {
 
 	// 解析更新数据
 	var inst model.ModelInstance
-	if err := json.NewDecoder(r.Body).Decode(&inst); err != nil {
+	if err := httputil.BindJSON(r, &inst); err != nil {
 		httputil.WriteError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
@@ -270,7 +269,7 @@ func (h *Handler) handleDeleteInstance(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) handleCreatePage(w http.ResponseWriter, r *http.Request) {
 	var p model.PageDefinition
-	if err := json.NewDecoder(r.Body).Decode(&p); err != nil {
+	if err := httputil.BindJSON(r, &p); err != nil {
 		httputil.WriteError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
@@ -343,7 +342,7 @@ func (h *Handler) handleUpdatePage(w http.ResponseWriter, r *http.Request) {
 
 	// 解析更新数据
 	var p model.PageDefinition
-	if err := json.NewDecoder(r.Body).Decode(&p); err != nil {
+	if err := httputil.BindJSON(r, &p); err != nil {
 		httputil.WriteError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
@@ -377,7 +376,7 @@ func (h *Handler) handleDeletePage(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) handleValidateForm(w http.ResponseWriter, r *http.Request) {
 	var data model.FormData
-	if err := json.NewDecoder(r.Body).Decode(&data); err != nil {
+	if err := httputil.BindJSON(r, &data); err != nil {
 		httputil.WriteError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}

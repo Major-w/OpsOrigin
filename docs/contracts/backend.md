@@ -7,11 +7,13 @@
 
 - **B1.1** 所有 HTTP handler 的响应必须经 `pkg/httputil` 的 `WriteError` / `WriteJSON`（列表响应用 `EmptySliceIfNil` 保证空列表返回 `[]` 而非 `null`）。禁止在 handler 里手写 `w.Write([]byte(...))` / `json.NewEncoder`。
 - **B1.2** 错误结构统一 `{ error: string }`（或带 code），非 2xx 一律走 `WriteError`。
+- **B1.3** 请求体解析统一 `httputil.BindJSON(r, &req)`，禁止手写 `json.NewDecoder(r.Body).Decode`（2026-08-19 已全仓替换 206 处）。
 
 ## B2 Context 透传
 
 - **B2.1** 禁止在 service/store 层使用 `context.Background()` / `context.TODO()` 作为请求上下文；必须透传 handler 的 `r.Context()`（含租户、鉴权、链路信息）。
 - **B2.2** 新增函数签名若有 context 参数，调用链必须逐层下传，禁止中途丢弃。
+- **B2.3** 租户取数统一 `auth.TenantFromContext(ctx)`（裸 key → principal → "default" 兜底），**禁止再定义本地 `tenantFromCtx` 副本**（2026-08-19 已收敛 11 份 → 1）。
 
 ## B3 权限点注册
 

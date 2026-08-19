@@ -1,7 +1,6 @@
 package ai
 
 import (
-	"encoding/json"
 	"github.com/opsorigin/core/pkg/httputil"
 	"net/http"
 
@@ -18,7 +17,7 @@ func (s *Service) handleListMemories(w http.ResponseWriter, r *http.Request) {
 	if c := r.URL.Query().Get("category"); c != "" {
 		filter.Category = c
 	}
-	httputil.WriteJSON(w, http.StatusOK, s.Engine.ListMemories(tenantFromCtx(r.Context()), filter))
+	httputil.WriteJSON(w, http.StatusOK, s.Engine.ListMemories(auth.TenantFromContext(r.Context()), filter))
 }
 
 // handleAddMemory 手动记录一条 Agent 长期记忆(P0-1)。
@@ -29,11 +28,11 @@ func (s *Service) handleAddMemory(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req agentic.ExperienceMemory
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := httputil.BindJSON(r, &req); err != nil {
 		httputil.WriteError(w, http.StatusBadRequest, "invalid request: "+err.Error())
 		return
 	}
-	req.TenantID = tenantFromCtx(r.Context())
+	req.TenantID = auth.TenantFromContext(r.Context())
 	// 手动记录默认来源: 对话要点(与反馈回流/工单沉淀区分)
 	if req.Source == "" {
 		req.Source = agentic.MemorySourceConversation
@@ -48,7 +47,7 @@ func (s *Service) handleAddMemory(w http.ResponseWriter, r *http.Request) {
 
 // handleDeleteMemory 删除一条记忆。
 func (s *Service) handleDeleteMemory(w http.ResponseWriter, r *http.Request) {
-	if !s.Engine.DeleteMemory(tenantFromCtx(r.Context()), r.PathValue("id")) {
+	if !s.Engine.DeleteMemory(auth.TenantFromContext(r.Context()), r.PathValue("id")) {
 		httputil.WriteError(w, http.StatusNotFound, "memory not found")
 		return
 	}

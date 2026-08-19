@@ -1,7 +1,6 @@
 package ai
 
 import (
-	"encoding/json"
 	"github.com/opsorigin/core/pkg/httputil"
 	"net/http"
 
@@ -25,9 +24,9 @@ func (s *Service) handleCreateFinetuneTask(w http.ResponseWriter, r *http.Reques
 		Method     string         `json:"method"`
 		Params     map[string]any `json:"params"`
 	}
-	_ = json.NewDecoder(r.Body).Decode(&req)
+	_ = httputil.BindJSON(r, &req)
 
-	t, err := s.Engine.CreateFinetuneTask(tenantFromCtx(r.Context()), req.Name, req.DatasetRef,
+	t, err := s.Engine.CreateFinetuneTask(auth.TenantFromContext(r.Context()), req.Name, req.DatasetRef,
 		req.BaseModel, req.Method, req.Params, func() string { u, _ := r.Context().Value("user_id").(string); return u }())
 	if err != nil {
 		httputil.WriteError(w, http.StatusBadRequest, err.Error())
@@ -38,7 +37,7 @@ func (s *Service) handleCreateFinetuneTask(w http.ResponseWriter, r *http.Reques
 
 // handleListFinetuneTasks 返回微调任务列表(创建时间倒序)。
 func (s *Service) handleListFinetuneTasks(w http.ResponseWriter, r *http.Request) {
-	httputil.WriteJSON(w, http.StatusOK, s.Engine.ListFinetuneTasks(tenantFromCtx(r.Context())))
+	httputil.WriteJSON(w, http.StatusOK, s.Engine.ListFinetuneTasks(auth.TenantFromContext(r.Context())))
 }
 
 // handleGetFinetuneTask 查询单个微调任务详情。

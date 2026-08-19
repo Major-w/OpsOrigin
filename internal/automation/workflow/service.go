@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/opsorigin/core/pkg/auth"
 	"net/http"
 	"regexp"
 	"strconv"
@@ -235,13 +236,6 @@ func (s *Service) SetScriptExecutor(exec ScriptExecutor) {
 	s.scriptExec = exec
 }
 
-func tenantFromCtx(ctx context.Context) string {
-	if t, ok := ctx.Value("tenant_id").(string); ok && t != "" {
-		return t
-	}
-	return "default"
-}
-
 func (s *Service) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/v1/workflows", s.handleCreate)
 	mux.HandleFunc("GET /api/v1/workflows", s.handleList)
@@ -261,7 +255,7 @@ func (s *Service) RegisterRoutes(mux *http.ServeMux) {
 
 func (s *Service) handleCreate(w http.ResponseWriter, r *http.Request) {
 	var wf Workflow
-	if err := json.NewDecoder(r.Body).Decode(&wf); err != nil {
+	if err := httputil.BindJSON(r, &wf); err != nil {
 		httputil.WriteError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
@@ -269,7 +263,7 @@ func (s *Service) handleCreate(w http.ResponseWriter, r *http.Request) {
 		httputil.WriteError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	wf.TenantID = tenantFromCtx(r.Context())
+	wf.TenantID = auth.TenantFromContext(r.Context())
 	if err := s.store.Create(r.Context(), &wf); err != nil {
 		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -278,7 +272,7 @@ func (s *Service) handleCreate(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Service) handleList(w http.ResponseWriter, r *http.Request) {
-	tenantID := tenantFromCtx(r.Context())
+	tenantID := auth.TenantFromContext(r.Context())
 	workflows, err := s.store.List(r.Context(), tenantID)
 	if err != nil {
 		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
@@ -292,7 +286,7 @@ func (s *Service) handleList(w http.ResponseWriter, r *http.Request) {
 
 func (s *Service) handleGet(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	tenantID := tenantFromCtx(r.Context())
+	tenantID := auth.TenantFromContext(r.Context())
 	wf, err := s.store.Get(r.Context(), id, tenantID)
 	if err != nil || wf == nil {
 		httputil.WriteError(w, http.StatusNotFound, "workflow not found")
@@ -303,14 +297,14 @@ func (s *Service) handleGet(w http.ResponseWriter, r *http.Request) {
 
 func (s *Service) handleUpdate(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	tenantID := tenantFromCtx(r.Context())
+	tenantID := auth.TenantFromContext(r.Context())
 	existing, err := s.store.Get(r.Context(), id, tenantID)
 	if err != nil || existing == nil {
 		httputil.WriteError(w, http.StatusNotFound, "workflow not found")
 		return
 	}
 	var wf Workflow
-	json.NewDecoder(r.Body).Decode(&wf)
+	httputil.BindJSON(r, &wf)
 	wf.ID = existing.ID
 	wf.TenantID = existing.TenantID
 	wf.CreatedAt = existing.CreatedAt
@@ -320,7 +314,7 @@ func (s *Service) handleUpdate(w http.ResponseWriter, r *http.Request) {
 
 func (s *Service) handleDelete(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	tenantID := tenantFromCtx(r.Context())
+	tenantID := auth.TenantFromContext(r.Context())
 	s.store.Delete(r.Context(), id, tenantID)
 	httputil.WriteJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
 }
@@ -329,7 +323,7 @@ func (s *Service) handleDelete(w http.ResponseWriter, r *http.Request) {
 // On an approval node it pauses (status=waiting) and returns the execution.
 func (s *Service) handleExecute(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	tenantID := tenantFromCtx(r.Context())
+	tenantID := auth.TenantFromContext(r.Context())
 	wf, err := s.store.Get(r.Context(), id, tenantID)
 	if err != nil || wf == nil {
 		httputil.WriteError(w, http.StatusNotFound, "workflow not found")
@@ -339,7 +333,7 @@ func (s *Service) handleExecute(w http.ResponseWriter, r *http.Request) {
 		AgentIDs []string       `json:"agent_ids"`
 		Inputs   map[string]any `json:"inputs,omitempty"`
 	}
-	json.NewDecoder(r.Body).Decode(&req)
+	httputil.BindJSON(r, &req)
 
 	now := time.Now()
 	exec := &WorkflowExecution{
@@ -591,7 +585,7 @@ func (s *Service) runParallelSteps(step *WorkflowStep, ctx map[string]any, agent
 }
 
 func (s *Service) handleListApprovals(w http.ResponseWriter, r *http.Request) {
-	tenantID := tenantFromCtx(r.Context())
+	tenantID := auth.TenantFromContext(r.Context())
 	approvals, err := s.store.ListApprovals(r.Context(), tenantID)
 	if err != nil {
 		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
@@ -615,7 +609,7 @@ func (s *Service) handleReject(w http.ResponseWriter, r *http.Request) {
 // on rejection it fails the execution.
 func (s *Service) decideApproval(w http.ResponseWriter, r *http.Request, status ApprovalStatus) {
 	id := r.PathValue("id")
-	tenantID := tenantFromCtx(r.Context())
+	tenantID := auth.TenantFromContext(r.Context())
 	approval, err := s.store.GetApproval(r.Context(), id, tenantID)
 	if err != nil || approval == nil {
 		httputil.WriteError(w, http.StatusNotFound, "approval not found")
@@ -629,7 +623,7 @@ func (s *Service) decideApproval(w http.ResponseWriter, r *http.Request, status 
 		DecidedBy string `json:"decided_by"`
 		Comment   string `json:"comment"`
 	}
-	json.NewDecoder(r.Body).Decode(&req)
+	httputil.BindJSON(r, &req)
 
 	now := time.Now()
 	approval.Status = status
@@ -687,7 +681,7 @@ func (s *Service) decideApproval(w http.ResponseWriter, r *http.Request, status 
 
 func (s *Service) handleListExecutions(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	tenantID := tenantFromCtx(r.Context())
+	tenantID := auth.TenantFromContext(r.Context())
 	execs, err := s.store.ListExecutions(r.Context(), id, tenantID)
 	if err != nil {
 		httputil.WriteError(w, http.StatusInternalServerError, err.Error())

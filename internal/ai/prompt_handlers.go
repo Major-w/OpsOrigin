@@ -1,7 +1,6 @@
 package ai
 
 import (
-	"encoding/json"
 	"github.com/opsorigin/core/pkg/httputil"
 	"net/http"
 
@@ -18,7 +17,7 @@ import (
 
 // handleListPrompts 列出租户提示词库, 可按 ?scene= 过滤。
 func (s *Service) handleListPrompts(w http.ResponseWriter, r *http.Request) {
-	prompts := s.Engine.ListPrompts(r.Context(), tenantFromCtx(r.Context()), r.URL.Query().Get("scene"))
+	prompts := s.Engine.ListPrompts(r.Context(), auth.TenantFromContext(r.Context()), r.URL.Query().Get("scene"))
 	if prompts == nil {
 		prompts = []*agentic.PromptTemplate{}
 	}
@@ -27,7 +26,7 @@ func (s *Service) handleListPrompts(w http.ResponseWriter, r *http.Request) {
 
 // handleGetPrompt 返回单条提示词详情(含解析出的占位变量)。
 func (s *Service) handleGetPrompt(w http.ResponseWriter, r *http.Request) {
-	p, err := s.Engine.GetPrompt(r.Context(), tenantFromCtx(r.Context()), r.PathValue("id"))
+	p, err := s.Engine.GetPrompt(r.Context(), auth.TenantFromContext(r.Context()), r.PathValue("id"))
 	if err != nil {
 		httputil.WriteError(w, http.StatusNotFound, err.Error())
 		return
@@ -51,11 +50,11 @@ func (s *Service) handleCreatePrompt(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req promptRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := httputil.BindJSON(r, &req); err != nil {
 		httputil.WriteError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
-	p, err := s.Engine.SavePrompt(r.Context(), tenantFromCtx(r.Context()), &agentic.PromptTemplate{
+	p, err := s.Engine.SavePrompt(r.Context(), auth.TenantFromContext(r.Context()), &agentic.PromptTemplate{
 		Name: req.Name, Scene: req.Scene, Description: req.Description,
 		Content: req.Content, IsDefault: req.IsDefault,
 	})
@@ -72,11 +71,11 @@ func (s *Service) handleUpdatePrompt(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req promptRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := httputil.BindJSON(r, &req); err != nil {
 		httputil.WriteError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
-	p, err := s.Engine.SavePrompt(r.Context(), tenantFromCtx(r.Context()), &agentic.PromptTemplate{
+	p, err := s.Engine.SavePrompt(r.Context(), auth.TenantFromContext(r.Context()), &agentic.PromptTemplate{
 		ID: r.PathValue("id"), Name: req.Name, Scene: req.Scene,
 		Description: req.Description, Content: req.Content, IsDefault: req.IsDefault,
 	})
@@ -92,7 +91,7 @@ func (s *Service) handleDeletePrompt(w http.ResponseWriter, r *http.Request) {
 	if !s.authorize(w, r, auth.PermissionAIToolExec) {
 		return
 	}
-	if err := s.Engine.DeletePrompt(r.Context(), tenantFromCtx(r.Context()), r.PathValue("id")); err != nil {
+	if err := s.Engine.DeletePrompt(r.Context(), auth.TenantFromContext(r.Context()), r.PathValue("id")); err != nil {
 		httputil.WriteError(w, http.StatusBadRequest, err.Error())
 		return
 	}
@@ -106,8 +105,8 @@ func (s *Service) handleRenderPrompt(w http.ResponseWriter, r *http.Request) {
 		Variables map[string]string `json:"variables"`
 	}
 	// 允许空 body: 不带变量时等价于取原文并计一次引用
-	_ = json.NewDecoder(r.Body).Decode(&req)
-	text, err := s.Engine.RenderPrompt(r.Context(), tenantFromCtx(r.Context()), r.PathValue("id"), req.Variables)
+	_ = httputil.BindJSON(r, &req)
+	text, err := s.Engine.RenderPrompt(r.Context(), auth.TenantFromContext(r.Context()), r.PathValue("id"), req.Variables)
 	if err != nil {
 		httputil.WriteError(w, http.StatusNotFound, err.Error())
 		return

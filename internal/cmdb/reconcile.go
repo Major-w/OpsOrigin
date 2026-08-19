@@ -2,8 +2,8 @@ package cmdb
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
+	"github.com/opsorigin/core/pkg/auth"
 	"github.com/opsorigin/core/pkg/httputil"
 	"log/slog"
 	"net/http"
@@ -202,7 +202,7 @@ func (s *Service) mergeReconcile(ctx context.Context, tenantID, keepID string, m
 
 // handleReconcileCandidates 列出疑似重复组。
 func (s *Service) handleReconcileCandidates(w http.ResponseWriter, r *http.Request) {
-	tenantID := tenantFromCtx(r.Context())
+	tenantID := auth.TenantFromContext(r.Context())
 	cands, err := s.findReconcileCandidates(r.Context(), tenantID)
 	if err != nil {
 		slog.Error("reconcile candidates failed", "error", err)
@@ -217,12 +217,12 @@ func (s *Service) handleReconcileCandidates(w http.ResponseWriter, r *http.Reque
 
 // handleReconcileMerge 合并一组疑似重复 CI。
 func (s *Service) handleReconcileMerge(w http.ResponseWriter, r *http.Request) {
-	tenantID := tenantFromCtx(r.Context())
+	tenantID := auth.TenantFromContext(r.Context())
 	var req struct {
 		KeepID   string   `json:"keep_id"`
 		MergeIDs []string `json:"merge_ids"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := httputil.BindJSON(r, &req); err != nil {
 		httputil.WriteError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}

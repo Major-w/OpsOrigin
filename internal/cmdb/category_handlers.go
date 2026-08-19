@@ -1,7 +1,7 @@
 package cmdb
 
 import (
-	"encoding/json"
+	"github.com/opsorigin/core/pkg/auth"
 	"github.com/opsorigin/core/pkg/httputil"
 	"net/http"
 	"time"
@@ -11,7 +11,7 @@ import (
 
 // handleListModelCategories 列出租户下全部分类（内置 + 自定义）。
 func (s *Service) handleListModelCategories(w http.ResponseWriter, r *http.Request) {
-	tenantID := tenantFromCtx(r.Context())
+	tenantID := auth.TenantFromContext(r.Context())
 	if s.pg == nil {
 		// 内存回退：仅内置 5 类
 		now := time.Now()
@@ -35,12 +35,12 @@ func (s *Service) handleListModelCategories(w http.ResponseWriter, r *http.Reque
 
 // handleCreateModelCategory 新增自定义分类（内置分类不可新增同名）。
 func (s *Service) handleCreateModelCategory(w http.ResponseWriter, r *http.Request) {
-	tenantID := tenantFromCtx(r.Context())
+	tenantID := auth.TenantFromContext(r.Context())
 	var req struct {
 		Name      string `json:"name"`
 		SortOrder int    `json:"sort_order"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := httputil.BindJSON(r, &req); err != nil {
 		httputil.WriteError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
@@ -72,7 +72,7 @@ func (s *Service) handleCreateModelCategory(w http.ResponseWriter, r *http.Reque
 // handleDeleteModelCategory 删除自定义分类（内置 / 被模型引用时拒绝）。
 func (s *Service) handleDeleteModelCategory(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	tenantID := tenantFromCtx(r.Context())
+	tenantID := auth.TenantFromContext(r.Context())
 	if s.pg == nil {
 		httputil.WriteError(w, http.StatusBadRequest, "postgres unavailable")
 		return

@@ -3,7 +3,6 @@ package process
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"fmt"
 	"io"
 	"log/slog"
@@ -222,7 +221,7 @@ func (s *Service) handleList(w http.ResponseWriter, r *http.Request) {
 
 func (s *Service) handleCreate(w http.ResponseWriter, r *http.Request) {
 	var p Process
-	if err := json.NewDecoder(r.Body).Decode(&p); err != nil {
+	if err := httputil.BindJSON(r, &p); err != nil {
 		httputil.WriteError(w, 400, "invalid body")
 		return
 	}
@@ -276,7 +275,7 @@ func (s *Service) handleUpdate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var p Process
-	if err := json.NewDecoder(r.Body).Decode(&p); err != nil {
+	if err := httputil.BindJSON(r, &p); err != nil {
 		httputil.WriteError(w, 400, "invalid body")
 		return
 	}

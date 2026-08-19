@@ -2,6 +2,7 @@ package cmdb
 
 import (
 	"encoding/json"
+	"github.com/opsorigin/core/pkg/auth"
 	"github.com/opsorigin/core/pkg/httputil"
 	"net/http"
 	"strconv"
@@ -14,7 +15,7 @@ import (
 // ============================================================
 
 func (s *Service) handleStats(w http.ResponseWriter, r *http.Request) {
-	tenantID := tenantFromCtx(r.Context())
+	tenantID := auth.TenantFromContext(r.Context())
 	if s.pg == nil {
 		httputil.WriteJSON(w, 200, &model.CMDBStats{})
 		return
@@ -32,7 +33,7 @@ func (s *Service) handleStats(w http.ResponseWriter, r *http.Request) {
 // ============================================================
 
 func (s *Service) handleListIDC(w http.ResponseWriter, r *http.Request) {
-	tenantID := tenantFromCtx(r.Context())
+	tenantID := auth.TenantFromContext(r.Context())
 	if s.pg == nil {
 		httputil.WriteJSON(w, 200, []*model.IDCRoom{})
 		return
@@ -49,9 +50,9 @@ func (s *Service) handleListIDC(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Service) handleCreateIDC(w http.ResponseWriter, r *http.Request) {
-	tenantID := tenantFromCtx(r.Context())
+	tenantID := auth.TenantFromContext(r.Context())
 	var room model.IDCRoom
-	if err := json.NewDecoder(r.Body).Decode(&room); err != nil {
+	if err := httputil.BindJSON(r, &room); err != nil {
 		httputil.WriteError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
@@ -69,7 +70,7 @@ func (s *Service) handleCreateIDC(w http.ResponseWriter, r *http.Request) {
 
 func (s *Service) handleDeleteIDC(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	tenantID := tenantFromCtx(r.Context())
+	tenantID := auth.TenantFromContext(r.Context())
 	if err := s.pg.DeleteIDCRoom(r.Context(), id, tenantID); err != nil {
 		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -79,7 +80,7 @@ func (s *Service) handleDeleteIDC(w http.ResponseWriter, r *http.Request) {
 
 func (s *Service) handleListRacks(w http.ResponseWriter, r *http.Request) {
 	idcID := r.PathValue("idcId")
-	tenantID := tenantFromCtx(r.Context())
+	tenantID := auth.TenantFromContext(r.Context())
 	racks, err := s.pg.ListRacks(r.Context(), tenantID, idcID)
 	if err != nil {
 		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
@@ -93,9 +94,9 @@ func (s *Service) handleListRacks(w http.ResponseWriter, r *http.Request) {
 
 func (s *Service) handleCreateRack(w http.ResponseWriter, r *http.Request) {
 	idcID := r.PathValue("idcId")
-	tenantID := tenantFromCtx(r.Context())
+	tenantID := auth.TenantFromContext(r.Context())
 	var rack model.Rack
-	if err := json.NewDecoder(r.Body).Decode(&rack); err != nil {
+	if err := httputil.BindJSON(r, &rack); err != nil {
 		httputil.WriteError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
@@ -114,7 +115,7 @@ func (s *Service) handleCreateRack(w http.ResponseWriter, r *http.Request) {
 
 func (s *Service) handleDeleteRack(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	tenantID := tenantFromCtx(r.Context())
+	tenantID := auth.TenantFromContext(r.Context())
 	if err := s.pg.DeleteRack(r.Context(), id, tenantID); err != nil {
 		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -124,7 +125,7 @@ func (s *Service) handleDeleteRack(w http.ResponseWriter, r *http.Request) {
 
 func (s *Service) handleGetRackUnits(w http.ResponseWriter, r *http.Request) {
 	rackID := r.PathValue("id")
-	tenantID := tenantFromCtx(r.Context())
+	tenantID := auth.TenantFromContext(r.Context())
 	units, err := s.pg.ListRackUnits(r.Context(), rackID, tenantID)
 	if err != nil {
 		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
@@ -138,11 +139,11 @@ func (s *Service) handleGetRackUnits(w http.ResponseWriter, r *http.Request) {
 
 func (s *Service) handleAssignRackUnits(w http.ResponseWriter, r *http.Request) {
 	rackID := r.PathValue("id")
-	tenantID := tenantFromCtx(r.Context())
+	tenantID := auth.TenantFromContext(r.Context())
 	var req struct {
 		Units []*model.RackUnit `json:"units"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := httputil.BindJSON(r, &req); err != nil {
 		httputil.WriteError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
@@ -162,7 +163,7 @@ func (s *Service) handleAssignRackUnits(w http.ResponseWriter, r *http.Request) 
 // ============================================================
 
 func (s *Service) handleAppTopology(w http.ResponseWriter, r *http.Request) {
-	tenantID := tenantFromCtx(r.Context())
+	tenantID := auth.TenantFromContext(r.Context())
 	appCIID := r.URL.Query().Get("app_ci_id")
 	depth, _ := strconv.Atoi(r.URL.Query().Get("depth"))
 	if appCIID == "" {
@@ -182,7 +183,7 @@ func (s *Service) handleAppTopology(w http.ResponseWriter, r *http.Request) {
 // ============================================================
 
 func (s *Service) handleListFieldRules(w http.ResponseWriter, r *http.Request) {
-	tenantID := tenantFromCtx(r.Context())
+	tenantID := auth.TenantFromContext(r.Context())
 	modelTypeID := r.URL.Query().Get("model_type_id")
 	rules, err := s.pg.ListFieldRules(r.Context(), tenantID, modelTypeID)
 	if err != nil {
@@ -196,9 +197,9 @@ func (s *Service) handleListFieldRules(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Service) handleCreateFieldRule(w http.ResponseWriter, r *http.Request) {
-	tenantID := tenantFromCtx(r.Context())
+	tenantID := auth.TenantFromContext(r.Context())
 	var rule model.FieldRule
-	if err := json.NewDecoder(r.Body).Decode(&rule); err != nil {
+	if err := httputil.BindJSON(r, &rule); err != nil {
 		httputil.WriteError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
@@ -220,7 +221,7 @@ func (s *Service) handleCreateFieldRule(w http.ResponseWriter, r *http.Request) 
 
 func (s *Service) handleDeleteFieldRule(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	tenantID := tenantFromCtx(r.Context())
+	tenantID := auth.TenantFromContext(r.Context())
 	if err := s.pg.DeleteFieldRule(r.Context(), id, tenantID); err != nil {
 		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -233,7 +234,7 @@ func (s *Service) handleDeleteFieldRule(w http.ResponseWriter, r *http.Request) 
 // ============================================================
 
 func (s *Service) handleListSubscriptions(w http.ResponseWriter, r *http.Request) {
-	tenantID := tenantFromCtx(r.Context())
+	tenantID := auth.TenantFromContext(r.Context())
 	subs, err := s.pg.ListSubscriptions(r.Context(), tenantID)
 	if err != nil {
 		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
@@ -246,9 +247,9 @@ func (s *Service) handleListSubscriptions(w http.ResponseWriter, r *http.Request
 }
 
 func (s *Service) handleCreateSubscription(w http.ResponseWriter, r *http.Request) {
-	tenantID := tenantFromCtx(r.Context())
+	tenantID := auth.TenantFromContext(r.Context())
 	var sub model.Subscription
-	if err := json.NewDecoder(r.Body).Decode(&sub); err != nil {
+	if err := httputil.BindJSON(r, &sub); err != nil {
 		httputil.WriteError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
@@ -277,7 +278,7 @@ func (s *Service) handleCreateSubscription(w http.ResponseWriter, r *http.Reques
 
 func (s *Service) handleUpdateSubscription(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	tenantID := tenantFromCtx(r.Context())
+	tenantID := auth.TenantFromContext(r.Context())
 	subs, err := s.pg.ListSubscriptions(r.Context(), tenantID)
 	if err != nil {
 		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
@@ -300,7 +301,7 @@ func (s *Service) handleUpdateSubscription(w http.ResponseWriter, r *http.Reques
 		Target    *string `json:"target"`
 		Enabled   *bool   `json:"enabled"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := httputil.BindJSON(r, &req); err != nil {
 		httputil.WriteError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
@@ -325,7 +326,7 @@ func (s *Service) handleUpdateSubscription(w http.ResponseWriter, r *http.Reques
 
 func (s *Service) handleDeleteSubscription(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	tenantID := tenantFromCtx(r.Context())
+	tenantID := auth.TenantFromContext(r.Context())
 	if err := s.pg.DeleteSubscription(r.Context(), id, tenantID); err != nil {
 		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -336,7 +337,7 @@ func (s *Service) handleDeleteSubscription(w http.ResponseWriter, r *http.Reques
 // handleTestSubscription 发送一条测试事件验证订阅链路。
 func (s *Service) handleTestSubscription(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	tenantID := tenantFromCtx(r.Context())
+	tenantID := auth.TenantFromContext(r.Context())
 	subs, err := s.pg.ListSubscriptions(r.Context(), tenantID)
 	if err != nil {
 		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
@@ -382,7 +383,7 @@ func (s *Service) handleTestSubscription(w http.ResponseWriter, r *http.Request)
 }
 
 func (s *Service) handleListSubscriptionDeliveries(w http.ResponseWriter, r *http.Request) {
-	tenantID := tenantFromCtx(r.Context())
+	tenantID := auth.TenantFromContext(r.Context())
 	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
 	items, err := s.pg.ListSubscriptionDeliveries(r.Context(), tenantID, limit)
 	if err != nil {

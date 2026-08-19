@@ -2,7 +2,6 @@ package knowledge
 
 import (
 	"context"
-	"encoding/json"
 	"github.com/opsorigin/core/pkg/httputil"
 	"net/http"
 	"time"
@@ -153,7 +152,7 @@ func (s *SocialStore) handleMarkFollowUpdateRead(w http.ResponseWriter, r *http.
 	var body struct {
 		ArticleID string `json:"article_id"`
 	}
-	json.NewDecoder(r.Body).Decode(&body)
+	httputil.BindJSON(r, &body)
 	if body.ArticleID != "" {
 		s.MarkFollowUpdateRead(r.Context(), body.ArticleID, user)
 	}

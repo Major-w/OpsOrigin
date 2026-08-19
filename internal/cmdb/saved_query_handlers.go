@@ -2,7 +2,7 @@ package cmdb
 
 import (
 	"context"
-	"encoding/json"
+	"github.com/opsorigin/core/pkg/auth"
 	"github.com/opsorigin/core/pkg/httputil"
 	"net/http"
 
@@ -11,7 +11,7 @@ import (
 
 // handleListSavedQueries 列出当前租户的查询策略。
 func (s *Service) handleListSavedQueries(w http.ResponseWriter, r *http.Request) {
-	tenantID := tenantFromCtx(r.Context())
+	tenantID := auth.TenantFromContext(r.Context())
 	if s.pg == nil {
 		httputil.WriteJSON(w, 200, []*model.SavedQuery{})
 		return
@@ -29,9 +29,9 @@ func (s *Service) handleListSavedQueries(w http.ResponseWriter, r *http.Request)
 
 // handleCreateSavedQuery 保存一条查询策略（"我想查"）。
 func (s *Service) handleCreateSavedQuery(w http.ResponseWriter, r *http.Request) {
-	tenantID := tenantFromCtx(r.Context())
+	tenantID := auth.TenantFromContext(r.Context())
 	var q model.SavedQuery
-	if err := json.NewDecoder(r.Body).Decode(&q); err != nil {
+	if err := httputil.BindJSON(r, &q); err != nil {
 		httputil.WriteError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
@@ -58,7 +58,7 @@ func (s *Service) handleCreateSavedQuery(w http.ResponseWriter, r *http.Request)
 // handleDeleteSavedQuery 删除查询策略。
 func (s *Service) handleDeleteSavedQuery(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	tenantID := tenantFromCtx(r.Context())
+	tenantID := auth.TenantFromContext(r.Context())
 	if s.pg == nil {
 		httputil.WriteJSON(w, 200, map[string]string{"status": "deleted"})
 		return
@@ -73,7 +73,7 @@ func (s *Service) handleDeleteSavedQuery(w http.ResponseWriter, r *http.Request)
 // handleResolveSavedQuery 应用一条保存查询，返回命中的 CI 列表（"我想查"一键复用）。
 func (s *Service) handleResolveSavedQuery(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	tenantID := tenantFromCtx(r.Context())
+	tenantID := auth.TenantFromContext(r.Context())
 	if s.pg == nil {
 		httputil.WriteJSON(w, 200, []*model.CIModel{})
 		return

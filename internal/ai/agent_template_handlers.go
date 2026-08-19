@@ -1,7 +1,6 @@
 package ai
 
 import (
-	"encoding/json"
 	"github.com/opsorigin/core/pkg/httputil"
 	"net/http"
 
@@ -42,14 +41,14 @@ func (s *Service) handleInstantiateAgentTemplate(w http.ResponseWriter, r *http.
 		WithInspection *bool  `json:"with_inspection"`
 	}
 	// body 可选: 不传则使用模板默认名称。
-	_ = json.NewDecoder(r.Body).Decode(&req)
+	_ = httputil.BindJSON(r, &req)
 
 	withInspection := true
 	if req.WithInspection != nil {
 		withInspection = *req.WithInspection
 	}
 
-	agent, insp, err := s.Engine.InstantiateAgentTemplate(tenantFromCtx(r.Context()), r.PathValue("id"), req.Name, withInspection)
+	agent, insp, err := s.Engine.InstantiateAgentTemplate(auth.TenantFromContext(r.Context()), r.PathValue("id"), req.Name, withInspection)
 	if err != nil {
 		httputil.WriteError(w, http.StatusBadRequest, err.Error())
 		return

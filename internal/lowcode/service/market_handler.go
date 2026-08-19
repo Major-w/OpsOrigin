@@ -1,7 +1,6 @@
 package service
 
 import (
-	"encoding/json"
 	"github.com/opsorigin/core/pkg/httputil"
 	"net/http"
 
@@ -123,7 +122,7 @@ func (h *MarketHandler) handleRate(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Rating float64 `json:"rating"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := httputil.BindJSON(r, &req); err != nil {
 		http.Error(w, `{"error":"invalid request body"}`, http.StatusBadRequest)
 		return
 	}

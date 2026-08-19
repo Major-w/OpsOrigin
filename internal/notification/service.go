@@ -3,8 +3,8 @@ package notification
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"fmt"
+	"github.com/opsorigin/core/pkg/auth"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -225,13 +225,6 @@ func NewService(db *sql.DB) *Service {
 	}
 }
 
-func tenantFromCtx(ctx context.Context) string {
-	if t, ok := ctx.Value("tenant_id").(string); ok && t != "" {
-		return t
-	}
-	return "default"
-}
-
 // RegisterRoutes 注册所有通知路由。
 // 注意 "channels" / "policies" / "history" / "events" 都是字面量段,
 // 在 Go 1.22+ ServeMux 中优先于 {id} 通配符匹配。
@@ -265,7 +258,7 @@ func (s *Service) RegisterRoutes(mux *http.ServeMux) {
 // ---------- 渠道 ----------
 
 func (s *Service) handleListChannels(w http.ResponseWriter, r *http.Request) {
-	tenantID := tenantFromCtx(r.Context())
+	tenantID := auth.TenantFromContext(r.Context())
 	channels, err := s.store.ListChannels(r.Context(), tenantID)
 	if err != nil {
 		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
@@ -285,9 +278,9 @@ func (s *Service) handleListChannels(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Service) handleCreateChannel(w http.ResponseWriter, r *http.Request) {
-	tenantID := tenantFromCtx(r.Context())
+	tenantID := auth.TenantFromContext(r.Context())
 	var req CreateChannelRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := httputil.BindJSON(r, &req); err != nil {
 		httputil.WriteError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
@@ -323,7 +316,7 @@ func (s *Service) handleCreateChannel(w http.ResponseWriter, r *http.Request) {
 
 func (s *Service) handleGetChannel(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	tenantID := tenantFromCtx(r.Context())
+	tenantID := auth.TenantFromContext(r.Context())
 	ch, err := s.store.GetChannel(r.Context(), id, tenantID)
 	if err != nil || ch == nil {
 		httputil.WriteError(w, http.StatusNotFound, "channel not found")
@@ -337,14 +330,14 @@ func (s *Service) handleGetChannel(w http.ResponseWriter, r *http.Request) {
 
 func (s *Service) handleUpdateChannel(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	tenantID := tenantFromCtx(r.Context())
+	tenantID := auth.TenantFromContext(r.Context())
 	existing, err := s.store.GetChannel(r.Context(), id, tenantID)
 	if err != nil || existing == nil {
 		httputil.WriteError(w, http.StatusNotFound, "channel not found")
 		return
 	}
 	var req UpdateChannelRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := httputil.BindJSON(r, &req); err != nil {
 		httputil.WriteError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
@@ -382,7 +375,7 @@ func (s *Service) handleUpdateChannel(w http.ResponseWriter, r *http.Request) {
 
 func (s *Service) handleDeleteChannel(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	tenantID := tenantFromCtx(r.Context())
+	tenantID := auth.TenantFromContext(r.Context())
 	if err := s.store.DeleteChannel(r.Context(), id, tenantID); err != nil {
 		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -392,7 +385,7 @@ func (s *Service) handleDeleteChannel(w http.ResponseWriter, r *http.Request) {
 
 func (s *Service) handleTestChannel(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	tenantID := tenantFromCtx(r.Context())
+	tenantID := auth.TenantFromContext(r.Context())
 	ch, err := s.store.GetChannel(r.Context(), id, tenantID)
 	if err != nil || ch == nil {
 		httputil.WriteError(w, http.StatusNotFound, "channel not found")
@@ -403,7 +396,7 @@ func (s *Service) handleTestChannel(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req TestRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := httputil.BindJSON(r, &req); err != nil {
 		req = TestRequest{}
 	}
 	if req.Title == "" {
@@ -444,7 +437,7 @@ func (s *Service) handleTestChannel(w http.ResponseWriter, r *http.Request) {
 // ---------- 策略 ----------
 
 func (s *Service) handleListPolicies(w http.ResponseWriter, r *http.Request) {
-	tenantID := tenantFromCtx(r.Context())
+	tenantID := auth.TenantFromContext(r.Context())
 	policies, err := s.store.ListPolicies(r.Context(), tenantID)
 	if err != nil {
 		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
@@ -457,9 +450,9 @@ func (s *Service) handleListPolicies(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Service) handleCreatePolicy(w http.ResponseWriter, r *http.Request) {
-	tenantID := tenantFromCtx(r.Context())
+	tenantID := auth.TenantFromContext(r.Context())
 	var req CreatePolicyRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := httputil.BindJSON(r, &req); err != nil {
 		httputil.WriteError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
@@ -488,7 +481,7 @@ func (s *Service) handleCreatePolicy(w http.ResponseWriter, r *http.Request) {
 
 func (s *Service) handleGetPolicy(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	tenantID := tenantFromCtx(r.Context())
+	tenantID := auth.TenantFromContext(r.Context())
 	p, err := s.store.GetPolicy(r.Context(), id, tenantID)
 	if err != nil || p == nil {
 		httputil.WriteError(w, http.StatusNotFound, "policy not found")
@@ -499,14 +492,14 @@ func (s *Service) handleGetPolicy(w http.ResponseWriter, r *http.Request) {
 
 func (s *Service) handleUpdatePolicy(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	tenantID := tenantFromCtx(r.Context())
+	tenantID := auth.TenantFromContext(r.Context())
 	existing, err := s.store.GetPolicy(r.Context(), id, tenantID)
 	if err != nil || existing == nil {
 		httputil.WriteError(w, http.StatusNotFound, "policy not found")
 		return
 	}
 	var req UpdatePolicyRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := httputil.BindJSON(r, &req); err != nil {
 		httputil.WriteError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
@@ -529,7 +522,7 @@ func (s *Service) handleUpdatePolicy(w http.ResponseWriter, r *http.Request) {
 
 func (s *Service) handleDeletePolicy(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	tenantID := tenantFromCtx(r.Context())
+	tenantID := auth.TenantFromContext(r.Context())
 	if err := s.store.DeletePolicy(r.Context(), id, tenantID); err != nil {
 		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -562,7 +555,7 @@ func (s *Service) handleListChannelTypes(w http.ResponseWriter, r *http.Request)
 // ---------- 历史 ----------
 
 func (s *Service) handleListHistory(w http.ResponseWriter, r *http.Request) {
-	tenantID := tenantFromCtx(r.Context())
+	tenantID := auth.TenantFromContext(r.Context())
 	limit := 50
 	if l := r.URL.Query().Get("limit"); l != "" {
 		var n int
@@ -584,9 +577,9 @@ func (s *Service) handleListHistory(w http.ResponseWriter, r *http.Request) {
 // ---------- 事件触发 ----------
 
 func (s *Service) handleSend(w http.ResponseWriter, r *http.Request) {
-	tenantID := tenantFromCtx(r.Context())
+	tenantID := auth.TenantFromContext(r.Context())
 	var req SendRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := httputil.BindJSON(r, &req); err != nil {
 		httputil.WriteError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}

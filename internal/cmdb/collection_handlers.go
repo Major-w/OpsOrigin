@@ -1,7 +1,7 @@
 package cmdb
 
 import (
-	"encoding/json"
+	"github.com/opsorigin/core/pkg/auth"
 	"github.com/opsorigin/core/pkg/httputil"
 	"net/http"
 
@@ -10,7 +10,7 @@ import (
 
 // handleGetCollectionPolicy 读取平台全局默认策略。
 func (s *Service) handleGetCollectionPolicy(w http.ResponseWriter, r *http.Request) {
-	tenantID := tenantFromCtx(r.Context())
+	tenantID := auth.TenantFromContext(r.Context())
 	policy, err := s.GetPlatformPolicy(r.Context(), tenantID)
 	if err != nil {
 		httputil.WriteError(w, http.StatusInternalServerError, "failed to get policy")
@@ -21,9 +21,9 @@ func (s *Service) handleGetCollectionPolicy(w http.ResponseWriter, r *http.Reque
 
 // handlePutCollectionPolicy 更新平台全局默认策略。
 func (s *Service) handlePutCollectionPolicy(w http.ResponseWriter, r *http.Request) {
-	tenantID := tenantFromCtx(r.Context())
+	tenantID := auth.TenantFromContext(r.Context())
 	var p model.PlatformPolicy
-	if err := json.NewDecoder(r.Body).Decode(&p); err != nil {
+	if err := httputil.BindJSON(r, &p); err != nil {
 		httputil.WriteError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
@@ -43,7 +43,7 @@ func (s *Service) handlePutCollectionPolicy(w http.ResponseWriter, r *http.Reque
 
 // handleListCollectionTasks 列出采集任务。
 func (s *Service) handleListCollectionTasks(w http.ResponseWriter, r *http.Request) {
-	tenantID := tenantFromCtx(r.Context())
+	tenantID := auth.TenantFromContext(r.Context())
 	tasks, err := s.ListCollectionTasks(r.Context(), tenantID)
 	if err != nil {
 		httputil.WriteError(w, http.StatusInternalServerError, "failed to list tasks")
@@ -57,7 +57,7 @@ func (s *Service) handleListCollectionTasks(w http.ResponseWriter, r *http.Reque
 
 // handleCreateCollectionTask 手动创建一条采集任务。
 func (s *Service) handleCreateCollectionTask(w http.ResponseWriter, r *http.Request) {
-	tenantID := tenantFromCtx(r.Context())
+	tenantID := auth.TenantFromContext(r.Context())
 	var req struct {
 		Name         string `json:"name"`
 		ResourceType string `json:"resource_type"`
@@ -68,7 +68,7 @@ func (s *Service) handleCreateCollectionTask(w http.ResponseWriter, r *http.Requ
 		Frequency    string `json:"frequency"`
 		Enabled      bool   `json:"enabled"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := httputil.BindJSON(r, &req); err != nil {
 		httputil.WriteError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
@@ -137,7 +137,7 @@ func (s *Service) handleCreateCollectionTask(w http.ResponseWriter, r *http.Requ
 // handleUpdateCollectionTask 更新采集任务（启停 / 频率）。
 func (s *Service) handleUpdateCollectionTask(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	tenantID := tenantFromCtx(r.Context())
+	tenantID := auth.TenantFromContext(r.Context())
 	t, err := s.GetCollectionTask(r.Context(), id, tenantID)
 	if err != nil {
 		httputil.WriteError(w, http.StatusInternalServerError, "internal error")
@@ -153,7 +153,7 @@ func (s *Service) handleUpdateCollectionTask(w http.ResponseWriter, r *http.Requ
 		TargetMode  *string `json:"target_mode"`
 		TargetQuery *string `json:"target_query"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := httputil.BindJSON(r, &req); err != nil {
 		httputil.WriteError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
@@ -187,7 +187,7 @@ func (s *Service) handleUpdateCollectionTask(w http.ResponseWriter, r *http.Requ
 // handleDeleteCollectionTask 删除采集任务。
 func (s *Service) handleDeleteCollectionTask(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	tenantID := tenantFromCtx(r.Context())
+	tenantID := auth.TenantFromContext(r.Context())
 	if err := s.DeleteCollectionTask(r.Context(), id, tenantID); err != nil {
 		httputil.WriteError(w, http.StatusInternalServerError, "failed to delete task")
 		return
@@ -198,7 +198,7 @@ func (s *Service) handleDeleteCollectionTask(w http.ResponseWriter, r *http.Requ
 // handleRunCollectionTask 手动立即触发一次采集（同步执行，便于验证）。
 func (s *Service) handleRunCollectionTask(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	tenantID := tenantFromCtx(r.Context())
+	tenantID := auth.TenantFromContext(r.Context())
 	t, err := s.GetCollectionTask(r.Context(), id, tenantID)
 	if err != nil {
 		httputil.WriteError(w, http.StatusInternalServerError, "internal error")
@@ -244,14 +244,14 @@ func (s *Service) handleRunCollectionTask(w http.ResponseWriter, r *http.Request
 
 // handleOnboardResource 纳管资源入口：依据默认策略 + 逐资源覆盖开关创建采集任务。
 func (s *Service) handleOnboardResource(w http.ResponseWriter, r *http.Request) {
-	tenantID := tenantFromCtx(r.Context())
+	tenantID := auth.TenantFromContext(r.Context())
 	var req struct {
 		ResourceType         string `json:"resource_type"`
 		Target               string `json:"target"`
 		EnableCMDBCollect    *bool  `json:"enable_cmdb_collect"`
 		EnableMonitorCollect *bool  `json:"enable_monitor_collect"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := httputil.BindJSON(r, &req); err != nil {
 		httputil.WriteError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}

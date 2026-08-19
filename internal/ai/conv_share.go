@@ -4,7 +4,7 @@ package ai
 
 import (
 	"context"
-	"encoding/json"
+	"github.com/opsorigin/core/pkg/auth"
 	"github.com/opsorigin/core/pkg/httputil"
 	"net/http"
 	"time"
@@ -120,7 +120,7 @@ func (s *Service) filterVisible(ctx context.Context, tenantID, userID string, co
 
 // handleListConversations 会话列表(用户隔离: 仅返回自己的 + 共享给我的)。
 func (s *Service) handleListConversations(w http.ResponseWriter, r *http.Request) {
-	tenantID := tenantFromCtx(r.Context())
+	tenantID := auth.TenantFromContext(r.Context())
 	agentID := r.URL.Query().Get("agent_id")
 	userID := currentUserID(r.Context())
 	convs := s.Engine.LoadConversations(tenantID, agentID, 200)
@@ -140,7 +140,7 @@ func (s *Service) requireConvWrite(ctx context.Context, tenantID, convID, userID
 // handleGetConversation 会话详情(可见性校验)。
 func (s *Service) handleGetConversation(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	tenantID := tenantFromCtx(r.Context())
+	tenantID := auth.TenantFromContext(r.Context())
 	userID := currentUserID(r.Context())
 	perm := s.convAccess(r.Context(), tenantID, id, userID, s.userGroups(r.Context(), userID))
 	if perm == "" {
@@ -161,7 +161,7 @@ func (s *Service) handleGetConversation(w http.ResponseWriter, r *http.Request) 
 // handleAddShare 共享会话给指定用户/组(仅属主可操作)。
 func (s *Service) handleAddShare(w http.ResponseWriter, r *http.Request) {
 	convID := r.PathValue("id")
-	tenantID := tenantFromCtx(r.Context())
+	tenantID := auth.TenantFromContext(r.Context())
 	userID := currentUserID(r.Context())
 	perm := s.convAccess(r.Context(), tenantID, convID, userID, s.userGroups(r.Context(), userID))
 	if perm != "owner" {
@@ -173,7 +173,7 @@ func (s *Service) handleAddShare(w http.ResponseWriter, r *http.Request) {
 		TargetID   string `json:"target_id"`
 		Permission string `json:"permission"` // view | edit
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := httputil.BindJSON(r, &req); err != nil {
 		httputil.WriteError(w, http.StatusBadRequest, "invalid body")
 		return
 	}
@@ -211,7 +211,7 @@ func (s *Service) handleAddShare(w http.ResponseWriter, r *http.Request) {
 // handleListShares 共享列表(属主或共享者可看)。
 func (s *Service) handleListShares(w http.ResponseWriter, r *http.Request) {
 	convID := r.PathValue("id")
-	tenantID := tenantFromCtx(r.Context())
+	tenantID := auth.TenantFromContext(r.Context())
 	userID := currentUserID(r.Context())
 	if s.convAccess(r.Context(), tenantID, convID, userID, s.userGroups(r.Context(), userID)) == "" {
 		httputil.WriteError(w, http.StatusNotFound, "conversation not found")
@@ -244,7 +244,7 @@ func (s *Service) handleListShares(w http.ResponseWriter, r *http.Request) {
 func (s *Service) handleDeleteShare(w http.ResponseWriter, r *http.Request) {
 	convID := r.PathValue("id")
 	sid := r.PathValue("sid")
-	tenantID := tenantFromCtx(r.Context())
+	tenantID := auth.TenantFromContext(r.Context())
 	userID := currentUserID(r.Context())
 	if s.convAccess(r.Context(), tenantID, convID, userID, s.userGroups(r.Context(), userID)) != "owner" {
 		httputil.WriteError(w, http.StatusForbidden, "only the owner can unshare this conversation")

@@ -3,7 +3,6 @@ package knowledge
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"github.com/opsorigin/core/pkg/httputil"
 	"net/http"
 	"time"
@@ -167,7 +166,7 @@ func (s *SocialStore) handleRate(w http.ResponseWriter, r *http.Request) {
 		Rating  int    `json:"rating"`
 		Comment string `json:"comment"`
 	}
-	json.NewDecoder(r.Body).Decode(&body)
+	httputil.BindJSON(r, &body)
 	user := r.URL.Query().Get("user")
 	if user == "" {
 		user = "admin"
@@ -180,7 +179,7 @@ func (s *SocialStore) handleAddComment(w http.ResponseWriter, r *http.Request) {
 		Content  string `json:"content"`
 		ParentID string `json:"parent_id"`
 	}
-	json.NewDecoder(r.Body).Decode(&body)
+	httputil.BindJSON(r, &body)
 	user := r.URL.Query().Get("user")
 	if user == "" {
 		user = "admin"

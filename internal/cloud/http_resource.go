@@ -1,8 +1,8 @@
 package cloud
 
 import (
-	"encoding/json"
 	"fmt"
+	"github.com/opsorigin/core/pkg/auth"
 	"github.com/opsorigin/core/pkg/httputil"
 	"net/http"
 )
@@ -31,7 +31,7 @@ type resourceListRequest struct {
 // provider=="k8s" 时走 Agent 通道发现（见 handleListK8sResources）。
 func (s *Service) handleListResources(w http.ResponseWriter, r *http.Request) {
 	var req resourceListRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := httputil.BindJSON(r, &req); err != nil {
 		httputil.WriteError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
@@ -117,7 +117,7 @@ func (s *Service) handleListK8sResources(w http.ResponseWriter, r *http.Request,
 	if len(kinds) == 0 {
 		kinds = K8sResourceTypes()
 	}
-	resources, err := s.k8sDiscoverer.Discover(r.Context(), tenantFromCtx(r.Context()), req.AgentID, kinds, req.K8s)
+	resources, err := s.k8sDiscoverer.Discover(r.Context(), auth.TenantFromContext(r.Context()), req.AgentID, kinds, req.K8s)
 	if err != nil {
 		httputil.WriteError(w, http.StatusBadGateway, "failed to discover k8s resources: "+err.Error())
 		return

@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"github.com/opsorigin/core/pkg/auth"
 
 	"fmt"
 	"github.com/opsorigin/core/internal/command"
@@ -260,13 +261,6 @@ const (
 	userCtxKey       ctxKey = "user_id"
 )
 
-func tenantFromCtx(ctx context.Context) string {
-	if t, ok := ctx.Value("tenant_id").(string); ok && t != "" {
-		return t
-	}
-	return "default"
-}
-
 func changeNoteFromCtx(ctx context.Context) string {
 	if v, ok := ctx.Value(changeNoteCtxKey).(string); ok {
 		return v
@@ -300,7 +294,7 @@ func (s *Service) RegisterRoutes(mux *http.ServeMux) {
 
 func (s *Service) handleCreate(w http.ResponseWriter, r *http.Request) {
 	var sc Script
-	if err := json.NewDecoder(r.Body).Decode(&sc); err != nil {
+	if err := httputil.BindJSON(r, &sc); err != nil {
 		httputil.WriteError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
@@ -308,7 +302,7 @@ func (s *Service) handleCreate(w http.ResponseWriter, r *http.Request) {
 		httputil.WriteError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	sc.TenantID = tenantFromCtx(r.Context())
+	sc.TenantID = auth.TenantFromContext(r.Context())
 	if sc.Timeout == 0 {
 		sc.Timeout = 300
 	}
@@ -321,7 +315,7 @@ func (s *Service) handleCreate(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Service) handleList(w http.ResponseWriter, r *http.Request) {
-	tenantID := tenantFromCtx(r.Context())
+	tenantID := auth.TenantFromContext(r.Context())
 	scripts, err := s.store.List(r.Context(), tenantID)
 	if err != nil {
 		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
@@ -335,7 +329,7 @@ func (s *Service) handleList(w http.ResponseWriter, r *http.Request) {
 
 func (s *Service) handleGet(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	tenantID := tenantFromCtx(r.Context())
+	tenantID := auth.TenantFromContext(r.Context())
 	sc, err := s.store.Get(r.Context(), id, tenantID)
 	if err != nil || sc == nil {
 		httputil.WriteError(w, http.StatusNotFound, "script not found")
@@ -346,7 +340,7 @@ func (s *Service) handleGet(w http.ResponseWriter, r *http.Request) {
 
 func (s *Service) handleUpdate(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	tenantID := tenantFromCtx(r.Context())
+	tenantID := auth.TenantFromContext(r.Context())
 	existing, err := s.store.Get(r.Context(), id, tenantID)
 	if err != nil || existing == nil {
 		httputil.WriteError(w, http.StatusNotFound, "script not found")
@@ -356,7 +350,7 @@ func (s *Service) handleUpdate(w http.ResponseWriter, r *http.Request) {
 		Script
 		ChangeNote string `json:"change_note,omitempty"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := httputil.BindJSON(r, &req); err != nil {
 		httputil.WriteError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
@@ -383,7 +377,7 @@ func (s *Service) handleUpdate(w http.ResponseWriter, r *http.Request) {
 
 func (s *Service) handleDelete(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	tenantID := tenantFromCtx(r.Context())
+	tenantID := auth.TenantFromContext(r.Context())
 	if err := s.store.Delete(r.Context(), id, tenantID); err != nil {
 		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -393,14 +387,14 @@ func (s *Service) handleDelete(w http.ResponseWriter, r *http.Request) {
 
 func (s *Service) handleExecute(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	tenantID := tenantFromCtx(r.Context())
+	tenantID := auth.TenantFromContext(r.Context())
 	sc, err := s.store.Get(r.Context(), id, tenantID)
 	if err != nil || sc == nil {
 		httputil.WriteError(w, http.StatusNotFound, "script not found")
 		return
 	}
 	var req ExecuteRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := httputil.BindJSON(r, &req); err != nil {
 		httputil.WriteError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
@@ -424,7 +418,7 @@ func (s *Service) handleExecute(w http.ResponseWriter, r *http.Request) {
 
 func (s *Service) handleListExecutions(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	tenantID := tenantFromCtx(r.Context())
+	tenantID := auth.TenantFromContext(r.Context())
 	results, err := s.store.ListExecutions(r.Context(), id, tenantID)
 	if err != nil {
 		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
@@ -438,7 +432,7 @@ func (s *Service) handleListExecutions(w http.ResponseWriter, r *http.Request) {
 
 func (s *Service) handleListVersions(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	tenantID := tenantFromCtx(r.Context())
+	tenantID := auth.TenantFromContext(r.Context())
 	versions, err := s.store.ListVersions(r.Context(), id, tenantID)
 	if err != nil {
 		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
@@ -452,7 +446,7 @@ func (s *Service) handleListVersions(w http.ResponseWriter, r *http.Request) {
 
 func (s *Service) handleGetVersion(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	tenantID := tenantFromCtx(r.Context())
+	tenantID := auth.TenantFromContext(r.Context())
 	var version int
 	if _, err := fmt.Sscanf(r.PathValue("version"), "%d", &version); err != nil {
 		httputil.WriteError(w, http.StatusBadRequest, "invalid version")
@@ -468,7 +462,7 @@ func (s *Service) handleGetVersion(w http.ResponseWriter, r *http.Request) {
 
 func (s *Service) handleDiff(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	tenantID := tenantFromCtx(r.Context())
+	tenantID := auth.TenantFromContext(r.Context())
 	fromStr := r.URL.Query().Get("from")
 	toStr := r.URL.Query().Get("to")
 	var fromVer, toVer int
@@ -537,7 +531,7 @@ func (s *Service) executeScript(sc *Script, req *ExecuteRequest) *ExecutionResul
 		}
 		tid := req.TenantID
 		if tid == "" {
-			tid = tenantFromCtx(context.Background())
+			tid = auth.TenantFromContext(context.Background())
 		}
 		agentID, perr := sr.PickSandboxAgentID(context.Background(), tid, req.AgentID)
 		if perr != nil {
@@ -570,7 +564,7 @@ func (s *Service) executeScript(sc *Script, req *ExecuteRequest) *ExecutionResul
 		}
 		tid := req.TenantID
 		if tid == "" {
-			tid = tenantFromCtx(context.Background())
+			tid = auth.TenantFromContext(context.Background())
 		}
 		output, exitCode, rerr := s.agentRunner.RunScriptOnAgent(context.Background(), req.AgentID, tid, sc.Content, req.Params, to, ra)
 		if rerr != nil {
@@ -826,7 +820,7 @@ func toJSONString(v any) string { b, _ := json.Marshal(v); return string(b) }
 
 func (s *Service) handleCheck(w http.ResponseWriter, r *http.Request) {
 	var req CheckRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := httputil.BindJSON(r, &req); err != nil {
 		httputil.WriteError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
@@ -947,7 +941,7 @@ func (s *Service) determineApproval(sc *Script) string {
 
 func (s *Service) handlePublish(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	tenantID := tenantFromCtx(r.Context())
+	tenantID := auth.TenantFromContext(r.Context())
 	sc, err := s.store.Get(r.Context(), id, tenantID)
 	if err != nil || sc == nil {
 		httputil.WriteError(w, http.StatusNotFound, "script not found")
@@ -967,7 +961,7 @@ func (s *Service) handlePublish(w http.ResponseWriter, r *http.Request) {
 
 func (s *Service) handleApprove(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	tenantID := tenantFromCtx(r.Context())
+	tenantID := auth.TenantFromContext(r.Context())
 	sc, err := s.store.Get(r.Context(), id, tenantID)
 	if err != nil || sc == nil {
 		httputil.WriteError(w, http.StatusNotFound, "script not found")
@@ -989,7 +983,7 @@ func (s *Service) handleApprove(w http.ResponseWriter, r *http.Request) {
 
 func (s *Service) handleReject(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	tenantID := tenantFromCtx(r.Context())
+	tenantID := auth.TenantFromContext(r.Context())
 	sc, err := s.store.Get(r.Context(), id, tenantID)
 	if err != nil || sc == nil {
 		httputil.WriteError(w, http.StatusNotFound, "script not found")

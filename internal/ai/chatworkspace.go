@@ -4,6 +4,7 @@ package ai
 
 import (
 	"context"
+	"github.com/opsorigin/core/pkg/auth"
 	"github.com/opsorigin/core/pkg/httputil"
 	"log/slog"
 	"net/http"
@@ -77,7 +78,7 @@ func (s *Service) SaveWorkspaceFile(ctx context.Context, conversationID, toolNam
 // handleListWorkspace 工作区文件列表(含内容预览)。
 func (s *Service) handleListWorkspace(w http.ResponseWriter, r *http.Request) {
 	convID := r.PathValue("id")
-	tenantID := tenantFromCtx(r.Context())
+	tenantID := auth.TenantFromContext(r.Context())
 	if s.db == nil {
 		httputil.WriteJSON(w, http.StatusOK, []WorkspaceFile{})
 		return
@@ -105,7 +106,7 @@ func (s *Service) handleListWorkspace(w http.ResponseWriter, r *http.Request) {
 func (s *Service) handleDownloadWorkspace(w http.ResponseWriter, r *http.Request) {
 	convID := r.PathValue("id")
 	fid := r.PathValue("fid")
-	tenantID := tenantFromCtx(r.Context())
+	tenantID := auth.TenantFromContext(r.Context())
 	if s.db == nil {
 		httputil.WriteError(w, http.StatusNotFound, "db unavailable")
 		return
@@ -129,7 +130,7 @@ func (s *Service) handleDownloadWorkspace(w http.ResponseWriter, r *http.Request
 func (s *Service) handleDeleteWorkspace(w http.ResponseWriter, r *http.Request) {
 	convID := r.PathValue("id")
 	fid := r.PathValue("fid")
-	tenantID := tenantFromCtx(r.Context())
+	tenantID := auth.TenantFromContext(r.Context())
 	if s.db == nil {
 		httputil.WriteError(w, http.StatusNotFound, "db unavailable")
 		return

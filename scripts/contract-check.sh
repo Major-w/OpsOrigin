@@ -16,7 +16,7 @@ fail() { printf '  \033[31mFAIL\033[0m %s\n' "$1"; FAIL=1; }
 warn() { printf '  \033[33mWARN\033[0m %s\n' "$1"; WARN=1; }
 
 echo "== [1/6] 竞品/品牌字样扫描（git grep 全仓）=="
-if git grep -nE "EasyOps|easyops|优维|WorkBuddy|CodeBuddy" -- ':!docs/contracts/*' >/tmp/contract-clean.txt 2>/dev/null; then
+if git grep -nE "EasyOps|easyops|优维|WorkBuddy|CodeBuddy" -- ':!docs/contracts/*' ':!scripts/contract-check.sh' >/tmp/contract-clean.txt 2>/dev/null; then
   fail "命中竞品/品牌字样:"; sed 's/^/    /' /tmp/contract-clean.txt
 else
   pass "无竞品/品牌字样"

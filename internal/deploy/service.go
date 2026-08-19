@@ -3,7 +3,6 @@ package deploy
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"fmt"
 	"io"
 	"log/slog"
@@ -61,7 +60,7 @@ func (s *Service) handleListApps(w http.ResponseWriter, r *http.Request) {
 }
 func (s *Service) handleCreateApp(w http.ResponseWriter, r *http.Request) {
 	var a DeployApp
-	json.NewDecoder(r.Body).Decode(&a)
+	httputil.BindJSON(r, &a)
 	a.TenantID = tenant(r)
 	s.store.CreateApp(r.Context(), &a)
 	httputil.WriteJSON(w, 201, a)
@@ -69,7 +68,7 @@ func (s *Service) handleCreateApp(w http.ResponseWriter, r *http.Request) {
 func (s *Service) handleUpdateApp(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	var a DeployApp
-	json.NewDecoder(r.Body).Decode(&a)
+	httputil.BindJSON(r, &a)
 	a.ID = id
 	a.TenantID = tenant(r)
 	s.store.UpdateApp(r.Context(), &a)
@@ -87,7 +86,7 @@ func (s *Service) handleListReleases(w http.ResponseWriter, r *http.Request) {
 }
 func (s *Service) handleCreateRelease(w http.ResponseWriter, r *http.Request) {
 	var r2 ReleaseTicket
-	json.NewDecoder(r.Body).Decode(&r2)
+	httputil.BindJSON(r, &r2)
 	r2.TenantID = tenant(r)
 	if r2.AppName == "" {
 		var a DeployApp
@@ -110,7 +109,7 @@ func (s *Service) handleCreateRelease(w http.ResponseWriter, r *http.Request) {
 func (s *Service) handleUpdateRelease(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	var r2 ReleaseTicket
-	json.NewDecoder(r.Body).Decode(&r2)
+	httputil.BindJSON(r, &r2)
 	r2.ID = id
 	r2.TenantID = tenant(r)
 	s.store.UpdateRelease(r.Context(), &r2)
@@ -149,7 +148,7 @@ func (s *Service) handleRejectRelease(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		Reason string `json:"reason"`
 	}
-	json.NewDecoder(r.Body).Decode(&body)
+	httputil.BindJSON(r, &body)
 	rel, err := s.store.GetRelease(r.Context(), id, t)
 	if err != nil || rel == nil {
 		httputil.WriteJSON(w, 404, map[string]string{"error": "not found"})
@@ -555,7 +554,7 @@ func (s *Service) handleListEnvs(w http.ResponseWriter, r *http.Request) {
 }
 func (s *Service) handleCreateEnv(w http.ResponseWriter, r *http.Request) {
 	var e DeployEnvironment
-	json.NewDecoder(r.Body).Decode(&e)
+	httputil.BindJSON(r, &e)
 	e.TenantID = tenant(r)
 	s.store.CreateEnv(r.Context(), &e)
 	httputil.WriteJSON(w, 201, e)
@@ -563,7 +562,7 @@ func (s *Service) handleCreateEnv(w http.ResponseWriter, r *http.Request) {
 func (s *Service) handleUpdateEnv(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	var e DeployEnvironment
-	json.NewDecoder(r.Body).Decode(&e)
+	httputil.BindJSON(r, &e)
 	e.ID = id
 	e.TenantID = tenant(r)
 	s.store.UpdateEnv(r.Context(), &e)

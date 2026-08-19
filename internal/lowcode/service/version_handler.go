@@ -1,7 +1,6 @@
 package service
 
 import (
-	"encoding/json"
 	"github.com/opsorigin/core/pkg/httputil"
 	"net/http"
 
@@ -81,7 +80,7 @@ func (h *VersionHandler) handlePublishPageVersion(w http.ResponseWriter, r *http
 	var req struct {
 		PublishedBy string `json:"published_by"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := httputil.BindJSON(r, &req); err != nil {
 		http.Error(w, `{"error":"invalid request body"}`, http.StatusBadRequest)
 		return
 	}
@@ -110,7 +109,7 @@ func (h *VersionHandler) handleRollbackPageVersion(w http.ResponseWriter, r *htt
 	var req struct {
 		OperatorID string `json:"operator_id"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := httputil.BindJSON(r, &req); err != nil {
 		http.Error(w, `{"error":"invalid request body"}`, http.StatusBadRequest)
 		return
 	}
@@ -175,7 +174,7 @@ func (h *VersionHandler) handlePublishModelVersion(w http.ResponseWriter, r *htt
 	var req struct {
 		PublishedBy string `json:"published_by"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := httputil.BindJSON(r, &req); err != nil {
 		http.Error(w, `{"error":"invalid request body"}`, http.StatusBadRequest)
 		return
 	}
@@ -204,7 +203,7 @@ func (h *VersionHandler) handleRollbackModelVersion(w http.ResponseWriter, r *ht
 	var req struct {
 		OperatorID string `json:"operator_id"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := httputil.BindJSON(r, &req); err != nil {
 		http.Error(w, `{"error":"invalid request body"}`, http.StatusBadRequest)
 		return
 	}

@@ -1,6 +1,7 @@
 package cmdb
 
 import (
+	"github.com/opsorigin/core/pkg/auth"
 	"github.com/opsorigin/core/pkg/httputil"
 	"net/http"
 
@@ -10,7 +11,7 @@ import (
 // handleArchiveCI 归档一条 CI：状态置为 archived，不物理删除，可随时恢复。
 func (s *Service) handleArchiveCI(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	tenantID := tenantFromCtx(r.Context())
+	tenantID := auth.TenantFromContext(r.Context())
 
 	if s.pg == nil {
 		if !s.mem.setCIStatus(tenantID, id, model.CIStatusArchived) {
@@ -34,7 +35,7 @@ func (s *Service) handleArchiveCI(w http.ResponseWriter, r *http.Request) {
 // handleRestoreCI 恢复一条已归档 CI：状态置回 active。
 func (s *Service) handleRestoreCI(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	tenantID := tenantFromCtx(r.Context())
+	tenantID := auth.TenantFromContext(r.Context())
 
 	if s.pg == nil {
 		if !s.mem.setCIStatus(tenantID, id, model.CIStatusActive) {

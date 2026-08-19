@@ -8,7 +8,6 @@ package ola
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"net/http"
 	"time"
 
@@ -143,7 +142,7 @@ func (s *Store) handleList(w http.ResponseWriter, r *http.Request) {
 
 func (s *Store) handleCreate(w http.ResponseWriter, r *http.Request) {
 	var p Policy
-	if err := json.NewDecoder(r.Body).Decode(&p); err != nil {
+	if err := httputil.BindJSON(r, &p); err != nil {
 		httputil.WriteJSON(w, 400, map[string]string{"error": "invalid body"})
 		return
 	}
@@ -158,7 +157,7 @@ func (s *Store) handleCreate(w http.ResponseWriter, r *http.Request) {
 func (s *Store) handleUpdate(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	var p Policy
-	if err := json.NewDecoder(r.Body).Decode(&p); err != nil {
+	if err := httputil.BindJSON(r, &p); err != nil {
 		httputil.WriteJSON(w, 400, map[string]string{"error": "invalid body"})
 		return
 	}

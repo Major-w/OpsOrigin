@@ -1,7 +1,6 @@
 package ai
 
 import (
-	"encoding/json"
 	"github.com/opsorigin/core/pkg/httputil"
 	"net/http"
 
@@ -14,7 +13,7 @@ func (s *Service) handleGenerateRemediations(w http.ResponseWriter, r *http.Requ
 	if !s.authorize(w, r, auth.PermissionAIToolExec) {
 		return
 	}
-	acts, err := s.Engine.GenerateRemediations(r.Context(), tenantFromCtx(r.Context()), r.PathValue("runID"))
+	acts, err := s.Engine.GenerateRemediations(r.Context(), auth.TenantFromContext(r.Context()), r.PathValue("runID"))
 	if err != nil {
 		httputil.WriteError(w, http.StatusBadRequest, err.Error())
 		return
@@ -24,7 +23,7 @@ func (s *Service) handleGenerateRemediations(w http.ResponseWriter, r *http.Requ
 
 // handleListRemediations 返回某 run 的修复动作列表。
 func (s *Service) handleListRemediations(w http.ResponseWriter, r *http.Request) {
-	httputil.WriteJSON(w, http.StatusOK, s.Engine.ListRemediations(tenantFromCtx(r.Context()), r.PathValue("runID")))
+	httputil.WriteJSON(w, http.StatusOK, s.Engine.ListRemediations(auth.TenantFromContext(r.Context()), r.PathValue("runID")))
 }
 
 // handleExecuteRemediation 执行一条修复动作(分级: auto 直接执行 / review 触发审批)。
@@ -36,11 +35,11 @@ func (s *Service) handleExecuteRemediation(w http.ResponseWriter, r *http.Reques
 	var req struct {
 		ActionID string `json:"action_id"`
 	}
-	_ = json.NewDecoder(r.Body).Decode(&req)
+	_ = httputil.BindJSON(r, &req)
 	if req.ActionID == "" {
 		req.ActionID = r.PathValue("actionID")
 	}
-	act, err := s.Engine.ExecuteRemediation(r.Context(), tenantFromCtx(r.Context()), req.ActionID)
+	act, err := s.Engine.ExecuteRemediation(r.Context(), auth.TenantFromContext(r.Context()), req.ActionID)
 	if err != nil {
 		httputil.WriteError(w, http.StatusBadRequest, err.Error())
 		return

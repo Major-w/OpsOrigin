@@ -137,7 +137,7 @@ func (s *Store) handleList(w http.ResponseWriter, r *http.Request) {
 
 func (s *Store) handleCreate(w http.ResponseWriter, r *http.Request) {
 	var c ChangeRequest
-	if err := json.NewDecoder(r.Body).Decode(&c); err != nil {
+	if err := httputil.BindJSON(r, &c); err != nil {
 		httputil.WriteJSON(w, 400, map[string]string{"error": "invalid body"})
 		return
 	}
@@ -152,7 +152,7 @@ func (s *Store) handleCreate(w http.ResponseWriter, r *http.Request) {
 func (s *Store) handleUpdate(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	var c ChangeRequest
-	if err := json.NewDecoder(r.Body).Decode(&c); err != nil {
+	if err := httputil.BindJSON(r, &c); err != nil {
 		httputil.WriteJSON(w, 400, map[string]string{"error": "invalid body"})
 		return
 	}

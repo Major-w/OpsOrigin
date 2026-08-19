@@ -2,7 +2,6 @@ package ai
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"github.com/opsorigin/core/pkg/httputil"
 	"net/http"
@@ -31,7 +30,7 @@ type generateWorkspaceRequest struct {
 
 func (s *Service) handleGenerateWorkspace(w http.ResponseWriter, r *http.Request) {
 	var req generateWorkspaceRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := httputil.BindJSON(r, &req); err != nil {
 		httputil.WriteError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}

@@ -3,7 +3,7 @@ package oncall
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
+	"github.com/opsorigin/core/pkg/auth"
 	"log/slog"
 	"net/http"
 	"sync"
@@ -171,13 +171,6 @@ func NewService(db *sql.DB) *Service {
 	return &Service{store: st}
 }
 
-func tenantFromCtx(ctx context.Context) string {
-	if t, ok := ctx.Value("tenant_id").(string); ok && t != "" {
-		return t
-	}
-	return "default"
-}
-
 func (s *Service) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/v1/oncall", s.handleListShifts)
 	mux.HandleFunc("POST /api/v1/oncall", s.handleAddShift)
@@ -188,7 +181,7 @@ func (s *Service) RegisterRoutes(mux *http.ServeMux) {
 }
 
 func (s *Service) handleListShifts(w http.ResponseWriter, r *http.Request) {
-	tenantID := tenantFromCtx(r.Context())
+	tenantID := auth.TenantFromContext(r.Context())
 	shifts, _ := s.store.ListShifts(r.Context(), tenantID)
 	if shifts == nil {
 		shifts = []*Shift{}
@@ -198,14 +191,14 @@ func (s *Service) handleListShifts(w http.ResponseWriter, r *http.Request) {
 
 func (s *Service) handleAddShift(w http.ResponseWriter, r *http.Request) {
 	var shift Shift
-	json.NewDecoder(r.Body).Decode(&shift)
-	shift.TenantID = tenantFromCtx(r.Context())
+	httputil.BindJSON(r, &shift)
+	shift.TenantID = auth.TenantFromContext(r.Context())
 	s.store.AddShift(r.Context(), &shift)
 	httputil.WriteJSON(w, http.StatusCreated, shift)
 }
 
 func (s *Service) handleListRotations(w http.ResponseWriter, r *http.Request) {
-	tenantID := tenantFromCtx(r.Context())
+	tenantID := auth.TenantFromContext(r.Context())
 	rotations, _ := s.store.ListRotations(r.Context(), tenantID)
 	if rotations == nil {
 		rotations = []*Rotation{}
@@ -215,20 +208,20 @@ func (s *Service) handleListRotations(w http.ResponseWriter, r *http.Request) {
 
 func (s *Service) handleCreateRotation(w http.ResponseWriter, r *http.Request) {
 	var rot Rotation
-	json.NewDecoder(r.Body).Decode(&rot)
-	rot.TenantID = tenantFromCtx(r.Context())
+	httputil.BindJSON(r, &rot)
+	rot.TenantID = auth.TenantFromContext(r.Context())
 	s.store.AddRotation(r.Context(), &rot)
 	httputil.WriteJSON(w, http.StatusCreated, rot)
 }
 
 func (s *Service) handleDeleteRotation(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	s.store.DeleteRotation(r.Context(), id, tenantFromCtx(r.Context()))
+	s.store.DeleteRotation(r.Context(), id, auth.TenantFromContext(r.Context()))
 	httputil.WriteJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
 }
 
 func (s *Service) handleCurrentOncall(w http.ResponseWriter, r *http.Request) {
-	tenantID := tenantFromCtx(r.Context())
+	tenantID := auth.TenantFromContext(r.Context())
 	id := r.PathValue("id")
 	rotations, _ := s.store.ListRotations(r.Context(), tenantID)
 	for _, rot := range rotations {

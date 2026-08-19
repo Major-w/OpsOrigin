@@ -377,6 +377,19 @@ func TenantIDFromContext(ctx context.Context) string {
 	return ""
 }
 
+// TenantFromContext 返回请求租户，带 "default" 兜底：
+// 优先裸字符串 key(兼容业务临时租户切换)，回落类型化主体租户，最后兜底 "default"。
+// 这是各业务模块统一的租户取数入口（曾散落 11 份 tenantFromCtx 副本，均指向此函数）。
+func TenantFromContext(ctx context.Context) string {
+	if v, ok := ctx.Value(legacyKeyTenantID).(string); ok && v != "" {
+		return v
+	}
+	if pr, ok := principal.FromContext(ctx); ok && pr.TenantID != "" {
+		return pr.TenantID
+	}
+	return "default"
+}
+
 func RoleFromContext(ctx context.Context) string {
 	if pr, ok := principal.FromContext(ctx); ok && pr.Role != "" {
 		return pr.Role

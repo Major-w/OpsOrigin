@@ -5,7 +5,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/csv"
-	"encoding/json"
+	"github.com/opsorigin/core/pkg/auth"
 	"log/slog"
 	"net/http"
 	"strconv"
@@ -86,7 +86,7 @@ func (s *Service) handleCreateScan(w http.ResponseWriter, r *http.Request) {
 		Registry     *RegistryConfig `json:"registry"`
 		RegistryAuto bool            `json:"registry_auto"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := httputil.BindJSON(r, &req); err != nil {
 		httputil.WriteError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
@@ -98,7 +98,7 @@ func (s *Service) handleCreateScan(w http.ResponseWriter, r *http.Request) {
 	if stype != model.ScanTypeFull && stype != model.ScanTypeQuick && stype != model.ScanTypeCVE && stype != model.ScanTypeAgent && stype != model.ScanTypeImage {
 		stype = model.ScanTypeFull
 	}
-	tenantID := tenantFromCtx(r.Context())
+	tenantID := auth.TenantFromContext(r.Context())
 	now := time.Now()
 	scan := &model.Scan{
 		TenantID:       tenantID,
@@ -204,7 +204,7 @@ func (s *Service) handleCreateScan(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Service) handleListScans(w http.ResponseWriter, r *http.Request) {
-	tenantID := tenantFromCtx(r.Context())
+	tenantID := auth.TenantFromContext(r.Context())
 	scans, err := s.store.ListScans(r.Context(), tenantID)
 	if err != nil {
 		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
@@ -218,7 +218,7 @@ func (s *Service) handleListScans(w http.ResponseWriter, r *http.Request) {
 
 func (s *Service) handleGetScan(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	tenantID := tenantFromCtx(r.Context())
+	tenantID := auth.TenantFromContext(r.Context())
 	scan, err := s.store.GetScan(r.Context(), id, tenantID)
 	if err != nil {
 		if err == store.ErrNotFound {
@@ -233,7 +233,7 @@ func (s *Service) handleGetScan(w http.ResponseWriter, r *http.Request) {
 
 func (s *Service) handleDeleteScan(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	tenantID := tenantFromCtx(r.Context())
+	tenantID := auth.TenantFromContext(r.Context())
 	if err := s.store.DeleteScan(r.Context(), id, tenantID); err != nil {
 		if err == store.ErrNotFound {
 			httputil.WriteError(w, http.StatusNotFound, "scan not found")
@@ -247,7 +247,7 @@ func (s *Service) handleDeleteScan(w http.ResponseWriter, r *http.Request) {
 
 func (s *Service) handleListFindings(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	tenantID := tenantFromCtx(r.Context())
+	tenantID := auth.TenantFromContext(r.Context())
 	findings, err := s.store.ListFindings(r.Context(), id, tenantID)
 	if err != nil {
 		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
@@ -260,7 +260,7 @@ func (s *Service) handleListFindings(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Service) handleStats(w http.ResponseWriter, r *http.Request) {
-	tenantID := tenantFromCtx(r.Context())
+	tenantID := auth.TenantFromContext(r.Context())
 	stats, err := s.store.GetStats(r.Context(), tenantID)
 	if err != nil {
 		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
@@ -276,7 +276,7 @@ func (s *Service) handleStats(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Service) handleExportCSV(w http.ResponseWriter, r *http.Request) {
-	tenantID := tenantFromCtx(r.Context())
+	tenantID := auth.TenantFromContext(r.Context())
 	findings, err := s.store.ListFindingsAll(r.Context(), tenantID)
 	if err != nil {
 		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
@@ -300,11 +300,4 @@ func (s *Service) handleExportCSV(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Disposition", "attachment; filename=vuln_findings.csv")
 	w.Write([]byte("\xEF\xBB\xBF"))
 	w.Write(buf.Bytes())
-}
-
-func tenantFromCtx(ctx context.Context) string {
-	if t, ok := ctx.Value("tenant_id").(string); ok && t != "" {
-		return t
-	}
-	return "default"
 }

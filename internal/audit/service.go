@@ -3,7 +3,6 @@ package audit
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"log/slog"
 	"net/http"
 	"strconv"
@@ -84,7 +83,7 @@ func (s *Service) RecordEvent(ctx context.Context, event *model.AuditEvent) erro
 
 func (s *Service) handleRecordEvent(w http.ResponseWriter, r *http.Request) {
 	var event model.AuditEvent
-	if err := json.NewDecoder(r.Body).Decode(&event); err != nil {
+	if err := httputil.BindJSON(r, &event); err != nil {
 		httputil.WriteError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
@@ -175,7 +174,7 @@ func (s *Service) handleValidateQuery(w http.ResponseWriter, r *http.Request) {
 		Query    string `json:"query"`
 		TenantID string `json:"tenant_id"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := httputil.BindJSON(r, &req); err != nil {
 		httputil.WriteError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}

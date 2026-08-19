@@ -2,6 +2,7 @@ package cmdb
 
 import (
 	"context"
+	"github.com/opsorigin/core/pkg/auth"
 	"github.com/opsorigin/core/pkg/httputil"
 	"net/http"
 	"strings"
@@ -11,7 +12,7 @@ import (
 
 // handleGetPanorama 处理 GET /api/v1/panorama?scope=<rootCI>&layers=cmdb,callchain。
 func (s *Service) handleGetPanorama(w http.ResponseWriter, r *http.Request) {
-	tenantID := tenantFromCtx(r.Context())
+	tenantID := auth.TenantFromContext(r.Context())
 	scope := strings.TrimSpace(r.URL.Query().Get("scope"))
 	if scope == "" {
 		httputil.WriteError(w, http.StatusBadRequest, "scope (root CI id) is required")

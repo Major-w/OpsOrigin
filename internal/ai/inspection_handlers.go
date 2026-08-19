@@ -1,7 +1,6 @@
 package ai
 
 import (
-	"encoding/json"
 	"github.com/opsorigin/core/pkg/httputil"
 	"net/http"
 
@@ -20,7 +19,7 @@ func (s *Service) handleListInspectionTemplates(w http.ResponseWriter, r *http.R
 
 // handleListInspections 列出当前租户的巡检任务。
 func (s *Service) handleListInspections(w http.ResponseWriter, r *http.Request) {
-	items := s.Engine.ListInspections(tenantFromCtx(r.Context()))
+	items := s.Engine.ListInspections(auth.TenantFromContext(r.Context()))
 	if items == nil {
 		items = []*agentic.Inspection{}
 	}
@@ -30,7 +29,7 @@ func (s *Service) handleListInspections(w http.ResponseWriter, r *http.Request) 
 // handleGetInspection 查询单个巡检任务(含下次运行时间与最近状态)。
 func (s *Service) handleGetInspection(w http.ResponseWriter, r *http.Request) {
 	in, ok := s.Engine.GetInspection(r.PathValue("id"))
-	if !ok || in.TenantID != tenantFromCtx(r.Context()) {
+	if !ok || in.TenantID != auth.TenantFromContext(r.Context()) {
 		httputil.WriteError(w, http.StatusNotFound, "inspection not found")
 		return
 	}
@@ -43,11 +42,11 @@ func (s *Service) handleCreateInspection(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	var in agentic.Inspection
-	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+	if err := httputil.BindJSON(r, &in); err != nil {
 		httputil.WriteError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
-	in.TenantID = tenantFromCtx(r.Context())
+	in.TenantID = auth.TenantFromContext(r.Context())
 	created, err := s.Engine.CreateInspection(r.Context(), &in)
 	if err != nil {
 		httputil.WriteError(w, http.StatusBadRequest, err.Error())
@@ -62,12 +61,12 @@ func (s *Service) handleUpdateInspection(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	existing, ok := s.Engine.GetInspection(r.PathValue("id"))
-	if !ok || existing.TenantID != tenantFromCtx(r.Context()) {
+	if !ok || existing.TenantID != auth.TenantFromContext(r.Context()) {
 		httputil.WriteError(w, http.StatusNotFound, "inspection not found")
 		return
 	}
 	var in agentic.Inspection
-	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+	if err := httputil.BindJSON(r, &in); err != nil {
 		httputil.WriteError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
@@ -86,7 +85,7 @@ func (s *Service) handleDeleteInspection(w http.ResponseWriter, r *http.Request)
 	if !s.authorize(w, r, auth.PermissionAIToolExec) {
 		return
 	}
-	tenantID := tenantFromCtx(r.Context())
+	tenantID := auth.TenantFromContext(r.Context())
 	existing, ok := s.Engine.GetInspection(r.PathValue("id"))
 	if !ok || existing.TenantID != tenantID {
 		httputil.WriteError(w, http.StatusNotFound, "inspection not found")
@@ -105,7 +104,7 @@ func (s *Service) handleRunInspection(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	existing, ok := s.Engine.GetInspection(r.PathValue("id"))
-	if !ok || existing.TenantID != tenantFromCtx(r.Context()) {
+	if !ok || existing.TenantID != auth.TenantFromContext(r.Context()) {
 		httputil.WriteError(w, http.StatusNotFound, "inspection not found")
 		return
 	}
@@ -125,14 +124,14 @@ func (s *Service) handleRunInspectionExperiment(w http.ResponseWriter, r *http.R
 		return
 	}
 	existing, ok := s.Engine.GetInspection(r.PathValue("id"))
-	if !ok || existing.TenantID != tenantFromCtx(r.Context()) {
+	if !ok || existing.TenantID != auth.TenantFromContext(r.Context()) {
 		httputil.WriteError(w, http.StatusNotFound, "inspection not found")
 		return
 	}
 	var req agentic.ExperimentMeta
-	_ = json.NewDecoder(r.Body).Decode(&req)
+	_ = httputil.BindJSON(r, &req)
 	if req.CreatedBy == "" {
-		req.CreatedBy = tenantFromCtx(r.Context())
+		req.CreatedBy = auth.TenantFromContext(r.Context())
 	}
 	run, err := s.Engine.RunInspectionExperiment(r.Context(), r.PathValue("id"), &req)
 	if err != nil {
@@ -145,7 +144,7 @@ func (s *Service) handleRunInspectionExperiment(w http.ResponseWriter, r *http.R
 // handleListInspectionRuns 列出某巡检任务的历史运行记录(最新在前)。
 func (s *Service) handleListInspectionRuns(w http.ResponseWriter, r *http.Request) {
 	existing, ok := s.Engine.GetInspection(r.PathValue("id"))
-	if !ok || existing.TenantID != tenantFromCtx(r.Context()) {
+	if !ok || existing.TenantID != auth.TenantFromContext(r.Context()) {
 		httputil.WriteError(w, http.StatusNotFound, "inspection not found")
 		return
 	}
@@ -163,11 +162,11 @@ func (s *Service) handleEscalateInspectionRun(w http.ResponseWriter, r *http.Req
 	if !s.authorize(w, r, auth.PermissionAIToolExec) {
 		return
 	}
-	tenantID := tenantFromCtx(r.Context())
+	tenantID := auth.TenantFromContext(r.Context())
 	var req struct {
 		Severity string `json:"severity"`
 	}
-	_ = json.NewDecoder(r.Body).Decode(&req)
+	_ = httputil.BindJSON(r, &req)
 
 	run, err := s.Engine.EscalateInspectionRun(r.Context(), tenantID, r.PathValue("runID"), req.Severity)
 	if err != nil {
@@ -180,7 +179,7 @@ func (s *Service) handleEscalateInspectionRun(w http.ResponseWriter, r *http.Req
 // handleWorkforceMetrics 返回数字员工运营效果聚合指标(巡检健康 + 发现/转单/处置漏斗 + 工单统计)。
 // 只读统计, 普通鉴权即可(无需 ai:tool:exec)。
 func (s *Service) handleWorkforceMetrics(w http.ResponseWriter, r *http.Request) {
-	tenantID := tenantFromCtx(r.Context())
+	tenantID := auth.TenantFromContext(r.Context())
 	m := s.Engine.GetWorkforceMetrics(tenantID)
 	s.Engine.FillTicketMetrics(r.Context(), tenantID, m)
 	httputil.WriteJSON(w, http.StatusOK, m)
@@ -193,7 +192,7 @@ func (s *Service) handleExportDataset(w http.ResponseWriter, r *http.Request) {
 	if !s.authorize(w, r, auth.PermissionAIToolExec) {
 		return
 	}
-	tenantID := tenantFromCtx(r.Context())
+	tenantID := auth.TenantFromContext(r.Context())
 
 	feedbacks := []*agentic.Feedback{}
 	if s.feedbackStore != nil {

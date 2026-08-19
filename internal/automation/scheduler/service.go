@@ -3,7 +3,7 @@ package scheduler
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
+	"github.com/opsorigin/core/pkg/auth"
 	"log/slog"
 	"net/http"
 	"strconv"
@@ -119,13 +119,6 @@ func (s *Service) SetWorkflowTrigger(f func(ctx context.Context, tenantID, workf
 
 func (s *Service) SetScriptTrigger(f func(ctx context.Context, tenantID, scriptID string, agentIDs []string) error) {
 	s.scriptTrigger = f
-}
-
-func tenantFromCtx(ctx context.Context) string {
-	if t, ok := ctx.Value("tenant_id").(string); ok && t != "" {
-		return t
-	}
-	return "default"
 }
 
 func (s *Service) RegisterRoutes(mux *http.ServeMux) {
@@ -286,7 +279,7 @@ func matchCronPart(part string, val int) bool {
 
 func (s *Service) handleCreate(w http.ResponseWriter, r *http.Request) {
 	var task ScheduledTask
-	if err := json.NewDecoder(r.Body).Decode(&task); err != nil {
+	if err := httputil.BindJSON(r, &task); err != nil {
 		httputil.WriteError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
@@ -294,7 +287,7 @@ func (s *Service) handleCreate(w http.ResponseWriter, r *http.Request) {
 		httputil.WriteError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	task.TenantID = tenantFromCtx(r.Context())
+	task.TenantID = auth.TenantFromContext(r.Context())
 	task.Enabled = true
 	if err := s.store.Create(r.Context(), &task); err != nil {
 		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
@@ -304,7 +297,7 @@ func (s *Service) handleCreate(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Service) handleList(w http.ResponseWriter, r *http.Request) {
-	tenantID := tenantFromCtx(r.Context())
+	tenantID := auth.TenantFromContext(r.Context())
 	tasks, err := s.store.List(r.Context(), tenantID)
 	if err != nil {
 		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
@@ -318,7 +311,7 @@ func (s *Service) handleList(w http.ResponseWriter, r *http.Request) {
 
 func (s *Service) handleGet(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	tenantID := tenantFromCtx(r.Context())
+	tenantID := auth.TenantFromContext(r.Context())
 	task, err := s.store.Get(r.Context(), id, tenantID)
 	if err != nil || task == nil {
 		httputil.WriteError(w, http.StatusNotFound, "task not found")
@@ -329,14 +322,14 @@ func (s *Service) handleGet(w http.ResponseWriter, r *http.Request) {
 
 func (s *Service) handleUpdate(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	tenantID := tenantFromCtx(r.Context())
+	tenantID := auth.TenantFromContext(r.Context())
 	existing, err := s.store.Get(r.Context(), id, tenantID)
 	if err != nil || existing == nil {
 		httputil.WriteError(w, http.StatusNotFound, "task not found")
 		return
 	}
 	var task ScheduledTask
-	json.NewDecoder(r.Body).Decode(&task)
+	httputil.BindJSON(r, &task)
 	task.ID = existing.ID
 	task.TenantID = existing.TenantID
 	task.CreatedAt = existing.CreatedAt
@@ -346,7 +339,7 @@ func (s *Service) handleUpdate(w http.ResponseWriter, r *http.Request) {
 
 func (s *Service) handleDelete(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	tenantID := tenantFromCtx(r.Context())
+	tenantID := auth.TenantFromContext(r.Context())
 	s.store.Delete(r.Context(), id, tenantID)
 	httputil.WriteJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
 }

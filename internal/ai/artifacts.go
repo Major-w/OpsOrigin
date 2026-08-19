@@ -4,7 +4,7 @@ package ai
 
 import (
 	"context"
-	"encoding/json"
+	"github.com/opsorigin/core/pkg/auth"
 	"github.com/opsorigin/core/pkg/httputil"
 	"log/slog"
 	"net/http"
@@ -93,13 +93,13 @@ func artifactContentType(fileName string, fallback string) string {
 // handleSaveArtifact 保存对话产物(文本内容 → 对象存储 + 元数据)。
 func (s *Service) handleSaveArtifact(w http.ResponseWriter, r *http.Request) {
 	convID := r.PathValue("id")
-	tenantID := tenantFromCtx(r.Context())
+	tenantID := auth.TenantFromContext(r.Context())
 	var req struct {
 		MessageID string `json:"message_id"`
 		FileName  string `json:"file_name"`
 		Content   string `json:"content"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := httputil.BindJSON(r, &req); err != nil {
 		httputil.WriteError(w, http.StatusBadRequest, "invalid body")
 		return
 	}
@@ -143,7 +143,7 @@ func (s *Service) handleSaveArtifact(w http.ResponseWriter, r *http.Request) {
 // handleListArtifacts 产物列表。
 func (s *Service) handleListArtifacts(w http.ResponseWriter, r *http.Request) {
 	convID := r.PathValue("id")
-	tenantID := tenantFromCtx(r.Context())
+	tenantID := auth.TenantFromContext(r.Context())
 	if s.db == nil {
 		httputil.WriteJSON(w, http.StatusOK, []ChatArtifact{})
 		return
@@ -171,7 +171,7 @@ func (s *Service) handleListArtifacts(w http.ResponseWriter, r *http.Request) {
 func (s *Service) handleDownloadArtifact(w http.ResponseWriter, r *http.Request) {
 	convID := r.PathValue("id")
 	aid := r.PathValue("aid")
-	tenantID := tenantFromCtx(r.Context())
+	tenantID := auth.TenantFromContext(r.Context())
 	if s.db == nil {
 		httputil.WriteError(w, http.StatusNotFound, "db unavailable")
 		return
@@ -201,7 +201,7 @@ func (s *Service) handleDownloadArtifact(w http.ResponseWriter, r *http.Request)
 func (s *Service) handleDeleteArtifact(w http.ResponseWriter, r *http.Request) {
 	convID := r.PathValue("id")
 	aid := r.PathValue("aid")
-	tenantID := tenantFromCtx(r.Context())
+	tenantID := auth.TenantFromContext(r.Context())
 	if s.db == nil {
 		httputil.WriteError(w, http.StatusNotFound, "db unavailable")
 		return

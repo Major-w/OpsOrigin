@@ -1,7 +1,7 @@
 package cloud
 
 import (
-	"encoding/json"
+	"github.com/opsorigin/core/pkg/auth"
 	"github.com/opsorigin/core/pkg/httputil"
 	"net/http"
 )
@@ -24,7 +24,7 @@ type syncRequest struct {
 // 返回 SyncResult{created,updated,skipped,failed,errors} 供前端展示。
 func (s *Service) handleSyncResources(w http.ResponseWriter, r *http.Request) {
 	var req syncRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := httputil.BindJSON(r, &req); err != nil {
 		httputil.WriteError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
@@ -72,7 +72,7 @@ func (s *Service) handleSyncResources(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	tenantID := tenantFromCtx(r.Context())
+	tenantID := auth.TenantFromContext(r.Context())
 	result := s.cmdb.SyncResources(r.Context(), tenantID, resources)
 	httputil.WriteJSON(w, http.StatusOK, result)
 }
@@ -97,7 +97,7 @@ func (s *Service) handleSyncK8sResources(w http.ResponseWriter, r *http.Request,
 			kinds = K8sResourceTypes()
 		}
 		var err error
-		resources, err = s.k8sDiscoverer.Discover(r.Context(), tenantFromCtx(r.Context()), req.AgentID, kinds, req.K8s)
+		resources, err = s.k8sDiscoverer.Discover(r.Context(), auth.TenantFromContext(r.Context()), req.AgentID, kinds, req.K8s)
 		if err != nil {
 			httputil.WriteError(w, http.StatusBadGateway, "failed to discover k8s resources: "+err.Error())
 			return
@@ -106,7 +106,7 @@ func (s *Service) handleSyncK8sResources(w http.ResponseWriter, r *http.Request,
 	if resources == nil {
 		resources = []Resource{}
 	}
-	tenantID := tenantFromCtx(r.Context())
+	tenantID := auth.TenantFromContext(r.Context())
 	result := s.cmdb.SyncResources(r.Context(), tenantID, resources)
 	httputil.WriteJSON(w, http.StatusOK, result)
 }

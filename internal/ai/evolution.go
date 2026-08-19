@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"encoding/xml"
 	"fmt"
+	"github.com/opsorigin/core/pkg/auth"
 	"github.com/opsorigin/core/pkg/httputil"
 	"io"
 	"log/slog"
@@ -188,7 +189,7 @@ func (s *Service) savePolicy(ctx context.Context, tenantID string, p EvolutionPo
 
 // handleEvolutionPolicy GET/PUT 全局策略。
 func (s *Service) handleEvolutionPolicy(w http.ResponseWriter, r *http.Request) {
-	tenantID := tenantFromCtx(r.Context())
+	tenantID := auth.TenantFromContext(r.Context())
 	if r.Method == http.MethodGet {
 		httputil.WriteJSON(w, http.StatusOK, s.getPolicy(r.Context(), tenantID))
 		return
@@ -200,7 +201,7 @@ func (s *Service) handleEvolutionPolicy(w http.ResponseWriter, r *http.Request) 
 		MinScore       *float64 `json:"min_score"`
 		Blacklist      []string `json:"blacklist"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := httputil.BindJSON(r, &req); err != nil {
 		httputil.WriteError(w, http.StatusBadRequest, "invalid body")
 		return
 	}
@@ -230,7 +231,7 @@ func (s *Service) handleEvolutionPolicy(w http.ResponseWriter, r *http.Request) 
 // handleEvolutionSources CRUD。
 func (s *Service) handleEvolutionSources(w http.ResponseWriter, r *http.Request) {
 	if r.Method == http.MethodGet {
-		httputil.WriteJSON(w, http.StatusOK, s.listSources(r.Context(), tenantFromCtx(r.Context())))
+		httputil.WriteJSON(w, http.StatusOK, s.listSources(r.Context(), auth.TenantFromContext(r.Context())))
 		return
 	}
 	// POST 创建
@@ -243,7 +244,7 @@ func (s *Service) handleEvolutionSources(w http.ResponseWriter, r *http.Request)
 		TargetCategory string   `json:"target_category"`
 		MinScore       *float64 `json:"min_score"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := httputil.BindJSON(r, &req); err != nil {
 		httputil.WriteError(w, http.StatusBadRequest, "invalid body")
 		return
 	}
@@ -274,7 +275,7 @@ func (s *Service) handleEvolutionSources(w http.ResponseWriter, r *http.Request)
 		if _, err := s.db.ExecContext(r.Context(),
 			`INSERT INTO ai_evolution_sources (id, tenant_id, name, type, source, enabled, interval_hours, target_category, min_score, created_at)
 			 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
-			it.ID, tenantFromCtx(r.Context()), it.Name, it.Type, it.Source, it.Enabled, it.IntervalHours, it.TargetCategory, it.MinScore, it.CreatedAt); err != nil {
+			it.ID, auth.TenantFromContext(r.Context()), it.Name, it.Type, it.Source, it.Enabled, it.IntervalHours, it.TargetCategory, it.MinScore, it.CreatedAt); err != nil {
 			httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
@@ -289,14 +290,14 @@ func (s *Service) handleUpdateEvolutionSource(w http.ResponseWriter, r *http.Req
 		return
 	}
 	id := r.PathValue("id")
-	tenantID := tenantFromCtx(r.Context())
+	tenantID := auth.TenantFromContext(r.Context())
 	var req struct {
 		Enabled        *bool    `json:"enabled"`
 		IntervalHours  *int     `json:"interval_hours"`
 		TargetCategory *string  `json:"target_category"`
 		MinScore       *float64 `json:"min_score"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := httputil.BindJSON(r, &req); err != nil {
 		httputil.WriteError(w, http.StatusBadRequest, "invalid body")
 		return
 	}
@@ -339,7 +340,7 @@ func (s *Service) handleDeleteEvolutionSource(w http.ResponseWriter, r *http.Req
 	}
 	id := r.PathValue("id")
 	if _, err := s.db.ExecContext(r.Context(),
-		`DELETE FROM ai_evolution_sources WHERE id=$1 AND tenant_id=$2`, id, tenantFromCtx(r.Context())); err != nil {
+		`DELETE FROM ai_evolution_sources WHERE id=$1 AND tenant_id=$2`, id, auth.TenantFromContext(r.Context())); err != nil {
 		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
@@ -359,13 +360,13 @@ func hitBlacklist(a evolvedArticle, black []string) bool {
 
 // handleEvolutionFetch 手动触发一次主动进化。
 func (s *Service) handleEvolutionFetch(w http.ResponseWriter, r *http.Request) {
-	sources := s.listSources(r.Context(), tenantFromCtx(r.Context()))
+	sources := s.listSources(r.Context(), auth.TenantFromContext(r.Context()))
 	results := []map[string]any{}
 	for _, src := range sources {
 		if !src.Enabled {
 			continue
 		}
-		summary, err := s.fetchAndAnalyze(r.Context(), tenantFromCtx(r.Context()), src)
+		summary, err := s.fetchAndAnalyze(r.Context(), auth.TenantFromContext(r.Context()), src)
 		item := map[string]any{"name": src.Name, "type": src.Type, "source": src.Source}
 		if err != nil {
 			item["status"] = "error"

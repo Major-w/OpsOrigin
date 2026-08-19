@@ -9,7 +9,6 @@ package inboundconfig
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"net/http"
 	"time"
 
@@ -176,7 +175,7 @@ func (s *Store) handleList(w http.ResponseWriter, r *http.Request) {
 
 func (s *Store) handleUpsert(w http.ResponseWriter, r *http.Request) {
 	var c Channel
-	if err := json.NewDecoder(r.Body).Decode(&c); err != nil {
+	if err := httputil.BindJSON(r, &c); err != nil {
 		httputil.WriteJSON(w, 400, map[string]string{"error": "invalid body"})
 		return
 	}

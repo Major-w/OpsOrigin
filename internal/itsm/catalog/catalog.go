@@ -374,7 +374,7 @@ func (s *Store) handleListVisible(w http.ResponseWriter, r *http.Request) {
 
 func (s *Store) handleCreate(w http.ResponseWriter, r *http.Request) {
 	var it ServiceItem
-	if err := json.NewDecoder(r.Body).Decode(&it); err != nil {
+	if err := httputil.BindJSON(r, &it); err != nil {
 		httputil.WriteJSON(w, 400, map[string]string{"error": "invalid body"})
 		return
 	}
@@ -400,7 +400,7 @@ func (s *Store) handleUpdate(w http.ResponseWriter, r *http.Request) {
 		tenant = "default"
 	}
 	var it ServiceItem
-	if err := json.NewDecoder(r.Body).Decode(&it); err != nil {
+	if err := httputil.BindJSON(r, &it); err != nil {
 		httputil.WriteJSON(w, 400, map[string]string{"error": "invalid body"})
 		return
 	}
@@ -510,7 +510,7 @@ func (s *Store) handleReorder(w http.ResponseWriter, r *http.Request) {
 		tenant = "default"
 	}
 	var req reorderReq
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := httputil.BindJSON(r, &req); err != nil {
 		httputil.WriteJSON(w, 400, map[string]string{"error": "invalid body"})
 		return
 	}

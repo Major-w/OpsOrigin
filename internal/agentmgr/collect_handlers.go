@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/opsorigin/core/pkg/auth"
 	"github.com/opsorigin/core/pkg/httputil"
 	"log/slog"
 	"net/http"
@@ -16,11 +17,11 @@ import (
 
 func (s *Service) handleCreateCollectTask(w http.ResponseWriter, r *http.Request) {
 	var t CollectTask
-	if err := json.NewDecoder(r.Body).Decode(&t); err != nil {
+	if err := httputil.BindJSON(r, &t); err != nil {
 		httputil.WriteError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
-	t.TenantID = tenantFromCtx(r.Context())
+	t.TenantID = auth.TenantFromContext(r.Context())
 	if err := s.collect.Create(&t); err != nil {
 		httputil.WriteError(w, http.StatusBadRequest, err.Error())
 		return
@@ -32,7 +33,7 @@ func (s *Service) handleCreateCollectTask(w http.ResponseWriter, r *http.Request
 }
 
 func (s *Service) handleListCollectTasks(w http.ResponseWriter, r *http.Request) {
-	items := s.collect.List(tenantFromCtx(r.Context()))
+	items := s.collect.List(auth.TenantFromContext(r.Context()))
 	if items == nil {
 		items = []*CollectTask{}
 	}
@@ -42,7 +43,7 @@ func (s *Service) handleListCollectTasks(w http.ResponseWriter, r *http.Request)
 func (s *Service) handleUpdateCollectTask(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	var t CollectTask
-	if err := json.NewDecoder(r.Body).Decode(&t); err != nil {
+	if err := httputil.BindJSON(r, &t); err != nil {
 		httputil.WriteError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}

@@ -2,6 +2,7 @@ package httputil
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"reflect"
 )
@@ -32,4 +33,24 @@ func WriteJSON(w http.ResponseWriter, status int, v any) {
 
 func WriteError(w http.ResponseWriter, status int, msg string) {
 	WriteJSON(w, status, map[string]string{"error": msg})
+}
+
+// BindJSON 解析请求体 JSON 到 v（handler 样板去重入口）。
+// 统一错误语义为 "invalid request body"，handler 只需：
+//
+//	var req model.X
+//	if err := httputil.BindJSON(r, &req); err != nil {
+//		httputil.WriteError(w, http.StatusBadRequest, err.Error())
+//		return
+//	}
+func BindJSON(r *http.Request, v any) error {
+	if err := json.NewDecoder(r.Body).Decode(v); err != nil {
+		return fmt.Errorf("invalid request body: %w", err)
+	}
+	return nil
+}
+
+// Param 返回 Go 1.22 路径参数（mux "GET /x/{id}" 模式），等价 r.PathValue。
+func Param(r *http.Request, name string) string {
+	return r.PathValue(name)
 }

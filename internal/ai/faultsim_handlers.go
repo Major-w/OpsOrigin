@@ -1,7 +1,6 @@
 package ai
 
 import (
-	"encoding/json"
 	"github.com/opsorigin/core/pkg/httputil"
 	"net/http"
 
@@ -29,9 +28,9 @@ func (s *Service) handleStartFaultInjection(w http.ResponseWriter, r *http.Reque
 		TargetName   string `json:"target_name"`
 		InspectionID string `json:"inspection_id"`
 	}
-	_ = json.NewDecoder(r.Body).Decode(&req)
+	_ = httputil.BindJSON(r, &req)
 
-	run, err := s.Engine.StartFaultInjection(r.Context(), tenantFromCtx(r.Context()),
+	run, err := s.Engine.StartFaultInjection(r.Context(), auth.TenantFromContext(r.Context()),
 		req.ScenarioID, req.TargetID, req.TargetName, req.InspectionID)
 	if err != nil {
 		httputil.WriteError(w, http.StatusBadRequest, err.Error())
@@ -42,7 +41,7 @@ func (s *Service) handleStartFaultInjection(w http.ResponseWriter, r *http.Reque
 
 // handleListFaultInjections 返回演练记录列表。
 func (s *Service) handleListFaultInjections(w http.ResponseWriter, r *http.Request) {
-	httputil.WriteJSON(w, http.StatusOK, s.Engine.ListFaultInjections(tenantFromCtx(r.Context())))
+	httputil.WriteJSON(w, http.StatusOK, s.Engine.ListFaultInjections(auth.TenantFromContext(r.Context())))
 }
 
 // handleRecoverFaultInjection 恢复/回滚一次演练(解除注入)。

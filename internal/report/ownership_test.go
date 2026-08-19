@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/opsorigin/core/pkg/auth"
 	"github.com/opsorigin/core/pkg/principal"
 )
 
@@ -100,8 +101,8 @@ func TestContextHelpersFallBackToLegacyKeys(t *testing.T) {
 	if u := userFromCtx(ctx); u != "u-legacy" {
 		t.Errorf("userFromCtx = %q, 期望 u-legacy", u)
 	}
-	if tn := tenantFromCtx(ctx); tn != "tenant-legacy" {
-		t.Errorf("tenantFromCtx = %q, 期望 tenant-legacy", tn)
+	if tn := auth.TenantFromContext(ctx); tn != "tenant-legacy" {
+		t.Errorf("TenantFromContext = %q, 期望 tenant-legacy", tn)
 	}
 }
 

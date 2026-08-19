@@ -10,6 +10,7 @@ import (
 	"encoding/xml"
 	"errors"
 	"fmt"
+	"github.com/opsorigin/core/pkg/auth"
 	"io"
 	"log/slog"
 	"net/http"
@@ -339,13 +340,6 @@ func (s *Service) EnsureCategory(ctx context.Context, tenantID, name string) (st
 	return c.ID, nil
 }
 
-func tenantFromCtx(ctx context.Context) string {
-	if t, ok := ctx.Value("tenant_id").(string); ok && t != "" {
-		return t
-	}
-	return "default"
-}
-
 func (s *Service) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/v1/knowledge", s.handleCreate)
 	mux.HandleFunc("GET /api/v1/knowledge", s.handleList)
@@ -423,11 +417,11 @@ func (s *Service) handleReindex(w http.ResponseWriter, r *http.Request) {
 
 func (s *Service) handleCreate(w http.ResponseWriter, r *http.Request) {
 	var a Article
-	if err := json.NewDecoder(r.Body).Decode(&a); err != nil {
+	if err := httputil.BindJSON(r, &a); err != nil {
 		httputil.WriteError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
-	a.TenantID = tenantFromCtx(r.Context())
+	a.TenantID = auth.TenantFromContext(r.Context())
 	// 分类路由闭环: 目标分类不存在时自动创建(与主动进化沉淀一致)
 	if a.Category != "" {
 		if _, err := s.EnsureCategory(r.Context(), a.TenantID, a.Category); err != nil {
@@ -442,7 +436,7 @@ func (s *Service) handleCreate(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Service) handleList(w http.ResponseWriter, r *http.Request) {
-	tenantID := tenantFromCtx(r.Context())
+	tenantID := auth.TenantFromContext(r.Context())
 	category := r.URL.Query().Get("category")
 	articles, _ := s.store.List(r.Context(), tenantID, category)
 	if articles == nil {
@@ -453,7 +447,7 @@ func (s *Service) handleList(w http.ResponseWriter, r *http.Request) {
 
 func (s *Service) handleGet(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	tenantID := tenantFromCtx(r.Context())
+	tenantID := auth.TenantFromContext(r.Context())
 	a, _ := s.store.Get(r.Context(), id, tenantID)
 	if a == nil {
 		httputil.WriteError(w, http.StatusNotFound, "article not found")
@@ -466,14 +460,14 @@ func (s *Service) handleGet(w http.ResponseWriter, r *http.Request) {
 
 func (s *Service) handleUpdate(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	tenantID := tenantFromCtx(r.Context())
+	tenantID := auth.TenantFromContext(r.Context())
 	existing, _ := s.store.Get(r.Context(), id, tenantID)
 	if existing == nil {
 		httputil.WriteError(w, http.StatusNotFound, "not found")
 		return
 	}
 	var a Article
-	json.NewDecoder(r.Body).Decode(&a)
+	httputil.BindJSON(r, &a)
 	a.ID = existing.ID
 	a.TenantID = existing.TenantID
 	a.CreatedAt = existing.CreatedAt
@@ -492,14 +486,14 @@ func (s *Service) handleUpdate(w http.ResponseWriter, r *http.Request) {
 
 func (s *Service) handleDelete(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	s.store.Delete(r.Context(), id, tenantFromCtx(r.Context()))
+	s.store.Delete(r.Context(), id, auth.TenantFromContext(r.Context()))
 	httputil.WriteJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
 }
 
 // ——— P1 内容管理: 分类元数据 ———
 
 func (s *Service) handleListCategories(w http.ResponseWriter, r *http.Request) {
-	cats, _ := s.store.ListCategories(r.Context(), tenantFromCtx(r.Context()))
+	cats, _ := s.store.ListCategories(r.Context(), auth.TenantFromContext(r.Context()))
 	if cats == nil {
 		cats = []*Category{}
 	}
@@ -508,7 +502,7 @@ func (s *Service) handleListCategories(w http.ResponseWriter, r *http.Request) {
 
 func (s *Service) handleCreateCategory(w http.ResponseWriter, r *http.Request) {
 	var c Category
-	if err := json.NewDecoder(r.Body).Decode(&c); err != nil {
+	if err := httputil.BindJSON(r, &c); err != nil {
 		httputil.WriteError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
@@ -516,7 +510,7 @@ func (s *Service) handleCreateCategory(w http.ResponseWriter, r *http.Request) {
 		httputil.WriteError(w, http.StatusBadRequest, "name is required")
 		return
 	}
-	c.TenantID = tenantFromCtx(r.Context())
+	c.TenantID = auth.TenantFromContext(r.Context())
 	if err := s.store.CreateCategory(r.Context(), &c); err != nil {
 		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -526,12 +520,12 @@ func (s *Service) handleCreateCategory(w http.ResponseWriter, r *http.Request) {
 
 func (s *Service) handleUpdateCategory(w http.ResponseWriter, r *http.Request) {
 	var c Category
-	if err := json.NewDecoder(r.Body).Decode(&c); err != nil {
+	if err := httputil.BindJSON(r, &c); err != nil {
 		httputil.WriteError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
 	c.ID = r.PathValue("id")
-	c.TenantID = tenantFromCtx(r.Context())
+	c.TenantID = auth.TenantFromContext(r.Context())
 	if err := s.store.UpdateCategory(r.Context(), &c); err != nil {
 		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -541,7 +535,7 @@ func (s *Service) handleUpdateCategory(w http.ResponseWriter, r *http.Request) {
 
 func (s *Service) handleDeleteCategory(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	tenantID := tenantFromCtx(r.Context())
+	tenantID := auth.TenantFromContext(r.Context())
 	// 先查分类名, 若有文章引用则把文章分类清空(避免悬挂分类)
 	if cats, err := s.store.ListCategories(r.Context(), tenantID); err == nil {
 		var name string
@@ -567,7 +561,7 @@ func (s *Service) handleDeleteCategory(w http.ResponseWriter, r *http.Request) {
 
 func (s *Service) handleListVersions(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	tenantID := tenantFromCtx(r.Context())
+	tenantID := auth.TenantFromContext(r.Context())
 	versions, _ := s.store.ListVersions(r.Context(), id, tenantID)
 	if versions == nil {
 		versions = []*ArticleVersion{}
@@ -582,7 +576,7 @@ func (s *Service) handleRollbackVersion(w http.ResponseWriter, r *http.Request) 
 		httputil.WriteError(w, http.StatusBadRequest, "invalid version")
 		return
 	}
-	tenantID := tenantFromCtx(r.Context())
+	tenantID := auth.TenantFromContext(r.Context())
 	if err := s.store.RollbackToVersion(r.Context(), id, tenantID, version); err != nil {
 		httputil.WriteError(w, http.StatusBadRequest, err.Error())
 		return
@@ -596,7 +590,7 @@ func (s *Service) handleImport(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Items []Article `json:"items"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := httputil.BindJSON(r, &req); err != nil {
 		httputil.WriteError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
@@ -608,7 +602,7 @@ func (s *Service) handleImport(w http.ResponseWriter, r *http.Request) {
 		httputil.WriteError(w, http.StatusBadRequest, "too many items (max 500)")
 		return
 	}
-	tenantID := tenantFromCtx(r.Context())
+	tenantID := auth.TenantFromContext(r.Context())
 	imported := 0
 	var errs []string
 	for _, item := range req.Items {
@@ -660,7 +654,7 @@ func (s *Service) handleImportFile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	category := r.FormValue("category")
-	tenantID := tenantFromCtx(r.Context())
+	tenantID := auth.TenantFromContext(r.Context())
 	imported := 0
 	var errs []string
 	for _, it := range items {
@@ -863,7 +857,7 @@ func extractDocxTextFromXML(raw []byte) string {
 // DB 只存 object_key; 否则回退数据库 bytea。
 func (s *Service) handleUploadAttachment(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	tenantID := tenantFromCtx(r.Context())
+	tenantID := auth.TenantFromContext(r.Context())
 	if err := r.ParseMultipartForm(64 << 20); err != nil {
 		httputil.WriteError(w, http.StatusBadRequest, "failed to parse form")
 		return
@@ -910,7 +904,7 @@ func (s *Service) handleUploadAttachment(w http.ResponseWriter, r *http.Request)
 
 func (s *Service) handleListAttachments(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	tenantID := tenantFromCtx(r.Context())
+	tenantID := auth.TenantFromContext(r.Context())
 	list, err := s.store.ListAttachments(r.Context(), id, tenantID)
 	if err != nil {
 		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
@@ -922,7 +916,7 @@ func (s *Service) handleListAttachments(w http.ResponseWriter, r *http.Request) 
 func (s *Service) handleDownloadAttachment(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	aidStr := r.PathValue("aid")
-	tenantID := tenantFromCtx(r.Context())
+	tenantID := auth.TenantFromContext(r.Context())
 	aid, err := strconv.ParseInt(aidStr, 10, 64)
 	if err != nil {
 		httputil.WriteError(w, http.StatusBadRequest, "invalid attachment id")
@@ -955,7 +949,7 @@ func (s *Service) handleDownloadAttachment(w http.ResponseWriter, r *http.Reques
 func (s *Service) handleDeleteAttachment(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	aidStr := r.PathValue("aid")
-	tenantID := tenantFromCtx(r.Context())
+	tenantID := auth.TenantFromContext(r.Context())
 	aid, err := strconv.ParseInt(aidStr, 10, 64)
 	if err != nil {
 		httputil.WriteError(w, http.StatusBadRequest, "invalid attachment id")

@@ -3,7 +3,7 @@ package report
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
+	"github.com/opsorigin/core/pkg/auth"
 	"net/http"
 
 	"github.com/opsorigin/core/pkg/httputil"
@@ -58,11 +58,11 @@ func (s *Service) handleListDatasets(w http.ResponseWriter, r *http.Request) {
 
 func (s *Service) handleQuery(w http.ResponseWriter, r *http.Request) {
 	var q Query
-	if err := json.NewDecoder(r.Body).Decode(&q); err != nil {
+	if err := httputil.BindJSON(r, &q); err != nil {
 		httputil.WriteError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
-	res, err := s.reg.Query(r.Context(), tenantFromCtx(r.Context()), &q)
+	res, err := s.reg.Query(r.Context(), auth.TenantFromContext(r.Context()), &q)
 	if err != nil {
 		httputil.WriteError(w, http.StatusBadRequest, err.Error())
 		return
@@ -73,7 +73,7 @@ func (s *Service) handleQuery(w http.ResponseWriter, r *http.Request) {
 // ——— 看板 CRUD ———
 
 func (s *Service) handleListDashboards(w http.ResponseWriter, r *http.Request) {
-	tenantID := tenantFromCtx(r.Context())
+	tenantID := auth.TenantFromContext(r.Context())
 	ds, _ := s.store.List(r.Context(), tenantID)
 	if ds == nil {
 		ds = []*Dashboard{}
@@ -98,12 +98,12 @@ func (s *Service) handleListDashboards(w http.ResponseWriter, r *http.Request) {
 
 func (s *Service) handleCreateDashboard(w http.ResponseWriter, r *http.Request) {
 	var d Dashboard
-	if err := json.NewDecoder(r.Body).Decode(&d); err != nil {
+	if err := httputil.BindJSON(r, &d); err != nil {
 		httputil.WriteError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
 	// 归属信息一律由服务端可信上下文覆盖，忽略请求体传入值(防伪造)
-	d.TenantID = tenantFromCtx(r.Context())
+	d.TenantID = auth.TenantFromContext(r.Context())
 	d.CreatedBy = userFromCtx(r.Context())
 	d.CreatedByName = userNameFromCtx(r.Context())
 	// 存储前校验所有 Widget 的查询引用，拒绝指向未注册字段/数据集的看板配置
@@ -120,7 +120,7 @@ func (s *Service) handleCreateDashboard(w http.ResponseWriter, r *http.Request) 
 
 func (s *Service) handleGetDashboard(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	d, err := s.store.Get(r.Context(), id, tenantFromCtx(r.Context()))
+	d, err := s.store.Get(r.Context(), id, auth.TenantFromContext(r.Context()))
 	if err != nil {
 		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -134,7 +134,7 @@ func (s *Service) handleGetDashboard(w http.ResponseWriter, r *http.Request) {
 
 func (s *Service) handleRenderDashboard(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	d, err := s.store.Get(r.Context(), id, tenantFromCtx(r.Context()))
+	d, err := s.store.Get(r.Context(), id, auth.TenantFromContext(r.Context()))
 	if err != nil {
 		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -143,7 +143,7 @@ func (s *Service) handleRenderDashboard(w http.ResponseWriter, r *http.Request) 
 		httputil.WriteError(w, http.StatusNotFound, "dashboard not found")
 		return
 	}
-	tenantID := tenantFromCtx(r.Context())
+	tenantID := auth.TenantFromContext(r.Context())
 	rendered := make([]map[string]any, 0, len(d.Widgets))
 	for _, wgt := range d.Widgets {
 		q := wgt.Query
@@ -175,7 +175,7 @@ func (s *Service) handleRenderDashboard(w http.ResponseWriter, r *http.Request) 
 
 func (s *Service) handleUpdateDashboard(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	tenantID := tenantFromCtx(r.Context())
+	tenantID := auth.TenantFromContext(r.Context())
 	existing, err := s.store.Get(r.Context(), id, tenantID)
 	if err != nil {
 		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
@@ -186,7 +186,7 @@ func (s *Service) handleUpdateDashboard(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	var incoming Dashboard
-	if err := json.NewDecoder(r.Body).Decode(&incoming); err != nil {
+	if err := httputil.BindJSON(r, &incoming); err != nil {
 		httputil.WriteError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
@@ -209,7 +209,7 @@ func (s *Service) handleUpdateDashboard(w http.ResponseWriter, r *http.Request) 
 
 func (s *Service) handleDeleteDashboard(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	if err := s.store.Delete(r.Context(), id, tenantFromCtx(r.Context())); err != nil {
+	if err := s.store.Delete(r.Context(), id, auth.TenantFromContext(r.Context())); err != nil {
 		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
@@ -221,15 +221,6 @@ func (s *Service) handleDeleteDashboard(w http.ResponseWriter, r *http.Request) 
 // tenantFromCtx 从可信用户上下文取租户 ID。
 // 优先读 principal(由鉴权中间件从 JWT / 内部服务凭证派生，客户端无法伪造)，
 // 兼容仍以裸 key 注入上下文的旧调用方，最终回落 default。
-func tenantFromCtx(ctx context.Context) string {
-	if t := principal.TenantID(ctx); t != "" {
-		return t
-	}
-	if t, ok := ctx.Value("tenant_id").(string); ok && t != "" {
-		return t
-	}
-	return "default"
-}
 
 // userFromCtx 从可信用户上下文取操作人 ID，用于记录"谁创建了看板"(审计与协作)。
 // 上下文缺失(内部定时任务等无主体场景)时回落 system，避免出现空归属的孤儿看板。
