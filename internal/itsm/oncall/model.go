@@ -27,7 +27,9 @@ type Rotation struct {
 }
 
 // CurrentOncall 计算当前当班成员(按创建时间 + cycle_days 周期推进):
-//   idx = (now - CreatedAt) / (cycle_days 天) % len(members)
+//
+//	idx = (now - CreatedAt) / (cycle_days 天) % len(members)
+//
 // cycle_days <= 0 时视为 1(每日轮换); 空成员返回空字符串。
 func (r *Rotation) CurrentOncall(now time.Time) string {
 	if len(r.Members) == 0 {

@@ -15,7 +15,7 @@ import (
 	_ "github.com/opsorigin/core/internal/cloud/providers/proxmox"
 	_ "github.com/opsorigin/core/internal/cloud/providers/sangfor"
 	_ "github.com/opsorigin/core/internal/cloud/providers/tencent"
-	_ "github.com/opsorigin/core/internal/cloud/providers/volcano"
 	_ "github.com/opsorigin/core/internal/cloud/providers/vmware"
+	_ "github.com/opsorigin/core/internal/cloud/providers/volcano"
 	_ "github.com/opsorigin/core/internal/cloud/providers/zstack"
 )

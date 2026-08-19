@@ -13,7 +13,7 @@ import (
 
 // ProviderConfig 一个可配置的 LLM provider(模型池成员)。
 type ProviderConfig struct {
-	Name    string `json:"name"`     // 池内唯一标识(Agent.model_name 可填此名路由到该池默认模型)
+	Name    string `json:"name"` // 池内唯一标识(Agent.model_name 可填此名路由到该池默认模型)
 	APIKey  string `json:"api_key"`
 	Model   string `json:"model"`    // 该 provider 的默认模型
 	BaseURL string `json:"base_url"` // OpenAI 兼容端点
@@ -22,10 +22,10 @@ type ProviderConfig struct {
 
 // ModelProvider 池内一个 provider 的运行时状态。
 type ModelProvider struct {
-	Name   string
-	Weight int
-	Client *llm.Client
-	cfg    llm.Config // 构造时快照(路由选型用, llm.Client 未暴露 Config 访问器)
+	Name    string
+	Weight  int
+	Client  *llm.Client
+	cfg     llm.Config // 构造时快照(路由选型用, llm.Client 未暴露 Config 访问器)
 	healthy bool
 	mu      sync.Mutex
 	// failedAt 最近一次失败时间; 冷却期内视为不健康(降级), 冷却后恢复参与路由。

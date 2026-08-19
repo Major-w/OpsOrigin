@@ -73,6 +73,7 @@ func TestRouterModelMatch(t *testing.T) {
 		t.Fatalf("expected no candidates for unknown model, got %d", len(cands3))
 	}
 }
+
 // TestRouterHotUpdate 验证 P3-2 热更新: UpdateProviders 整体替换池、保留健康状态、
 // 新 provider 默认健康、权重排序生效。
 func TestRouterHotUpdate(t *testing.T) {

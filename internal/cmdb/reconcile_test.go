@@ -50,7 +50,7 @@ func TestGroupCandidates_RepeatIP(t *testing.T) {
 func TestGroupCandidates_RepeatNameSameType(t *testing.T) {
 	cis := []*model.CIModel{
 		mkCI("a", "web-01", "server", "10.0.0.1", 0.9),
-		mkCI("b", "web-01", "server", "10.0.0.2", 0.5), // 同名同类型不同 IP
+		mkCI("b", "web-01", "server", "10.0.0.2", 0.5),   // 同名同类型不同 IP
 		mkCI("c", "web-01", "database", "10.0.0.3", 0.8), // 同名不同类型 → 不归组
 	}
 	groups := groupCandidates(cis)

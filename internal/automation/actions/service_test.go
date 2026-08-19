@@ -51,7 +51,7 @@ func TestHTTPActionTemplateReplace(t *testing.T) {
 		"url":    srv.URL,
 		"body":   `{"env":"${custom_fields.env}","risk":"${risk_level}"}`,
 	}, "default", "t1", map[string]any{
-		"risk_level":   "high",
+		"risk_level":    "high",
 		"custom_fields": map[string]any{"env": "prod"},
 	})
 	if err != nil {

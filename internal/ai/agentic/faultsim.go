@@ -76,23 +76,23 @@ const (
 
 // FaultInjectionRun 一次故障仿真演练记录。
 type FaultInjectionRun struct {
-	ID            string     `json:"id"`
-	TenantID      string     `json:"tenant_id"`
-	ScenarioID    string     `json:"scenario_id"`
-	ScenarioName  string     `json:"scenario_name"`
-	TargetID      string     `json:"target_id,omitempty"`
-	TargetName    string     `json:"target_name,omitempty"`
-	InspectionID  string     `json:"inspection_id,omitempty"`
-	Status        string     `json:"status"`
-	StartedAt     time.Time  `json:"started_at"`
-	RecoveredAt   *time.Time `json:"recovered_at,omitempty"`
-	AgentResponded bool      `json:"agent_responded"`
-	AgentSummary  string     `json:"agent_summary,omitempty"`
-	Findings      int        `json:"findings"`
-	MatchedScenario bool     `json:"matched_scenario"`
-	Score         int        `json:"score"`
-	Report        string     `json:"report,omitempty"`
-	Error         string     `json:"error,omitempty"`
+	ID              string     `json:"id"`
+	TenantID        string     `json:"tenant_id"`
+	ScenarioID      string     `json:"scenario_id"`
+	ScenarioName    string     `json:"scenario_name"`
+	TargetID        string     `json:"target_id,omitempty"`
+	TargetName      string     `json:"target_name,omitempty"`
+	InspectionID    string     `json:"inspection_id,omitempty"`
+	Status          string     `json:"status"`
+	StartedAt       time.Time  `json:"started_at"`
+	RecoveredAt     *time.Time `json:"recovered_at,omitempty"`
+	AgentResponded  bool       `json:"agent_responded"`
+	AgentSummary    string     `json:"agent_summary,omitempty"`
+	Findings        int        `json:"findings"`
+	MatchedScenario bool       `json:"matched_scenario"`
+	Score           int        `json:"score"`
+	Report          string     `json:"report,omitempty"`
+	Error           string     `json:"error,omitempty"`
 }
 
 // ListFaultScenarios 返回预置故障场景库。

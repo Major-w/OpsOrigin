@@ -8,9 +8,10 @@
 //   - 存储：云盘(volumes) → TypeDisk
 //
 // 凭证约定（复用 cloud.Credential）：
-//   AccessKey = 账户名（如 admin）
-//   SecretKey = 密码
-//   Extra["endpoint"] = ZStack 管理节点基址(含端口)，如 http://172.16.0.1:8080
+//
+//	AccessKey = 账户名（如 admin）
+//	SecretKey = 密码
+//	Extra["endpoint"] = ZStack 管理节点基址(含端口)，如 http://172.16.0.1:8080
 package zstack
 
 import (

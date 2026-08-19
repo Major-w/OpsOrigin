@@ -362,7 +362,7 @@ func (c *GRPCAgentClient) heartbeatLoop(ctx context.Context, stream pb.TunnelSer
 			hb := &pb.TunnelMessage{
 				Payload: &pb.TunnelMessage_Heartbeat{
 					Heartbeat: &pb.Heartbeat{
-						Timestamp:   time.Now().UnixMilli(),
+						Timestamp:    time.Now().UnixMilli(),
 						ActiveAgents: 1,
 					},
 				},

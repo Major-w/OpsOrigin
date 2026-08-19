@@ -10,6 +10,7 @@ import { apiFetch, apiList } from '@/lib/utils'
 import { Plus, Trash2, Bell, Send, RefreshCw, Play } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { toast } from '@/stores/toast'
+import { ConfirmDialog } from '@/components/ui/confirm-dialog'
 
 interface Subscription {
   id: string; name: string; model_type_id?: string; event_type: string
@@ -54,10 +55,14 @@ export default function SubscriptionPage() {
     catch (e: any) { toast.error(e.message) }
   }
 
-  const remove = async (sub: Subscription) => {
-    if (!confirm(`确认删除订阅「${sub.name}」？`)) return
-    try { await apiFetch(`/cmdb/subscriptions/${sub.id}`, { method: 'DELETE' }); toast.success('已删除'); load() }
-    catch (e: any) { toast.error(e.message) }
+  const [delTarget, setDelTarget] = useState<Subscription | null>(null)
+  const [delSubmitting, setDelSubmitting] = useState(false)
+
+  const confirmRemove = async () => {
+    if (!delTarget) return
+    setDelSubmitting(true)
+    try { await apiFetch(`/cmdb/subscriptions/${delTarget.id}`, { method: 'DELETE' }); toast.success('已删除'); load(); setDelTarget(null) }
+    catch (e: any) { toast.error(e.message) } finally { setDelSubmitting(false) }
   }
 
   const test = async (sub: Subscription) => {
@@ -112,7 +117,7 @@ export default function SubscriptionPage() {
                       <td className="px-4 py-3">
                         <div className="flex items-center justify-end gap-1">
                           <Button variant="ghost" size="sm" className="h-7 w-7 p-0" title="测试投递" onClick={() => test(s)}><Play className="h-3.5 w-3.5" /></Button>
-                          <Button variant="ghost" size="sm" className="h-7 w-7 p-0 text-red-500" onClick={() => remove(s)}><Trash2 className="h-3.5 w-3.5" /></Button>
+                          <Button variant="ghost" size="sm" className="h-7 w-7 p-0 text-red-500" onClick={() => setDelTarget(s)}><Trash2 className="h-3.5 w-3.5" /></Button>
                         </div>
                       </td>
                     </tr>
@@ -186,6 +191,16 @@ export default function SubscriptionPage() {
         </div>
         <DialogFooter><Button variant="outline" onClick={() => setDialogOpen(false)}>取消</Button><Button onClick={create} disabled={!form.name.trim()}>创建</Button></DialogFooter>
       </Dialog>
+
+      <ConfirmDialog
+        open={!!delTarget}
+        onClose={() => setDelTarget(null)}
+        onConfirm={confirmRemove}
+        title="确认删除订阅"
+        description={delTarget ? `确认删除订阅「${delTarget.name}」？` : ''}
+        confirmLabel="删除"
+        loading={delSubmitting}
+      />
     </div>
   )
 }

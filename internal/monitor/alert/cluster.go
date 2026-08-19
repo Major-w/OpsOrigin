@@ -71,9 +71,9 @@ func (a *Aggregator) sameTopologyDomain(ctx context.Context, ciA, ciB string) bo
 //   - matched=true 时调用方应抑制通知(仅代表告警通知, 降低告警风暴)
 //
 // 相似判据(满足其一):
-//   1. 同 rule 族 + 同 CI
-//   2. 同 rule 族 + labels 共享 ≥2 键 + 同拓扑域
-//   3. 不同 rule 但同 CI + labels 共享 ≥2 键(同目标多指标异常)
+//  1. 同 rule 族 + 同 CI
+//  2. 同 rule 族 + labels 共享 ≥2 键 + 同拓扑域
+//  3. 不同 rule 但同 CI + labels 共享 ≥2 键(同目标多指标异常)
 func (a *Aggregator) clusterAlert(ctx context.Context, alert *model.AlertEvent) (string, bool) {
 	now := time.Now()
 	cutoff := now.Add(-clusterWindow)
@@ -118,12 +118,12 @@ func (a *Aggregator) clusterAlert(ctx context.Context, alert *model.AlertEvent) 
 
 // RCAEntry 根因分析候选(按评分降序)。
 type RCAEntry struct {
-	CIID      string `json:"ci_id"`
-	RuleName  string `json:"rule_name"`
-	Title     string `json:"title"`
-	Severity  string `json:"severity"`
+	CIID      string  `json:"ci_id"`
+	RuleName  string  `json:"rule_name"`
+	Title     string  `json:"title"`
+	Severity  string  `json:"severity"`
 	Score     float64 `json:"score"`
-	Triggered string `json:"triggered_at"`
+	Triggered string  `json:"triggered_at"`
 }
 
 // AnalyzeRootCause 对一组活跃告警做启发式根因分析:
@@ -201,18 +201,19 @@ type RootCausePath struct {
 	RootCIID      string   `json:"root_ci_id"`
 	RootTitle     string   `json:"root_title"`
 	RootSeverity  string   `json:"root_severity"`
-	Path          []string `json:"path"`            // [root, ..., leaf] CI 传播链
-	AffectedCount int      `json:"affected_count"`  // 受影响告警数(含根因)
+	Path          []string `json:"path"`           // [root, ..., leaf] CI 传播链
+	AffectedCount int      `json:"affected_count"` // 受影响告警数(含根因)
 	EarliestAt    string   `json:"earliest_triggered"`
-	Confidence    float64  `json:"confidence"`      // 0-1: 拓扑确认的传播关系占比
+	Confidence    float64  `json:"confidence"` // 0-1: 拓扑确认的传播关系占比
 }
 
 // AnalyzeRootCausePaths 因果链分析: 把活跃告警按 拓扑祖先 + 触发时序 串成传播路径。
 // 规则:
-//   1. 告警 A 是 B 的拓扑祖先 且 A 先触发 -> B 受 A 影响(有向边 A→B);
-//   2. 无入边的节点 = 根因候选(不被任何其他告警影响);
-//   3. 从每个根因沿出边收集受影响节点 -> 一条传播路径(含多跳链);
-//   4. Confidence = 路径中拓扑确认边 / 总边数(无 topology 时按同 rule 族时间窗口近似, 置信度 0.5)。
+//  1. 告警 A 是 B 的拓扑祖先 且 A 先触发 -> B 受 A 影响(有向边 A→B);
+//  2. 无入边的节点 = 根因候选(不被任何其他告警影响);
+//  3. 从每个根因沿出边收集受影响节点 -> 一条传播路径(含多跳链);
+//  4. Confidence = 路径中拓扑确认边 / 总边数(无 topology 时按同 rule 族时间窗口近似, 置信度 0.5)。
+//
 // 相比 AnalyzeRootCause(扁平评分候选), 本方法直接给出"根因→传播"因果链, 更贴近根因定位语义。
 func (a *Aggregator) AnalyzeRootCausePaths(ctx context.Context, alerts []*model.AlertEvent) []RootCausePath {
 	type node struct {

@@ -107,18 +107,18 @@ type bpmnDefinitions struct {
 }
 
 type bpmnProcess struct {
-	ID                       string           `xml:"id,attr"`
-	Name                     string           `xml:"name,attr"`
-	StartEvent               []bpmnElem       `xml:"startEvent"`
-	EndEvent                 []bpmnElem       `xml:"endEvent"`
-	UserTask                 []bpmnTask       `xml:"userTask"`
-	ServiceTask              []bpmnTask       `xml:"serviceTask"`
-	ExclusiveGateway         []bpmnElem       `xml:"exclusiveGateway"`
-	ParallelGateway          []bpmnElem       `xml:"parallelGateway"`
-	IntermediateCatchEvent   []bpmnTimer      `xml:"intermediateCatchEvent"`
-	CallActivity             []bpmnCall       `xml:"callActivity"`
-	Task                     []bpmnTask       `xml:"task"`
-	SequenceFlow             []bpmnFlow       `xml:"sequenceFlow"`
+	ID                     string      `xml:"id,attr"`
+	Name                   string      `xml:"name,attr"`
+	StartEvent             []bpmnElem  `xml:"startEvent"`
+	EndEvent               []bpmnElem  `xml:"endEvent"`
+	UserTask               []bpmnTask  `xml:"userTask"`
+	ServiceTask            []bpmnTask  `xml:"serviceTask"`
+	ExclusiveGateway       []bpmnElem  `xml:"exclusiveGateway"`
+	ParallelGateway        []bpmnElem  `xml:"parallelGateway"`
+	IntermediateCatchEvent []bpmnTimer `xml:"intermediateCatchEvent"`
+	CallActivity           []bpmnCall  `xml:"callActivity"`
+	Task                   []bpmnTask  `xml:"task"`
+	SequenceFlow           []bpmnFlow  `xml:"sequenceFlow"`
 }
 
 type bpmnElem struct {
@@ -127,9 +127,9 @@ type bpmnElem struct {
 }
 
 type bpmnTask struct {
-	ID        string   `xml:"id,attr"`
-	Name      string   `xml:"name,attr"`
-	Extension bpmnExt  `xml:"extensionElements"`
+	ID        string  `xml:"id,attr"`
+	Name      string  `xml:"name,attr"`
+	Extension bpmnExt `xml:"extensionElements"`
 }
 
 type bpmnExt struct {

@@ -52,18 +52,18 @@ type HeartbeatPayload struct {
 
 // TaskRequest received from the server for script execution.
 type TaskRequest struct {
-	TaskID   string         `json:"task_id"`
-	Action   string         `json:"action"`
-	Script   string         `json:"script"`
-	Params   map[string]any `json:"params,omitempty"`
-	Timeout  int            `json:"timeout,omitempty"`
+	TaskID  string         `json:"task_id"`
+	Action  string         `json:"action"`
+	Script  string         `json:"script"`
+	Params  map[string]any `json:"params,omitempty"`
+	Timeout int            `json:"timeout,omitempty"`
 
 	// Mode 执行模式:
 	//   - "sandbox" 沙箱隔离: 强隔离执行不可信代码(独立临时目录+净化环境+进程组+venv);
 	//   - "collect" 只读采集: 可读主机系统信息(采集目的), 写仍被限制在临时目录, 环境净化, 拦截逃逸高危命令;
 	//   - "normal" 常规执行: 默认, 带 Agent 权限直跑(受命令白名单与审批闸门约束)。
 	// 为空时回退到 Sandbox 布尔字段的旧语义。
-	Mode         string   `json:"mode,omitempty"`
+	Mode string `json:"mode,omitempty"`
 
 	// 沙箱执行:为 true 时不直接裸跑脚本,而是在本机创建真实隔离环境
 	// (独立临时工作目录 + 净化环境变量 + 独立进程组;python 另建 venv)。
@@ -94,26 +94,26 @@ type MetricReport struct {
 
 // CMDBReport for CMDB data reporting.
 type CMDBReport struct {
-	AgentID    string            `json:"agent_id"`
-	Hostname   string            `json:"hostname"`
-	OS         string            `json:"os"`
-	OSVersion  string            `json:"os_version"`
-	CPU        string            `json:"cpu"`
-	Memory     string            `json:"memory"`
-	Disk       string            `json:"disk"`
-	IPs        []string          `json:"ips"`
-	Labels     map[string]string `json:"labels,omitempty"`
-	Timestamp  int64             `json:"timestamp"`
+	AgentID   string            `json:"agent_id"`
+	Hostname  string            `json:"hostname"`
+	OS        string            `json:"os"`
+	OSVersion string            `json:"os_version"`
+	CPU       string            `json:"cpu"`
+	Memory    string            `json:"memory"`
+	Disk      string            `json:"disk"`
+	IPs       []string          `json:"ips"`
+	Labels    map[string]string `json:"labels,omitempty"`
+	Timestamp int64             `json:"timestamp"`
 }
 
 // FileDownloadRequest for downloading files from server.
 // ExpectedChecksum / ChecksumAlgo: 非空时下载完成后强制校验(§5.3 MD5/SHA256)。
 // 目前校验算法固定为 sha256(与 Server 端 download_tokens 约定一致)。
 type FileDownloadRequest struct {
-	FileURL         string `json:"file_url"`
-	FilePath        string `json:"file_path"`
+	FileURL          string `json:"file_url"`
+	FilePath         string `json:"file_path"`
 	ExpectedChecksum string `json:"expected_checksum,omitempty"`
-	ChecksumAlgo    string `json:"checksum_algo,omitempty"`
+	ChecksumAlgo     string `json:"checksum_algo,omitempty"`
 }
 
 // Agent is the main agent process.
@@ -126,7 +126,7 @@ type Agent struct {
 	client       *http.Client
 	tunnelClient *tunnel.AgentClient // Proxy 中转客户端(可选)
 	grpcClient   *GRPCAgentClient    // gRPC 直连客户端(可选)
-	scheduler    *Scheduler         // 本地任务调度器(内置/自定义任务, 阶段 3)
+	scheduler    *Scheduler          // 本地任务调度器(内置/自定义任务, 阶段 3)
 	stopCh       chan struct{}
 	stopOnce     sync.Once
 	wsConn       *websocket.Conn // WebSocket 长连接(可选)
@@ -134,12 +134,12 @@ type Agent struct {
 
 	// 命令白名单(§6):非 nil 时每次执行前强制校验,未命中则拒绝。
 	// 由 Server 的 GET /api/v1/agents/:id/whitelist 下发,nil 表示该租户未启用。
-	whitelist       *command.Whitelist
-	whitelistMu     sync.RWMutex
-	whitelistVer    int64
+	whitelist    *command.Whitelist
+	whitelistMu  sync.RWMutex
+	whitelistVer int64
 
 	// cmdb 断连缓存(§4.7.1 QoS): cmdb 任务上报失败时缓存, 重连后补传; monitor 不缓存。
-	cmdbMu     sync.Mutex
+	cmdbMu      sync.Mutex
 	pendingCMDB []cachedBatch
 }
 
@@ -319,8 +319,8 @@ func (a *Agent) runCustomScript(script, scriptType string) func(context.Context)
 		}
 		// 兜底: 整行输出作为一条指标(原始值放 label)
 		return []MetricPoint{{
-			Name:  "script.output",
-			Value: 0,
+			Name:   "script.output",
+			Value:  0,
 			Labels: map[string]string{"value": strings.TrimSpace(resp.Output)},
 		}}, nil
 	}
@@ -594,12 +594,12 @@ func (a *Agent) Register(ctx context.Context) error {
 	}
 
 	payload := map[string]any{
-		"name":       hostname,
-		"type":       "agent",
-		"address":    getPrimaryIP(),
-		"port":       8080,
-		"os_type":    runtime.GOOS,
-		"auth_type":  "token",
+		"name":      hostname,
+		"type":      "agent",
+		"address":   getPrimaryIP(),
+		"port":      8080,
+		"os_type":   runtime.GOOS,
+		"auth_type": "token",
 	}
 
 	data, _ := json.Marshal(payload)
@@ -660,7 +660,7 @@ func (a *Agent) fetchWhitelist(ctx context.Context) {
 	}
 	var body struct {
 		Enabled bool              `json:"enabled"`
-		Version int64            `json:"version"`
+		Version int64             `json:"version"`
 		Rules   []json.RawMessage `json:"rules"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
@@ -726,9 +726,9 @@ func (a *Agent) Heartbeat(ctx context.Context) error {
 	}
 
 	var result struct {
-		Status          string `json:"status"`
-		BreakerOpen     bool   `json:"breaker_open"`
-		RestartRequested bool  `json:"restart_requested"`
+		Status           string `json:"status"`
+		BreakerOpen      bool   `json:"breaker_open"`
+		RestartRequested bool   `json:"restart_requested"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&result); err == nil && result.RestartRequested {
 		fmt.Printf("[agent] restart requested by server, exiting so the host service can restart the agent\n")
@@ -1068,7 +1068,7 @@ func (a *Agent) ReportCMDBData() error {
 		IPs:       info.IPs,
 		Timestamp: time.Now().UnixMilli(),
 	}
-	
+
 	data, _ := json.Marshal(report)
 	resp, err := a.client.Post(
 		a.baseURL+"/agents/"+a.agentID+"/cmdb",
@@ -1189,7 +1189,7 @@ func fileChecksum(path, algo string) (string, error) {
 func (a *Agent) DownloadFileLoop(ctx context.Context) {
 	ticker := time.NewTicker(5 * time.Minute)
 	defer ticker.Stop()
-	
+
 	for {
 		select {
 		case <-ctx.Done():
@@ -1210,10 +1210,10 @@ func (a *Agent) pollDownloadTasks(ctx context.Context) {
 		return
 	}
 	defer resp.Body.Close()
-	
+
 	var tasks []FileDownloadRequest
 	json.NewDecoder(resp.Body).Decode(&tasks)
-	
+
 	for _, task := range tasks {
 		if err := a.DownloadFile(task.FileURL, task.FilePath, task.ExpectedChecksum, task.ChecksumAlgo); err != nil {
 			fmt.Printf("[agent] download error for %s: %v\n", task.FileURL, err)
@@ -1406,7 +1406,6 @@ func (a *Agent) Stop() {
 		a.wsMu.Unlock()
 	})
 }
-
 
 // reportTaskResultHTTP 通过 HTTP 上报任务结果(WS 不可用时的 fallback)。
 func (a *Agent) reportTaskResultHTTP(ctx context.Context, task TaskRequest, stdout, stderr string, exitCode int, duration time.Duration) {

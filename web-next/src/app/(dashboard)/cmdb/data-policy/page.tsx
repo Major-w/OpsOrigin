@@ -8,6 +8,7 @@ import { Input } from '@/components/ui/input'
 import { Dialog, DialogFooter } from '@/components/ui/dialog'
 import { apiFetch, apiList } from '@/lib/utils'
 import { toast } from '@/stores/toast'
+import { ConfirmDialog } from '@/components/ui/confirm-dialog'
 import { Plus, Trash2, ShieldCheck } from 'lucide-react'
 
 interface PolicyCondition { attr: string; op: string; value: string }
@@ -40,10 +41,15 @@ export default function CMDBDataPolicyPage() {
     } catch (e: any) { toast.error('保存失败: ' + e.message) }
   }
 
-  const del = async (p: DataPolicy) => {
-    if (!confirm(`删除角色 ${p.role} 对 ${p.model_type_id} 的数据权限？`)) return
-    try { await apiFetch(`/cmdb/data-policies/${p.id}`, { method: 'DELETE' }); toast.success('已删除'); load() }
-    catch (e: any) { toast.error('删除失败: ' + e.message) }
+  const [delTarget, setDelTarget] = useState<DataPolicy | null>(null)
+  const [delSubmitting, setDelSubmitting] = useState(false)
+
+  const confirmDel = async () => {
+    if (!delTarget) return
+    setDelSubmitting(true)
+    try {
+      await apiFetch(`/cmdb/data-policies/${delTarget.id}`, { method: 'DELETE' }); toast.success('已删除'); load(); setDelTarget(null)
+    } catch (e: any) { toast.error('删除失败: ' + e.message) } finally { setDelSubmitting(false) }
   }
 
   const condText = (c: PolicyCondition[]) => c.map(x => `${x.attr} ${x.op === 'in' ? '∈' : '='} ${x.value}`).join(' 且 ') || '全部数据'
@@ -78,7 +84,7 @@ export default function CMDBDataPolicyPage() {
                       <td className="px-4 py-2 text-xs">{p.model_type_id}</td>
                       <td className="px-4 py-2"><Badge variant="outline" className="text-[10px]">{p.action}</Badge></td>
                       <td className="px-4 py-2 text-xs">{condText(p.condition)}</td>
-                      <td className="px-4 py-2"><Button variant="ghost" size="icon" className="h-6 w-6" onClick={() => del(p)}><Trash2 className="h-3 w-3 text-destructive" /></Button></td>
+                      <td className="px-4 py-2"><Button variant="ghost" size="icon" className="h-6 w-6" onClick={() => setDelTarget(p)}><Trash2 className="h-3 w-3 text-destructive" /></Button></td>
                     </tr>
                   ))}
                 </tbody>
@@ -125,6 +131,16 @@ export default function CMDBDataPolicyPage() {
         </div>
         <DialogFooter><Button variant="outline" onClick={() => setDialogOpen(false)}>取消</Button><Button onClick={save}>保存</Button></DialogFooter>
       </Dialog>
+
+      <ConfirmDialog
+        open={!!delTarget}
+        onClose={() => setDelTarget(null)}
+        onConfirm={confirmDel}
+        title="确认删除数据权限"
+        description={delTarget ? `删除角色 ${delTarget.role} 对 ${delTarget.model_type_id} 的数据权限？` : ''}
+        confirmLabel="删除"
+        loading={delSubmitting}
+      />
     </div>
   )
 }

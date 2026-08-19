@@ -19,7 +19,7 @@ type FileProxy struct {
 	coreBase    string // 形如 http://core:8080
 	tokenSecret string
 	limiter     *filelimit.Limiter
-	client       *http.Client
+	client      *http.Client
 }
 
 // NewFileProxy 构造文件代理。coreAddr 为 Core 地址(如 localhost:8080)。
@@ -28,7 +28,7 @@ func NewFileProxy(coreAddr, tokenSecret string) *FileProxy {
 		coreBase:    "http://" + coreAddr,
 		tokenSecret: tokenSecret,
 		limiter:     filelimit.New(0, 0),
-		client:       &http.Client{Timeout: 30 * time.Minute}, // 大文件下载,长超时
+		client:      &http.Client{Timeout: 30 * time.Minute}, // 大文件下载,长超时
 	}
 }
 

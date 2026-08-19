@@ -21,9 +21,9 @@ import (
 //
 // 存储为进程内 map(与 agents/plans 同策略); 多副本部署需落 PG 时按 outbox 模式扩展。
 type FinetuneTask struct {
-	ID          string         `json:"id"`
-	TenantID    string         `json:"tenant_id"`
-	Name        string         `json:"name"`
+	ID       string `json:"id"`
+	TenantID string `json:"tenant_id"`
+	Name     string `json:"name"`
 	// DatasetRef 训练数据集引用(如 "latest" = 当前 /ai/dataset 全量导出)。
 	DatasetRef string `json:"dataset_ref,omitempty"`
 	// BaseModel 基座模型(如 deepseek-chat / qwen-max, 需在模型池内)。
@@ -38,12 +38,12 @@ type FinetuneTask struct {
 	ResultModel string `json:"result_model,omitempty"`
 	// ResultProviderName 产物注册进模型池的 provider 名(如 finetuned-<id>), 前端可据此
 	// 在模型池/Agent 表单选择。
-	ResultProviderName string `json:"result_provider_name,omitempty"`
-	Error     string     `json:"error,omitempty"`
-	CreatedBy string     `json:"created_by,omitempty"`
-	CreatedAt time.Time  `json:"created_at"`
-	UpdatedAt time.Time  `json:"updated_at"`
-	FinishedAt *time.Time `json:"finished_at,omitempty"`
+	ResultProviderName string     `json:"result_provider_name,omitempty"`
+	Error              string     `json:"error,omitempty"`
+	CreatedBy          string     `json:"created_by,omitempty"`
+	CreatedAt          time.Time  `json:"created_at"`
+	UpdatedAt          time.Time  `json:"updated_at"`
+	FinishedAt         *time.Time `json:"finished_at,omitempty"`
 }
 
 // FinetuneRunnerFunc 微调执行回调(由 cmd/core 注入真实微调后端; nil=未配置微调后端)。

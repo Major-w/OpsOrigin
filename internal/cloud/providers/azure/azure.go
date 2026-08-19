@@ -176,12 +176,12 @@ func (p *Provider) listVMs(ctx context.Context, token, sub, region string) ([]cl
 	}
 	var r struct {
 		Value []struct {
-			ID   string `json:"id"`
-			Name string `json:"name"`
-			Location string `json:"location"`
+			ID         string `json:"id"`
+			Name       string `json:"name"`
+			Location   string `json:"location"`
 			Properties struct {
 				ProvisioningState string `json:"provisioningState"`
-				HardwareProfile  struct {
+				HardwareProfile   struct {
 					VMSize string `json:"vmSize"`
 				} `json:"hardwareProfile"`
 			} `json:"properties"`
@@ -215,9 +215,9 @@ func (p *Provider) listSQL(ctx context.Context, token, sub, region string) ([]cl
 	}
 	var r struct {
 		Value []struct {
-			ID       string `json:"id"`
-			Name     string `json:"name"`
-			Location string `json:"location"`
+			ID         string `json:"id"`
+			Name       string `json:"name"`
+			Location   string `json:"location"`
 			Properties struct {
 				State string `json:"state"`
 			} `json:"properties"`
@@ -250,9 +250,9 @@ func (p *Provider) listLBs(ctx context.Context, token, sub, region string) ([]cl
 	}
 	var r struct {
 		Value []struct {
-			ID       string `json:"id"`
-			Name     string `json:"name"`
-			Location string `json:"location"`
+			ID         string `json:"id"`
+			Name       string `json:"name"`
+			Location   string `json:"location"`
 			Properties struct {
 				ProvisioningState string `json:"provisioningState"`
 			} `json:"properties"`

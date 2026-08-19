@@ -353,8 +353,8 @@ func (s *Service) handleDingTalk(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var dm struct {
-		MsgType        string `json:"msgtype"`
-		Text           struct {
+		MsgType string `json:"msgtype"`
+		Text    struct {
 			Content string `json:"content"`
 		} `json:"text"`
 		SenderID       string `json:"senderId"`

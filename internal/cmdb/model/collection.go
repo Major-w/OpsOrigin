@@ -10,26 +10,26 @@ import "time"
 //   - CMDB 是唯一调度者：持有采集任务，按 Frequency 触发，结果按 Kind 路由落库；
 //   - 采集器可插拔（注册表模式），CMDB 不直接依赖具体采集实现。
 type CollectionTask struct {
-	ID           string     `json:"id"`
-	TenantID     string     `json:"tenant_id"`
-	Name         string     `json:"name"`
-	ResourceType string     `json:"resource_type"` // cloud | host | container
-	Target       string     `json:"target"`        // 指向某纳管资源，如 "cloud:aliyun" / "host:<id>"
-	Kind         string     `json:"kind"`          // cmdb | monitor
-	Channel      string     `json:"channel"`       // 采集通道：server(CMDB 服务端拉取) | agent(经 Agent 推送上报)
-	Frequency    string     `json:"frequency"`     // 采集频率：Go duration 字符串，如 "15m" / "1h"
+	ID           string `json:"id"`
+	TenantID     string `json:"tenant_id"`
+	Name         string `json:"name"`
+	ResourceType string `json:"resource_type"` // cloud | host | container
+	Target       string `json:"target"`        // 指向某纳管资源，如 "cloud:aliyun" / "host:<id>"
+	Kind         string `json:"kind"`          // cmdb | monitor
+	Channel      string `json:"channel"`       // 采集通道：server(CMDB 服务端拉取) | agent(经 Agent 推送上报)
+	Frequency    string `json:"frequency"`     // 采集频率：Go duration 字符串，如 "15m" / "1h"
 	// 动态执行目标（P1-4：主机查询策略驱动的动态目标范围）：
 	//   target_mode="static"：沿用 Target 静态资源 ID（默认，向后兼容）
 	//   target_mode="query" ：Target 留空，改由 TargetQuery 引用的保存查询（"我想查"）实时解析命中的 CI 集合，
 	//                         调度/手动触发时对集合中每个资源分别下发采集（命中主机自动纳入采集范围）。
-	TargetMode  string `json:"target_mode"`
-	TargetQuery string `json:"target_query,omitempty"` // target_mode=query 时引用的保存查询 ID
-	Enabled      bool   `json:"enabled"`
-	LastRunAt    *time.Time `json:"last_run_at,omitempty"`
-	Status       string     `json:"status"` // idle | running | success | failed | pending
-	Error        string     `json:"error,omitempty"`
-	CreatedAt    time.Time  `json:"created_at"`
-	UpdatedAt    time.Time  `json:"updated_at"`
+	TargetMode  string     `json:"target_mode"`
+	TargetQuery string     `json:"target_query,omitempty"` // target_mode=query 时引用的保存查询 ID
+	Enabled     bool       `json:"enabled"`
+	LastRunAt   *time.Time `json:"last_run_at,omitempty"`
+	Status      string     `json:"status"` // idle | running | success | failed | pending
+	Error       string     `json:"error,omitempty"`
+	CreatedAt   time.Time  `json:"created_at"`
+	UpdatedAt   time.Time  `json:"updated_at"`
 }
 
 // IsDue 判断任务是否到点需要触发。interval 为解析后的频率。

@@ -16,8 +16,8 @@ type Proxy struct {
 	cfg        *config.Config
 	wg         sync.WaitGroup
 	cancel     context.CancelFunc
-	client     *tunnel.Client      // TCP tunnel client (legacy)
-	grpcClient *GRPCProxyClient    // gRPC client (new)
+	client     *tunnel.Client   // TCP tunnel client (legacy)
+	grpcClient *GRPCProxyClient // gRPC client (new)
 	agents     *AgentRegistry
 }
 

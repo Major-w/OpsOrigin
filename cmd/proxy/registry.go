@@ -14,8 +14,8 @@ import (
 )
 
 type AgentInfo struct {
-	ID      string
-	Conn    *tunnel.Conn
+	ID          string
+	Conn        *tunnel.Conn
 	ConnectedAt time.Time
 	// pending 关联命令响应: CommandID -> chan *tunnel.AgentResponse。
 	// 读循环收到 MsgAgentResp 后投递, 供 SendCommand 等待。
@@ -23,8 +23,8 @@ type AgentInfo struct {
 }
 
 type AgentRegistry struct {
-	mu      sync.RWMutex
-	agents  map[string]*AgentInfo
+	mu     sync.RWMutex
+	agents map[string]*AgentInfo
 	// onMetrics 收到 Agent 的 metrics 上报(MsgMetrics)时触发。
 	// 由 Proxy 注入: 透传为 gRPC MetricBatch 转发 Core(纯转发, 不聚合)。
 	onMetrics func(agentID string, msg *tunnel.MetricsMessage)

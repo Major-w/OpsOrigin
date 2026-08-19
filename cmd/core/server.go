@@ -30,14 +30,14 @@ type routeRegistrar interface {
 // gRPC tunnel server，以及 agentmgr 的 Agent WebSocket hub）均由各自独立监听，
 // 不经过本网关——本网关只负责把控制面 REST API 暴露给所有调用方。
 type Server struct {
-	mux        *http.ServeMux
+	mux         *http.ServeMux
 	middlewares []func(http.Handler) http.Handler
-	addr       string
+	addr        string
 
-	mu              sync.Mutex
-	httpServer      *http.Server
-	bypassPrefixes  []string
-	handlerWrapper  func(http.Handler) http.Handler
+	mu             sync.Mutex
+	httpServer     *http.Server
+	bypassPrefixes []string
+	handlerWrapper func(http.Handler) http.Handler
 }
 
 // NewServer 构造 Core 主 HTTP 网关，监听地址取自 cfg.Core.Addr。

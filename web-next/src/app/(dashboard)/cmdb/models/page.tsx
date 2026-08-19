@@ -11,6 +11,7 @@ import { Plus, Trash2, GripVertical, Edit2, Download, Upload, Settings2, Shield,
 import { useCan } from '@/stores/permissions'
 import { cn } from '@/lib/utils'
 import { toast } from '@/stores/toast'
+import { ConfirmDialog } from '@/components/ui/confirm-dialog'
 import TopologyGraph from '@/components/TopologyGraph'
 
 interface SchemaField {
@@ -135,14 +136,32 @@ export default function CMDBModelsPage() {
     } catch (e: any) { setFieldUsage([]); toast.error('加载字段消费度失败: ' + e.message) }
   }
 
-  const handleRollback = async (v: { version: number }) => {
-    if (!verModel) return
-    if (!confirm(`回滚「${verModel.name}」到 v${v.version}？当前 schema 会留痕为下一个版本。`)) return
+  // 危险操作二次确认（回滚/删模型/删分类统一 ConfirmDialog）
+  const [confirmTarget, setConfirmTarget] = useState<{ type: 'rollback'; version: number } | { type: 'model'; model: CIModel } | { type: 'category'; cat: Category } | null>(null)
+  const [confirmSubmitting, setConfirmSubmitting] = useState(false)
+
+  const confirmAction = async () => {
+    const t = confirmTarget
+    if (!t) return
+    setConfirmSubmitting(true)
     try {
-      await apiFetch(`/cmdb/model-type/${verModel.id}/rollback/${v.version}`, { method: 'POST' })
-      toast.success(`已回滚到 v${v.version}`)
-      setVerDialogOpen(false); loadModels()
-    } catch (e: any) { toast.error('回滚失败: ' + e.message) }
+      if (t.type === 'rollback') {
+        if (!verModel) return
+        await apiFetch(`/cmdb/model-type/${verModel.id}/rollback/${t.version}`, { method: 'POST' })
+        toast.success(`已回滚到 v${t.version}`)
+        setVerDialogOpen(false); loadModels()
+      } else if (t.type === 'model') {
+        if (t.model.builtin) return
+        await apiFetch(`/cmdb/model-type/${t.model.id}`, { method: 'DELETE' })
+        toast.success('模型已删除'); loadModels()
+      } else {
+        if (t.cat.builtin) return
+        await apiFetch(`/cmdb/model-categories/${t.cat.id}`, { method: 'DELETE' })
+        toast.success('分类已删除'); loadCategories()
+        if (categoryFilter === t.cat.name) setCategoryFilter('all')
+      }
+      setConfirmTarget(null)
+    } catch (e: any) { toast.error(e.message || '操作失败') } finally { setConfirmSubmitting(false) }
   }
   // P2-4 字段级规则权限
   const [ruleDialogOpen, setRuleDialogOpen] = useState(false)
@@ -221,12 +240,7 @@ export default function CMDBModelsPage() {
 
   const handleDelete = async (model: CIModel) => {
     if (model.builtin) return
-    if (!confirm(`确认删除模型「${model.name}」？`)) return
-    try {
-      await apiFetch(`/cmdb/model-type/${model.id}`, { method: 'DELETE' })
-      toast.success('模型已删除')
-      loadModels()
-    } catch (e: any) { toast.error(`删除模型失败: ${e.message}`) }
+    setConfirmTarget({ type: 'model', model })
   }
 
   const handleDeleteField = (idx: number) => setFields(prev => prev.filter((_, i) => i !== idx))
@@ -257,13 +271,7 @@ export default function CMDBModelsPage() {
 
   const handleDeleteCategory = async (c: Category) => {
     if (c.builtin) { toast.error('内置分类不可删除'); return }
-    if (!confirm(`确认删除分类「${c.name}」？`)) return
-    try {
-      await apiFetch(`/cmdb/model-categories/${c.id}`, { method: 'DELETE' })
-      toast.success('分类已删除')
-      loadCategories()
-      if (categoryFilter === c.name) setCategoryFilter('all')
-    } catch (e: any) { toast.error(e.message) }
+    setConfirmTarget({ type: 'category', cat: c })
   }
 
   // P2-4 字段级规则权限
@@ -340,7 +348,7 @@ export default function CMDBModelsPage() {
                 <p className="text-sm font-medium">v{v.version} · {v.name}</p>
                 <p className="text-xs text-muted-foreground">{v.created_at?.slice(0, 19)?.replace('T', ' ') || ''} · {Object.keys(v.schema || {}).length} 个字段</p>
               </div>
-              <Button variant="outline" size="sm" className="h-6 text-xs" onClick={() => handleRollback(v)}>回滚</Button>
+              <Button variant="outline" size="sm" className="h-6 text-xs" onClick={() => setConfirmTarget({ type: 'rollback', version: v.version })}>回滚</Button>
             </div>
           ))}
         </div>
@@ -631,6 +639,16 @@ export default function CMDBModelsPage() {
       </Dialog>
 
       <input ref={fileRef} type="file" accept="application/json" className="hidden" onChange={handleImportFile} />
+
+      <ConfirmDialog
+        open={!!confirmTarget}
+        onClose={() => setConfirmTarget(null)}
+        onConfirm={confirmAction}
+        title={confirmTarget?.type === 'rollback' ? '确认回滚' : confirmTarget?.type === 'model' ? '确认删除模型' : '确认删除分类'}
+        description={confirmTarget?.type === 'rollback' && verModel ? `回滚「${verModel.name}」到 v${confirmTarget.version}？当前 schema 会留痕为下一个版本。` : confirmTarget?.type === 'model' ? `确认删除模型「${confirmTarget.model.name}」？` : confirmTarget?.type === 'category' ? `确认删除分类「${confirmTarget.cat.name}」？` : ''}
+        confirmLabel="确定"
+        loading={confirmSubmitting}
+      />
     </div>
   )
 }

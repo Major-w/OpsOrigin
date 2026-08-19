@@ -23,21 +23,21 @@ import (
 // 执行端默认内置演示执行器(不真实影响系统); cmd/core 可通过 SetRemediationRunner
 // 注入真实 Agent/脚本执行回调。
 type RemediationAction struct {
-	ID            string     `json:"id"`
-	TenantID      string     `json:"tenant_id"`
-	RunID         string     `json:"run_id"`
-	InspectionID  string     `json:"inspection_id"`
-	FindingIdx    int        `json:"finding_idx"`
-	Level         string     `json:"level"`    // high | medium | low
-	Title         string     `json:"title"`    // 发现标题
-	Suggestion    string     `json:"suggestion"` // 处置指令(执行内容)
-	Risk          string     `json:"risk"`     // blocked | auto | review
-	Status        string     `json:"status"`   // pending | awaiting_approval | approved | rejected | executing | succeeded | failed
-	ApprovalID    string     `json:"approval_id,omitempty"` // 审批单 ID(走审批时)
-	Result        string     `json:"result,omitempty"`
-	Error         string     `json:"error,omitempty"`
-	CreatedAt     time.Time  `json:"created_at"`
-	FinishedAt    *time.Time `json:"finished_at,omitempty"`
+	ID           string     `json:"id"`
+	TenantID     string     `json:"tenant_id"`
+	RunID        string     `json:"run_id"`
+	InspectionID string     `json:"inspection_id"`
+	FindingIdx   int        `json:"finding_idx"`
+	Level        string     `json:"level"`                 // high | medium | low
+	Title        string     `json:"title"`                 // 发现标题
+	Suggestion   string     `json:"suggestion"`            // 处置指令(执行内容)
+	Risk         string     `json:"risk"`                  // blocked | auto | review
+	Status       string     `json:"status"`                // pending | awaiting_approval | approved | rejected | executing | succeeded | failed
+	ApprovalID   string     `json:"approval_id,omitempty"` // 审批单 ID(走审批时)
+	Result       string     `json:"result,omitempty"`
+	Error        string     `json:"error,omitempty"`
+	CreatedAt    time.Time  `json:"created_at"`
+	FinishedAt   *time.Time `json:"finished_at,omitempty"`
 }
 
 // Remediation 状态常量。

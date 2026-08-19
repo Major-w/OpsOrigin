@@ -47,17 +47,17 @@ func TestPrivateCloudProvidersRegistered(t *testing.T) {
 // 且纳管界面透出的「已验证/待测」状态符合预期（VMware 已验证，深信服/ZStack 待测）。
 func TestProviderSupportedVersions(t *testing.T) {
 	cases := map[string]cloud.VersionStatus{
-		"vmware":  cloud.VersionVerified,
-		"sangfor": cloud.VersionUntested,
-		"zstack":  cloud.VersionUntested,
-		"proxmox": cloud.VersionVerified,
+		"vmware":    cloud.VersionVerified,
+		"sangfor":   cloud.VersionUntested,
+		"zstack":    cloud.VersionUntested,
+		"proxmox":   cloud.VersionVerified,
 		"openstack": cloud.VersionVerified,
-		"aliyun":  cloud.VersionVerified,
-		"tencent": cloud.VersionVerified,
-		"huawei":  cloud.VersionVerified,
-		"aws":     cloud.VersionVerified,
-		"volcano": cloud.VersionUntested,
-		"azure":   cloud.VersionUntested,
+		"aliyun":    cloud.VersionVerified,
+		"tencent":   cloud.VersionVerified,
+		"huawei":    cloud.VersionVerified,
+		"aws":       cloud.VersionVerified,
+		"volcano":   cloud.VersionUntested,
+		"azure":     cloud.VersionUntested,
 	}
 	for name, wantStatus := range cases {
 		p, err := cloud.Get(name)

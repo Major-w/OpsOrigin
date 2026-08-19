@@ -10,6 +10,7 @@ import { apiFetch, apiList, apiBase } from '@/lib/utils'
 import { Plus, Trash2, Building2, Server, RefreshCw, Rows3, Unplug } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { toast } from '@/stores/toast'
+import { ConfirmDialog } from '@/components/ui/confirm-dialog'
 
 interface IDCRoom { id: string; name: string; location?: string; description?: string }
 interface Rack { id: string; idc_id: string; name: string; row?: string; col?: string; max_units: number }
@@ -88,10 +89,26 @@ export default function CMDBIDCPage() {
     } catch (e: any) { toast.error(e.message) }
   }
 
-  const deleteRoom = async (room: IDCRoom) => {
-    if (!confirm(`确认删除机房「${room.name}」及其全部机柜？`)) return
-    try { await apiFetch(`/cmdb/idc/${room.id}`, { method: 'DELETE' }); toast.success('已删除'); if (selectedRoom?.id === room.id) selectRoom(null); loadRooms() }
-    catch (e: any) { toast.error(e.message) }
+  // 删除确认（机房/机柜统一走 ConfirmDialog）
+  const [deleteTarget, setDeleteTarget] = useState<{ kind: 'room'; item: IDCRoom } | { kind: 'rack'; item: Rack } | null>(null)
+  const [deleteSubmitting, setDeleteSubmitting] = useState(false)
+
+  const openDelete = (kind: 'room' | 'rack', item: IDCRoom | Rack) => setDeleteTarget({ kind, item: item as any })
+
+  const confirmDelete = async () => {
+    if (!deleteTarget) return
+    const { kind, item } = deleteTarget
+    setDeleteSubmitting(true)
+    try {
+      if (kind === 'room') {
+        await apiFetch(`/cmdb/idc/${(item as IDCRoom).id}`, { method: 'DELETE' }); toast.success('已删除')
+        if (selectedRoom?.id === (item as IDCRoom).id) selectRoom(null); loadRooms()
+      } else {
+        await apiFetch(`/cmdb/racks/${(item as Rack).id}`, { method: 'DELETE' }); toast.success('已删除')
+        if (selectedRack?.id === (item as Rack).id) selectRack(null); loadRacks(selectedRoom!.id)
+      }
+      setDeleteTarget(null)
+    } catch (e: any) { toast.error(e.message) } finally { setDeleteSubmitting(false) }
   }
 
   const createRack = async () => {
@@ -100,12 +117,6 @@ export default function CMDBIDCPage() {
       await apiFetch(`/cmdb/idc/${selectedRoom.id}/racks`, { method: 'POST', body: JSON.stringify(rackForm) })
       toast.success('机柜已创建'); setRackDialog(false); setRackForm({ name: '', row: '', col: '', max_units: 42 }); loadRacks(selectedRoom.id)
     } catch (e: any) { toast.error(e.message) }
-  }
-
-  const deleteRack = async (rack: Rack) => {
-    if (!confirm(`确认删除机柜「${rack.name}」及其 U 位占用？`)) return
-    try { await apiFetch(`/cmdb/racks/${rack.id}`, { method: 'DELETE' }); toast.success('已删除'); if (selectedRack?.id === rack.id) selectRack(null); loadRacks(selectedRoom!.id) }
-    catch (e: any) { toast.error(e.message) }
   }
 
   const openAssign = (unit: number) => {
@@ -246,7 +257,7 @@ export default function CMDBIDCPage() {
                   <p className="text-sm font-medium">{r.name}</p>
                   <p className="text-xs text-muted-foreground">{r.location || '未填位置'}{r.description ? ` · ${r.description}` : ''}</p>
                 </div>
-                <Button variant="ghost" size="icon" className="h-6 w-6" onClick={e => { e.stopPropagation(); deleteRoom(r) }}><Trash2 className="h-3 w-3" /></Button>
+                <Button variant="ghost" size="icon" className="h-6 w-6" onClick={e => { e.stopPropagation(); openDelete('room', r) }}><Trash2 className="h-3 w-3" /></Button>
               </div>
             ))}
           </CardContent>
@@ -268,7 +279,7 @@ export default function CMDBIDCPage() {
                     <p className="text-xs text-muted-foreground">{rk.max_units}U{ rk.row ? ` · ${rk.row}` : ''}{rk.col ? ` · ${rk.col}` : ''}</p>
                   </div>
                 </div>
-                <Button variant="ghost" size="icon" className="h-6 w-6" onClick={e => { e.stopPropagation(); deleteRack(rk) }}><Trash2 className="h-3 w-3" /></Button>
+                <Button variant="ghost" size="icon" className="h-6 w-6" onClick={e => { e.stopPropagation(); openDelete('rack', rk) }}><Trash2 className="h-3 w-3" /></Button>
               </div>
             ))}
           </CardContent>
@@ -346,6 +357,16 @@ export default function CMDBIDCPage() {
           <Button onClick={assignUnit}>保存</Button>
         </DialogFooter>
       </Dialog>
+
+      <ConfirmDialog
+        open={!!deleteTarget}
+        onClose={() => setDeleteTarget(null)}
+        onConfirm={confirmDelete}
+        title="确认删除"
+        description={deleteTarget ? (deleteTarget.kind === 'room' ? `确认删除机房「${(deleteTarget.item as IDCRoom).name}」及其全部机柜？` : `确认删除机柜「${(deleteTarget.item as Rack).name}」及其 U 位占用？`) : ''}
+        confirmLabel="删除"
+        loading={deleteSubmitting}
+      />
       </>
       )}
     </div>

@@ -11,15 +11,15 @@ import (
 func TestHostToCI(t *testing.T) {
 	h := &agentmgr.AgentHost{
 		ID:        "agent-123",
-		TenantID: "default",
-		Hostname: "web-01",
-		OSType:   "linux",
+		TenantID:  "default",
+		Hostname:  "web-01",
+		OSType:    "linux",
 		OSVersion: "Ubuntu 22.04",
-		CPU:      "8 Cores (Intel)",
-		Memory:   "16 GB",
-		Disk:     "100G total / 40G used",
-		Address:  "10.0.0.5",
-		Labels:   map[string]string{"env": "prod"},
+		CPU:       "8 Cores (Intel)",
+		Memory:    "16 GB",
+		Disk:      "100G total / 40G used",
+		Address:   "10.0.0.5",
+		Labels:    map[string]string{"env": "prod"},
 	}
 	ci := hostToCI(h, "default")
 

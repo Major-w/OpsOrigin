@@ -7,9 +7,10 @@
 //   - 存储：数据存储/卷 → TypeDisk
 //
 // 凭证约定（复用 cloud.Credential）：
-//   AccessKey = 深信服管理员用户名
-//   SecretKey = 密码
-//   Extra["endpoint"] = aCloud 管理基址，如 https://172.16.0.1
+//
+//	AccessKey = 深信服管理员用户名
+//	SecretKey = 密码
+//	Extra["endpoint"] = aCloud 管理基址，如 https://172.16.0.1
 //
 // 注：aCloud REST 端点路径与字段以 MVP 形态给出，联调时按实际版本校正。
 package sangfor
@@ -196,16 +197,16 @@ type vmList struct {
 }
 
 type sangforVM struct {
-	ID         string `json:"id"`
-	UUID       string `json:"uuid"`
-	Name       string `json:"name"`
-	Status     string `json:"status"`
-	State      string `json:"state"`
-	IPv4       string `json:"ip"`
-	IP         string `json:"ipAddress"`
-	CPU        int    `json:"cpu"`
-	MemoryMiB  int    `json:"memorySizeMiB"`
-	MemMB      int    `json:"memoryMb"`
+	ID        string `json:"id"`
+	UUID      string `json:"uuid"`
+	Name      string `json:"name"`
+	Status    string `json:"status"`
+	State     string `json:"state"`
+	IPv4      string `json:"ip"`
+	IP        string `json:"ipAddress"`
+	CPU       int    `json:"cpu"`
+	MemoryMiB int    `json:"memorySizeMiB"`
+	MemMB     int    `json:"memoryMb"`
 }
 
 func (v sangforVM) toResource(region string) *cloud.Resource {

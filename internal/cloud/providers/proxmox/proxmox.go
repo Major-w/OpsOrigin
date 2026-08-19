@@ -8,11 +8,12 @@
 //   - 网络：SDN 虚拟网络(vnet) → TypeVPC（环境未启用 SDN 时该类自动跳过）
 //
 // 凭证约定（复用 cloud.Credential）：
-//   AccessKey = Proxmox 登录用户名（含域，如 root@pam 或 user@pve）
-//   SecretKey = 密码
-//   Extra["endpoint"] = Proxmox 管理基址，须含端口，如 https://10.0.0.1:8006
-//   Extra["insecure"] / Extra["skip_tls_verify"] = "true" 时跳过 TLS 证书校验
-//     （Proxmox VE 8.x 默认 HTTPS 自签证书，真机纳管常需开启）
+//
+//	AccessKey = Proxmox 登录用户名（含域，如 root@pam 或 user@pve）
+//	SecretKey = 密码
+//	Extra["endpoint"] = Proxmox 管理基址，须含端口，如 https://10.0.0.1:8006
+//	Extra["insecure"] / Extra["skip_tls_verify"] = "true" 时跳过 TLS 证书校验
+//	  （Proxmox VE 8.x 默认 HTTPS 自签证书，真机纳管常需开启）
 //
 // 认证：POST /api2/json/access/ticket 取得 PVEAuthCookie，后续请求携带该 Cookie。
 // 注：集群资源端点以 MVP 形态给出，联调时按实际版本校正；网络类依赖 SDN 插件。
@@ -200,16 +201,16 @@ type clusterResources struct {
 
 // pveResource 描述单条集群资源（qemu/lxc 虚拟机或容器）。
 type pveResource struct {
-	Type    string `json:"type"`     // qemu(虚拟)/lxc(容器)
-	VMID    string `json:"vmid"`     // 集群内唯一数字 ID
-	Name    string `json:"name"`     // 配置名（可能为空）
-	Node    string `json:"node"`     // 所在物理节点
-	Status  string `json:"status"`   // running/stopped
-	CPUs    int    `json:"cpus"`     // 分配的 vCPU 数
-	Mem     int64  `json:"mem"`      // 当前内存使用(bytes)
-	MaxMem  int64  `json:"maxmem"`   // 内存上限(bytes)
-	Disk    int64  `json:"disk"`     // 当前磁盘使用(bytes)
-	MaxDisk int64  `json:"maxdisk"`  // 磁盘上限(bytes)
+	Type    string `json:"type"`    // qemu(虚拟)/lxc(容器)
+	VMID    string `json:"vmid"`    // 集群内唯一数字 ID
+	Name    string `json:"name"`    // 配置名（可能为空）
+	Node    string `json:"node"`    // 所在物理节点
+	Status  string `json:"status"`  // running/stopped
+	CPUs    int    `json:"cpus"`    // 分配的 vCPU 数
+	Mem     int64  `json:"mem"`     // 当前内存使用(bytes)
+	MaxMem  int64  `json:"maxmem"`  // 内存上限(bytes)
+	Disk    int64  `json:"disk"`    // 当前磁盘使用(bytes)
+	MaxDisk int64  `json:"maxdisk"` // 磁盘上限(bytes)
 }
 
 // vmToResource 将集群资源条目映射为统一 Resource（VM/容器均归 TypeVM，以 Extra.hypervisor 区分）。
@@ -278,14 +279,14 @@ func (p *provider) listStorages(ctx context.Context, cred cloud.Credential, endp
 			status = "inactive"
 		}
 		out = append(out, cloud.Resource{
-			Provider: "proxmox",
-			Type:     cloud.TypeDisk,
-			ID:       s.Storage,
-			Name:     s.Storage,
-			Region:   firstNonEmpty(s.Node, "cluster"),
-			Status:   status,
-			Labels:   map[string]string{"storage_type": s.Type},
-			Extra:    map[string]any{"content": s.Content, "node": s.Node},
+			Provider:     "proxmox",
+			Type:         cloud.TypeDisk,
+			ID:           s.Storage,
+			Name:         s.Storage,
+			Region:       firstNonEmpty(s.Node, "cluster"),
+			Status:       status,
+			Labels:       map[string]string{"storage_type": s.Type},
+			Extra:        map[string]any{"content": s.Content, "node": s.Node},
 			DiscoveredAt: now,
 		})
 	}
@@ -317,14 +318,14 @@ func (p *provider) listVNets(ctx context.Context, cred cloud.Credential, endpoin
 			continue
 		}
 		out = append(out, cloud.Resource{
-			Provider: "proxmox",
-			Type:     cloud.TypeVPC,
-			ID:       v.VNet,
-			Name:     v.VNet,
-			Region:   firstNonEmpty(v.Zone, "cluster"),
-			Status:   "available",
-			Labels:   map[string]string{"sdn_zone": v.Zone, "sdn_type": v.Type},
-			Extra:    map[string]any{"tag": v.Tag},
+			Provider:     "proxmox",
+			Type:         cloud.TypeVPC,
+			ID:           v.VNet,
+			Name:         v.VNet,
+			Region:       firstNonEmpty(v.Zone, "cluster"),
+			Status:       "available",
+			Labels:       map[string]string{"sdn_zone": v.Zone, "sdn_type": v.Type},
+			Extra:        map[string]any{"tag": v.Tag},
 			DiscoveredAt: now,
 		})
 	}

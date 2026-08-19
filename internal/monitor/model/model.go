@@ -82,9 +82,9 @@ type AlertEvent struct {
 	// 同簇只通知代表告警, 减少告警风暴。空=未聚类。
 	ClusterID string `json:"cluster_id,omitempty"`
 	// RCA 根因分析结果(启发式): 触发时刻最早 + 拓扑最深 + 严重度最高的候选 CI。
-	RootCauses []string `json:"root_causes,omitempty"`
-	TriggeredAt time.Time `json:"triggered_at"`
-	ResolvedAt   *time.Time `json:"resolved_at,omitempty"`
+	RootCauses  []string   `json:"root_causes,omitempty"`
+	TriggeredAt time.Time  `json:"triggered_at"`
+	ResolvedAt  *time.Time `json:"resolved_at,omitempty"`
 }
 
 type AlertRule struct {

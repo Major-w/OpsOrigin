@@ -116,9 +116,9 @@ const (
 // ProviderVersion 声明某 Provider 适配/验证过的云版本。
 // 纳管 UI 据 Status 透出「已验证 / 待测」标记，辅助用户确认目标版本。
 type ProviderVersion struct {
-	Version string       `json:"version"`        // 版本号或区间描述，如 "6.7" / "6.5+" / "8.x"
-	Status  VersionStatus `json:"status"`        // verified / untested
-	Note    string       `json:"note,omitempty"` // 适配说明（可选）
+	Version string        `json:"version"`        // 版本号或区间描述，如 "6.7" / "6.5+" / "8.x"
+	Status  VersionStatus `json:"status"`         // verified / untested
+	Note    string        `json:"note,omitempty"` // 适配说明（可选）
 }
 
 // supportedKinds 记录各 Provider 对外声明的可纳管资源类型，用于 UI 类型选择。

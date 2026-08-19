@@ -87,13 +87,13 @@ func hostToCI(h *agentmgr.AgentHost, tenantID string) *model.CIModel {
 		name = firstNonEmpty(h.Address, h.ID)
 	}
 	return &model.CIModel{
-		TypeID:       "host",
-		TenantID:     tenantID,
-		Name:         name,
-		Status:       model.CIStatusActive,
-		Attributes:   attrs,
+		TypeID:        "host",
+		TenantID:      tenantID,
+		Name:          name,
+		Status:        model.CIStatusActive,
+		Attributes:    attrs,
 		AttributeMeta: meta,
-		Channel:      model.WeightDiscovery,
+		Channel:       model.WeightDiscovery,
 	}
 }
 

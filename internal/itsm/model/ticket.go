@@ -110,9 +110,9 @@ type ApprovalChain struct {
 
 // ApprovalStatus 审批状态记录
 type ApprovalStatus struct {
-	CurrentIndex int              `json:"current_index"` // 当前审批人索引(顺序模式)
-	Votes        []ApprovalVote   `json:"votes"`         // 投票记录
-	FinalResult  string           `json:"final_result"`  // pending / approved / rejected
+	CurrentIndex int            `json:"current_index"` // 当前审批人索引(顺序模式)
+	Votes        []ApprovalVote `json:"votes"`         // 投票记录
+	FinalResult  string         `json:"final_result"`  // pending / approved / rejected
 }
 
 // ApprovalVote 单次审批投票
@@ -137,13 +137,13 @@ type CreateTicketRequest struct {
 	// CustomFields 可配置表单采集的业务自定义字段（JSONB）。
 	CustomFields map[string]any `json:"custom_fields,omitempty"`
 	// FormScope 指定本工单套用的表单作用域（默认 ticket:default）；用于目录/流程按场景套不同字段。
-	FormScope      string         `json:"form_scope,omitempty"`
-	ProcessID      string         `json:"process_id,omitempty"` // 绑定的流程模板 ID（触发流程引擎驱动）
-	CatalogID      string         `json:"catalog_id,omitempty"` // 发起来源的服务目录项 ID
-	ScheduledAt    *time.Time     `json:"scheduled_at,omitempty"`
-	DeadlineAt     *time.Time     `json:"deadline_at,omitempty"`
-	TraceID        string         `json:"trace_id,omitempty"`
-	ApprovalChain  *ApprovalChain `json:"approval_chain,omitempty"` // 审批链配置
+	FormScope     string         `json:"form_scope,omitempty"`
+	ProcessID     string         `json:"process_id,omitempty"` // 绑定的流程模板 ID（触发流程引擎驱动）
+	CatalogID     string         `json:"catalog_id,omitempty"` // 发起来源的服务目录项 ID
+	ScheduledAt   *time.Time     `json:"scheduled_at,omitempty"`
+	DeadlineAt    *time.Time     `json:"deadline_at,omitempty"`
+	TraceID       string         `json:"trace_id,omitempty"`
+	ApprovalChain *ApprovalChain `json:"approval_chain,omitempty"` // 审批链配置
 }
 
 type ApproveRequest struct {
@@ -210,20 +210,20 @@ type RemindRequest struct {
 type RelateRequest struct {
 	RelatedID string `json:"related_id"`
 	RelateBy  string `json:"relate_by,omitempty"`
-	Relation  string `json:"relation,omitempty"`  // parent / child / depends_on / blocks / related
-	Reason    string `json:"reason,omitempty"`    // 关联原因
+	Relation  string `json:"relation,omitempty"` // parent / child / depends_on / blocks / related
+	Reason    string `json:"reason,omitempty"`   // 关联原因
 }
 
 // UpdateTicketRequest 通用更新基础信息(非状态)。
 type UpdateTicketRequest struct {
-	Title       string            `json:"title,omitempty"`
-	Description string            `json:"description,omitempty"`
-	RiskLevel   RiskLevel         `json:"risk_level,omitempty"`
-	Assignee    string            `json:"assignee,omitempty"`
-	Labels      map[string]string `json:"labels,omitempty"`
-	CIIDs       []string          `json:"ci_ids,omitempty"`
-	ChangePlan  string            `json:"change_plan,omitempty"`
-	RollbackPlan string           `json:"rollback_plan,omitempty"`
+	Title        string            `json:"title,omitempty"`
+	Description  string            `json:"description,omitempty"`
+	RiskLevel    RiskLevel         `json:"risk_level,omitempty"`
+	Assignee     string            `json:"assignee,omitempty"`
+	Labels       map[string]string `json:"labels,omitempty"`
+	CIIDs        []string          `json:"ci_ids,omitempty"`
+	ChangePlan   string            `json:"change_plan,omitempty"`
+	RollbackPlan string            `json:"rollback_plan,omitempty"`
 }
 
 // SubmitRequest 提交工单(离开 draft): 高风险进待审批, 低/中风险直接进执行。
