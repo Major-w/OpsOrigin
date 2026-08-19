@@ -406,25 +406,25 @@ func (s *Service) StartReindexLoop(ctx context.Context, interval time.Duration) 
 func (s *Service) handleReindex(w http.ResponseWriter, r *http.Request) {
 	ps, ok := s.store.(*pgStore)
 	if !ok {
-		writeError(w, http.StatusBadRequest, "reindex only supported with postgres store")
+		httputil.WriteError(w, http.StatusBadRequest, "reindex only supported with postgres store")
 		return
 	}
 	if !ps.VectorEnabled() {
-		writeError(w, http.StatusBadRequest, "vector search not enabled (pgvector unavailable)")
+		httputil.WriteError(w, http.StatusBadRequest, "vector search not enabled (pgvector unavailable)")
 		return
 	}
 	n, err := ps.ReindexAll(r.Context())
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"status": "ok", "reindexed": n})
+	httputil.WriteJSON(w, http.StatusOK, map[string]any{"status": "ok", "reindexed": n})
 }
 
 func (s *Service) handleCreate(w http.ResponseWriter, r *http.Request) {
 	var a Article
 	if err := json.NewDecoder(r.Body).Decode(&a); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
+		httputil.WriteError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
 	a.TenantID = tenantFromCtx(r.Context())
@@ -435,10 +435,10 @@ func (s *Service) handleCreate(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if err := s.store.Create(r.Context(), &a); err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusCreated, a)
+	httputil.WriteJSON(w, http.StatusCreated, a)
 }
 
 func (s *Service) handleList(w http.ResponseWriter, r *http.Request) {
@@ -448,7 +448,7 @@ func (s *Service) handleList(w http.ResponseWriter, r *http.Request) {
 	if articles == nil {
 		articles = []*Article{}
 	}
-	writeJSON(w, http.StatusOK, articles)
+	httputil.WriteJSON(w, http.StatusOK, articles)
 }
 
 func (s *Service) handleGet(w http.ResponseWriter, r *http.Request) {
@@ -456,12 +456,12 @@ func (s *Service) handleGet(w http.ResponseWriter, r *http.Request) {
 	tenantID := tenantFromCtx(r.Context())
 	a, _ := s.store.Get(r.Context(), id, tenantID)
 	if a == nil {
-		writeError(w, http.StatusNotFound, "article not found")
+		httputil.WriteError(w, http.StatusNotFound, "article not found")
 		return
 	}
 	s.store.IncrementViews(r.Context(), id, tenantID)
 	a.Views++
-	writeJSON(w, http.StatusOK, a)
+	httputil.WriteJSON(w, http.StatusOK, a)
 }
 
 func (s *Service) handleUpdate(w http.ResponseWriter, r *http.Request) {
@@ -469,7 +469,7 @@ func (s *Service) handleUpdate(w http.ResponseWriter, r *http.Request) {
 	tenantID := tenantFromCtx(r.Context())
 	existing, _ := s.store.Get(r.Context(), id, tenantID)
 	if existing == nil {
-		writeError(w, http.StatusNotFound, "not found")
+		httputil.WriteError(w, http.StatusNotFound, "not found")
 		return
 	}
 	var a Article
@@ -487,13 +487,13 @@ func (s *Service) handleUpdate(w http.ResponseWriter, r *http.Request) {
 	if s.social != nil {
 		s.social.NotifyFollowersOnUpdate(r.Context(), id)
 	}
-	writeJSON(w, http.StatusOK, a)
+	httputil.WriteJSON(w, http.StatusOK, a)
 }
 
 func (s *Service) handleDelete(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	s.store.Delete(r.Context(), id, tenantFromCtx(r.Context()))
-	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
+	httputil.WriteJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
 }
 
 // ——— P1 内容管理: 分类元数据 ———
@@ -503,40 +503,40 @@ func (s *Service) handleListCategories(w http.ResponseWriter, r *http.Request) {
 	if cats == nil {
 		cats = []*Category{}
 	}
-	writeJSON(w, http.StatusOK, cats)
+	httputil.WriteJSON(w, http.StatusOK, cats)
 }
 
 func (s *Service) handleCreateCategory(w http.ResponseWriter, r *http.Request) {
 	var c Category
 	if err := json.NewDecoder(r.Body).Decode(&c); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
+		httputil.WriteError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
 	if c.Name == "" {
-		writeError(w, http.StatusBadRequest, "name is required")
+		httputil.WriteError(w, http.StatusBadRequest, "name is required")
 		return
 	}
 	c.TenantID = tenantFromCtx(r.Context())
 	if err := s.store.CreateCategory(r.Context(), &c); err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusCreated, c)
+	httputil.WriteJSON(w, http.StatusCreated, c)
 }
 
 func (s *Service) handleUpdateCategory(w http.ResponseWriter, r *http.Request) {
 	var c Category
 	if err := json.NewDecoder(r.Body).Decode(&c); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
+		httputil.WriteError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
 	c.ID = r.PathValue("id")
 	c.TenantID = tenantFromCtx(r.Context())
 	if err := s.store.UpdateCategory(r.Context(), &c); err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, c)
+	httputil.WriteJSON(w, http.StatusOK, c)
 }
 
 func (s *Service) handleDeleteCategory(w http.ResponseWriter, r *http.Request) {
@@ -560,7 +560,7 @@ func (s *Service) handleDeleteCategory(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	s.store.DeleteCategory(r.Context(), id, tenantID)
-	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
+	httputil.WriteJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
 }
 
 // ——— P1 内容管理: 文章版本 ———
@@ -572,22 +572,22 @@ func (s *Service) handleListVersions(w http.ResponseWriter, r *http.Request) {
 	if versions == nil {
 		versions = []*ArticleVersion{}
 	}
-	writeJSON(w, http.StatusOK, versions)
+	httputil.WriteJSON(w, http.StatusOK, versions)
 }
 
 func (s *Service) handleRollbackVersion(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	version, err := strconv.Atoi(r.PathValue("version"))
 	if err != nil || version <= 0 {
-		writeError(w, http.StatusBadRequest, "invalid version")
+		httputil.WriteError(w, http.StatusBadRequest, "invalid version")
 		return
 	}
 	tenantID := tenantFromCtx(r.Context())
 	if err := s.store.RollbackToVersion(r.Context(), id, tenantID, version); err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
+		httputil.WriteError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]string{"status": "rolled_back", "version": r.PathValue("version")})
+	httputil.WriteJSON(w, http.StatusOK, map[string]string{"status": "rolled_back", "version": r.PathValue("version")})
 }
 
 // handleImport 批量导入文章。Body: {"items":[{title,content,category,tags,status}]}。
@@ -597,15 +597,15 @@ func (s *Service) handleImport(w http.ResponseWriter, r *http.Request) {
 		Items []Article `json:"items"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
+		httputil.WriteError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
 	if len(req.Items) == 0 {
-		writeError(w, http.StatusBadRequest, "items is empty")
+		httputil.WriteError(w, http.StatusBadRequest, "items is empty")
 		return
 	}
 	if len(req.Items) > 500 {
-		writeError(w, http.StatusBadRequest, "too many items (max 500)")
+		httputil.WriteError(w, http.StatusBadRequest, "too many items (max 500)")
 		return
 	}
 	tenantID := tenantFromCtx(r.Context())
@@ -627,36 +627,36 @@ func (s *Service) handleImport(w http.ResponseWriter, r *http.Request) {
 		}
 		imported++
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"imported": imported, "errors": errs})
+	httputil.WriteJSON(w, http.StatusOK, map[string]any{"imported": imported, "errors": errs})
 }
 
 // handleImportFile 接收上传文件(.md/.txt/.json/.pdf/.docx), 服务端解析文本后批量建文章。
 // multipart 字段: file(必填); 可选 form: category(统一归类)。
 func (s *Service) handleImportFile(w http.ResponseWriter, r *http.Request) {
 	if err := r.ParseMultipartForm(32 << 20); err != nil {
-		writeError(w, http.StatusBadRequest, "解析上传失败(请使用 multipart/form-data)")
+		httputil.WriteError(w, http.StatusBadRequest, "解析上传失败(请使用 multipart/form-data)")
 		return
 	}
 	fh, ok := r.MultipartForm.File["file"]
 	if !ok || len(fh) == 0 {
-		writeError(w, http.StatusBadRequest, "缺少 file 字段")
+		httputil.WriteError(w, http.StatusBadRequest, "缺少 file 字段")
 		return
 	}
 	header := fh[0]
 	f, err := header.Open()
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "打开上传文件失败")
+		httputil.WriteError(w, http.StatusInternalServerError, "打开上传文件失败")
 		return
 	}
 	defer f.Close()
 	data, err := io.ReadAll(f)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "读取上传文件失败")
+		httputil.WriteError(w, http.StatusInternalServerError, "读取上传文件失败")
 		return
 	}
 	items, err := parseImportFile(header.Filename, data)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
+		httputil.WriteError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 	category := r.FormValue("category")
@@ -682,7 +682,7 @@ func (s *Service) handleImportFile(w http.ResponseWriter, r *http.Request) {
 		}
 		imported++
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"imported": imported, "errors": errs})
+	httputil.WriteJSON(w, http.StatusOK, map[string]any{"imported": imported, "errors": errs})
 }
 
 // parseImportFile 按扩展名路由到对应解析器。
@@ -865,18 +865,18 @@ func (s *Service) handleUploadAttachment(w http.ResponseWriter, r *http.Request)
 	id := r.PathValue("id")
 	tenantID := tenantFromCtx(r.Context())
 	if err := r.ParseMultipartForm(64 << 20); err != nil {
-		writeError(w, http.StatusBadRequest, "failed to parse form")
+		httputil.WriteError(w, http.StatusBadRequest, "failed to parse form")
 		return
 	}
 	file, header, err := r.FormFile("file")
 	if err != nil {
-		writeError(w, http.StatusBadRequest, "file is required")
+		httputil.WriteError(w, http.StatusBadRequest, "file is required")
 		return
 	}
 	defer file.Close()
 	data, err := io.ReadAll(file)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to read file")
+		httputil.WriteError(w, http.StatusInternalServerError, "failed to read file")
 		return
 	}
 	uploadedBy := r.FormValue("uploaded_by")
@@ -895,17 +895,17 @@ func (s *Service) handleUploadAttachment(w http.ResponseWriter, r *http.Request)
 	if s.objStore != nil {
 		key := fmt.Sprintf("kb/%s/%s", id, uuid.NewString())
 		if err := s.objStore.Put(r.Context(), key, bytes.NewReader(data), int64(len(data)), header.Header.Get("Content-Type")); err != nil {
-			writeError(w, http.StatusInternalServerError, "failed to store attachment: "+err.Error())
+			httputil.WriteError(w, http.StatusInternalServerError, "failed to store attachment: "+err.Error())
 			return
 		}
 		att.ObjectKey = key
 		att.Data = nil
 	}
 	if err := s.store.AddAttachment(r.Context(), att); err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to save attachment: "+err.Error())
+		httputil.WriteError(w, http.StatusInternalServerError, "failed to save attachment: "+err.Error())
 		return
 	}
-	writeJSON(w, http.StatusCreated, att)
+	httputil.WriteJSON(w, http.StatusCreated, att)
 }
 
 func (s *Service) handleListAttachments(w http.ResponseWriter, r *http.Request) {
@@ -913,10 +913,10 @@ func (s *Service) handleListAttachments(w http.ResponseWriter, r *http.Request) 
 	tenantID := tenantFromCtx(r.Context())
 	list, err := s.store.ListAttachments(r.Context(), id, tenantID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, list)
+	httputil.WriteJSON(w, http.StatusOK, list)
 }
 
 func (s *Service) handleDownloadAttachment(w http.ResponseWriter, r *http.Request) {
@@ -925,16 +925,16 @@ func (s *Service) handleDownloadAttachment(w http.ResponseWriter, r *http.Reques
 	tenantID := tenantFromCtx(r.Context())
 	aid, err := strconv.ParseInt(aidStr, 10, 64)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid attachment id")
+		httputil.WriteError(w, http.StatusBadRequest, "invalid attachment id")
 		return
 	}
 	att, err := s.store.GetAttachment(r.Context(), aid, id, tenantID)
 	if err != nil {
 		if err == ErrNotFound {
-			writeError(w, http.StatusNotFound, "attachment not found")
+			httputil.WriteError(w, http.StatusNotFound, "attachment not found")
 			return
 		}
-		writeError(w, http.StatusInternalServerError, err.Error())
+		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	w.Header().Set("Content-Disposition", "attachment; filename=\""+att.FileName+"\"")
@@ -958,17 +958,17 @@ func (s *Service) handleDeleteAttachment(w http.ResponseWriter, r *http.Request)
 	tenantID := tenantFromCtx(r.Context())
 	aid, err := strconv.ParseInt(aidStr, 10, 64)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid attachment id")
+		httputil.WriteError(w, http.StatusBadRequest, "invalid attachment id")
 		return
 	}
 	// 先取元数据: 对象存储模式下需一并删除对象, 避免孤儿文件。
 	att, err := s.store.GetAttachment(r.Context(), aid, id, tenantID)
 	if err != nil {
 		if err == ErrNotFound {
-			writeError(w, http.StatusNotFound, "attachment not found")
+			httputil.WriteError(w, http.StatusNotFound, "attachment not found")
 			return
 		}
-		writeError(w, http.StatusInternalServerError, err.Error())
+		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	if att.ObjectKey != "" && s.objStore != nil {
@@ -978,22 +978,11 @@ func (s *Service) handleDeleteAttachment(w http.ResponseWriter, r *http.Request)
 	}
 	if err := s.store.DeleteAttachment(r.Context(), aid, id, tenantID); err != nil {
 		if err == ErrNotFound {
-			writeError(w, http.StatusNotFound, "attachment not found")
+			httputil.WriteError(w, http.StatusNotFound, "attachment not found")
 			return
 		}
-		writeError(w, http.StatusInternalServerError, err.Error())
+		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
-}
-
-func writeJSON(w http.ResponseWriter, status int, v any) {
-	v = httputil.EmptySliceIfNil(v)
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	json.NewEncoder(w).Encode(v)
-}
-
-func writeError(w http.ResponseWriter, status int, msg string) {
-	writeJSON(w, status, map[string]string{"error": msg})
+	httputil.WriteJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
 }

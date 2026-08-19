@@ -178,7 +178,7 @@ func maskSensitive(s string) string {
 // handleGetConfig 返回所有配置项(分组)。
 func (s *Service) handleGetConfig(w http.ResponseWriter, r *http.Request) {
 	groups := s.buildConfigItems()
-	writeJSON(w, http.StatusOK, groups)
+	httputil.WriteJSON(w, http.StatusOK, groups)
 }
 
 // handleGetCategories 返回所有配置分组名。
@@ -191,18 +191,18 @@ func (s *Service) handleGetCategories(w http.ResponseWriter, r *http.Request) {
 			"label":    g.Label,
 		})
 	}
-	writeJSON(w, http.StatusOK, categories)
+	httputil.WriteJSON(w, http.StatusOK, categories)
 }
 
 // handleUpdateConfig 更新配置项并持久化到 .env 文件。
 func (s *Service) handleUpdateConfig(w http.ResponseWriter, r *http.Request) {
 	var req UpdateRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
+		httputil.WriteError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
 	if len(req.Updates) == 0 {
-		writeError(w, http.StatusBadRequest, "no updates provided")
+		httputil.WriteError(w, http.StatusBadRequest, "no updates provided")
 		return
 	}
 
@@ -217,7 +217,7 @@ func (s *Service) handleUpdateConfig(w http.ResponseWriter, r *http.Request) {
 	// 验证所有 key 合法
 	for key := range req.Updates {
 		if !knownKeys[key] {
-			writeError(w, http.StatusBadRequest, fmt.Sprintf("unknown config key: %s", key))
+			httputil.WriteError(w, http.StatusBadRequest, fmt.Sprintf("unknown config key: %s", key))
 			return
 		}
 	}
@@ -255,7 +255,7 @@ func (s *Service) handleUpdateConfig(w http.ResponseWriter, r *http.Request) {
 	if restartCount > 0 {
 		result["message"] = fmt.Sprintf("已更新 %d 项配置,其中 %d 项需重启服务后生效", len(req.Updates), restartCount)
 	}
-	writeJSON(w, http.StatusOK, result)
+	httputil.WriteJSON(w, http.StatusOK, result)
 }
 
 // applyUpdate 将单个配置项更新应用到内存中的 Config。
@@ -433,14 +433,4 @@ func parseDurationSafe(s string) time.Duration {
 }
 
 // writeJSON 写入 JSON 响应。
-func writeJSON(w http.ResponseWriter, status int, v any) {
-	v = httputil.EmptySliceIfNil(v)
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	json.NewEncoder(w).Encode(v)
-}
-
 // writeError 写入错误响应。
-func writeError(w http.ResponseWriter, status int, msg string) {
-	writeJSON(w, status, map[string]string{"error": msg})
-}

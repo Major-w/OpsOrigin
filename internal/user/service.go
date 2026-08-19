@@ -1,7 +1,6 @@
 package user
 
 import (
-	"context"
 	"database/sql"
 	"encoding/json"
 	"net/http"
@@ -46,7 +45,7 @@ func (s *Service) handleLogin(w http.ResponseWriter, r *http.Request) {
 		Password string `json:"password"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
+		httputil.WriteError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
 
@@ -55,9 +54,9 @@ func (s *Service) handleLogin(w http.ResponseWriter, r *http.Request) {
 		tenantID = "default"
 	}
 
-	user, err := s.store.GetByUsername(context.Background(), req.Username, tenantID)
+	user, err := s.store.GetByUsername(r.Context(), req.Username, tenantID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "database error")
+		httputil.WriteError(w, http.StatusInternalServerError, "database error")
 		return
 	}
 
@@ -76,14 +75,14 @@ func (s *Service) handleLogin(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if user == nil || !s.store.VerifyPassword(user, req.Password) || !user.IsActive() {
-		writeError(w, http.StatusUnauthorized, "invalid credentials")
+		httputil.WriteError(w, http.StatusUnauthorized, "invalid credentials")
 		return
 	}
 
 	// 生成Token
 	token, err := s.authProv.GenerateToken(user.ID, user.TenantID, string(user.Role), 24*time.Hour)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "token generation failed")
+		httputil.WriteError(w, http.StatusInternalServerError, "token generation failed")
 		return
 	}
 
@@ -99,18 +98,18 @@ func (s *Service) handleLogin(w http.ResponseWriter, r *http.Request) {
 		RefreshToken: refreshToken,
 		ExpiresAt:    expiresAt,
 	}
-	if err := s.store.CreateSession(context.Background(), session); err != nil {
-		writeError(w, http.StatusInternalServerError, "session creation failed")
+	if err := s.store.CreateSession(r.Context(), session); err != nil {
+		httputil.WriteError(w, http.StatusInternalServerError, "session creation failed")
 		return
 	}
 
 	// 更新最后登录时间
-	s.store.UpdateLastLogin(context.Background(), user.ID, user.TenantID)
+	s.store.UpdateLastLogin(r.Context(), user.ID, user.TenantID)
 
 	// 获取用户权限
-	permissions, _ := s.store.GetUserPermissions(context.Background(), string(user.Role))
+	permissions, _ := s.store.GetUserPermissions(r.Context(), string(user.Role))
 
-	writeJSON(w, http.StatusOK, map[string]any{
+	httputil.WriteJSON(w, http.StatusOK, map[string]any{
 		"token":         token,
 		"refresh_token": refreshToken,
 		"user_id":       user.ID,
@@ -125,17 +124,17 @@ func (s *Service) handleLogin(w http.ResponseWriter, r *http.Request) {
 func (s *Service) handleLogout(w http.ResponseWriter, r *http.Request) {
 	token := auth.TokenFromContext(r.Context())
 	if token == "" {
-		writeError(w, http.StatusBadRequest, "no token provided")
+		httputil.WriteError(w, http.StatusBadRequest, "no token provided")
 		return
 	}
 
 	// 撤销会话
-	session, err := s.store.GetSessionByToken(context.Background(), token)
+	session, err := s.store.GetSessionByToken(r.Context(), token)
 	if err == nil && session != nil {
-		s.store.RevokeSession(context.Background(), session.ID)
+		s.store.RevokeSession(r.Context(), session.ID)
 	}
 
-	writeJSON(w, http.StatusOK, map[string]string{"status": "logged out"})
+	httputil.WriteJSON(w, http.StatusOK, map[string]string{"status": "logged out"})
 }
 
 func (s *Service) handleRefreshToken(w http.ResponseWriter, r *http.Request) {
@@ -143,38 +142,38 @@ func (s *Service) handleRefreshToken(w http.ResponseWriter, r *http.Request) {
 		RefreshToken string `json:"refresh_token"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
+		httputil.WriteError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
 
 	// 获取会话
-	session, err := s.store.GetSessionByRefreshToken(context.Background(), req.RefreshToken)
+	session, err := s.store.GetSessionByRefreshToken(r.Context(), req.RefreshToken)
 	if err != nil || session == nil {
-		writeError(w, http.StatusUnauthorized, "invalid refresh token")
+		httputil.WriteError(w, http.StatusUnauthorized, "invalid refresh token")
 		return
 	}
 
 	// 检查是否过期
 	if time.Now().After(session.ExpiresAt) {
-		s.store.RevokeSession(context.Background(), session.ID)
-		writeError(w, http.StatusUnauthorized, "refresh token expired")
+		s.store.RevokeSession(r.Context(), session.ID)
+		httputil.WriteError(w, http.StatusUnauthorized, "refresh token expired")
 		return
 	}
 
 	// 获取用户信息
-	user, err := s.store.GetByID(context.Background(), session.UserID, session.TenantID)
+	user, err := s.store.GetByID(r.Context(), session.UserID, session.TenantID)
 	if err != nil || user == nil || !user.IsActive() {
-		writeError(w, http.StatusUnauthorized, "user not found or inactive")
+		httputil.WriteError(w, http.StatusUnauthorized, "user not found or inactive")
 		return
 	}
 
 	// 撤销旧会话
-	s.store.RevokeSession(context.Background(), session.ID)
+	s.store.RevokeSession(r.Context(), session.ID)
 
 	// 生成新Token
 	newToken, err := s.authProv.GenerateToken(user.ID, user.TenantID, string(user.Role), 24*time.Hour)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "token generation failed")
+		httputil.WriteError(w, http.StatusInternalServerError, "token generation failed")
 		return
 	}
 
@@ -190,15 +189,15 @@ func (s *Service) handleRefreshToken(w http.ResponseWriter, r *http.Request) {
 		RefreshToken: newRefreshToken,
 		ExpiresAt:    expiresAt,
 	}
-	if err := s.store.CreateSession(context.Background(), newSession); err != nil {
-		writeError(w, http.StatusInternalServerError, "session creation failed")
+	if err := s.store.CreateSession(r.Context(), newSession); err != nil {
+		httputil.WriteError(w, http.StatusInternalServerError, "session creation failed")
 		return
 	}
 
 	// 获取用户权限
-	permissions, _ := s.store.GetUserPermissions(context.Background(), string(user.Role))
+	permissions, _ := s.store.GetUserPermissions(r.Context(), string(user.Role))
 
-	writeJSON(w, http.StatusOK, map[string]any{
+	httputil.WriteJSON(w, http.StatusOK, map[string]any{
 		"token":         newToken,
 		"refresh_token": newRefreshToken,
 		"user_id":       user.ID,
@@ -214,13 +213,13 @@ func (s *Service) handleListUsers(w http.ResponseWriter, r *http.Request) {
 	role := auth.RoleFromContext(r.Context())
 	tenantID := auth.TenantIDFromContext(r.Context())
 	if role != "admin" {
-		writeError(w, http.StatusForbidden, "admin only")
+		httputil.WriteError(w, http.StatusForbidden, "admin only")
 		return
 	}
 
-	users, err := s.store.List(context.Background(), tenantID)
+	users, err := s.store.List(r.Context(), tenantID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 
@@ -258,13 +257,13 @@ func (s *Service) handleListUsers(w http.ResponseWriter, r *http.Request) {
 	if result == nil {
 		result = []userVO{}
 	}
-	writeJSON(w, http.StatusOK, result)
+	httputil.WriteJSON(w, http.StatusOK, result)
 }
 
 func (s *Service) handleCreateUser(w http.ResponseWriter, r *http.Request) {
 	role := auth.RoleFromContext(r.Context())
 	if role != "admin" {
-		writeError(w, http.StatusForbidden, "admin only")
+		httputil.WriteError(w, http.StatusForbidden, "admin only")
 		return
 	}
 
@@ -275,11 +274,11 @@ func (s *Service) handleCreateUser(w http.ResponseWriter, r *http.Request) {
 		Role     string `json:"role"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
+		httputil.WriteError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
 	if req.Username == "" || req.Password == "" {
-		writeError(w, http.StatusBadRequest, "username and password required")
+		httputil.WriteError(w, http.StatusBadRequest, "username and password required")
 		return
 	}
 
@@ -299,25 +298,25 @@ func (s *Service) handleCreateUser(w http.ResponseWriter, r *http.Request) {
 		u.Role = model.RoleViewer
 	}
 
-	if err := s.store.Create(context.Background(), u); err != nil {
-		writeError(w, http.StatusConflict, err.Error())
+	if err := s.store.Create(r.Context(), u); err != nil {
+		httputil.WriteError(w, http.StatusConflict, err.Error())
 		return
 	}
 
-	writeJSON(w, http.StatusCreated, u)
+	httputil.WriteJSON(w, http.StatusCreated, u)
 }
 
 func (s *Service) handleGetUser(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	tenantID := auth.TenantIDFromContext(r.Context())
 
-	user, err := s.store.GetByID(context.Background(), id, tenantID)
+	user, err := s.store.GetByID(r.Context(), id, tenantID)
 	if err != nil || user == nil {
-		writeError(w, http.StatusNotFound, "user not found")
+		httputil.WriteError(w, http.StatusNotFound, "user not found")
 		return
 	}
 
-	writeJSON(w, http.StatusOK, user)
+	httputil.WriteJSON(w, http.StatusOK, user)
 }
 
 func (s *Service) handleUpdateUser(w http.ResponseWriter, r *http.Request) {
@@ -327,13 +326,13 @@ func (s *Service) handleUpdateUser(w http.ResponseWriter, r *http.Request) {
 
 	// 只有admin可以更新其他用户，或者用户可以更新自己
 	if role != "admin" && auth.UserIDFromContext(r.Context()) != id {
-		writeError(w, http.StatusForbidden, "permission denied")
+		httputil.WriteError(w, http.StatusForbidden, "permission denied")
 		return
 	}
 
-	user, err := s.store.GetByID(context.Background(), id, tenantID)
+	user, err := s.store.GetByID(r.Context(), id, tenantID)
 	if err != nil || user == nil {
-		writeError(w, http.StatusNotFound, "user not found")
+		httputil.WriteError(w, http.StatusNotFound, "user not found")
 		return
 	}
 
@@ -344,7 +343,7 @@ func (s *Service) handleUpdateUser(w http.ResponseWriter, r *http.Request) {
 		Status   string `json:"status"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
+		httputil.WriteError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
 
@@ -361,12 +360,12 @@ func (s *Service) handleUpdateUser(w http.ResponseWriter, r *http.Request) {
 		user.Status = req.Status
 	}
 
-	if err := s.store.Update(context.Background(), user); err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+	if err := s.store.Update(r.Context(), user); err != nil {
+		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 
-	writeJSON(w, http.StatusOK, user)
+	httputil.WriteJSON(w, http.StatusOK, user)
 }
 
 func (s *Service) handleDeleteUser(w http.ResponseWriter, r *http.Request) {
@@ -375,22 +374,22 @@ func (s *Service) handleDeleteUser(w http.ResponseWriter, r *http.Request) {
 	tenantID := auth.TenantIDFromContext(r.Context())
 
 	if role != "admin" {
-		writeError(w, http.StatusForbidden, "admin only")
+		httputil.WriteError(w, http.StatusForbidden, "admin only")
 		return
 	}
 
 	// 不能删除自己
 	if auth.UserIDFromContext(r.Context()) == id {
-		writeError(w, http.StatusBadRequest, "cannot delete yourself")
+		httputil.WriteError(w, http.StatusBadRequest, "cannot delete yourself")
 		return
 	}
 
-	if err := s.store.Delete(context.Background(), id, tenantID); err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+	if err := s.store.Delete(r.Context(), id, tenantID); err != nil {
+		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 
-	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
+	httputil.WriteJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
 }
 
 func (s *Service) handleChangePassword(w http.ResponseWriter, r *http.Request) {
@@ -400,7 +399,7 @@ func (s *Service) handleChangePassword(w http.ResponseWriter, r *http.Request) {
 
 	// 只有admin可以修改其他用户密码，或者用户可以修改自己密码
 	if role != "admin" && auth.UserIDFromContext(r.Context()) != id {
-		writeError(w, http.StatusForbidden, "permission denied")
+		httputil.WriteError(w, http.StatusForbidden, "permission denied")
 		return
 	}
 
@@ -409,62 +408,51 @@ func (s *Service) handleChangePassword(w http.ResponseWriter, r *http.Request) {
 		NewPassword string `json:"new_password"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
+		httputil.WriteError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
 
 	// 如果是修改自己密码，需要验证旧密码
 	if auth.UserIDFromContext(r.Context()) == id {
-		user, err := s.store.GetByID(context.Background(), id, tenantID)
+		user, err := s.store.GetByID(r.Context(), id, tenantID)
 		if err != nil || user == nil {
-			writeError(w, http.StatusNotFound, "user not found")
+			httputil.WriteError(w, http.StatusNotFound, "user not found")
 			return
 		}
 		if !s.store.VerifyPassword(user, req.OldPassword) {
-			writeError(w, http.StatusBadRequest, "old password incorrect")
+			httputil.WriteError(w, http.StatusBadRequest, "old password incorrect")
 			return
 		}
 	}
 
 	if req.NewPassword == "" {
-		writeError(w, http.StatusBadRequest, "new password required")
+		httputil.WriteError(w, http.StatusBadRequest, "new password required")
 		return
 	}
 
-	if err := s.store.UpdatePassword(context.Background(), id, tenantID, req.NewPassword); err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+	if err := s.store.UpdatePassword(r.Context(), id, tenantID, req.NewPassword); err != nil {
+		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 
-	writeJSON(w, http.StatusOK, map[string]string{"status": "password updated"})
+	httputil.WriteJSON(w, http.StatusOK, map[string]string{"status": "password updated"})
 }
 
 func (s *Service) handleGetCurrentUser(w http.ResponseWriter, r *http.Request) {
 	userID := auth.UserIDFromContext(r.Context())
 	tenantID := auth.TenantIDFromContext(r.Context())
 
-	user, err := s.store.GetByID(context.Background(), userID, tenantID)
+	user, err := s.store.GetByID(r.Context(), userID, tenantID)
 	if err != nil || user == nil {
-		writeError(w, http.StatusNotFound, "user not found")
+		httputil.WriteError(w, http.StatusNotFound, "user not found")
 		return
 	}
 
 	// 获取用户权限
-	permissions, _ := s.store.GetUserPermissions(context.Background(), string(user.Role))
+	permissions, _ := s.store.GetUserPermissions(r.Context(), string(user.Role))
 
-	writeJSON(w, http.StatusOK, map[string]any{
+	httputil.WriteJSON(w, http.StatusOK, map[string]any{
 		"user":        user,
 		"permissions": permissions,
 	})
-}
-
-func writeJSON(w http.ResponseWriter, status int, v any) {
-	v = httputil.EmptySliceIfNil(v)
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	json.NewEncoder(w).Encode(v)
-}
-
-func writeError(w http.ResponseWriter, status int, msg string) {
-	writeJSON(w, status, map[string]string{"error": msg})
 }

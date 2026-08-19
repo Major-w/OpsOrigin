@@ -22,11 +22,11 @@ type Policy struct {
 	ID            string    `json:"id"`
 	TenantID      string    `json:"tenant_id"`
 	Name          string    `json:"name"`
-	ProcessID     string    `json:"process_id"`          // 关联流程（可选，限定策略适用范围）
-	StepID        string    `json:"step_id"`             // 关联流程步骤（可选，指定某定时器步骤）
-	DurationHours int       `json:"duration_hours"`      // OLA 处理时限（小时）
-	EscalateTo    string    `json:"escalate_to"`         // 超时升级对象（角色/负责人/群组）
-	NotifyChannel string    `json:"notify_channel"`      // 通知渠道：email/wecom/dingtalk/feishu
+	ProcessID     string    `json:"process_id"`     // 关联流程（可选，限定策略适用范围）
+	StepID        string    `json:"step_id"`        // 关联流程步骤（可选，指定某定时器步骤）
+	DurationHours int       `json:"duration_hours"` // OLA 处理时限（小时）
+	EscalateTo    string    `json:"escalate_to"`    // 超时升级对象（角色/负责人/群组）
+	NotifyChannel string    `json:"notify_channel"` // 通知渠道：email/wecom/dingtalk/feishu
 	Enabled       bool      `json:"enabled"`
 	CreatedAt     time.Time `json:"created_at"`
 	UpdatedAt     time.Time `json:"updated_at"`
@@ -135,53 +135,47 @@ func tenantOf(r *http.Request) string {
 func (s *Store) handleList(w http.ResponseWriter, r *http.Request) {
 	list, err := s.List(r.Context(), tenantOf(r))
 	if err != nil {
-		writeJSON(w, 500, map[string]string{"error": err.Error()})
+		httputil.WriteJSON(w, 500, map[string]string{"error": err.Error()})
 		return
 	}
-	writeJSON(w, 200, httputil.EmptySliceIfNil(list))
+	httputil.WriteJSON(w, 200, httputil.EmptySliceIfNil(list))
 }
 
 func (s *Store) handleCreate(w http.ResponseWriter, r *http.Request) {
 	var p Policy
 	if err := json.NewDecoder(r.Body).Decode(&p); err != nil {
-		writeJSON(w, 400, map[string]string{"error": "invalid body"})
+		httputil.WriteJSON(w, 400, map[string]string{"error": "invalid body"})
 		return
 	}
 	p.TenantID = tenantOf(r)
 	if err := s.Create(r.Context(), &p); err != nil {
-		writeJSON(w, 500, map[string]string{"error": err.Error()})
+		httputil.WriteJSON(w, 500, map[string]string{"error": err.Error()})
 		return
 	}
-	writeJSON(w, 201, p)
+	httputil.WriteJSON(w, 201, p)
 }
 
 func (s *Store) handleUpdate(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	var p Policy
 	if err := json.NewDecoder(r.Body).Decode(&p); err != nil {
-		writeJSON(w, 400, map[string]string{"error": "invalid body"})
+		httputil.WriteJSON(w, 400, map[string]string{"error": "invalid body"})
 		return
 	}
 	p.ID = id
 	p.TenantID = tenantOf(r)
 	if err := s.Update(r.Context(), &p); err != nil {
-		writeJSON(w, 500, map[string]string{"error": err.Error()})
+		httputil.WriteJSON(w, 500, map[string]string{"error": err.Error()})
 		return
 	}
-	writeJSON(w, 200, p)
+	httputil.WriteJSON(w, 200, p)
 }
 
 func (s *Store) handleDelete(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	if err := s.Delete(r.Context(), id, tenantOf(r)); err != nil {
-		writeJSON(w, 500, map[string]string{"error": err.Error()})
+		httputil.WriteJSON(w, 500, map[string]string{"error": err.Error()})
 		return
 	}
-	writeJSON(w, 204, nil)
-}
-
-func writeJSON(w http.ResponseWriter, status int, v any) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	json.NewEncoder(w).Encode(v)
+	httputil.WriteJSON(w, 204, nil)
 }

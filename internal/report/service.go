@@ -51,7 +51,7 @@ func (s *Service) RegisterRoutes(mux *http.ServeMux) {
 // ——— 数据集浏览器 ———
 
 func (s *Service) handleListDatasets(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, s.reg.List())
+	httputil.WriteJSON(w, http.StatusOK, s.reg.List())
 }
 
 // ——— 统一查询 ———
@@ -59,15 +59,15 @@ func (s *Service) handleListDatasets(w http.ResponseWriter, r *http.Request) {
 func (s *Service) handleQuery(w http.ResponseWriter, r *http.Request) {
 	var q Query
 	if err := json.NewDecoder(r.Body).Decode(&q); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
+		httputil.WriteError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
 	res, err := s.reg.Query(r.Context(), tenantFromCtx(r.Context()), &q)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
+		httputil.WriteError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, res)
+	httputil.WriteJSON(w, http.StatusOK, res)
 }
 
 // ——— 看板 CRUD ———
@@ -93,13 +93,13 @@ func (s *Service) handleListDashboards(w http.ResponseWriter, r *http.Request) {
 			"createdByName": d.CreatedByName,
 		})
 	}
-	writeJSON(w, http.StatusOK, summary)
+	httputil.WriteJSON(w, http.StatusOK, summary)
 }
 
 func (s *Service) handleCreateDashboard(w http.ResponseWriter, r *http.Request) {
 	var d Dashboard
 	if err := json.NewDecoder(r.Body).Decode(&d); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
+		httputil.WriteError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
 	// 归属信息一律由服务端可信上下文覆盖，忽略请求体传入值(防伪造)
@@ -108,39 +108,39 @@ func (s *Service) handleCreateDashboard(w http.ResponseWriter, r *http.Request) 
 	d.CreatedByName = userNameFromCtx(r.Context())
 	// 存储前校验所有 Widget 的查询引用，拒绝指向未注册字段/数据集的看板配置
 	if err := d.Validate(s.reg); err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
+		httputil.WriteError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 	if err := s.store.Create(r.Context(), &d); err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusCreated, d)
+	httputil.WriteJSON(w, http.StatusCreated, d)
 }
 
 func (s *Service) handleGetDashboard(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	d, err := s.store.Get(r.Context(), id, tenantFromCtx(r.Context()))
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	if d == nil {
-		writeError(w, http.StatusNotFound, "dashboard not found")
+		httputil.WriteError(w, http.StatusNotFound, "dashboard not found")
 		return
 	}
-	writeJSON(w, http.StatusOK, d)
+	httputil.WriteJSON(w, http.StatusOK, d)
 }
 
 func (s *Service) handleRenderDashboard(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	d, err := s.store.Get(r.Context(), id, tenantFromCtx(r.Context()))
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	if d == nil {
-		writeError(w, http.StatusNotFound, "dashboard not found")
+		httputil.WriteError(w, http.StatusNotFound, "dashboard not found")
 		return
 	}
 	tenantID := tenantFromCtx(r.Context())
@@ -166,7 +166,7 @@ func (s *Service) handleRenderDashboard(w http.ResponseWriter, r *http.Request) 
 			"data":   res,
 		})
 	}
-	writeJSON(w, http.StatusOK, map[string]any{
+	httputil.WriteJSON(w, http.StatusOK, map[string]any{
 		"id":      d.ID,
 		"name":    d.Name,
 		"widgets": rendered,
@@ -178,16 +178,16 @@ func (s *Service) handleUpdateDashboard(w http.ResponseWriter, r *http.Request) 
 	tenantID := tenantFromCtx(r.Context())
 	existing, err := s.store.Get(r.Context(), id, tenantID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	if existing == nil {
-		writeError(w, http.StatusNotFound, "dashboard not found")
+		httputil.WriteError(w, http.StatusNotFound, "dashboard not found")
 		return
 	}
 	var incoming Dashboard
 	if err := json.NewDecoder(r.Body).Decode(&incoming); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
+		httputil.WriteError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
 	incoming.ID = existing.ID
@@ -197,23 +197,23 @@ func (s *Service) handleUpdateDashboard(w http.ResponseWriter, r *http.Request) 
 	incoming.CreatedBy = existing.CreatedBy
 	incoming.CreatedByName = existing.CreatedByName
 	if err := incoming.Validate(s.reg); err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
+		httputil.WriteError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 	if err := s.store.Update(r.Context(), &incoming); err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, incoming)
+	httputil.WriteJSON(w, http.StatusOK, incoming)
 }
 
 func (s *Service) handleDeleteDashboard(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	if err := s.store.Delete(r.Context(), id, tenantFromCtx(r.Context())); err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
+	httputil.WriteJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
 }
 
 // ——— 上下文辅助 ———
@@ -252,11 +252,3 @@ func userNameFromCtx(ctx context.Context) string {
 }
 
 // ——— HTTP 响应封装 ———
-
-func writeJSON(w http.ResponseWriter, status int, v any) {
-	httputil.WriteJSON(w, status, v)
-}
-
-func writeError(w http.ResponseWriter, status int, msg string) {
-	httputil.WriteError(w, status, msg)
-}

@@ -3,6 +3,7 @@ package cmdb
 import (
 	"context"
 	"encoding/json"
+	"github.com/opsorigin/core/pkg/httputil"
 	"net/http"
 
 	"github.com/opsorigin/core/internal/cmdb/model"
@@ -12,18 +13,18 @@ import (
 func (s *Service) handleListSavedQueries(w http.ResponseWriter, r *http.Request) {
 	tenantID := tenantFromCtx(r.Context())
 	if s.pg == nil {
-		writeJSON(w, 200, []*model.SavedQuery{})
+		httputil.WriteJSON(w, 200, []*model.SavedQuery{})
 		return
 	}
 	qs, err := s.pg.ListSavedQueries(r.Context(), tenantID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	if qs == nil {
 		qs = []*model.SavedQuery{}
 	}
-	writeJSON(w, 200, qs)
+	httputil.WriteJSON(w, 200, qs)
 }
 
 // handleCreateSavedQuery 保存一条查询策略（"我想查"）。
@@ -31,11 +32,11 @@ func (s *Service) handleCreateSavedQuery(w http.ResponseWriter, r *http.Request)
 	tenantID := tenantFromCtx(r.Context())
 	var q model.SavedQuery
 	if err := json.NewDecoder(r.Body).Decode(&q); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
+		httputil.WriteError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
 	if q.Name == "" {
-		writeError(w, http.StatusBadRequest, "name is required")
+		httputil.WriteError(w, http.StatusBadRequest, "name is required")
 		return
 	}
 	if q.Query == nil {
@@ -44,14 +45,14 @@ func (s *Service) handleCreateSavedQuery(w http.ResponseWriter, r *http.Request)
 	q.TenantID = tenantID
 
 	if s.pg == nil {
-		writeJSON(w, 201, &q)
+		httputil.WriteJSON(w, 201, &q)
 		return
 	}
 	if err := s.pg.CreateSavedQuery(r.Context(), &q); err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	writeJSON(w, 201, &q)
+	httputil.WriteJSON(w, 201, &q)
 }
 
 // handleDeleteSavedQuery 删除查询策略。
@@ -59,14 +60,14 @@ func (s *Service) handleDeleteSavedQuery(w http.ResponseWriter, r *http.Request)
 	id := r.PathValue("id")
 	tenantID := tenantFromCtx(r.Context())
 	if s.pg == nil {
-		writeJSON(w, 200, map[string]string{"status": "deleted"})
+		httputil.WriteJSON(w, 200, map[string]string{"status": "deleted"})
 		return
 	}
 	if err := s.pg.DeleteSavedQuery(r.Context(), id, tenantID); err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	writeJSON(w, 200, map[string]string{"status": "deleted"})
+	httputil.WriteJSON(w, 200, map[string]string{"status": "deleted"})
 }
 
 // handleResolveSavedQuery 应用一条保存查询，返回命中的 CI 列表（"我想查"一键复用）。
@@ -74,27 +75,27 @@ func (s *Service) handleResolveSavedQuery(w http.ResponseWriter, r *http.Request
 	id := r.PathValue("id")
 	tenantID := tenantFromCtx(r.Context())
 	if s.pg == nil {
-		writeJSON(w, 200, []*model.CIModel{})
+		httputil.WriteJSON(w, 200, []*model.CIModel{})
 		return
 	}
 	q, err := s.pg.GetSavedQuery(r.Context(), id, tenantID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	if q == nil {
-		writeError(w, 404, "saved query not found")
+		httputil.WriteError(w, 404, "saved query not found")
 		return
 	}
 	cis, err := s.resolveSavedQueryCIs(r.Context(), tenantID, q)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	if cis == nil {
 		cis = []*model.CIModel{}
 	}
-	writeJSON(w, 200, map[string]any{"query": q, "count": len(cis), "items": cis})
+	httputil.WriteJSON(w, 200, map[string]any{"query": q, "count": len(cis), "items": cis})
 }
 
 // resolveSavedQueryFilter 把保存查询的结构化 Query 转为 repo 过滤条件。

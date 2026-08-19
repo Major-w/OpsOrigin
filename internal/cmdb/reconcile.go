@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/opsorigin/core/pkg/httputil"
 	"log/slog"
 	"net/http"
 	"sort"
@@ -205,13 +206,13 @@ func (s *Service) handleReconcileCandidates(w http.ResponseWriter, r *http.Reque
 	cands, err := s.findReconcileCandidates(r.Context(), tenantID)
 	if err != nil {
 		slog.Error("reconcile candidates failed", "error", err)
-		writeError(w, http.StatusInternalServerError, err.Error())
+		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	if cands == nil {
 		cands = []ReconcileCandidate{}
 	}
-	writeJSON(w, http.StatusOK, cands)
+	httputil.WriteJSON(w, http.StatusOK, cands)
 }
 
 // handleReconcileMerge 合并一组疑似重复 CI。
@@ -222,19 +223,19 @@ func (s *Service) handleReconcileMerge(w http.ResponseWriter, r *http.Request) {
 		MergeIDs []string `json:"merge_ids"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
+		httputil.WriteError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
 	if req.KeepID == "" || len(req.MergeIDs) == 0 {
-		writeError(w, http.StatusBadRequest, "keep_id and merge_ids are required")
+		httputil.WriteError(w, http.StatusBadRequest, "keep_id and merge_ids are required")
 		return
 	}
 	updated, err := s.mergeReconcile(r.Context(), tenantID, req.KeepID, req.MergeIDs)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
+		httputil.WriteError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{
+	httputil.WriteJSON(w, http.StatusOK, map[string]any{
 		"kept_id": req.KeepID, "merged_count": len(req.MergeIDs), "updated_fields": updated,
 	})
 }

@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"encoding/xml"
 	"fmt"
+	"github.com/opsorigin/core/pkg/httputil"
 	"io"
 	"log/slog"
 	"net/http"
@@ -189,7 +190,7 @@ func (s *Service) savePolicy(ctx context.Context, tenantID string, p EvolutionPo
 func (s *Service) handleEvolutionPolicy(w http.ResponseWriter, r *http.Request) {
 	tenantID := tenantFromCtx(r.Context())
 	if r.Method == http.MethodGet {
-		writeJSON(w, http.StatusOK, s.getPolicy(r.Context(), tenantID))
+		httputil.WriteJSON(w, http.StatusOK, s.getPolicy(r.Context(), tenantID))
 		return
 	}
 	var req struct {
@@ -200,7 +201,7 @@ func (s *Service) handleEvolutionPolicy(w http.ResponseWriter, r *http.Request) 
 		Blacklist      []string `json:"blacklist"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid body")
+		httputil.WriteError(w, http.StatusBadRequest, "invalid body")
 		return
 	}
 	cur := s.getPolicy(r.Context(), tenantID)
@@ -220,16 +221,16 @@ func (s *Service) handleEvolutionPolicy(w http.ResponseWriter, r *http.Request) 
 		cur.Blacklist = req.Blacklist
 	}
 	if err := s.savePolicy(r.Context(), tenantID, cur); err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, s.getPolicy(r.Context(), tenantID))
+	httputil.WriteJSON(w, http.StatusOK, s.getPolicy(r.Context(), tenantID))
 }
 
 // handleEvolutionSources CRUD。
 func (s *Service) handleEvolutionSources(w http.ResponseWriter, r *http.Request) {
 	if r.Method == http.MethodGet {
-		writeJSON(w, http.StatusOK, s.listSources(r.Context(), tenantFromCtx(r.Context())))
+		httputil.WriteJSON(w, http.StatusOK, s.listSources(r.Context(), tenantFromCtx(r.Context())))
 		return
 	}
 	// POST 创建
@@ -243,15 +244,15 @@ func (s *Service) handleEvolutionSources(w http.ResponseWriter, r *http.Request)
 		MinScore       *float64 `json:"min_score"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid body")
+		httputil.WriteError(w, http.StatusBadRequest, "invalid body")
 		return
 	}
 	if req.Name == "" || req.Source == "" {
-		writeError(w, http.StatusBadRequest, "name and source required")
+		httputil.WriteError(w, http.StatusBadRequest, "name and source required")
 		return
 	}
 	if req.Type != "rss" && req.Type != "url" && req.Type != "keyword" {
-		writeError(w, http.StatusBadRequest, "type must be rss|url|keyword")
+		httputil.WriteError(w, http.StatusBadRequest, "type must be rss|url|keyword")
 		return
 	}
 	enabled := true
@@ -274,17 +275,17 @@ func (s *Service) handleEvolutionSources(w http.ResponseWriter, r *http.Request)
 			`INSERT INTO ai_evolution_sources (id, tenant_id, name, type, source, enabled, interval_hours, target_category, min_score, created_at)
 			 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
 			it.ID, tenantFromCtx(r.Context()), it.Name, it.Type, it.Source, it.Enabled, it.IntervalHours, it.TargetCategory, it.MinScore, it.CreatedAt); err != nil {
-			writeError(w, http.StatusInternalServerError, err.Error())
+			httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
 	}
-	writeJSON(w, http.StatusCreated, it)
+	httputil.WriteJSON(w, http.StatusCreated, it)
 }
 
 // handleUpdateEvolutionSource 编辑数据源(策略覆盖字段)。
 func (s *Service) handleUpdateEvolutionSource(w http.ResponseWriter, r *http.Request) {
 	if s.db == nil {
-		writeError(w, http.StatusNotFound, "db unavailable")
+		httputil.WriteError(w, http.StatusNotFound, "db unavailable")
 		return
 	}
 	id := r.PathValue("id")
@@ -296,7 +297,7 @@ func (s *Service) handleUpdateEvolutionSource(w http.ResponseWriter, r *http.Req
 		MinScore       *float64 `json:"min_score"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid body")
+		httputil.WriteError(w, http.StatusBadRequest, "invalid body")
 		return
 	}
 	// 读当前行判断 tenant 归属
@@ -307,7 +308,7 @@ func (s *Service) handleUpdateEvolutionSource(w http.ResponseWriter, r *http.Req
 	var ms float64
 	var en bool
 	if err := row.Scan(&iv, &cat, &ms, &en); err != nil {
-		writeError(w, http.StatusNotFound, "source not found")
+		httputil.WriteError(w, http.StatusNotFound, "source not found")
 		return
 	}
 	if req.Enabled != nil {
@@ -325,24 +326,24 @@ func (s *Service) handleUpdateEvolutionSource(w http.ResponseWriter, r *http.Req
 	if _, err := s.db.ExecContext(r.Context(),
 		`UPDATE ai_evolution_sources SET enabled=$1, interval_hours=$2, target_category=$3, min_score=$4 WHERE id=$5 AND tenant_id=$6`,
 		en, iv, cat, ms, id, tenantID); err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]string{"status": "updated"})
+	httputil.WriteJSON(w, http.StatusOK, map[string]string{"status": "updated"})
 }
 
 func (s *Service) handleDeleteEvolutionSource(w http.ResponseWriter, r *http.Request) {
 	if s.db == nil {
-		writeError(w, http.StatusNotFound, "db unavailable")
+		httputil.WriteError(w, http.StatusNotFound, "db unavailable")
 		return
 	}
 	id := r.PathValue("id")
 	if _, err := s.db.ExecContext(r.Context(),
 		`DELETE FROM ai_evolution_sources WHERE id=$1 AND tenant_id=$2`, id, tenantFromCtx(r.Context())); err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
+	httputil.WriteJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
 }
 
 // hitBlacklist 命中任一黑名单关键词(大小写不敏感)。
@@ -375,7 +376,7 @@ func (s *Service) handleEvolutionFetch(w http.ResponseWriter, r *http.Request) {
 		}
 		results = append(results, item)
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"results": results})
+	httputil.WriteJSON(w, http.StatusOK, map[string]any{"results": results})
 }
 
 // fetchAndAnalyze 抓取单个数据源 → LLM 提炼(打分过滤) → 沉淀知识库。

@@ -5,6 +5,7 @@ package ai
 import (
 	"context"
 	"encoding/json"
+	"github.com/opsorigin/core/pkg/httputil"
 	"log/slog"
 	"net/http"
 	"path/filepath"
@@ -99,11 +100,11 @@ func (s *Service) handleSaveArtifact(w http.ResponseWriter, r *http.Request) {
 		Content   string `json:"content"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid body")
+		httputil.WriteError(w, http.StatusBadRequest, "invalid body")
 		return
 	}
 	if strings.TrimSpace(req.Content) == "" {
-		writeError(w, http.StatusBadRequest, "content required")
+		httputil.WriteError(w, http.StatusBadRequest, "content required")
 		return
 	}
 	fileName := strings.TrimSpace(req.FileName)
@@ -132,11 +133,11 @@ func (s *Service) handleSaveArtifact(w http.ResponseWriter, r *http.Request) {
 			`INSERT INTO ai_chat_artifacts (id, tenant_id, conversation_id, message_id, file_name, file_type, file_size, object_key, created_at)
 			 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
 			art.ID, tenantID, convID, req.MessageID, fileName, contentType, art.FileSize, key, art.CreatedAt); err != nil {
-			writeError(w, http.StatusInternalServerError, err.Error())
+			httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
 	}
-	writeJSON(w, http.StatusCreated, art)
+	httputil.WriteJSON(w, http.StatusCreated, art)
 }
 
 // handleListArtifacts 产物列表。
@@ -144,14 +145,14 @@ func (s *Service) handleListArtifacts(w http.ResponseWriter, r *http.Request) {
 	convID := r.PathValue("id")
 	tenantID := tenantFromCtx(r.Context())
 	if s.db == nil {
-		writeJSON(w, http.StatusOK, []ChatArtifact{})
+		httputil.WriteJSON(w, http.StatusOK, []ChatArtifact{})
 		return
 	}
 	rows, err := s.db.QueryContext(r.Context(),
 		`SELECT id, tenant_id, conversation_id, message_id, file_name, file_type, file_size, object_key, created_at
 		 FROM ai_chat_artifacts WHERE conversation_id=$1 AND tenant_id=$2 ORDER BY created_at DESC`, convID, tenantID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	defer rows.Close()
@@ -163,7 +164,7 @@ func (s *Service) handleListArtifacts(w http.ResponseWriter, r *http.Request) {
 		}
 		out = append(out, a)
 	}
-	writeJSON(w, http.StatusOK, out)
+	httputil.WriteJSON(w, http.StatusOK, out)
 }
 
 // handleDownloadArtifact 产物下载(对象存储 → 流式)。
@@ -172,7 +173,7 @@ func (s *Service) handleDownloadArtifact(w http.ResponseWriter, r *http.Request)
 	aid := r.PathValue("aid")
 	tenantID := tenantFromCtx(r.Context())
 	if s.db == nil {
-		writeError(w, http.StatusNotFound, "db unavailable")
+		httputil.WriteError(w, http.StatusNotFound, "db unavailable")
 		return
 	}
 	var a ChatArtifact
@@ -181,11 +182,11 @@ func (s *Service) handleDownloadArtifact(w http.ResponseWriter, r *http.Request)
 		 FROM ai_chat_artifacts WHERE id=$1 AND conversation_id=$2 AND tenant_id=$3`, aid, convID, tenantID).
 		Scan(&a.ID, &a.TenantID, &a.ConversationID, &a.MessageID, &a.FileName, &a.FileType, &a.FileSize, &a.ObjectKey, &a.CreatedAt)
 	if err != nil {
-		writeError(w, http.StatusNotFound, "artifact not found")
+		httputil.WriteError(w, http.StatusNotFound, "artifact not found")
 		return
 	}
 	if a.ObjectKey == "" || s.objStore == nil {
-		writeError(w, http.StatusServiceUnavailable, "object store disabled or artifact not stored")
+		httputil.WriteError(w, http.StatusServiceUnavailable, "object store disabled or artifact not stored")
 		return
 	}
 	w.Header().Set("Content-Disposition", "attachment; filename=\""+a.FileName+"\"")
@@ -202,14 +203,14 @@ func (s *Service) handleDeleteArtifact(w http.ResponseWriter, r *http.Request) {
 	aid := r.PathValue("aid")
 	tenantID := tenantFromCtx(r.Context())
 	if s.db == nil {
-		writeError(w, http.StatusNotFound, "db unavailable")
+		httputil.WriteError(w, http.StatusNotFound, "db unavailable")
 		return
 	}
 	var key string
 	err := s.db.QueryRowContext(r.Context(),
 		`SELECT object_key FROM ai_chat_artifacts WHERE id=$1 AND conversation_id=$2 AND tenant_id=$3`, aid, convID, tenantID).Scan(&key)
 	if err != nil {
-		writeError(w, http.StatusNotFound, "artifact not found")
+		httputil.WriteError(w, http.StatusNotFound, "artifact not found")
 		return
 	}
 	if key != "" && s.objStore != nil {
@@ -219,8 +220,8 @@ func (s *Service) handleDeleteArtifact(w http.ResponseWriter, r *http.Request) {
 	}
 	if _, err := s.db.ExecContext(r.Context(),
 		`DELETE FROM ai_chat_artifacts WHERE id=$1 AND conversation_id=$2 AND tenant_id=$3`, aid, convID, tenantID); err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
+	httputil.WriteJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/opsorigin/core/pkg/httputil"
 	"net/http"
 	"strings"
 	"time"
@@ -31,21 +32,21 @@ type generateWorkspaceRequest struct {
 func (s *Service) handleGenerateWorkspace(w http.ResponseWriter, r *http.Request) {
 	var req generateWorkspaceRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
+		httputil.WriteError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
 	req.Prompt = strings.TrimSpace(req.Prompt)
 	if req.Prompt == "" {
-		writeError(w, http.StatusBadRequest, "请描述你想看的数据")
+		httputil.WriteError(w, http.StatusBadRequest, "请描述你想看的数据")
 		return
 	}
 	if len([]rune(req.Prompt)) > 1000 {
-		writeError(w, http.StatusBadRequest, "需求描述过长，请精简到 1000 字以内")
+		httputil.WriteError(w, http.StatusBadRequest, "需求描述过长，请精简到 1000 字以内")
 		return
 	}
 	client := s.LLMClient()
 	if client == nil {
-		writeError(w, http.StatusServiceUnavailable, "尚未配置 AI 模型，请先在系统设置中完成配置")
+		httputil.WriteError(w, http.StatusServiceUnavailable, "尚未配置 AI 模型，请先在系统设置中完成配置")
 		return
 	}
 
@@ -59,10 +60,10 @@ func (s *Service) handleGenerateWorkspace(w http.ResponseWriter, r *http.Request
 	draft, err := aiworkspace.New(client, model).Generate(ctx, report.Default(), req.Prompt)
 	if err != nil {
 		// 生成失败多半是"模型没听懂/数据集覆盖不到"，属于可重试的业务态，不是 5xx。
-		writeError(w, http.StatusUnprocessableEntity, err.Error())
+		httputil.WriteError(w, http.StatusUnprocessableEntity, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, draft)
+	httputil.WriteJSON(w, http.StatusOK, draft)
 }
 
 // workspaceSuggestion 是提示词建议 chip，按已注册数据集动态生成，
@@ -95,7 +96,7 @@ func (s *Service) handleWorkspaceSuggestions(w http.ResponseWriter, r *http.Requ
 		}
 		out = append(out, workspaceSuggestion{Dataset: ds.Name, Label: label, Prompt: prompt})
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"suggestions": out})
+	httputil.WriteJSON(w, http.StatusOK, map[string]any{"suggestions": out})
 }
 
 // firstGroupableLabel 取数据集第一个可分组的非时间维度展示名，用于拼建议语。

@@ -14,15 +14,15 @@ import (
 
 // Policy SLA 策略定义
 type Policy struct {
-	ID              string    `json:"id"`
-	TenantID        string    `json:"tenant_id"`
-	Name            string    `json:"name"`
-	RiskLevel       string    `json:"risk_level"` // low/medium/high/critical
-	ProcessID       string    `json:"process_id,omitempty"` // 绑定流程: 非空时按流程优先匹配 SLA
-	ResponseHours   int       `json:"response_hours"`
-	ResolutionHours int       `json:"resolution_hours"`
-	EscalationHours int       `json:"escalation_hours"`
-	EscalationTo    string    `json:"escalation_to,omitempty"` // 升级通知角色/负责人
+	ID              string `json:"id"`
+	TenantID        string `json:"tenant_id"`
+	Name            string `json:"name"`
+	RiskLevel       string `json:"risk_level"`           // low/medium/high/critical
+	ProcessID       string `json:"process_id,omitempty"` // 绑定流程: 非空时按流程优先匹配 SLA
+	ResponseHours   int    `json:"response_hours"`
+	ResolutionHours int    `json:"resolution_hours"`
+	EscalationHours int    `json:"escalation_hours"`
+	EscalationTo    string `json:"escalation_to,omitempty"` // 升级通知角色/负责人
 	// 多级升级策略: 按时间阈值逐级升级
 	EscalationLevels []EscalationLevel `json:"escalation_levels,omitempty"`
 	Enabled          bool              `json:"enabled"`
@@ -189,10 +189,10 @@ func (s *Store) handleList(w http.ResponseWriter, r *http.Request) {
 	}
 	policies, err := s.List(r.Context(), tenant)
 	if err != nil {
-		writeJSON(w, 500, map[string]string{"error": err.Error()})
+		httputil.WriteJSON(w, 500, map[string]string{"error": err.Error()})
 		return
 	}
-	writeJSON(w, 200, policies)
+	httputil.WriteJSON(w, 200, policies)
 }
 
 func (s *Store) handleUpdate(w http.ResponseWriter, r *http.Request) {
@@ -203,16 +203,16 @@ func (s *Store) handleUpdate(w http.ResponseWriter, r *http.Request) {
 	}
 	var p Policy
 	if err := json.NewDecoder(r.Body).Decode(&p); err != nil {
-		writeJSON(w, 400, map[string]string{"error": "invalid body"})
+		httputil.WriteJSON(w, 400, map[string]string{"error": "invalid body"})
 		return
 	}
 	p.ID = id
 	p.TenantID = tenant
 	if err := s.Update(r.Context(), &p); err != nil {
-		writeJSON(w, 500, map[string]string{"error": err.Error()})
+		httputil.WriteJSON(w, 500, map[string]string{"error": err.Error()})
 		return
 	}
-	writeJSON(w, 200, p)
+	httputil.WriteJSON(w, 200, p)
 }
 
 func (s *Store) handleCreate(w http.ResponseWriter, r *http.Request) {
@@ -222,15 +222,15 @@ func (s *Store) handleCreate(w http.ResponseWriter, r *http.Request) {
 	}
 	var p Policy
 	if err := json.NewDecoder(r.Body).Decode(&p); err != nil {
-		writeJSON(w, 400, map[string]string{"error": "invalid body"})
+		httputil.WriteJSON(w, 400, map[string]string{"error": "invalid body"})
 		return
 	}
 	p.TenantID = tenant
 	if err := s.Create(r.Context(), &p); err != nil {
-		writeJSON(w, 500, map[string]string{"error": err.Error()})
+		httputil.WriteJSON(w, 500, map[string]string{"error": err.Error()})
 		return
 	}
-	writeJSON(w, 201, p)
+	httputil.WriteJSON(w, 201, p)
 }
 
 func (s *Store) handleDelete(w http.ResponseWriter, r *http.Request) {
@@ -240,15 +240,8 @@ func (s *Store) handleDelete(w http.ResponseWriter, r *http.Request) {
 		tenant = "default"
 	}
 	if err := s.Delete(r.Context(), id, tenant); err != nil {
-		writeJSON(w, 500, map[string]string{"error": err.Error()})
+		httputil.WriteJSON(w, 500, map[string]string{"error": err.Error()})
 		return
 	}
-	writeJSON(w, 204, nil)
-}
-
-func writeJSON(w http.ResponseWriter, status int, v any) {
-	v = httputil.EmptySliceIfNil(v)
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	json.NewEncoder(w).Encode(v)
+	httputil.WriteJSON(w, 204, nil)
 }

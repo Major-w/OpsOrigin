@@ -2,6 +2,7 @@ package cmdb
 
 import (
 	"encoding/json"
+	"github.com/opsorigin/core/pkg/httputil"
 	"net/http"
 
 	"github.com/opsorigin/core/internal/cmdb/model"
@@ -12,10 +13,10 @@ func (s *Service) handleGetCollectionPolicy(w http.ResponseWriter, r *http.Reque
 	tenantID := tenantFromCtx(r.Context())
 	policy, err := s.GetPlatformPolicy(r.Context(), tenantID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to get policy")
+		httputil.WriteError(w, http.StatusInternalServerError, "failed to get policy")
 		return
 	}
-	writeJSON(w, 200, policy)
+	httputil.WriteJSON(w, 200, policy)
 }
 
 // handlePutCollectionPolicy 更新平台全局默认策略。
@@ -23,7 +24,7 @@ func (s *Service) handlePutCollectionPolicy(w http.ResponseWriter, r *http.Reque
 	tenantID := tenantFromCtx(r.Context())
 	var p model.PlatformPolicy
 	if err := json.NewDecoder(r.Body).Decode(&p); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
+		httputil.WriteError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
 	p.TenantID = tenantID
@@ -34,10 +35,10 @@ func (s *Service) handlePutCollectionPolicy(w http.ResponseWriter, r *http.Reque
 		p.MonitorDefaultFrequency = "5m"
 	}
 	if err := s.SavePlatformPolicy(r.Context(), &p); err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to save policy")
+		httputil.WriteError(w, http.StatusInternalServerError, "failed to save policy")
 		return
 	}
-	writeJSON(w, 200, p)
+	httputil.WriteJSON(w, 200, p)
 }
 
 // handleListCollectionTasks 列出采集任务。
@@ -45,13 +46,13 @@ func (s *Service) handleListCollectionTasks(w http.ResponseWriter, r *http.Reque
 	tenantID := tenantFromCtx(r.Context())
 	tasks, err := s.ListCollectionTasks(r.Context(), tenantID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to list tasks")
+		httputil.WriteError(w, http.StatusInternalServerError, "failed to list tasks")
 		return
 	}
 	if tasks == nil {
 		tasks = []*model.CollectionTask{}
 	}
-	writeJSON(w, 200, map[string]any{"tasks": tasks})
+	httputil.WriteJSON(w, 200, map[string]any{"tasks": tasks})
 }
 
 // handleCreateCollectionTask 手动创建一条采集任务。
@@ -68,44 +69,44 @@ func (s *Service) handleCreateCollectionTask(w http.ResponseWriter, r *http.Requ
 		Enabled      bool   `json:"enabled"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
+		httputil.WriteError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
 	if !validResourceType(req.ResourceType) {
-		writeError(w, http.StatusBadRequest, "resource_type must be cloud|host|container")
+		httputil.WriteError(w, http.StatusBadRequest, "resource_type must be cloud|host|container")
 		return
 	}
 	if req.Kind != "cmdb" && req.Kind != "monitor" {
-		writeError(w, http.StatusBadRequest, "kind must be cmdb|monitor")
+		httputil.WriteError(w, http.StatusBadRequest, "kind must be cmdb|monitor")
 		return
 	}
 	if req.TargetMode == "" {
 		req.TargetMode = "static"
 	}
 	if req.TargetMode != "static" && req.TargetMode != "query" {
-		writeError(w, http.StatusBadRequest, "target_mode must be static|query")
+		httputil.WriteError(w, http.StatusBadRequest, "target_mode must be static|query")
 		return
 	}
 	// 动态目标（query）模式：Target 留空，必须引用已存在的保存查询（"我想查"）。
 	if req.TargetMode == "query" {
 		if req.TargetQuery == "" {
-			writeError(w, http.StatusBadRequest, "target_query is required when target_mode=query")
+			httputil.WriteError(w, http.StatusBadRequest, "target_query is required when target_mode=query")
 			return
 		}
 		if s.pg != nil {
 			sq, gerr := s.pg.GetSavedQuery(r.Context(), req.TargetQuery, tenantID)
 			if gerr != nil {
-				writeError(w, http.StatusInternalServerError, "failed to verify target_query")
+				httputil.WriteError(w, http.StatusInternalServerError, "failed to verify target_query")
 				return
 			}
 			if sq == nil {
-				writeError(w, http.StatusBadRequest, "target_query references a non-existent saved query")
+				httputil.WriteError(w, http.StatusBadRequest, "target_query references a non-existent saved query")
 				return
 			}
 		}
 	} else {
 		if req.Target == "" {
-			writeError(w, http.StatusBadRequest, "target is required for static mode")
+			httputil.WriteError(w, http.StatusBadRequest, "target is required for static mode")
 			return
 		}
 	}
@@ -127,10 +128,10 @@ func (s *Service) handleCreateCollectionTask(w http.ResponseWriter, r *http.Requ
 		t.Name = req.ResourceType + " " + req.Kind
 	}
 	if err := s.CreateCollectionTask(r.Context(), t); err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to create task")
+		httputil.WriteError(w, http.StatusInternalServerError, "failed to create task")
 		return
 	}
-	writeJSON(w, 201, t)
+	httputil.WriteJSON(w, 201, t)
 }
 
 // handleUpdateCollectionTask 更新采集任务（启停 / 频率）。
@@ -139,11 +140,11 @@ func (s *Service) handleUpdateCollectionTask(w http.ResponseWriter, r *http.Requ
 	tenantID := tenantFromCtx(r.Context())
 	t, err := s.GetCollectionTask(r.Context(), id, tenantID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "internal error")
+		httputil.WriteError(w, http.StatusInternalServerError, "internal error")
 		return
 	}
 	if t == nil {
-		writeError(w, 404, "task not found")
+		httputil.WriteError(w, 404, "task not found")
 		return
 	}
 	var req struct {
@@ -153,7 +154,7 @@ func (s *Service) handleUpdateCollectionTask(w http.ResponseWriter, r *http.Requ
 		TargetQuery *string `json:"target_query"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
+		httputil.WriteError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
 	if req.Enabled != nil {
@@ -164,23 +165,23 @@ func (s *Service) handleUpdateCollectionTask(w http.ResponseWriter, r *http.Requ
 	}
 	if req.TargetMode != nil && *req.TargetMode != "" {
 		if *req.TargetMode != "static" && *req.TargetMode != "query" {
-			writeError(w, http.StatusBadRequest, "target_mode must be static|query")
+			httputil.WriteError(w, http.StatusBadRequest, "target_mode must be static|query")
 			return
 		}
 		t.TargetMode = *req.TargetMode
 	}
 	if req.TargetQuery != nil {
 		if t.TargetMode == "query" && *req.TargetQuery == "" {
-			writeError(w, http.StatusBadRequest, "target_query is required when target_mode=query")
+			httputil.WriteError(w, http.StatusBadRequest, "target_query is required when target_mode=query")
 			return
 		}
 		t.TargetQuery = *req.TargetQuery
 	}
 	if err := s.UpdateCollectionTask(r.Context(), t); err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to update task")
+		httputil.WriteError(w, http.StatusInternalServerError, "failed to update task")
 		return
 	}
-	writeJSON(w, 200, t)
+	httputil.WriteJSON(w, 200, t)
 }
 
 // handleDeleteCollectionTask 删除采集任务。
@@ -188,10 +189,10 @@ func (s *Service) handleDeleteCollectionTask(w http.ResponseWriter, r *http.Requ
 	id := r.PathValue("id")
 	tenantID := tenantFromCtx(r.Context())
 	if err := s.DeleteCollectionTask(r.Context(), id, tenantID); err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to delete task")
+		httputil.WriteError(w, http.StatusInternalServerError, "failed to delete task")
 		return
 	}
-	writeJSON(w, 200, map[string]string{"status": "deleted"})
+	httputil.WriteJSON(w, 200, map[string]string{"status": "deleted"})
 }
 
 // handleRunCollectionTask 手动立即触发一次采集（同步执行，便于验证）。
@@ -200,16 +201,16 @@ func (s *Service) handleRunCollectionTask(w http.ResponseWriter, r *http.Request
 	tenantID := tenantFromCtx(r.Context())
 	t, err := s.GetCollectionTask(r.Context(), id, tenantID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "internal error")
+		httputil.WriteError(w, http.StatusInternalServerError, "internal error")
 		return
 	}
 	if t == nil {
-		writeError(w, 404, "task not found")
+		httputil.WriteError(w, 404, "task not found")
 		return
 	}
 	c, ok := s.registry.Lookup(t.Kind, t.ResourceType)
 	if !ok {
-		writeError(w, http.StatusBadRequest, "no collector registered for "+collectorKey(t.Kind, t.ResourceType))
+		httputil.WriteError(w, http.StatusBadRequest, "no collector registered for "+collectorKey(t.Kind, t.ResourceType))
 		return
 	}
 
@@ -218,27 +219,27 @@ func (s *Service) handleRunCollectionTask(w http.ResponseWriter, r *http.Request
 		resolved, totalCIS, totalMetrics, rerr := s.runCollectionTaskResolved(r.Context(), t, tenantID)
 		if rerr != nil {
 			s.markTaskFailed(r.Context(), t, "resolve target query failed: "+rerr.Error())
-			writeError(w, http.StatusInternalServerError, "resolve target query failed: "+rerr.Error())
+			httputil.WriteError(w, http.StatusInternalServerError, "resolve target query failed: "+rerr.Error())
 			return
 		}
 		s.markTaskSuccess(r.Context(), t)
-		writeJSON(w, 200, map[string]any{"status": "success", "resolved_targets": resolved, "cis": totalCIS, "metrics": totalMetrics})
+		httputil.WriteJSON(w, 200, map[string]any{"status": "success", "resolved_targets": resolved, "cis": totalCIS, "metrics": totalMetrics})
 		return
 	}
 
 	out, err := c.Run(r.Context(), t)
 	if err != nil {
 		s.markTaskFailed(r.Context(), t, err.Error())
-		writeError(w, http.StatusBadGateway, "collection failed: "+err.Error())
+		httputil.WriteError(w, http.StatusBadGateway, "collection failed: "+err.Error())
 		return
 	}
 	if err := s.ingestCollectionOutput(r.Context(), t, out); err != nil {
 		s.markTaskFailed(r.Context(), t, err.Error())
-		writeError(w, http.StatusInternalServerError, "ingest failed: "+err.Error())
+		httputil.WriteError(w, http.StatusInternalServerError, "ingest failed: "+err.Error())
 		return
 	}
 	s.markTaskSuccess(r.Context(), t)
-	writeJSON(w, 200, map[string]any{"status": "success", "cis": len(out.CIs), "metrics": len(out.Metrics)})
+	httputil.WriteJSON(w, 200, map[string]any{"status": "success", "cis": len(out.CIs), "metrics": len(out.Metrics)})
 }
 
 // handleOnboardResource 纳管资源入口：依据默认策略 + 逐资源覆盖开关创建采集任务。
@@ -251,22 +252,22 @@ func (s *Service) handleOnboardResource(w http.ResponseWriter, r *http.Request) 
 		EnableMonitorCollect *bool  `json:"enable_monitor_collect"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
+		httputil.WriteError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
 	if !validResourceType(req.ResourceType) {
-		writeError(w, http.StatusBadRequest, "resource_type must be cloud|host|container")
+		httputil.WriteError(w, http.StatusBadRequest, "resource_type must be cloud|host|container")
 		return
 	}
 	if req.Target == "" {
-		writeError(w, http.StatusBadRequest, "target is required")
+		httputil.WriteError(w, http.StatusBadRequest, "target is required")
 		return
 	}
 	if err := s.OnboardResource(r.Context(), tenantID, req.ResourceType, req.Target, req.EnableCMDBCollect, req.EnableMonitorCollect); err != nil {
-		writeError(w, http.StatusInternalServerError, "onboard failed: "+err.Error())
+		httputil.WriteError(w, http.StatusInternalServerError, "onboard failed: "+err.Error())
 		return
 	}
-	writeJSON(w, 200, map[string]string{"status": "onboarded"})
+	httputil.WriteJSON(w, 200, map[string]string{"status": "onboarded"})
 }
 
 func validResourceType(rt string) bool {

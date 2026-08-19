@@ -2,6 +2,7 @@ package cmdb
 
 import (
 	"context"
+	"github.com/opsorigin/core/pkg/httputil"
 	"net/http"
 	"strings"
 
@@ -13,7 +14,7 @@ func (s *Service) handleGetPanorama(w http.ResponseWriter, r *http.Request) {
 	tenantID := tenantFromCtx(r.Context())
 	scope := strings.TrimSpace(r.URL.Query().Get("scope"))
 	if scope == "" {
-		writeError(w, http.StatusBadRequest, "scope (root CI id) is required")
+		httputil.WriteError(w, http.StatusBadRequest, "scope (root CI id) is required")
 		return
 	}
 	var layers []string
@@ -26,10 +27,10 @@ func (s *Service) handleGetPanorama(w http.ResponseWriter, r *http.Request) {
 	}
 	resp, err := s.GetPanorama(r.Context(), tenantID, scope, layers)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, resp)
+	httputil.WriteJSON(w, http.StatusOK, resp)
 }
 
 // GetPanorama 组合 CMDB 拓扑 + 监控快照 + 告警 rollup，产出融合全景图（设计 §7）。

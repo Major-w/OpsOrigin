@@ -353,10 +353,10 @@ func (s *Store) handleList(w http.ResponseWriter, r *http.Request) {
 	}
 	items, err := s.List(r.Context(), tenant)
 	if err != nil {
-		writeJSON(w, 500, map[string]string{"error": err.Error()})
+		httputil.WriteJSON(w, 500, map[string]string{"error": err.Error()})
 		return
 	}
-	writeJSON(w, 200, items)
+	httputil.WriteJSON(w, 200, items)
 }
 
 func (s *Store) handleListVisible(w http.ResponseWriter, r *http.Request) {
@@ -366,16 +366,16 @@ func (s *Store) handleListVisible(w http.ResponseWriter, r *http.Request) {
 	}
 	items, err := s.ListVisible(r.Context(), tenant, auth.UserIDFromContext(r.Context()))
 	if err != nil {
-		writeJSON(w, 500, map[string]string{"error": err.Error()})
+		httputil.WriteJSON(w, 500, map[string]string{"error": err.Error()})
 		return
 	}
-	writeJSON(w, 200, items)
+	httputil.WriteJSON(w, 200, items)
 }
 
 func (s *Store) handleCreate(w http.ResponseWriter, r *http.Request) {
 	var it ServiceItem
 	if err := json.NewDecoder(r.Body).Decode(&it); err != nil {
-		writeJSON(w, 400, map[string]string{"error": "invalid body"})
+		httputil.WriteJSON(w, 400, map[string]string{"error": "invalid body"})
 		return
 	}
 	it.TenantID = r.Header.Get("X-Tenant-ID")
@@ -383,14 +383,14 @@ func (s *Store) handleCreate(w http.ResponseWriter, r *http.Request) {
 		it.TenantID = "default"
 	}
 	if it.Kind != "folder" && it.Enabled && it.ProcessID == "" {
-		writeJSON(w, 400, map[string]string{"error": "服务目录必须关联流程模板才能上线"})
+		httputil.WriteJSON(w, 400, map[string]string{"error": "服务目录必须关联流程模板才能上线"})
 		return
 	}
 	if err := s.Create(r.Context(), &it); err != nil {
-		writeJSON(w, 500, map[string]string{"error": err.Error()})
+		httputil.WriteJSON(w, 500, map[string]string{"error": err.Error()})
 		return
 	}
-	writeJSON(w, 201, it)
+	httputil.WriteJSON(w, 201, it)
 }
 
 func (s *Store) handleUpdate(w http.ResponseWriter, r *http.Request) {
@@ -401,20 +401,20 @@ func (s *Store) handleUpdate(w http.ResponseWriter, r *http.Request) {
 	}
 	var it ServiceItem
 	if err := json.NewDecoder(r.Body).Decode(&it); err != nil {
-		writeJSON(w, 400, map[string]string{"error": "invalid body"})
+		httputil.WriteJSON(w, 400, map[string]string{"error": "invalid body"})
 		return
 	}
 	it.ID = id
 	it.TenantID = tenant
 	if it.Kind != "folder" && it.Enabled && it.ProcessID == "" {
-		writeJSON(w, 400, map[string]string{"error": "服务目录必须关联流程模板才能上线"})
+		httputil.WriteJSON(w, 400, map[string]string{"error": "服务目录必须关联流程模板才能上线"})
 		return
 	}
 	if err := s.Update(r.Context(), &it); err != nil {
-		writeJSON(w, 500, map[string]string{"error": err.Error()})
+		httputil.WriteJSON(w, 500, map[string]string{"error": err.Error()})
 		return
 	}
-	writeJSON(w, 200, it)
+	httputil.WriteJSON(w, 200, it)
 }
 
 func (s *Store) handleDelete(w http.ResponseWriter, r *http.Request) {
@@ -424,10 +424,10 @@ func (s *Store) handleDelete(w http.ResponseWriter, r *http.Request) {
 		tenant = "default"
 	}
 	if err := s.Delete(r.Context(), id, tenant); err != nil {
-		writeJSON(w, 500, map[string]string{"error": err.Error()})
+		httputil.WriteJSON(w, 500, map[string]string{"error": err.Error()})
 		return
 	}
-	writeJSON(w, 200, map[string]string{"status": "deleted"})
+	httputil.WriteJSON(w, 200, map[string]string{"status": "deleted"})
 }
 
 // CatalogUsage 目录项运营指标：申请次数 + 满意度聚合（来源工单的 catalog_id）。
@@ -494,10 +494,10 @@ func (s *Store) handleUsage(w http.ResponseWriter, r *http.Request) {
 	}
 	list, err := s.Usage(r.Context(), tenant)
 	if err != nil {
-		writeJSON(w, 500, map[string]string{"error": err.Error()})
+		httputil.WriteJSON(w, 500, map[string]string{"error": err.Error()})
 		return
 	}
-	writeJSON(w, 200, list)
+	httputil.WriteJSON(w, 200, list)
 }
 
 type reorderReq struct {
@@ -511,23 +511,16 @@ func (s *Store) handleReorder(w http.ResponseWriter, r *http.Request) {
 	}
 	var req reorderReq
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeJSON(w, 400, map[string]string{"error": "invalid body"})
+		httputil.WriteJSON(w, 400, map[string]string{"error": "invalid body"})
 		return
 	}
 	if len(req.Items) == 0 {
-		writeJSON(w, 400, map[string]string{"error": "empty items"})
+		httputil.WriteJSON(w, 400, map[string]string{"error": "empty items"})
 		return
 	}
 	if err := s.Reorder(r.Context(), tenant, req.Items); err != nil {
-		writeJSON(w, 500, map[string]string{"error": err.Error()})
+		httputil.WriteJSON(w, 500, map[string]string{"error": err.Error()})
 		return
 	}
-	writeJSON(w, 200, map[string]string{"status": "ok"})
-}
-
-func writeJSON(w http.ResponseWriter, status int, v any) {
-	v = httputil.EmptySliceIfNil(v)
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	json.NewEncoder(w).Encode(v)
+	httputil.WriteJSON(w, 200, map[string]string{"status": "ok"})
 }

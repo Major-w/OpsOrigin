@@ -39,5 +39,5 @@ func (s *Service) ListCollectors() []CollectorInfo {
 }
 
 func (s *Service) handleListCollectors(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, httputil.EmptySliceIfNil(s.ListCollectors()))
+	httputil.WriteJSON(w, http.StatusOK, httputil.EmptySliceIfNil(s.ListCollectors()))
 }

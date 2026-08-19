@@ -2,6 +2,7 @@ package service
 
 import (
 	"encoding/json"
+	"github.com/opsorigin/core/pkg/httputil"
 	"net/http"
 
 	"github.com/opsorigin/core/internal/lowcode/version"
@@ -41,7 +42,7 @@ func (h *VersionHandler) handlePageVersions(w http.ResponseWriter, r *http.Reque
 	}
 
 	versions := h.versionSvc.GetPageVersions(pageID)
-	writeJSON(w, http.StatusOK, map[string]interface{}{
+	httputil.WriteJSON(w, http.StatusOK, map[string]interface{}{
 		"success": true,
 		"data":    versions,
 	})
@@ -62,7 +63,7 @@ func (h *VersionHandler) handlePageVersion(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	writeJSON(w, http.StatusOK, map[string]interface{}{
+	httputil.WriteJSON(w, http.StatusOK, map[string]interface{}{
 		"success": true,
 		"data":    pageVersion,
 	})
@@ -91,7 +92,7 @@ func (h *VersionHandler) handlePublishPageVersion(w http.ResponseWriter, r *http
 		return
 	}
 
-	writeJSON(w, http.StatusOK, map[string]interface{}{
+	httputil.WriteJSON(w, http.StatusOK, map[string]interface{}{
 		"success": true,
 		"message": "version published successfully",
 	})
@@ -120,7 +121,7 @@ func (h *VersionHandler) handleRollbackPageVersion(w http.ResponseWriter, r *htt
 		return
 	}
 
-	writeJSON(w, http.StatusOK, map[string]interface{}{
+	httputil.WriteJSON(w, http.StatusOK, map[string]interface{}{
 		"success": true,
 		"data":    newVersion,
 	})
@@ -135,7 +136,7 @@ func (h *VersionHandler) handleModelVersions(w http.ResponseWriter, r *http.Requ
 	}
 
 	versions := h.versionSvc.GetModelVersions(modelID)
-	writeJSON(w, http.StatusOK, map[string]interface{}{
+	httputil.WriteJSON(w, http.StatusOK, map[string]interface{}{
 		"success": true,
 		"data":    versions,
 	})
@@ -156,7 +157,7 @@ func (h *VersionHandler) handleModelVersion(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	writeJSON(w, http.StatusOK, map[string]interface{}{
+	httputil.WriteJSON(w, http.StatusOK, map[string]interface{}{
 		"success": true,
 		"data":    modelVersion,
 	})
@@ -185,7 +186,7 @@ func (h *VersionHandler) handlePublishModelVersion(w http.ResponseWriter, r *htt
 		return
 	}
 
-	writeJSON(w, http.StatusOK, map[string]interface{}{
+	httputil.WriteJSON(w, http.StatusOK, map[string]interface{}{
 		"success": true,
 		"message": "version published successfully",
 	})
@@ -214,7 +215,7 @@ func (h *VersionHandler) handleRollbackModelVersion(w http.ResponseWriter, r *ht
 		return
 	}
 
-	writeJSON(w, http.StatusOK, map[string]interface{}{
+	httputil.WriteJSON(w, http.StatusOK, map[string]interface{}{
 		"success": true,
 		"data":    newVersion,
 	})

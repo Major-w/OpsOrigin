@@ -85,7 +85,7 @@ func (s *Service) RecordEvent(ctx context.Context, event *model.AuditEvent) erro
 func (s *Service) handleRecordEvent(w http.ResponseWriter, r *http.Request) {
 	var event model.AuditEvent
 	if err := json.NewDecoder(r.Body).Decode(&event); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
+		httputil.WriteError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
 
@@ -101,13 +101,13 @@ func (s *Service) handleRecordEvent(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if event.TraceID == "" || event.TenantID == "" {
-		writeError(w, http.StatusForbidden, "[ASSERT-AUDIT-01] missing trace_id or tenant_id")
+		httputil.WriteError(w, http.StatusForbidden, "[ASSERT-AUDIT-01] missing trace_id or tenant_id")
 		return
 	}
 
 	if err := s.store.Record(r.Context(), &event); err != nil {
 		slog.Error("audit record failed", "error", err)
-		writeError(w, http.StatusInternalServerError, "failed to record audit event")
+		httputil.WriteError(w, http.StatusInternalServerError, "failed to record audit event")
 		return
 	}
 
@@ -115,7 +115,7 @@ func (s *Service) handleRecordEvent(w http.ResponseWriter, r *http.Request) {
 		"trace_id", event.TraceID,
 		"event_type", event.EventType,
 		"actor_type", event.Actor.Type)
-	writeJSON(w, http.StatusCreated, event)
+	httputil.WriteJSON(w, http.StatusCreated, event)
 }
 
 func (s *Service) handleQueryEvents(w http.ResponseWriter, r *http.Request) {
@@ -158,11 +158,11 @@ func (s *Service) handleQueryEvents(w http.ResponseWriter, r *http.Request) {
 
 	events, total, err := s.store.Query(r.Context(), filter)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 
-	writeJSON(w, http.StatusOK, map[string]any{
+	httputil.WriteJSON(w, http.StatusOK, map[string]any{
 		"items":  events,
 		"total":  total,
 		"limit":  limit,
@@ -176,29 +176,18 @@ func (s *Service) handleValidateQuery(w http.ResponseWriter, r *http.Request) {
 		TenantID string `json:"tenant_id"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
+		httputil.WriteError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
 
 	enforced, err := s.rls.Enforce(req.Query, req.TenantID)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
+		httputil.WriteError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 
-	writeJSON(w, http.StatusOK, map[string]any{
+	httputil.WriteJSON(w, http.StatusOK, map[string]any{
 		"original": req.Query,
 		"enforced": enforced,
 	})
-}
-
-func writeJSON(w http.ResponseWriter, status int, v any) {
-	v = httputil.EmptySliceIfNil(v)
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	json.NewEncoder(w).Encode(v)
-}
-
-func writeError(w http.ResponseWriter, status int, msg string) {
-	writeJSON(w, status, map[string]string{"error": msg})
 }

@@ -2,6 +2,7 @@ package ai
 
 import (
 	"encoding/json"
+	"github.com/opsorigin/core/pkg/httputil"
 	"net/http"
 
 	"github.com/opsorigin/core/internal/ai/agentic"
@@ -15,17 +16,17 @@ func (s *Service) handleListAgentTemplates(w http.ResponseWriter, r *http.Reques
 	if items == nil {
 		items = []*agentic.AgentTemplate{}
 	}
-	writeJSON(w, http.StatusOK, items)
+	httputil.WriteJSON(w, http.StatusOK, items)
 }
 
 // handleGetAgentTemplate 返回单个岗位模板详情(含完整 system prompt, 供前端预览)。
 func (s *Service) handleGetAgentTemplate(w http.ResponseWriter, r *http.Request) {
 	t, ok := s.Engine.GetAgentTemplate(r.PathValue("id"))
 	if !ok {
-		writeError(w, http.StatusNotFound, "agent template not found")
+		httputil.WriteError(w, http.StatusNotFound, "agent template not found")
 		return
 	}
-	writeJSON(w, http.StatusOK, t)
+	httputil.WriteJSON(w, http.StatusOK, t)
 }
 
 // handleInstantiateAgentTemplate 将岗位模板一键实例化为租户内可用的 Agent。
@@ -50,10 +51,10 @@ func (s *Service) handleInstantiateAgentTemplate(w http.ResponseWriter, r *http.
 
 	agent, insp, err := s.Engine.InstantiateAgentTemplate(tenantFromCtx(r.Context()), r.PathValue("id"), req.Name, withInspection)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
+		httputil.WriteError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusCreated, map[string]any{
+	httputil.WriteJSON(w, http.StatusCreated, map[string]any{
 		"agent":      agent,
 		"inspection": insp, // 自动创建的关联巡检任务(可能为 null)
 	})

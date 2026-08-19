@@ -3,6 +3,7 @@ package knowledge
 import (
 	"context"
 	"encoding/json"
+	"github.com/opsorigin/core/pkg/httputil"
 	"net/http"
 	"time"
 )
@@ -113,7 +114,7 @@ func (s *SocialStore) handleFollow(w http.ResponseWriter, r *http.Request) {
 		user = "admin"
 	}
 	followed, _ := s.ToggleFollow(r.Context(), r.PathValue("id"), user)
-	writeJSON(w, 200, map[string]bool{"followed": followed})
+	httputil.WriteJSON(w, 200, map[string]bool{"followed": followed})
 }
 
 func (s *SocialStore) handleListFollows(w http.ResponseWriter, r *http.Request) {
@@ -122,7 +123,7 @@ func (s *SocialStore) handleListFollows(w http.ResponseWriter, r *http.Request) 
 		user = "admin"
 	}
 	ids, _ := s.ListFollows(r.Context(), user)
-	writeJSON(w, 200, map[string][]string{"article_ids": ids})
+	httputil.WriteJSON(w, 200, map[string][]string{"article_ids": ids})
 }
 
 func (s *SocialStore) handleListBookmarks(w http.ResponseWriter, r *http.Request) {
@@ -131,7 +132,7 @@ func (s *SocialStore) handleListBookmarks(w http.ResponseWriter, r *http.Request
 		user = "admin"
 	}
 	ids, _ := s.ListBookmarks(r.Context(), user)
-	writeJSON(w, 200, map[string][]string{"article_ids": ids})
+	httputil.WriteJSON(w, 200, map[string][]string{"article_ids": ids})
 }
 
 func (s *SocialStore) handleListFollowUpdates(w http.ResponseWriter, r *http.Request) {
@@ -141,7 +142,7 @@ func (s *SocialStore) handleListFollowUpdates(w http.ResponseWriter, r *http.Req
 	}
 	unreadOnly := r.URL.Query().Get("unread") == "true"
 	updates, _ := s.ListFollowUpdates(r.Context(), user, unreadOnly)
-	writeJSON(w, 200, updates)
+	httputil.WriteJSON(w, 200, updates)
 }
 
 func (s *SocialStore) handleMarkFollowUpdateRead(w http.ResponseWriter, r *http.Request) {
@@ -156,5 +157,5 @@ func (s *SocialStore) handleMarkFollowUpdateRead(w http.ResponseWriter, r *http.
 	if body.ArticleID != "" {
 		s.MarkFollowUpdateRead(r.Context(), body.ArticleID, user)
 	}
-	writeJSON(w, 200, map[string]string{"status": "ok"})
+	httputil.WriteJSON(w, 200, map[string]string{"status": "ok"})
 }

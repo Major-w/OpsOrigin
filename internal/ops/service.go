@@ -3,7 +3,6 @@ package ops
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"log/slog"
 	"net/http"
 	"os"
@@ -87,7 +86,7 @@ func (s *Service) handleHealth(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	writeJSON(w, statusCode, map[string]any{
+	httputil.WriteJSON(w, statusCode, map[string]any{
 		"status":  overall,
 		"uptime":  time.Since(hs.StartedAt).String(),
 		"version": hs.Version,
@@ -109,12 +108,12 @@ func (s *Service) handleStatus(w http.ResponseWriter, r *http.Request) {
 	}
 
 	hs.Uptime = time.Since(hs.StartedAt).String()
-	writeJSON(w, http.StatusOK, hs)
+	httputil.WriteJSON(w, http.StatusOK, hs)
 }
 
 func (s *Service) handleStop(w http.ResponseWriter, r *http.Request) {
 	slog.Warn("graceful shutdown requested via API")
-	writeJSON(w, http.StatusOK, map[string]string{"status": "shutting_down"})
+	httputil.WriteJSON(w, http.StatusOK, map[string]string{"status": "shutting_down"})
 
 	go func() {
 		time.Sleep(500 * time.Millisecond)
@@ -125,20 +124,13 @@ func (s *Service) handleStop(w http.ResponseWriter, r *http.Request) {
 
 func (s *Service) handleRestart(w http.ResponseWriter, r *http.Request) {
 	slog.Warn("restart requested via API")
-	writeJSON(w, http.StatusOK, map[string]string{"status": "restarting"})
+	httputil.WriteJSON(w, http.StatusOK, map[string]string{"status": "restarting"})
 
 	go func() {
 		time.Sleep(500 * time.Millisecond)
 		p, _ := os.FindProcess(os.Getpid())
 		p.Signal(syscall.SIGHUP)
 	}()
-}
-
-func writeJSON(w http.ResponseWriter, status int, v any) {
-	v = httputil.EmptySliceIfNil(v)
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	json.NewEncoder(w).Encode(v)
 }
 
 func HandleSignal(cancel context.CancelFunc) {

@@ -7,8 +7,8 @@ package systemmon
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"fmt"
+	"github.com/opsorigin/core/pkg/httputil"
 	"io"
 	"log/slog"
 	"net"
@@ -89,7 +89,7 @@ func (s *Service) handleStatus(w http.ResponseWriter, r *http.Request) {
 		s.probeDgraph(ctx),
 		s.probeLLM(),
 	}
-	writeJSON(w, http.StatusOK, map[string]any{
+	httputil.WriteJSON(w, http.StatusOK, map[string]any{
 		"items":       items,
 		"server_time": time.Now().Format(time.RFC3339),
 	})
@@ -193,20 +193,20 @@ func (s *Service) handleLogs(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if source == "core" {
-		writeJSON(w, http.StatusOK, map[string]any{"source": "core", "lines": s.ring.Tail(lines)})
+		httputil.WriteJSON(w, http.StatusOK, map[string]any{"source": "core", "lines": s.ring.Tail(lines)})
 		return
 	}
 	if s.dockerSock == "" {
-		writeError(w, http.StatusNotImplemented, "docker socket 未挂载, 无法读取其他组件日志")
+		httputil.WriteError(w, http.StatusNotImplemented, "docker socket 未挂载, 无法读取其他组件日志")
 		return
 	}
 	container := s.containerPrefix + source
 	logs, err := s.dockerLogs(r.Context(), container, lines)
 	if err != nil {
-		writeError(w, http.StatusBadGateway, "读取容器日志失败: "+err.Error())
+		httputil.WriteError(w, http.StatusBadGateway, "读取容器日志失败: "+err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"source": source, "container": container, "lines": logs})
+	httputil.WriteJSON(w, http.StatusOK, map[string]any{"source": source, "container": container, "lines": logs})
 }
 
 // dockerLogs 通过 docker socket HTTP API 拉取容器日志。
@@ -252,16 +252,6 @@ func heapMB() int {
 	var m runtime.MemStats
 	runtime.ReadMemStats(&m)
 	return int(m.HeapAlloc / 1024 / 1024)
-}
-
-func writeJSON(w http.ResponseWriter, status int, v any) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(v)
-}
-
-func writeError(w http.ResponseWriter, status int, msg string) {
-	writeJSON(w, status, map[string]string{"error": msg})
 }
 
 // ——— 日志环形缓冲 + slog Handler ———

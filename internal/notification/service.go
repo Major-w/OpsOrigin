@@ -268,7 +268,7 @@ func (s *Service) handleListChannels(w http.ResponseWriter, r *http.Request) {
 	tenantID := tenantFromCtx(r.Context())
 	channels, err := s.store.ListChannels(r.Context(), tenantID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	if channels == nil {
@@ -281,27 +281,27 @@ func (s *Service) handleListChannels(w http.ResponseWriter, r *http.Request) {
 		mc.Config = maskConfig(c.Type, c.Config)
 		masked = append(masked, &mc)
 	}
-	writeJSON(w, http.StatusOK, masked)
+	httputil.WriteJSON(w, http.StatusOK, masked)
 }
 
 func (s *Service) handleCreateChannel(w http.ResponseWriter, r *http.Request) {
 	tenantID := tenantFromCtx(r.Context())
 	var req CreateChannelRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
+		httputil.WriteError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
 	if req.Name == "" || req.Type == "" {
-		writeError(w, http.StatusBadRequest, "name and type are required")
+		httputil.WriteError(w, http.StatusBadRequest, "name and type are required")
 		return
 	}
 	sender, ok := s.senders[req.Type]
 	if !ok {
-		writeError(w, http.StatusBadRequest, "unsupported channel type: "+string(req.Type))
+		httputil.WriteError(w, http.StatusBadRequest, "unsupported channel type: "+string(req.Type))
 		return
 	}
 	if err := sender.Validate(req.Config); err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
+		httputil.WriteError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 	ch := &Channel{
@@ -312,13 +312,13 @@ func (s *Service) handleCreateChannel(w http.ResponseWriter, r *http.Request) {
 		Enabled:  req.Enabled,
 	}
 	if err := s.store.CreateChannel(r.Context(), ch); err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	// 返回时掩码
 	masked := *ch
 	masked.Config = maskConfig(ch.Type, ch.Config)
-	writeJSON(w, http.StatusCreated, masked)
+	httputil.WriteJSON(w, http.StatusCreated, masked)
 }
 
 func (s *Service) handleGetChannel(w http.ResponseWriter, r *http.Request) {
@@ -326,13 +326,13 @@ func (s *Service) handleGetChannel(w http.ResponseWriter, r *http.Request) {
 	tenantID := tenantFromCtx(r.Context())
 	ch, err := s.store.GetChannel(r.Context(), id, tenantID)
 	if err != nil || ch == nil {
-		writeError(w, http.StatusNotFound, "channel not found")
+		httputil.WriteError(w, http.StatusNotFound, "channel not found")
 		return
 	}
 	// 详情接口也掩码(如需明文走 reveal 查询参数)
 	masked := *ch
 	masked.Config = maskConfig(ch.Type, ch.Config)
-	writeJSON(w, http.StatusOK, masked)
+	httputil.WriteJSON(w, http.StatusOK, masked)
 }
 
 func (s *Service) handleUpdateChannel(w http.ResponseWriter, r *http.Request) {
@@ -340,12 +340,12 @@ func (s *Service) handleUpdateChannel(w http.ResponseWriter, r *http.Request) {
 	tenantID := tenantFromCtx(r.Context())
 	existing, err := s.store.GetChannel(r.Context(), id, tenantID)
 	if err != nil || existing == nil {
-		writeError(w, http.StatusNotFound, "channel not found")
+		httputil.WriteError(w, http.StatusNotFound, "channel not found")
 		return
 	}
 	var req UpdateChannelRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
+		httputil.WriteError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
 	// 合并 config:前端可能只传改动的字段,空值保留原值
@@ -360,11 +360,11 @@ func (s *Service) handleUpdateChannel(w http.ResponseWriter, r *http.Request) {
 	}
 	sender, ok := s.senders[existing.Type]
 	if !ok {
-		writeError(w, http.StatusInternalServerError, "sender not found for type")
+		httputil.WriteError(w, http.StatusInternalServerError, "sender not found for type")
 		return
 	}
 	if err := sender.Validate(merged); err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
+		httputil.WriteError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 	updated := *existing
@@ -372,22 +372,22 @@ func (s *Service) handleUpdateChannel(w http.ResponseWriter, r *http.Request) {
 	updated.Config = merged
 	updated.Enabled = req.Enabled
 	if err := s.store.UpdateChannel(r.Context(), &updated); err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	masked := updated
 	masked.Config = maskConfig(updated.Type, updated.Config)
-	writeJSON(w, http.StatusOK, masked)
+	httputil.WriteJSON(w, http.StatusOK, masked)
 }
 
 func (s *Service) handleDeleteChannel(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	tenantID := tenantFromCtx(r.Context())
 	if err := s.store.DeleteChannel(r.Context(), id, tenantID); err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
+	httputil.WriteJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
 }
 
 func (s *Service) handleTestChannel(w http.ResponseWriter, r *http.Request) {
@@ -395,11 +395,11 @@ func (s *Service) handleTestChannel(w http.ResponseWriter, r *http.Request) {
 	tenantID := tenantFromCtx(r.Context())
 	ch, err := s.store.GetChannel(r.Context(), id, tenantID)
 	if err != nil || ch == nil {
-		writeError(w, http.StatusNotFound, "channel not found")
+		httputil.WriteError(w, http.StatusNotFound, "channel not found")
 		return
 	}
 	if !ch.Enabled {
-		writeError(w, http.StatusBadRequest, "channel is disabled")
+		httputil.WriteError(w, http.StatusBadRequest, "channel is disabled")
 		return
 	}
 	var req TestRequest
@@ -414,7 +414,7 @@ func (s *Service) handleTestChannel(w http.ResponseWriter, r *http.Request) {
 	}
 	sender, ok := s.senders[ch.Type]
 	if !ok {
-		writeError(w, http.StatusInternalServerError, "sender not found")
+		httputil.WriteError(w, http.StatusInternalServerError, "sender not found")
 		return
 	}
 	err = sender.Send(ch, req.Title, req.Content)
@@ -431,14 +431,14 @@ func (s *Service) handleTestChannel(w http.ResponseWriter, r *http.Request) {
 		n.Status = "failed"
 		n.Error = err.Error()
 		s.store.SaveNotification(r.Context(), n)
-		writeJSON(w, http.StatusOK, map[string]any{
+		httputil.WriteJSON(w, http.StatusOK, map[string]any{
 			"success": false,
 			"error":   err.Error(),
 		})
 		return
 	}
 	s.store.SaveNotification(r.Context(), n)
-	writeJSON(w, http.StatusOK, map[string]any{"success": true})
+	httputil.WriteJSON(w, http.StatusOK, map[string]any{"success": true})
 }
 
 // ---------- 策略 ----------
@@ -447,24 +447,24 @@ func (s *Service) handleListPolicies(w http.ResponseWriter, r *http.Request) {
 	tenantID := tenantFromCtx(r.Context())
 	policies, err := s.store.ListPolicies(r.Context(), tenantID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	if policies == nil {
 		policies = []*Policy{}
 	}
-	writeJSON(w, http.StatusOK, policies)
+	httputil.WriteJSON(w, http.StatusOK, policies)
 }
 
 func (s *Service) handleCreatePolicy(w http.ResponseWriter, r *http.Request) {
 	tenantID := tenantFromCtx(r.Context())
 	var req CreatePolicyRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
+		httputil.WriteError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
 	if req.Name == "" || req.Event == "" {
-		writeError(w, http.StatusBadRequest, "name and event are required")
+		httputil.WriteError(w, http.StatusBadRequest, "name and event are required")
 		return
 	}
 	p := &Policy{
@@ -480,10 +480,10 @@ func (s *Service) handleCreatePolicy(w http.ResponseWriter, r *http.Request) {
 		p.ChannelIDs = []string{}
 	}
 	if err := s.store.CreatePolicy(r.Context(), p); err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusCreated, p)
+	httputil.WriteJSON(w, http.StatusCreated, p)
 }
 
 func (s *Service) handleGetPolicy(w http.ResponseWriter, r *http.Request) {
@@ -491,10 +491,10 @@ func (s *Service) handleGetPolicy(w http.ResponseWriter, r *http.Request) {
 	tenantID := tenantFromCtx(r.Context())
 	p, err := s.store.GetPolicy(r.Context(), id, tenantID)
 	if err != nil || p == nil {
-		writeError(w, http.StatusNotFound, "policy not found")
+		httputil.WriteError(w, http.StatusNotFound, "policy not found")
 		return
 	}
-	writeJSON(w, http.StatusOK, p)
+	httputil.WriteJSON(w, http.StatusOK, p)
 }
 
 func (s *Service) handleUpdatePolicy(w http.ResponseWriter, r *http.Request) {
@@ -502,12 +502,12 @@ func (s *Service) handleUpdatePolicy(w http.ResponseWriter, r *http.Request) {
 	tenantID := tenantFromCtx(r.Context())
 	existing, err := s.store.GetPolicy(r.Context(), id, tenantID)
 	if err != nil || existing == nil {
-		writeError(w, http.StatusNotFound, "policy not found")
+		httputil.WriteError(w, http.StatusNotFound, "policy not found")
 		return
 	}
 	var req UpdatePolicyRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
+		httputil.WriteError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
 	updated := *existing
@@ -521,26 +521,26 @@ func (s *Service) handleUpdatePolicy(w http.ResponseWriter, r *http.Request) {
 		updated.ChannelIDs = []string{}
 	}
 	if err := s.store.UpdatePolicy(r.Context(), &updated); err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, updated)
+	httputil.WriteJSON(w, http.StatusOK, updated)
 }
 
 func (s *Service) handleDeletePolicy(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	tenantID := tenantFromCtx(r.Context())
 	if err := s.store.DeletePolicy(r.Context(), id, tenantID); err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
+	httputil.WriteJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
 }
 
 // ---------- 元信息 ----------
 
 func (s *Service) handleListEvents(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, AllEventTypes())
+	httputil.WriteJSON(w, http.StatusOK, AllEventTypes())
 }
 
 func (s *Service) handleListChannelTypes(w http.ResponseWriter, r *http.Request) {
@@ -556,7 +556,7 @@ func (s *Service) handleListChannelTypes(w http.ResponseWriter, r *http.Request)
 			"required_fields": sender.RequiredFields(),
 		})
 	}
-	writeJSON(w, http.StatusOK, result)
+	httputil.WriteJSON(w, http.StatusOK, result)
 }
 
 // ---------- 历史 ----------
@@ -572,13 +572,13 @@ func (s *Service) handleListHistory(w http.ResponseWriter, r *http.Request) {
 	}
 	notifications, err := s.store.ListNotifications(r.Context(), tenantID, limit)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	if notifications == nil {
 		notifications = []*Notification{}
 	}
-	writeJSON(w, http.StatusOK, notifications)
+	httputil.WriteJSON(w, http.StatusOK, notifications)
 }
 
 // ---------- 事件触发 ----------
@@ -587,15 +587,15 @@ func (s *Service) handleSend(w http.ResponseWriter, r *http.Request) {
 	tenantID := tenantFromCtx(r.Context())
 	var req SendRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
+		httputil.WriteError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
 	if req.Event == "" {
-		writeError(w, http.StatusBadRequest, "event is required")
+		httputil.WriteError(w, http.StatusBadRequest, "event is required")
 		return
 	}
 	sent, failed := s.dispatchEvent(r.Context(), tenantID, req.Event, req.Title, req.Content)
-	writeJSON(w, http.StatusOK, map[string]any{
+	httputil.WriteJSON(w, http.StatusOK, map[string]any{
 		"event":  req.Event,
 		"sent":   sent,
 		"failed": failed,
@@ -736,14 +736,3 @@ func maskString(s string) string {
 }
 
 // ---------- 辅助 HTTP 函数 ----------
-
-func writeJSON(w http.ResponseWriter, status int, v any) {
-	v = httputil.EmptySliceIfNil(v)
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	json.NewEncoder(w).Encode(v)
-}
-
-func writeError(w http.ResponseWriter, status int, msg string) {
-	writeJSON(w, status, map[string]string{"error": msg})
-}

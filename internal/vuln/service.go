@@ -87,11 +87,11 @@ func (s *Service) handleCreateScan(w http.ResponseWriter, r *http.Request) {
 		RegistryAuto bool            `json:"registry_auto"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
+		httputil.WriteError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
 	if req.Name == "" {
-		writeError(w, http.StatusBadRequest, "name is required")
+		httputil.WriteError(w, http.StatusBadRequest, "name is required")
 		return
 	}
 	stype := model.ScanType(req.Type)
@@ -111,7 +111,7 @@ func (s *Service) handleCreateScan(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := s.store.CreateScan(r.Context(), scan); err != nil {
 		slog.Error("vuln: create scan failed", "error", err)
-		writeError(w, http.StatusInternalServerError, "failed to create scan")
+		httputil.WriteError(w, http.StatusInternalServerError, "failed to create scan")
 		return
 	}
 
@@ -130,17 +130,17 @@ func (s *Service) handleCreateScan(w http.ResponseWriter, r *http.Request) {
 	switch stype {
 	case model.ScanTypeAgent:
 		if s.agentRunner == nil {
-			writeError(w, http.StatusBadRequest, "agent scan requires agent runner (agentmgr not available)")
+			httputil.WriteError(w, http.StatusBadRequest, "agent scan requires agent runner (agentmgr not available)")
 			return
 		}
 		sc = NewAgentScanner(s.agentRunner)
 	case model.ScanTypeImage:
 		if s.agentRunner == nil {
-			writeError(w, http.StatusBadRequest, "image scan requires agent runner (agentmgr not available)")
+			httputil.WriteError(w, http.StatusBadRequest, "image scan requires agent runner (agentmgr not available)")
 			return
 		}
 		if req.AgentID == "" {
-			writeError(w, http.StatusBadRequest, "image scan requires agent_id (host with registry egress)")
+			httputil.WriteError(w, http.StatusBadRequest, "image scan requires agent_id (host with registry egress)")
 			return
 		}
 		reg := RegistryConfig{}
@@ -151,13 +151,13 @@ func (s *Service) handleCreateScan(w http.ResponseWriter, r *http.Request) {
 		inv = nil
 		if req.RegistryAuto {
 			if reg.URL == "" {
-				writeError(w, http.StatusBadRequest, "registry_auto requires registry.url")
+				httputil.WriteError(w, http.StatusBadRequest, "registry_auto requires registry.url")
 				return
 			}
 			sc = NewImageScanner(s.agentRunner, reg, true, req.AgentID)
 		} else {
 			if len(req.Images) == 0 {
-				writeError(w, http.StatusBadRequest, "image scan requires images[] (full refs, e.g. registry.io/team/app:tag) or registry_auto:true")
+				httputil.WriteError(w, http.StatusBadRequest, "image scan requires images[] (full refs, e.g. registry.io/team/app:tag) or registry_auto:true")
 				return
 			}
 			for _, ref := range req.Images {
@@ -177,7 +177,7 @@ func (s *Service) handleCreateScan(w http.ResponseWriter, r *http.Request) {
 		slog.Error("vuln: scan failed", "error", err)
 		scan.Status = model.ScanStatusFailed
 		s.store.UpdateScan(r.Context(), scan)
-		writeError(w, http.StatusInternalServerError, "scan failed")
+		httputil.WriteError(w, http.StatusInternalServerError, "scan failed")
 		return
 	}
 	counts := map[string]int{}
@@ -192,28 +192,28 @@ func (s *Service) handleCreateScan(w http.ResponseWriter, r *http.Request) {
 
 	if err := s.store.CreateFindings(r.Context(), findings); err != nil {
 		slog.Error("vuln: store findings failed", "error", err)
-		writeError(w, http.StatusInternalServerError, "failed to store findings")
+		httputil.WriteError(w, http.StatusInternalServerError, "failed to store findings")
 		return
 	}
 	if err := s.store.UpdateScan(r.Context(), scan); err != nil {
 		slog.Error("vuln: finalize scan failed", "error", err)
-		writeError(w, http.StatusInternalServerError, "failed to finalize scan")
+		httputil.WriteError(w, http.StatusInternalServerError, "failed to finalize scan")
 		return
 	}
-	writeJSON(w, http.StatusOK, scan)
+	httputil.WriteJSON(w, http.StatusOK, scan)
 }
 
 func (s *Service) handleListScans(w http.ResponseWriter, r *http.Request) {
 	tenantID := tenantFromCtx(r.Context())
 	scans, err := s.store.ListScans(r.Context(), tenantID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	if scans == nil {
 		scans = []*model.Scan{}
 	}
-	writeJSON(w, http.StatusOK, scans)
+	httputil.WriteJSON(w, http.StatusOK, scans)
 }
 
 func (s *Service) handleGetScan(w http.ResponseWriter, r *http.Request) {
@@ -222,13 +222,13 @@ func (s *Service) handleGetScan(w http.ResponseWriter, r *http.Request) {
 	scan, err := s.store.GetScan(r.Context(), id, tenantID)
 	if err != nil {
 		if err == store.ErrNotFound {
-			writeError(w, http.StatusNotFound, "scan not found")
+			httputil.WriteError(w, http.StatusNotFound, "scan not found")
 			return
 		}
-		writeError(w, http.StatusInternalServerError, err.Error())
+		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, scan)
+	httputil.WriteJSON(w, http.StatusOK, scan)
 }
 
 func (s *Service) handleDeleteScan(w http.ResponseWriter, r *http.Request) {
@@ -236,13 +236,13 @@ func (s *Service) handleDeleteScan(w http.ResponseWriter, r *http.Request) {
 	tenantID := tenantFromCtx(r.Context())
 	if err := s.store.DeleteScan(r.Context(), id, tenantID); err != nil {
 		if err == store.ErrNotFound {
-			writeError(w, http.StatusNotFound, "scan not found")
+			httputil.WriteError(w, http.StatusNotFound, "scan not found")
 			return
 		}
-		writeError(w, http.StatusInternalServerError, err.Error())
+		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
+	httputil.WriteJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
 }
 
 func (s *Service) handleListFindings(w http.ResponseWriter, r *http.Request) {
@@ -250,20 +250,20 @@ func (s *Service) handleListFindings(w http.ResponseWriter, r *http.Request) {
 	tenantID := tenantFromCtx(r.Context())
 	findings, err := s.store.ListFindings(r.Context(), id, tenantID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	if findings == nil {
 		findings = []*model.Finding{}
 	}
-	writeJSON(w, http.StatusOK, findings)
+	httputil.WriteJSON(w, http.StatusOK, findings)
 }
 
 func (s *Service) handleStats(w http.ResponseWriter, r *http.Request) {
 	tenantID := tenantFromCtx(r.Context())
 	stats, err := s.store.GetStats(r.Context(), tenantID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	if stats.BySeverity == nil {
@@ -272,14 +272,14 @@ func (s *Service) handleStats(w http.ResponseWriter, r *http.Request) {
 	if stats.ByStatus == nil {
 		stats.ByStatus = map[string]int{}
 	}
-	writeJSON(w, http.StatusOK, stats)
+	httputil.WriteJSON(w, http.StatusOK, stats)
 }
 
 func (s *Service) handleExportCSV(w http.ResponseWriter, r *http.Request) {
 	tenantID := tenantFromCtx(r.Context())
 	findings, err := s.store.ListFindingsAll(r.Context(), tenantID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	var buf bytes.Buffer
@@ -307,15 +307,4 @@ func tenantFromCtx(ctx context.Context) string {
 		return t
 	}
 	return "default"
-}
-
-func writeJSON(w http.ResponseWriter, status int, v any) {
-	v = httputil.EmptySliceIfNil(v)
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	json.NewEncoder(w).Encode(v)
-}
-
-func writeError(w http.ResponseWriter, status int, msg string) {
-	writeJSON(w, status, map[string]string{"error": msg})
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"github.com/opsorigin/core/pkg/httputil"
 	"net/http"
 	"strconv"
 	"time"
@@ -189,7 +190,7 @@ func (s *Service) handleListVersions(w http.ResponseWriter, r *http.Request) {
 	tenant := tenantOf(r)
 	list, err := s.store.ListVersions(r.Context(), id, tenant)
 	if err != nil {
-		writeError(w, 500, err.Error())
+		httputil.WriteError(w, 500, err.Error())
 		return
 	}
 	// 把「当前生效版本」也拼进列表头部, 前端一屏即可对比当前 vs 历史
@@ -208,7 +209,7 @@ func (s *Service) handleListVersions(w http.ResponseWriter, r *http.Request) {
 			list = append([]*ProcessVersion{snap}, list...)
 		}
 	}
-	writeJSON(w, 200, list)
+	httputil.WriteJSON(w, 200, list)
 }
 
 func (s *Service) handleGetVersion(w http.ResponseWriter, r *http.Request) {
@@ -216,12 +217,12 @@ func (s *Service) handleGetVersion(w http.ResponseWriter, r *http.Request) {
 	tenant := tenantOf(r)
 	num, err := strconv.Atoi(r.PathValue("version"))
 	if err != nil {
-		writeError(w, 400, "invalid version")
+		httputil.WriteError(w, 400, "invalid version")
 		return
 	}
 	v, err := s.store.GetVersion(r.Context(), id, tenant, num)
 	if err != nil {
-		writeError(w, 500, err.Error())
+		httputil.WriteError(w, 500, err.Error())
 		return
 	}
 	if v == nil {
@@ -230,13 +231,13 @@ func (s *Service) handleGetVersion(w http.ResponseWriter, r *http.Request) {
 			snap := SnapshotOf(cur, "")
 			snap.ID = "current"
 			snap.CreatedAt = cur.UpdatedAt
-			writeJSON(w, 200, snap)
+			httputil.WriteJSON(w, 200, snap)
 			return
 		}
-		writeError(w, 404, "version not found")
+		httputil.WriteError(w, 404, "version not found")
 		return
 	}
-	writeJSON(w, 200, v)
+	httputil.WriteJSON(w, 200, v)
 }
 
 func tenantOf(r *http.Request) string {

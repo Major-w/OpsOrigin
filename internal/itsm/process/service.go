@@ -167,12 +167,12 @@ func (s *Service) handleExportBPMN(w http.ResponseWriter, r *http.Request) {
 	}
 	p, err := s.store.Get(r.Context(), id, tenant)
 	if err != nil || p == nil {
-		writeError(w, 404, "not found")
+		httputil.WriteError(w, 404, "not found")
 		return
 	}
 	xmlData, err := ToBPMNXML(p)
 	if err != nil {
-		writeError(w, 500, err.Error())
+		httputil.WriteError(w, 500, err.Error())
 		return
 	}
 	w.Header().Set("Content-Type", "text/xml; charset=utf-8")
@@ -184,12 +184,12 @@ func (s *Service) handleExportBPMN(w http.ResponseWriter, r *http.Request) {
 func (s *Service) handleImportBPMN(w http.ResponseWriter, r *http.Request) {
 	body, err := io.ReadAll(io.LimitReader(r.Body, 4<<20))
 	if err != nil {
-		writeError(w, 400, "invalid body")
+		httputil.WriteError(w, 400, "invalid body")
 		return
 	}
 	p, err := FromBPMNXML(string(body))
 	if err != nil {
-		writeError(w, 400, err.Error())
+		httputil.WriteError(w, 400, err.Error())
 		return
 	}
 	p.TenantID = r.Header.Get("X-Tenant-ID")
@@ -200,11 +200,11 @@ func (s *Service) handleImportBPMN(w http.ResponseWriter, r *http.Request) {
 		p.Name = "导入流程"
 	}
 	if err := s.store.Create(context.Background(), p); err != nil {
-		writeError(w, 500, err.Error())
+		httputil.WriteError(w, 500, err.Error())
 		return
 	}
 	slog.Info("itsm process imported from bpmn", "id", p.ID, "name", p.Name, "steps", len(p.Steps))
-	writeJSON(w, 201, p)
+	httputil.WriteJSON(w, 201, p)
 }
 
 func (s *Service) handleList(w http.ResponseWriter, r *http.Request) {
@@ -214,20 +214,20 @@ func (s *Service) handleList(w http.ResponseWriter, r *http.Request) {
 	}
 	processes, err := s.store.List(r.Context(), tenant)
 	if err != nil {
-		writeError(w, 500, err.Error())
+		httputil.WriteError(w, 500, err.Error())
 		return
 	}
-	writeJSON(w, 200, processes)
+	httputil.WriteJSON(w, 200, processes)
 }
 
 func (s *Service) handleCreate(w http.ResponseWriter, r *http.Request) {
 	var p Process
 	if err := json.NewDecoder(r.Body).Decode(&p); err != nil {
-		writeError(w, 400, "invalid body")
+		httputil.WriteError(w, 400, "invalid body")
 		return
 	}
 	if p.Name == "" {
-		writeError(w, 400, "name required")
+		httputil.WriteError(w, 400, "name required")
 		return
 	}
 	p.TenantID = r.Header.Get("X-Tenant-ID")
@@ -235,11 +235,11 @@ func (s *Service) handleCreate(w http.ResponseWriter, r *http.Request) {
 		p.TenantID = "default"
 	}
 	if err := s.store.Create(context.Background(), &p); err != nil {
-		writeError(w, 500, err.Error())
+		httputil.WriteError(w, 500, err.Error())
 		return
 	}
 	slog.Info("itsm process created", "id", p.ID, "name", p.Name)
-	writeJSON(w, 201, p)
+	httputil.WriteJSON(w, 201, p)
 }
 
 func (s *Service) handleGet(w http.ResponseWriter, r *http.Request) {
@@ -250,14 +250,14 @@ func (s *Service) handleGet(w http.ResponseWriter, r *http.Request) {
 	}
 	p, err := s.store.Get(r.Context(), id, tenant)
 	if err != nil {
-		writeError(w, 500, err.Error())
+		httputil.WriteError(w, 500, err.Error())
 		return
 	}
 	if p == nil {
-		writeError(w, 404, "not found")
+		httputil.WriteError(w, 404, "not found")
 		return
 	}
-	writeJSON(w, 200, p)
+	httputil.WriteJSON(w, 200, p)
 }
 
 func (s *Service) handleUpdate(w http.ResponseWriter, r *http.Request) {
@@ -268,16 +268,16 @@ func (s *Service) handleUpdate(w http.ResponseWriter, r *http.Request) {
 	}
 	existing, err := s.store.Get(r.Context(), id, tenant)
 	if err != nil {
-		writeError(w, 500, err.Error())
+		httputil.WriteError(w, 500, err.Error())
 		return
 	}
 	if existing == nil {
-		writeError(w, 404, "not found")
+		httputil.WriteError(w, 404, "not found")
 		return
 	}
 	var p Process
 	if err := json.NewDecoder(r.Body).Decode(&p); err != nil {
-		writeError(w, 400, "invalid body")
+		httputil.WriteError(w, 400, "invalid body")
 		return
 	}
 	p.ID = id
@@ -291,11 +291,11 @@ func (s *Service) handleUpdate(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if err := s.store.Update(r.Context(), &p); err != nil {
-		writeError(w, 500, err.Error())
+		httputil.WriteError(w, 500, err.Error())
 		return
 	}
 	slog.Info("itsm process updated", "id", id, "version", p.Version)
-	writeJSON(w, 200, p)
+	httputil.WriteJSON(w, 200, p)
 }
 
 func (s *Service) handleDelete(w http.ResponseWriter, r *http.Request) {
@@ -305,19 +305,8 @@ func (s *Service) handleDelete(w http.ResponseWriter, r *http.Request) {
 		tenant = "default"
 	}
 	if err := s.store.Delete(r.Context(), id, tenant); err != nil {
-		writeError(w, 500, err.Error())
+		httputil.WriteError(w, 500, err.Error())
 		return
 	}
-	writeJSON(w, 200, map[string]string{"status": "deleted"})
-}
-
-func writeJSON(w http.ResponseWriter, status int, v any) {
-	v = httputil.EmptySliceIfNil(v)
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	json.NewEncoder(w).Encode(v)
-}
-
-func writeError(w http.ResponseWriter, status int, msg string) {
-	writeJSON(w, status, map[string]string{"error": msg})
+	httputil.WriteJSON(w, 200, map[string]string{"status": "deleted"})
 }

@@ -2,6 +2,7 @@ package service
 
 import (
 	"encoding/json"
+	"github.com/opsorigin/core/pkg/httputil"
 	"net/http"
 
 	"github.com/opsorigin/core/internal/lowcode/component"
@@ -34,7 +35,7 @@ func (h *MarketHandler) handleCategories(w http.ResponseWriter, r *http.Request)
 	}
 
 	categories := h.market.GetCategories()
-	writeJSON(w, http.StatusOK, map[string]interface{}{
+	httputil.WriteJSON(w, http.StatusOK, map[string]interface{}{
 		"success": true,
 		"data":    categories,
 	})
@@ -51,7 +52,7 @@ func (h *MarketHandler) handleComponents(w http.ResponseWriter, r *http.Request)
 	keyword := r.URL.Query().Get("keyword")
 
 	components := h.market.GetComponents(category, keyword)
-	writeJSON(w, http.StatusOK, map[string]interface{}{
+	httputil.WriteJSON(w, http.StatusOK, map[string]interface{}{
 		"success": true,
 		"data":    components,
 	})
@@ -72,7 +73,7 @@ func (h *MarketHandler) handleComponent(w http.ResponseWriter, r *http.Request) 
 			http.Error(w, `{"error":"`+err.Error()+`"}`, http.StatusNotFound)
 			return
 		}
-		writeJSON(w, http.StatusOK, map[string]interface{}{
+		httputil.WriteJSON(w, http.StatusOK, map[string]interface{}{
 			"success": true,
 			"data":    comp,
 		})
@@ -100,7 +101,7 @@ func (h *MarketHandler) handleInstall(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeJSON(w, http.StatusOK, map[string]interface{}{
+	httputil.WriteJSON(w, http.StatusOK, map[string]interface{}{
 		"success": true,
 		"message": "component installed successfully",
 	})
@@ -133,7 +134,7 @@ func (h *MarketHandler) handleRate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeJSON(w, http.StatusOK, map[string]interface{}{
+	httputil.WriteJSON(w, http.StatusOK, map[string]interface{}{
 		"success": true,
 		"message": "component rated successfully",
 	})

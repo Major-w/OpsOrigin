@@ -262,7 +262,7 @@ func (s *Service) handleListTargets(w http.ResponseWriter, r *http.Request) {
 	if filtered == nil {
 		filtered = []*model.MonitorTarget{}
 	}
-	writeJSON(w, http.StatusOK, filtered)
+	httputil.WriteJSON(w, http.StatusOK, filtered)
 }
 
 // pluginWithUsage 在插件声明之上附加「当前租户已接入多少个目标」，
@@ -293,7 +293,7 @@ func (s *Service) handleListPlugins(w http.ResponseWriter, r *http.Request) {
 		names := usage[p.Key]
 		out = append(out, pluginWithUsage{Plugin: p, InUse: len(names), Targets: names})
 	}
-	writeJSON(w, http.StatusOK, out)
+	httputil.WriteJSON(w, http.StatusOK, out)
 }
 
 func (s *Service) handleGetTarget(w http.ResponseWriter, r *http.Request) {
@@ -301,10 +301,10 @@ func (s *Service) handleGetTarget(w http.ResponseWriter, r *http.Request) {
 	tenantID := tenantFromCtx(r.Context())
 	target := s.discovery.GetTarget(id)
 	if target == nil || target.TenantID != tenantID {
-		writeError(w, http.StatusNotFound, "target not found")
+		httputil.WriteError(w, http.StatusNotFound, "target not found")
 		return
 	}
-	writeJSON(w, http.StatusOK, target)
+	httputil.WriteJSON(w, http.StatusOK, target)
 }
 
 func (s *Service) handleAddTarget(w http.ResponseWriter, r *http.Request) {
@@ -316,11 +316,11 @@ func (s *Service) handleAddTarget(w http.ResponseWriter, r *http.Request) {
 		CIID    string                `json:"ci_id,omitempty"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
+		httputil.WriteError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
 	if req.Name == "" || req.Address == "" {
-		writeError(w, http.StatusBadRequest, "name and address required")
+		httputil.WriteError(w, http.StatusBadRequest, "name and address required")
 		return
 	}
 	if len(req.Probes) == 0 {
@@ -346,13 +346,13 @@ func (s *Service) handleAddTarget(w http.ResponseWriter, r *http.Request) {
 	}
 	s.prober.AddTarget(target)
 	s.topology.RecordTenant(r.Context(), ciID, target.TenantID)
-	writeJSON(w, http.StatusCreated, target)
+	httputil.WriteJSON(w, http.StatusCreated, target)
 }
 
 func (s *Service) handleDeleteTarget(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	s.prober.RemoveTarget(id)
-	writeJSON(w, http.StatusOK, map[string]string{"status": "removed"})
+	httputil.WriteJSON(w, http.StatusOK, map[string]string{"status": "removed"})
 }
 
 func (s *Service) handleRunProbe(w http.ResponseWriter, r *http.Request) {
@@ -363,7 +363,7 @@ func (s *Service) handleRunProbe(w http.ResponseWriter, r *http.Request) {
 		Timeout  string              `json:"timeout,omitempty"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
+		httputil.WriteError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
 	timeout := 5 * time.Second
@@ -380,7 +380,7 @@ func (s *Service) handleRunProbe(w http.ResponseWriter, r *http.Request) {
 		TenantID: tenantFromCtx(r.Context()),
 	}
 	result := s.prober.Probe(r.Context(), task)
-	writeJSON(w, http.StatusOK, result)
+	httputil.WriteJSON(w, http.StatusOK, result)
 }
 
 func (s *Service) handleListAlerts(w http.ResponseWriter, r *http.Request) {
@@ -397,7 +397,7 @@ func (s *Service) handleListAlerts(w http.ResponseWriter, r *http.Request) {
 		if filtered == nil {
 			filtered = []*model.AlertEvent{}
 		}
-		writeJSON(w, http.StatusOK, filtered)
+		httputil.WriteJSON(w, http.StatusOK, filtered)
 		return
 	}
 	allAlerts := s.aggregator.GetActiveAlerts()
@@ -410,11 +410,11 @@ func (s *Service) handleListAlerts(w http.ResponseWriter, r *http.Request) {
 	if filtered == nil {
 		filtered = []*model.AlertEvent{}
 	}
-	writeJSON(w, http.StatusOK, filtered)
+	httputil.WriteJSON(w, http.StatusOK, filtered)
 }
 
 func (s *Service) handleAlertStats(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, s.aggregator.GetStats())
+	httputil.WriteJSON(w, http.StatusOK, s.aggregator.GetStats())
 }
 
 // handleAlertRCA 返回活跃告警的启发式根因分析(P0 补短板: 对标 Dynatrace Davis / AISWare RCA)。
@@ -438,7 +438,7 @@ func (s *Service) handleAlertRCA(w http.ResponseWriter, r *http.Request) {
 	if entries == nil {
 		entries = []alert.RCAEntry{}
 	}
-	writeJSON(w, http.StatusOK, entries)
+	httputil.WriteJSON(w, http.StatusOK, entries)
 }
 
 func (s *Service) handleAckAlert(w http.ResponseWriter, r *http.Request) {
@@ -451,19 +451,19 @@ func (s *Service) handleAckAlert(w http.ResponseWriter, r *http.Request) {
 		req.AcknowledgedBy = "admin"
 	}
 	if err := s.aggregator.Acknowledge(id, req.AcknowledgedBy); err != nil {
-		writeError(w, http.StatusNotFound, err.Error())
+		httputil.WriteError(w, http.StatusNotFound, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]string{"status": "acknowledged"})
+	httputil.WriteJSON(w, http.StatusOK, map[string]string{"status": "acknowledged"})
 }
 
 func (s *Service) handleResolveAlert(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	if err := s.aggregator.Resolve(id); err != nil {
-		writeError(w, http.StatusNotFound, err.Error())
+		httputil.WriteError(w, http.StatusNotFound, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]string{"status": "resolved"})
+	httputil.WriteJSON(w, http.StatusOK, map[string]string{"status": "resolved"})
 }
 
 func (s *Service) handleListRules(w http.ResponseWriter, r *http.Request) {
@@ -471,25 +471,25 @@ func (s *Service) handleListRules(w http.ResponseWriter, r *http.Request) {
 	if rules == nil {
 		rules = []*model.AlertRule{}
 	}
-	writeJSON(w, http.StatusOK, rules)
+	httputil.WriteJSON(w, http.StatusOK, rules)
 }
 
 func (s *Service) handleCreateRule(w http.ResponseWriter, r *http.Request) {
 	var rule model.AlertRule
 	if err := json.NewDecoder(r.Body).Decode(&rule); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
+		httputil.WriteError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
 	rule.TenantID = tenantFromCtx(r.Context())
 	rule.Enabled = true
 	s.aggregator.AddRule(&rule)
-	writeJSON(w, http.StatusCreated, rule)
+	httputil.WriteJSON(w, http.StatusCreated, rule)
 }
 
 func (s *Service) handleDeleteRule(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	s.aggregator.DeleteRule(id)
-	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
+	httputil.WriteJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
 }
 
 func (s *Service) handleGetMetrics(w http.ResponseWriter, r *http.Request) {
@@ -513,7 +513,7 @@ func (s *Service) handleGetMetrics(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 	s.probeMu.Unlock()
-	writeJSON(w, http.StatusOK, points)
+	httputil.WriteJSON(w, http.StatusOK, points)
 }
 
 func (s *Service) handleSetParent(w http.ResponseWriter, r *http.Request) {
@@ -522,16 +522,16 @@ func (s *Service) handleSetParent(w http.ResponseWriter, r *http.Request) {
 		ParentID string `json:"parent_id"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
+		httputil.WriteError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
 	tenantID := tenantFromCtx(r.Context())
 	if !s.topology.VerifyTenant(r.Context(), req.CIID, tenantID) {
-		writeError(w, http.StatusNotFound, "ci not found in tenant")
+		httputil.WriteError(w, http.StatusNotFound, "ci not found in tenant")
 		return
 	}
 	s.topology.SetParent(r.Context(), req.CIID, req.ParentID)
-	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+	httputil.WriteJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
 func tenantFromCtx(ctx context.Context) string {
@@ -539,15 +539,4 @@ func tenantFromCtx(ctx context.Context) string {
 		return t
 	}
 	return "default"
-}
-
-func writeJSON(w http.ResponseWriter, status int, v any) {
-	v = httputil.EmptySliceIfNil(v)
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	json.NewEncoder(w).Encode(v)
-}
-
-func writeError(w http.ResponseWriter, status int, msg string) {
-	writeJSON(w, status, map[string]string{"error": msg})
 }

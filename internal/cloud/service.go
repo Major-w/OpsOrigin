@@ -11,11 +11,7 @@ package cloud
 
 import (
 	"context"
-	"encoding/json"
-	"log/slog"
 	"net/http"
-
-	"github.com/opsorigin/core/pkg/httputil"
 )
 
 // CMDBWriter 是云资源同步进 CMDB 的契约。由 cmd/core/cloud_adapter.go
@@ -109,17 +105,4 @@ func traceIDFromCtx(ctx context.Context) string {
 		return t
 	}
 	return "unknown"
-}
-
-func writeJSON(w http.ResponseWriter, status int, v any) {
-	v = httputil.EmptySliceIfNil(v)
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	if err := json.NewEncoder(w).Encode(v); err != nil {
-		slog.Warn("cloud: write json failed", "error", err)
-	}
-}
-
-func writeError(w http.ResponseWriter, status int, msg string) {
-	writeJSON(w, status, map[string]string{"error": msg})
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/opsorigin/core/pkg/httputil"
 	"log/slog"
 	"net/http"
 	"time"
@@ -16,18 +17,18 @@ import (
 func (s *Service) handleCreateCollectTask(w http.ResponseWriter, r *http.Request) {
 	var t CollectTask
 	if err := json.NewDecoder(r.Body).Decode(&t); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
+		httputil.WriteError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
 	t.TenantID = tenantFromCtx(r.Context())
 	if err := s.collect.Create(&t); err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
+		httputil.WriteError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 	slog.Info("collect task created", "id", t.ID, "name", t.Name, "type", t.Type)
 	// 变更即推送:在线 Agent 立即收到最新任务清单(离线 Agent 注册时补齐)。
 	s.pushTaskListToOnline()
-	writeJSON(w, http.StatusCreated, t)
+	httputil.WriteJSON(w, http.StatusCreated, t)
 }
 
 func (s *Service) handleListCollectTasks(w http.ResponseWriter, r *http.Request) {
@@ -35,33 +36,33 @@ func (s *Service) handleListCollectTasks(w http.ResponseWriter, r *http.Request)
 	if items == nil {
 		items = []*CollectTask{}
 	}
-	writeJSON(w, http.StatusOK, items)
+	httputil.WriteJSON(w, http.StatusOK, items)
 }
 
 func (s *Service) handleUpdateCollectTask(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	var t CollectTask
 	if err := json.NewDecoder(r.Body).Decode(&t); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
+		httputil.WriteError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
 	t.ID = id
 	if err := s.collect.Update(&t); err != nil {
-		writeError(w, http.StatusNotFound, err.Error())
+		httputil.WriteError(w, http.StatusNotFound, err.Error())
 		return
 	}
 	s.pushTaskListToOnline()
-	writeJSON(w, http.StatusOK, t)
+	httputil.WriteJSON(w, http.StatusOK, t)
 }
 
 func (s *Service) handleDeleteCollectTask(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	if err := s.collect.Delete(id); err != nil {
-		writeError(w, http.StatusNotFound, err.Error())
+		httputil.WriteError(w, http.StatusNotFound, err.Error())
 		return
 	}
 	s.pushTaskListToOnline()
-	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
+	httputil.WriteJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
 }
 
 func (s *Service) handleCollectTaskRuns(w http.ResponseWriter, r *http.Request) {
@@ -70,7 +71,7 @@ func (s *Service) handleCollectTaskRuns(w http.ResponseWriter, r *http.Request) 
 	if runs == nil {
 		runs = []*CollectRun{}
 	}
-	writeJSON(w, http.StatusOK, runs)
+	httputil.WriteJSON(w, http.StatusOK, runs)
 }
 
 // ——— 采集调度器 ———
@@ -204,7 +205,7 @@ func (s *Service) handleCollectCompletion(ctx context.Context, agentID, taskID s
 func (s *Service) handleQueryCollectMetrics(w http.ResponseWriter, r *http.Request) {
 	pg, ok := s.store.(*pgStore)
 	if !ok {
-		writeJSON(w, http.StatusOK, []any{})
+		httputil.WriteJSON(w, http.StatusOK, []any{})
 		return
 	}
 	q := r.URL.Query()
@@ -218,13 +219,13 @@ func (s *Service) handleQueryCollectMetrics(w http.ResponseWriter, r *http.Reque
 	}
 	items, err := pg.QueryCollectMetrics(r.Context(), "default", q.Get("agent_id"), q.Get("name"), limit)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	if items == nil {
 		items = []map[string]any{}
 	}
-	writeJSON(w, http.StatusOK, items)
+	httputil.WriteJSON(w, http.StatusOK, items)
 }
 
 // lookupCollectMeta 从任务记录回查 collect_task_id 与 collect_type(派发时写入 Params)。

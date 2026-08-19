@@ -265,7 +265,7 @@ func (s *Service) handleCreateCI(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
+		httputil.WriteError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
 
@@ -283,12 +283,12 @@ func (s *Service) handleCreateCI(w http.ResponseWriter, r *http.Request) {
 	traceID := traceIDFromCtx(ctx)
 	if s.pg != nil {
 		if err := s.validateAttributes(ctx, ci.TypeID, ci.Attributes, ""); err != nil {
-			writeError(w, http.StatusBadRequest, err.Error())
+			httputil.WriteError(w, http.StatusBadRequest, err.Error())
 			return
 		}
 		if err := s.pg.CreateCI(ctx, ci, traceID); err != nil {
 			slog.Error("create ci failed", "error", err)
-			writeError(w, http.StatusInternalServerError, err.Error())
+			httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
 	} else {
@@ -303,7 +303,7 @@ func (s *Service) handleCreateCI(w http.ResponseWriter, r *http.Request) {
 	// P2-5 订阅分发：CI 创建事件
 	s.dispatchCIEvent(ctx, tenantID, "ci_created", ci)
 
-	writeJSON(w, http.StatusCreated, ci)
+	httputil.WriteJSON(w, http.StatusCreated, ci)
 }
 
 // handleBatchCreateCI 批量创建 CI(F4-B 决策 B: 异步化)。
@@ -321,11 +321,11 @@ func (s *Service) handleBatchCreateCI(w http.ResponseWriter, r *http.Request) {
 		Channel     int               `json:"channel"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&reqs); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
+		httputil.WriteError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
 	if len(reqs) == 0 {
-		writeError(w, http.StatusBadRequest, "empty batch")
+		httputil.WriteError(w, http.StatusBadRequest, "empty batch")
 		return
 	}
 
@@ -352,7 +352,7 @@ func (s *Service) handleBatchCreateCI(w http.ResponseWriter, r *http.Request) {
 		accepted++
 	}
 
-	writeJSON(w, http.StatusAccepted, map[string]any{
+	httputil.WriteJSON(w, http.StatusAccepted, map[string]any{
 		"accepted": accepted,
 		"total":    len(reqs),
 	})
@@ -466,24 +466,24 @@ func (s *Service) handleChainQuery(w http.ResponseWriter, r *http.Request) {
 		MaxDepth int `json:"max_depth"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
+		httputil.WriteError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
 	if req.StartType == "" {
-		writeError(w, http.StatusBadRequest, "start_type is required")
+		httputil.WriteError(w, http.StatusBadRequest, "start_type is required")
 		return
 	}
 	if req.MaxDepth <= 0 || req.MaxDepth > 5 {
 		req.MaxDepth = 3
 	}
 	if s.pg == nil {
-		writeError(w, http.StatusBadRequest, "requires pg backend")
+		httputil.WriteError(w, http.StatusBadRequest, "requires pg backend")
 		return
 	}
 
 	rels, err := s.pg.ListRelations(ctx, tenantID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	// relation → 邻接表(源→目标 与 目标→源)
@@ -498,7 +498,7 @@ func (s *Service) handleChainQuery(w http.ResponseWriter, r *http.Request) {
 	// 起点 CI
 	start, err := s.pg.ListCI(ctx, tenantID, req.StartType)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 
@@ -552,7 +552,7 @@ func (s *Service) handleChainQuery(w http.ResponseWriter, r *http.Request) {
 		current = nextIDs
 	}
 
-	writeJSON(w, http.StatusOK, map[string]any{"layers": layers, "total_layers": len(layers)})
+	httputil.WriteJSON(w, http.StatusOK, map[string]any{"layers": layers, "total_layers": len(layers)})
 }
 
 func (s *Service) handleGetCI(w http.ResponseWriter, r *http.Request) {
@@ -562,19 +562,19 @@ func (s *Service) handleGetCI(w http.ResponseWriter, r *http.Request) {
 	if s.pg == nil {
 		ci := s.mem.getCI(id, tenantID)
 		if ci == nil {
-			writeError(w, http.StatusNotFound, "ci not found")
+			httputil.WriteError(w, http.StatusNotFound, "ci not found")
 			return
 		}
-		writeJSON(w, http.StatusOK, ci)
+		httputil.WriteJSON(w, http.StatusOK, ci)
 		return
 	}
 	ci, err := s.pg.GetCI(r.Context(), id, tenantID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	if ci == nil {
-		writeError(w, http.StatusNotFound, "ci not found")
+		httputil.WriteError(w, http.StatusNotFound, "ci not found")
 		return
 	}
 	// P2-4 字段级规则权限
@@ -583,7 +583,7 @@ func (s *Service) handleGetCI(w http.ResponseWriter, r *http.Request) {
 	}
 	// 聚合字段: 模型声明 Aggregate 时按关系链实时计算(count/sum/avg)。
 	s.computeAggregates(r.Context(), tenantID, ci)
-	writeJSON(w, http.StatusOK, ci)
+	httputil.WriteJSON(w, http.StatusOK, ci)
 }
 
 func (s *Service) handleUpdateCI(w http.ResponseWriter, r *http.Request) {
@@ -601,7 +601,7 @@ func (s *Service) handleUpdateCI(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
+		httputil.WriteError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
 
@@ -610,7 +610,7 @@ func (s *Service) handleUpdateCI(w http.ResponseWriter, r *http.Request) {
 		var err error
 		existing, err = s.pg.GetCI(ctx, id, tenantID)
 		if err != nil {
-			writeError(w, http.StatusInternalServerError, err.Error())
+			httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
 	} else {
@@ -618,7 +618,7 @@ func (s *Service) handleUpdateCI(w http.ResponseWriter, r *http.Request) {
 		existing = s.mem.getCI(id, tenantID)
 	}
 	if existing == nil {
-		writeError(w, http.StatusNotFound, "ci not found")
+		httputil.WriteError(w, http.StatusNotFound, "ci not found")
 		return
 	}
 
@@ -652,21 +652,21 @@ func (s *Service) handleUpdateCI(w http.ResponseWriter, r *http.Request) {
 	if s.pg != nil {
 		// 更新路径同样校验(必填/类型/唯一/引用), exclude 自身避免自撞。
 		if err := s.validateAttributes(ctx, ci.TypeID, ci.Attributes, id); err != nil {
-			writeError(w, http.StatusBadRequest, err.Error())
+			httputil.WriteError(w, http.StatusBadRequest, err.Error())
 			return
 		}
 		// P2-6 写拦截: 角色 update 策略下目标 CI 必须满足条件
 		if err := s.checkDataPolicyWrite(ctx, tenantID, ci.TypeID, ci, "update"); err != nil {
-			writeError(w, http.StatusForbidden, err.Error())
+			httputil.WriteError(w, http.StatusForbidden, err.Error())
 			return
 		}
 		if err := s.pg.UpdateCI(ctx, ci, channel, traceID); err != nil {
 			if errors.Is(err, pg.ErrAntiFlapping) {
-				writeError(w, http.StatusConflict, err.Error())
+				httputil.WriteError(w, http.StatusConflict, err.Error())
 				return
 			}
 			slog.Error("update ci failed", "error", err)
-			writeError(w, http.StatusInternalServerError, err.Error())
+			httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
 	} else {
@@ -676,7 +676,7 @@ func (s *Service) handleUpdateCI(w http.ResponseWriter, r *http.Request) {
 	// P2-5 订阅分发：CI 更新事件
 	s.dispatchCIEvent(ctx, tenantID, "ci_updated", ci)
 
-	writeJSON(w, http.StatusOK, ci)
+	httputil.WriteJSON(w, http.StatusOK, ci)
 }
 
 func (s *Service) handleDeleteCI(w http.ResponseWriter, r *http.Request) {
@@ -686,7 +686,7 @@ func (s *Service) handleDeleteCI(w http.ResponseWriter, r *http.Request) {
 
 	if s.pg == nil {
 		if !s.mem.deleteCI(id, tenantID) {
-			writeError(w, http.StatusNotFound, "ci not found")
+			httputil.WriteError(w, http.StatusNotFound, "ci not found")
 			return
 		}
 		w.WriteHeader(http.StatusNoContent)
@@ -697,16 +697,16 @@ func (s *Service) handleDeleteCI(w http.ResponseWriter, r *http.Request) {
 	// P2-6 写拦截: 角色 delete 策略下目标 CI 必须满足条件
 	if before != nil {
 		if err := s.checkDataPolicyWrite(r.Context(), tenantID, before.TypeID, before, "delete"); err != nil {
-			writeError(w, http.StatusForbidden, err.Error())
+			httputil.WriteError(w, http.StatusForbidden, err.Error())
 			return
 		}
 	}
 	if err := s.pg.DeleteCI(r.Context(), id, tenantID, traceID); err != nil {
 		if err.Error() == "ci not found" {
-			writeError(w, http.StatusNotFound, "ci not found")
+			httputil.WriteError(w, http.StatusNotFound, "ci not found")
 			return
 		}
-		writeError(w, http.StatusInternalServerError, err.Error())
+		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	if before != nil {
@@ -755,12 +755,12 @@ func (s *Service) handleListCI(w http.ResponseWriter, r *http.Request) {
 		} else if archivedMode != "all" {
 			cis = filterExcludeStatus(cis, model.CIStatusArchived)
 		}
-		writeJSON(w, http.StatusOK, cis)
+		httputil.WriteJSON(w, http.StatusOK, cis)
 		return
 	}
 	cis, err := s.pg.ListCIFiltered(r.Context(), tenantID, typeID, archivedMode, sortBy, sortOrder, limit, offset)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	if cis == nil {
@@ -772,7 +772,7 @@ func (s *Service) handleListCI(w http.ResponseWriter, r *http.Request) {
 	}
 	// P2-6 行级数据权限: 角色策略过滤可见范围
 	cis = filterByDataPolicy(cis, s.loadDataPolicies(r.Context(), tenantID), roleFromContext(r.Context()))
-	writeJSON(w, http.StatusOK, cis)
+	httputil.WriteJSON(w, http.StatusOK, cis)
 }
 
 func (s *Service) handleGetTopology(w http.ResponseWriter, r *http.Request) {
@@ -784,10 +784,10 @@ func (s *Service) handleGetTopology(w http.ResponseWriter, r *http.Request) {
 		nodes, edges, err := s.dg.QueryTopology(r.Context(), tenantID, id, 3)
 		if err != nil {
 			slog.Error("query topology failed", "error", err)
-			writeError(w, http.StatusInternalServerError, err.Error())
+			httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
-		writeJSON(w, http.StatusOK, map[string]any{"nodes": nodes, "edges": edges})
+		httputil.WriteJSON(w, http.StatusOK, map[string]any{"nodes": nodes, "edges": edges})
 		return
 	}
 
@@ -796,7 +796,7 @@ func (s *Service) handleGetTopology(w http.ResponseWriter, r *http.Request) {
 	if s.pg != nil {
 		rels, err := s.pg.ListRelations(r.Context(), tenantID)
 		if err != nil {
-			writeError(w, http.StatusInternalServerError, err.Error())
+			httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
 		nodes, edges := buildTopologyFromRelations(tenantID, id, rels, 3)
@@ -812,12 +812,12 @@ func (s *Service) handleGetTopology(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 		}
-		writeJSON(w, http.StatusOK, map[string]any{"nodes": nodes, "edges": edges})
+		httputil.WriteJSON(w, http.StatusOK, map[string]any{"nodes": nodes, "edges": edges})
 		return
 	}
 
 	nodes, edges := s.mem.queryTopology(tenantID, id, 3)
-	writeJSON(w, http.StatusOK, map[string]any{"nodes": nodes, "edges": edges})
+	httputil.WriteJSON(w, http.StatusOK, map[string]any{"nodes": nodes, "edges": edges})
 }
 
 // buildTopologyFromRelations 以 rootID 为起点, 在关系切片上做双向 BFS(深度 maxDepth),
@@ -875,7 +875,7 @@ func (s *Service) handleImpactAnalysis(w http.ResponseWriter, r *http.Request) {
 		result, err = s.dg.ImpactAnalysis(r.Context(), tenantID, id, 3)
 		if err != nil {
 			slog.Error("impact analysis failed", "error", err)
-			writeError(w, http.StatusInternalServerError, err.Error())
+			httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
 	}
@@ -885,7 +885,7 @@ func (s *Service) handleImpactAnalysis(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		slog.Warn("impact enrich failed, fallback to raw result", "error", err)
 	}
-	writeJSON(w, http.StatusOK, enriched)
+	httputil.WriteJSON(w, http.StatusOK, enriched)
 }
 
 func (s *Service) handleCIAudit(w http.ResponseWriter, r *http.Request) {
@@ -893,18 +893,18 @@ func (s *Service) handleCIAudit(w http.ResponseWriter, r *http.Request) {
 	tenantID := tenantFromCtx(r.Context())
 
 	if s.pg == nil {
-		writeJSON(w, http.StatusOK, []*model.AttributeChange{})
+		httputil.WriteJSON(w, http.StatusOK, []*model.AttributeChange{})
 		return
 	}
 	changes, err := s.pg.GetCIAudit(r.Context(), id, tenantID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	if changes == nil {
 		changes = []*model.AttributeChange{}
 	}
-	writeJSON(w, http.StatusOK, changes)
+	httputil.WriteJSON(w, http.StatusOK, changes)
 }
 
 func (s *Service) handleSearchCI(w http.ResponseWriter, r *http.Request) {
@@ -936,7 +936,7 @@ func (s *Service) handleSearchCI(w http.ResponseWriter, r *http.Request) {
 		if cis == nil {
 			cis = []*model.CIModel{}
 		}
-		writeJSON(w, http.StatusOK, cis)
+		httputil.WriteJSON(w, http.StatusOK, cis)
 		return
 	}
 	if q != "" {
@@ -945,7 +945,7 @@ func (s *Service) handleSearchCI(w http.ResponseWriter, r *http.Request) {
 		// performance as the dataset grows (see report issue 3.3).
 		cis, err := s.pg.ListCIByQuery(r.Context(), tenantID, typeID, q)
 		if err != nil {
-			writeError(w, http.StatusInternalServerError, err.Error())
+			httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
 		if archivedMode == "archived" {
@@ -960,12 +960,12 @@ func (s *Service) handleSearchCI(w http.ResponseWriter, r *http.Request) {
 		if rules, rerr := s.pg.ListFieldRules(r.Context(), tenantID, typeID); rerr == nil {
 			applyFieldRules(cis, rules, subjectFromRequest(r))
 		}
-		writeJSON(w, http.StatusOK, cis)
+		httputil.WriteJSON(w, http.StatusOK, cis)
 		return
 	}
 	cis, err := s.pg.ListCI(r.Context(), tenantID, typeID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	if archivedMode == "archived" {
@@ -982,7 +982,7 @@ func (s *Service) handleSearchCI(w http.ResponseWriter, r *http.Request) {
 	}
 	// P2-6 行级数据权限: 角色策略过滤可见范围(搜索与列表一致)
 	cis = filterByDataPolicy(cis, s.loadDataPolicies(r.Context(), tenantID), roleFromContext(r.Context()))
-	writeJSON(w, http.StatusOK, cis)
+	httputil.WriteJSON(w, http.StatusOK, cis)
 }
 
 // validateAttributes 校验 CI 属性: 必填 / 类型 / 枚举选项 / 引用目标存在 /
@@ -1079,7 +1079,7 @@ func (s *Service) handleListRelations(w http.ResponseWriter, r *http.Request) {
 		if rels == nil {
 			rels = []*model.CIRelation{}
 		}
-		writeJSON(w, http.StatusOK, rels)
+		httputil.WriteJSON(w, http.StatusOK, rels)
 		return
 	}
 
@@ -1093,13 +1093,13 @@ func (s *Service) handleListRelations(w http.ResponseWriter, r *http.Request) {
 		rels, err = s.pg.ListRelations(r.Context(), tenantID)
 	}
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	if rels == nil {
 		rels = []*model.CIRelation{}
 	}
-	writeJSON(w, http.StatusOK, rels)
+	httputil.WriteJSON(w, http.StatusOK, rels)
 }
 
 func (s *Service) handleCreateRelation(w http.ResponseWriter, r *http.Request) {
@@ -1114,7 +1114,7 @@ func (s *Service) handleCreateRelation(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
+		httputil.WriteError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
 
@@ -1129,7 +1129,7 @@ func (s *Service) handleCreateRelation(w http.ResponseWriter, r *http.Request) {
 		hasCycle = s.mem.detectCycle(tenantID, req.SourceID, req.TargetID)
 	}
 	if hasCycle {
-		writeError(w, http.StatusConflict, "adding this relation would create a topological cycle [ASSERT-CMDB-02]")
+		httputil.WriteError(w, http.StatusConflict, "adding this relation would create a topological cycle [ASSERT-CMDB-02]")
 		return
 	}
 
@@ -1145,14 +1145,14 @@ func (s *Service) handleCreateRelation(w http.ResponseWriter, r *http.Request) {
 	if s.pg != nil {
 		if err := s.pg.CreateRelation(ctx, rel, traceID); err != nil {
 			slog.Error("create relation failed", "error", err)
-			writeError(w, http.StatusInternalServerError, err.Error())
+			httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
 	} else {
 		s.mem.createRelation(rel)
 	}
 
-	writeJSON(w, http.StatusCreated, rel)
+	httputil.WriteJSON(w, http.StatusCreated, rel)
 }
 
 // handleBatchUpdateCI 批量更新多个 CI 的属性(合并写), 逐个过 validateAttributes
@@ -1166,11 +1166,11 @@ func (s *Service) handleBatchUpdateCI(w http.ResponseWriter, r *http.Request) {
 		Attrs map[string]any `json:"attrs"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
+		httputil.WriteError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
 	if len(req.IDs) == 0 || len(req.Attrs) == 0 {
-		writeError(w, http.StatusBadRequest, "ids and attrs are required")
+		httputil.WriteError(w, http.StatusBadRequest, "ids and attrs are required")
 		return
 	}
 
@@ -1223,7 +1223,7 @@ func (s *Service) handleBatchUpdateCI(w http.ResponseWriter, r *http.Request) {
 		updated++
 	}
 
-	writeJSON(w, http.StatusOK, map[string]any{"updated": updated, "failed": failed})
+	httputil.WriteJSON(w, http.StatusOK, map[string]any{"updated": updated, "failed": failed})
 }
 
 // handleBatchDeleteCI 批量删除 CI(含订阅事件分发), 返回成功数与失败明细。
@@ -1235,11 +1235,11 @@ func (s *Service) handleBatchDeleteCI(w http.ResponseWriter, r *http.Request) {
 		IDs []string `json:"ids"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
+		httputil.WriteError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
 	if len(req.IDs) == 0 {
-		writeError(w, http.StatusBadRequest, "ids are required")
+		httputil.WriteError(w, http.StatusBadRequest, "ids are required")
 		return
 	}
 
@@ -1273,7 +1273,7 @@ func (s *Service) handleBatchDeleteCI(w http.ResponseWriter, r *http.Request) {
 		deleted++
 	}
 
-	writeJSON(w, http.StatusOK, map[string]any{"deleted": deleted, "failed": failed})
+	httputil.WriteJSON(w, http.StatusOK, map[string]any{"deleted": deleted, "failed": failed})
 }
 
 // handleBatchCreateRelation 批量创建关系(逐条环路检测, ASSERT-CMDB-02)。
@@ -1290,11 +1290,11 @@ func (s *Service) handleBatchCreateRelation(w http.ResponseWriter, r *http.Reque
 		} `json:"relations"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
+		httputil.WriteError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
 	if len(req.Relations) == 0 {
-		writeError(w, http.StatusBadRequest, "relations are required")
+		httputil.WriteError(w, http.StatusBadRequest, "relations are required")
 		return
 	}
 
@@ -1341,7 +1341,7 @@ func (s *Service) handleBatchCreateRelation(w http.ResponseWriter, r *http.Reque
 		created++
 	}
 
-	writeJSON(w, http.StatusOK, map[string]any{"created": created, "failed": failed})
+	httputil.WriteJSON(w, http.StatusOK, map[string]any{"created": created, "failed": failed})
 }
 
 func (s *Service) handleDeleteRelation(w http.ResponseWriter, r *http.Request) {
@@ -1351,7 +1351,7 @@ func (s *Service) handleDeleteRelation(w http.ResponseWriter, r *http.Request) {
 
 	if s.pg == nil {
 		if !s.mem.deleteRelation(id, tenantID) {
-			writeError(w, http.StatusNotFound, "relation not found")
+			httputil.WriteError(w, http.StatusNotFound, "relation not found")
 			return
 		}
 		w.WriteHeader(http.StatusNoContent)
@@ -1359,10 +1359,10 @@ func (s *Service) handleDeleteRelation(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := s.pg.DeleteRelation(r.Context(), id, tenantID, traceID); err != nil {
 		if err.Error() == "relation not found" {
-			writeError(w, http.StatusNotFound, "relation not found")
+			httputil.WriteError(w, http.StatusNotFound, "relation not found")
 			return
 		}
-		writeError(w, http.StatusInternalServerError, err.Error())
+		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
@@ -1409,11 +1409,11 @@ func (s *Service) ResolveModelType(ctx context.Context, typeID, tenantID string)
 func (s *Service) handleCreateModelType(w http.ResponseWriter, r *http.Request) {
 	var mt model.CIModelType
 	if err := json.NewDecoder(r.Body).Decode(&mt); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
+		httputil.WriteError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
 	if err := validate.Name("模型名称", mt.Name); err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
+		httputil.WriteError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 	mt.TenantID = tenantFromCtx(r.Context())
@@ -1421,7 +1421,7 @@ func (s *Service) handleCreateModelType(w http.ResponseWriter, r *http.Request) 
 	// 模型继承：禁止自引用（读取侧有环检测兜底，此处阻断明显错误）。
 	// 注意：新建时 mt.ID 与 mt.ParentID 均为空，不能误判为"继承自身"（历史 bug：新建必失败）。
 	if mt.ID != "" && mt.ParentID == mt.ID {
-		writeError(w, http.StatusBadRequest, "模型不能继承自身")
+		httputil.WriteError(w, http.StatusBadRequest, "模型不能继承自身")
 		return
 	}
 	if mt.Category == "" {
@@ -1430,11 +1430,11 @@ func (s *Service) handleCreateModelType(w http.ResponseWriter, r *http.Request) 
 
 	if err := s.pg.CreateCIModelType(r.Context(), &mt); err != nil {
 		slog.Error("create model type failed", "error", err)
-		writeError(w, http.StatusInternalServerError, err.Error())
+		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 
-	writeJSON(w, http.StatusCreated, mt)
+	httputil.WriteJSON(w, http.StatusCreated, mt)
 }
 
 // fieldUsage 模型字段消费度(保存查询/表单引用计数)。
@@ -1468,7 +1468,7 @@ func (s *Service) handleFieldUsage(w http.ResponseWriter, r *http.Request) {
 
 	mt, err := s.pg.GetCIModelType(ctx, id, tenantID)
 	if err != nil || mt == nil {
-		writeError(w, http.StatusNotFound, "model type not found")
+		httputil.WriteError(w, http.StatusNotFound, "model type not found")
 		return
 	}
 
@@ -1509,7 +1509,7 @@ func (s *Service) handleFieldUsage(w http.ResponseWriter, r *http.Request) {
 		return fields[i].Total > fields[j].Total
 	})
 
-	writeJSON(w, http.StatusOK, map[string]any{
+	httputil.WriteJSON(w, http.StatusOK, map[string]any{
 		"model_type_id": id, "model_name": mt.Name,
 		"fields": fields, "unused_count": countUnused(fields),
 	})
@@ -1521,14 +1521,14 @@ func (s *Service) handleGetModelType(w http.ResponseWriter, r *http.Request) {
 	tenantID := tenantFromCtx(r.Context())
 	mt, err := s.ResolveModelType(r.Context(), id, tenantID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	if mt == nil {
-		writeError(w, http.StatusNotFound, "model type not found")
+		httputil.WriteError(w, http.StatusNotFound, "model type not found")
 		return
 	}
-	writeJSON(w, http.StatusOK, mt)
+	httputil.WriteJSON(w, http.StatusOK, mt)
 }
 
 func (s *Service) handleListModelTypes(w http.ResponseWriter, r *http.Request) {
@@ -1550,7 +1550,7 @@ func (s *Service) handleListModelTypes(w http.ResponseWriter, r *http.Request) {
 
 	types, err := s.pg.ListCIModelTypes(r.Context(), tenantID, limit, offset)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	// 合并继承属性并默认分类，保证列表/详情展示完整属性集
@@ -1566,14 +1566,14 @@ func (s *Service) handleListModelTypes(w http.ResponseWriter, r *http.Request) {
 	// 获取总数
 	total, err := s.pg.CountCIModelTypes(r.Context(), tenantID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	if types == nil {
 		types = []*model.CIModelType{}
 	}
 
-	writeJSON(w, http.StatusOK, map[string]any{
+	httputil.WriteJSON(w, http.StatusOK, map[string]any{
 		"items":  types,
 		"total":  total,
 		"limit":  limit,
@@ -1588,17 +1588,17 @@ func (s *Service) handleUpdateModelType(w http.ResponseWriter, r *http.Request) 
 	// 获取现有模型类型
 	existing, err := s.pg.GetCIModelType(r.Context(), id, tenantID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	if existing == nil {
-		writeError(w, http.StatusNotFound, "model type not found")
+		httputil.WriteError(w, http.StatusNotFound, "model type not found")
 		return
 	}
 
 	var mt model.CIModelType
 	if err := json.NewDecoder(r.Body).Decode(&mt); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
+		httputil.WriteError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
 
@@ -1620,11 +1620,11 @@ func (s *Service) handleUpdateModelType(w http.ResponseWriter, r *http.Request) 
 
 	if err := s.pg.UpdateCIModelType(r.Context(), &mt); err != nil {
 		slog.Error("update model type failed", "error", err)
-		writeError(w, http.StatusInternalServerError, err.Error())
+		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 
-	writeJSON(w, http.StatusOK, mt)
+	httputil.WriteJSON(w, http.StatusOK, mt)
 }
 
 // handleListModelTypeVersions 模型版本历史(新→旧, 含 schema 快照供前端 diff)。
@@ -1633,13 +1633,13 @@ func (s *Service) handleListModelTypeVersions(w http.ResponseWriter, r *http.Req
 	tenantID := tenantFromCtx(r.Context())
 	versions, err := s.pg.ListModelTypeVersions(r.Context(), id, tenantID, 100)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	if versions == nil {
 		versions = []*model.ModelTypeVersion{}
 	}
-	writeJSON(w, http.StatusOK, versions)
+	httputil.WriteJSON(w, http.StatusOK, versions)
 }
 
 // handleRollbackModelType 回滚模型到指定版本(恢复 schema/名称/分类等)。
@@ -1651,17 +1651,17 @@ func (s *Service) handleRollbackModelType(w http.ResponseWriter, r *http.Request
 
 	version, err := strconv.Atoi(versionStr)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid version")
+		httputil.WriteError(w, http.StatusBadRequest, "invalid version")
 		return
 	}
 	snap, err := s.pg.GetModelTypeVersion(ctx, id, tenantID, version)
 	if err != nil || snap == nil {
-		writeError(w, http.StatusNotFound, "version not found")
+		httputil.WriteError(w, http.StatusNotFound, "version not found")
 		return
 	}
 	current, err := s.pg.GetCIModelType(ctx, id, tenantID)
 	if err != nil || current == nil {
-		writeError(w, http.StatusNotFound, "model type not found")
+		httputil.WriteError(w, http.StatusNotFound, "model type not found")
 		return
 	}
 
@@ -1685,10 +1685,10 @@ func (s *Service) handleRollbackModelType(w http.ResponseWriter, r *http.Request
 	current.Version = snap.Version + 1
 
 	if err := s.pg.UpdateCIModelType(ctx, current); err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "model_type_id": id, "version": current.Version})
+	httputil.WriteJSON(w, http.StatusOK, map[string]any{"ok": true, "model_type_id": id, "version": current.Version})
 }
 
 func (s *Service) handleDeleteModelType(w http.ResponseWriter, r *http.Request) {
@@ -1698,21 +1698,21 @@ func (s *Service) handleDeleteModelType(w http.ResponseWriter, r *http.Request) 
 	// 检查是否有CI实例使用此模型类型
 	count, err := s.pg.CountCIByTypeID(r.Context(), id, tenantID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	if count > 0 {
-		writeError(w, http.StatusBadRequest, fmt.Sprintf("cannot delete model type with %d CI instances", count))
+		httputil.WriteError(w, http.StatusBadRequest, fmt.Sprintf("cannot delete model type with %d CI instances", count))
 		return
 	}
 
 	if err := s.pg.DeleteCIModelType(r.Context(), id, tenantID); err != nil {
 		slog.Error("delete model type failed", "error", err)
-		writeError(w, http.StatusInternalServerError, err.Error())
+		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 
-	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
+	httputil.WriteJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
 }
 
 // handleExportModelTypes 导出模型定义为 JSON 数组（跳过内置模型：内置模型不可导出）。
@@ -1720,7 +1720,7 @@ func (s *Service) handleExportModelTypes(w http.ResponseWriter, r *http.Request)
 	tenantID := tenantFromCtx(r.Context())
 	types, err := s.pg.ListCIModelTypes(r.Context(), tenantID, 1000, 0)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	ids := map[string]bool{}
@@ -1753,7 +1753,7 @@ func (s *Service) handleExportModelTypes(w http.ResponseWriter, r *http.Request)
 	}
 	w.Header().Set("Content-Disposition", `attachment; filename="cmdb-model-types.json"`)
 	w.Header().Set("Content-Type", "application/json")
-	writeJSON(w, http.StatusOK, out)
+	httputil.WriteJSON(w, http.StatusOK, out)
 }
 
 // handleImportModelTypes 从 JSON 数组导入模型定义。
@@ -1762,7 +1762,7 @@ func (s *Service) handleImportModelTypes(w http.ResponseWriter, r *http.Request)
 	tenantID := tenantFromCtx(r.Context())
 	var raw []model.CIModelType
 	if err := json.NewDecoder(r.Body).Decode(&raw); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
+		httputil.WriteError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
 
@@ -1830,7 +1830,7 @@ func (s *Service) handleImportModelTypes(w http.ResponseWriter, r *http.Request)
 		}
 		created++
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"created": created, "skipped": skipped})
+	httputil.WriteJSON(w, http.StatusOK, map[string]any{"created": created, "skipped": skipped})
 }
 
 // ---------- CI CSV 导入导出 (P1-1) ----------
@@ -1895,12 +1895,12 @@ func (s *Service) handleExportCI(w http.ResponseWriter, r *http.Request) {
 	tenantID := tenantFromCtx(r.Context())
 	typeID := r.URL.Query().Get("type_id")
 	if typeID == "" {
-		writeError(w, http.StatusBadRequest, "type_id is required")
+		httputil.WriteError(w, http.StatusBadRequest, "type_id is required")
 		return
 	}
 	mt, err := s.ResolveModelType(r.Context(), typeID, tenantID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	attrCols := []string{}
@@ -1916,7 +1916,7 @@ func (s *Service) handleExportCI(w http.ResponseWriter, r *http.Request) {
 	if s.pg != nil {
 		cis, err = s.pg.ListCI(r.Context(), tenantID, typeID)
 		if err != nil {
-			writeError(w, http.StatusInternalServerError, err.Error())
+			httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
 	} else {
@@ -1929,7 +1929,7 @@ func (s *Service) handleExportCI(w http.ResponseWriter, r *http.Request) {
 	var buf bytes.Buffer
 	cw := csv.NewWriter(&buf)
 	if err := cw.Write(cols); err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	for _, ci := range cis {
@@ -1938,13 +1938,13 @@ func (s *Service) handleExportCI(w http.ResponseWriter, r *http.Request) {
 			row = append(row, toCSVValue(ci.Attributes[c]))
 		}
 		if err := cw.Write(row); err != nil {
-			writeError(w, http.StatusInternalServerError, err.Error())
+			httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
 	}
 	cw.Flush()
 	if err := cw.Error(); err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 
@@ -1960,21 +1960,21 @@ func (s *Service) handleImportCI(w http.ResponseWriter, r *http.Request) {
 	tenantID := tenantFromCtx(r.Context())
 	typeID := r.URL.Query().Get("type_id")
 	if typeID == "" {
-		writeError(w, http.StatusBadRequest, "type_id is required")
+		httputil.WriteError(w, http.StatusBadRequest, "type_id is required")
 		return
 	}
 	mt, err := s.ResolveModelType(r.Context(), typeID, tenantID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	if err := r.ParseMultipartForm(32 << 20); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid multipart form")
+		httputil.WriteError(w, http.StatusBadRequest, "invalid multipart form")
 		return
 	}
 	file, _, err := r.FormFile("file")
 	if err != nil {
-		writeError(w, http.StatusBadRequest, "missing 'file' field")
+		httputil.WriteError(w, http.StatusBadRequest, "missing 'file' field")
 		return
 	}
 	defer file.Close()
@@ -1983,11 +1983,11 @@ func (s *Service) handleImportCI(w http.ResponseWriter, r *http.Request) {
 	reader.FieldsPerRecord = -1
 	records, err := reader.ReadAll()
 	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid csv: "+err.Error())
+		httputil.WriteError(w, http.StatusBadRequest, "invalid csv: "+err.Error())
 		return
 	}
 	if len(records) < 2 {
-		writeJSON(w, http.StatusOK, map[string]any{"created": 0, "updated": 0, "failed": []any{}})
+		httputil.WriteJSON(w, http.StatusOK, map[string]any{"created": 0, "updated": 0, "failed": []any{}})
 		return
 	}
 
@@ -1997,7 +1997,7 @@ func (s *Service) handleImportCI(w http.ResponseWriter, r *http.Request) {
 		idx[strings.TrimSpace(h)] = i
 	}
 	if _, ok := idx["name"]; !ok {
-		writeError(w, http.StatusBadRequest, "csv must contain a 'name' column")
+		httputil.WriteError(w, http.StatusBadRequest, "csv must contain a 'name' column")
 		return
 	}
 	get := func(row []string, col string) string {
@@ -2097,7 +2097,7 @@ func (s *Service) handleImportCI(w http.ResponseWriter, r *http.Request) {
 	if len(toCreate) > 0 {
 		if s.pg != nil {
 			if berr := s.pg.BulkCreateCI(r.Context(), toCreate, traceID); berr != nil {
-				writeError(w, http.StatusInternalServerError, "bulk create failed: "+berr.Error())
+				httputil.WriteError(w, http.StatusInternalServerError, "bulk create failed: "+berr.Error())
 				return
 			}
 			created = len(toCreate)
@@ -2109,7 +2109,7 @@ func (s *Service) handleImportCI(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	writeJSON(w, http.StatusOK, map[string]any{
+	httputil.WriteJSON(w, http.StatusOK, map[string]any{
 		"created": created,
 		"updated": updated,
 		"failed":  failed,
@@ -2161,17 +2161,6 @@ func validateAttrType(typ string, val any) bool {
 	return true
 }
 
-func writeJSON(w http.ResponseWriter, status int, v any) {
-	v = httputil.EmptySliceIfNil(v)
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	json.NewEncoder(w).Encode(v)
-}
-
-func writeError(w http.ResponseWriter, status int, msg string) {
-	writeJSON(w, status, map[string]string{"error": msg})
-}
-
 // ============================================================
 // AI 模型注册表 / 本体服务（设计文档阶段 1）
 // ============================================================
@@ -2179,7 +2168,7 @@ func writeError(w http.ResponseWriter, status int, msg string) {
 // handleRegistryResolve 把 AI 特征解析为已有 leaf / 挂载 abstract 父类 / 新提案。
 func (s *Service) handleRegistryResolve(w http.ResponseWriter, r *http.Request) {
 	if s.typeRegistry == nil {
-		writeError(w, http.StatusNotImplemented, "类型注册表未启用")
+		httputil.WriteError(w, http.StatusNotImplemented, "类型注册表未启用")
 		return
 	}
 	ctx := r.Context()
@@ -2189,26 +2178,26 @@ func (s *Service) handleRegistryResolve(w http.ResponseWriter, r *http.Request) 
 		Features map[string]any `json:"features"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "请求体解析失败: "+err.Error())
+		httputil.WriteError(w, http.StatusBadRequest, "请求体解析失败: "+err.Error())
 		return
 	}
 	if len(req.Features) == 0 {
-		writeError(w, http.StatusBadRequest, "features 不能为空")
+		httputil.WriteError(w, http.StatusBadRequest, "features 不能为空")
 		return
 	}
 
 	res, err := s.typeRegistry.ResolveType(ctx, tenantID, req.Features)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "类型解析失败: "+err.Error())
+		httputil.WriteError(w, http.StatusInternalServerError, "类型解析失败: "+err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, res)
+	httputil.WriteJSON(w, http.StatusOK, res)
 }
 
 // handleRegistryPropose 提交新类型提案（相似度去重 + 审核门控）。
 func (s *Service) handleRegistryPropose(w http.ResponseWriter, r *http.Request) {
 	if s.typeRegistry == nil {
-		writeError(w, http.StatusNotImplemented, "类型注册表未启用")
+		httputil.WriteError(w, http.StatusNotImplemented, "类型注册表未启用")
 		return
 	}
 	ctx := r.Context()
@@ -2216,7 +2205,7 @@ func (s *Service) handleRegistryPropose(w http.ResponseWriter, r *http.Request) 
 
 	var prop registry.AITypeProposal
 	if err := json.NewDecoder(r.Body).Decode(&prop); err != nil {
-		writeError(w, http.StatusBadRequest, "请求体解析失败: "+err.Error())
+		httputil.WriteError(w, http.StatusBadRequest, "请求体解析失败: "+err.Error())
 		return
 	}
 	// 服务端托管的字段：租户来自上下文，状态/ID/时间戳由注册表内部生成。
@@ -2228,16 +2217,16 @@ func (s *Service) handleRegistryPropose(w http.ResponseWriter, r *http.Request) 
 
 	id, status, err := s.typeRegistry.ProposeType(ctx, prop)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "提案提交失败: "+err.Error())
+		httputil.WriteError(w, http.StatusInternalServerError, "提案提交失败: "+err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"id": id, "status": status})
+	httputil.WriteJSON(w, http.StatusOK, map[string]any{"id": id, "status": status})
 }
 
 // handleRegistryPromote 证据累积后晋升某提案类型（提升置信度，达阈值即视为激活）。
 func (s *Service) handleRegistryPromote(w http.ResponseWriter, r *http.Request) {
 	if s.typeRegistry == nil {
-		writeError(w, http.StatusNotImplemented, "类型注册表未启用")
+		httputil.WriteError(w, http.StatusNotImplemented, "类型注册表未启用")
 		return
 	}
 	ctx := r.Context()
@@ -2248,19 +2237,19 @@ func (s *Service) handleRegistryPromote(w http.ResponseWriter, r *http.Request) 
 		Evidence []string `json:"evidence"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "请求体解析失败: "+err.Error())
+		httputil.WriteError(w, http.StatusBadRequest, "请求体解析失败: "+err.Error())
 		return
 	}
 	if req.ID == "" {
-		writeError(w, http.StatusBadRequest, "id 不能为空")
+		httputil.WriteError(w, http.StatusBadRequest, "id 不能为空")
 		return
 	}
 
 	if err := s.typeRegistry.PromoteType(ctx, tenantID, req.ID, req.Evidence); err != nil {
-		writeError(w, http.StatusInternalServerError, "晋升失败: "+err.Error())
+		httputil.WriteError(w, http.StatusInternalServerError, "晋升失败: "+err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"id": req.ID, "promoted": true})
+	httputil.WriteJSON(w, http.StatusOK, map[string]any{"id": req.ID, "promoted": true})
 }
 
 // ============================================================
@@ -2279,10 +2268,10 @@ func (s *Service) handleListHistory(w http.ResponseWriter, r *http.Request) {
 	versions, total, err := s.pg.ListAllCIHistory(r.Context(), tenantID, changeType, limit, offset)
 	if err != nil {
 		slog.Error("list history failed", "err", err)
-		writeError(w, http.StatusInternalServerError, "internal error")
+		httputil.WriteError(w, http.StatusInternalServerError, "internal error")
 		return
 	}
-	writeJSON(w, 200, map[string]any{"items": versions, "total": total, "limit": limit, "offset": offset})
+	httputil.WriteJSON(w, 200, map[string]any{"items": versions, "total": total, "limit": limit, "offset": offset})
 }
 
 func (s *Service) handleListCIVersions(w http.ResponseWriter, r *http.Request) {
@@ -2297,10 +2286,10 @@ func (s *Service) handleListCIVersions(w http.ResponseWriter, r *http.Request) {
 	versions, total, err := s.pg.ListCIVersions(r.Context(), ciID, tenantID, limit, offset)
 	if err != nil {
 		slog.Error("list ci versions failed", "err", err)
-		writeError(w, http.StatusInternalServerError, "internal error")
+		httputil.WriteError(w, http.StatusInternalServerError, "internal error")
 		return
 	}
-	writeJSON(w, 200, map[string]any{"items": versions, "total": total, "limit": limit, "offset": offset})
+	httputil.WriteJSON(w, 200, map[string]any{"items": versions, "total": total, "limit": limit, "offset": offset})
 }
 
 func (s *Service) handleGetVersionDetail(w http.ResponseWriter, r *http.Request) {
@@ -2308,14 +2297,14 @@ func (s *Service) handleGetVersionDetail(w http.ResponseWriter, r *http.Request)
 	version, err := s.pg.GetCIVersion(r.Context(), id)
 	if err != nil {
 		slog.Error("get version detail failed", "err", err)
-		writeError(w, http.StatusInternalServerError, "internal error")
+		httputil.WriteError(w, http.StatusInternalServerError, "internal error")
 		return
 	}
 	if version == nil {
-		writeError(w, 404, "version not found")
+		httputil.WriteError(w, 404, "version not found")
 		return
 	}
-	writeJSON(w, 200, version)
+	httputil.WriteJSON(w, 200, version)
 }
 
 // ============================================================
@@ -2327,10 +2316,10 @@ func (s *Service) handleListDiscoveryTasks(w http.ResponseWriter, r *http.Reques
 	tasks, err := s.pg.ListDiscoveryTasks(r.Context(), tenantID)
 	if err != nil {
 		slog.Error("list discovery tasks failed", "err", err)
-		writeError(w, http.StatusInternalServerError, "internal error")
+		httputil.WriteError(w, http.StatusInternalServerError, "internal error")
 		return
 	}
-	writeJSON(w, 200, tasks)
+	httputil.WriteJSON(w, 200, tasks)
 }
 
 func (s *Service) handleCreateDiscoveryTask(w http.ResponseWriter, r *http.Request) {
@@ -2342,11 +2331,11 @@ func (s *Service) handleCreateDiscoveryTask(w http.ResponseWriter, r *http.Reque
 		Config map[string]any `json:"config"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
-		writeError(w, 400, "invalid body")
+		httputil.WriteError(w, 400, "invalid body")
 		return
 	}
 	if input.Name == "" || input.Type == "" || input.Target == "" {
-		writeError(w, 400, "name, type, target are required")
+		httputil.WriteError(w, 400, "name, type, target are required")
 		return
 	}
 
@@ -2363,10 +2352,10 @@ func (s *Service) handleCreateDiscoveryTask(w http.ResponseWriter, r *http.Reque
 
 	if err := s.pg.CreateDiscoveryTask(r.Context(), task); err != nil {
 		slog.Error("create discovery task failed", "err", err)
-		writeError(w, http.StatusInternalServerError, "internal error")
+		httputil.WriteError(w, http.StatusInternalServerError, "internal error")
 		return
 	}
-	writeJSON(w, 201, task)
+	httputil.WriteJSON(w, 201, task)
 }
 
 func (s *Service) handleUpdateDiscoveryTask(w http.ResponseWriter, r *http.Request) {
@@ -2376,11 +2365,11 @@ func (s *Service) handleUpdateDiscoveryTask(w http.ResponseWriter, r *http.Reque
 	existing, err := s.pg.GetDiscoveryTask(r.Context(), id, tenantID)
 	if err != nil {
 		slog.Error("get discovery task failed", "err", err)
-		writeError(w, http.StatusInternalServerError, "internal error")
+		httputil.WriteError(w, http.StatusInternalServerError, "internal error")
 		return
 	}
 	if existing == nil {
-		writeError(w, 404, "task not found")
+		httputil.WriteError(w, 404, "task not found")
 		return
 	}
 
@@ -2391,7 +2380,7 @@ func (s *Service) handleUpdateDiscoveryTask(w http.ResponseWriter, r *http.Reque
 		Config map[string]any `json:"config"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
-		writeError(w, 400, "invalid body")
+		httputil.WriteError(w, 400, "invalid body")
 		return
 	}
 
@@ -2410,10 +2399,10 @@ func (s *Service) handleUpdateDiscoveryTask(w http.ResponseWriter, r *http.Reque
 
 	if err := s.pg.UpdateDiscoveryTask(r.Context(), existing); err != nil {
 		slog.Error("update discovery task failed", "err", err)
-		writeError(w, http.StatusInternalServerError, "internal error")
+		httputil.WriteError(w, http.StatusInternalServerError, "internal error")
 		return
 	}
-	writeJSON(w, 200, existing)
+	httputil.WriteJSON(w, 200, existing)
 }
 
 func (s *Service) handleDeleteDiscoveryTask(w http.ResponseWriter, r *http.Request) {
@@ -2421,10 +2410,10 @@ func (s *Service) handleDeleteDiscoveryTask(w http.ResponseWriter, r *http.Reque
 	tenantID := tenantFromCtx(r.Context())
 	if err := s.pg.DeleteDiscoveryTask(r.Context(), id, tenantID); err != nil {
 		slog.Error("delete discovery task failed", "err", err)
-		writeError(w, http.StatusInternalServerError, "internal error")
+		httputil.WriteError(w, http.StatusInternalServerError, "internal error")
 		return
 	}
-	writeJSON(w, 200, map[string]string{"status": "deleted"})
+	httputil.WriteJSON(w, 200, map[string]string{"status": "deleted"})
 }
 
 func (s *Service) handleRunDiscoveryTask(w http.ResponseWriter, r *http.Request) {
@@ -2433,7 +2422,7 @@ func (s *Service) handleRunDiscoveryTask(w http.ResponseWriter, r *http.Request)
 
 	task, err := s.pg.GetDiscoveryTask(r.Context(), id, tenantID)
 	if err != nil || task == nil {
-		writeError(w, 404, "task not found")
+		httputil.WriteError(w, 404, "task not found")
 		return
 	}
 
@@ -2445,7 +2434,7 @@ func (s *Service) handleRunDiscoveryTask(w http.ResponseWriter, r *http.Request)
 	case "cloud", "host", "container":
 		task.Status = "failed"
 		_ = s.pg.UpdateDiscoveryTask(r.Context(), task)
-		writeError(w, http.StatusBadRequest, "类型 "+task.Type+" 属于资源纳管层职责，请使用资源纳管（云/主机/容器）同步，而非 CMDB 自动发现")
+		httputil.WriteError(w, http.StatusBadRequest, "类型 "+task.Type+" 属于资源纳管层职责，请使用资源纳管（云/主机/容器）同步，而非 CMDB 自动发现")
 		return
 	case "relation":
 		// 内置关系发现（在已纳管 CI 之上推断）
@@ -2454,13 +2443,13 @@ func (s *Service) handleRunDiscoveryTask(w http.ResponseWriter, r *http.Request)
 		if s.discoveryReg == nil || s.discoveryRunner == nil {
 			task.Status = "failed"
 			_ = s.pg.UpdateDiscoveryTask(r.Context(), task)
-			writeError(w, http.StatusInternalServerError, "自动发现引擎未初始化（discovery registry / runner 未注入）")
+			httputil.WriteError(w, http.StatusInternalServerError, "自动发现引擎未初始化（discovery registry / runner 未注入）")
 			return
 		}
 		if _, ok := s.discoveryReg.Lookup(task.Type); !ok {
 			task.Status = "failed"
 			_ = s.pg.UpdateDiscoveryTask(r.Context(), task)
-			writeError(w, http.StatusBadRequest, "不支持的发现类型: "+task.Type+"（可用类型见 GET /api/v1/cmdb/discovery/types）")
+			httputil.WriteError(w, http.StatusBadRequest, "不支持的发现类型: "+task.Type+"（可用类型见 GET /api/v1/cmdb/discovery/types）")
 			return
 		}
 	}
@@ -2517,7 +2506,7 @@ func (s *Service) handleRunDiscoveryTask(w http.ResponseWriter, r *http.Request)
 		s.pg.UpdateDiscoveryTask(ctx, task)
 	}()
 
-	writeJSON(w, 200, map[string]string{"status": "started"})
+	httputil.WriteJSON(w, 200, map[string]string{"status": "started"})
 }
 
 // runDiscoveryPlugin 按任务类型从注册表取出对应插件，在探针 Agent 上执行真实发现。
@@ -2557,7 +2546,7 @@ func (s *Service) handleListDiscoveryTypes(w http.ResponseWriter, r *http.Reques
 			"note":    m.Note,
 		})
 	}
-	writeJSON(w, 200, map[string]any{"types": out})
+	httputil.WriteJSON(w, 200, map[string]any{"types": out})
 }
 
 // buildBuiltinModelTypes 返回系统内置模型类型清单。
@@ -3078,33 +3067,33 @@ func (s *Service) handleQualityFix(w http.ResponseWriter, r *http.Request) {
 		CIID       string `json:"ci_id"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
+		httputil.WriteError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
 
 	switch req.Dimension {
 	case string(quality.DimConsistency):
 		if req.RelationID == "" {
-			writeError(w, http.StatusBadRequest, "relation_id is required for consistency fix")
+			httputil.WriteError(w, http.StatusBadRequest, "relation_id is required for consistency fix")
 			return
 		}
 		if s.pg == nil {
-			writeError(w, http.StatusBadRequest, "requires pg backend")
+			httputil.WriteError(w, http.StatusBadRequest, "requires pg backend")
 			return
 		}
 		if err := s.pg.DeleteRelation(ctx, req.RelationID, tenantID, "quality-fix"); err != nil {
 			if err.Error() == "relation not found" {
-				writeError(w, http.StatusNotFound, "relation not found")
+				httputil.WriteError(w, http.StatusNotFound, "relation not found")
 				return
 			}
-			writeError(w, http.StatusInternalServerError, err.Error())
+			httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
-		writeJSON(w, http.StatusOK, map[string]any{"fixed": true, "dimension": req.Dimension, "relation_id": req.RelationID})
+		httputil.WriteJSON(w, http.StatusOK, map[string]any{"fixed": true, "dimension": req.Dimension, "relation_id": req.RelationID})
 	case string(quality.DimUniqueness):
-		writeJSON(w, http.StatusOK, map[string]any{"fixed": false, "hint": "重复 IP/名称请使用「实体调解合并」按渠道置信度合并"})
+		httputil.WriteJSON(w, http.StatusOK, map[string]any{"fixed": false, "hint": "重复 IP/名称请使用「实体调解合并」按渠道置信度合并"})
 	default:
-		writeError(w, http.StatusBadRequest, "unsupported dimension: "+req.Dimension)
+		httputil.WriteError(w, http.StatusBadRequest, "unsupported dimension: "+req.Dimension)
 	}
 }
 
@@ -3115,10 +3104,10 @@ func (s *Service) handleQualityScan(w http.ResponseWriter, r *http.Request) {
 	report, err := eng.Scan(r.Context(), tenantID)
 	if err != nil {
 		slog.Error("quality scan failed", "err", err)
-		writeError(w, http.StatusInternalServerError, "internal error")
+		httputil.WriteError(w, http.StatusInternalServerError, "internal error")
 		return
 	}
-	writeJSON(w, 200, report)
+	httputil.WriteJSON(w, 200, report)
 }
 
 func (s *Service) handleListDiscoveryResults(w http.ResponseWriter, r *http.Request) {
@@ -3128,10 +3117,10 @@ func (s *Service) handleListDiscoveryResults(w http.ResponseWriter, r *http.Requ
 	results, err := s.pg.ListDiscoveryResults(r.Context(), taskID, tenantID)
 	if err != nil {
 		slog.Error("list discovery results failed", "err", err)
-		writeError(w, http.StatusInternalServerError, "internal error")
+		httputil.WriteError(w, http.StatusInternalServerError, "internal error")
 		return
 	}
-	writeJSON(w, 200, results)
+	httputil.WriteJSON(w, 200, results)
 }
 
 func (s *Service) handleSyncDiscoveryResult(w http.ResponseWriter, r *http.Request) {
@@ -3141,7 +3130,7 @@ func (s *Service) handleSyncDiscoveryResult(w http.ResponseWriter, r *http.Reque
 	// 获取发现结果
 	results, err := s.pg.ListDiscoveryResults(r.Context(), "", tenantID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "internal error")
+		httputil.WriteError(w, http.StatusInternalServerError, "internal error")
 		return
 	}
 
@@ -3153,7 +3142,7 @@ func (s *Service) handleSyncDiscoveryResult(w http.ResponseWriter, r *http.Reque
 		}
 	}
 	if target == nil {
-		writeError(w, 404, "result not found")
+		httputil.WriteError(w, 404, "result not found")
 		return
 	}
 
@@ -3182,20 +3171,20 @@ func (s *Service) handleSyncDiscoveryResult(w http.ResponseWriter, r *http.Reque
 		}
 		// 标记已同步(指向已有 CI, 不重复创建)。
 		s.pg.MarkDiscoveryResultSynced(r.Context(), resultID, existing.ID)
-		writeJSON(w, 200, map[string]any{"status": "drift_detected", "ci_id": existing.ID, "drifts": len(drifts)})
+		httputil.WriteJSON(w, 200, map[string]any{"status": "drift_detected", "ci_id": existing.ID, "drifts": len(drifts)})
 		return
 	}
 
 	if err := s.pg.CreateCI(r.Context(), ci, "discovery"); err != nil {
 		slog.Error("sync discovery result failed", "err", err)
-		writeError(w, http.StatusInternalServerError, "failed to create CI")
+		httputil.WriteError(w, http.StatusInternalServerError, "failed to create CI")
 		return
 	}
 
 	// 标记已同步
 	s.pg.MarkDiscoveryResultSynced(r.Context(), resultID, ci.ID)
 
-	writeJSON(w, 200, map[string]any{"status": "synced", "ci_id": ci.ID})
+	httputil.WriteJSON(w, 200, map[string]any{"status": "synced", "ci_id": ci.ID})
 }
 
 // detectDrifts 对比已有 CI(期望)与发现 CI(实际)的差异, 生成漂移记录。
@@ -3224,12 +3213,12 @@ func (s *Service) handleIDCPanorama(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	tenantID := tenantFromCtx(ctx)
 	if s.pg == nil {
-		writeJSON(w, http.StatusOK, map[string]any{"racks": []*model.CIModel{}, "devices": []*model.CIModel{}})
+		httputil.WriteJSON(w, http.StatusOK, map[string]any{"racks": []*model.CIModel{}, "devices": []*model.CIModel{}})
 		return
 	}
 	racks, err := s.pg.ListCI(ctx, tenantID, "rack")
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	// 设备: 各类型中带 rack_id 属性的(占用机柜 U 位)。
@@ -3251,7 +3240,7 @@ func (s *Service) handleIDCPanorama(w http.ResponseWriter, r *http.Request) {
 	if devices == nil {
 		devices = []*model.CIModel{}
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"racks": racks, "devices": devices})
+	httputil.WriteJSON(w, http.StatusOK, map[string]any{"racks": racks, "devices": devices})
 }
 
 // handleListDrifts 漂移清单(可按 CI 过滤, 默认未解决)。
@@ -3260,18 +3249,18 @@ func (s *Service) handleListDrifts(w http.ResponseWriter, r *http.Request) {
 	ciID := r.URL.Query().Get("ci_id")
 	includeResolved := r.URL.Query().Get("resolved") == "true"
 	if s.pg == nil {
-		writeJSON(w, http.StatusOK, []*model.CMDBDrift{})
+		httputil.WriteJSON(w, http.StatusOK, []*model.CMDBDrift{})
 		return
 	}
 	drifts, err := s.pg.ListDrifts(r.Context(), tenantID, ciID, includeResolved, 500)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	if drifts == nil {
 		drifts = []*model.CMDBDrift{}
 	}
-	writeJSON(w, http.StatusOK, drifts)
+	httputil.WriteJSON(w, http.StatusOK, drifts)
 }
 
 // handleResolveDrift 标记漂移已解决。
@@ -3279,10 +3268,10 @@ func (s *Service) handleResolveDrift(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	tenantID := tenantFromCtx(r.Context())
 	if err := s.pg.ResolveDrift(r.Context(), id, tenantID); err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"resolved": true, "id": id})
+	httputil.WriteJSON(w, http.StatusOK, map[string]any{"resolved": true, "id": id})
 }
 
 func (s *Service) handleSyncAllDiscoveryResults(w http.ResponseWriter, r *http.Request) {
@@ -3291,10 +3280,10 @@ func (s *Service) handleSyncAllDiscoveryResults(w http.ResponseWriter, r *http.R
 
 	affected, err := s.pg.SyncAllDiscoveryResults(r.Context(), taskID, tenantID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "internal error")
+		httputil.WriteError(w, http.StatusInternalServerError, "internal error")
 		return
 	}
-	writeJSON(w, 200, map[string]any{"synced_count": affected})
+	httputil.WriteJSON(w, 200, map[string]any{"synced_count": affected})
 }
 
 // discoverRelations 在已纳管 CI 之上自动推断关系（纳管后 CMDB 自动发现）。

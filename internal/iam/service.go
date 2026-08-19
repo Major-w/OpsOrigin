@@ -418,7 +418,7 @@ func (s *Service) RegisterRoutes(mux *http.ServeMux) {
 // ---------- 权限 ----------
 
 func (s *Service) handleListPermissions(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, s.permissions)
+	httputil.WriteJSON(w, http.StatusOK, s.permissions)
 }
 
 // ---------- 角色 ----------
@@ -427,34 +427,34 @@ func (s *Service) handleListRoles(w http.ResponseWriter, r *http.Request) {
 	tenantID := tenantFromCtx(r.Context())
 	roles, err := s.store.ListRoles(r.Context(), tenantID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	if roles == nil {
 		roles = []*Role{}
 	}
-	writeJSON(w, http.StatusOK, roles)
+	httputil.WriteJSON(w, http.StatusOK, roles)
 }
 
 func (s *Service) handleCreateRole(w http.ResponseWriter, r *http.Request) {
 	tenantID := tenantFromCtx(r.Context())
 	var req CreateRoleRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
+		httputil.WriteError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
 	if err := validate.Name("角色名称", req.Name); err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
+		httputil.WriteError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 	// 角色名唯一性校验
 	if existing, _ := s.store.GetRoleByName(r.Context(), req.Name, tenantID); existing != nil {
-		writeError(w, http.StatusConflict, "role name already exists")
+		httputil.WriteError(w, http.StatusConflict, "role name already exists")
 		return
 	}
 	// 校验权限名合法
 	if invalid := s.findInvalidPermissions(req.Permissions); len(invalid) > 0 {
-		writeError(w, http.StatusBadRequest, "unknown permissions: "+joinStrings(invalid))
+		httputil.WriteError(w, http.StatusBadRequest, "unknown permissions: "+joinStrings(invalid))
 		return
 	}
 	role := &Role{
@@ -465,11 +465,11 @@ func (s *Service) handleCreateRole(w http.ResponseWriter, r *http.Request) {
 		Permissions: req.Permissions,
 	}
 	if err := s.store.CreateRole(r.Context(), role); err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	s.invalidatePermCache()
-	writeJSON(w, http.StatusCreated, role)
+	httputil.WriteJSON(w, http.StatusCreated, role)
 }
 
 func (s *Service) handleGetRole(w http.ResponseWriter, r *http.Request) {
@@ -477,10 +477,10 @@ func (s *Service) handleGetRole(w http.ResponseWriter, r *http.Request) {
 	tenantID := tenantFromCtx(r.Context())
 	role, err := s.store.GetRole(r.Context(), id, tenantID)
 	if err != nil || role == nil {
-		writeError(w, http.StatusNotFound, "role not found")
+		httputil.WriteError(w, http.StatusNotFound, "role not found")
 		return
 	}
-	writeJSON(w, http.StatusOK, role)
+	httputil.WriteJSON(w, http.StatusOK, role)
 }
 
 func (s *Service) handleUpdateRole(w http.ResponseWriter, r *http.Request) {
@@ -488,16 +488,16 @@ func (s *Service) handleUpdateRole(w http.ResponseWriter, r *http.Request) {
 	tenantID := tenantFromCtx(r.Context())
 	existing, err := s.store.GetRole(r.Context(), id, tenantID)
 	if err != nil || existing == nil {
-		writeError(w, http.StatusNotFound, "role not found")
+		httputil.WriteError(w, http.StatusNotFound, "role not found")
 		return
 	}
 	var req UpdateRoleRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
+		httputil.WriteError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
 	if invalid := s.findInvalidPermissions(req.Permissions); len(invalid) > 0 {
-		writeError(w, http.StatusBadRequest, "unknown permissions: "+joinStrings(invalid))
+		httputil.WriteError(w, http.StatusBadRequest, "unknown permissions: "+joinStrings(invalid))
 		return
 	}
 	updated := *existing
@@ -505,11 +505,11 @@ func (s *Service) handleUpdateRole(w http.ResponseWriter, r *http.Request) {
 	updated.Description = req.Description
 	updated.Permissions = req.Permissions
 	if err := s.store.UpdateRole(r.Context(), &updated); err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	s.invalidatePermCache()
-	writeJSON(w, http.StatusOK, updated)
+	httputil.WriteJSON(w, http.StatusOK, updated)
 }
 
 func (s *Service) handleDeleteRole(w http.ResponseWriter, r *http.Request) {
@@ -517,19 +517,19 @@ func (s *Service) handleDeleteRole(w http.ResponseWriter, r *http.Request) {
 	tenantID := tenantFromCtx(r.Context())
 	existing, err := s.store.GetRole(r.Context(), id, tenantID)
 	if err != nil || existing == nil {
-		writeError(w, http.StatusNotFound, "role not found")
+		httputil.WriteError(w, http.StatusNotFound, "role not found")
 		return
 	}
 	if existing.IsBuiltIn {
-		writeError(w, http.StatusBadRequest, "built-in role cannot be deleted")
+		httputil.WriteError(w, http.StatusBadRequest, "built-in role cannot be deleted")
 		return
 	}
 	if err := s.store.DeleteRole(r.Context(), id, tenantID); err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	s.invalidatePermCache()
-	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
+	httputil.WriteJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
 }
 
 // ---------- 用户组 ----------
@@ -538,24 +538,24 @@ func (s *Service) handleListGroups(w http.ResponseWriter, r *http.Request) {
 	tenantID := tenantFromCtx(r.Context())
 	groups, err := s.store.ListGroups(r.Context(), tenantID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	if groups == nil {
 		groups = []*Group{}
 	}
-	writeJSON(w, http.StatusOK, groups)
+	httputil.WriteJSON(w, http.StatusOK, groups)
 }
 
 func (s *Service) handleCreateGroup(w http.ResponseWriter, r *http.Request) {
 	tenantID := tenantFromCtx(r.Context())
 	var req CreateGroupRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
+		httputil.WriteError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
 	if err := validate.Name("用户组名称", req.Name); err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
+		httputil.WriteError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 	group := &Group{
@@ -568,10 +568,10 @@ func (s *Service) handleCreateGroup(w http.ResponseWriter, r *http.Request) {
 		group.UserIDs = []string{}
 	}
 	if err := s.store.CreateGroup(r.Context(), group); err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusCreated, group)
+	httputil.WriteJSON(w, http.StatusCreated, group)
 }
 
 func (s *Service) handleGetGroup(w http.ResponseWriter, r *http.Request) {
@@ -579,10 +579,10 @@ func (s *Service) handleGetGroup(w http.ResponseWriter, r *http.Request) {
 	tenantID := tenantFromCtx(r.Context())
 	group, err := s.store.GetGroup(r.Context(), id, tenantID)
 	if err != nil || group == nil {
-		writeError(w, http.StatusNotFound, "group not found")
+		httputil.WriteError(w, http.StatusNotFound, "group not found")
 		return
 	}
-	writeJSON(w, http.StatusOK, group)
+	httputil.WriteJSON(w, http.StatusOK, group)
 }
 
 func (s *Service) handleUpdateGroup(w http.ResponseWriter, r *http.Request) {
@@ -590,12 +590,12 @@ func (s *Service) handleUpdateGroup(w http.ResponseWriter, r *http.Request) {
 	tenantID := tenantFromCtx(r.Context())
 	existing, err := s.store.GetGroup(r.Context(), id, tenantID)
 	if err != nil || existing == nil {
-		writeError(w, http.StatusNotFound, "group not found")
+		httputil.WriteError(w, http.StatusNotFound, "group not found")
 		return
 	}
 	var req UpdateGroupRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
+		httputil.WriteError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
 	updated := *existing
@@ -606,20 +606,20 @@ func (s *Service) handleUpdateGroup(w http.ResponseWriter, r *http.Request) {
 		updated.UserIDs = []string{}
 	}
 	if err := s.store.UpdateGroup(r.Context(), &updated); err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, updated)
+	httputil.WriteJSON(w, http.StatusOK, updated)
 }
 
 func (s *Service) handleDeleteGroup(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	tenantID := tenantFromCtx(r.Context())
 	if err := s.store.DeleteGroup(r.Context(), id, tenantID); err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
+	httputil.WriteJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
 }
 
 // ---------- 用户-角色分配 ----------
@@ -629,7 +629,7 @@ func (s *Service) handleGetUserRoles(w http.ResponseWriter, r *http.Request) {
 	tenantID := tenantFromCtx(r.Context())
 	roleIDs, err := s.store.GetUserRoles(r.Context(), userID, tenantID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	if roleIDs == nil {
@@ -642,7 +642,7 @@ func (s *Service) handleGetUserRoles(w http.ResponseWriter, r *http.Request) {
 			roles = append(roles, role)
 		}
 	}
-	writeJSON(w, http.StatusOK, UserRoles{UserID: userID, RoleIDs: roleIDs, Roles: roles})
+	httputil.WriteJSON(w, http.StatusOK, UserRoles{UserID: userID, RoleIDs: roleIDs, Roles: roles})
 }
 
 func (s *Service) handleAssignUserRoles(w http.ResponseWriter, r *http.Request) {
@@ -650,14 +650,14 @@ func (s *Service) handleAssignUserRoles(w http.ResponseWriter, r *http.Request) 
 	tenantID := tenantFromCtx(r.Context())
 	var req AssignUserRolesRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
+		httputil.WriteError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
 	if err := s.store.SetUserRoles(r.Context(), userID, tenantID, req.RoleIDs); err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, UserRoles{UserID: userID, RoleIDs: req.RoleIDs})
+	httputil.WriteJSON(w, http.StatusOK, UserRoles{UserID: userID, RoleIDs: req.RoleIDs})
 }
 
 // handleGetMyPermissions 返回当前登录用户的有效权限(主角色 + 已分配 IAM 角色聚合),
@@ -668,7 +668,7 @@ func (s *Service) handleGetMyPermissions(w http.ResponseWriter, r *http.Request)
 	tenantID := auth.TenantIDFromContext(r.Context())
 	role := auth.RoleFromContext(r.Context())
 	perms := s.GetAggregatedPermissions(r.Context(), tenantID, userID, role)
-	writeJSON(w, http.StatusOK, map[string]any{"permissions": perms})
+	httputil.WriteJSON(w, http.StatusOK, map[string]any{"permissions": perms})
 }
 
 // GetAggregatedPermissions 聚合某用户的有效权限:主角色权限(经 ResolvePermissions 读取
@@ -724,15 +724,4 @@ func joinStrings(ss []string) string {
 		out += s
 	}
 	return out
-}
-
-func writeJSON(w http.ResponseWriter, status int, v any) {
-	v = httputil.EmptySliceIfNil(v)
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	json.NewEncoder(w).Encode(v)
-}
-
-func writeError(w http.ResponseWriter, status int, msg string) {
-	writeJSON(w, status, map[string]string{"error": msg})
 }

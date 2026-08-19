@@ -4,6 +4,7 @@ package ai
 
 import (
 	"context"
+	"github.com/opsorigin/core/pkg/httputil"
 	"log/slog"
 	"net/http"
 	"strconv"
@@ -78,14 +79,14 @@ func (s *Service) handleListWorkspace(w http.ResponseWriter, r *http.Request) {
 	convID := r.PathValue("id")
 	tenantID := tenantFromCtx(r.Context())
 	if s.db == nil {
-		writeJSON(w, http.StatusOK, []WorkspaceFile{})
+		httputil.WriteJSON(w, http.StatusOK, []WorkspaceFile{})
 		return
 	}
 	rows, err := s.db.QueryContext(r.Context(),
 		`SELECT id, tenant_id, conversation_id, tool_name, file_name, file_type, file_size, content, created_at
 		 FROM ai_workspace_files WHERE conversation_id=$1 AND tenant_id=$2 ORDER BY created_at DESC`, convID, tenantID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	defer rows.Close()
@@ -97,7 +98,7 @@ func (s *Service) handleListWorkspace(w http.ResponseWriter, r *http.Request) {
 		}
 		out = append(out, f)
 	}
-	writeJSON(w, http.StatusOK, out)
+	httputil.WriteJSON(w, http.StatusOK, out)
 }
 
 // handleDownloadWorkspace 工作区文件下载(文本内容直接返回)。
@@ -106,7 +107,7 @@ func (s *Service) handleDownloadWorkspace(w http.ResponseWriter, r *http.Request
 	fid := r.PathValue("fid")
 	tenantID := tenantFromCtx(r.Context())
 	if s.db == nil {
-		writeError(w, http.StatusNotFound, "db unavailable")
+		httputil.WriteError(w, http.StatusNotFound, "db unavailable")
 		return
 	}
 	var f WorkspaceFile
@@ -115,7 +116,7 @@ func (s *Service) handleDownloadWorkspace(w http.ResponseWriter, r *http.Request
 		 FROM ai_workspace_files WHERE id=$1 AND conversation_id=$2 AND tenant_id=$3`, fid, convID, tenantID).
 		Scan(&f.ID, &f.TenantID, &f.ConversationID, &f.ToolName, &f.FileName, &f.FileType, &f.FileSize, &f.Content, &f.CreatedAt)
 	if err != nil {
-		writeError(w, http.StatusNotFound, "workspace file not found")
+		httputil.WriteError(w, http.StatusNotFound, "workspace file not found")
 		return
 	}
 	w.Header().Set("Content-Disposition", "attachment; filename=\""+f.FileName+"\"")
@@ -130,13 +131,13 @@ func (s *Service) handleDeleteWorkspace(w http.ResponseWriter, r *http.Request) 
 	fid := r.PathValue("fid")
 	tenantID := tenantFromCtx(r.Context())
 	if s.db == nil {
-		writeError(w, http.StatusNotFound, "db unavailable")
+		httputil.WriteError(w, http.StatusNotFound, "db unavailable")
 		return
 	}
 	if _, err := s.db.ExecContext(r.Context(),
 		`DELETE FROM ai_workspace_files WHERE id=$1 AND conversation_id=$2 AND tenant_id=$3`, fid, convID, tenantID); err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
+	httputil.WriteJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
 }

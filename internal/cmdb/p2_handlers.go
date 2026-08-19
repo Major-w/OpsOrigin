@@ -2,6 +2,7 @@ package cmdb
 
 import (
 	"encoding/json"
+	"github.com/opsorigin/core/pkg/httputil"
 	"net/http"
 	"strconv"
 
@@ -15,15 +16,15 @@ import (
 func (s *Service) handleStats(w http.ResponseWriter, r *http.Request) {
 	tenantID := tenantFromCtx(r.Context())
 	if s.pg == nil {
-		writeJSON(w, 200, &model.CMDBStats{})
+		httputil.WriteJSON(w, 200, &model.CMDBStats{})
 		return
 	}
 	st, err := s.pg.Stats(r.Context(), tenantID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	writeJSON(w, 200, st)
+	httputil.WriteJSON(w, 200, st)
 }
 
 // ============================================================
@@ -33,47 +34,47 @@ func (s *Service) handleStats(w http.ResponseWriter, r *http.Request) {
 func (s *Service) handleListIDC(w http.ResponseWriter, r *http.Request) {
 	tenantID := tenantFromCtx(r.Context())
 	if s.pg == nil {
-		writeJSON(w, 200, []*model.IDCRoom{})
+		httputil.WriteJSON(w, 200, []*model.IDCRoom{})
 		return
 	}
 	rooms, err := s.pg.ListIDCRooms(r.Context(), tenantID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	if rooms == nil {
 		rooms = []*model.IDCRoom{}
 	}
-	writeJSON(w, 200, rooms)
+	httputil.WriteJSON(w, 200, rooms)
 }
 
 func (s *Service) handleCreateIDC(w http.ResponseWriter, r *http.Request) {
 	tenantID := tenantFromCtx(r.Context())
 	var room model.IDCRoom
 	if err := json.NewDecoder(r.Body).Decode(&room); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
+		httputil.WriteError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
 	if room.Name == "" {
-		writeError(w, http.StatusBadRequest, "机房名称不能为空")
+		httputil.WriteError(w, http.StatusBadRequest, "机房名称不能为空")
 		return
 	}
 	room.TenantID = tenantID
 	if err := s.pg.CreateIDCRoom(r.Context(), &room); err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	writeJSON(w, 201, &room)
+	httputil.WriteJSON(w, 201, &room)
 }
 
 func (s *Service) handleDeleteIDC(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	tenantID := tenantFromCtx(r.Context())
 	if err := s.pg.DeleteIDCRoom(r.Context(), id, tenantID); err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	writeJSON(w, 200, map[string]string{"status": "deleted"})
+	httputil.WriteJSON(w, 200, map[string]string{"status": "deleted"})
 }
 
 func (s *Service) handleListRacks(w http.ResponseWriter, r *http.Request) {
@@ -81,13 +82,13 @@ func (s *Service) handleListRacks(w http.ResponseWriter, r *http.Request) {
 	tenantID := tenantFromCtx(r.Context())
 	racks, err := s.pg.ListRacks(r.Context(), tenantID, idcID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	if racks == nil {
 		racks = []*model.Rack{}
 	}
-	writeJSON(w, 200, racks)
+	httputil.WriteJSON(w, 200, racks)
 }
 
 func (s *Service) handleCreateRack(w http.ResponseWriter, r *http.Request) {
@@ -95,30 +96,30 @@ func (s *Service) handleCreateRack(w http.ResponseWriter, r *http.Request) {
 	tenantID := tenantFromCtx(r.Context())
 	var rack model.Rack
 	if err := json.NewDecoder(r.Body).Decode(&rack); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
+		httputil.WriteError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
 	if rack.Name == "" {
-		writeError(w, http.StatusBadRequest, "机柜编号不能为空")
+		httputil.WriteError(w, http.StatusBadRequest, "机柜编号不能为空")
 		return
 	}
 	rack.TenantID = tenantID
 	rack.IDCRoomID = idcID
 	if err := s.pg.CreateRack(r.Context(), &rack); err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	writeJSON(w, 201, &rack)
+	httputil.WriteJSON(w, 201, &rack)
 }
 
 func (s *Service) handleDeleteRack(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	tenantID := tenantFromCtx(r.Context())
 	if err := s.pg.DeleteRack(r.Context(), id, tenantID); err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	writeJSON(w, 200, map[string]string{"status": "deleted"})
+	httputil.WriteJSON(w, 200, map[string]string{"status": "deleted"})
 }
 
 func (s *Service) handleGetRackUnits(w http.ResponseWriter, r *http.Request) {
@@ -126,13 +127,13 @@ func (s *Service) handleGetRackUnits(w http.ResponseWriter, r *http.Request) {
 	tenantID := tenantFromCtx(r.Context())
 	units, err := s.pg.ListRackUnits(r.Context(), rackID, tenantID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	if units == nil {
 		units = []*model.RackUnit{}
 	}
-	writeJSON(w, 200, units)
+	httputil.WriteJSON(w, 200, units)
 }
 
 func (s *Service) handleAssignRackUnits(w http.ResponseWriter, r *http.Request) {
@@ -142,18 +143,18 @@ func (s *Service) handleAssignRackUnits(w http.ResponseWriter, r *http.Request) 
 		Units []*model.RackUnit `json:"units"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
+		httputil.WriteError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
 	if len(req.Units) == 0 {
-		writeError(w, http.StatusBadRequest, "units is required")
+		httputil.WriteError(w, http.StatusBadRequest, "units is required")
 		return
 	}
 	if err := s.pg.AssignRackUnits(r.Context(), rackID, tenantID, req.Units); err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
+		httputil.WriteError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	writeJSON(w, 200, map[string]string{"status": "assigned"})
+	httputil.WriteJSON(w, 200, map[string]string{"status": "assigned"})
 }
 
 // ============================================================
@@ -165,15 +166,15 @@ func (s *Service) handleAppTopology(w http.ResponseWriter, r *http.Request) {
 	appCIID := r.URL.Query().Get("app_ci_id")
 	depth, _ := strconv.Atoi(r.URL.Query().Get("depth"))
 	if appCIID == "" {
-		writeError(w, http.StatusBadRequest, "app_ci_id is required")
+		httputil.WriteError(w, http.StatusBadRequest, "app_ci_id is required")
 		return
 	}
 	topo, err := s.BuildAppTopology(r.Context(), tenantID, appCIID, depth)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
+		httputil.WriteError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	writeJSON(w, 200, topo)
+	httputil.WriteJSON(w, 200, topo)
 }
 
 // ============================================================
@@ -185,46 +186,46 @@ func (s *Service) handleListFieldRules(w http.ResponseWriter, r *http.Request) {
 	modelTypeID := r.URL.Query().Get("model_type_id")
 	rules, err := s.pg.ListFieldRules(r.Context(), tenantID, modelTypeID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	if rules == nil {
 		rules = []*model.FieldRule{}
 	}
-	writeJSON(w, 200, rules)
+	httputil.WriteJSON(w, 200, rules)
 }
 
 func (s *Service) handleCreateFieldRule(w http.ResponseWriter, r *http.Request) {
 	tenantID := tenantFromCtx(r.Context())
 	var rule model.FieldRule
 	if err := json.NewDecoder(r.Body).Decode(&rule); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
+		httputil.WriteError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
 	if rule.ModelTypeID == "" || rule.Field == "" || rule.Permission == "" {
-		writeError(w, http.StatusBadRequest, "model_type_id/field/permission are required")
+		httputil.WriteError(w, http.StatusBadRequest, "model_type_id/field/permission are required")
 		return
 	}
 	if rule.Action != model.FieldActionHidden && rule.Action != model.FieldActionReadonly {
-		writeError(w, http.StatusBadRequest, "action must be hidden|readonly")
+		httputil.WriteError(w, http.StatusBadRequest, "action must be hidden|readonly")
 		return
 	}
 	rule.TenantID = tenantID
 	if err := s.pg.CreateFieldRule(r.Context(), &rule); err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	writeJSON(w, 201, &rule)
+	httputil.WriteJSON(w, 201, &rule)
 }
 
 func (s *Service) handleDeleteFieldRule(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	tenantID := tenantFromCtx(r.Context())
 	if err := s.pg.DeleteFieldRule(r.Context(), id, tenantID); err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	writeJSON(w, 200, map[string]string{"status": "deleted"})
+	httputil.WriteJSON(w, 200, map[string]string{"status": "deleted"})
 }
 
 // ============================================================
@@ -235,32 +236,32 @@ func (s *Service) handleListSubscriptions(w http.ResponseWriter, r *http.Request
 	tenantID := tenantFromCtx(r.Context())
 	subs, err := s.pg.ListSubscriptions(r.Context(), tenantID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	if subs == nil {
 		subs = []*model.Subscription{}
 	}
-	writeJSON(w, 200, subs)
+	httputil.WriteJSON(w, 200, subs)
 }
 
 func (s *Service) handleCreateSubscription(w http.ResponseWriter, r *http.Request) {
 	tenantID := tenantFromCtx(r.Context())
 	var sub model.Subscription
 	if err := json.NewDecoder(r.Body).Decode(&sub); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
+		httputil.WriteError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
 	if sub.Name == "" {
-		writeError(w, http.StatusBadRequest, "订阅名称不能为空")
+		httputil.WriteError(w, http.StatusBadRequest, "订阅名称不能为空")
 		return
 	}
 	if sub.Channel != model.SubChannelWebhook && sub.Channel != model.SubChannelNotification {
-		writeError(w, http.StatusBadRequest, "channel must be webhook|notification")
+		httputil.WriteError(w, http.StatusBadRequest, "channel must be webhook|notification")
 		return
 	}
 	if sub.Channel == model.SubChannelWebhook && sub.Target == "" {
-		writeError(w, http.StatusBadRequest, "webhook target url is required")
+		httputil.WriteError(w, http.StatusBadRequest, "webhook target url is required")
 		return
 	}
 	if sub.EventType == "" {
@@ -268,10 +269,10 @@ func (s *Service) handleCreateSubscription(w http.ResponseWriter, r *http.Reques
 	}
 	sub.TenantID = tenantID
 	if err := s.pg.CreateSubscription(r.Context(), &sub); err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	writeJSON(w, 201, &sub)
+	httputil.WriteJSON(w, 201, &sub)
 }
 
 func (s *Service) handleUpdateSubscription(w http.ResponseWriter, r *http.Request) {
@@ -279,7 +280,7 @@ func (s *Service) handleUpdateSubscription(w http.ResponseWriter, r *http.Reques
 	tenantID := tenantFromCtx(r.Context())
 	subs, err := s.pg.ListSubscriptions(r.Context(), tenantID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	var target *model.Subscription
@@ -290,7 +291,7 @@ func (s *Service) handleUpdateSubscription(w http.ResponseWriter, r *http.Reques
 		}
 	}
 	if target == nil {
-		writeError(w, 404, "subscription not found")
+		httputil.WriteError(w, 404, "subscription not found")
 		return
 	}
 	var req struct {
@@ -300,7 +301,7 @@ func (s *Service) handleUpdateSubscription(w http.ResponseWriter, r *http.Reques
 		Enabled   *bool   `json:"enabled"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
+		httputil.WriteError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
 	if req.Name != nil && *req.Name != "" {
@@ -316,20 +317,20 @@ func (s *Service) handleUpdateSubscription(w http.ResponseWriter, r *http.Reques
 		target.Enabled = *req.Enabled
 	}
 	if err := s.pg.UpdateSubscription(r.Context(), target); err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	writeJSON(w, 200, target)
+	httputil.WriteJSON(w, 200, target)
 }
 
 func (s *Service) handleDeleteSubscription(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	tenantID := tenantFromCtx(r.Context())
 	if err := s.pg.DeleteSubscription(r.Context(), id, tenantID); err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	writeJSON(w, 200, map[string]string{"status": "deleted"})
+	httputil.WriteJSON(w, 200, map[string]string{"status": "deleted"})
 }
 
 // handleTestSubscription 发送一条测试事件验证订阅链路。
@@ -338,7 +339,7 @@ func (s *Service) handleTestSubscription(w http.ResponseWriter, r *http.Request)
 	tenantID := tenantFromCtx(r.Context())
 	subs, err := s.pg.ListSubscriptions(r.Context(), tenantID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	var target *model.Subscription
@@ -349,7 +350,7 @@ func (s *Service) handleTestSubscription(w http.ResponseWriter, r *http.Request)
 		}
 	}
 	if target == nil {
-		writeError(w, 404, "subscription not found")
+		httputil.WriteError(w, 404, "subscription not found")
 		return
 	}
 	// 同步执行一次投递，返回结果便于验证
@@ -377,7 +378,7 @@ func (s *Service) handleTestSubscription(w http.ResponseWriter, r *http.Request)
 	if s.pg != nil {
 		_ = s.pg.RecordSubscriptionDelivery(r.Context(), d)
 	}
-	writeJSON(w, 200, d)
+	httputil.WriteJSON(w, 200, d)
 }
 
 func (s *Service) handleListSubscriptionDeliveries(w http.ResponseWriter, r *http.Request) {
@@ -385,11 +386,11 @@ func (s *Service) handleListSubscriptionDeliveries(w http.ResponseWriter, r *htt
 	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
 	items, err := s.pg.ListSubscriptionDeliveries(r.Context(), tenantID, limit)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	if items == nil {
 		items = []*model.SubscriptionDelivery{}
 	}
-	writeJSON(w, 200, items)
+	httputil.WriteJSON(w, 200, items)
 }

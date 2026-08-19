@@ -381,12 +381,12 @@ func (s *Service) RegisterRoutes(mux *http.ServeMux) {
 func (s *Service) handleCreate(w http.ResponseWriter, r *http.Request) {
 	var req model.CreateTicketRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
+		httputil.WriteError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
 
 	if req.Title == "" {
-		writeError(w, http.StatusBadRequest, "title is required")
+		httputil.WriteError(w, http.StatusBadRequest, "title is required")
 		return
 	}
 
@@ -398,10 +398,10 @@ func (s *Service) handleCreate(w http.ResponseWriter, r *http.Request) {
 	ticket, err := s.CreateTicket(r.Context(), req)
 	if err != nil {
 		slog.Error("create ticket failed", "error", err)
-		writeError(w, http.StatusInternalServerError, "failed to create ticket")
+		httputil.WriteError(w, http.StatusInternalServerError, "failed to create ticket")
 		return
 	}
-	writeJSON(w, http.StatusCreated, ticket)
+	httputil.WriteJSON(w, http.StatusCreated, ticket)
 }
 
 // CreateTicket 创建一张工单, 供 HTTP handler 与内部模块(如 AI 巡检发现转单)复用。
@@ -628,14 +628,14 @@ func (s *Service) handleGet(w http.ResponseWriter, r *http.Request) {
 	ticket, err := s.store.Get(r.Context(), id, tenantID)
 	if err != nil {
 		if err == store.ErrNotFound {
-			writeError(w, http.StatusNotFound, "ticket not found")
+			httputil.WriteError(w, http.StatusNotFound, "ticket not found")
 			return
 		}
-		writeError(w, http.StatusInternalServerError, err.Error())
+		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 
-	writeJSON(w, http.StatusOK, ticket)
+	httputil.WriteJSON(w, http.StatusOK, ticket)
 }
 
 // TicketMetricsBySource 按工单 labels 中 source 字段过滤统计(供 AI 数字员工运营效果评估)。
@@ -707,14 +707,14 @@ func (s *Service) handleList(w http.ResponseWriter, r *http.Request) {
 
 	tickets, err := s.store.List(r.Context(), tenantID, status)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	if tickets == nil {
 		tickets = []*model.Ticket{}
 	}
 
-	writeJSON(w, http.StatusOK, tickets)
+	httputil.WriteJSON(w, http.StatusOK, tickets)
 }
 
 // stepVoter 是可选的多人审批表决能力接口(由 process.Service 实现, 可选能力不破坏既有 ProcessEngine)。
@@ -760,22 +760,22 @@ func (s *Service) handleApprove(w http.ResponseWriter, r *http.Request) {
 
 	var req model.ApproveRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
+		httputil.WriteError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
 
 	ticket, err := s.store.Get(r.Context(), id, tenantID)
 	if err != nil {
 		if err == store.ErrNotFound {
-			writeError(w, http.StatusNotFound, "ticket not found")
+			httputil.WriteError(w, http.StatusNotFound, "ticket not found")
 			return
 		}
-		writeError(w, http.StatusInternalServerError, err.Error())
+		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 
 	if err := model.CanTransition(ticket.Status, model.StatusApproved); err != nil {
-		writeError(w, http.StatusConflict, err.Error())
+		httputil.WriteError(w, http.StatusConflict, err.Error())
 		return
 	}
 
@@ -810,10 +810,10 @@ func (s *Service) handleApprove(w http.ResponseWriter, r *http.Request) {
 			if !allVoted {
 				// 还有审批人未投票，等待
 				if err := s.store.Update(r.Context(), ticket); err != nil {
-					writeError(w, http.StatusInternalServerError, "failed to update ticket")
+					httputil.WriteError(w, http.StatusInternalServerError, "failed to update ticket")
 					return
 				}
-				writeJSON(w, http.StatusOK, map[string]any{
+				httputil.WriteJSON(w, http.StatusOK, map[string]any{
 					"status":  "waiting",
 					"message": fmt.Sprintf("已记录审批意见, 等待其余审批人 (%d/%d)", len(ticket.ApprovalStatus.Votes), len(ticket.ApprovalChain.Approvers)),
 					"ticket":  ticket,
@@ -826,12 +826,12 @@ func (s *Service) handleApprove(w http.ResponseWriter, r *http.Request) {
 				ticket.Status = model.StatusRejected
 				ticket.RejectReason = "审批链驳回"
 				if err := s.store.Update(r.Context(), ticket); err != nil {
-					writeError(w, http.StatusInternalServerError, "failed to update ticket")
+					httputil.WriteError(w, http.StatusInternalServerError, "failed to update ticket")
 					return
 				}
 				s.recordEvent(r.Context(), ticket, model.StatusPendingReview, model.StatusRejected, req.ApprovedBy, "审批链驳回")
 				s.broadcastTicketUpdate(ticket)
-				writeJSON(w, http.StatusOK, ticket)
+				httputil.WriteJSON(w, http.StatusOK, ticket)
 				return
 			}
 			// 全部通过
@@ -840,18 +840,18 @@ func (s *Service) handleApprove(w http.ResponseWriter, r *http.Request) {
 			// 顺序模式: 检查当前审批人是否是正确的顺序
 			currentApprover := ticket.ApprovalChain.Approvers[ticket.ApprovalStatus.CurrentIndex]
 			if req.ApprovedBy != currentApprover {
-				writeError(w, http.StatusConflict, fmt.Sprintf("当前审批人应为 %s", currentApprover))
+				httputil.WriteError(w, http.StatusConflict, fmt.Sprintf("当前审批人应为 %s", currentApprover))
 				return
 			}
 			ticket.ApprovalStatus.CurrentIndex++
 			// 检查是否还有下一个审批人
 			if ticket.ApprovalStatus.CurrentIndex < len(ticket.ApprovalChain.Approvers) {
 				if err := s.store.Update(r.Context(), ticket); err != nil {
-					writeError(w, http.StatusInternalServerError, "failed to update ticket")
+					httputil.WriteError(w, http.StatusInternalServerError, "failed to update ticket")
 					return
 				}
 				nextApprover := ticket.ApprovalChain.Approvers[ticket.ApprovalStatus.CurrentIndex]
-				writeJSON(w, http.StatusOK, map[string]any{
+				httputil.WriteJSON(w, http.StatusOK, map[string]any{
 					"status":  "waiting",
 					"message": fmt.Sprintf("已通过, 等待下一级审批人: %s", nextApprover),
 					"ticket":  ticket,
@@ -868,7 +868,7 @@ func (s *Service) handleApprove(w http.ResponseWriter, r *http.Request) {
 				extra := dynamicApprovers(step, ticket)
 				all, err := voter.VoteStep(r.Context(), ticket.TenantID, ticket.ID, step.ID, req.ApprovedBy, true, extra)
 				if err == nil && !all {
-					writeJSON(w, http.StatusOK, map[string]any{
+					httputil.WriteJSON(w, http.StatusOK, map[string]any{
 						"status":  "waiting",
 						"message": "已记录审批意见, 等待其余审批人",
 						"ticket":  ticket,
@@ -893,7 +893,7 @@ func (s *Service) handleApprove(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := s.store.Update(r.Context(), ticket); err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to update ticket")
+		httputil.WriteError(w, http.StatusInternalServerError, "failed to update ticket")
 		return
 	}
 
@@ -906,7 +906,7 @@ func (s *Service) handleApprove(w http.ResponseWriter, r *http.Request) {
 		req.ApprovedBy, assigneeAndOwner(ticket)...)
 	s.advanceProcess(r.Context(), ticket, "success")
 	s.broadcastTicketUpdate(ticket)
-	writeJSON(w, http.StatusOK, ticket)
+	httputil.WriteJSON(w, http.StatusOK, ticket)
 }
 
 func (s *Service) handleReject(w http.ResponseWriter, r *http.Request) {
@@ -915,22 +915,22 @@ func (s *Service) handleReject(w http.ResponseWriter, r *http.Request) {
 
 	var req model.RejectRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
+		httputil.WriteError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
 
 	ticket, err := s.store.Get(r.Context(), id, tenantID)
 	if err != nil {
 		if err == store.ErrNotFound {
-			writeError(w, http.StatusNotFound, "ticket not found")
+			httputil.WriteError(w, http.StatusNotFound, "ticket not found")
 			return
 		}
-		writeError(w, http.StatusInternalServerError, err.Error())
+		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 
 	if err := model.CanTransition(ticket.Status, model.StatusRejected); err != nil {
-		writeError(w, http.StatusConflict, err.Error())
+		httputil.WriteError(w, http.StatusConflict, err.Error())
 		return
 	}
 
@@ -939,7 +939,7 @@ func (s *Service) handleReject(w http.ResponseWriter, r *http.Request) {
 	ticket.RejectReason = req.Reason
 
 	if err := s.store.Update(r.Context(), ticket); err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to update ticket")
+		httputil.WriteError(w, http.StatusInternalServerError, "failed to update ticket")
 		return
 	}
 
@@ -951,7 +951,7 @@ func (s *Service) handleReject(w http.ResponseWriter, r *http.Request) {
 		req.RejectedBy, assigneeAndOwner(ticket)...)
 	s.advanceProcess(r.Context(), ticket, "failure")
 	s.broadcastTicketUpdate(ticket)
-	writeJSON(w, http.StatusOK, ticket)
+	httputil.WriteJSON(w, http.StatusOK, ticket)
 }
 
 func (s *Service) handleExecute(w http.ResponseWriter, r *http.Request) {
@@ -960,27 +960,27 @@ func (s *Service) handleExecute(w http.ResponseWriter, r *http.Request) {
 
 	var req model.ExecuteRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
+		httputil.WriteError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
 
 	ticket, err := s.store.Get(r.Context(), id, tenantID)
 	if err != nil {
 		if err == store.ErrNotFound {
-			writeError(w, http.StatusNotFound, "ticket not found")
+			httputil.WriteError(w, http.StatusNotFound, "ticket not found")
 			return
 		}
-		writeError(w, http.StatusInternalServerError, err.Error())
+		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 
 	if ticket.RiskLevel.RequiresApproval() && ticket.Status != model.StatusApproved {
-		writeError(w, http.StatusForbidden, model.ErrRiskRequiresApproval.Error())
+		httputil.WriteError(w, http.StatusForbidden, model.ErrRiskRequiresApproval.Error())
 		return
 	}
 
 	if err := model.CanTransition(ticket.Status, model.StatusExecuting); err != nil {
-		writeError(w, http.StatusConflict, err.Error())
+		httputil.WriteError(w, http.StatusConflict, err.Error())
 		return
 	}
 
@@ -990,14 +990,14 @@ func (s *Service) handleExecute(w http.ResponseWriter, r *http.Request) {
 	ticket.ExecutedAt = &now
 
 	if err := s.store.Update(r.Context(), ticket); err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to update ticket")
+		httputil.WriteError(w, http.StatusInternalServerError, "failed to update ticket")
 		return
 	}
 
 	s.recordEvent(r.Context(), ticket, previousStatus, model.StatusExecuting, req.ExecutedBy, req.Result)
 	s.fireWebhook(r.Context(), "ticket.executing", ticket, req.ExecutedBy)
 	s.broadcastTicketUpdate(ticket)
-	writeJSON(w, http.StatusOK, ticket)
+	httputil.WriteJSON(w, http.StatusOK, ticket)
 }
 
 func (s *Service) handleComplete(w http.ResponseWriter, r *http.Request) {
@@ -1013,15 +1013,15 @@ func (s *Service) handleComplete(w http.ResponseWriter, r *http.Request) {
 	ticket, err := s.store.Get(r.Context(), id, tenantID)
 	if err != nil {
 		if err == store.ErrNotFound {
-			writeError(w, http.StatusNotFound, "ticket not found")
+			httputil.WriteError(w, http.StatusNotFound, "ticket not found")
 			return
 		}
-		writeError(w, http.StatusInternalServerError, err.Error())
+		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 
 	if err := model.CanTransition(ticket.Status, model.StatusSucceeded); err != nil {
-		writeError(w, http.StatusConflict, err.Error())
+		httputil.WriteError(w, http.StatusConflict, err.Error())
 		return
 	}
 
@@ -1040,7 +1040,7 @@ func (s *Service) handleComplete(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := s.store.Update(r.Context(), ticket); err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to update ticket")
+		httputil.WriteError(w, http.StatusInternalServerError, "failed to update ticket")
 		return
 	}
 
@@ -1049,7 +1049,7 @@ func (s *Service) handleComplete(w http.ResponseWriter, r *http.Request) {
 	s.advanceProcess(r.Context(), ticket, "success")
 	s.broadcastTicketUpdate(ticket)
 	s.archiveTicketToKnowledge(r.Context(), ticket, req.Comment)
-	writeJSON(w, http.StatusOK, ticket)
+	httputil.WriteJSON(w, http.StatusOK, ticket)
 }
 
 func (s *Service) handleRollback(w http.ResponseWriter, r *http.Request) {
@@ -1065,15 +1065,15 @@ func (s *Service) handleRollback(w http.ResponseWriter, r *http.Request) {
 	ticket, err := s.store.Get(r.Context(), id, tenantID)
 	if err != nil {
 		if err == store.ErrNotFound {
-			writeError(w, http.StatusNotFound, "ticket not found")
+			httputil.WriteError(w, http.StatusNotFound, "ticket not found")
 			return
 		}
-		writeError(w, http.StatusInternalServerError, err.Error())
+		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 
 	if err := model.CanTransition(ticket.Status, model.StatusRolledBack); err != nil {
-		writeError(w, http.StatusConflict, err.Error())
+		httputil.WriteError(w, http.StatusConflict, err.Error())
 		return
 	}
 
@@ -1085,7 +1085,7 @@ func (s *Service) handleRollback(w http.ResponseWriter, r *http.Request) {
 	ticket.RolledBackAt = &now
 
 	if err := s.store.Update(r.Context(), ticket); err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to update ticket")
+		httputil.WriteError(w, http.StatusInternalServerError, "failed to update ticket")
 		return
 	}
 
@@ -1093,7 +1093,7 @@ func (s *Service) handleRollback(w http.ResponseWriter, r *http.Request) {
 	s.fireWebhook(r.Context(), "ticket.rolled_back", ticket, req.RolledBackBy)
 	s.advanceProcess(r.Context(), ticket, "failure")
 	s.broadcastTicketUpdate(ticket)
-	writeJSON(w, http.StatusOK, ticket)
+	httputil.WriteJSON(w, http.StatusOK, ticket)
 }
 
 func (s *Service) handleSubmit(w http.ResponseWriter, r *http.Request) {
@@ -1111,14 +1111,14 @@ func (s *Service) handleSubmit(w http.ResponseWriter, r *http.Request) {
 	ticket, err := s.store.Get(r.Context(), id, tenantID)
 	if err != nil {
 		if err == store.ErrNotFound {
-			writeError(w, http.StatusNotFound, "ticket not found")
+			httputil.WriteError(w, http.StatusNotFound, "ticket not found")
 			return
 		}
-		writeError(w, http.StatusInternalServerError, err.Error())
+		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	if model.IsTerminal(ticket.Status) {
-		writeError(w, http.StatusConflict, model.ErrTicketClosed.Error())
+		httputil.WriteError(w, http.StatusConflict, model.ErrTicketClosed.Error())
 		return
 	}
 
@@ -1128,7 +1128,7 @@ func (s *Service) handleSubmit(w http.ResponseWriter, r *http.Request) {
 		target = model.StatusExecuting
 	}
 	if err := model.CanTransition(ticket.Status, target); err != nil {
-		writeError(w, http.StatusConflict, err.Error())
+		httputil.WriteError(w, http.StatusConflict, err.Error())
 		return
 	}
 
@@ -1136,7 +1136,7 @@ func (s *Service) handleSubmit(w http.ResponseWriter, r *http.Request) {
 	ticket.Status = target
 
 	if err := s.store.Update(r.Context(), ticket); err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to update ticket")
+		httputil.WriteError(w, http.StatusInternalServerError, "failed to update ticket")
 		return
 	}
 
@@ -1144,7 +1144,7 @@ func (s *Service) handleSubmit(w http.ResponseWriter, r *http.Request) {
 	s.fireWebhook(r.Context(), "ticket.submitted", ticket, req.SubmittedBy)
 	s.advanceProcess(r.Context(), ticket, "success")
 	s.broadcastTicketUpdate(ticket)
-	writeJSON(w, http.StatusOK, ticket)
+	httputil.WriteJSON(w, http.StatusOK, ticket)
 }
 
 func (s *Service) handleAssign(w http.ResponseWriter, r *http.Request) {
@@ -1153,11 +1153,11 @@ func (s *Service) handleAssign(w http.ResponseWriter, r *http.Request) {
 
 	var req model.AssignRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
+		httputil.WriteError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
 	if req.Assignee == "" {
-		writeError(w, http.StatusBadRequest, "assignee is required")
+		httputil.WriteError(w, http.StatusBadRequest, "assignee is required")
 		return
 	}
 
@@ -1169,14 +1169,14 @@ func (s *Service) handleAssign(w http.ResponseWriter, r *http.Request) {
 	ticket, err := s.store.Get(r.Context(), id, tenantID)
 	if err != nil {
 		if err == store.ErrNotFound {
-			writeError(w, http.StatusNotFound, "ticket not found")
+			httputil.WriteError(w, http.StatusNotFound, "ticket not found")
 			return
 		}
-		writeError(w, http.StatusInternalServerError, err.Error())
+		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	if model.IsTerminal(ticket.Status) {
-		writeError(w, http.StatusConflict, model.ErrTicketClosed.Error())
+		httputil.WriteError(w, http.StatusConflict, model.ErrTicketClosed.Error())
 		return
 	}
 
@@ -1186,7 +1186,7 @@ func (s *Service) handleAssign(w http.ResponseWriter, r *http.Request) {
 	ticket.AssignedAt = &now
 
 	if err := s.store.Update(r.Context(), ticket); err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to update ticket")
+		httputil.WriteError(w, http.StatusInternalServerError, "failed to update ticket")
 		return
 	}
 
@@ -1197,7 +1197,7 @@ func (s *Service) handleAssign(w http.ResponseWriter, r *http.Request) {
 		fmt.Sprintf("指派人: %s / 风险: %s", req.AssignedBy, ticket.RiskLevel),
 		req.AssignedBy, req.Assignee)
 	s.broadcastTicketUpdate(ticket)
-	writeJSON(w, http.StatusOK, ticket)
+	httputil.WriteJSON(w, http.StatusOK, ticket)
 }
 
 func (s *Service) handleClose(w http.ResponseWriter, r *http.Request) {
@@ -1213,14 +1213,14 @@ func (s *Service) handleClose(w http.ResponseWriter, r *http.Request) {
 	ticket, err := s.store.Get(r.Context(), id, tenantID)
 	if err != nil {
 		if err == store.ErrNotFound {
-			writeError(w, http.StatusNotFound, "ticket not found")
+			httputil.WriteError(w, http.StatusNotFound, "ticket not found")
 			return
 		}
-		writeError(w, http.StatusInternalServerError, err.Error())
+		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	if err := model.CanTransition(ticket.Status, model.StatusClosed); err != nil {
-		writeError(w, http.StatusConflict, err.Error())
+		httputil.WriteError(w, http.StatusConflict, err.Error())
 		return
 	}
 
@@ -1231,7 +1231,7 @@ func (s *Service) handleClose(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := s.store.Update(r.Context(), ticket); err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to update ticket")
+		httputil.WriteError(w, http.StatusInternalServerError, "failed to update ticket")
 		return
 	}
 
@@ -1261,7 +1261,7 @@ func (s *Service) handleClose(w http.ResponseWriter, r *http.Request) {
 		fmt.Sprintf("关闭人: %s%s", req.ClosedBy, optionalComment(req.Comment)),
 		req.ClosedBy, assigneeAndOwner(ticket)...)
 	s.broadcastTicketUpdate(ticket)
-	writeJSON(w, http.StatusOK, ticket)
+	httputil.WriteJSON(w, http.StatusOK, ticket)
 }
 
 func (s *Service) handleWithdraw(w http.ResponseWriter, r *http.Request) {
@@ -1274,23 +1274,23 @@ func (s *Service) handleWithdraw(w http.ResponseWriter, r *http.Request) {
 	}
 	ticket, err := s.store.Get(r.Context(), id, tenantID)
 	if err != nil {
-		writeError(w, http.StatusNotFound, "ticket not found")
+		httputil.WriteError(w, http.StatusNotFound, "ticket not found")
 		return
 	}
 	if err := model.CanTransition(ticket.Status, model.StatusWithdrawn); err != nil {
-		writeError(w, http.StatusConflict, err.Error())
+		httputil.WriteError(w, http.StatusConflict, err.Error())
 		return
 	}
 	prev := ticket.Status
 	ticket.Status = model.StatusWithdrawn
 	if err := s.store.Update(r.Context(), ticket); err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to update ticket")
+		httputil.WriteError(w, http.StatusInternalServerError, "failed to update ticket")
 		return
 	}
 	s.recordEvent(r.Context(), ticket, prev, model.StatusWithdrawn, req.WithdrawnBy, req.Reason)
 	s.fireWebhook(r.Context(), "ticket.withdrawn", ticket, req.WithdrawnBy)
 	s.broadcastTicketUpdate(ticket)
-	writeJSON(w, http.StatusOK, ticket)
+	httputil.WriteJSON(w, http.StatusOK, ticket)
 }
 
 func (s *Service) handleReopen(w http.ResponseWriter, r *http.Request) {
@@ -1303,17 +1303,17 @@ func (s *Service) handleReopen(w http.ResponseWriter, r *http.Request) {
 	}
 	ticket, err := s.store.Get(r.Context(), id, tenantID)
 	if err != nil {
-		writeError(w, http.StatusNotFound, "ticket not found")
+		httputil.WriteError(w, http.StatusNotFound, "ticket not found")
 		return
 	}
 	if err := model.CanTransition(ticket.Status, model.StatusReopened); err != nil {
-		writeError(w, http.StatusConflict, err.Error())
+		httputil.WriteError(w, http.StatusConflict, err.Error())
 		return
 	}
 	prev := ticket.Status
 	ticket.Status = model.StatusReopened
 	if err := s.store.Update(r.Context(), ticket); err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to update ticket")
+		httputil.WriteError(w, http.StatusInternalServerError, "failed to update ticket")
 		return
 	}
 	s.recordEvent(r.Context(), ticket, prev, model.StatusReopened, req.ReopenedBy, req.Reason)
@@ -1324,7 +1324,7 @@ func (s *Service) handleReopen(w http.ResponseWriter, r *http.Request) {
 		fmt.Sprintf("重开人: %s / 原因: %s", req.ReopenedBy, truncate(req.Reason, 120)),
 		req.ReopenedBy, assigneeAndOwner(ticket)...)
 	s.broadcastTicketUpdate(ticket)
-	writeJSON(w, http.StatusOK, ticket)
+	httputil.WriteJSON(w, http.StatusOK, ticket)
 }
 
 // handleResubmit 允许被拒工单修改后重新提交到 pending_review 状态。
@@ -1341,23 +1341,23 @@ func (s *Service) handleResubmit(w http.ResponseWriter, r *http.Request) {
 	}
 	ticket, err := s.store.Get(r.Context(), id, tenantID)
 	if err != nil {
-		writeError(w, http.StatusNotFound, "ticket not found")
+		httputil.WriteError(w, http.StatusNotFound, "ticket not found")
 		return
 	}
 	if err := model.CanTransition(ticket.Status, model.StatusPendingReview); err != nil {
-		writeError(w, http.StatusConflict, err.Error())
+		httputil.WriteError(w, http.StatusConflict, err.Error())
 		return
 	}
 	prev := ticket.Status
 	ticket.Status = model.StatusPendingReview
 	if err := s.store.Update(r.Context(), ticket); err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to update ticket")
+		httputil.WriteError(w, http.StatusInternalServerError, "failed to update ticket")
 		return
 	}
 	s.recordEvent(r.Context(), ticket, prev, model.StatusPendingReview, req.ResubmittedBy, "重新提交: "+req.Reason)
 	s.fireWebhook(r.Context(), "ticket.resubmitted", ticket, req.ResubmittedBy)
 	s.broadcastTicketUpdate(ticket)
-	writeJSON(w, http.StatusOK, ticket)
+	httputil.WriteJSON(w, http.StatusOK, ticket)
 }
 
 func (s *Service) handleHold(w http.ResponseWriter, r *http.Request) {
@@ -1370,11 +1370,11 @@ func (s *Service) handleHold(w http.ResponseWriter, r *http.Request) {
 	}
 	ticket, err := s.store.Get(r.Context(), id, tenantID)
 	if err != nil {
-		writeError(w, http.StatusNotFound, "ticket not found")
+		httputil.WriteError(w, http.StatusNotFound, "ticket not found")
 		return
 	}
 	if model.IsTerminal(ticket.Status) {
-		writeError(w, http.StatusConflict, "terminal ticket cannot be held")
+		httputil.WriteError(w, http.StatusConflict, "terminal ticket cannot be held")
 		return
 	}
 	now := time.Now()
@@ -1383,12 +1383,12 @@ func (s *Service) handleHold(w http.ResponseWriter, r *http.Request) {
 	ticket.HoldUntilAt = req.HoldUntilAt
 	ticket.HoldAt = &now // 记录挂起开始时间
 	if err := s.store.Update(r.Context(), ticket); err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to update ticket")
+		httputil.WriteError(w, http.StatusInternalServerError, "failed to update ticket")
 		return
 	}
 	s.recordEvent(r.Context(), ticket, ticket.Status, ticket.Status, req.HoldBy, "挂起: "+req.Reason)
 	s.broadcastTicketUpdate(ticket)
-	writeJSON(w, http.StatusOK, ticket)
+	httputil.WriteJSON(w, http.StatusOK, ticket)
 }
 
 func (s *Service) handleResume(w http.ResponseWriter, r *http.Request) {
@@ -1404,11 +1404,11 @@ func (s *Service) handleResume(w http.ResponseWriter, r *http.Request) {
 	}
 	ticket, err := s.store.Get(r.Context(), id, tenantID)
 	if err != nil {
-		writeError(w, http.StatusNotFound, "ticket not found")
+		httputil.WriteError(w, http.StatusNotFound, "ticket not found")
 		return
 	}
 	if !ticket.OnHold {
-		writeError(w, http.StatusConflict, "ticket is not on hold")
+		httputil.WriteError(w, http.StatusConflict, "ticket is not on hold")
 		return
 	}
 	now := time.Now()
@@ -1430,12 +1430,12 @@ func (s *Service) handleResume(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := s.store.Update(r.Context(), ticket); err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to update ticket")
+		httputil.WriteError(w, http.StatusInternalServerError, "failed to update ticket")
 		return
 	}
 	s.recordEvent(r.Context(), ticket, ticket.Status, ticket.Status, req.ResumedBy, "恢复: "+req.Reason)
 	s.broadcastTicketUpdate(ticket)
-	writeJSON(w, http.StatusOK, ticket)
+	httputil.WriteJSON(w, http.StatusOK, ticket)
 }
 
 func (s *Service) handleRemind(w http.ResponseWriter, r *http.Request) {
@@ -1448,7 +1448,7 @@ func (s *Service) handleRemind(w http.ResponseWriter, r *http.Request) {
 	}
 	ticket, err := s.store.Get(r.Context(), id, tenantID)
 	if err != nil {
-		writeError(w, http.StatusNotFound, "ticket not found")
+		httputil.WriteError(w, http.StatusNotFound, "ticket not found")
 		return
 	}
 	content := fmt.Sprintf("负责人: %s\n催办人: %s", ticket.Assignee, req.RemindedBy)
@@ -1461,7 +1461,7 @@ func (s *Service) handleRemind(w http.ResponseWriter, r *http.Request) {
 		fmt.Sprintf("催办人: %s%s", req.RemindedBy, optionalComment(req.Message)),
 		req.RemindedBy, ticket.Assignee)
 	s.recordEvent(r.Context(), ticket, ticket.Status, ticket.Status, req.RemindedBy, "催办: "+req.Message)
-	writeJSON(w, http.StatusOK, map[string]string{"status": "reminded"})
+	httputil.WriteJSON(w, http.StatusOK, map[string]string{"status": "reminded"})
 }
 
 func (s *Service) handleRelate(w http.ResponseWriter, r *http.Request) {
@@ -1470,21 +1470,21 @@ func (s *Service) handleRelate(w http.ResponseWriter, r *http.Request) {
 	var req model.RelateRequest
 	json.NewDecoder(r.Body).Decode(&req)
 	if req.RelatedID == "" {
-		writeError(w, http.StatusBadRequest, "related_id is required")
+		httputil.WriteError(w, http.StatusBadRequest, "related_id is required")
 		return
 	}
 	if req.RelatedID == id {
-		writeError(w, http.StatusBadRequest, "cannot relate to itself")
+		httputil.WriteError(w, http.StatusBadRequest, "cannot relate to itself")
 		return
 	}
 	a, err := s.store.Get(r.Context(), id, tenantID)
 	if err != nil {
-		writeError(w, http.StatusNotFound, "ticket not found")
+		httputil.WriteError(w, http.StatusNotFound, "ticket not found")
 		return
 	}
 	b, err := s.store.Get(r.Context(), req.RelatedID, tenantID)
 	if err != nil {
-		writeError(w, http.StatusNotFound, "related ticket not found")
+		httputil.WriteError(w, http.StatusNotFound, "related ticket not found")
 		return
 	}
 	if !containsStr(a.RelatedTicketIDs, b.ID) {
@@ -1494,13 +1494,13 @@ func (s *Service) handleRelate(w http.ResponseWriter, r *http.Request) {
 		b.RelatedTicketIDs = append(b.RelatedTicketIDs, a.ID)
 	}
 	if err := s.store.Update(r.Context(), a); err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to update ticket")
+		httputil.WriteError(w, http.StatusInternalServerError, "failed to update ticket")
 		return
 	}
 	_ = s.store.Update(r.Context(), b)
 	s.recordEvent(r.Context(), a, a.Status, a.Status, req.RelateBy, fmt.Sprintf("关联工单: %s (类型: %s)", b.ID, req.Relation))
 	s.broadcastTicketUpdate(a)
-	writeJSON(w, http.StatusOK, a)
+	httputil.WriteJSON(w, http.StatusOK, a)
 }
 
 func (s *Service) handleUpdateTicket(w http.ResponseWriter, r *http.Request) {
@@ -1508,12 +1508,12 @@ func (s *Service) handleUpdateTicket(w http.ResponseWriter, r *http.Request) {
 	tenantID := tenantFromCtx(r.Context())
 	var req model.UpdateTicketRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
+		httputil.WriteError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
 	ticket, err := s.store.Get(r.Context(), id, tenantID)
 	if err != nil {
-		writeError(w, http.StatusNotFound, "ticket not found")
+		httputil.WriteError(w, http.StatusNotFound, "ticket not found")
 		return
 	}
 	prev := ticket.Status
@@ -1544,12 +1544,12 @@ func (s *Service) handleUpdateTicket(w http.ResponseWriter, r *http.Request) {
 		ticket.RollbackPlan = req.RollbackPlan
 	}
 	if err := s.store.Update(r.Context(), ticket); err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to update ticket")
+		httputil.WriteError(w, http.StatusInternalServerError, "failed to update ticket")
 		return
 	}
 	s.recordEvent(r.Context(), ticket, prev, ticket.Status, req.Assignee, "更新工单信息")
 	s.broadcastTicketUpdate(ticket)
-	writeJSON(w, http.StatusOK, ticket)
+	httputil.WriteJSON(w, http.StatusOK, ticket)
 }
 
 func containsStr(list []string, s string) bool {
@@ -1620,19 +1620,19 @@ func (s *Service) handleGetProcessInstance(w http.ResponseWriter, r *http.Reques
 	id := r.PathValue("id")
 	tenantID := tenantFromCtx(r.Context())
 	if s.processStore == nil {
-		writeError(w, http.StatusNotImplemented, "process engine not configured")
+		httputil.WriteError(w, http.StatusNotImplemented, "process engine not configured")
 		return
 	}
 	inst, err := s.processStore.GetInstance(r.Context(), id, tenantID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	if inst == nil {
-		writeError(w, http.StatusNotFound, "no process instance for ticket")
+		httputil.WriteError(w, http.StatusNotFound, "no process instance for ticket")
 		return
 	}
-	writeJSON(w, http.StatusOK, inst)
+	httputil.WriteJSON(w, http.StatusOK, inst)
 }
 
 func (s *Service) handleGetEvents(w http.ResponseWriter, r *http.Request) {
@@ -1641,29 +1641,29 @@ func (s *Service) handleGetEvents(w http.ResponseWriter, r *http.Request) {
 
 	ticket, err := s.store.Get(r.Context(), id, tenantID)
 	if err != nil {
-		writeError(w, http.StatusNotFound, "ticket not found")
+		httputil.WriteError(w, http.StatusNotFound, "ticket not found")
 		return
 	}
 
 	events, err := s.store.GetEvents(r.Context(), ticket.ID, tenantID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	if events == nil {
 		events = []*model.TicketEvent{}
 	}
-	writeJSON(w, http.StatusOK, events)
+	httputil.WriteJSON(w, http.StatusOK, events)
 }
 
 func (s *Service) handleStats(w http.ResponseWriter, r *http.Request) {
 	tenantID := tenantFromCtx(r.Context())
 	stats, err := s.store.GetStats(r.Context(), tenantID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, stats)
+	httputil.WriteJSON(w, http.StatusOK, stats)
 }
 
 func (s *Service) handleAddComment(w http.ResponseWriter, r *http.Request) {
@@ -1676,21 +1676,21 @@ func (s *Service) handleAddComment(w http.ResponseWriter, r *http.Request) {
 		Mentions []string `json:"mentions,omitempty"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
+		httputil.WriteError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
 	if req.Author == "" || req.Content == "" {
-		writeError(w, http.StatusBadRequest, "author and content are required")
+		httputil.WriteError(w, http.StatusBadRequest, "author and content are required")
 		return
 	}
 
 	ticket, err := s.store.Get(r.Context(), id, tenantID)
 	if err != nil {
 		if err == store.ErrNotFound {
-			writeError(w, http.StatusNotFound, "ticket not found")
+			httputil.WriteError(w, http.StatusNotFound, "ticket not found")
 			return
 		}
-		writeError(w, http.StatusInternalServerError, err.Error())
+		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 
@@ -1704,7 +1704,7 @@ func (s *Service) handleAddComment(w http.ResponseWriter, r *http.Request) {
 		Mentions: extractMentions(req.Content, req.Mentions),
 	}
 	if err := s.store.AddComment(r.Context(), comment); err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to add comment")
+		httputil.WriteError(w, http.StatusInternalServerError, "failed to add comment")
 		return
 	}
 
@@ -1719,7 +1719,7 @@ func (s *Service) handleAddComment(w http.ResponseWriter, r *http.Request) {
 		truncate(req.Content, 140), req.Author, assigneeAndOwner(ticket)...)
 
 	s.broadcastTicketUpdate(ticket)
-	writeJSON(w, http.StatusCreated, comment)
+	httputil.WriteJSON(w, http.StatusCreated, comment)
 }
 
 // AddTicketComment 以指定作者追加评论(供邮件入站等外部通道调用)。
@@ -1742,13 +1742,13 @@ func (s *Service) handleListComments(w http.ResponseWriter, r *http.Request) {
 
 	comments, err := s.store.ListComments(r.Context(), id, tenantID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	if comments == nil {
 		comments = []*model.Comment{}
 	}
-	writeJSON(w, http.StatusOK, comments)
+	httputil.WriteJSON(w, http.StatusOK, comments)
 }
 
 func (s *Service) handleDeleteComment(w http.ResponseWriter, r *http.Request) {
@@ -1758,19 +1758,19 @@ func (s *Service) handleDeleteComment(w http.ResponseWriter, r *http.Request) {
 
 	cid, err := strconv.ParseInt(cidStr, 10, 64)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid comment id")
+		httputil.WriteError(w, http.StatusBadRequest, "invalid comment id")
 		return
 	}
 
 	if err := s.store.DeleteComment(r.Context(), cid, id, tenantID); err != nil {
 		if err == store.ErrNotFound {
-			writeError(w, http.StatusNotFound, "comment not found")
+			httputil.WriteError(w, http.StatusNotFound, "comment not found")
 			return
 		}
-		writeError(w, http.StatusInternalServerError, err.Error())
+		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
+	httputil.WriteJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
 }
 
 func (s *Service) handleEditComment(w http.ResponseWriter, r *http.Request) {
@@ -1780,7 +1780,7 @@ func (s *Service) handleEditComment(w http.ResponseWriter, r *http.Request) {
 
 	cid, err := strconv.ParseInt(cidStr, 10, 64)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid comment id")
+		httputil.WriteError(w, http.StatusBadRequest, "invalid comment id")
 		return
 	}
 
@@ -1788,19 +1788,19 @@ func (s *Service) handleEditComment(w http.ResponseWriter, r *http.Request) {
 		Content string `json:"content"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.Content == "" {
-		writeError(w, http.StatusBadRequest, "content is required")
+		httputil.WriteError(w, http.StatusBadRequest, "content is required")
 		return
 	}
 
 	if err := s.store.EditComment(r.Context(), cid, id, tenantID, body.Content); err != nil {
 		if err == store.ErrNotFound {
-			writeError(w, http.StatusNotFound, "comment not found")
+			httputil.WriteError(w, http.StatusNotFound, "comment not found")
 			return
 		}
-		writeError(w, http.StatusInternalServerError, err.Error())
+		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]string{"status": "updated"})
+	httputil.WriteJSON(w, http.StatusOK, map[string]string{"status": "updated"})
 }
 
 // --- Subtasks ---
@@ -1811,11 +1811,11 @@ func (s *Service) handleAddSubtask(w http.ResponseWriter, r *http.Request) {
 
 	var req model.CreateSubtaskRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
+		httputil.WriteError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
 	if req.Title == "" {
-		writeError(w, http.StatusBadRequest, "title is required")
+		httputil.WriteError(w, http.StatusBadRequest, "title is required")
 		return
 	}
 	if req.CreatedBy == "" {
@@ -1874,7 +1874,7 @@ func (s *Service) handleAddSubtask(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if err := s.store.CreateSubtask(r.Context(), st); err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to create subtask")
+		httputil.WriteError(w, http.StatusInternalServerError, "failed to create subtask")
 		return
 	}
 	// 派发即通知: 子任务有指派人时向其站内信箱投递待办。
@@ -1886,7 +1886,7 @@ func (s *Service) handleAddSubtask(w http.ResponseWriter, r *http.Request) {
 				st.CreatedBy, st.Assignee)
 		}
 	}
-	writeJSON(w, http.StatusCreated, st)
+	httputil.WriteJSON(w, http.StatusCreated, st)
 }
 
 // handleGetSubtask 获取子任务详情。
@@ -1898,16 +1898,16 @@ func (s *Service) handleGetSubtask(w http.ResponseWriter, r *http.Request) {
 
 	sid, err := strconv.ParseInt(sidStr, 10, 64)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid subtask id")
+		httputil.WriteError(w, http.StatusBadRequest, "invalid subtask id")
 		return
 	}
 	st, err := s.store.GetSubtask(r.Context(), sid, id, tenantID)
 	if err != nil {
 		if err == store.ErrNotFound {
-			writeError(w, http.StatusNotFound, "subtask not found")
+			httputil.WriteError(w, http.StatusNotFound, "subtask not found")
 			return
 		}
-		writeError(w, http.StatusInternalServerError, err.Error())
+		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 
@@ -1931,7 +1931,7 @@ func (s *Service) handleGetSubtask(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
-	writeJSON(w, http.StatusOK, st)
+	httputil.WriteJSON(w, http.StatusOK, st)
 }
 
 func (s *Service) handleListSubtasks(w http.ResponseWriter, r *http.Request) {
@@ -1940,13 +1940,13 @@ func (s *Service) handleListSubtasks(w http.ResponseWriter, r *http.Request) {
 
 	subtasks, err := s.store.ListSubtasks(r.Context(), id, tenantID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	if subtasks == nil {
 		subtasks = []*model.Subtask{}
 	}
-	writeJSON(w, http.StatusOK, subtasks)
+	httputil.WriteJSON(w, http.StatusOK, subtasks)
 }
 
 func (s *Service) handleUpdateSubtask(w http.ResponseWriter, r *http.Request) {
@@ -1956,13 +1956,13 @@ func (s *Service) handleUpdateSubtask(w http.ResponseWriter, r *http.Request) {
 
 	sid, err := strconv.ParseInt(sidStr, 10, 64)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid subtask id")
+		httputil.WriteError(w, http.StatusBadRequest, "invalid subtask id")
 		return
 	}
 
 	var req model.UpdateSubtaskRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
+		httputil.WriteError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
 
@@ -1970,10 +1970,10 @@ func (s *Service) handleUpdateSubtask(w http.ResponseWriter, r *http.Request) {
 	cur, err := s.store.GetSubtask(r.Context(), sid, id, tenantID)
 	if err != nil {
 		if err == store.ErrNotFound {
-			writeError(w, http.StatusNotFound, "subtask not found")
+			httputil.WriteError(w, http.StatusNotFound, "subtask not found")
 			return
 		}
-		writeError(w, http.StatusInternalServerError, err.Error())
+		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 
@@ -1993,7 +1993,7 @@ func (s *Service) handleUpdateSubtask(w http.ResponseWriter, r *http.Request) {
 		case model.SubtaskPending, model.SubtaskInProgress, model.SubtaskDone, model.SubtaskBlocked:
 			updated.Status = req.Status
 		default:
-			writeError(w, http.StatusBadRequest, "invalid status")
+			httputil.WriteError(w, http.StatusBadRequest, "invalid status")
 			return
 		}
 	}
@@ -2017,10 +2017,10 @@ func (s *Service) handleUpdateSubtask(w http.ResponseWriter, r *http.Request) {
 
 	if err := s.store.UpdateSubtask(r.Context(), &updated); err != nil {
 		if err == store.ErrNotFound {
-			writeError(w, http.StatusNotFound, "subtask not found")
+			httputil.WriteError(w, http.StatusNotFound, "subtask not found")
 			return
 		}
-		writeError(w, http.StatusInternalServerError, err.Error())
+		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 
@@ -2041,7 +2041,7 @@ func (s *Service) handleUpdateSubtask(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
-	writeJSON(w, http.StatusOK, &updated)
+	httputil.WriteJSON(w, http.StatusOK, &updated)
 }
 
 func (s *Service) handleDeleteSubtask(w http.ResponseWriter, r *http.Request) {
@@ -2051,19 +2051,19 @@ func (s *Service) handleDeleteSubtask(w http.ResponseWriter, r *http.Request) {
 
 	sid, err := strconv.ParseInt(sidStr, 10, 64)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid subtask id")
+		httputil.WriteError(w, http.StatusBadRequest, "invalid subtask id")
 		return
 	}
 
 	if err := s.store.DeleteSubtask(r.Context(), sid, id, tenantID); err != nil {
 		if err == store.ErrNotFound {
-			writeError(w, http.StatusNotFound, "subtask not found")
+			httputil.WriteError(w, http.StatusNotFound, "subtask not found")
 			return
 		}
-		writeError(w, http.StatusInternalServerError, err.Error())
+		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
+	httputil.WriteJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
 }
 
 func (s *Service) handleUploadAttachment(w http.ResponseWriter, r *http.Request) {
@@ -2071,20 +2071,20 @@ func (s *Service) handleUploadAttachment(w http.ResponseWriter, r *http.Request)
 	tenantID := tenantFromCtx(r.Context())
 
 	if err := r.ParseMultipartForm(32 << 20); err != nil {
-		writeError(w, http.StatusBadRequest, "failed to parse form")
+		httputil.WriteError(w, http.StatusBadRequest, "failed to parse form")
 		return
 	}
 
 	file, header, err := r.FormFile("file")
 	if err != nil {
-		writeError(w, http.StatusBadRequest, "file is required")
+		httputil.WriteError(w, http.StatusBadRequest, "file is required")
 		return
 	}
 	defer file.Close()
 
 	data, err := io.ReadAll(file)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to read file")
+		httputil.WriteError(w, http.StatusInternalServerError, "failed to read file")
 		return
 	}
 
@@ -2106,17 +2106,17 @@ func (s *Service) handleUploadAttachment(w http.ResponseWriter, r *http.Request)
 	if s.objStore != nil {
 		key := fmt.Sprintf("itsm/%s/%s", tenantID, uuid.NewString())
 		if err := s.objStore.Put(r.Context(), key, bytes.NewReader(data), int64(len(data)), header.Header.Get("Content-Type")); err != nil {
-			writeError(w, http.StatusInternalServerError, "failed to store attachment: "+err.Error())
+			httputil.WriteError(w, http.StatusInternalServerError, "failed to store attachment: "+err.Error())
 			return
 		}
 		att.ObjectKey = key
 		att.Data = nil
 	}
 	if err := s.store.AddAttachment(r.Context(), att); err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to save attachment")
+		httputil.WriteError(w, http.StatusInternalServerError, "failed to save attachment")
 		return
 	}
-	writeJSON(w, http.StatusCreated, att)
+	httputil.WriteJSON(w, http.StatusCreated, att)
 }
 
 func (s *Service) handleListAttachments(w http.ResponseWriter, r *http.Request) {
@@ -2125,13 +2125,13 @@ func (s *Service) handleListAttachments(w http.ResponseWriter, r *http.Request) 
 
 	atts, err := s.store.ListAttachments(r.Context(), id, tenantID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	if atts == nil {
 		atts = []*model.Attachment{}
 	}
-	writeJSON(w, http.StatusOK, atts)
+	httputil.WriteJSON(w, http.StatusOK, atts)
 }
 
 func (s *Service) handleDownloadAttachment(w http.ResponseWriter, r *http.Request) {
@@ -2141,17 +2141,17 @@ func (s *Service) handleDownloadAttachment(w http.ResponseWriter, r *http.Reques
 
 	aid, err := strconv.ParseInt(aidStr, 10, 64)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid attachment id")
+		httputil.WriteError(w, http.StatusBadRequest, "invalid attachment id")
 		return
 	}
 
 	att, err := s.store.GetAttachment(r.Context(), aid, id, tenantID)
 	if err != nil {
 		if err == store.ErrNotFound {
-			writeError(w, http.StatusNotFound, "attachment not found")
+			httputil.WriteError(w, http.StatusNotFound, "attachment not found")
 			return
 		}
-		writeError(w, http.StatusInternalServerError, err.Error())
+		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 
@@ -2178,7 +2178,7 @@ func (s *Service) handleDeleteAttachment(w http.ResponseWriter, r *http.Request)
 
 	aid, err := strconv.ParseInt(aidStr, 10, 64)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid attachment id")
+		httputil.WriteError(w, http.StatusBadRequest, "invalid attachment id")
 		return
 	}
 
@@ -2186,10 +2186,10 @@ func (s *Service) handleDeleteAttachment(w http.ResponseWriter, r *http.Request)
 	att, err := s.store.GetAttachment(r.Context(), aid, id, tenantID)
 	if err != nil {
 		if err == store.ErrNotFound {
-			writeError(w, http.StatusNotFound, "attachment not found")
+			httputil.WriteError(w, http.StatusNotFound, "attachment not found")
 			return
 		}
-		writeError(w, http.StatusInternalServerError, err.Error())
+		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	if att.ObjectKey != "" && s.objStore != nil {
@@ -2199,13 +2199,13 @@ func (s *Service) handleDeleteAttachment(w http.ResponseWriter, r *http.Request)
 	}
 	if err := s.store.DeleteAttachment(r.Context(), aid, id, tenantID); err != nil {
 		if err == store.ErrNotFound {
-			writeError(w, http.StatusNotFound, "attachment not found")
+			httputil.WriteError(w, http.StatusNotFound, "attachment not found")
 			return
 		}
-		writeError(w, http.StatusInternalServerError, err.Error())
+		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
+	httputil.WriteJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
 }
 
 func (s *Service) recordEvent(ctx context.Context, ticket *model.Ticket, from, to model.TicketStatus, changedBy string, comment string) {
@@ -2458,17 +2458,17 @@ func (s *Service) handleSLAStats(w http.ResponseWriter, r *http.Request) {
 	tenantID := tenantFromCtx(r.Context())
 	stats, err := s.store.GetSLAStats(r.Context(), tenantID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, stats)
+	httputil.WriteJSON(w, http.StatusOK, stats)
 }
 
 func (s *Service) handleSLABreached(w http.ResponseWriter, r *http.Request) {
 	tenantID := tenantFromCtx(r.Context())
 	tickets, err := s.store.List(r.Context(), tenantID, "")
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	var breached []*model.Ticket
@@ -2480,7 +2480,7 @@ func (s *Service) handleSLABreached(w http.ResponseWriter, r *http.Request) {
 	if breached == nil {
 		breached = []*model.Ticket{}
 	}
-	writeJSON(w, http.StatusOK, breached)
+	httputil.WriteJSON(w, http.StatusOK, breached)
 }
 
 func (s *Service) handleTicketSLA(w http.ResponseWriter, r *http.Request) {
@@ -2488,7 +2488,7 @@ func (s *Service) handleTicketSLA(w http.ResponseWriter, r *http.Request) {
 	tenantID := tenantFromCtx(r.Context())
 	ticket, err := s.store.Get(r.Context(), id, tenantID)
 	if err != nil {
-		writeError(w, http.StatusNotFound, "ticket not found")
+		httputil.WriteError(w, http.StatusNotFound, "ticket not found")
 		return
 	}
 	now := time.Now()
@@ -2510,7 +2510,7 @@ func (s *Service) handleTicketSLA(w http.ResponseWriter, r *http.Request) {
 			result["elapsed_percent"] = float64(totalElapsed) / float64(totalDuration) * 100
 		}
 	}
-	writeJSON(w, http.StatusOK, result)
+	httputil.WriteJSON(w, http.StatusOK, result)
 }
 
 // --- Form schema handlers (dynamic forms) ---
@@ -2521,11 +2521,11 @@ func (s *Service) handleFulfillCatalog(w http.ResponseWriter, r *http.Request) {
 	tenantID := tenantFromCtx(r.Context())
 	var req model.CreateTicketRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
+		httputil.WriteError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
 	if req.Title == "" {
-		writeError(w, http.StatusBadRequest, "title is required")
+		httputil.WriteError(w, http.StatusBadRequest, "title is required")
 		return
 	}
 	if req.CreatedBy == "" {
@@ -2534,13 +2534,13 @@ func (s *Service) handleFulfillCatalog(w http.ResponseWriter, r *http.Request) {
 	tk, err := s.CreateTicketFromCatalog(r.Context(), id, tenantID, req)
 	if err != nil {
 		if strings.Contains(err.Error(), "not found") || strings.Contains(err.Error(), "disabled") {
-			writeError(w, http.StatusNotFound, err.Error())
+			httputil.WriteError(w, http.StatusNotFound, err.Error())
 			return
 		}
-		writeError(w, http.StatusInternalServerError, err.Error())
+		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusCreated, tk)
+	httputil.WriteJSON(w, http.StatusCreated, tk)
 }
 
 // handleListFormScopes 列出已配置的作用域；若带 scope 查询参数则返回该作用域的 schema（无则 schema 为 null）。
@@ -2550,22 +2550,22 @@ func (s *Service) handleListFormScopes(w http.ResponseWriter, r *http.Request) {
 	if scope != "" {
 		schema, err := s.store.GetFormSchema(r.Context(), tenantID, scope)
 		if err != nil {
-			writeError(w, http.StatusInternalServerError, err.Error())
+			httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
 		s.expandSchemaDicts(r.Context(), tenantID, schema)
-		writeJSON(w, http.StatusOK, map[string]any{"scope": scope, "schema": schema})
+		httputil.WriteJSON(w, http.StatusOK, map[string]any{"scope": scope, "schema": schema})
 		return
 	}
 	scopes, err := s.store.ListFormScopes(r.Context(), tenantID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	if scopes == nil {
 		scopes = []string{}
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"scopes": scopes})
+	httputil.WriteJSON(w, http.StatusOK, map[string]any{"scopes": scopes})
 }
 
 // handleUpsertFormSchema 按 scope 写入/更新一张表单 schema（管理端可配）。
@@ -2575,14 +2575,14 @@ func (s *Service) handleUpsertFormSchema(w http.ResponseWriter, r *http.Request)
 		Schema form.FormSchema `json:"schema"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
+		httputil.WriteError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
 	if req.Scope == "" {
 		req.Scope = req.Schema.Scope
 	}
 	if req.Scope == "" {
-		writeError(w, http.StatusBadRequest, "scope is required")
+		httputil.WriteError(w, http.StatusBadRequest, "scope is required")
 		return
 	}
 	req.Schema.Scope = req.Scope
@@ -2591,10 +2591,10 @@ func (s *Service) handleUpsertFormSchema(w http.ResponseWriter, r *http.Request)
 	}
 	tenantID := tenantFromCtx(r.Context())
 	if err := s.store.UpsertFormSchema(r.Context(), tenantID, req.Scope, req.Schema); err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"status": "ok", "scope": req.Scope})
+	httputil.WriteJSON(w, http.StatusOK, map[string]any{"status": "ok", "scope": req.Scope})
 }
 
 // expandSchemaDicts 展开 schema 中的 dict_ref 引用: 从数据字典拉取字段定义替换引用字段。
@@ -2627,31 +2627,31 @@ func (s *Service) handleListFieldDicts(w http.ResponseWriter, r *http.Request) {
 	tenantID := tenantFromCtx(r.Context())
 	dicts, err := s.store.ListFieldDicts(r.Context(), tenantID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	if dicts == nil {
 		dicts = []*form.FieldDict{}
 	}
-	writeJSON(w, http.StatusOK, dicts)
+	httputil.WriteJSON(w, http.StatusOK, dicts)
 }
 
 func (s *Service) handleUpsertFieldDict(w http.ResponseWriter, r *http.Request) {
 	var dict form.FieldDict
 	if err := json.NewDecoder(r.Body).Decode(&dict); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
+		httputil.WriteError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
 	if dict.Name == "" {
-		writeError(w, http.StatusBadRequest, "name is required")
+		httputil.WriteError(w, http.StatusBadRequest, "name is required")
 		return
 	}
 	tenantID := tenantFromCtx(r.Context())
 	if err := s.store.UpsertFieldDict(r.Context(), tenantID, &dict); err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, dict)
+	httputil.WriteJSON(w, http.StatusOK, dict)
 }
 
 func (s *Service) handleDeleteFieldDict(w http.ResponseWriter, r *http.Request) {
@@ -2659,13 +2659,13 @@ func (s *Service) handleDeleteFieldDict(w http.ResponseWriter, r *http.Request) 
 	tenantID := tenantFromCtx(r.Context())
 	if err := s.store.DeleteFieldDict(r.Context(), tenantID, id); err != nil {
 		if err == store.ErrNotFound {
-			writeError(w, http.StatusNotFound, "dict not found")
+			httputil.WriteError(w, http.StatusNotFound, "dict not found")
 			return
 		}
-		writeError(w, http.StatusInternalServerError, err.Error())
+		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
+	httputil.WriteJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
 }
 
 // handleFormOptions 解析表单字段的动态选项来源（cmdb:<type> / iam:user|role|group / cmdb:types）。
@@ -2675,7 +2675,7 @@ func (s *Service) handleDeleteFieldDict(w http.ResponseWriter, r *http.Request) 
 func (s *Service) handleFormOptions(w http.ResponseWriter, r *http.Request) {
 	tenantID := tenantFromCtx(r.Context())
 	if s.formEngine == nil || s.formEngine.SourceResolver() == nil {
-		writeJSON(w, http.StatusOK, map[string]any{"options": []form.FieldOption{}, "sources": []string{}})
+		httputil.WriteJSON(w, http.StatusOK, map[string]any{"options": []form.FieldOption{}, "sources": []string{}})
 		return
 	}
 	resolver := s.formEngine.SourceResolver()
@@ -2685,31 +2685,31 @@ func (s *Service) handleFormOptions(w http.ResponseWriter, r *http.Request) {
 		if c, ok := resolver.(sourceCataloger); ok {
 			sources = c.SourceCatalog(r.Context(), tenantID)
 		}
-		writeJSON(w, http.StatusOK, map[string]any{"sources": sources})
+		httputil.WriteJSON(w, http.StatusOK, map[string]any{"sources": sources})
 		return
 	}
 	// 层级模式：parent 参数存在即按树取子节点（parent 为空取根层级）
 	if r.URL.Query().Has("parent") {
 		tr, ok := resolver.(form.TreeSourceResolver)
 		if !ok {
-			writeJSON(w, http.StatusOK, map[string]any{"source": source, "options": []form.FieldOption{}})
+			httputil.WriteJSON(w, http.StatusOK, map[string]any{"source": source, "options": []form.FieldOption{}})
 			return
 		}
 		parent := strings.TrimSpace(r.URL.Query().Get("parent"))
 		children, err := tr.ResolveTree(r.Context(), tenantID, source, parent)
 		if err != nil {
-			writeError(w, http.StatusBadGateway, fmt.Sprintf("解析选项来源失败: %v", err))
+			httputil.WriteError(w, http.StatusBadGateway, fmt.Sprintf("解析选项来源失败: %v", err))
 			return
 		}
 		if children == nil {
 			children = []form.FieldOption{}
 		}
-		writeJSON(w, http.StatusOK, map[string]any{"source": source, "parent": parent, "options": children})
+		httputil.WriteJSON(w, http.StatusOK, map[string]any{"source": source, "parent": parent, "options": children})
 		return
 	}
 	opts, err := resolver.Resolve(r.Context(), tenantID, source)
 	if err != nil {
-		writeError(w, http.StatusBadGateway, fmt.Sprintf("解析选项来源失败: %v", err))
+		httputil.WriteError(w, http.StatusBadGateway, fmt.Sprintf("解析选项来源失败: %v", err))
 		return
 	}
 	if kw := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("keyword"))); kw != "" {
@@ -2731,7 +2731,7 @@ func (s *Service) handleFormOptions(w http.ResponseWriter, r *http.Request) {
 	if opts == nil {
 		opts = []form.FieldOption{}
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"source": source, "options": opts})
+	httputil.WriteJSON(w, http.StatusOK, map[string]any{"source": source, "options": opts})
 }
 
 // handleUpdateCustomFields 按作用域更新工单自定义字段（流程步骤级表单回写）。
@@ -2744,12 +2744,12 @@ func (s *Service) handleUpdateCustomFields(w http.ResponseWriter, r *http.Reques
 		Fields map[string]any `json:"fields"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
+		httputil.WriteError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
 	ticket, err := s.store.Get(r.Context(), id, tenantID)
 	if err != nil {
-		writeError(w, http.StatusNotFound, "ticket not found")
+		httputil.WriteError(w, http.StatusNotFound, "ticket not found")
 		return
 	}
 	if ticket.CustomFields == nil {
@@ -2762,7 +2762,7 @@ func (s *Service) handleUpdateCustomFields(w http.ResponseWriter, r *http.Reques
 		if schema, serr := s.formEngine.ResolveSchema(r.Context(), tenantID, req.Scope); serr == nil && schema != nil {
 			form.MergeDefaults(schema, req.Fields)
 			if verr := s.formEngine.ValidateValues(r.Context(), tenantID, schema, req.Fields); verr != nil {
-				writeError(w, http.StatusBadRequest, fmt.Sprintf("表单校验失败: %v", verr))
+				httputil.WriteError(w, http.StatusBadRequest, fmt.Sprintf("表单校验失败: %v", verr))
 				return
 			}
 		}
@@ -2771,7 +2771,7 @@ func (s *Service) handleUpdateCustomFields(w http.ResponseWriter, r *http.Reques
 		ticket.CustomFields[k] = v
 	}
 	if err := s.store.Update(r.Context(), ticket); err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	// 步骤表单保存后推进流程: 若当前步骤下游是网关(表达式条件), 基于刚填写的表单字段选路;
@@ -2779,7 +2779,7 @@ func (s *Service) handleUpdateCustomFields(w http.ResponseWriter, r *http.Reques
 	if ticket.ProcessID != "" && s.processStore != nil {
 		s.advanceProcess(r.Context(), ticket, "success")
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"status": "ok", "custom_fields": ticket.CustomFields})
+	httputil.WriteJSON(w, http.StatusOK, map[string]any{"status": "ok", "custom_fields": ticket.CustomFields})
 }
 
 func formatDuration(d time.Duration) string {
@@ -2801,11 +2801,11 @@ func formatDuration(d time.Duration) string {
 func (s *Service) handleCreateChange(w http.ResponseWriter, r *http.Request) {
 	var req model.CreateChangeRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
+		httputil.WriteError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
 	if req.Title == "" {
-		writeError(w, http.StatusBadRequest, "title is required")
+		httputil.WriteError(w, http.StatusBadRequest, "title is required")
 		return
 	}
 	tenantID := tenantFromCtx(r.Context())
@@ -2835,23 +2835,23 @@ func (s *Service) handleCreateChange(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := s.store.CreateChange(r.Context(), change); err != nil {
 		slog.Error("create change failed", "error", err)
-		writeError(w, http.StatusInternalServerError, "failed to create change request")
+		httputil.WriteError(w, http.StatusInternalServerError, "failed to create change request")
 		return
 	}
-	writeJSON(w, http.StatusCreated, change)
+	httputil.WriteJSON(w, http.StatusCreated, change)
 }
 
 func (s *Service) handleListChanges(w http.ResponseWriter, r *http.Request) {
 	tenantID := tenantFromCtx(r.Context())
 	changes, err := s.store.ListChanges(r.Context(), tenantID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	if changes == nil {
 		changes = []*model.ChangeRequest{}
 	}
-	writeJSON(w, http.StatusOK, changes)
+	httputil.WriteJSON(w, http.StatusOK, changes)
 }
 
 func (s *Service) handleGetChange(w http.ResponseWriter, r *http.Request) {
@@ -2860,13 +2860,13 @@ func (s *Service) handleGetChange(w http.ResponseWriter, r *http.Request) {
 	change, err := s.store.GetChange(r.Context(), id, tenantID)
 	if err != nil {
 		if err == store.ErrNotFound {
-			writeError(w, http.StatusNotFound, "change request not found")
+			httputil.WriteError(w, http.StatusNotFound, "change request not found")
 			return
 		}
-		writeError(w, http.StatusInternalServerError, err.Error())
+		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, change)
+	httputil.WriteJSON(w, http.StatusOK, change)
 }
 
 func (s *Service) handleVoteChange(w http.ResponseWriter, r *http.Request) {
@@ -2875,26 +2875,26 @@ func (s *Service) handleVoteChange(w http.ResponseWriter, r *http.Request) {
 
 	var req model.VoteChangeRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
+		httputil.WriteError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
 	if req.Member == "" {
-		writeError(w, http.StatusBadRequest, "member is required")
+		httputil.WriteError(w, http.StatusBadRequest, "member is required")
 		return
 	}
 
 	change, err := s.store.GetChange(r.Context(), id, tenantID)
 	if err != nil {
 		if err == store.ErrNotFound {
-			writeError(w, http.StatusNotFound, "change request not found")
+			httputil.WriteError(w, http.StatusNotFound, "change request not found")
 			return
 		}
-		writeError(w, http.StatusInternalServerError, err.Error())
+		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 
 	if change.Status != model.ChangeStatusPending {
-		writeError(w, http.StatusConflict, "change request is not in pending status")
+		httputil.WriteError(w, http.StatusConflict, "change request is not in pending status")
 		return
 	}
 
@@ -2906,7 +2906,7 @@ func (s *Service) handleVoteChange(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if !found {
-		writeError(w, http.StatusBadRequest, "member is not a CAB member")
+		httputil.WriteError(w, http.StatusBadRequest, "member is not a CAB member")
 		return
 	}
 
@@ -2916,10 +2916,10 @@ func (s *Service) handleVoteChange(w http.ResponseWriter, r *http.Request) {
 			change.Approvals[i].Comment = req.Comment
 			change.Approvals[i].VotedAt = time.Now()
 			if err := s.store.UpdateChange(r.Context(), change); err != nil {
-				writeError(w, http.StatusInternalServerError, "failed to update vote")
+				httputil.WriteError(w, http.StatusInternalServerError, "failed to update vote")
 				return
 			}
-			writeJSON(w, http.StatusOK, change)
+			httputil.WriteJSON(w, http.StatusOK, change)
 			return
 		}
 	}
@@ -2966,10 +2966,10 @@ func (s *Service) handleVoteChange(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := s.store.UpdateChange(r.Context(), change); err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to update change request")
+		httputil.WriteError(w, http.StatusInternalServerError, "failed to update change request")
 		return
 	}
-	writeJSON(w, http.StatusOK, change)
+	httputil.WriteJSON(w, http.StatusOK, change)
 }
 
 func (s *Service) handleExecuteChange(w http.ResponseWriter, r *http.Request) {
@@ -2979,37 +2979,37 @@ func (s *Service) handleExecuteChange(w http.ResponseWriter, r *http.Request) {
 	change, err := s.store.GetChange(r.Context(), id, tenantID)
 	if err != nil {
 		if err == store.ErrNotFound {
-			writeError(w, http.StatusNotFound, "change request not found")
+			httputil.WriteError(w, http.StatusNotFound, "change request not found")
 			return
 		}
-		writeError(w, http.StatusInternalServerError, err.Error())
+		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 
 	if change.Status != model.ChangeStatusApproved {
-		writeError(w, http.StatusConflict, "change request must be approved before execution")
+		httputil.WriteError(w, http.StatusConflict, "change request must be approved before execution")
 		return
 	}
 
 	change.Status = model.ChangeStatusExecuted
 	if err := s.store.UpdateChange(r.Context(), change); err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to execute change request")
+		httputil.WriteError(w, http.StatusInternalServerError, "failed to execute change request")
 		return
 	}
-	writeJSON(w, http.StatusOK, change)
+	httputil.WriteJSON(w, http.StatusOK, change)
 }
 
 // --- CSV Import Handler ---
 
 func (s *Service) handleImportTickets(w http.ResponseWriter, r *http.Request) {
 	if err := r.ParseMultipartForm(32 << 20); err != nil {
-		writeError(w, http.StatusBadRequest, "failed to parse form")
+		httputil.WriteError(w, http.StatusBadRequest, "failed to parse form")
 		return
 	}
 
 	file, _, err := r.FormFile("file")
 	if err != nil {
-		writeError(w, http.StatusBadRequest, "file is required")
+		httputil.WriteError(w, http.StatusBadRequest, "file is required")
 		return
 	}
 	defer file.Close()
@@ -3017,7 +3017,7 @@ func (s *Service) handleImportTickets(w http.ResponseWriter, r *http.Request) {
 	reader := csv.NewReader(file)
 	records, err := reader.ReadAll()
 	if err != nil {
-		writeError(w, http.StatusBadRequest, "failed to parse CSV: "+err.Error())
+		httputil.WriteError(w, http.StatusBadRequest, "failed to parse CSV: "+err.Error())
 		return
 	}
 
@@ -3082,7 +3082,7 @@ func (s *Service) handleImportTickets(w http.ResponseWriter, r *http.Request) {
 		success++
 	}
 
-	writeJSON(w, http.StatusOK, map[string]any{
+	httputil.WriteJSON(w, http.StatusOK, map[string]any{
 		"total":   len(records) - 1,
 		"success": success,
 		"errors":  errors,
@@ -3095,7 +3095,7 @@ func (s *Service) handleExportTicketsCSV(w http.ResponseWriter, r *http.Request)
 	tenantID := tenantFromCtx(r.Context())
 	tickets, err := s.store.List(r.Context(), tenantID, "")
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 
@@ -3157,7 +3157,7 @@ func (s *Service) handleExportStatsCSV(w http.ResponseWriter, r *http.Request) {
 	tenantID := tenantFromCtx(r.Context())
 	stats, err := s.store.GetStats(r.Context(), tenantID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 
@@ -3197,17 +3197,6 @@ func traceIDFromCtx(ctx context.Context) string {
 		return t
 	}
 	return "unknown"
-}
-
-func writeJSON(w http.ResponseWriter, status int, v any) {
-	v = httputil.EmptySliceIfNil(v)
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	json.NewEncoder(w).Encode(v)
-}
-
-func writeError(w http.ResponseWriter, status int, msg string) {
-	writeJSON(w, status, map[string]string{"error": msg})
 }
 
 // rememberTicketExperience 工单处置成功后, 把处置经验沉淀到 AI 长期记忆库(P0-1)。

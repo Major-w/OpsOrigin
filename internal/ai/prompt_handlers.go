@@ -2,6 +2,7 @@ package ai
 
 import (
 	"encoding/json"
+	"github.com/opsorigin/core/pkg/httputil"
 	"net/http"
 
 	"github.com/opsorigin/core/internal/ai/agentic"
@@ -21,17 +22,17 @@ func (s *Service) handleListPrompts(w http.ResponseWriter, r *http.Request) {
 	if prompts == nil {
 		prompts = []*agentic.PromptTemplate{}
 	}
-	writeJSON(w, http.StatusOK, prompts)
+	httputil.WriteJSON(w, http.StatusOK, prompts)
 }
 
 // handleGetPrompt 返回单条提示词详情(含解析出的占位变量)。
 func (s *Service) handleGetPrompt(w http.ResponseWriter, r *http.Request) {
 	p, err := s.Engine.GetPrompt(r.Context(), tenantFromCtx(r.Context()), r.PathValue("id"))
 	if err != nil {
-		writeError(w, http.StatusNotFound, err.Error())
+		httputil.WriteError(w, http.StatusNotFound, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, p)
+	httputil.WriteJSON(w, http.StatusOK, p)
 }
 
 // promptRequest 是新建/更新提示词的入参。
@@ -51,7 +52,7 @@ func (s *Service) handleCreatePrompt(w http.ResponseWriter, r *http.Request) {
 	}
 	var req promptRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
+		httputil.WriteError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
 	p, err := s.Engine.SavePrompt(r.Context(), tenantFromCtx(r.Context()), &agentic.PromptTemplate{
@@ -59,10 +60,10 @@ func (s *Service) handleCreatePrompt(w http.ResponseWriter, r *http.Request) {
 		Content: req.Content, IsDefault: req.IsDefault,
 	})
 	if err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
+		httputil.WriteError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusCreated, p)
+	httputil.WriteJSON(w, http.StatusCreated, p)
 }
 
 // handleUpdatePrompt 更新一条提示词(含把它设为默认系统提示词, 保存即热生效)。
@@ -72,7 +73,7 @@ func (s *Service) handleUpdatePrompt(w http.ResponseWriter, r *http.Request) {
 	}
 	var req promptRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
+		httputil.WriteError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
 	p, err := s.Engine.SavePrompt(r.Context(), tenantFromCtx(r.Context()), &agentic.PromptTemplate{
@@ -80,10 +81,10 @@ func (s *Service) handleUpdatePrompt(w http.ResponseWriter, r *http.Request) {
 		Description: req.Description, Content: req.Content, IsDefault: req.IsDefault,
 	})
 	if err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
+		httputil.WriteError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, p)
+	httputil.WriteJSON(w, http.StatusOK, p)
 }
 
 // handleDeletePrompt 删除一条提示词。预置与默认提示词受保护(引擎层拒绝)。
@@ -92,10 +93,10 @@ func (s *Service) handleDeletePrompt(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := s.Engine.DeletePrompt(r.Context(), tenantFromCtx(r.Context()), r.PathValue("id")); err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
+		httputil.WriteError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
+	httputil.WriteJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
 }
 
 // handleRenderPrompt 用变量渲染提示词并累计引用次数, 返回可直接粘进 Agent 的成品文本。
@@ -108,8 +109,8 @@ func (s *Service) handleRenderPrompt(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewDecoder(r.Body).Decode(&req)
 	text, err := s.Engine.RenderPrompt(r.Context(), tenantFromCtx(r.Context()), r.PathValue("id"), req.Variables)
 	if err != nil {
-		writeError(w, http.StatusNotFound, err.Error())
+		httputil.WriteError(w, http.StatusNotFound, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]string{"content": text})
+	httputil.WriteJSON(w, http.StatusOK, map[string]string{"content": text})
 }

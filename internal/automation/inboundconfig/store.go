@@ -20,7 +20,7 @@ import (
 
 // ChannelType 渠道类型。
 const (
-	TypeEmail   = "email"
+	TypeEmail    = "email"
 	TypeWeCom    = "wecom"
 	TypeDingTalk = "dingtalk"
 	TypeFeishu   = "feishu"
@@ -168,37 +168,31 @@ func tenantOf(r *http.Request) string {
 func (s *Store) handleList(w http.ResponseWriter, r *http.Request) {
 	list, err := s.List(r.Context(), tenantOf(r))
 	if err != nil {
-		writeJSON(w, 500, map[string]string{"error": err.Error()})
+		httputil.WriteJSON(w, 500, map[string]string{"error": err.Error()})
 		return
 	}
-	writeJSON(w, 200, httputil.EmptySliceIfNil(list))
+	httputil.WriteJSON(w, 200, httputil.EmptySliceIfNil(list))
 }
 
 func (s *Store) handleUpsert(w http.ResponseWriter, r *http.Request) {
 	var c Channel
 	if err := json.NewDecoder(r.Body).Decode(&c); err != nil {
-		writeJSON(w, 400, map[string]string{"error": "invalid body"})
+		httputil.WriteJSON(w, 400, map[string]string{"error": "invalid body"})
 		return
 	}
 	c.TenantID = tenantOf(r)
 	if err := s.Upsert(r.Context(), &c); err != nil {
-		writeJSON(w, 500, map[string]string{"error": err.Error()})
+		httputil.WriteJSON(w, 500, map[string]string{"error": err.Error()})
 		return
 	}
-	writeJSON(w, 200, c)
+	httputil.WriteJSON(w, 200, c)
 }
 
 func (s *Store) handleDelete(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	if err := s.Delete(r.Context(), id, tenantOf(r)); err != nil {
-		writeJSON(w, 500, map[string]string{"error": err.Error()})
+		httputil.WriteJSON(w, 500, map[string]string{"error": err.Error()})
 		return
 	}
-	writeJSON(w, 204, nil)
-}
-
-func writeJSON(w http.ResponseWriter, status int, v any) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	json.NewEncoder(w).Encode(v)
+	httputil.WriteJSON(w, 204, nil)
 }

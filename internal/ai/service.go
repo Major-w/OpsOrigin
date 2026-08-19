@@ -300,11 +300,11 @@ func (s *Service) handleChat(w http.ResponseWriter, r *http.Request) {
 		MessageID      string        `json:"message_id"` // 前端为本次 assistant 回复生成的稳定 ID, 反馈时用于精确关联
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
+		httputil.WriteError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
 	if req.Prompt == "" {
-		writeError(w, http.StatusBadRequest, "prompt is required")
+		httputil.WriteError(w, http.StatusBadRequest, "prompt is required")
 		return
 	}
 
@@ -340,7 +340,7 @@ func (s *Service) handleChat(w http.ResponseWriter, r *http.Request) {
 	if req.Reasoning && !req.Stream {
 		thinking, answer, convID, err := s.Engine.ChatReasoning(r.Context(), req.AgentID, req.Prompt, req.History, req.ConversationID, req.Model)
 		if err != nil {
-			writeError(w, http.StatusBadGateway, chatFriendlyError(err.Error()))
+			httputil.WriteError(w, http.StatusBadGateway, chatFriendlyError(err.Error()))
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
@@ -356,7 +356,7 @@ func (s *Service) handleChat(w http.ResponseWriter, r *http.Request) {
 
 	out, convID, err := s.Engine.Chat(r.Context(), req.AgentID, req.Prompt, req.History, req.ConversationID, req.Model)
 	if err != nil {
-		writeError(w, http.StatusBadGateway, chatFriendlyError(err.Error()))
+		httputil.WriteError(w, http.StatusBadGateway, chatFriendlyError(err.Error()))
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
@@ -382,7 +382,7 @@ func (s *Service) handleChatStream(w http.ResponseWriter, r *http.Request, req *
 }) {
 	flusher, ok := w.(http.Flusher)
 	if !ok {
-		writeError(w, http.StatusInternalServerError, "streaming not supported")
+		httputil.WriteError(w, http.StatusInternalServerError, "streaming not supported")
 		return
 	}
 
@@ -475,15 +475,15 @@ func (s *Service) UpdateLLMConfig(cfg llm.Config) {
 func (s *Service) handleSaveConversation(w http.ResponseWriter, r *http.Request) {
 	var conv agentic.Conversation
 	if err := json.NewDecoder(r.Body).Decode(&conv); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
+		httputil.WriteError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
 	conv.TenantID = tenantFromCtx(r.Context())
 	if err := s.Engine.SaveConversation(r.Context(), &conv); err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, conv)
+	httputil.WriteJSON(w, http.StatusOK, conv)
 }
 
 // handleDeleteConversation 删除会话(属主可删)。
@@ -492,11 +492,11 @@ func (s *Service) handleDeleteConversation(w http.ResponseWriter, r *http.Reques
 	tenantID := tenantFromCtx(r.Context())
 	userID := currentUserID(r.Context())
 	if s.convAccess(r.Context(), tenantID, id, userID, s.userGroups(r.Context(), userID)) != "owner" {
-		writeError(w, http.StatusForbidden, "only the owner can delete this conversation")
+		httputil.WriteError(w, http.StatusForbidden, "only the owner can delete this conversation")
 		return
 	}
 	if err := s.Engine.DeleteConversation(id, tenantID); err != nil {
-		writeError(w, http.StatusNotFound, err.Error())
+		httputil.WriteError(w, http.StatusNotFound, err.Error())
 		return
 	}
 	// 连带清理共享记录(防孤儿)
@@ -506,7 +506,7 @@ func (s *Service) handleDeleteConversation(w http.ResponseWriter, r *http.Reques
 			slog.Warn("conversation shares cleanup failed", "id", id, "err", err)
 		}
 	}
-	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
+	httputil.WriteJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
 }
 
 // ——— 进化闭环概览 ———
@@ -531,7 +531,7 @@ func (s *Service) handleEvolutionStats(w http.ResponseWriter, r *http.Request) {
 	if KnowledgeStatsHook != nil {
 		stats.DisposalCases = KnowledgeStatsHook(r.Context())
 	}
-	writeJSON(w, http.StatusOK, stats)
+	httputil.WriteJSON(w, http.StatusOK, stats)
 }
 
 // handleCreateAgent godoc
@@ -556,7 +556,7 @@ func (s *Service) handleCreateAgent(w http.ResponseWriter, r *http.Request) {
 		Skills              []model.AgentSkill `json:"skills"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
+		httputil.WriteError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
 
@@ -571,11 +571,11 @@ func (s *Service) handleCreateAgent(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := s.Engine.CreateAgent(r.Context(), agent); err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 
-	writeJSON(w, http.StatusCreated, agent)
+	httputil.WriteJSON(w, http.StatusCreated, agent)
 }
 
 func (s *Service) handleListAgents(w http.ResponseWriter, r *http.Request) {
@@ -590,17 +590,17 @@ func (s *Service) handleListAgents(w http.ResponseWriter, r *http.Request) {
 	if filtered == nil {
 		filtered = []*model.AgentInstance{}
 	}
-	writeJSON(w, http.StatusOK, filtered)
+	httputil.WriteJSON(w, http.StatusOK, filtered)
 }
 
 func (s *Service) handleGetAgent(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	agent, ok := s.Engine.GetAgent(id)
 	if !ok || agent.TenantID != tenantFromCtx(r.Context()) {
-		writeError(w, http.StatusNotFound, "agent not found")
+		httputil.WriteError(w, http.StatusNotFound, "agent not found")
 		return
 	}
-	writeJSON(w, http.StatusOK, agent)
+	httputil.WriteJSON(w, http.StatusOK, agent)
 }
 
 func (s *Service) handleListTools(w http.ResponseWriter, r *http.Request) {
@@ -608,7 +608,7 @@ func (s *Service) handleListTools(w http.ResponseWriter, r *http.Request) {
 	if tools == nil {
 		tools = []mcp.ToolDefinition{}
 	}
-	writeJSON(w, http.StatusOK, tools)
+	httputil.WriteJSON(w, http.StatusOK, tools)
 }
 
 // StartExternalMCP 从环境变量加载外部 MCP server 配置并接入。
@@ -632,7 +632,7 @@ func (s *Service) StartExternalMCP(ctx context.Context) {
 
 // handleMCPServers 返回外部 MCP server 的运行时状态(连接/工具数/错误)。
 func (s *Service) handleMCPServers(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, s.MCPManager.Status())
+	httputil.WriteJSON(w, http.StatusOK, s.MCPManager.Status())
 }
 
 func (s *Service) handleExecuteTool(w http.ResponseWriter, r *http.Request) {
@@ -647,23 +647,23 @@ func (s *Service) handleExecuteTool(w http.ResponseWriter, r *http.Request) {
 
 	var input map[string]any
 	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
+		httputil.WriteError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
 
 	tenantID := tenantFromCtx(r.Context())
 	if s.limiter != nil && !s.limiter.Allow(tenantID+":tool:"+name) {
-		writeError(w, http.StatusTooManyRequests, "rate limit exceeded for tool execution")
+		httputil.WriteError(w, http.StatusTooManyRequests, "rate limit exceeded for tool execution")
 		return
 	}
 
 	result, err := s.Registry.Execute(r.Context(), name, input)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 
-	writeJSON(w, http.StatusOK, map[string]any{"result": result})
+	httputil.WriteJSON(w, http.StatusOK, map[string]any{"result": result})
 }
 
 // ——— 自定义 MCP 工具注册 (PRD 5.2.2) ———
@@ -709,19 +709,19 @@ func (s *Service) handleCreateCustomTool(w http.ResponseWriter, r *http.Request)
 	}
 	var t agentic.CustomTool
 	if err := json.NewDecoder(r.Body).Decode(&t); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
+		httputil.WriteError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
 	if err := validateCustomTool(&t); err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
+		httputil.WriteError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 	t.TenantID = tenantFromCtx(r.Context())
 	if err := s.Engine.CreateCustomTool(r.Context(), &t); err != nil {
-		writeError(w, http.StatusConflict, err.Error())
+		httputil.WriteError(w, http.StatusConflict, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusCreated, t)
+	httputil.WriteJSON(w, http.StatusCreated, t)
 }
 
 func (s *Service) handleListCustomTools(w http.ResponseWriter, r *http.Request) {
@@ -729,7 +729,7 @@ func (s *Service) handleListCustomTools(w http.ResponseWriter, r *http.Request) 
 	if items == nil {
 		items = []*agentic.CustomTool{}
 	}
-	writeJSON(w, http.StatusOK, items)
+	httputil.WriteJSON(w, http.StatusOK, items)
 }
 
 func (s *Service) handleUpdateCustomTool(w http.ResponseWriter, r *http.Request) {
@@ -739,20 +739,20 @@ func (s *Service) handleUpdateCustomTool(w http.ResponseWriter, r *http.Request)
 	id := r.PathValue("id")
 	var t agentic.CustomTool
 	if err := json.NewDecoder(r.Body).Decode(&t); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
+		httputil.WriteError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
 	if err := validateCustomTool(&t); err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
+		httputil.WriteError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 	t.ID = id
 	t.TenantID = tenantFromCtx(r.Context())
 	if err := s.Engine.UpdateCustomTool(r.Context(), &t); err != nil {
-		writeError(w, http.StatusNotFound, err.Error())
+		httputil.WriteError(w, http.StatusNotFound, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, t)
+	httputil.WriteJSON(w, http.StatusOK, t)
 }
 
 func (s *Service) handleDeleteCustomTool(w http.ResponseWriter, r *http.Request) {
@@ -761,10 +761,10 @@ func (s *Service) handleDeleteCustomTool(w http.ResponseWriter, r *http.Request)
 	}
 	id := r.PathValue("id")
 	if err := s.Engine.DeleteCustomTool(r.Context(), id, tenantFromCtx(r.Context())); err != nil {
-		writeError(w, http.StatusNotFound, err.Error())
+		httputil.WriteError(w, http.StatusNotFound, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
+	httputil.WriteJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
 }
 
 // authorize 检查当前请求的 RBAC 权限;不满足时写入错误响应并返回 false。
@@ -772,11 +772,11 @@ func (s *Service) handleDeleteCustomTool(w http.ResponseWriter, r *http.Request)
 func (s *Service) authorize(w http.ResponseWriter, r *http.Request, perm string) bool {
 	role := auth.RoleFromContext(r.Context())
 	if role == "" {
-		writeError(w, http.StatusUnauthorized, "unauthorized")
+		httputil.WriteError(w, http.StatusUnauthorized, "unauthorized")
 		return false
 	}
 	if !auth.HasPermission(role, perm) {
-		writeError(w, http.StatusForbidden, "forbidden: missing permission "+perm)
+		httputil.WriteError(w, http.StatusForbidden, "forbidden: missing permission "+perm)
 		return false
 	}
 	return true
@@ -789,7 +789,7 @@ func (s *Service) handleExecutePlan(w http.ResponseWriter, r *http.Request) {
 		Steps     []model.Step `json:"steps"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
+		httputil.WriteError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
 
@@ -804,11 +804,11 @@ func (s *Service) handleExecutePlan(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := s.Engine.ExecutePlan(r.Context(), plan); err != nil {
-		writeError(w, http.StatusConflict, err.Error())
+		httputil.WriteError(w, http.StatusConflict, err.Error())
 		return
 	}
 
-	writeJSON(w, http.StatusOK, plan)
+	httputil.WriteJSON(w, http.StatusOK, plan)
 }
 
 func (s *Service) handleListPlans(w http.ResponseWriter, r *http.Request) {
@@ -823,12 +823,12 @@ func (s *Service) handleListPlans(w http.ResponseWriter, r *http.Request) {
 	if filtered == nil {
 		filtered = []*model.ExecutionPlan{}
 	}
-	writeJSON(w, http.StatusOK, filtered)
+	httputil.WriteJSON(w, http.StatusOK, filtered)
 }
 
 func (s *Service) handleGetRateLimit(w http.ResponseWriter, r *http.Request) {
 	agentID := r.PathValue("agent_id")
-	writeJSON(w, http.StatusOK, map[string]any{
+	httputil.WriteJSON(w, http.StatusOK, map[string]any{
 		"agent_id":   agentID,
 		"state":      s.limiter.GetState(agentID),
 		"call_count": s.limiter.GetCount(agentID),
@@ -844,7 +844,7 @@ func (s *Service) handleGetRateLimit(w http.ResponseWriter, r *http.Request) {
 func (s *Service) handleGetApprovalPolicy(w http.ResponseWriter, r *http.Request) {
 	agentID := r.URL.Query().Get("agent_id")
 	policy := s.Engine.GetApprovalPolicy(agentID)
-	writeJSON(w, http.StatusOK, map[string]any{
+	httputil.WriteJSON(w, http.StatusOK, map[string]any{
 		"agent_id": agentID,
 		"policy":   policy,
 	})
@@ -860,7 +860,7 @@ func (s *Service) handlePutApprovalPolicy(w http.ResponseWriter, r *http.Request
 		AskTimeoutSec  int      `json:"ask_timeout_sec"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
+		httputil.WriteError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
 
@@ -877,7 +877,7 @@ func (s *Service) handlePutApprovalPolicy(w http.ResponseWriter, r *http.Request
 	case "":
 		// 保留原值
 	default:
-		writeError(w, http.StatusBadRequest, "invalid mode: must be always_ask | always_allow | sensitive_only")
+		httputil.WriteError(w, http.StatusBadRequest, "invalid mode: must be always_ask | always_allow | sensitive_only")
 		return
 	}
 	if req.SensitiveTools != nil {
@@ -889,7 +889,7 @@ func (s *Service) handlePutApprovalPolicy(w http.ResponseWriter, r *http.Request
 
 	s.Engine.SetApprovalPolicy(key, cur)
 	slog.Info("ai approval policy updated", "agent_id", key, "mode", cur.Mode)
-	writeJSON(w, http.StatusOK, map[string]any{
+	httputil.WriteJSON(w, http.StatusOK, map[string]any{
 		"agent_id": agentID,
 		"policy":   cur,
 	})
@@ -902,7 +902,7 @@ func (s *Service) handleListPendingApprovals(w http.ResponseWriter, r *http.Requ
 	if items == nil {
 		items = []*agentic.PendingApproval{}
 	}
-	writeJSON(w, http.StatusOK, items)
+	httputil.WriteJSON(w, http.StatusOK, items)
 }
 
 // handleRespondApproval 对挂起的审批请求做出响应: {action: "approve"|"reject", comment?}
@@ -913,11 +913,11 @@ func (s *Service) handleRespondApproval(w http.ResponseWriter, r *http.Request) 
 		Comment string `json:"comment"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
+		httputil.WriteError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
 	if req.Action != "approve" && req.Action != "reject" {
-		writeError(w, http.StatusBadRequest, "action must be approve or reject")
+		httputil.WriteError(w, http.StatusBadRequest, "action must be approve or reject")
 		return
 	}
 	by := auth.UserIDFromContext(r.Context())
@@ -925,11 +925,11 @@ func (s *Service) handleRespondApproval(w http.ResponseWriter, r *http.Request) 
 		by = "human"
 	}
 	if !s.Engine.Approvals().Respond(id, req.Action, by, req.Comment) {
-		writeError(w, http.StatusNotFound, "approval request not found or already expired")
+		httputil.WriteError(w, http.StatusNotFound, "approval request not found or already expired")
 		return
 	}
 	slog.Info("ai approval responded", "id", id, "action", req.Action, "by", by)
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "action": req.Action})
+	httputil.WriteJSON(w, http.StatusOK, map[string]any{"ok": true, "action": req.Action})
 }
 
 func tenantFromCtx(ctx context.Context) string {
@@ -948,23 +948,12 @@ func userFromCtx(r *http.Request) string {
 	return "anonymous"
 }
 
-func writeJSON(w http.ResponseWriter, status int, v any) {
-	v = httputil.EmptySliceIfNil(v)
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	json.NewEncoder(w).Encode(v)
-}
-
-func writeError(w http.ResponseWriter, status int, msg string) {
-	writeJSON(w, status, map[string]string{"error": msg})
-}
-
 // ——— 反馈(Eval 与反馈, P2) ———
 
 // handleSubmitFeedback 接收用户对一条 AI 消息的点赞/点踩并落库(upsert)。
 func (s *Service) handleSubmitFeedback(w http.ResponseWriter, r *http.Request) {
 	if s.feedbackStore == nil {
-		writeError(w, http.StatusServiceUnavailable, "feedback store not configured")
+		httputil.WriteError(w, http.StatusServiceUnavailable, "feedback store not configured")
 		return
 	}
 	var req struct {
@@ -974,15 +963,15 @@ func (s *Service) handleSubmitFeedback(w http.ResponseWriter, r *http.Request) {
 		Comment        string `json:"comment"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
+		httputil.WriteError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
 	if req.Rating != "up" && req.Rating != "down" {
-		writeError(w, http.StatusBadRequest, "rating must be 'up' or 'down'")
+		httputil.WriteError(w, http.StatusBadRequest, "rating must be 'up' or 'down'")
 		return
 	}
 	if req.MessageID == "" && req.ConversationID == "" {
-		writeError(w, http.StatusBadRequest, "message_id or conversation_id is required")
+		httputil.WriteError(w, http.StatusBadRequest, "message_id or conversation_id is required")
 		return
 	}
 	tenant := tenantFromCtx(r.Context())
@@ -994,12 +983,12 @@ func (s *Service) handleSubmitFeedback(w http.ResponseWriter, r *http.Request) {
 		Comment:        req.Comment,
 	}
 	if err := s.feedbackStore.Save(r.Context(), f); err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to save feedback")
+		httputil.WriteError(w, http.StatusInternalServerError, "failed to save feedback")
 		return
 	}
 	// 反馈回流(非阻断): 点赞→正向经验 / 点踩→反例, 沉淀为长期记忆(自动落库)
 	s.reflowFeedback(r.Context(), tenant, f)
-	writeJSON(w, http.StatusOK, map[string]any{"id": f.ID, "ok": true})
+	httputil.WriteJSON(w, http.StatusOK, map[string]any{"id": f.ID, "ok": true})
 }
 
 // reflowFeedback 把赞踩反馈回流为长期记忆: 取该会话最新一轮问答,
@@ -1055,41 +1044,41 @@ func truncateRunes(s string, n int) string {
 // handleListFeedback 返回当前租户的反馈列表(可按 conversation_id 过滤)。
 func (s *Service) handleListFeedback(w http.ResponseWriter, r *http.Request) {
 	if s.feedbackStore == nil {
-		writeError(w, http.StatusServiceUnavailable, "feedback store not configured")
+		httputil.WriteError(w, http.StatusServiceUnavailable, "feedback store not configured")
 		return
 	}
 	tenant := tenantFromCtx(r.Context())
 	convID := r.URL.Query().Get("conversation_id")
 	list, err := s.feedbackStore.List(r.Context(), tenant, convID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to list feedback")
+		httputil.WriteError(w, http.StatusInternalServerError, "failed to list feedback")
 		return
 	}
 	if list == nil {
 		list = []*agentic.Feedback{}
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"feedbacks": list})
+	httputil.WriteJSON(w, http.StatusOK, map[string]any{"feedbacks": list})
 }
 
 // handleFeedbackStats 返回当前租户的反馈聚合统计(点赞/点踩计数)。
 func (s *Service) handleFeedbackStats(w http.ResponseWriter, r *http.Request) {
 	if s.feedbackStore == nil {
-		writeError(w, http.StatusServiceUnavailable, "feedback store not configured")
+		httputil.WriteError(w, http.StatusServiceUnavailable, "feedback store not configured")
 		return
 	}
 	tenant := tenantFromCtx(r.Context())
 	up, down, err := s.feedbackStore.Stats(r.Context(), tenant)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to compute feedback stats")
+		httputil.WriteError(w, http.StatusInternalServerError, "failed to compute feedback stats")
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"up": up, "down": down, "total": up + down})
+	httputil.WriteJSON(w, http.StatusOK, map[string]any{"up": up, "down": down, "total": up + down})
 }
 
 // handleEvalCases 返回内置运维评测集,供前端展示或离线评估对话质量。
 func (s *Service) handleEvalCases(w http.ResponseWriter, r *http.Request) {
 	cases := eval.DefaultEvalSet()
-	writeJSON(w, http.StatusOK, map[string]any{"cases": cases})
+	httputil.WriteJSON(w, http.StatusOK, map[string]any{"cases": cases})
 }
 
 func (s *Service) handleTokenStats(w http.ResponseWriter, r *http.Request) {
@@ -1098,7 +1087,7 @@ func (s *Service) handleTokenStats(w http.ResponseWriter, r *http.Request) {
 		period = "24h"
 	}
 	stats := s.Engine.GetTokenStats(period)
-	writeJSON(w, http.StatusOK, stats)
+	httputil.WriteJSON(w, http.StatusOK, stats)
 }
 
 // handleUpdateSettings 运行时调整生成参数(温度/max_tokens)与物理 LLM 并发上限。
@@ -1110,7 +1099,7 @@ func (s *Service) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 		MaxInflight int     `json:"max_inflight"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
+		httputil.WriteError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
 	if req.MaxTokens > 0 {
@@ -1122,33 +1111,33 @@ func (s *Service) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 		s.Engine.SetLLMMaxInflight(req.MaxInflight)
 	}
 	slog.Info("ai settings updated", "max_tokens", req.MaxTokens, "temperature", req.Temperature, "max_inflight", req.MaxInflight)
-	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+	httputil.WriteJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
 func (s *Service) handleUpdateAgent(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	var ag model.AgentInstance
 	if err := json.NewDecoder(r.Body).Decode(&ag); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid body")
+		httputil.WriteError(w, http.StatusBadRequest, "invalid body")
 		return
 	}
 	ag.ID = id
 	ag.TenantID = tenantFromCtx(r.Context())
 	if err := s.Engine.UpdateAgent(r.Context(), &ag); err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, ag)
+	httputil.WriteJSON(w, http.StatusOK, ag)
 }
 
 func (s *Service) handleDeleteAgent(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	tenant := tenantFromCtx(r.Context())
 	if err := s.Engine.DeleteAgent(r.Context(), id, tenant); err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
+	httputil.WriteJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
 }
 
 // ——— Feature 1: 多智能体团队 ———
@@ -1156,15 +1145,15 @@ func (s *Service) handleDeleteAgent(w http.ResponseWriter, r *http.Request) {
 func (s *Service) handleCreateTeam(w http.ResponseWriter, r *http.Request) {
 	var team model.AgentTeam
 	if err := json.NewDecoder(r.Body).Decode(&team); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
+		httputil.WriteError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
 	team.TenantID = tenantFromCtx(r.Context())
 	if err := s.Engine.CreateTeam(r.Context(), &team); err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
+		httputil.WriteError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusCreated, team)
+	httputil.WriteJSON(w, http.StatusCreated, team)
 }
 
 func (s *Service) handleListTeams(w http.ResponseWriter, r *http.Request) {
@@ -1173,47 +1162,47 @@ func (s *Service) handleListTeams(w http.ResponseWriter, r *http.Request) {
 	if teams == nil {
 		teams = []*model.AgentTeam{}
 	}
-	writeJSON(w, http.StatusOK, teams)
+	httputil.WriteJSON(w, http.StatusOK, teams)
 }
 
 func (s *Service) handleGetTeam(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	team, ok := s.Engine.GetTeam(id)
 	if !ok {
-		writeError(w, http.StatusNotFound, "team not found")
+		httputil.WriteError(w, http.StatusNotFound, "team not found")
 		return
 	}
 	if team.TenantID != tenantFromCtx(r.Context()) {
-		writeError(w, http.StatusNotFound, "team not found")
+		httputil.WriteError(w, http.StatusNotFound, "team not found")
 		return
 	}
-	writeJSON(w, http.StatusOK, team)
+	httputil.WriteJSON(w, http.StatusOK, team)
 }
 
 func (s *Service) handleUpdateTeam(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	var team model.AgentTeam
 	if err := json.NewDecoder(r.Body).Decode(&team); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
+		httputil.WriteError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
 	team.ID = id
 	team.TenantID = tenantFromCtx(r.Context())
 	if err := s.Engine.UpdateTeam(r.Context(), &team); err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
+		httputil.WriteError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, team)
+	httputil.WriteJSON(w, http.StatusOK, team)
 }
 
 func (s *Service) handleDeleteTeam(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	tenant := tenantFromCtx(r.Context())
 	if err := s.Engine.DeleteTeam(r.Context(), id, tenant); err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
+	httputil.WriteJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
 }
 
 // handleTeamChat 团队对话(SSE 流式)：逐成员发射 agent_start/token/agent_end,
@@ -1221,24 +1210,24 @@ func (s *Service) handleDeleteTeam(w http.ResponseWriter, r *http.Request) {
 func (s *Service) handleTeamChat(w http.ResponseWriter, r *http.Request) {
 	var req model.TeamChatRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
+		httputil.WriteError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
 	if req.TeamID == "" {
 		req.TeamID = r.PathValue("id")
 	}
 	if req.Message == "" {
-		writeError(w, http.StatusBadRequest, "message is required")
+		httputil.WriteError(w, http.StatusBadRequest, "message is required")
 		return
 	}
 
 	team, ok := s.Engine.GetTeam(req.TeamID)
 	if !ok {
-		writeError(w, http.StatusNotFound, "team not found")
+		httputil.WriteError(w, http.StatusNotFound, "team not found")
 		return
 	}
 	if team.TenantID != tenantFromCtx(r.Context()) {
-		writeError(w, http.StatusNotFound, "team not found")
+		httputil.WriteError(w, http.StatusNotFound, "team not found")
 		return
 	}
 
@@ -1248,7 +1237,7 @@ func (s *Service) handleTeamChat(w http.ResponseWriter, r *http.Request) {
 
 	flusher, ok := w.(http.Flusher)
 	if !ok {
-		writeError(w, http.StatusInternalServerError, "streaming not supported")
+		httputil.WriteError(w, http.StatusInternalServerError, "streaming not supported")
 		return
 	}
 	w.Header().Set("Content-Type", "text/event-stream")

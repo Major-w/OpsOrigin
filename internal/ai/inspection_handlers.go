@@ -2,6 +2,7 @@ package ai
 
 import (
 	"encoding/json"
+	"github.com/opsorigin/core/pkg/httputil"
 	"net/http"
 
 	"github.com/opsorigin/core/internal/ai/agentic"
@@ -14,7 +15,7 @@ func (s *Service) handleListInspectionTemplates(w http.ResponseWriter, r *http.R
 	if items == nil {
 		items = []*agentic.InspectionTemplate{}
 	}
-	writeJSON(w, http.StatusOK, items)
+	httputil.WriteJSON(w, http.StatusOK, items)
 }
 
 // handleListInspections 列出当前租户的巡检任务。
@@ -23,17 +24,17 @@ func (s *Service) handleListInspections(w http.ResponseWriter, r *http.Request) 
 	if items == nil {
 		items = []*agentic.Inspection{}
 	}
-	writeJSON(w, http.StatusOK, items)
+	httputil.WriteJSON(w, http.StatusOK, items)
 }
 
 // handleGetInspection 查询单个巡检任务(含下次运行时间与最近状态)。
 func (s *Service) handleGetInspection(w http.ResponseWriter, r *http.Request) {
 	in, ok := s.Engine.GetInspection(r.PathValue("id"))
 	if !ok || in.TenantID != tenantFromCtx(r.Context()) {
-		writeError(w, http.StatusNotFound, "inspection not found")
+		httputil.WriteError(w, http.StatusNotFound, "inspection not found")
 		return
 	}
-	writeJSON(w, http.StatusOK, in)
+	httputil.WriteJSON(w, http.StatusOK, in)
 }
 
 // handleCreateInspection 创建巡检任务。可基于模板(template_id)预填巡检指令。
@@ -43,16 +44,16 @@ func (s *Service) handleCreateInspection(w http.ResponseWriter, r *http.Request)
 	}
 	var in agentic.Inspection
 	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
+		httputil.WriteError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
 	in.TenantID = tenantFromCtx(r.Context())
 	created, err := s.Engine.CreateInspection(r.Context(), &in)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
+		httputil.WriteError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusCreated, created)
+	httputil.WriteJSON(w, http.StatusCreated, created)
 }
 
 // handleUpdateInspection 更新巡检任务(改周期/范围/启停会自动重排下次运行时间)。
@@ -62,22 +63,22 @@ func (s *Service) handleUpdateInspection(w http.ResponseWriter, r *http.Request)
 	}
 	existing, ok := s.Engine.GetInspection(r.PathValue("id"))
 	if !ok || existing.TenantID != tenantFromCtx(r.Context()) {
-		writeError(w, http.StatusNotFound, "inspection not found")
+		httputil.WriteError(w, http.StatusNotFound, "inspection not found")
 		return
 	}
 	var in agentic.Inspection
 	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
+		httputil.WriteError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
 	in.ID = r.PathValue("id")
 	in.TenantID = existing.TenantID
 	updated, err := s.Engine.UpdateInspection(r.Context(), &in)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
+		httputil.WriteError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, updated)
+	httputil.WriteJSON(w, http.StatusOK, updated)
 }
 
 // handleDeleteInspection 删除巡检任务及其运行记录。
@@ -88,11 +89,11 @@ func (s *Service) handleDeleteInspection(w http.ResponseWriter, r *http.Request)
 	tenantID := tenantFromCtx(r.Context())
 	existing, ok := s.Engine.GetInspection(r.PathValue("id"))
 	if !ok || existing.TenantID != tenantID {
-		writeError(w, http.StatusNotFound, "inspection not found")
+		httputil.WriteError(w, http.StatusNotFound, "inspection not found")
 		return
 	}
 	if err := s.Engine.DeleteInspection(r.Context(), r.PathValue("id"), tenantID); err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
@@ -105,15 +106,15 @@ func (s *Service) handleRunInspection(w http.ResponseWriter, r *http.Request) {
 	}
 	existing, ok := s.Engine.GetInspection(r.PathValue("id"))
 	if !ok || existing.TenantID != tenantFromCtx(r.Context()) {
-		writeError(w, http.StatusNotFound, "inspection not found")
+		httputil.WriteError(w, http.StatusNotFound, "inspection not found")
 		return
 	}
 	run, err := s.Engine.RunInspection(r.Context(), r.PathValue("id"), "manual")
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, run)
+	httputil.WriteJSON(w, http.StatusOK, run)
 }
 
 // handleRunInspectionExperiment 执行一次对比实验(策略优化 A/B): 用覆盖的 prompt/scope
@@ -125,7 +126,7 @@ func (s *Service) handleRunInspectionExperiment(w http.ResponseWriter, r *http.R
 	}
 	existing, ok := s.Engine.GetInspection(r.PathValue("id"))
 	if !ok || existing.TenantID != tenantFromCtx(r.Context()) {
-		writeError(w, http.StatusNotFound, "inspection not found")
+		httputil.WriteError(w, http.StatusNotFound, "inspection not found")
 		return
 	}
 	var req agentic.ExperimentMeta
@@ -135,24 +136,24 @@ func (s *Service) handleRunInspectionExperiment(w http.ResponseWriter, r *http.R
 	}
 	run, err := s.Engine.RunInspectionExperiment(r.Context(), r.PathValue("id"), &req)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, run)
+	httputil.WriteJSON(w, http.StatusOK, run)
 }
 
 // handleListInspectionRuns 列出某巡检任务的历史运行记录(最新在前)。
 func (s *Service) handleListInspectionRuns(w http.ResponseWriter, r *http.Request) {
 	existing, ok := s.Engine.GetInspection(r.PathValue("id"))
 	if !ok || existing.TenantID != tenantFromCtx(r.Context()) {
-		writeError(w, http.StatusNotFound, "inspection not found")
+		httputil.WriteError(w, http.StatusNotFound, "inspection not found")
 		return
 	}
 	runs := s.Engine.ListInspectionRuns(r.PathValue("id"))
 	if runs == nil {
 		runs = []*agentic.InspectionRun{}
 	}
-	writeJSON(w, http.StatusOK, runs)
+	httputil.WriteJSON(w, http.StatusOK, runs)
 }
 
 // handleEscalateInspectionRun 将某次巡检运行记录中的发现批量转 ITSM 工单, 形成处置闭环。
@@ -170,10 +171,10 @@ func (s *Service) handleEscalateInspectionRun(w http.ResponseWriter, r *http.Req
 
 	run, err := s.Engine.EscalateInspectionRun(r.Context(), tenantID, r.PathValue("runID"), req.Severity)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
+		httputil.WriteError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, run)
+	httputil.WriteJSON(w, http.StatusOK, run)
 }
 
 // handleWorkforceMetrics 返回数字员工运营效果聚合指标(巡检健康 + 发现/转单/处置漏斗 + 工单统计)。
@@ -182,7 +183,7 @@ func (s *Service) handleWorkforceMetrics(w http.ResponseWriter, r *http.Request)
 	tenantID := tenantFromCtx(r.Context())
 	m := s.Engine.GetWorkforceMetrics(tenantID)
 	s.Engine.FillTicketMetrics(r.Context(), tenantID, m)
-	writeJSON(w, http.StatusOK, m)
+	httputil.WriteJSON(w, http.StatusOK, m)
 }
 
 // handleExportDataset 导出训练数据集(P3-1 反馈驱动微调):
@@ -203,12 +204,12 @@ func (s *Service) handleExportDataset(w http.ResponseWriter, r *http.Request) {
 
 	jsonl, summary, err := s.Engine.ExportDataset(r.Context(), tenantID, feedbacks)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 
 	if r.URL.Query().Get("format") == "json" {
-		writeJSON(w, http.StatusOK, map[string]any{
+		httputil.WriteJSON(w, http.StatusOK, map[string]any{
 			"summary": summary,
 			"entries": jsonl,
 		})
@@ -227,5 +228,5 @@ func (s *Service) handleListModels(w http.ResponseWriter, r *http.Request) {
 	if models == nil {
 		models = []agentic.ModelStatus{}
 	}
-	writeJSON(w, http.StatusOK, models)
+	httputil.WriteJSON(w, http.StatusOK, models)
 }

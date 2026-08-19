@@ -2,6 +2,7 @@ package ai
 
 import (
 	"encoding/json"
+	"github.com/opsorigin/core/pkg/httputil"
 	"net/http"
 	"strings"
 
@@ -26,11 +27,11 @@ func (s *Service) handlePublishSkill(w http.ResponseWriter, r *http.Request) {
 		Tags        []string `json:"tags"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
+		httputil.WriteError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
 	if req.AgentID == "" {
-		writeError(w, http.StatusBadRequest, "agent_id is required")
+		httputil.WriteError(w, http.StatusBadRequest, "agent_id is required")
 		return
 	}
 	meta := agentic.SkillPackageMeta{
@@ -43,10 +44,10 @@ func (s *Service) handlePublishSkill(w http.ResponseWriter, r *http.Request) {
 	}
 	pkg, err := s.Engine.PublishSkill(r.Context(), tenantFromCtx(r.Context()), req.AgentID, meta)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
+		httputil.WriteError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusCreated, pkg)
+	httputil.WriteJSON(w, http.StatusCreated, pkg)
 }
 
 // handleListSkills 列出当前租户的技能包目录(可按 category / tag 过滤)。
@@ -57,17 +58,17 @@ func (s *Service) handleListSkills(w http.ResponseWriter, r *http.Request) {
 	if pkgs == nil {
 		pkgs = []*agentic.SkillPackage{}
 	}
-	writeJSON(w, http.StatusOK, pkgs)
+	httputil.WriteJSON(w, http.StatusOK, pkgs)
 }
 
 // handleGetSkill 返回单个技能包详情。
 func (s *Service) handleGetSkill(w http.ResponseWriter, r *http.Request) {
 	pkg, err := s.Engine.GetSkillPackage(r.Context(), tenantFromCtx(r.Context()), r.PathValue("id"))
 	if err != nil {
-		writeError(w, http.StatusNotFound, err.Error())
+		httputil.WriteError(w, http.StatusNotFound, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, pkg)
+	httputil.WriteJSON(w, http.StatusOK, pkg)
 }
 
 // handleDeleteSkill 下架一个技能包。需 ai:tool:exec 权限。
@@ -76,10 +77,10 @@ func (s *Service) handleDeleteSkill(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := s.Engine.DeleteSkillPackage(r.Context(), tenantFromCtx(r.Context()), r.PathValue("id")); err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
+	httputil.WriteJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
 }
 
 // handleInstallSkill 从技能包实例化一个新的数字员工。需 ai:tool:exec 权限。
@@ -94,10 +95,10 @@ func (s *Service) handleInstallSkill(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewDecoder(r.Body).Decode(&req)
 	ag, err := s.Engine.InstallSkill(r.Context(), tenantFromCtx(r.Context()), r.PathValue("id"), req.Name)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
+		httputil.WriteError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusCreated, ag)
+	httputil.WriteJSON(w, http.StatusCreated, ag)
 }
 
 // handleExportSkill 导出技能包为可移植 JSON(浏览器下载附件)。
@@ -105,7 +106,7 @@ func (s *Service) handleExportSkill(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	data, err := s.Engine.ExportSkill(r.Context(), tenantFromCtx(r.Context()), id)
 	if err != nil {
-		writeError(w, http.StatusNotFound, err.Error())
+		httputil.WriteError(w, http.StatusNotFound, err.Error())
 		return
 	}
 	fn := "skill-package.json"
@@ -128,11 +129,11 @@ func (s *Service) handleImportSkill(w http.ResponseWriter, r *http.Request) {
 		Data json.RawMessage `json:"data"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
+		httputil.WriteError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
 	if len(req.Data) == 0 {
-		writeError(w, http.StatusBadRequest, "data is required")
+		httputil.WriteError(w, http.StatusBadRequest, "data is required")
 		return
 	}
 	// 允许传入 JSON 字符串(前端读文件后 JSON.stringify)或直接对象
@@ -145,10 +146,10 @@ func (s *Service) handleImportSkill(w http.ResponseWriter, r *http.Request) {
 	}
 	pkg, err := s.Engine.ImportSkill(r.Context(), tenantFromCtx(r.Context()), raw)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
+		httputil.WriteError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusCreated, pkg)
+	httputil.WriteJSON(w, http.StatusCreated, pkg)
 }
 
 // handleRateSkill 对技能包打分(1~5 星)。用户身份从请求上下文注入, 无需特殊权限。
@@ -158,48 +159,48 @@ func (s *Service) handleRateSkill(w http.ResponseWriter, r *http.Request) {
 		Score int `json:"score"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
+		httputil.WriteError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
 	if req.Score < 1 || req.Score > 5 {
-		writeError(w, http.StatusBadRequest, "score must be between 1 and 5")
+		httputil.WriteError(w, http.StatusBadRequest, "score must be between 1 and 5")
 		return
 	}
 	if err := s.Engine.RateSkill(r.Context(), tenantFromCtx(r.Context()), r.PathValue("id"), userFromCtx(r), req.Score); err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
+		httputil.WriteError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]string{"status": "rated"})
+	httputil.WriteJSON(w, http.StatusOK, map[string]string{"status": "rated"})
 }
 
 // handleGetSkillRating 返回技能包评分均值 / 次数 / 当前用户打分。
 func (s *Service) handleGetSkillRating(w http.ResponseWriter, r *http.Request) {
 	avg, count, my, err := s.Engine.GetSkillRating(r.Context(), tenantFromCtx(r.Context()), r.PathValue("id"), userFromCtx(r))
 	if err != nil {
-		writeError(w, http.StatusNotFound, err.Error())
+		httputil.WriteError(w, http.StatusNotFound, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"avg": avg, "count": count, "my_score": my})
+	httputil.WriteJSON(w, http.StatusOK, map[string]any{"avg": avg, "count": count, "my_score": my})
 }
 
 // handleToggleFavorite 切换当前用户对技能包的收藏状态。
 func (s *Service) handleToggleFavorite(w http.ResponseWriter, r *http.Request) {
 	fav, err := s.Engine.ToggleFavorite(r.Context(), tenantFromCtx(r.Context()), r.PathValue("id"), userFromCtx(r))
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]bool{"favorited": fav})
+	httputil.WriteJSON(w, http.StatusOK, map[string]bool{"favorited": fav})
 }
 
 // handleIsFavorite 返回当前用户是否已收藏该技能包。
 func (s *Service) handleIsFavorite(w http.ResponseWriter, r *http.Request) {
 	fav, err := s.Engine.IsFavorite(r.Context(), tenantFromCtx(r.Context()), r.PathValue("id"), userFromCtx(r))
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]bool{"favorited": fav})
+	httputil.WriteJSON(w, http.StatusOK, map[string]bool{"favorited": fav})
 }
 
 // handleListFavorites 返回当前用户收藏的技能包列表。
@@ -208,7 +209,7 @@ func (s *Service) handleListFavorites(w http.ResponseWriter, r *http.Request) {
 	if pkgs == nil {
 		pkgs = []*agentic.SkillPackage{}
 	}
-	writeJSON(w, http.StatusOK, pkgs)
+	httputil.WriteJSON(w, http.StatusOK, pkgs)
 }
 
 // handleListVersions 返回与指定技能包同名的全部版本。
@@ -217,7 +218,7 @@ func (s *Service) handleListVersions(w http.ResponseWriter, r *http.Request) {
 	if vs == nil {
 		vs = []*agentic.SkillPackage{}
 	}
-	writeJSON(w, http.StatusOK, vs)
+	httputil.WriteJSON(w, http.StatusOK, vs)
 }
 
 // slugify 将名称转为安全的下载文件名(空格→-, 去除非常规字符)。

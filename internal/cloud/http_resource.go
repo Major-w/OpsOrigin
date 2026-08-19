@@ -3,6 +3,7 @@ package cloud
 import (
 	"encoding/json"
 	"fmt"
+	"github.com/opsorigin/core/pkg/httputil"
 	"net/http"
 )
 
@@ -31,11 +32,11 @@ type resourceListRequest struct {
 func (s *Service) handleListResources(w http.ResponseWriter, r *http.Request) {
 	var req resourceListRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
+		httputil.WriteError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
 	if req.Provider == "" {
-		writeError(w, http.StatusBadRequest, "provider is required")
+		httputil.WriteError(w, http.StatusBadRequest, "provider is required")
 		return
 	}
 	if req.Provider == K8sProviderName {
@@ -43,17 +44,17 @@ func (s *Service) handleListResources(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !Exists(req.Provider) {
-		writeError(w, http.StatusBadRequest, "unknown provider: "+req.Provider)
+		httputil.WriteError(w, http.StatusBadRequest, "unknown provider: "+req.Provider)
 		return
 	}
 	p, err := Get(req.Provider)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
+		httputil.WriteError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 	cred, cerr := s.resolveCredential(req)
 	if cerr != nil {
-		writeError(w, http.StatusBadRequest, cerr.Error())
+		httputil.WriteError(w, http.StatusBadRequest, cerr.Error())
 		return
 	}
 	kinds := parseKinds(req.Types)
@@ -63,13 +64,13 @@ func (s *Service) handleListResources(w http.ResponseWriter, r *http.Request) {
 	region := firstNonEmpty(req.Region, cred.Region)
 	resources, err := p.ListResources(r.Context(), cred, region, kinds)
 	if err != nil {
-		writeError(w, http.StatusBadGateway, "failed to list resources: "+err.Error())
+		httputil.WriteError(w, http.StatusBadGateway, "failed to list resources: "+err.Error())
 		return
 	}
 	if resources == nil {
 		resources = []Resource{}
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"resources": resources})
+	httputil.WriteJSON(w, http.StatusOK, map[string]any{"resources": resources})
 }
 
 // resolveCredential 解析请求中的凭证：优先用 credential_id 从 Store 取，
@@ -105,11 +106,11 @@ func (s *Service) resolveCredential(req resourceListRequest) (Credential, error)
 // discoverer 未注入（agentmgr 未就绪）或 agent_id 缺失 → 400。
 func (s *Service) handleListK8sResources(w http.ResponseWriter, r *http.Request, req resourceListRequest) {
 	if req.AgentID == "" {
-		writeError(w, http.StatusBadRequest, "agent_id is required for k8s discovery")
+		httputil.WriteError(w, http.StatusBadRequest, "agent_id is required for k8s discovery")
 		return
 	}
 	if s.k8sDiscoverer == nil {
-		writeError(w, http.StatusBadRequest, "k8s discovery not configured")
+		httputil.WriteError(w, http.StatusBadRequest, "k8s discovery not configured")
 		return
 	}
 	kinds := parseKinds(req.Types)
@@ -118,13 +119,13 @@ func (s *Service) handleListK8sResources(w http.ResponseWriter, r *http.Request,
 	}
 	resources, err := s.k8sDiscoverer.Discover(r.Context(), tenantFromCtx(r.Context()), req.AgentID, kinds, req.K8s)
 	if err != nil {
-		writeError(w, http.StatusBadGateway, "failed to discover k8s resources: "+err.Error())
+		httputil.WriteError(w, http.StatusBadGateway, "failed to discover k8s resources: "+err.Error())
 		return
 	}
 	if resources == nil {
 		resources = []Resource{}
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"resources": resources})
+	httputil.WriteJSON(w, http.StatusOK, map[string]any{"resources": resources})
 }
 
 // parseKinds 把字符串类型列表转换为 ResourceType 切片，过滤掉不支持的类型。

@@ -57,14 +57,14 @@ func (s *Service) RegisterRoutes(mux *http.ServeMux) {
 
 func (s *Service) handleListApps(w http.ResponseWriter, r *http.Request) {
 	apps, _ := s.store.ListApps(r.Context(), tenant(r))
-	writeJSON(w, 200, apps)
+	httputil.WriteJSON(w, 200, apps)
 }
 func (s *Service) handleCreateApp(w http.ResponseWriter, r *http.Request) {
 	var a DeployApp
 	json.NewDecoder(r.Body).Decode(&a)
 	a.TenantID = tenant(r)
 	s.store.CreateApp(r.Context(), &a)
-	writeJSON(w, 201, a)
+	httputil.WriteJSON(w, 201, a)
 }
 func (s *Service) handleUpdateApp(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
@@ -73,17 +73,17 @@ func (s *Service) handleUpdateApp(w http.ResponseWriter, r *http.Request) {
 	a.ID = id
 	a.TenantID = tenant(r)
 	s.store.UpdateApp(r.Context(), &a)
-	writeJSON(w, 200, a)
+	httputil.WriteJSON(w, 200, a)
 }
 func (s *Service) handleDeleteApp(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	s.store.DeleteApp(r.Context(), id, tenant(r))
-	writeJSON(w, 200, map[string]string{"ok": "deleted"})
+	httputil.WriteJSON(w, 200, map[string]string{"ok": "deleted"})
 }
 
 func (s *Service) handleListReleases(w http.ResponseWriter, r *http.Request) {
 	rel, _ := s.store.ListReleases(r.Context(), tenant(r))
-	writeJSON(w, 200, rel)
+	httputil.WriteJSON(w, 200, rel)
 }
 func (s *Service) handleCreateRelease(w http.ResponseWriter, r *http.Request) {
 	var r2 ReleaseTicket
@@ -105,7 +105,7 @@ func (s *Service) handleCreateRelease(w http.ResponseWriter, r *http.Request) {
 		r2.Operator = operatorOf(r)
 	}
 	s.store.CreateRelease(r.Context(), &r2)
-	writeJSON(w, 201, r2)
+	httputil.WriteJSON(w, 201, r2)
 }
 func (s *Service) handleUpdateRelease(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
@@ -114,12 +114,12 @@ func (s *Service) handleUpdateRelease(w http.ResponseWriter, r *http.Request) {
 	r2.ID = id
 	r2.TenantID = tenant(r)
 	s.store.UpdateRelease(r.Context(), &r2)
-	writeJSON(w, 200, r2)
+	httputil.WriteJSON(w, 200, r2)
 }
 func (s *Service) handleDeleteRelease(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	s.store.DeleteRelease(r.Context(), id, tenant(r))
-	writeJSON(w, 200, map[string]string{"ok": "deleted"})
+	httputil.WriteJSON(w, 200, map[string]string{"ok": "deleted"})
 }
 
 // handleApproveRelease 审批通过，校验审批人是否在 approvers 名单内（名单非空时）。
@@ -128,12 +128,12 @@ func (s *Service) handleApproveRelease(w http.ResponseWriter, r *http.Request) {
 	t := tenant(r)
 	rel, err := s.store.GetRelease(r.Context(), id, t)
 	if err != nil || rel == nil {
-		writeJSON(w, 404, map[string]string{"error": "not found"})
+		httputil.WriteJSON(w, 404, map[string]string{"error": "not found"})
 		return
 	}
 	operator := operatorOf(r)
 	if len(rel.Approvers) > 0 && !contains(rel.Approvers, operator) {
-		writeJSON(w, 403, map[string]string{"error": "审批人不在 approvers 名单内", "operator": operator})
+		httputil.WriteJSON(w, 403, map[string]string{"error": "审批人不在 approvers 名单内", "operator": operator})
 		return
 	}
 	rel.Status = "approved"
@@ -141,7 +141,7 @@ func (s *Service) handleApproveRelease(w http.ResponseWriter, r *http.Request) {
 	now := time.Now()
 	rel.ApprovedAt = &now
 	s.store.UpdateRelease(r.Context(), rel)
-	writeJSON(w, 200, rel)
+	httputil.WriteJSON(w, 200, rel)
 }
 func (s *Service) handleRejectRelease(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
@@ -152,14 +152,14 @@ func (s *Service) handleRejectRelease(w http.ResponseWriter, r *http.Request) {
 	json.NewDecoder(r.Body).Decode(&body)
 	rel, err := s.store.GetRelease(r.Context(), id, t)
 	if err != nil || rel == nil {
-		writeJSON(w, 404, map[string]string{"error": "not found"})
+		httputil.WriteJSON(w, 404, map[string]string{"error": "not found"})
 		return
 	}
 	rel.Status = "rejected"
 	rel.RejectedBy = operatorOf(r)
 	rel.RejectReason = body.Reason
 	s.store.UpdateRelease(r.Context(), rel)
-	writeJSON(w, 200, rel)
+	httputil.WriteJSON(w, 200, rel)
 }
 
 // handleDeployRelease 触发真实部署：先置 deploying，再异步经 Agent 通道执行。
@@ -168,11 +168,11 @@ func (s *Service) handleDeployRelease(w http.ResponseWriter, r *http.Request) {
 	t := tenant(r)
 	rel, err := s.store.GetRelease(r.Context(), id, t)
 	if err != nil || rel == nil {
-		writeJSON(w, 404, map[string]string{"error": "not found"})
+		httputil.WriteJSON(w, 404, map[string]string{"error": "not found"})
 		return
 	}
 	if rel.Status == "deploying" {
-		writeJSON(w, 409, map[string]string{"error": "deploy already in progress"})
+		httputil.WriteJSON(w, 409, map[string]string{"error": "deploy already in progress"})
 		return
 	}
 	rel.Operator = operatorOf(r)
@@ -180,12 +180,12 @@ func (s *Service) handleDeployRelease(w http.ResponseWriter, r *http.Request) {
 	now := time.Now()
 	rel.DeployedAt = &now
 	if err := s.store.UpdateRelease(r.Context(), rel); err != nil {
-		writeJSON(w, 500, map[string]string{"error": err.Error()})
+		httputil.WriteJSON(w, 500, map[string]string{"error": err.Error()})
 		return
 	}
 	// 脱离请求上下文，避免客户端断开导致部署中断。
 	go s.executeDeploy(rel)
-	writeJSON(w, 202, rel)
+	httputil.WriteJSON(w, 202, rel)
 }
 
 // handleRollbackRelease 回滚到该应用+环境的上一成功版本。
@@ -195,7 +195,7 @@ func (s *Service) handleRollbackRelease(w http.ResponseWriter, r *http.Request) 
 	t := tenant(r)
 	rel, err := s.store.GetRelease(r.Context(), id, t)
 	if err != nil || rel == nil {
-		writeJSON(w, 404, map[string]string{"error": "not found"})
+		httputil.WriteJSON(w, 404, map[string]string{"error": "not found"})
 		return
 	}
 
@@ -220,7 +220,7 @@ func (s *Service) handleRollbackRelease(w http.ResponseWriter, r *http.Request) 
 			note += " 失败:\n" + out
 		}
 		s.historyFor(rel, "rolled_back", note+"\n"+out)
-		writeJSON(w, 200, rel)
+		httputil.WriteJSON(w, 200, rel)
 		return
 	}
 
@@ -248,7 +248,7 @@ func (s *Service) handleRollbackRelease(w http.ResponseWriter, r *http.Request) 
 			rel.Status = "rolled_back"
 			s.store.UpdateRelease(r.Context(), rel)
 			s.historyFor(rel, "rolled_back", "回滚脚本下发失败:\n"+out)
-			writeJSON(w, 200, rel)
+			httputil.WriteJSON(w, 200, rel)
 			return
 		}
 	}
@@ -259,7 +259,7 @@ func (s *Service) handleRollbackRelease(w http.ResponseWriter, r *http.Request) 
 		note += " 至版本 " + prev.Version
 	}
 	s.historyFor(rel, "rolled_back", note)
-	writeJSON(w, 200, rel)
+	httputil.WriteJSON(w, 200, rel)
 }
 
 // executeDeploy 是真实部署引擎：依据环境 Mode 在目标落地下发指令。
@@ -551,14 +551,14 @@ func (s *Service) handleListEnvs(w http.ResponseWriter, r *http.Request) {
 			envs = append(envs, e)
 		}
 	}
-	writeJSON(w, 200, envs)
+	httputil.WriteJSON(w, 200, envs)
 }
 func (s *Service) handleCreateEnv(w http.ResponseWriter, r *http.Request) {
 	var e DeployEnvironment
 	json.NewDecoder(r.Body).Decode(&e)
 	e.TenantID = tenant(r)
 	s.store.CreateEnv(r.Context(), &e)
-	writeJSON(w, 201, e)
+	httputil.WriteJSON(w, 201, e)
 }
 func (s *Service) handleUpdateEnv(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
@@ -567,17 +567,17 @@ func (s *Service) handleUpdateEnv(w http.ResponseWriter, r *http.Request) {
 	e.ID = id
 	e.TenantID = tenant(r)
 	s.store.UpdateEnv(r.Context(), &e)
-	writeJSON(w, 200, e)
+	httputil.WriteJSON(w, 200, e)
 }
 func (s *Service) handleDeleteEnv(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	s.store.DeleteEnv(r.Context(), id, tenant(r))
-	writeJSON(w, 200, map[string]string{"ok": "deleted"})
+	httputil.WriteJSON(w, 200, map[string]string{"ok": "deleted"})
 }
 
 func (s *Service) handleListHistory(w http.ResponseWriter, r *http.Request) {
 	h, _ := s.store.ListHistory(r.Context(), tenant(r))
-	writeJSON(w, 200, h)
+	httputil.WriteJSON(w, 200, h)
 }
 
 func tenant(r *http.Request) string {
@@ -628,11 +628,4 @@ func httpProbe(url string, timeout time.Duration) (int, string, error) {
 	defer resp.Body.Close()
 	b, _ := io.ReadAll(io.LimitReader(resp.Body, 4<<10))
 	return resp.StatusCode, string(b), nil
-}
-
-func writeJSON(w http.ResponseWriter, status int, v any) {
-	v = httputil.EmptySliceIfNil(v)
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	json.NewEncoder(w).Encode(v)
 }

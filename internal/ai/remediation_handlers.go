@@ -2,6 +2,7 @@ package ai
 
 import (
 	"encoding/json"
+	"github.com/opsorigin/core/pkg/httputil"
 	"net/http"
 
 	"github.com/opsorigin/core/pkg/auth"
@@ -15,15 +16,15 @@ func (s *Service) handleGenerateRemediations(w http.ResponseWriter, r *http.Requ
 	}
 	acts, err := s.Engine.GenerateRemediations(r.Context(), tenantFromCtx(r.Context()), r.PathValue("runID"))
 	if err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
+		httputil.WriteError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, acts)
+	httputil.WriteJSON(w, http.StatusOK, acts)
 }
 
 // handleListRemediations 返回某 run 的修复动作列表。
 func (s *Service) handleListRemediations(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, s.Engine.ListRemediations(tenantFromCtx(r.Context()), r.PathValue("runID")))
+	httputil.WriteJSON(w, http.StatusOK, s.Engine.ListRemediations(tenantFromCtx(r.Context()), r.PathValue("runID")))
 }
 
 // handleExecuteRemediation 执行一条修复动作(分级: auto 直接执行 / review 触发审批)。
@@ -41,8 +42,8 @@ func (s *Service) handleExecuteRemediation(w http.ResponseWriter, r *http.Reques
 	}
 	act, err := s.Engine.ExecuteRemediation(r.Context(), tenantFromCtx(r.Context()), req.ActionID)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
+		httputil.WriteError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, act)
+	httputil.WriteJSON(w, http.StatusOK, act)
 }

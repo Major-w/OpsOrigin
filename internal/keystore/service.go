@@ -150,7 +150,7 @@ func (s *Service) RegisterRoutes(mux *http.ServeMux) {
 func (s *Service) handleCreate(w http.ResponseWriter, r *http.Request) {
 	var key KeyEntry
 	if err := json.NewDecoder(r.Body).Decode(&key); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
+		httputil.WriteError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
 	key.TenantID = tenantFromCtx(r.Context())
@@ -174,10 +174,10 @@ func (s *Service) handleCreate(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if err := s.store.Create(r.Context(), &key); err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusCreated, key)
+	httputil.WriteJSON(w, http.StatusCreated, key)
 }
 
 func (s *Service) handleList(w http.ResponseWriter, r *http.Request) {
@@ -185,13 +185,13 @@ func (s *Service) handleList(w http.ResponseWriter, r *http.Request) {
 	keyType := KeyType(r.URL.Query().Get("type"))
 	keys, err := s.store.List(r.Context(), tenantID, keyType)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	if keys == nil {
 		keys = []*KeyEntry{}
 	}
-	writeJSON(w, http.StatusOK, keys)
+	httputil.WriteJSON(w, http.StatusOK, keys)
 }
 
 func (s *Service) handleGet(w http.ResponseWriter, r *http.Request) {
@@ -199,10 +199,10 @@ func (s *Service) handleGet(w http.ResponseWriter, r *http.Request) {
 	tenantID := tenantFromCtx(r.Context())
 	key, err := s.store.Get(r.Context(), id, tenantID)
 	if err != nil || key == nil {
-		writeError(w, http.StatusNotFound, "key not found")
+		httputil.WriteError(w, http.StatusNotFound, "key not found")
 		return
 	}
-	writeJSON(w, http.StatusOK, key)
+	httputil.WriteJSON(w, http.StatusOK, key)
 }
 
 func (s *Service) handleUpdate(w http.ResponseWriter, r *http.Request) {
@@ -210,7 +210,7 @@ func (s *Service) handleUpdate(w http.ResponseWriter, r *http.Request) {
 	tenantID := tenantFromCtx(r.Context())
 	key, err := s.store.Get(r.Context(), id, tenantID)
 	if err != nil || key == nil {
-		writeError(w, http.StatusNotFound, "key not found")
+		httputil.WriteError(w, http.StatusNotFound, "key not found")
 		return
 	}
 	var req struct {
@@ -222,7 +222,7 @@ func (s *Service) handleUpdate(w http.ResponseWriter, r *http.Request) {
 		Port     string  `json:"port,omitempty"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
+		httputil.WriteError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
 	if req.Name != "" {
@@ -251,17 +251,17 @@ func (s *Service) handleUpdate(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if err := s.store.Update(r.Context(), key); err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, key)
+	httputil.WriteJSON(w, http.StatusOK, key)
 }
 
 func (s *Service) handleDelete(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	tenantID := tenantFromCtx(r.Context())
 	s.store.Delete(r.Context(), id, tenantID)
-	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
+	httputil.WriteJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
 }
 
 func (s *Service) handleBatchDelete(w http.ResponseWriter, r *http.Request) {
@@ -269,24 +269,13 @@ func (s *Service) handleBatchDelete(w http.ResponseWriter, r *http.Request) {
 		IDs []string `json:"ids"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
+		httputil.WriteError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
 	tenantID := tenantFromCtx(r.Context())
 	if err := s.store.BatchDelete(r.Context(), tenantID, req.IDs); err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
-}
-
-func writeJSON(w http.ResponseWriter, status int, v any) {
-	v = httputil.EmptySliceIfNil(v)
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	json.NewEncoder(w).Encode(v)
-}
-
-func writeError(w http.ResponseWriter, status int, msg string) {
-	writeJSON(w, status, map[string]string{"error": msg})
+	httputil.WriteJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
 }

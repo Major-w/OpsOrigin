@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"github.com/opsorigin/core/pkg/httputil"
 	"net/http"
 	"strings"
 	"time"
@@ -138,18 +139,18 @@ func (s *PrecipitationStore) RegisterRoutes(mux *http.ServeMux) {
 
 func (s *PrecipitationStore) handleList(w http.ResponseWriter, r *http.Request) {
 	rules, _ := s.List(r.Context())
-	writeJSON(w, 200, rules)
+	httputil.WriteJSON(w, 200, rules)
 }
 
 func (s *PrecipitationStore) handleCreate(w http.ResponseWriter, r *http.Request) {
 	var rule PrecipitationRule
 	json.NewDecoder(r.Body).Decode(&rule)
 	if rule.Name == "" {
-		writeError(w, 400, "name is required")
+		httputil.WriteError(w, 400, "name is required")
 		return
 	}
 	s.Save(r.Context(), &rule)
-	writeJSON(w, 201, rule)
+	httputil.WriteJSON(w, 201, rule)
 }
 
 func (s *PrecipitationStore) handleUpdate(w http.ResponseWriter, r *http.Request) {
@@ -157,18 +158,18 @@ func (s *PrecipitationStore) handleUpdate(w http.ResponseWriter, r *http.Request
 	json.NewDecoder(r.Body).Decode(&rule)
 	rule.ID = r.PathValue("id")
 	s.Save(r.Context(), &rule)
-	writeJSON(w, 200, rule)
+	httputil.WriteJSON(w, 200, rule)
 }
 
 func (s *PrecipitationStore) handleDelete(w http.ResponseWriter, r *http.Request) {
 	s.Delete(r.Context(), r.PathValue("id"))
-	writeJSON(w, 200, map[string]string{"status": "deleted"})
+	httputil.WriteJSON(w, 200, map[string]string{"status": "deleted"})
 }
 
 func (s *PrecipitationStore) handleRun(w http.ResponseWriter, r *http.Request) {
 	rule, err := s.Get(r.Context(), r.PathValue("id"))
 	if err != nil {
-		writeError(w, 404, "rule not found")
+		httputil.WriteError(w, 404, "rule not found")
 		return
 	}
 	var body struct {
@@ -180,8 +181,8 @@ func (s *PrecipitationStore) handleRun(w http.ResponseWriter, r *http.Request) {
 	}
 	id, err := s.RenderAndCreate(r.Context(), rule, body.Vars)
 	if err != nil {
-		writeError(w, 500, err.Error())
+		httputil.WriteError(w, 500, err.Error())
 		return
 	}
-	writeJSON(w, 200, map[string]string{"article_id": id, "status": "created"})
+	httputil.WriteJSON(w, 200, map[string]string{"article_id": id, "status": "created"})
 }

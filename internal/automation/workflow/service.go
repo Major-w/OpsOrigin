@@ -262,32 +262,32 @@ func (s *Service) RegisterRoutes(mux *http.ServeMux) {
 func (s *Service) handleCreate(w http.ResponseWriter, r *http.Request) {
 	var wf Workflow
 	if err := json.NewDecoder(r.Body).Decode(&wf); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
+		httputil.WriteError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
 	if err := validate.Name("工作流名称", wf.Name); err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
+		httputil.WriteError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 	wf.TenantID = tenantFromCtx(r.Context())
 	if err := s.store.Create(r.Context(), &wf); err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusCreated, wf)
+	httputil.WriteJSON(w, http.StatusCreated, wf)
 }
 
 func (s *Service) handleList(w http.ResponseWriter, r *http.Request) {
 	tenantID := tenantFromCtx(r.Context())
 	workflows, err := s.store.List(r.Context(), tenantID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	if workflows == nil {
 		workflows = []*Workflow{}
 	}
-	writeJSON(w, http.StatusOK, workflows)
+	httputil.WriteJSON(w, http.StatusOK, workflows)
 }
 
 func (s *Service) handleGet(w http.ResponseWriter, r *http.Request) {
@@ -295,10 +295,10 @@ func (s *Service) handleGet(w http.ResponseWriter, r *http.Request) {
 	tenantID := tenantFromCtx(r.Context())
 	wf, err := s.store.Get(r.Context(), id, tenantID)
 	if err != nil || wf == nil {
-		writeError(w, http.StatusNotFound, "workflow not found")
+		httputil.WriteError(w, http.StatusNotFound, "workflow not found")
 		return
 	}
-	writeJSON(w, http.StatusOK, wf)
+	httputil.WriteJSON(w, http.StatusOK, wf)
 }
 
 func (s *Service) handleUpdate(w http.ResponseWriter, r *http.Request) {
@@ -306,7 +306,7 @@ func (s *Service) handleUpdate(w http.ResponseWriter, r *http.Request) {
 	tenantID := tenantFromCtx(r.Context())
 	existing, err := s.store.Get(r.Context(), id, tenantID)
 	if err != nil || existing == nil {
-		writeError(w, http.StatusNotFound, "workflow not found")
+		httputil.WriteError(w, http.StatusNotFound, "workflow not found")
 		return
 	}
 	var wf Workflow
@@ -315,14 +315,14 @@ func (s *Service) handleUpdate(w http.ResponseWriter, r *http.Request) {
 	wf.TenantID = existing.TenantID
 	wf.CreatedAt = existing.CreatedAt
 	s.store.Update(r.Context(), &wf)
-	writeJSON(w, http.StatusOK, wf)
+	httputil.WriteJSON(w, http.StatusOK, wf)
 }
 
 func (s *Service) handleDelete(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	tenantID := tenantFromCtx(r.Context())
 	s.store.Delete(r.Context(), id, tenantID)
-	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
+	httputil.WriteJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
 }
 
 // handleExecute creates a running execution and drives it through the steps.
@@ -332,7 +332,7 @@ func (s *Service) handleExecute(w http.ResponseWriter, r *http.Request) {
 	tenantID := tenantFromCtx(r.Context())
 	wf, err := s.store.Get(r.Context(), id, tenantID)
 	if err != nil || wf == nil {
-		writeError(w, http.StatusNotFound, "workflow not found")
+		httputil.WriteError(w, http.StatusNotFound, "workflow not found")
 		return
 	}
 	var req struct {
@@ -356,7 +356,7 @@ func (s *Service) handleExecute(w http.ResponseWriter, r *http.Request) {
 		exec.Context["inputs"] = req.Inputs
 	}
 	if err := s.store.CreateExecution(r.Context(), exec); err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	exec.Status = ExecStatusRunning
@@ -370,7 +370,7 @@ func (s *Service) handleExecute(w http.ResponseWriter, r *http.Request) {
 	// 前端通过 GET /workflows/{id}/executions 轮询状态。
 	// 使用 WithoutCancel 派生，避免客户端断开导致后台执行被取消。
 	go s.runFromStep(context.WithoutCancel(r.Context()), exec, wf, startStepID)
-	writeJSON(w, http.StatusAccepted, exec)
+	httputil.WriteJSON(w, http.StatusAccepted, exec)
 }
 
 // runFromStep drives execution starting at startStepID, following OnSuccess/OnFailure.
@@ -594,13 +594,13 @@ func (s *Service) handleListApprovals(w http.ResponseWriter, r *http.Request) {
 	tenantID := tenantFromCtx(r.Context())
 	approvals, err := s.store.ListApprovals(r.Context(), tenantID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	if approvals == nil {
 		approvals = []*StepApproval{}
 	}
-	writeJSON(w, http.StatusOK, approvals)
+	httputil.WriteJSON(w, http.StatusOK, approvals)
 }
 
 func (s *Service) handleApprove(w http.ResponseWriter, r *http.Request) {
@@ -618,11 +618,11 @@ func (s *Service) decideApproval(w http.ResponseWriter, r *http.Request, status 
 	tenantID := tenantFromCtx(r.Context())
 	approval, err := s.store.GetApproval(r.Context(), id, tenantID)
 	if err != nil || approval == nil {
-		writeError(w, http.StatusNotFound, "approval not found")
+		httputil.WriteError(w, http.StatusNotFound, "approval not found")
 		return
 	}
 	if approval.Status != ApprovalPending {
-		writeError(w, http.StatusBadRequest, "approval already decided")
+		httputil.WriteError(w, http.StatusBadRequest, "approval already decided")
 		return
 	}
 	var req struct {
@@ -637,18 +637,18 @@ func (s *Service) decideApproval(w http.ResponseWriter, r *http.Request, status 
 	approval.Comment = req.Comment
 	approval.DecidedAt = &now
 	if err := s.store.UpdateApproval(r.Context(), approval); err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 
 	exec, err := s.store.GetExecution(r.Context(), approval.ExecutionID, tenantID)
 	if err != nil || exec == nil {
-		writeJSON(w, http.StatusOK, approval)
+		httputil.WriteJSON(w, http.StatusOK, approval)
 		return
 	}
 	wf, _ := s.store.Get(r.Context(), exec.WorkflowID, tenantID)
 	if wf == nil {
-		writeJSON(w, http.StatusOK, approval)
+		httputil.WriteJSON(w, http.StatusOK, approval)
 		return
 	}
 	// 审批续跑同样需要 DAG→on_success/on_failure 编译，否则审批节点后继为空而中断。
@@ -682,7 +682,7 @@ func (s *Service) decideApproval(w http.ResponseWriter, r *http.Request, status 
 		}
 		s.store.UpdateExecution(r.Context(), exec)
 	}
-	writeJSON(w, http.StatusOK, approval)
+	httputil.WriteJSON(w, http.StatusOK, approval)
 }
 
 func (s *Service) handleListExecutions(w http.ResponseWriter, r *http.Request) {
@@ -690,13 +690,13 @@ func (s *Service) handleListExecutions(w http.ResponseWriter, r *http.Request) {
 	tenantID := tenantFromCtx(r.Context())
 	execs, err := s.store.ListExecutions(r.Context(), id, tenantID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	if execs == nil {
 		execs = []*WorkflowExecution{}
 	}
-	writeJSON(w, http.StatusOK, execs)
+	httputil.WriteJSON(w, http.StatusOK, execs)
 }
 
 // findStep returns a pointer to the top-level step with the given ID.
@@ -841,17 +841,6 @@ func compareNumbers(a, b, op string) bool {
 	return false
 }
 
-func writeJSON(w http.ResponseWriter, status int, v any) {
-	v = httputil.EmptySliceIfNil(v)
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	json.NewEncoder(w).Encode(v)
-}
-
-func writeError(w http.ResponseWriter, status int, msg string) {
-	writeJSON(w, status, map[string]string{"error": msg})
-}
-
 // Trigger 同步执行指定工作流，返回最终 execution。供 scheduler 定时触发复用，
 // 调用方（API handler / scheduler）自行决定是否异步驱动。
 func (s *Service) Trigger(ctx context.Context, tenantID, workflowID string, agentIDs []string, inputs map[string]any) (*WorkflowExecution, error) {
@@ -897,18 +886,18 @@ func (s *Service) handleCancelExecution(w http.ResponseWriter, r *http.Request) 
 	}
 	exec, err := s.store.GetExecution(r.Context(), execID, tenantID)
 	if err != nil || exec == nil {
-		writeError(w, http.StatusNotFound, "execution not found")
+		httputil.WriteError(w, http.StatusNotFound, "execution not found")
 		return
 	}
 	if exec.Status != "running" && exec.Status != "waiting" {
-		writeError(w, http.StatusBadRequest, "cannot cancel execution in status: "+string(exec.Status))
+		httputil.WriteError(w, http.StatusBadRequest, "cannot cancel execution in status: "+string(exec.Status))
 		return
 	}
 	if err := s.store.CancelExecution(r.Context(), execID, tenantID); err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]string{"status": "cancelled"})
+	httputil.WriteJSON(w, http.StatusOK, map[string]string{"status": "cancelled"})
 }
 
 func (s *Service) handleListTemplates(w http.ResponseWriter, r *http.Request) {
@@ -953,5 +942,5 @@ func (s *Service) handleListTemplates(w http.ResponseWriter, r *http.Request) {
 			},
 		},
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"templates": templates})
+	httputil.WriteJSON(w, http.StatusOK, map[string]any{"templates": templates})
 }

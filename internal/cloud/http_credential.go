@@ -2,6 +2,7 @@ package cloud
 
 import (
 	"encoding/json"
+	"github.com/opsorigin/core/pkg/httputil"
 	"net/http"
 	"strings"
 )
@@ -48,7 +49,7 @@ func (s *Service) handleListProviders(w http.ResponseWriter, r *http.Request) {
 		}
 		providers = append(providers, providerInfo{Name: K8sProviderName, Types: ks})
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"providers": providers})
+	httputil.WriteJSON(w, http.StatusOK, map[string]any{"providers": providers})
 }
 
 // handleListCredentials 列出本作用域已保存的凭证（不返回 SecretKey）。
@@ -74,7 +75,7 @@ func (s *Service) handleListCredentials(w http.ResponseWriter, r *http.Request) 
 	if views == nil {
 		views = []credentialView{}
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"credentials": views})
+	httputil.WriteJSON(w, http.StatusOK, map[string]any{"credentials": views})
 }
 
 // handleCreateCredential 保存一条云凭证到 Store（建立纳管通道），响应中不回显 SecretKey。
@@ -91,15 +92,15 @@ func (s *Service) handleCreateCredential(w http.ResponseWriter, r *http.Request)
 		EnableMonitorCollect *bool             `json:"enable_monitor_collect,omitempty"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
+		httputil.WriteError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
 	if req.Provider == "" {
-		writeError(w, http.StatusBadRequest, "provider is required")
+		httputil.WriteError(w, http.StatusBadRequest, "provider is required")
 		return
 	}
 	if !Exists(req.Provider) {
-		writeError(w, http.StatusBadRequest, "unknown provider: "+req.Provider)
+		httputil.WriteError(w, http.StatusBadRequest, "unknown provider: "+req.Provider)
 		return
 	}
 	cred := Credential{
@@ -110,7 +111,7 @@ func (s *Service) handleCreateCredential(w http.ResponseWriter, r *http.Request)
 		Extra:     req.Extra,
 	}
 	if err := s.store.Save(cred); err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to save credential")
+		httputil.WriteError(w, http.StatusInternalServerError, "failed to save credential")
 		return
 	}
 	// 纳管通道已建立 → 回调 CMDB 创建采集任务（若存在 onOnboard 注入）。
@@ -118,7 +119,7 @@ func (s *Service) handleCreateCredential(w http.ResponseWriter, r *http.Request)
 		s.onOnboard("cloud", "cloud:"+cred.Provider, req.EnableCMDBCollect, req.EnableMonitorCollect)
 	}
 	// 安全：响应中不携带 SecretKey，仅返回脱敏视图。
-	writeJSON(w, http.StatusCreated, credentialView{
+	httputil.WriteJSON(w, http.StatusCreated, credentialView{
 		ID:        idOf(cred),
 		Provider:  cred.Provider,
 		Region:    cred.Region,
@@ -133,14 +134,14 @@ func (s *Service) handleDeleteCredential(w http.ResponseWriter, r *http.Request)
 	id := r.PathValue("id")
 	provider, credID := splitCredentialID(id)
 	if provider == "" {
-		writeError(w, http.StatusBadRequest, "invalid credential id")
+		httputil.WriteError(w, http.StatusBadRequest, "invalid credential id")
 		return
 	}
 	if err := s.store.Delete(provider, credID); err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to delete credential")
+		httputil.WriteError(w, http.StatusInternalServerError, "failed to delete credential")
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
+	httputil.WriteJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
 }
 
 // splitCredentialID 从凭证 id（格式 "<provider>:<id>"）拆分出 provider 与内部 id。

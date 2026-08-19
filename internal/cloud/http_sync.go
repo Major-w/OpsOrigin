@@ -2,6 +2,7 @@ package cloud
 
 import (
 	"encoding/json"
+	"github.com/opsorigin/core/pkg/httputil"
 	"net/http"
 )
 
@@ -24,11 +25,11 @@ type syncRequest struct {
 func (s *Service) handleSyncResources(w http.ResponseWriter, r *http.Request) {
 	var req syncRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
+		httputil.WriteError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
 	if req.Provider == "" {
-		writeError(w, http.StatusBadRequest, "provider is required")
+		httputil.WriteError(w, http.StatusBadRequest, "provider is required")
 		return
 	}
 	if req.Provider == K8sProviderName {
@@ -36,7 +37,7 @@ func (s *Service) handleSyncResources(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !Exists(req.Provider) {
-		writeError(w, http.StatusBadRequest, "unknown provider: "+req.Provider)
+		httputil.WriteError(w, http.StatusBadRequest, "unknown provider: "+req.Provider)
 		return
 	}
 
@@ -45,7 +46,7 @@ func (s *Service) handleSyncResources(w http.ResponseWriter, r *http.Request) {
 		// 未携带资源 → 先发现
 		p, err := Get(req.Provider)
 		if err != nil {
-			writeError(w, http.StatusBadRequest, err.Error())
+			httputil.WriteError(w, http.StatusBadRequest, err.Error())
 			return
 		}
 		cred, cerr := s.resolveCredential(resourceListRequest{
@@ -56,7 +57,7 @@ func (s *Service) handleSyncResources(w http.ResponseWriter, r *http.Request) {
 			CredentialID: req.CredentialID,
 		})
 		if cerr != nil {
-			writeError(w, http.StatusBadRequest, cerr.Error())
+			httputil.WriteError(w, http.StatusBadRequest, cerr.Error())
 			return
 		}
 		kinds := parseKinds(req.Types)
@@ -66,14 +67,14 @@ func (s *Service) handleSyncResources(w http.ResponseWriter, r *http.Request) {
 		region := firstNonEmpty(req.Region, cred.Region)
 		resources, err = p.ListResources(r.Context(), cred, region, kinds)
 		if err != nil {
-			writeError(w, http.StatusBadGateway, "failed to discover resources: "+err.Error())
+			httputil.WriteError(w, http.StatusBadGateway, "failed to discover resources: "+err.Error())
 			return
 		}
 	}
 
 	tenantID := tenantFromCtx(r.Context())
 	result := s.cmdb.SyncResources(r.Context(), tenantID, resources)
-	writeJSON(w, http.StatusOK, result)
+	httputil.WriteJSON(w, http.StatusOK, result)
 }
 
 // handleSyncK8sResources 把 K8s 资源同步进 CMDB。
@@ -82,13 +83,13 @@ func (s *Service) handleSyncResources(w http.ResponseWriter, r *http.Request) {
 // discoverer 未注入 → 400。
 func (s *Service) handleSyncK8sResources(w http.ResponseWriter, r *http.Request, req syncRequest) {
 	if s.k8sDiscoverer == nil {
-		writeError(w, http.StatusBadRequest, "k8s discovery not configured")
+		httputil.WriteError(w, http.StatusBadRequest, "k8s discovery not configured")
 		return
 	}
 	resources := req.Resources
 	if len(resources) == 0 {
 		if req.AgentID == "" {
-			writeError(w, http.StatusBadRequest, "agent_id or resources is required for k8s sync")
+			httputil.WriteError(w, http.StatusBadRequest, "agent_id or resources is required for k8s sync")
 			return
 		}
 		kinds := parseKinds(req.Types)
@@ -98,7 +99,7 @@ func (s *Service) handleSyncK8sResources(w http.ResponseWriter, r *http.Request,
 		var err error
 		resources, err = s.k8sDiscoverer.Discover(r.Context(), tenantFromCtx(r.Context()), req.AgentID, kinds, req.K8s)
 		if err != nil {
-			writeError(w, http.StatusBadGateway, "failed to discover k8s resources: "+err.Error())
+			httputil.WriteError(w, http.StatusBadGateway, "failed to discover k8s resources: "+err.Error())
 			return
 		}
 	}
@@ -107,5 +108,5 @@ func (s *Service) handleSyncK8sResources(w http.ResponseWriter, r *http.Request,
 	}
 	tenantID := tenantFromCtx(r.Context())
 	result := s.cmdb.SyncResources(r.Context(), tenantID, resources)
-	writeJSON(w, http.StatusOK, result)
+	httputil.WriteJSON(w, http.StatusOK, result)
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/opsorigin/core/pkg/httputil"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -135,18 +136,18 @@ func (s *Service) loadDataPolicies(ctx context.Context, tenantID string) []*mode
 func (s *Service) handleListDataPolicies(w http.ResponseWriter, r *http.Request) {
 	tenantID := tenantFromCtx(r.Context())
 	if s.pg == nil {
-		writeJSON(w, http.StatusOK, []*model.DataPolicy{})
+		httputil.WriteJSON(w, http.StatusOK, []*model.DataPolicy{})
 		return
 	}
 	policies, err := s.pg.ListDataPolicies(r.Context(), tenantID, r.URL.Query().Get("role"), r.URL.Query().Get("model_type_id"))
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	if policies == nil {
 		policies = []*model.DataPolicy{}
 	}
-	writeJSON(w, http.StatusOK, policies)
+	httputil.WriteJSON(w, http.StatusOK, policies)
 }
 
 // handleSaveDataPolicy 新建/更新(按 role+model+action upsert)。
@@ -154,11 +155,11 @@ func (s *Service) handleSaveDataPolicy(w http.ResponseWriter, r *http.Request) {
 	tenantID := tenantFromCtx(r.Context())
 	var p model.DataPolicy
 	if err := json.NewDecoder(r.Body).Decode(&p); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
+		httputil.WriteError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
 	if p.Role == "" || p.ModelTypeID == "" {
-		writeError(w, http.StatusBadRequest, "role and model_type_id are required")
+		httputil.WriteError(w, http.StatusBadRequest, "role and model_type_id are required")
 		return
 	}
 	if p.Action == "" {
@@ -166,10 +167,10 @@ func (s *Service) handleSaveDataPolicy(w http.ResponseWriter, r *http.Request) {
 	}
 	p.TenantID = tenantID
 	if err := s.pg.SaveDataPolicy(r.Context(), &p); err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, p)
+	httputil.WriteJSON(w, http.StatusOK, p)
 }
 
 // handleDeleteDataPolicy 删除规则。
@@ -177,8 +178,8 @@ func (s *Service) handleDeleteDataPolicy(w http.ResponseWriter, r *http.Request)
 	id := r.PathValue("id")
 	tenantID := tenantFromCtx(r.Context())
 	if err := s.pg.DeleteDataPolicy(r.Context(), id, tenantID); err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"deleted": true, "id": id})
+	httputil.WriteJSON(w, http.StatusOK, map[string]any{"deleted": true, "id": id})
 }

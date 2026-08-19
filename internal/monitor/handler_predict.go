@@ -2,6 +2,7 @@ package monitor
 
 import (
 	"encoding/json"
+	"github.com/opsorigin/core/pkg/httputil"
 	"net/http"
 
 	"github.com/opsorigin/core/internal/monitor/predict"
@@ -11,7 +12,7 @@ import (
 func (s *Service) handleAlertRCAPaths(w http.ResponseWriter, r *http.Request) {
 	alerts := s.aggregator.GetActiveAlerts()
 	paths := s.aggregator.AnalyzeRootCausePaths(r.Context(), alerts)
-	writeJSON(w, http.StatusOK, paths)
+	httputil.WriteJSON(w, http.StatusOK, paths)
 }
 
 // handlePredict 趋势预测(L2 预测性运维):
@@ -24,15 +25,15 @@ func (s *Service) handlePredict(w http.ResponseWriter, r *http.Request) {
 		StepHours float64   `json:"step_hours"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request: "+err.Error())
+		httputil.WriteError(w, http.StatusBadRequest, "invalid request: "+err.Error())
 		return
 	}
 	if len(req.Series) < 2 {
-		writeError(w, http.StatusBadRequest, "series must have at least 2 points")
+		httputil.WriteError(w, http.StatusBadRequest, "series must have at least 2 points")
 		return
 	}
 	if req.StepHours <= 0 {
 		req.StepHours = 1
 	}
-	writeJSON(w, http.StatusOK, predict.Analyze(req.Series, req.Threshold, req.StepHours))
+	httputil.WriteJSON(w, http.StatusOK, predict.Analyze(req.Series, req.Threshold, req.StepHours))
 }

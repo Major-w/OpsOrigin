@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"github.com/opsorigin/core/pkg/httputil"
 	"net/http"
 	"time"
 
@@ -143,7 +144,7 @@ func (s *SocialStore) RegisterRoutes(mux *http.ServeMux) {
 
 func (s *SocialStore) handleStats(w http.ResponseWriter, r *http.Request) {
 	st, _ := s.GetStats(r.Context(), r.PathValue("id"), r.URL.Query().Get("user"))
-	writeJSON(w, 200, st)
+	httputil.WriteJSON(w, 200, st)
 }
 func (s *SocialStore) handleLike(w http.ResponseWriter, r *http.Request) {
 	user := r.URL.Query().Get("user")
@@ -151,7 +152,7 @@ func (s *SocialStore) handleLike(w http.ResponseWriter, r *http.Request) {
 		user = "admin"
 	}
 	liked, _ := s.ToggleLike(r.Context(), r.PathValue("id"), user)
-	writeJSON(w, 200, map[string]bool{"liked": liked})
+	httputil.WriteJSON(w, 200, map[string]bool{"liked": liked})
 }
 func (s *SocialStore) handleBookmark(w http.ResponseWriter, r *http.Request) {
 	user := r.URL.Query().Get("user")
@@ -159,7 +160,7 @@ func (s *SocialStore) handleBookmark(w http.ResponseWriter, r *http.Request) {
 		user = "admin"
 	}
 	bookmarked, _ := s.ToggleBookmark(r.Context(), r.PathValue("id"), user)
-	writeJSON(w, 200, map[string]bool{"bookmarked": bookmarked})
+	httputil.WriteJSON(w, 200, map[string]bool{"bookmarked": bookmarked})
 }
 func (s *SocialStore) handleRate(w http.ResponseWriter, r *http.Request) {
 	var body struct {
@@ -172,7 +173,7 @@ func (s *SocialStore) handleRate(w http.ResponseWriter, r *http.Request) {
 		user = "admin"
 	}
 	s.Rate(r.Context(), r.PathValue("id"), user, body.Rating, body.Comment)
-	writeJSON(w, 200, map[string]string{"ok": "rated"})
+	httputil.WriteJSON(w, 200, map[string]string{"ok": "rated"})
 }
 func (s *SocialStore) handleAddComment(w http.ResponseWriter, r *http.Request) {
 	var body struct {
@@ -185,11 +186,11 @@ func (s *SocialStore) handleAddComment(w http.ResponseWriter, r *http.Request) {
 		user = "admin"
 	}
 	c, _ := s.AddComment(r.Context(), r.PathValue("id"), user, body.Content, body.ParentID)
-	writeJSON(w, 201, c)
+	httputil.WriteJSON(w, 201, c)
 }
 func (s *SocialStore) handleListComments(w http.ResponseWriter, r *http.Request) {
 	comments, _ := s.ListComments(r.Context(), r.PathValue("id"))
-	writeJSON(w, 200, comments)
+	httputil.WriteJSON(w, 200, comments)
 }
 
 // writeJSON is defined in service.go (shared)

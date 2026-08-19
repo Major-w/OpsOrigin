@@ -2,6 +2,7 @@ package ai
 
 import (
 	"encoding/json"
+	"github.com/opsorigin/core/pkg/httputil"
 	"net/http"
 
 	"github.com/opsorigin/core/pkg/auth"
@@ -9,7 +10,9 @@ import (
 
 // handleCreateFinetuneTask 创建反馈驱动微调任务(L3-1)。
 // body: {"name":"...","dataset_ref":"latest","base_model":"deepseek-chat",
-//        "method":"loRA","params":{"epochs":3}}。
+//
+//	"method":"loRA","params":{"epochs":3}}。
+//
 // 需 ai:tool:exec 权限(创建训练任务属于配置变更)。
 func (s *Service) handleCreateFinetuneTask(w http.ResponseWriter, r *http.Request) {
 	if !s.authorize(w, r, auth.PermissionAIToolExec) {
@@ -27,23 +30,23 @@ func (s *Service) handleCreateFinetuneTask(w http.ResponseWriter, r *http.Reques
 	t, err := s.Engine.CreateFinetuneTask(tenantFromCtx(r.Context()), req.Name, req.DatasetRef,
 		req.BaseModel, req.Method, req.Params, func() string { u, _ := r.Context().Value("user_id").(string); return u }())
 	if err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
+		httputil.WriteError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusCreated, t)
+	httputil.WriteJSON(w, http.StatusCreated, t)
 }
 
 // handleListFinetuneTasks 返回微调任务列表(创建时间倒序)。
 func (s *Service) handleListFinetuneTasks(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, s.Engine.ListFinetuneTasks(tenantFromCtx(r.Context())))
+	httputil.WriteJSON(w, http.StatusOK, s.Engine.ListFinetuneTasks(tenantFromCtx(r.Context())))
 }
 
 // handleGetFinetuneTask 查询单个微调任务详情。
 func (s *Service) handleGetFinetuneTask(w http.ResponseWriter, r *http.Request) {
 	t, ok := s.Engine.GetFinetuneTask(r.PathValue("id"))
 	if !ok {
-		writeError(w, http.StatusNotFound, "finetune task not found")
+		httputil.WriteError(w, http.StatusNotFound, "finetune task not found")
 		return
 	}
-	writeJSON(w, http.StatusOK, t)
+	httputil.WriteJSON(w, http.StatusOK, t)
 }

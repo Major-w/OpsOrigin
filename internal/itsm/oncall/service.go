@@ -193,7 +193,7 @@ func (s *Service) handleListShifts(w http.ResponseWriter, r *http.Request) {
 	if shifts == nil {
 		shifts = []*Shift{}
 	}
-	writeJSON(w, http.StatusOK, shifts)
+	httputil.WriteJSON(w, http.StatusOK, shifts)
 }
 
 func (s *Service) handleAddShift(w http.ResponseWriter, r *http.Request) {
@@ -201,7 +201,7 @@ func (s *Service) handleAddShift(w http.ResponseWriter, r *http.Request) {
 	json.NewDecoder(r.Body).Decode(&shift)
 	shift.TenantID = tenantFromCtx(r.Context())
 	s.store.AddShift(r.Context(), &shift)
-	writeJSON(w, http.StatusCreated, shift)
+	httputil.WriteJSON(w, http.StatusCreated, shift)
 }
 
 func (s *Service) handleListRotations(w http.ResponseWriter, r *http.Request) {
@@ -210,7 +210,7 @@ func (s *Service) handleListRotations(w http.ResponseWriter, r *http.Request) {
 	if rotations == nil {
 		rotations = []*Rotation{}
 	}
-	writeJSON(w, http.StatusOK, rotations)
+	httputil.WriteJSON(w, http.StatusOK, rotations)
 }
 
 func (s *Service) handleCreateRotation(w http.ResponseWriter, r *http.Request) {
@@ -218,13 +218,13 @@ func (s *Service) handleCreateRotation(w http.ResponseWriter, r *http.Request) {
 	json.NewDecoder(r.Body).Decode(&rot)
 	rot.TenantID = tenantFromCtx(r.Context())
 	s.store.AddRotation(r.Context(), &rot)
-	writeJSON(w, http.StatusCreated, rot)
+	httputil.WriteJSON(w, http.StatusCreated, rot)
 }
 
 func (s *Service) handleDeleteRotation(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	s.store.DeleteRotation(r.Context(), id, tenantFromCtx(r.Context()))
-	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
+	httputil.WriteJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
 }
 
 func (s *Service) handleCurrentOncall(w http.ResponseWriter, r *http.Request) {
@@ -236,7 +236,7 @@ func (s *Service) handleCurrentOncall(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		member := rot.CurrentOncall(time.Now())
-		writeJSON(w, http.StatusOK, map[string]any{
+		httputil.WriteJSON(w, http.StatusOK, map[string]any{
 			"rotation_id": rot.ID,
 			"name":        rot.Name,
 			"member":      member,
@@ -246,16 +246,5 @@ func (s *Service) handleCurrentOncall(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
-	writeError(w, http.StatusNotFound, "rotation not found")
-}
-
-func writeJSON(w http.ResponseWriter, status int, v any) {
-	v = httputil.EmptySliceIfNil(v)
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	json.NewEncoder(w).Encode(v)
-}
-
-func writeError(w http.ResponseWriter, status int, msg string) {
-	writeJSON(w, status, map[string]string{"error": msg})
+	httputil.WriteError(w, http.StatusNotFound, "rotation not found")
 }

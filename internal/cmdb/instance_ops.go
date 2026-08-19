@@ -1,6 +1,7 @@
 package cmdb
 
 import (
+	"github.com/opsorigin/core/pkg/httputil"
 	"net/http"
 
 	"github.com/opsorigin/core/internal/cmdb/model"
@@ -13,21 +14,21 @@ func (s *Service) handleArchiveCI(w http.ResponseWriter, r *http.Request) {
 
 	if s.pg == nil {
 		if !s.mem.setCIStatus(tenantID, id, model.CIStatusArchived) {
-			writeError(w, 404, "ci not found")
+			httputil.WriteError(w, 404, "ci not found")
 			return
 		}
-		writeJSON(w, 200, map[string]string{"status": "archived"})
+		httputil.WriteJSON(w, 200, map[string]string{"status": "archived"})
 		return
 	}
 	if err := s.pg.UpdateCIStatus(r.Context(), id, tenantID, model.CIStatusArchived, "archive"); err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	// P2-5 订阅分发：归档事件
 	if ci, err := s.pg.GetCI(r.Context(), id, tenantID); err == nil && ci != nil {
 		s.dispatchCIEvent(r.Context(), tenantID, "ci_archived", ci)
 	}
-	writeJSON(w, 200, map[string]string{"status": "archived"})
+	httputil.WriteJSON(w, 200, map[string]string{"status": "archived"})
 }
 
 // handleRestoreCI 恢复一条已归档 CI：状态置回 active。
@@ -37,17 +38,17 @@ func (s *Service) handleRestoreCI(w http.ResponseWriter, r *http.Request) {
 
 	if s.pg == nil {
 		if !s.mem.setCIStatus(tenantID, id, model.CIStatusActive) {
-			writeError(w, 404, "ci not found")
+			httputil.WriteError(w, 404, "ci not found")
 			return
 		}
-		writeJSON(w, 200, map[string]string{"status": "restored"})
+		httputil.WriteJSON(w, 200, map[string]string{"status": "restored"})
 		return
 	}
 	if err := s.pg.UpdateCIStatus(r.Context(), id, tenantID, model.CIStatusActive, "restore"); err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	writeJSON(w, 200, map[string]string{"status": "restored"})
+	httputil.WriteJSON(w, 200, map[string]string{"status": "restored"})
 }
 
 // ============================================================

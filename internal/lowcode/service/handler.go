@@ -55,7 +55,7 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 func (h *Handler) handleCreateModel(w http.ResponseWriter, r *http.Request) {
 	var m model.DataModel
 	if err := json.NewDecoder(r.Body).Decode(&m); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
+		httputil.WriteError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
 
@@ -63,11 +63,11 @@ func (h *Handler) handleCreateModel(w http.ResponseWriter, r *http.Request) {
 	m.TenantID = getTenantID(r)
 
 	if err := h.svc.CreateDataModel(r.Context(), &m); err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 
-	writeJSON(w, http.StatusCreated, m)
+	httputil.WriteJSON(w, http.StatusCreated, m)
 }
 
 func (h *Handler) handleListModels(w http.ResponseWriter, r *http.Request) {
@@ -81,11 +81,11 @@ func (h *Handler) handleListModels(w http.ResponseWriter, r *http.Request) {
 
 	models, total, err := h.svc.ListDataModels(r.Context(), tenantID, limit, offset)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 
-	writeJSON(w, http.StatusOK, map[string]any{
+	httputil.WriteJSON(w, http.StatusOK, map[string]any{
 		"items":  models,
 		"total":  total,
 		"limit":  limit,
@@ -99,15 +99,15 @@ func (h *Handler) handleGetModel(w http.ResponseWriter, r *http.Request) {
 
 	m, err := h.svc.GetDataModel(r.Context(), id, tenantID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	if m == nil {
-		writeError(w, http.StatusNotFound, "model not found")
+		httputil.WriteError(w, http.StatusNotFound, "model not found")
 		return
 	}
 
-	writeJSON(w, http.StatusOK, m)
+	httputil.WriteJSON(w, http.StatusOK, m)
 }
 
 func (h *Handler) handleUpdateModel(w http.ResponseWriter, r *http.Request) {
@@ -117,18 +117,18 @@ func (h *Handler) handleUpdateModel(w http.ResponseWriter, r *http.Request) {
 	// 获取现有模型
 	existing, err := h.svc.GetDataModel(r.Context(), id, tenantID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	if existing == nil {
-		writeError(w, http.StatusNotFound, "model not found")
+		httputil.WriteError(w, http.StatusNotFound, "model not found")
 		return
 	}
 
 	// 解析更新数据
 	var m model.DataModel
 	if err := json.NewDecoder(r.Body).Decode(&m); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
+		httputil.WriteError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
 
@@ -138,11 +138,11 @@ func (h *Handler) handleUpdateModel(w http.ResponseWriter, r *http.Request) {
 	m.CreatedAt = existing.CreatedAt
 
 	if err := h.svc.UpdateDataModel(r.Context(), &m); err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 
-	writeJSON(w, http.StatusOK, m)
+	httputil.WriteJSON(w, http.StatusOK, m)
 }
 
 func (h *Handler) handleDeleteModel(w http.ResponseWriter, r *http.Request) {
@@ -150,11 +150,11 @@ func (h *Handler) handleDeleteModel(w http.ResponseWriter, r *http.Request) {
 	tenantID := getTenantID(r)
 
 	if err := h.svc.DeleteDataModel(r.Context(), id, tenantID); err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 
-	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
+	httputil.WriteJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
 }
 
 // ========== 模型实例管理 ==========
@@ -162,7 +162,7 @@ func (h *Handler) handleDeleteModel(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) handleCreateInstance(w http.ResponseWriter, r *http.Request) {
 	var inst model.ModelInstance
 	if err := json.NewDecoder(r.Body).Decode(&inst); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
+		httputil.WriteError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
 
@@ -170,11 +170,11 @@ func (h *Handler) handleCreateInstance(w http.ResponseWriter, r *http.Request) {
 	inst.TenantID = getTenantID(r)
 
 	if err := h.svc.CreateInstance(r.Context(), &inst); err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 
-	writeJSON(w, http.StatusCreated, inst)
+	httputil.WriteJSON(w, http.StatusCreated, inst)
 }
 
 func (h *Handler) handleListInstances(w http.ResponseWriter, r *http.Request) {
@@ -189,11 +189,11 @@ func (h *Handler) handleListInstances(w http.ResponseWriter, r *http.Request) {
 
 	instances, total, err := h.svc.ListInstances(r.Context(), modelID, tenantID, limit, offset)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 
-	writeJSON(w, http.StatusOK, map[string]any{
+	httputil.WriteJSON(w, http.StatusOK, map[string]any{
 		"items":  instances,
 		"total":  total,
 		"limit":  limit,
@@ -207,15 +207,15 @@ func (h *Handler) handleGetInstance(w http.ResponseWriter, r *http.Request) {
 
 	inst, err := h.svc.GetInstance(r.Context(), id, tenantID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	if inst == nil {
-		writeError(w, http.StatusNotFound, "instance not found")
+		httputil.WriteError(w, http.StatusNotFound, "instance not found")
 		return
 	}
 
-	writeJSON(w, http.StatusOK, inst)
+	httputil.WriteJSON(w, http.StatusOK, inst)
 }
 
 func (h *Handler) handleUpdateInstance(w http.ResponseWriter, r *http.Request) {
@@ -225,18 +225,18 @@ func (h *Handler) handleUpdateInstance(w http.ResponseWriter, r *http.Request) {
 	// 获取现有实例
 	existing, err := h.svc.GetInstance(r.Context(), id, tenantID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	if existing == nil {
-		writeError(w, http.StatusNotFound, "instance not found")
+		httputil.WriteError(w, http.StatusNotFound, "instance not found")
 		return
 	}
 
 	// 解析更新数据
 	var inst model.ModelInstance
 	if err := json.NewDecoder(r.Body).Decode(&inst); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
+		httputil.WriteError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
 
@@ -247,11 +247,11 @@ func (h *Handler) handleUpdateInstance(w http.ResponseWriter, r *http.Request) {
 	inst.CreatedAt = existing.CreatedAt
 
 	if err := h.svc.UpdateInstance(r.Context(), &inst); err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 
-	writeJSON(w, http.StatusOK, inst)
+	httputil.WriteJSON(w, http.StatusOK, inst)
 }
 
 func (h *Handler) handleDeleteInstance(w http.ResponseWriter, r *http.Request) {
@@ -259,11 +259,11 @@ func (h *Handler) handleDeleteInstance(w http.ResponseWriter, r *http.Request) {
 	tenantID := getTenantID(r)
 
 	if err := h.svc.DeleteInstance(r.Context(), id, tenantID); err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 
-	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
+	httputil.WriteJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
 }
 
 // ========== 页面管理 ==========
@@ -271,7 +271,7 @@ func (h *Handler) handleDeleteInstance(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) handleCreatePage(w http.ResponseWriter, r *http.Request) {
 	var p model.PageDefinition
 	if err := json.NewDecoder(r.Body).Decode(&p); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
+		httputil.WriteError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
 
@@ -279,11 +279,11 @@ func (h *Handler) handleCreatePage(w http.ResponseWriter, r *http.Request) {
 	p.TenantID = getTenantID(r)
 
 	if err := h.svc.CreatePage(r.Context(), &p); err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 
-	writeJSON(w, http.StatusCreated, p)
+	httputil.WriteJSON(w, http.StatusCreated, p)
 }
 
 func (h *Handler) handleListPages(w http.ResponseWriter, r *http.Request) {
@@ -297,11 +297,11 @@ func (h *Handler) handleListPages(w http.ResponseWriter, r *http.Request) {
 
 	pages, total, err := h.svc.ListPages(r.Context(), tenantID, limit, offset)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 
-	writeJSON(w, http.StatusOK, map[string]any{
+	httputil.WriteJSON(w, http.StatusOK, map[string]any{
 		"items":  pages,
 		"total":  total,
 		"limit":  limit,
@@ -315,15 +315,15 @@ func (h *Handler) handleGetPage(w http.ResponseWriter, r *http.Request) {
 
 	p, err := h.svc.GetPage(r.Context(), id, tenantID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	if p == nil {
-		writeError(w, http.StatusNotFound, "page not found")
+		httputil.WriteError(w, http.StatusNotFound, "page not found")
 		return
 	}
 
-	writeJSON(w, http.StatusOK, p)
+	httputil.WriteJSON(w, http.StatusOK, p)
 }
 
 func (h *Handler) handleUpdatePage(w http.ResponseWriter, r *http.Request) {
@@ -333,18 +333,18 @@ func (h *Handler) handleUpdatePage(w http.ResponseWriter, r *http.Request) {
 	// 获取现有页面
 	existing, err := h.svc.GetPage(r.Context(), id, tenantID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	if existing == nil {
-		writeError(w, http.StatusNotFound, "page not found")
+		httputil.WriteError(w, http.StatusNotFound, "page not found")
 		return
 	}
 
 	// 解析更新数据
 	var p model.PageDefinition
 	if err := json.NewDecoder(r.Body).Decode(&p); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
+		httputil.WriteError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
 
@@ -354,11 +354,11 @@ func (h *Handler) handleUpdatePage(w http.ResponseWriter, r *http.Request) {
 	p.CreatedAt = existing.CreatedAt
 
 	if err := h.svc.UpdatePage(r.Context(), &p); err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 
-	writeJSON(w, http.StatusOK, p)
+	httputil.WriteJSON(w, http.StatusOK, p)
 }
 
 func (h *Handler) handleDeletePage(w http.ResponseWriter, r *http.Request) {
@@ -366,11 +366,11 @@ func (h *Handler) handleDeletePage(w http.ResponseWriter, r *http.Request) {
 	tenantID := getTenantID(r)
 
 	if err := h.svc.DeletePage(r.Context(), id, tenantID); err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 
-	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
+	httputil.WriteJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
 }
 
 // ========== 表单验证 ==========
@@ -378,17 +378,17 @@ func (h *Handler) handleDeletePage(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) handleValidateForm(w http.ResponseWriter, r *http.Request) {
 	var data model.FormData
 	if err := json.NewDecoder(r.Body).Decode(&data); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
+		httputil.WriteError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
 
 	errors, err := h.svc.ValidateForm(r.Context(), &data)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 
-	writeJSON(w, http.StatusOK, map[string]any{
+	httputil.WriteJSON(w, http.StatusOK, map[string]any{
 		"valid":  len(errors) == 0,
 		"errors": errors,
 	})
@@ -402,33 +402,22 @@ func (h *Handler) handleGenerateSQL(w http.ResponseWriter, r *http.Request) {
 
 	m, err := h.svc.GetDataModel(r.Context(), modelID, tenantID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	if m == nil {
-		writeError(w, http.StatusNotFound, "model not found")
+		httputil.WriteError(w, http.StatusNotFound, "model not found")
 		return
 	}
 
 	sql := h.svc.GenerateCreateTableSQL(m)
 
-	writeJSON(w, http.StatusOK, map[string]string{
+	httputil.WriteJSON(w, http.StatusOK, map[string]string{
 		"sql": sql,
 	})
 }
 
 // ========== 工具函数 ==========
-
-func writeJSON(w http.ResponseWriter, status int, v any) {
-	v = httputil.EmptySliceIfNil(v)
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	json.NewEncoder(w).Encode(v)
-}
-
-func writeError(w http.ResponseWriter, status int, msg string) {
-	writeJSON(w, status, map[string]string{"error": msg})
-}
 
 func getTenantID(r *http.Request) string {
 	if t := r.Context().Value("tenant_id"); t != nil {

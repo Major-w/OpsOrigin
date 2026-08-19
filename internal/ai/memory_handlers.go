@@ -2,6 +2,7 @@ package ai
 
 import (
 	"encoding/json"
+	"github.com/opsorigin/core/pkg/httputil"
 	"net/http"
 
 	"github.com/opsorigin/core/internal/ai/agentic"
@@ -17,7 +18,7 @@ func (s *Service) handleListMemories(w http.ResponseWriter, r *http.Request) {
 	if c := r.URL.Query().Get("category"); c != "" {
 		filter.Category = c
 	}
-	writeJSON(w, http.StatusOK, s.Engine.ListMemories(tenantFromCtx(r.Context()), filter))
+	httputil.WriteJSON(w, http.StatusOK, s.Engine.ListMemories(tenantFromCtx(r.Context()), filter))
 }
 
 // handleAddMemory 手动记录一条 Agent 长期记忆(P0-1)。
@@ -29,7 +30,7 @@ func (s *Service) handleAddMemory(w http.ResponseWriter, r *http.Request) {
 	}
 	var req agentic.ExperienceMemory
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request: "+err.Error())
+		httputil.WriteError(w, http.StatusBadRequest, "invalid request: "+err.Error())
 		return
 	}
 	req.TenantID = tenantFromCtx(r.Context())
@@ -39,17 +40,17 @@ func (s *Service) handleAddMemory(w http.ResponseWriter, r *http.Request) {
 	}
 	m, err := s.Engine.AddMemory(&req)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
+		httputil.WriteError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusCreated, m)
+	httputil.WriteJSON(w, http.StatusCreated, m)
 }
 
 // handleDeleteMemory 删除一条记忆。
 func (s *Service) handleDeleteMemory(w http.ResponseWriter, r *http.Request) {
 	if !s.Engine.DeleteMemory(tenantFromCtx(r.Context()), r.PathValue("id")) {
-		writeError(w, http.StatusNotFound, "memory not found")
+		httputil.WriteError(w, http.StatusNotFound, "memory not found")
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
+	httputil.WriteJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
 }

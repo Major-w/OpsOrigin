@@ -301,11 +301,11 @@ func (s *Service) RegisterRoutes(mux *http.ServeMux) {
 func (s *Service) handleCreate(w http.ResponseWriter, r *http.Request) {
 	var sc Script
 	if err := json.NewDecoder(r.Body).Decode(&sc); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
+		httputil.WriteError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
 	if err := validate.Name("脚本名称", sc.Name); err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
+		httputil.WriteError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 	sc.TenantID = tenantFromCtx(r.Context())
@@ -314,23 +314,23 @@ func (s *Service) handleCreate(w http.ResponseWriter, r *http.Request) {
 	}
 	sc.ApprovalStatus = s.determineApproval(&sc)
 	if err := s.store.Create(r.Context(), &sc); err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusCreated, sc)
+	httputil.WriteJSON(w, http.StatusCreated, sc)
 }
 
 func (s *Service) handleList(w http.ResponseWriter, r *http.Request) {
 	tenantID := tenantFromCtx(r.Context())
 	scripts, err := s.store.List(r.Context(), tenantID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	if scripts == nil {
 		scripts = []*Script{}
 	}
-	writeJSON(w, http.StatusOK, scripts)
+	httputil.WriteJSON(w, http.StatusOK, scripts)
 }
 
 func (s *Service) handleGet(w http.ResponseWriter, r *http.Request) {
@@ -338,10 +338,10 @@ func (s *Service) handleGet(w http.ResponseWriter, r *http.Request) {
 	tenantID := tenantFromCtx(r.Context())
 	sc, err := s.store.Get(r.Context(), id, tenantID)
 	if err != nil || sc == nil {
-		writeError(w, http.StatusNotFound, "script not found")
+		httputil.WriteError(w, http.StatusNotFound, "script not found")
 		return
 	}
-	writeJSON(w, http.StatusOK, sc)
+	httputil.WriteJSON(w, http.StatusOK, sc)
 }
 
 func (s *Service) handleUpdate(w http.ResponseWriter, r *http.Request) {
@@ -349,7 +349,7 @@ func (s *Service) handleUpdate(w http.ResponseWriter, r *http.Request) {
 	tenantID := tenantFromCtx(r.Context())
 	existing, err := s.store.Get(r.Context(), id, tenantID)
 	if err != nil || existing == nil {
-		writeError(w, http.StatusNotFound, "script not found")
+		httputil.WriteError(w, http.StatusNotFound, "script not found")
 		return
 	}
 	var req struct {
@@ -357,12 +357,12 @@ func (s *Service) handleUpdate(w http.ResponseWriter, r *http.Request) {
 		ChangeNote string `json:"change_note,omitempty"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
+		httputil.WriteError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
 	sc := req.Script
 	if err := validate.Name("脚本名称", sc.Name); err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
+		httputil.WriteError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 	sc.ID = existing.ID
@@ -375,20 +375,20 @@ func (s *Service) handleUpdate(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx := context.WithValue(r.Context(), changeNoteCtxKey, req.ChangeNote)
 	if err := s.store.Update(ctx, &sc); err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, sc)
+	httputil.WriteJSON(w, http.StatusOK, sc)
 }
 
 func (s *Service) handleDelete(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	tenantID := tenantFromCtx(r.Context())
 	if err := s.store.Delete(r.Context(), id, tenantID); err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
+	httputil.WriteJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
 }
 
 func (s *Service) handleExecute(w http.ResponseWriter, r *http.Request) {
@@ -396,12 +396,12 @@ func (s *Service) handleExecute(w http.ResponseWriter, r *http.Request) {
 	tenantID := tenantFromCtx(r.Context())
 	sc, err := s.store.Get(r.Context(), id, tenantID)
 	if err != nil || sc == nil {
-		writeError(w, http.StatusNotFound, "script not found")
+		httputil.WriteError(w, http.StatusNotFound, "script not found")
 		return
 	}
 	var req ExecuteRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
+		httputil.WriteError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
 	req.TenantID = tenantID
@@ -409,7 +409,7 @@ func (s *Service) handleExecute(w http.ResponseWriter, r *http.Request) {
 		for _, p := range sc.InputParams {
 			if p.Required {
 				if _, ok := req.Params[p.Name]; !ok {
-					writeError(w, http.StatusBadRequest, "missing required param: "+p.Name)
+					httputil.WriteError(w, http.StatusBadRequest, "missing required param: "+p.Name)
 					return
 				}
 			}
@@ -419,7 +419,7 @@ func (s *Service) handleExecute(w http.ResponseWriter, r *http.Request) {
 	if err := s.store.SaveExecution(r.Context(), result); err != nil {
 		slog.Error("failed to save execution", "script_id", sc.ID, "error", err)
 	}
-	writeJSON(w, http.StatusOK, result)
+	httputil.WriteJSON(w, http.StatusOK, result)
 }
 
 func (s *Service) handleListExecutions(w http.ResponseWriter, r *http.Request) {
@@ -427,13 +427,13 @@ func (s *Service) handleListExecutions(w http.ResponseWriter, r *http.Request) {
 	tenantID := tenantFromCtx(r.Context())
 	results, err := s.store.ListExecutions(r.Context(), id, tenantID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	if results == nil {
 		results = []*ExecutionResult{}
 	}
-	writeJSON(w, http.StatusOK, results)
+	httputil.WriteJSON(w, http.StatusOK, results)
 }
 
 func (s *Service) handleListVersions(w http.ResponseWriter, r *http.Request) {
@@ -441,13 +441,13 @@ func (s *Service) handleListVersions(w http.ResponseWriter, r *http.Request) {
 	tenantID := tenantFromCtx(r.Context())
 	versions, err := s.store.ListVersions(r.Context(), id, tenantID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	if versions == nil {
 		versions = []*ScriptVersion{}
 	}
-	writeJSON(w, http.StatusOK, versions)
+	httputil.WriteJSON(w, http.StatusOK, versions)
 }
 
 func (s *Service) handleGetVersion(w http.ResponseWriter, r *http.Request) {
@@ -455,15 +455,15 @@ func (s *Service) handleGetVersion(w http.ResponseWriter, r *http.Request) {
 	tenantID := tenantFromCtx(r.Context())
 	var version int
 	if _, err := fmt.Sscanf(r.PathValue("version"), "%d", &version); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid version")
+		httputil.WriteError(w, http.StatusBadRequest, "invalid version")
 		return
 	}
 	v, err := s.store.GetVersion(r.Context(), id, tenantID, version)
 	if err != nil || v == nil {
-		writeError(w, http.StatusNotFound, "version not found")
+		httputil.WriteError(w, http.StatusNotFound, "version not found")
 		return
 	}
-	writeJSON(w, http.StatusOK, v)
+	httputil.WriteJSON(w, http.StatusOK, v)
 }
 
 func (s *Service) handleDiff(w http.ResponseWriter, r *http.Request) {
@@ -473,24 +473,24 @@ func (s *Service) handleDiff(w http.ResponseWriter, r *http.Request) {
 	toStr := r.URL.Query().Get("to")
 	var fromVer, toVer int
 	if _, err := fmt.Sscanf(fromStr, "%d", &fromVer); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid from version")
+		httputil.WriteError(w, http.StatusBadRequest, "invalid from version")
 		return
 	}
 	if _, err := fmt.Sscanf(toStr, "%d", &toVer); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid to version")
+		httputil.WriteError(w, http.StatusBadRequest, "invalid to version")
 		return
 	}
 	from, err := s.store.GetVersion(r.Context(), id, tenantID, fromVer)
 	if err != nil || from == nil {
-		writeError(w, http.StatusNotFound, "from version not found")
+		httputil.WriteError(w, http.StatusNotFound, "from version not found")
 		return
 	}
 	to, err := s.store.GetVersion(r.Context(), id, tenantID, toVer)
 	if err != nil || to == nil {
-		writeError(w, http.StatusNotFound, "to version not found")
+		httputil.WriteError(w, http.StatusNotFound, "to version not found")
 		return
 	}
-	writeJSON(w, http.StatusOK, diffVersions(from, to))
+	httputil.WriteJSON(w, http.StatusOK, diffVersions(from, to))
 }
 
 func (s *Service) Execute(scriptID string, params map[string]string, timeout int, runAs string, agentID string, tenantID string) (string, int, error) {
@@ -824,28 +824,17 @@ func diffContent(old, new string) []DiffEntry {
 
 func toJSONString(v any) string { b, _ := json.Marshal(v); return string(b) }
 
-func writeJSON(w http.ResponseWriter, status int, v any) {
-	v = httputil.EmptySliceIfNil(v)
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	json.NewEncoder(w).Encode(v)
-}
-
-func writeError(w http.ResponseWriter, status int, msg string) {
-	writeJSON(w, status, map[string]string{"error": msg})
-}
-
 func (s *Service) handleCheck(w http.ResponseWriter, r *http.Request) {
 	var req CheckRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
+		httputil.WriteError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
 	if req.Type == "" || req.Content == "" {
-		writeError(w, http.StatusBadRequest, "type and content are required")
+		httputil.WriteError(w, http.StatusBadRequest, "type and content are required")
 		return
 	}
-	writeJSON(w, http.StatusOK, checkSyntax(string(req.Type), req.Content))
+	httputil.WriteJSON(w, http.StatusOK, checkSyntax(string(req.Type), req.Content))
 }
 
 var bashErrRE = regexp.MustCompile(`^.*:\s*line\s+(\d+):\s+(.+)`)
@@ -961,19 +950,19 @@ func (s *Service) handlePublish(w http.ResponseWriter, r *http.Request) {
 	tenantID := tenantFromCtx(r.Context())
 	sc, err := s.store.Get(r.Context(), id, tenantID)
 	if err != nil || sc == nil {
-		writeError(w, http.StatusNotFound, "script not found")
+		httputil.WriteError(w, http.StatusNotFound, "script not found")
 		return
 	}
 	if !sc.Public {
-		writeError(w, http.StatusBadRequest, "only public scripts can be published")
+		httputil.WriteError(w, http.StatusBadRequest, "only public scripts can be published")
 		return
 	}
 	sc.ApprovalStatus = s.determineApproval(sc)
 	if err := s.store.Update(r.Context(), sc); err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, sc)
+	httputil.WriteJSON(w, http.StatusOK, sc)
 }
 
 func (s *Service) handleApprove(w http.ResponseWriter, r *http.Request) {
@@ -981,21 +970,21 @@ func (s *Service) handleApprove(w http.ResponseWriter, r *http.Request) {
 	tenantID := tenantFromCtx(r.Context())
 	sc, err := s.store.Get(r.Context(), id, tenantID)
 	if err != nil || sc == nil {
-		writeError(w, http.StatusNotFound, "script not found")
+		httputil.WriteError(w, http.StatusNotFound, "script not found")
 		return
 	}
 	// 接受 pending(公共脚本高危需审批)与 draft(AI 生成/私有脚本待批准) → approved
 	if sc.ApprovalStatus != "pending" && sc.ApprovalStatus != "draft" {
-		writeError(w, http.StatusBadRequest, "script is not in pending/draft status")
+		httputil.WriteError(w, http.StatusBadRequest, "script is not in pending/draft status")
 		return
 	}
 	sc.ApprovalStatus = "approved"
 	ctx := context.WithValue(r.Context(), changeNoteCtxKey, "approved")
 	if err := s.store.Update(ctx, sc); err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, sc)
+	httputil.WriteJSON(w, http.StatusOK, sc)
 }
 
 func (s *Service) handleReject(w http.ResponseWriter, r *http.Request) {
@@ -1003,18 +992,18 @@ func (s *Service) handleReject(w http.ResponseWriter, r *http.Request) {
 	tenantID := tenantFromCtx(r.Context())
 	sc, err := s.store.Get(r.Context(), id, tenantID)
 	if err != nil || sc == nil {
-		writeError(w, http.StatusNotFound, "script not found")
+		httputil.WriteError(w, http.StatusNotFound, "script not found")
 		return
 	}
 	if sc.ApprovalStatus != "pending" {
-		writeError(w, http.StatusBadRequest, "script is not in pending status")
+		httputil.WriteError(w, http.StatusBadRequest, "script is not in pending status")
 		return
 	}
 	sc.ApprovalStatus = "rejected"
 	ctx := context.WithValue(r.Context(), changeNoteCtxKey, "rejected")
 	if err := s.store.Update(ctx, sc); err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, sc)
+	httputil.WriteJSON(w, http.StatusOK, sc)
 }

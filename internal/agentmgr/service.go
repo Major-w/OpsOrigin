@@ -937,7 +937,7 @@ func (s *Service) handleListSandboxAgents(w http.ResponseWriter, r *http.Request
 	tenantID := tenantFromCtx(r.Context())
 	agents, err := s.listSandboxAgents(r.Context(), tenantID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	online := 0
@@ -946,7 +946,7 @@ func (s *Service) handleListSandboxAgents(w http.ResponseWriter, r *http.Request
 			online++
 		}
 	}
-	writeJSON(w, http.StatusOK, map[string]any{
+	httputil.WriteJSON(w, http.StatusOK, map[string]any{
 		"exists": online > 0,
 		"count":  len(agents),
 		"online": online,
@@ -965,26 +965,26 @@ func (s *Service) handleSetSandboxLabel(w http.ResponseWriter, r *http.Request) 
 		Enabled bool `json:"enabled"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
+		httputil.WriteError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
 	host, err := s.store.Get(r.Context(), id, tenantID)
 	if err != nil || host == nil {
-		writeError(w, http.StatusNotFound, "agent not found")
+		httputil.WriteError(w, http.StatusNotFound, "agent not found")
 		return
 	}
 	if host.Type == AgentTypeAgentless {
-		writeError(w, http.StatusBadRequest, "Agentless 主机无本地 Agent,无法承载隔离沙箱环境")
+		httputil.WriteError(w, http.StatusBadRequest, "Agentless 主机无本地 Agent,无法承载隔离沙箱环境")
 		return
 	}
 	host.SetSandbox(req.Enabled)
 	host.UpdatedAt = time.Now()
 	if err := s.store.Update(r.Context(), host); err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	slog.Info("sandbox label updated", "agent_id", id, "enabled", req.Enabled)
-	writeJSON(w, http.StatusOK, map[string]any{"id": id, "sandbox": req.Enabled})
+	httputil.WriteJSON(w, http.StatusOK, map[string]any{"id": id, "sandbox": req.Enabled})
 }
 
 // ApplySandboxPool 把"Server 所在主机"的 Agent 自动标记为沙箱环境(默认沙箱池)。
@@ -1041,38 +1041,38 @@ func (s *Service) ApplySandboxPool(ctx context.Context) {
 func (s *Service) handleBatchExecute(w http.ResponseWriter, r *http.Request) {
 	var req remoteexec.BatchExecRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
+		httputil.WriteError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
 
 	if len(req.Hosts) == 0 {
-		writeError(w, http.StatusBadRequest, "hosts is required")
+		httputil.WriteError(w, http.StatusBadRequest, "hosts is required")
 		return
 	}
 	if req.Command == "" {
-		writeError(w, http.StatusBadRequest, "command is required")
+		httputil.WriteError(w, http.StatusBadRequest, "command is required")
 		return
 	}
 
 	result := s.remoteExec.Execute(r.Context(), req)
-	writeJSON(w, http.StatusOK, result)
+	httputil.WriteJSON(w, http.StatusOK, result)
 }
 
 // handleGetExecTask 查询批量执行任务状态。
 func (s *Service) handleGetExecTask(w http.ResponseWriter, r *http.Request) {
 	taskID := r.PathValue("task_id")
 	if taskID == "" {
-		writeError(w, http.StatusBadRequest, "task_id is required")
+		httputil.WriteError(w, http.StatusBadRequest, "task_id is required")
 		return
 	}
 
 	result, ok := s.remoteExec.GetTask(taskID)
 	if !ok {
-		writeError(w, http.StatusNotFound, "task not found")
+		httputil.WriteError(w, http.StatusNotFound, "task not found")
 		return
 	}
 
-	writeJSON(w, http.StatusOK, result)
+	httputil.WriteJSON(w, http.StatusOK, result)
 }
 
 // handleSSHExecute 在单台主机上执行命令。
@@ -1095,19 +1095,19 @@ func (s *Service) handleSSHExecute(w http.ResponseWriter, r *http.Request) {
 		SandboxAgentID string `json:"sandbox_agent_id,omitempty"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
+		httputil.WriteError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
 
 	if req.Command == "" {
-		writeError(w, http.StatusBadRequest, "command is required")
+		httputil.WriteError(w, http.StatusBadRequest, "command is required")
 		return
 	}
 
 	// §6 命令白名单:服务端下发前强制校验(直连 / 经 Proxy / 沙箱 三条路径统一拦截)。
 	if err := s.verifyCommand(req.Command); err != nil {
 		slog.Warn("ssh-execute denied by whitelist", "host", req.Host, "error", err)
-		writeError(w, http.StatusForbidden, "command denied by whitelist: "+err.Error())
+		httputil.WriteError(w, http.StatusForbidden, "command denied by whitelist: "+err.Error())
 		return
 	}
 
@@ -1122,7 +1122,7 @@ func (s *Service) handleSSHExecute(w http.ResponseWriter, r *http.Request) {
 		tenantID := tenantFromCtx(r.Context())
 		agent, err := s.pickSandboxAgent(r.Context(), tenantID, req.SandboxAgentID)
 		if err != nil {
-			writeError(w, http.StatusBadRequest, err.Error())
+			httputil.WriteError(w, http.StatusBadRequest, err.Error())
 			return
 		}
 		start := time.Now()
@@ -1142,7 +1142,7 @@ func (s *Service) handleSSHExecute(w http.ResponseWriter, r *http.Request) {
 		if execErr != nil {
 			resp["error"] = execErr.Error()
 		}
-		writeJSON(w, http.StatusOK, resp)
+		httputil.WriteJSON(w, http.StatusOK, resp)
 		return
 	}
 
@@ -1162,7 +1162,7 @@ func (s *Service) handleSSHExecute(w http.ResponseWriter, r *http.Request) {
 			"command":  req.Command,
 		}, int32(timeout.Seconds()))
 		if execErr == nil {
-			writeJSON(w, http.StatusOK, map[string]any{
+			httputil.WriteJSON(w, http.StatusOK, map[string]any{
 				"host":      req.Host,
 				"port":      port,
 				"output":    out,
@@ -1177,7 +1177,7 @@ func (s *Service) handleSSHExecute(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if req.Host == "" {
-		writeError(w, http.StatusBadRequest, "host is required when not using sandbox")
+		httputil.WriteError(w, http.StatusBadRequest, "host is required when not using sandbox")
 		return
 	}
 
@@ -1196,7 +1196,7 @@ func (s *Service) handleSSHExecute(w http.ResponseWriter, r *http.Request) {
 	}
 
 	result := s.remoteExec.ExecuteSingle(r.Context(), execReq)
-	writeJSON(w, http.StatusOK, map[string]any{
+	httputil.WriteJSON(w, http.StatusOK, map[string]any{
 		"host":      result.Host,
 		"port":      result.Port,
 		"output":    result.Output,
@@ -1399,7 +1399,7 @@ func (s *Service) handleGetWhitelist(w http.ResponseWriter, r *http.Request) {
 	s.whitelistMu.RUnlock()
 
 	if wl == nil {
-		writeJSON(w, http.StatusOK, map[string]any{
+		httputil.WriteJSON(w, http.StatusOK, map[string]any{
 			"enabled": false,
 			"version": 0,
 			"rules":   []any{},
@@ -1412,7 +1412,7 @@ func (s *Service) handleGetWhitelist(w http.ResponseWriter, r *http.Request) {
 	for _, r := range raw {
 		rules = append(rules, map[string]string{"type": string(r.Type), "pattern": r.Pattern})
 	}
-	writeJSON(w, http.StatusOK, map[string]any{
+	httputil.WriteJSON(w, http.StatusOK, map[string]any{
 		"enabled": true,
 		"version": 1,
 		"rules":   rules,
@@ -1436,17 +1436,17 @@ func (s *Service) handleExecSandbox(w http.ResponseWriter, r *http.Request) {
 		Params       map[string]string `json:"params,omitempty"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
+		httputil.WriteError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
 	if req.Script == "" {
-		writeError(w, http.StatusBadRequest, "script is required")
+		httputil.WriteError(w, http.StatusBadRequest, "script is required")
 		return
 	}
 	// §6 命令白名单:沙箱执行同样受控(白名单启用时)。
 	if err := s.verifyCommand(req.Script); err != nil {
 		slog.Warn("sandbox-exec denied by whitelist", "error", err)
-		writeError(w, http.StatusForbidden, "script denied by whitelist: "+err.Error())
+		httputil.WriteError(w, http.StatusForbidden, "script denied by whitelist: "+err.Error())
 		return
 	}
 	timeout := req.Timeout
@@ -1461,7 +1461,7 @@ func (s *Service) handleExecSandbox(w http.ResponseWriter, r *http.Request) {
 	}
 	agent, err := s.pickSandboxAgent(r.Context(), tenantID, prefer)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
+		httputil.WriteError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 
@@ -1485,17 +1485,17 @@ func (s *Service) handleExecSandbox(w http.ResponseWriter, r *http.Request) {
 	if execErr != nil {
 		resp["error"] = execErr.Error()
 	}
-	writeJSON(w, http.StatusOK, resp)
+	httputil.WriteJSON(w, http.StatusOK, resp)
 }
 
 func (s *Service) handleRegister(w http.ResponseWriter, r *http.Request) {
 	var req RegisterAgentRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
+		httputil.WriteError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
 	if err := validate.HostName("主机名称", req.Name); err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
+		httputil.WriteError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 	// 勾选了 as_proxy 时,注册为 Proxy 节点
@@ -1512,16 +1512,16 @@ func (s *Service) handleRegister(w http.ResponseWriter, r *http.Request) {
 		}
 		if err := s.store.RegisterProxy(r.Context(), proxy); err != nil {
 			slog.Warn("register proxy failed", "error", err)
-			writeError(w, http.StatusInternalServerError, err.Error())
+			httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
-		writeJSON(w, http.StatusCreated, proxy)
+		httputil.WriteJSON(w, http.StatusCreated, proxy)
 		return
 	}
 	host := s.buildHost(&req, r)
 	if err := s.store.Register(r.Context(), host); err != nil {
 		slog.Warn("register agent failed", "error", err)
-		writeError(w, http.StatusInternalServerError, err.Error())
+		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	// 方案 X 闭环：主机注册即同步为 CMDB host CI（agent_hosts → CMDB 最后一跳）。
@@ -1532,7 +1532,7 @@ func (s *Service) handleRegister(w http.ResponseWriter, r *http.Request) {
 			slog.Warn("agent onboard → cmdb failed", "agent", host.ID, "err", e)
 		}
 	}
-	writeJSON(w, http.StatusCreated, host)
+	httputil.WriteJSON(w, http.StatusCreated, host)
 }
 
 func (s *Service) buildHost(req *RegisterAgentRequest, r *http.Request) *AgentHost {
@@ -1559,7 +1559,7 @@ func (s *Service) handleList(w http.ResponseWriter, r *http.Request) {
 	hosts, err := s.store.List(r.Context(), tenantID)
 	if err != nil {
 		slog.Warn("list agents failed", "error", err)
-		writeError(w, http.StatusInternalServerError, err.Error())
+		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	// Redis 模式下批量查在线状态，避免逐条 EXISTS N+1
@@ -1592,7 +1592,7 @@ func (s *Service) handleList(w http.ResponseWriter, r *http.Request) {
 	}
 	// 动态标注疑似重复记录,供前端提示用户合并
 	s.decorateDuplicates(result)
-	writeJSON(w, http.StatusOK, result)
+	httputil.WriteJSON(w, http.StatusOK, result)
 }
 
 func (s *Service) handleGet(w http.ResponseWriter, r *http.Request) {
@@ -1600,10 +1600,10 @@ func (s *Service) handleGet(w http.ResponseWriter, r *http.Request) {
 	tenantID := tenantFromCtx(r.Context())
 	host, err := s.store.Get(r.Context(), id, tenantID)
 	if err != nil || host == nil {
-		writeError(w, http.StatusNotFound, "agent not found")
+		httputil.WriteError(w, http.StatusNotFound, "agent not found")
 		return
 	}
-	writeJSON(w, http.StatusOK, host)
+	httputil.WriteJSON(w, http.StatusOK, host)
 }
 
 // decorateDuplicates 动态标注"疑似重复"关系:同一结果集内,若两条记录主机名相同
@@ -1741,14 +1741,14 @@ func (s *Service) handleMerge(w http.ResponseWriter, r *http.Request) {
 		TargetID string `json:"target_id"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.TargetID == "" {
-		writeError(w, http.StatusBadRequest, "invalid request: target_id required")
+		httputil.WriteError(w, http.StatusBadRequest, "invalid request: target_id required")
 		return
 	}
 	if err := s.MergeHosts(r.Context(), id, body.TargetID, tenantID); err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
+		httputil.WriteError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]string{"status": "merged", "source": id, "target": body.TargetID})
+	httputil.WriteJSON(w, http.StatusOK, map[string]string{"status": "merged", "source": id, "target": body.TargetID})
 }
 
 func (s *Service) handleUpdate(w http.ResponseWriter, r *http.Request) {
@@ -1756,16 +1756,16 @@ func (s *Service) handleUpdate(w http.ResponseWriter, r *http.Request) {
 	tenantID := tenantFromCtx(r.Context())
 	host, err := s.store.Get(r.Context(), id, tenantID)
 	if err != nil || host == nil {
-		writeError(w, http.StatusNotFound, "agent not found")
+		httputil.WriteError(w, http.StatusNotFound, "agent not found")
 		return
 	}
 	var req UpdateAgentRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
+		httputil.WriteError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
 	if err := validate.HostNameOptional("主机名称", req.Name); err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
+		httputil.WriteError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 	if req.Name != "" {
@@ -1788,10 +1788,10 @@ func (s *Service) handleUpdate(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := s.store.Update(r.Context(), host); err != nil {
 		slog.Warn("update agent failed", "error", err)
-		writeError(w, http.StatusInternalServerError, err.Error())
+		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, host)
+	httputil.WriteJSON(w, http.StatusOK, host)
 }
 
 func (s *Service) handleDelete(w http.ResponseWriter, r *http.Request) {
@@ -1799,10 +1799,10 @@ func (s *Service) handleDelete(w http.ResponseWriter, r *http.Request) {
 	tenantID := tenantFromCtx(r.Context())
 	if err := s.store.Delete(r.Context(), id, tenantID); err != nil {
 		slog.Warn("delete agent failed", "error", err)
-		writeError(w, http.StatusInternalServerError, err.Error())
+		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
+	httputil.WriteJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
 }
 
 func (s *Service) handleHeartbeat(w http.ResponseWriter, r *http.Request) {
@@ -1810,12 +1810,12 @@ func (s *Service) handleHeartbeat(w http.ResponseWriter, r *http.Request) {
 	tenantID := tenantFromCtx(r.Context())
 	var req HeartbeatRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
+		httputil.WriteError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
 	if err := s.hbWriter.Record(r.Context(), id, tenantID, &req); err != nil {
 		slog.Warn("heartbeat failed", "error", err)
-		writeError(w, http.StatusInternalServerError, err.Error())
+		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 
@@ -1832,13 +1832,13 @@ func (s *Service) handleHeartbeat(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	writeJSON(w, http.StatusOK, resp)
+	httputil.WriteJSON(w, http.StatusOK, resp)
 }
 
 func (s *Service) handleBatchInstall(w http.ResponseWriter, r *http.Request) {
 	var req BatchInstallRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
+		httputil.WriteError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
 	if req.Port == 0 {
@@ -1847,7 +1847,7 @@ func (s *Service) handleBatchInstall(w http.ResponseWriter, r *http.Request) {
 
 	addresses, err := parseAddressList(strings.Join(req.Addresses, ","))
 	if err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
+		httputil.WriteError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 
@@ -1962,7 +1962,7 @@ func (s *Service) handleBatchInstall(w http.ResponseWriter, r *http.Request) {
 		onboard(host.ID)
 		results = append(results, map[string]any{"address": addr, "status": "installed", "agent_id": host.ID, "output": output})
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"results": results})
+	httputil.WriteJSON(w, http.StatusOK, map[string]any{"results": results})
 }
 
 func (s *Service) handleTestSSH(w http.ResponseWriter, r *http.Request) {
@@ -1976,7 +1976,7 @@ func (s *Service) handleTestSSH(w http.ResponseWriter, r *http.Request) {
 		ProxyID  string `json:"proxy_id,omitempty"` // 指定则经 Proxy 探测
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
+		httputil.WriteError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
 	if req.Port == 0 {
@@ -2002,7 +2002,7 @@ func (s *Service) handleTestSSH(w http.ResponseWriter, r *http.Request) {
 			detail = execErr.Error()
 			slog.Warn("SSH test via proxy failed", "address", req.Address, "proxy_id", req.ProxyID, "detail", detail)
 		}
-		writeJSON(w, http.StatusOK, map[string]any{
+		httputil.WriteJSON(w, http.StatusOK, map[string]any{
 			"reachable": reachable,
 			"address":   fmt.Sprintf("%s:%d", req.Address, req.Port),
 			"auth_type": authType,
@@ -2016,7 +2016,7 @@ func (s *Service) handleTestSSH(w http.ResponseWriter, r *http.Request) {
 	if !reachable {
 		slog.Warn("SSH test failed", "address", req.Address, "detail", detail)
 	}
-	writeJSON(w, http.StatusOK, map[string]any{
+	httputil.WriteJSON(w, http.StatusOK, map[string]any{
 		"reachable": reachable,
 		"address":   fmt.Sprintf("%s:%d", req.Address, req.Port),
 		"auth_type": authType,
@@ -2310,7 +2310,7 @@ sudo systemctl enable opsorigin-proxy
 sudo systemctl start opsorigin-proxy
 echo "OpsOrigin Proxy installed successfully (id=$PROXY_ID, listen=:$LISTEN_PORT)"`, serverAddr, scheme, proxyID, listenPort)
 	default:
-		writeError(w, http.StatusBadRequest, "os parameter required: linux, windows, container, or proxy")
+		httputil.WriteError(w, http.StatusBadRequest, "os parameter required: linux, windows, container, or proxy")
 		return
 	}
 
@@ -2339,12 +2339,12 @@ func (s *Service) handleCreateTask(w http.ResponseWriter, r *http.Request) {
 	agentID := r.PathValue("id")
 	var req TaskRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
+		httputil.WriteError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
 	if err := s.store.CreateTask(r.Context(), agentID, &req); err != nil {
 		slog.Warn("create task failed", "error", err)
-		writeError(w, http.StatusInternalServerError, err.Error())
+		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	// Proxy 路由:如果 Agent 通过 Proxy 连接,优先通过 tunnel 下发命令
@@ -2372,7 +2372,7 @@ func (s *Service) handleCreateTask(w http.ResponseWriter, r *http.Request) {
 						slog.Warn("complete task via proxy failed", "error", err, "agent_id", agentID, "task_id", req.TaskID)
 					}
 					slog.Info("task dispatched via proxy", "agent_id", agentID, "task_id", req.TaskID, "proxy_id", host.ProxyID)
-					writeJSON(w, http.StatusOK, map[string]any{"task_id": req.TaskID, "status": "completed"})
+					httputil.WriteJSON(w, http.StatusOK, map[string]any{"task_id": req.TaskID, "status": "completed"})
 					return
 				}
 				// 失败则降级到 WS/HTTP
@@ -2380,7 +2380,7 @@ func (s *Service) handleCreateTask(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
-	writeJSON(w, http.StatusCreated, req)
+	httputil.WriteJSON(w, http.StatusCreated, req)
 }
 
 func (s *Service) handleListTasks(w http.ResponseWriter, r *http.Request) {
@@ -2388,13 +2388,13 @@ func (s *Service) handleListTasks(w http.ResponseWriter, r *http.Request) {
 	tasks, err := s.store.ListTasks(r.Context(), agentID)
 	if err != nil {
 		slog.Warn("list tasks failed", "error", err)
-		writeError(w, http.StatusInternalServerError, err.Error())
+		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	if tasks == nil {
 		tasks = []*TaskInfo{}
 	}
-	writeJSON(w, http.StatusOK, tasks)
+	httputil.WriteJSON(w, http.StatusOK, tasks)
 }
 
 func (s *Service) handleCompleteTask(w http.ResponseWriter, r *http.Request) {
@@ -2402,7 +2402,7 @@ func (s *Service) handleCompleteTask(w http.ResponseWriter, r *http.Request) {
 	taskID := r.PathValue("task_id")
 	var resp TaskResponse
 	if err := json.NewDecoder(r.Body).Decode(&resp); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
+		httputil.WriteError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
 	if resp.TaskID == "" {
@@ -2410,12 +2410,12 @@ func (s *Service) handleCompleteTask(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := s.store.CompleteTask(r.Context(), agentID, taskID, &resp); err != nil {
 		slog.Warn("complete task failed", "error", err)
-		writeError(w, http.StatusInternalServerError, err.Error())
+		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	// 采集任务完成: 按类型解析输出入库(CMDB 更新 / 指标记录)
 	s.handleCollectCompletion(r.Context(), agentID, taskID, &resp)
-	writeJSON(w, http.StatusOK, map[string]any{"status": "ok"})
+	httputil.WriteJSON(w, http.StatusOK, map[string]any{"status": "ok"})
 }
 
 func (s *Service) handleDownloadAgent(w http.ResponseWriter, r *http.Request) {
@@ -2469,7 +2469,7 @@ func (s *Service) handleDownloadAgent(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		if binPath == "" {
-			writeError(w, 404, "binary not found, please build first: make build")
+			httputil.WriteError(w, 404, "binary not found, please build first: make build")
 			return
 		}
 
@@ -2493,7 +2493,7 @@ func (s *Service) handleDownloadAgent(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(http.StatusOK)
 			w.Write([]byte(generateWindowsProxyInstallScript(serverAddr, arch)))
 		default:
-			writeError(w, http.StatusBadRequest, "os parameter required: linux, darwin, or windows")
+			httputil.WriteError(w, http.StatusBadRequest, "os parameter required: linux, darwin, or windows")
 		}
 		return
 	}
@@ -2512,7 +2512,7 @@ func (s *Service) handleDownloadAgent(w http.ResponseWriter, r *http.Request) {
 		w.Write([]byte(generateWindowsInstallScript(serverAddr, arch)))
 
 	default:
-		writeError(w, http.StatusBadRequest, "os parameter required: linux, darwin, or windows")
+		httputil.WriteError(w, http.StatusBadRequest, "os parameter required: linux, darwin, or windows")
 	}
 }
 
@@ -2960,23 +2960,23 @@ func (s *Service) handleListProxies(w http.ResponseWriter, r *http.Request) {
 	proxies, err := s.store.ListProxies(r.Context(), tenantID)
 	if err != nil {
 		slog.Warn("list proxies failed", "error", err)
-		writeError(w, http.StatusInternalServerError, err.Error())
+		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	if proxies == nil {
 		proxies = []*ProxyInfo{}
 	}
-	writeJSON(w, http.StatusOK, proxies)
+	httputil.WriteJSON(w, http.StatusOK, proxies)
 }
 
 func (s *Service) handleRegisterProxy(w http.ResponseWriter, r *http.Request) {
 	var req RegisterProxyRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
+		httputil.WriteError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
 	if err := validate.HostName("Proxy 名称", req.Name); err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
+		httputil.WriteError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 	proxy := &ProxyInfo{
@@ -2987,10 +2987,10 @@ func (s *Service) handleRegisterProxy(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := s.store.RegisterProxy(r.Context(), proxy); err != nil {
 		slog.Warn("register proxy failed", "error", err)
-		writeError(w, http.StatusInternalServerError, err.Error())
+		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusCreated, proxy)
+	httputil.WriteJSON(w, http.StatusCreated, proxy)
 }
 
 func (s *Service) handleGetProxy(w http.ResponseWriter, r *http.Request) {
@@ -2998,10 +2998,10 @@ func (s *Service) handleGetProxy(w http.ResponseWriter, r *http.Request) {
 	tenantID := tenantFromCtx(r.Context())
 	proxy, err := s.store.GetProxy(r.Context(), id, tenantID)
 	if err != nil || proxy == nil {
-		writeError(w, http.StatusNotFound, "proxy not found")
+		httputil.WriteError(w, http.StatusNotFound, "proxy not found")
 		return
 	}
-	writeJSON(w, http.StatusOK, proxy)
+	httputil.WriteJSON(w, http.StatusOK, proxy)
 }
 
 func (s *Service) handleUpdateProxy(w http.ResponseWriter, r *http.Request) {
@@ -3009,12 +3009,12 @@ func (s *Service) handleUpdateProxy(w http.ResponseWriter, r *http.Request) {
 	tenantID := tenantFromCtx(r.Context())
 	proxy, err := s.store.GetProxy(r.Context(), id, tenantID)
 	if err != nil || proxy == nil {
-		writeError(w, http.StatusNotFound, "proxy not found")
+		httputil.WriteError(w, http.StatusNotFound, "proxy not found")
 		return
 	}
 	var req UpdateProxyRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
+		httputil.WriteError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
 	if req.Name != "" {
@@ -3031,10 +3031,10 @@ func (s *Service) handleUpdateProxy(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := s.store.UpdateProxy(r.Context(), proxy); err != nil {
 		slog.Warn("update proxy failed", "error", err)
-		writeError(w, http.StatusInternalServerError, err.Error())
+		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, proxy)
+	httputil.WriteJSON(w, http.StatusOK, proxy)
 }
 
 func (s *Service) handleDeleteProxy(w http.ResponseWriter, r *http.Request) {
@@ -3042,10 +3042,10 @@ func (s *Service) handleDeleteProxy(w http.ResponseWriter, r *http.Request) {
 	tenantID := tenantFromCtx(r.Context())
 	if err := s.store.DeleteProxy(r.Context(), id, tenantID); err != nil {
 		slog.Warn("delete proxy failed", "error", err)
-		writeError(w, http.StatusInternalServerError, err.Error())
+		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
+	httputil.WriteJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
 }
 
 // ---- Circuit breaker ----
@@ -3053,7 +3053,7 @@ func (s *Service) handleDeleteProxy(w http.ResponseWriter, r *http.Request) {
 func (s *Service) handleGetCB(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	cb := s.getOrCreateBreaker(id)
-	writeJSON(w, http.StatusOK, cb)
+	httputil.WriteJSON(w, http.StatusOK, cb)
 }
 
 func (s *Service) handleSetCB(w http.ResponseWriter, r *http.Request) {
@@ -3082,7 +3082,7 @@ func (s *Service) handleSetCB(w http.ResponseWriter, r *http.Request) {
 		cb.MaxConsecutiveFails = req.MaxConsecutiveFails
 	}
 	s.cbMu.Unlock()
-	writeJSON(w, http.StatusOK, cb)
+	httputil.WriteJSON(w, http.StatusOK, cb)
 }
 
 // handleRestartAgent 通过下发 action=restart 任务来重启 agent,而非触发熔断。
@@ -3094,11 +3094,11 @@ func (s *Service) handleRestartAgent(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := s.store.CreateTask(r.Context(), id, task); err != nil {
 		slog.Warn("queue restart task failed", "error", err)
-		writeError(w, http.StatusInternalServerError, err.Error())
+		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	slog.Info("agent restart task queued", "agent_id", id, "task_id", task.TaskID)
-	writeJSON(w, http.StatusOK, map[string]any{
+	httputil.WriteJSON(w, http.StatusOK, map[string]any{
 		"status":            "restart_command_queued",
 		"agent_id":          id,
 		"restart_requested": true,
@@ -3122,7 +3122,7 @@ func (s *Service) handleUpgradeAgent(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := s.store.CreateTask(r.Context(), id, task); err != nil {
 		slog.Warn("queue upgrade task failed", "error", err)
-		writeError(w, http.StatusInternalServerError, err.Error())
+		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 
@@ -3142,7 +3142,7 @@ func (s *Service) handleUpgradeAgent(w http.ResponseWriter, r *http.Request) {
 	}
 
 	slog.Info("agent upgrade task queued", "agent_id", id, "task_id", task.TaskID)
-	writeJSON(w, http.StatusOK, map[string]any{
+	httputil.WriteJSON(w, http.StatusOK, map[string]any{
 		"status":   "upgrade_command_queued",
 		"agent_id": id,
 		"task_id":  task.TaskID,
@@ -3159,7 +3159,7 @@ func (s *Service) handleUninstallAgent(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := s.store.CreateTask(r.Context(), id, task); err != nil {
 		slog.Warn("queue uninstall task failed", "error", err)
-		writeError(w, http.StatusInternalServerError, err.Error())
+		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 
@@ -3179,7 +3179,7 @@ func (s *Service) handleUninstallAgent(w http.ResponseWriter, r *http.Request) {
 	}
 
 	slog.Info("agent uninstall task queued", "agent_id", id, "task_id", task.TaskID)
-	writeJSON(w, http.StatusOK, map[string]any{
+	httputil.WriteJSON(w, http.StatusOK, map[string]any{
 		"status":   "uninstall_command_queued",
 		"agent_id": id,
 		"task_id":  task.TaskID,
@@ -3207,13 +3207,13 @@ func (s *Service) handleCMDBReport(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	host, err := s.store.Get(r.Context(), id, tenantFromCtx(r.Context()))
 	if err != nil || host == nil {
-		writeError(w, http.StatusNotFound, "agent not found")
+		httputil.WriteError(w, http.StatusNotFound, "agent not found")
 		return
 	}
 
 	var report cmdbReportPayload
 	if err := json.NewDecoder(r.Body).Decode(&report); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
+		httputil.WriteError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
 
@@ -3223,7 +3223,7 @@ func (s *Service) handleCMDBReport(w http.ResponseWriter, r *http.Request) {
 	s.store.Update(r.Context(), host)
 	// 方案 X 闭环：Agent 上报 CMDB 资产后立即同步为 CMDB host CI。
 	s.syncHostCI(r.Context(), tenantFromCtx(r.Context()), host)
-	writeJSON(w, http.StatusOK, map[string]string{"status": "cmdb data received"})
+	httputil.WriteJSON(w, http.StatusOK, map[string]string{"status": "cmdb data received"})
 }
 
 // cmdbReportPayload 是 Agent 上报 CMDB 数据的载荷结构(供采集结果解析复用)。
@@ -3278,13 +3278,13 @@ func (s *Service) handleDownloadTasks(w http.ResponseWriter, r *http.Request) {
 	tenantID := tenantFromCtx(r.Context())
 	host, err := s.store.Get(r.Context(), id, tenantID)
 	if err != nil || host == nil {
-		writeError(w, http.StatusNotFound, "agent not found")
+		httputil.WriteError(w, http.StatusNotFound, "agent not found")
 		return
 	}
 	tasks, err := s.store.ListTasks(r.Context(), id)
 	if err != nil {
 		slog.Warn("download tasks failed", "error", err)
-		writeError(w, http.StatusInternalServerError, err.Error())
+		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	pending := make([]*TaskInfo, 0)
@@ -3293,7 +3293,7 @@ func (s *Service) handleDownloadTasks(w http.ResponseWriter, r *http.Request) {
 			pending = append(pending, t)
 		}
 	}
-	writeJSON(w, http.StatusOK, pending)
+	httputil.WriteJSON(w, http.StatusOK, pending)
 }
 
 // buildFileURL 依据基址生成含短期令牌的下载地址。base 形如 http://host:port/api/v1。
@@ -3321,21 +3321,21 @@ func (s *Service) handleCreateDownloadTask(w http.ResponseWriter, r *http.Reques
 
 	var req downloadTaskRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
+		httputil.WriteError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
 	if req.FileID == "" || req.FilePath == "" {
-		writeError(w, http.StatusBadRequest, "file_id and file_path are required")
+		httputil.WriteError(w, http.StatusBadRequest, "file_id and file_path are required")
 		return
 	}
 	if s.fileTokenSecret == "" {
-		writeError(w, http.StatusInternalServerError, "file token secret not configured")
+		httputil.WriteError(w, http.StatusInternalServerError, "file token secret not configured")
 		return
 	}
 
 	host, err := s.store.Get(r.Context(), agentID, tenantID)
 	if err != nil || host == nil {
-		writeError(w, http.StatusNotFound, "agent not found")
+		httputil.WriteError(w, http.StatusNotFound, "agent not found")
 		return
 	}
 
@@ -3344,7 +3344,7 @@ func (s *Service) handleCreateDownloadTask(w http.ResponseWriter, r *http.Reques
 	if host.ProxyID != "" {
 		proxy, perr := s.store.GetProxy(r.Context(), host.ProxyID, tenantID)
 		if perr != nil || proxy == nil {
-			writeError(w, http.StatusBadRequest, "agent's proxy not found")
+			httputil.WriteError(w, http.StatusBadRequest, "agent's proxy not found")
 			return
 		}
 		scheme := "http"
@@ -3353,7 +3353,7 @@ func (s *Service) handleCreateDownloadTask(w http.ResponseWriter, r *http.Reques
 		}
 		base = fmt.Sprintf("%s://%s:%d/api/v1", scheme, proxy.Address, proxy.Port)
 	} else if s.serverBaseURL == "" {
-		writeError(w, http.StatusInternalServerError, "server base url not configured")
+		httputil.WriteError(w, http.StatusInternalServerError, "server base url not configured")
 		return
 	}
 
@@ -3364,7 +3364,7 @@ func (s *Service) handleCreateDownloadTask(w http.ResponseWriter, r *http.Reques
 	tok, err := token.Generate(s.fileTokenSecret, req.FileID, agentID, ttl)
 	if err != nil {
 		slog.Warn("mint download token failed", "error", err, "agent_id", agentID)
-		writeError(w, http.StatusInternalServerError, "mint token failed")
+		httputil.WriteError(w, http.StatusInternalServerError, "mint token failed")
 		return
 	}
 
@@ -3378,13 +3378,13 @@ func (s *Service) handleCreateDownloadTask(w http.ResponseWriter, r *http.Reques
 	}
 	if err := s.store.CreateTask(r.Context(), agentID, task); err != nil {
 		slog.Warn("create download task failed", "error", err, "agent_id", agentID)
-		writeError(w, http.StatusInternalServerError, err.Error())
+		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	slog.Info("download task created",
 		"agent_id", agentID, "file_id", req.FileID,
 		"via_proxy", host.ProxyID != "", "ttl", ttl.String())
-	writeJSON(w, http.StatusCreated, task)
+	httputil.WriteJSON(w, http.StatusCreated, task)
 }
 
 // handleServeFile 中心存储文件拉取端点(§5):
@@ -3396,7 +3396,7 @@ func (s *Service) handleServeFile(w http.ResponseWriter, r *http.Request) {
 	fileID := r.PathValue("file_id")
 	tok := r.URL.Query().Get("token")
 	if tok == "" {
-		writeError(w, http.StatusUnauthorized, "missing download token")
+		httputil.WriteError(w, http.StatusUnauthorized, "missing download token")
 		return
 	}
 	claims, err := token.Verify(s.fileTokenSecret, tok)
@@ -3405,42 +3405,42 @@ func (s *Service) handleServeFile(w http.ResponseWriter, r *http.Request) {
 		if err == token.ErrExpired {
 			status = http.StatusUnauthorized
 		}
-		writeError(w, status, "invalid download token: "+err.Error())
+		httputil.WriteError(w, status, "invalid download token: "+err.Error())
 		return
 	}
 	if claims.FileID != fileID {
-		writeError(w, http.StatusForbidden, "token/file mismatch")
+		httputil.WriteError(w, http.StatusForbidden, "token/file mismatch")
 		return
 	}
 
 	key := claims.AgentID
 	if !s.fileLimiter.Allow(key) {
-		writeError(w, http.StatusTooManyRequests, "download rate limited")
+		httputil.WriteError(w, http.StatusTooManyRequests, "download rate limited")
 		return
 	}
 
 	if s.fileStoreDir == "" {
 		s.fileLimiter.RecordFailure(key)
-		writeError(w, http.StatusInternalServerError, "file store not configured")
+		httputil.WriteError(w, http.StatusInternalServerError, "file store not configured")
 		return
 	}
 	// 防目录穿越:file_id 必须是裸文件名,不含路径分隔符。
 	if filepath.Base(fileID) != fileID {
 		s.fileLimiter.RecordFailure(key)
-		writeError(w, http.StatusBadRequest, "invalid file_id")
+		httputil.WriteError(w, http.StatusBadRequest, "invalid file_id")
 		return
 	}
 	fp := filepath.Join(s.fileStoreDir, fileID)
 	info, err := os.Stat(fp)
 	if err != nil {
 		s.fileLimiter.RecordFailure(key)
-		writeError(w, http.StatusNotFound, "file not found")
+		httputil.WriteError(w, http.StatusNotFound, "file not found")
 		return
 	}
 	f, err := os.Open(fp)
 	if err != nil {
 		s.fileLimiter.RecordFailure(key)
-		writeError(w, http.StatusInternalServerError, "open file failed")
+		httputil.WriteError(w, http.StatusInternalServerError, "open file failed")
 		return
 	}
 	defer f.Close()
@@ -3449,17 +3449,6 @@ func (s *Service) handleServeFile(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=%q", fileID))
 	http.ServeContent(w, r, fileID, info.ModTime(), f)
 	s.fileLimiter.RecordSuccess(key)
-}
-
-func writeJSON(w http.ResponseWriter, status int, v any) {
-	v = httputil.EmptySliceIfNil(v)
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	json.NewEncoder(w).Encode(v)
-}
-
-func writeError(w http.ResponseWriter, status int, msg string) {
-	writeJSON(w, status, map[string]string{"error": msg})
 }
 
 // ------- Agent 全局版本一致性 -------
@@ -3472,7 +3461,7 @@ func (s *Service) handleGetVersionPolicy(w http.ResponseWriter, r *http.Request)
 	}
 	agents, err := s.store.List(r.Context(), tenantID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 
@@ -3495,7 +3484,7 @@ func (s *Service) handleGetVersionPolicy(w http.ResponseWriter, r *http.Request)
 		pending = total - onTarget
 	}
 
-	writeJSON(w, http.StatusOK, map[string]any{
+	httputil.WriteJSON(w, http.StatusOK, map[string]any{
 		"target_version": target,
 		"agents_total":   total,
 		"on_target":      onTarget,
@@ -3509,7 +3498,7 @@ func (s *Service) handleSetVersionPolicy(w http.ResponseWriter, r *http.Request)
 		TargetVersion string `json:"target_version"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
+		httputil.WriteError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
 	s.versionPolicyMu.Lock()
@@ -3517,7 +3506,7 @@ func (s *Service) handleSetVersionPolicy(w http.ResponseWriter, r *http.Request)
 	s.versionPolicyMu.Unlock()
 
 	slog.Info("agent version policy updated", "target_version", req.TargetVersion)
-	writeJSON(w, http.StatusOK, map[string]string{
+	httputil.WriteJSON(w, http.StatusOK, map[string]string{
 		"status":         "ok",
 		"target_version": req.TargetVersion,
 	})
@@ -3535,13 +3524,13 @@ func (s *Service) handleBatchUpgrade(w http.ResponseWriter, r *http.Request) {
 	s.versionPolicyMu.Unlock()
 
 	if target == "" {
-		writeError(w, http.StatusBadRequest, "no target version set; use PUT /api/v1/agents/version-policy first")
+		httputil.WriteError(w, http.StatusBadRequest, "no target version set; use PUT /api/v1/agents/version-policy first")
 		return
 	}
 
 	agents, err := s.store.List(r.Context(), tenantID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 
@@ -3579,7 +3568,7 @@ func (s *Service) handleBatchUpgrade(w http.ResponseWriter, r *http.Request) {
 		upgraded++
 	}
 
-	writeJSON(w, http.StatusOK, map[string]any{
+	httputil.WriteJSON(w, http.StatusOK, map[string]any{
 		"status":         "ok",
 		"target_version": target,
 		"upgrade_queued": upgraded,
@@ -3602,13 +3591,13 @@ type fileMeta struct {
 
 func (s *Service) handleUploadFile(w http.ResponseWriter, r *http.Request) {
 	if s.fileStoreDir == "" {
-		writeError(w, http.StatusInternalServerError, "file store not configured (SetFileStoreDir)")
+		httputil.WriteError(w, http.StatusInternalServerError, "file store not configured (SetFileStoreDir)")
 		return
 	}
 	r.ParseMultipartForm(256 << 20) // 256MB max
 	file, header, err := r.FormFile("file")
 	if err != nil {
-		writeError(w, http.StatusBadRequest, "missing file field: "+err.Error())
+		httputil.WriteError(w, http.StatusBadRequest, "missing file field: "+err.Error())
 		return
 	}
 	defer file.Close()
@@ -3616,7 +3605,7 @@ func (s *Service) handleUploadFile(w http.ResponseWriter, r *http.Request) {
 	storedPath := filepath.Join(s.fileStoreDir, fid)
 	out, err := os.Create(storedPath)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to store file: "+err.Error())
+		httputil.WriteError(w, http.StatusInternalServerError, "failed to store file: "+err.Error())
 		return
 	}
 	defer out.Close()
@@ -3625,7 +3614,7 @@ func (s *Service) handleUploadFile(w http.ResponseWriter, r *http.Request) {
 	size, err := io.Copy(out, tr)
 	if err != nil {
 		os.Remove(storedPath)
-		writeError(w, http.StatusInternalServerError, "failed to write file: "+err.Error())
+		httputil.WriteError(w, http.StatusInternalServerError, "failed to write file: "+err.Error())
 		return
 	}
 	checksum := fmt.Sprintf("%x", h.Sum(nil))
@@ -3650,12 +3639,12 @@ func (s *Service) handleUploadFile(w http.ResponseWriter, r *http.Request) {
 			slog.Warn("file meta save failed", "error", err)
 		}
 	}
-	writeJSON(w, http.StatusCreated, meta)
+	httputil.WriteJSON(w, http.StatusCreated, meta)
 }
 
 func (s *Service) handleListFiles(w http.ResponseWriter, r *http.Request) {
 	if s.entClient == nil {
-		writeJSON(w, http.StatusOK, []fileMeta{})
+		httputil.WriteJSON(w, http.StatusOK, []fileMeta{})
 		return
 	}
 	tenantID := r.Header.Get("X-Tenant-ID")
@@ -3664,7 +3653,7 @@ func (s *Service) handleListFiles(w http.ResponseWriter, r *http.Request) {
 	}
 	files, err := s.entClient.File.Query().Where(entFile.TenantIDEQ(tenantID)).Order(ent.Desc(entFile.FieldCreatedAt)).All(r.Context())
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	result := make([]fileMeta, 0, len(files))
@@ -3678,7 +3667,7 @@ func (s *Service) handleListFiles(w http.ResponseWriter, r *http.Request) {
 	if result == nil {
 		result = []fileMeta{}
 	}
-	writeJSON(w, http.StatusOK, result)
+	httputil.WriteJSON(w, http.StatusOK, result)
 }
 
 func (s *Service) handleDeleteFile(w http.ResponseWriter, r *http.Request) {
@@ -3689,21 +3678,21 @@ func (s *Service) handleDeleteFile(w http.ResponseWriter, r *http.Request) {
 	if s.fileStoreDir != "" {
 		os.Remove(filepath.Join(s.fileStoreDir, fid))
 	}
-	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
+	httputil.WriteJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
 }
 
 func (s *Service) handleFileMeta(w http.ResponseWriter, r *http.Request) {
 	fid := r.PathValue("file_id")
 	if s.entClient == nil {
-		writeError(w, http.StatusNotFound, "file not found")
+		httputil.WriteError(w, http.StatusNotFound, "file not found")
 		return
 	}
 	f, err := s.entClient.File.Get(r.Context(), fid)
 	if err != nil {
-		writeError(w, http.StatusNotFound, "file not found")
+		httputil.WriteError(w, http.StatusNotFound, "file not found")
 		return
 	}
-	writeJSON(w, http.StatusOK, fileMeta{
+	httputil.WriteJSON(w, http.StatusOK, fileMeta{
 		ID: f.ID, OriginalName: f.OriginalName, SizeBytes: f.SizeBytes,
 		Checksum: f.Checksum, ChecksumAlgo: f.ChecksumAlgo,
 		TenantID: f.TenantID, CreatedAt: f.CreatedAt.Format(time.RFC3339),
