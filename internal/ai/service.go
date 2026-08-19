@@ -217,10 +217,32 @@ func (s *Service) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/v1/ai/faultsim/injections", s.handleListFaultInjections)
 	mux.HandleFunc("POST /api/v1/ai/faultsim/injections/{id}/recover", s.handleRecoverFaultInjection)
 
-	// —— 自动修复执行 (L1: 巡检发现 -> 分级处置 blocked/auto/review) ——
+	// —— 自动修复执行 (L1: 巡检发现 -> 分级处置 blocked/auto/review + 验证闭环) ——
 	mux.HandleFunc("POST /api/v1/ai/inspections/{id}/runs/{runID}/remediate/generate", s.handleGenerateRemediations)
 	mux.HandleFunc("GET /api/v1/ai/inspections/{id}/runs/{runID}/remediate", s.handleListRemediations)
 	mux.HandleFunc("POST /api/v1/ai/remediate/{actionID}/execute", s.handleExecuteRemediation)
+
+	// —— 可复用剧本 (runbook: 成功且验证通过的修复自动沉淀, 同因直接复用) ——
+	mux.HandleFunc("GET /api/v1/ai/runbooks", s.handleListRunbooks)
+	mux.HandleFunc("GET /api/v1/ai/runbooks/{id}", s.handleGetRunbook)
+	mux.HandleFunc("POST /api/v1/ai/runbooks/{id}/execute", s.handleExecuteRunbook)
+
+	// —— 自治分级 (notify/suggest/act_with_approval/autonomous) ——
+	mux.HandleFunc("GET /api/v1/ai/autonomy", s.handleGetAutonomy)
+	mux.HandleFunc("PUT /api/v1/ai/autonomy", s.handleSetAutonomy)
+
+	// —— 告警第一道防线 (告警 → agent 自动分级) ——
+	mux.HandleFunc("POST /api/v1/ai/alerts/triage", s.handleAlertTriage)
+
+	// —— RCA 基准 (根因结论记录 + 人工标注准确率) ——
+	mux.HandleFunc("POST /api/v1/ai/rca-records", s.handleRecordRCA)
+	mux.HandleFunc("GET /api/v1/ai/rca-records", s.handleListRCARecords)
+	mux.HandleFunc("POST /api/v1/ai/rca-records/{id}/label", s.handleLabelRCA)
+
+	// —— 事故复盘沉淀 (复盘学习, 回灌记忆) ——
+	mux.HandleFunc("POST /api/v1/ai/postmortems", s.handleCreatePostmortem)
+	mux.HandleFunc("GET /api/v1/ai/postmortems", s.handleListPostmortems)
+	mux.HandleFunc("POST /api/v1/ai/postmortems/{id}/publish", s.handlePublishPostmortem)
 
 	// —— Agent 长期记忆 (P0-1: 经验跨会话复用) ——
 	mux.HandleFunc("GET /api/v1/ai/memory", s.handleListMemories)

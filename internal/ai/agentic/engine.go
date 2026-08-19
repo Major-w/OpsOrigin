@@ -66,8 +66,22 @@ type Engine struct {
 
 	// remediations 自动修复动作(L1 分级处置闭环): 进程内存储。
 	// RemediationRunnerFunc 由 cmd/core 注入真实 Agent/脚本执行; nil=内置演示执行器。
-	remediations          map[string]*RemediationAction
-	RemediationRunnerFunc RemediationRunnerFunc
+	// RemediationVerifierFunc 修复后验证回调; nil=默认视为验证通过。
+	remediations            map[string]*RemediationAction
+	RemediationRunnerFunc   RemediationRunnerFunc
+	RemediationVerifierFunc RemediationVerifierFunc
+
+	// runbooks 沉淀的可复用修复剧本(P0-2): 由成功且验证通过的修复抽取。
+	runbooks map[string]*Runbook
+
+	// autonomy 自治分级(notify/suggest/act_with_approval/autonomous)。
+	autonomy AutonomyLevel
+
+	// rcaRecords RCA 基准记录(人工标注准确率形成证据)。
+	rcaRecords map[string]*RCARecord
+
+	// postmortems 事故复盘沉淀(复盘学习, 回灌记忆/runbook)。
+	postmortems map[string]*Postmortem
 
 	// memories Agent 长期记忆(P0-1): 进程内存储(与 agents/plans 同策略)。
 	memories map[string]*ExperienceMemory

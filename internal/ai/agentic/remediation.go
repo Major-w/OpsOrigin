@@ -38,6 +38,11 @@ type RemediationAction struct {
 	Error        string     `json:"error,omitempty"`
 	CreatedAt    time.Time  `json:"created_at"`
 	FinishedAt   *time.Time `json:"finished_at,omitempty"`
+
+	// —— 验证修复闭环：修复已部署 ≠ 服务已验证健康 ——
+	VerifyStatus string     `json:"verify_status,omitempty"` // ""(未验证) | verifying | verified | verify_failed
+	VerifyNote   string     `json:"verify_note,omitempty"`
+	VerifiedAt   *time.Time `json:"verified_at,omitempty"`
 }
 
 // Remediation 状态常量。
@@ -51,8 +56,19 @@ const (
 	RemediationFailed           = "failed"
 )
 
+// 验证修复状态常量。
+const (
+	RemediationVerifying    = "verifying"
+	RemediationVerified     = "verified"
+	RemediationVerifyFailed = "verify_failed"
+)
+
 // RemediationRunnerFunc 修复执行回调(由 cmd/core 注入真实 Agent/脚本执行; nil=内置演示执行器)。
 type RemediationRunnerFunc func(ctx context.Context, action *RemediationAction) (result string, err error)
+
+// RemediationVerifierFunc 修复后验证回调：回查服务健康(探活/指标恢复/进程状态)。
+// 返回 (健康, 验证说明, 错误)；未注入时默认视为验证通过(演示/无验证器场景)。
+type RemediationVerifierFunc func(ctx context.Context, action *RemediationAction) (healthy bool, note string, err error)
 
 // remediationBlockedPatterns 危险处置指令黑名单(命中即拦截, 与 script_generate 同思路)。
 var remediationBlockedPatterns = []string{
@@ -133,10 +149,10 @@ func classifyRemediationRisk(level, suggestion string) string {
 	return "review"
 }
 
-// ExecuteRemediation 执行一条修复动作(分级处置):
-//   - blocked: 返回错误(已拦截);
-//   - auto: 立即执行(经 runner; nil 用演示执行器);
-//   - review: 触发审批闸门(goroutine 等待), 批准后执行, 拒绝/超时置 rejected。
+// ExecuteRemediation 执行一条修复动作, 按自治分级分流:
+//   - notify / suggest: 不执行(仅通知/生成建议), 状态保持 pending;
+//   - autonomous: 非 blocked 直接执行(跳过审批, 保留危险词拦截);
+//   - 默认 act_with_approval: blocked 拦截 / auto 立即执行 / review 审批后执行。
 func (e *Engine) ExecuteRemediation(ctx context.Context, tenantID, actionID string) (*RemediationAction, error) {
 	e.mu.Lock()
 	a, ok := e.remediations[actionID]
@@ -153,7 +169,18 @@ func (e *Engine) ExecuteRemediation(ctx context.Context, tenantID, actionID stri
 		return a, fmt.Errorf("remediation blocked: %s", a.Error)
 	}
 	runner := e.RemediationRunnerFunc
+	autonomy := e.GetAutonomy()
 	e.mu.Unlock()
+
+	// 自治档位: notify/suggest 不执行, 仅产出提示。
+	if autonomy == AutonomyNotify {
+		a.Result = "仅通知: 修复未执行(自治档位=notify)"
+		return a, nil
+	}
+	if autonomy == AutonomySuggest {
+		a.Result = "建议处置(未执行, 自治档位=suggest): " + truncateStr(a.Suggestion, 200)
+		return a, nil
+	}
 
 	switch a.Risk {
 	case "blocked":
@@ -161,6 +188,10 @@ func (e *Engine) ExecuteRemediation(ctx context.Context, tenantID, actionID stri
 	case "auto":
 		return e.runRemediationAction(ctx, a, runner)
 	default: // review
+		if autonomy == AutonomyAutonomous {
+			// 自主档位: 跳过审批直接执行(危险词仍由 blocked 拦截)。
+			return e.runRemediationAction(ctx, a, runner)
+		}
 		return e.runRemediationWithApproval(ctx, a, runner)
 	}
 }
@@ -189,7 +220,7 @@ func (e *Engine) runRemediationWithApproval(ctx context.Context, a *RemediationA
 	return a, nil
 }
 
-// runRemediationAction 实际执行修复动作(pending/approved -> executing -> succeeded/failed)。
+// runRemediationAction 实际执行修复动作(pending/approved -> executing -> succeeded/failed -> verifying -> verified/verify_failed)。
 // runner 为 nil 时用内置演示执行器(返回"演示执行: 建议截断", 不真实影响系统)。
 func (e *Engine) runRemediationAction(ctx context.Context, a *RemediationAction, runner RemediationRunnerFunc) (*RemediationAction, error) {
 	e.setRemediationStatus(a.ID, RemediationExecuting, "", "")
@@ -206,7 +237,53 @@ func (e *Engine) runRemediationAction(ctx context.Context, a *RemediationAction,
 		return e.remediations[a.ID], nil
 	}
 	e.setRemediationStatus(a.ID, RemediationSucceeded, result, "")
+	// —— 验证修复闭环: 修复已部署后回查服务健康 ——
+	e.verifyRemediation(ctx, a)
+	// 验证通过 → 自动沉淀可复用剧本(幂等, 复用或新建)。
+	cur := e.remediations[a.ID]
+	if cur != nil && cur.VerifyStatus == RemediationVerified {
+		e.CreateRunbookFromRemediation(ctx, cur)
+	}
 	return e.remediations[a.ID], nil
+}
+
+// verifyRemediation 验证修复效果: 探活/指标回查直到确认服务健康。
+// 未注入验证器时(演示/单测场景)默认视为已确认健康, 避免阻塞链路。
+func (e *Engine) verifyRemediation(ctx context.Context, a *RemediationAction) {
+	verifier := func() RemediationVerifierFunc {
+		e.mu.RLock()
+		defer e.mu.RUnlock()
+		return e.RemediationVerifierFunc
+	}()
+	now := time.Now()
+	e.mu.Lock()
+	a.VerifyStatus = RemediationVerifying
+	if verifier == nil {
+		// 无验证器: 默认确认(演示链路不阻塞), 注明待真实验证器注入。
+		a.VerifyStatus = RemediationVerified
+		a.VerifyNote = "未注入验证器, 默认确认(演示链路)"
+		a.VerifiedAt = &now
+		e.mu.Unlock()
+		return
+	}
+	e.mu.Unlock()
+	healthy, note, verr := verifier(ctx, a)
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if verr != nil {
+		a.VerifyStatus = RemediationVerifyFailed
+		a.VerifyNote = "验证器执行失败(建议人工确认): " + verr.Error()
+		return
+	}
+	if healthy {
+		a.VerifyStatus = RemediationVerified
+		a.VerifyNote = note
+		a.VerifiedAt = &now
+		return
+	}
+	// 未恢复: 升级人工(保留修复结果, 状态置 verify_failed 供前端高亮人工跟进)。
+	a.VerifyStatus = RemediationVerifyFailed
+	a.VerifyNote = note + "（服务未恢复, 请人工跟进）"
 }
 
 // setRemediationStatus 更新动作状态。
@@ -262,6 +339,14 @@ func (e *Engine) SetRemediationRunner(fn RemediationRunnerFunc) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.RemediationRunnerFunc = fn
+}
+
+// SetRemediationVerifier 注入修复后验证回调(cmd/core 装配; nil=默认视为验证通过)。
+// 验证器应回查探活/指标恢复/进程状态, 返回服务是否健康。
+func (e *Engine) SetRemediationVerifier(fn RemediationVerifierFunc) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.RemediationVerifierFunc = fn
 }
 
 // inspectionRunsByID 从 run 索引查找指定 run(按 run 主键 ID 匹配)。
