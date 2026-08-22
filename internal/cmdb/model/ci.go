@@ -30,6 +30,7 @@ const (
 	ModelCategoryMiddleware = "中间件资源"
 	ModelCategoryDatabase   = "数据库资源"
 	ModelCategoryInfra      = "基础设施资源"
+	ModelCategoryContainer  = "容器资源"
 	// 兼容别名（旧代码引用）：platform≈基础设施资源，org≈业务资源
 	ModelCategoryPlatform = ModelCategoryInfra
 	ModelCategoryOrg      = ModelCategoryBusiness
@@ -37,7 +38,7 @@ const (
 
 // ModelCategories 返回默认内置分类名（前端兜底 / 种子使用）。
 func ModelCategories() []string {
-	return []string{ModelCategoryBusiness, ModelCategoryApp, ModelCategoryMiddleware, ModelCategoryDatabase, ModelCategoryInfra}
+	return []string{ModelCategoryBusiness, ModelCategoryApp, ModelCategoryMiddleware, ModelCategoryDatabase, ModelCategoryInfra, ModelCategoryContainer}
 }
 
 // BuiltinAuthor 是系统内置模型的作者标识（内置模型治理语义）：
@@ -53,6 +54,7 @@ const (
 	ModelTypeMiddleware      = "middleware"       // 中间件资源：Redis/Nginx/ES/Kafka 等
 	ModelTypeApp             = "app"              // 应用资源：应用服务实例
 	ModelTypeBusinessService = "business_service" // 业务资源：业务服务（服务建模顶层）
+	ModelTypeKubernetes      = "kubernetes"       // 容器资源：K8S 容器平台（抽象父类，集群/节点/Pod/工作负载等共性承载）
 )
 
 // 预置关系类型（RelationType 仍为自由字符串，常量仅规范服务建模链语义）：

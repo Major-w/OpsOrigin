@@ -106,6 +106,7 @@ const DEFAULT_CATEGORIES = [
   { name: '中间件资源', emoji: '🔌', color: 'bg-violet-500' },
   { name: '数据库资源', emoji: '🗄️', color: 'bg-amber-500' },
   { name: '基础设施资源', emoji: '🖥️', color: 'bg-slate-500' },
+  { name: '容器资源', emoji: '☸️', color: 'bg-teal-500' },
 ] as const
 
 // 自定义分类的兜底样式

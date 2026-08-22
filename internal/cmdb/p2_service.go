@@ -276,6 +276,8 @@ func layerForCI(ci *model.CIModel, mt *model.CIModelType) string {
 			return "infra"
 		case model.ModelCategoryBusiness:
 			return "business"
+		case model.ModelCategoryContainer:
+			return "container"
 		}
 	}
 	t := strings.ToLower(ci.TypeID)

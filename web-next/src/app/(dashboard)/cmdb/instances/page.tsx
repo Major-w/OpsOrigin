@@ -255,7 +255,7 @@ export default function CMDBPage() {
                   const arr = byCat.get(m.category) || []
                   arr.push(m); byCat.set(m.category, arr)
                 }
-                const catOrder = ['基础设施资源', '数据库资源', '中间件资源', '应用资源', '业务资源']
+                const catOrder = ['基础设施资源', '容器资源', '数据库资源', '中间件资源', '应用资源', '业务资源']
                 const cats = catOrder.filter(c => byCat.has(c)).concat(Array.from(byCat.keys()).filter(c => !catOrder.includes(c)))
                 return (
                   <div className="text-xs">
