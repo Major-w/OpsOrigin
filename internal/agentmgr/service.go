@@ -516,6 +516,34 @@ func (s *Service) SetGRPCTunnel(gs *tunnel.GRPCServer) {
 	gs.OnHeartbeat(func(info tunnel.AgentHeartbeatInfo) {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
+		// gRPC 直连 Agent 注册时只建内存会话,未落 agent_hosts 表,
+		// 导致前端主机列表读不到(此前只有 HTTP Register 才会建行)。
+		// 这里在首跳心跳时确保 agent_hosts 已存在该行(按 agentID 去重复用),
+		// 使注册即出现在主机列表;后续心跳仅刷新在线状态与资源信息。
+		if _, gerr := s.store.Get(ctx, info.AgentID, "default"); gerr != nil {
+			host := &AgentHost{
+				ID:            info.AgentID,
+				TenantID:      "default",
+				Name:          info.Hostname,
+				Type:          AgentTypeAgent,
+				Address:       info.AgentID, // 直连身份即指纹,作为去重键
+				OSType:        info.OS,
+				OSVersion:     info.OSVersion,
+				Version:       info.Version,
+				CPU:           info.CPU,
+				Memory:        info.Memory,
+				Hostname:      info.Hostname,
+				ProxyID:       info.AgentID,
+				Channels:      []string{"agent"},
+				InstallMethod: InstallManual,
+				Capabilities:  info.Capabilities,
+				IPs:           info.IPs,
+				Status:        AgentStatusOnline,
+			}
+			if rerr := s.store.Register(ctx, host); rerr != nil {
+				slog.Warn("tunnel register agent host failed", "agent_id", info.AgentID, "error", rerr)
+			}
+		}
 		req := &HeartbeatRequest{
 			Hostname:     info.Hostname,
 			OS:           info.OS,

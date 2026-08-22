@@ -585,45 +585,6 @@ func rotateAgentIdentity() (string, error) {
 	return fp, nil
 }
 
-// --- Registration ---
-
-func (a *Agent) Register(ctx context.Context) error {
-	hostname, _ := os.Hostname()
-	if a.cfg.AgentName != "" {
-		hostname = a.cfg.AgentName
-	}
-
-	payload := map[string]any{
-		"name":      hostname,
-		"type":      "agent",
-		"address":   getPrimaryIP(),
-		"port":      8080,
-		"os_type":   runtime.GOOS,
-		"auth_type": "token",
-	}
-
-	data, _ := json.Marshal(payload)
-	resp, err := a.client.Post(a.baseURL+"/agents", "application/json", bytes.NewReader(data))
-	if err != nil {
-		return fmt.Errorf("register: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode >= 300 {
-		body, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("register failed %d: %s", resp.StatusCode, string(body))
-	}
-
-	var result struct {
-		ID string `json:"id"`
-	}
-	json.NewDecoder(resp.Body).Decode(&result)
-	a.agentID = result.ID
-
-	fmt.Printf("[agent] registered with server, agent_id=%s\n", a.agentID)
-	return nil
-}
-
 // --- Command Whitelist (§6) ---
 
 // verifyCommand 命令白名单校验。whitelist 为 nil 表示该租户未启用,直接放行。
@@ -1390,9 +1351,9 @@ func (a *Agent) Run(ctx context.Context) error {
 		return a.tunnelClient.Start(ctx)
 	}
 
-	// 仅保留 gRPC 接入方式:Agent 直连 Core,或经 Proxy 中转(二者均为 gRPC 隧道)。
-	// HTTP 轮询与 WebSocket 两种连接模式已禁用(先禁用,后续如需可重新启用)。
-	return fmt.Errorf("agent 仅支持 gRPC 接入: 请通过 --grpc-server 直连 Core,或通过 --proxy 经代理中转;HTTP 轮询与 WebSocket 模式已禁用")
+	// Agent 仅支持 gRPC 接入:直连 Core(--grpc-server)或经 Proxy 中转(--proxy),
+	// 二者均为 gRPC 隧道。HTTP 轮询与 WebSocket 模式已在代码层面移除,不会走到此处。
+	return fmt.Errorf("agent 仅支持 gRPC 接入: 请通过 --grpc-server 直连 Core,或通过 --proxy 经代理中转")
 }
 
 func (a *Agent) Stop() {
@@ -1405,25 +1366,4 @@ func (a *Agent) Stop() {
 		}
 		a.wsMu.Unlock()
 	})
-}
-
-// reportTaskResultHTTP 通过 HTTP 上报任务结果(WS 不可用时的 fallback)。
-func (a *Agent) reportTaskResultHTTP(ctx context.Context, task TaskRequest, stdout, stderr string, exitCode int, duration time.Duration) {
-	result := TaskResponse{
-		TaskID:   task.TaskID,
-		Success:  exitCode == 0,
-		Output:   stdout,
-		ExitCode: exitCode,
-		Duration: duration.Milliseconds(),
-		Error:    stderr,
-	}
-	data, _ := json.Marshal(result)
-	resp, err := a.client.Post(
-		a.baseURL+"/agents/"+a.agentID+"/tasks/"+task.TaskID,
-		"application/json", bytes.NewReader(data))
-	if err != nil {
-		fmt.Printf("[agent] http report task result error: %v\n", err)
-		return
-	}
-	resp.Body.Close()
 }
