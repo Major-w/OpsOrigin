@@ -44,6 +44,7 @@ export default function CMDBIDCPage() {
   const roomRacks = () => panorama.racks.filter(r => !panoRoom || r.attributes?.room_id === panoRoom)
   const panoRooms = panorama.racks
     .map(r => r.attributes?.room_id).filter((v, i, a) => v && a.indexOf(v) === i)
+  const roomName = (rid: string) => rooms.find(x => x.id === rid)?.name || rid.slice(0, 12)
   const [roomDialog, setRoomDialog] = useState(false)
   const [roomForm, setRoomForm] = useState({ name: '', location: '', description: '' })
   const [rackDialog, setRackDialog] = useState(false)
@@ -169,7 +170,7 @@ export default function CMDBIDCPage() {
             <span className="text-xs text-muted-foreground">机房:</span>
             <button onClick={() => { setPanoRoom(''); setPanoRack(null) }} className={cn('px-3 py-1 rounded-full text-xs border', panoRoom === '' ? 'border-emerald-500 bg-emerald-50 dark:bg-emerald-500/10 text-emerald-600' : 'border-gray-200 dark:border-gray-700')}>全部</button>
             {panoRooms.map(rid => (
-              <button key={rid} onClick={() => { setPanoRoom(rid); setPanoRack(null) }} className={cn('px-3 py-1 rounded-full text-xs border', panoRoom === rid ? 'border-emerald-500 bg-emerald-50 dark:bg-emerald-500/10 text-emerald-600' : 'border-gray-200 dark:border-gray-700')}>{rid.slice(0, 12)}</button>
+              <button key={rid} onClick={() => { setPanoRoom(rid); setPanoRack(null) }} className={cn('px-3 py-1 rounded-full text-xs border', panoRoom === rid ? 'border-emerald-500 bg-emerald-50 dark:bg-emerald-500/10 text-emerald-600' : 'border-gray-200 dark:border-gray-700')}>{roomName(rid)}</button>
             ))}
             <span className="text-xs text-muted-foreground ml-auto">机柜 {roomRacks().length} · 设备 {panorama.devices.length}</span>
           </div>

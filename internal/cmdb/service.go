@@ -1280,50 +1280,74 @@ func detectDrifts(existing, discovered *model.CIModel) []*model.CMDBDrift {
 	return out
 }
 
-// handleIDCPanorama 机房机柜 2D 视图数据(模型驱动):
-// 返回 rack 机柜 CI 与所有带 rack_id 属性的设备 CI, 前端据此渲染
-// 机房平面图 + 机柜正视图 —— 录入模型数据即成图。
-// handleIDCPanorama 机房机柜 2D 视图数据(模型驱动):
-// 返回 rack 机柜 CI 与占用机柜 U 位的设备 CI, 前端据此渲染
-// 机房平面图 + 机柜正视图 —— 录入模型数据即成图。
+// handleIDCPanorama 机房机柜 2D 视图数据:
+// 机柜主体以 cmdb_rack 表(管理视图录入, 含 idc_id/max_units/row/col)为数据源,
+// 并兼容模型驱动录入的 rack CI(未在 cmdb_rack 登记的类型), 前端据此渲染
+// 机房平面图 + 机柜正视图 —— 管理视图录入或模型驱动录入均可成图。
 //
-// 数据来源兼容两条路径(历史割裂, 此处合并):
+// 设备合并两条来源(历史割裂, 此处合并):
 //  1. 设备 CI 自带 rack_id / rack_unit 属性(模型驱动录入);
 //  2. 管理视图通过 U 位分配写入 cmdb_rack_unit 表(ci_id 占用), 设备 CI 本身
-//     不含 rack_id 属性 —— 这条路径也必须被纳入, 否则 2D 视图永远空。
+//     不含 rack_id 属性 —— 这条路径也必须被纳入, 否则 2D 视图设备永远空。
 func (s *Service) handleIDCPanorama(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	tenantID := auth.TenantFromContext(ctx)
 	if s.pg == nil {
-		httputil.WriteJSON(w, http.StatusOK, map[string]any{"racks": []*model.CIModel{}, "devices": []*model.CIModel{}})
+		httputil.WriteJSON(w, http.StatusOK, map[string]any{"racks": []any{}, "devices": []*model.CIModel{}})
 		return
 	}
+
+	// 机柜主体: cmdb_rack 表 + cmdb_ci type=rack, 按 ID 去重合并。
+	// 前端读取结构: attributes.room_id(机房分组) / attributes.max_units(U 位总数) / name / id。
+	type panoRack struct {
+		ID         string         `json:"id"`
+		TypeID     string         `json:"type_id"`
+		Name       string         `json:"name"`
+		Attributes map[string]any `json:"attributes"`
+	}
+	rackByID := map[string]*panoRack{}
 	allRacks, err := s.pg.ListAllRacks(ctx, tenantID)
 	if err != nil {
 		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	// 机柜 CI(type=rack) 注入所属机房(room_id)与 U 位总数(max_units),
-	// 便于前端平面图按 room 维度分组、机柜正视图按 max_units 渲染。
-	racks, err := s.pg.ListCI(ctx, tenantID, "rack")
-	if err != nil {
-		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-	rackMeta := map[string]*model.Rack{} // rackID -> 表记录(含 idc_id/max_units)
 	for _, rk := range allRacks {
-		rackMeta[rk.ID] = rk
+		attrs := map[string]any{}
+		if rk.IDCRoomID != "" {
+			attrs["room_id"] = rk.IDCRoomID
+		}
+		if rk.MaxUnits > 0 {
+			attrs["max_units"] = rk.MaxUnits
+		}
+		if rk.Row != "" {
+			attrs["row"] = rk.Row
+		}
+		if rk.Col != "" {
+			attrs["col"] = rk.Col
+		}
+		rackByID[rk.ID] = &panoRack{ID: rk.ID, TypeID: "rack", Name: rk.Name, Attributes: attrs}
 	}
-	for _, rc := range racks {
-		if rc.Attributes == nil {
-			rc.Attributes = map[string]any{}
-		}
-		if meta, ok := rackMeta[rc.ID]; ok {
-			rc.Attributes["room_id"] = meta.IDCRoomID
-			if meta.MaxUnits > 0 {
-				rc.Attributes["max_units"] = meta.MaxUnits
+	// 兼容纯模型驱动场景: cmdb_ci type=rack 且未在 cmdb_rack 登记的。
+	if rackCIs, err := s.pg.ListCI(ctx, tenantID, "rack"); err == nil {
+		for _, rc := range rackCIs {
+			if _, exists := rackByID[rc.ID]; exists {
+				continue
 			}
+			attrs := map[string]any{}
+			if v, ok := rc.Attributes["room_id"].(string); ok && v != "" {
+				attrs["room_id"] = v
+			}
+			if v, ok := rc.Attributes["max_units"]; ok {
+				if n, ok := v.(float64); ok && n > 0 {
+					attrs["max_units"] = int(n)
+				}
+			}
+			rackByID[rc.ID] = &panoRack{ID: rc.ID, TypeID: "rack", Name: rc.Name, Attributes: attrs}
 		}
+	}
+	racks := make([]*panoRack, 0, len(rackByID))
+	for _, rk := range rackByID {
+		racks = append(racks, rk)
 	}
 
 	// 设备: 合并两条来源。
@@ -1373,9 +1397,6 @@ func (s *Service) handleIDCPanorama(w http.ResponseWriter, r *http.Request) {
 	devices := make([]*model.CIModel, 0, len(devByID))
 	for _, d := range devByID {
 		devices = append(devices, d)
-	}
-	if racks == nil {
-		racks = []*model.CIModel{}
 	}
 	httputil.WriteJSON(w, http.StatusOK, map[string]any{"racks": racks, "devices": devices})
 }
