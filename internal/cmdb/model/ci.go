@@ -76,6 +76,9 @@ const (
 // 声明后，实例间建立该 relation_type 的关系时由后端按 TargetModel + Cardinality 校验。
 // 未在此声明的"自由关系"仍可建立（兼容自动发现/历史关系），但跳过基数约束。
 type RelationDef struct {
+	// ID 是关系的稳定机器标识(关系级寻址), 供采集上报按 模型ID-关系ID 建立关系、
+	// 以及属性级权限按关系引用。旧数据无 ID 时由 ResolveModelType 兼容补全为 RelationType。
+	ID           string `json:"id,omitempty"`
 	Name         string `json:"name"`                   // 关系展示名，如 "部署于"
 	RelationType string `json:"relation_type"`          // 关系类型键（自由字符串，建议复用内置常量）
 	TargetModel  string `json:"target_model"`           // 目标模型类型 ID
@@ -153,7 +156,38 @@ func (t CIModelType) IsInstantiable() bool {
 	return !t.Abstract
 }
 
+// FieldByNameOrID 按字段名或字段 ID 反查属性定义(采集上报按 field_id 定位写入时使用)。
+// 优先精确匹配 ID, 其次匹配 Name, 兼容旧数据无 ID 场景。
+func (t CIModelType) FieldByNameOrID(key string) (AttrDef, bool) {
+	for name, def := range t.Schema {
+		if def.ID != "" && def.ID == key {
+			return def, true
+		}
+		if name == key {
+			return def, true
+		}
+	}
+	return AttrDef{}, false
+}
+
+// RelationByID 按关系 ID 或 relation_type 反查关系定义(采集上报按 relation_id 建关系时使用)。
+func (t CIModelType) RelationByID(key string) (RelationDef, bool) {
+	for _, r := range t.Relations {
+		if r.ID != "" && r.ID == key {
+			return r, true
+		}
+		if r.RelationType == key {
+			return r, true
+		}
+	}
+	return RelationDef{}, false
+}
+
 type AttrDef struct {
+	// ID 是属性的稳定机器标识(属性级寻址), 供采集上报按 模型ID-字段ID 定位写入、
+	// 以及属性级权限按字段引用。业务主键仍是字段 Name(前端寻址/展示);
+	// 重命名字段时 ID 不变, 不破坏采集映射。旧数据无 ID 时由 ResolveModelType 兼容补全为 Name。
+	ID          string `json:"id,omitempty"`
 	Type        string `json:"type"`
 	Required    bool   `json:"required"`
 	Description string `json:"description,omitempty"`

@@ -326,6 +326,29 @@ func (r *Repository) ListRacks(ctx context.Context, tenantID, idcID string) ([]*
 	return out, rows.Err()
 }
 
+// ListAllRacks 返回租户下全部机柜（含所属机房 idc_id），供 2D 视图构建机柜→机房映射。
+func (r *Repository) ListAllRacks(ctx context.Context, tenantID string) ([]*model.Rack, error) {
+	rows, err := r.db.QueryContext(ctx, `
+		SELECT id, tenant_id, idc_id, name, COALESCE(row,''), COALESCE(col,''), max_units, created_at
+		FROM cmdb_rack WHERE tenant_id=$1 ORDER BY name`, tenantID)
+	if err != nil {
+		return nil, fmt.Errorf("list all racks: %w", err)
+	}
+	defer rows.Close()
+	out := make([]*model.Rack, 0)
+	for rows.Next() {
+		rack := &model.Rack{}
+		var rw, col sql.NullString
+		if err := rows.Scan(&rack.ID, &rack.TenantID, &rack.IDCRoomID, &rack.Name, &rw, &col, &rack.MaxUnits, &rack.CreatedAt); err != nil {
+			return nil, fmt.Errorf("scan rack: %w", err)
+		}
+		rack.Row = rw.String
+		rack.Col = col.String
+		out = append(out, rack)
+	}
+	return out, rows.Err()
+}
+
 func (r *Repository) DeleteRack(ctx context.Context, id, tenantID string) error {
 	if _, err := r.db.ExecContext(ctx, `DELETE FROM cmdb_rack_unit WHERE rack_id=$1`, id); err != nil {
 		return fmt.Errorf("cascade rack units: %w", err)

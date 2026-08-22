@@ -48,9 +48,20 @@ interface CollectRun {
 }
 
 const SCRIPT_HINT: Record<ScriptCollectType, string> = {
-  cmdb: '#!/bin/sh\nhostname=$(hostname)\necho "{\\"hostname\\":\\"$hostname\\",\\"os\\":\\"$(uname -s)\\"}"',
+  cmdb: `#!/bin/sh
+# 统一输出格式：collect/report（按 模型ID-字段ID 自动填充/新增实例）
+# 单条：{"model_id":"server","name":"web-01","identify":{"field_id":"ip","value":"10.0.0.1"},"attrs":{"ip":"10.0.0.1","cpu":"8C","mem":"32G"},"relations":[{"relation_id":"belongs_to","target":"room-a"}]}
+# 批量：echo {"reports":[ ... ]}
+echo "{\\"model_id\\":\\"host\\",\\"name\\":\\"$(hostname)\\",\\"attrs\\":{\\"os\\":\\"$(uname -s)\\"}}"`,
   metric: '#!/bin/sh\necho "[{\\"name\\":\\"cpu_usage\\",\\"value\\":42.5,\\"unit\\":\\"%\\"}]"',
 }
+
+// cmdb 型采集脚本的「输出格式规范」说明（统一 collect/report 契约）。
+const CMDB_FORMAT_NOTE = `脚本最终输出须为 JSON（符合 collect/report 格式），系统自动按 模型ID-字段ID 把内容填充到对应模型实例的属性或关系，不存在则新增：
+• 单条：{"model_id":"模型ID","name":"实例名","identify":{"field_id":"字段ID","value":"唯一值"},"attrs":{"字段ID或名称":"值",...},"relations":[{"relation_id":"关系ID","target":"目标CI标识或ID"}]}
+• 批量：{"reports":[ 单条, 单条, ... ]} 或 多行 JSON（每行一条）
+• model_id 为 CMDB 模型类型 ID（如 host/server/room）；attrs 的键既支持字段 ID 也支持字段名称；identify 用于定位已有实例（缺失则新建）。
+旧格式（{"hostname":...,"os":...} 扁平对象）仍兼容，仅回写主机资产字段。`
 
 interface Props {
   /** 面板作用域：cmdb=资产字段回写，metric=指标点上报。 */
@@ -127,9 +138,9 @@ export function ScriptCollectPanel({ type }: Props) {
           ? <Database className="h-4 w-4 text-emerald-600 shrink-0" />
           : <Gauge className="h-4 w-4 text-blue-600 shrink-0" />}
         <span>
-          {type === 'cmdb'
-            ? <><b>资产脚本采集</b> — 脚本输出 JSON 对象（hostname/os/cpu/memory/disk/ips），结果自动回写主机配置项</>
-            : <><b>指标脚本采集</b> — 脚本输出 JSON 指标数组 [{'{name,value,unit}'}]，结果落入指标时序</>}
+        {type === 'cmdb'
+          ? <><b>资产脚本采集</b> — 脚本输出统一 <b>collect/report</b> 格式（模型ID-字段ID），自动填充/新增对应模型实例的属性与关系（旧扁平格式兼容）</>
+          : <><b>指标脚本采集</b> — 脚本输出 JSON 指标数组 [{'{name,value,unit}'}]，结果落入指标时序</>}
         </span>
       </div>
 
@@ -219,6 +230,12 @@ export function ScriptCollectPanel({ type }: Props) {
             <textarea rows={5} value={form.script} onChange={e => setForm(f => ({ ...f, script: e.target.value }))}
               placeholder={SCRIPT_HINT[type]}
               className="w-full rounded-md border border-input bg-background px-3 py-2 text-xs font-mono resize-none" />
+            {type === 'cmdb' && (
+              <details className="mt-2 text-xs text-muted-foreground">
+                <summary className="cursor-pointer select-none font-medium text-foreground/70">输出格式规范（collect/report · 模型ID-字段ID）</summary>
+                <pre className="mt-2 whitespace-pre-wrap rounded-md bg-muted/60 p-3 leading-relaxed">{CMDB_FORMAT_NOTE}</pre>
+              </details>
+            )}
           </div>
           <div>
             <label className="text-sm font-medium mb-1 block">目标 Agent <span className="text-muted-foreground text-xs">(留空 = 全部在线)</span></label>

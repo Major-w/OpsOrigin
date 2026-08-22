@@ -8,6 +8,7 @@ import (
 	"github.com/opsorigin/core/pkg/httputil"
 	"log/slog"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -170,7 +171,23 @@ func (s *Service) handleCollectCompletion(ctx context.Context, agentID, taskID s
 
 	switch collectType {
 	case "cmdb":
-		// 输出为 CMDB 对象 JSON → 更新 agent_hosts 的 CMDB 字段
+		// 优先按统一 collect/report 格式解析(model_id-字段ID)，命中则泛化 upsert 到 CMDB 实例。
+		// 兼容两种形态：单条 report 对象，或 {reports:[...]} 包裹数组。
+		if reports := parseCollectReports(resp.Output); len(reports) > 0 {
+			if s.collectReportSink != nil {
+				applied, err := s.collectReportSink.ApplyCollectReports(ctx, "default", reports)
+				if err != nil {
+					slog.Warn("collect: apply report to cmdb failed", "agent", agentID, "task", collectTaskID, "err", err)
+				} else {
+					slog.Info("collect: cmdb report applied", "agent", agentID, "task", collectTaskID, "applied", applied)
+				}
+			} else {
+				slog.Warn("collect: collectReportSink not injected, skip report upsert", "agent", agentID, "task", collectTaskID)
+			}
+			break
+		}
+		// 回退：旧扁平 host 资产格式(hostname/os/cpu...) → 更新 agent_hosts 的 CMDB 字段。
+		// 保证存量脚本(未迁移到 report 格式)继续可用。
 		var report cmdbReportPayload
 		if err := json.Unmarshal([]byte(resp.Output), &report); err == nil && (report.Hostname != "" || report.OS != "") {
 			if host, err := s.store.Get(ctx, agentID, "default"); err == nil && host != nil {
@@ -253,4 +270,70 @@ func contains(list []string, v string) bool {
 		}
 	}
 	return false
+}
+
+// parseCollectReports 把采集脚本输出解析为统一 collect/report 格式的单条 report map 列表。
+//
+// 兼容两种形态：
+//  1. 单条 report 对象：{"model_id":"...","attrs":{...},"relations":[...]}
+//  2. 包裹数组：{"reports":[{...},{...}]} 或 裸 JSON 数组 [{...},{...}]
+//
+// 仅当能识别到至少一条含 model_id 的 report 时才返回(非空)，否则返回空切片，
+// 交由调用方回退到旧扁平 host 资产格式。
+func parseCollectReports(output string) []map[string]any {
+	trimmed := strings.TrimSpace(output)
+	if trimmed == "" {
+		return nil
+	}
+
+	// 形态 2：可能是 {reports:[...]} 或 裸数组 [...]
+	var wrapped struct {
+		Reports []map[string]any `json:"reports"`
+	}
+	if err := json.Unmarshal([]byte(trimmed), &wrapped); err == nil && len(wrapped.Reports) > 0 {
+		out := make([]map[string]any, 0, len(wrapped.Reports))
+		for _, r := range wrapped.Reports {
+			if isReport(r) {
+				out = append(out, r)
+			}
+		}
+		if len(out) > 0 {
+			return out
+		}
+	}
+
+	// 可能是裸数组
+	var arr []map[string]any
+	if err := json.Unmarshal([]byte(trimmed), &arr); err == nil && len(arr) > 0 {
+		out := make([]map[string]any, 0, len(arr))
+		for _, r := range arr {
+			if isReport(r) {
+				out = append(out, r)
+			}
+		}
+		if len(out) > 0 {
+			return out
+		}
+	}
+
+	// 形态 1：单条 report 对象
+	var single map[string]any
+	if err := json.Unmarshal([]byte(trimmed), &single); err == nil && isReport(single) {
+		return []map[string]any{single}
+	}
+
+	return nil
+}
+
+// isReport 判断一个 map 是否为有效的 collect/report 单条(必须含非空 model_id)。
+func isReport(m map[string]any) bool {
+	if m == nil {
+		return false
+	}
+	id, _ := m["model_id"].(string)
+	if id == "" {
+		// 兼容字段别名
+		id, _ = m["modelId"].(string)
+	}
+	return id != ""
 }

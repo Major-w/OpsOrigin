@@ -48,6 +48,7 @@ const navGroups: (NavItem | NavGroup)[] = [
       { to: '/itsm/portal', label: '服务门户', icon: Store },
       { to: '/itsm/tickets', label: '工单列表', icon: TicketCheck },
       { to: '/itsm/change', label: '变更日历', icon: Calendar },
+      { to: '/itsm/change-assess', label: '变更影响评估', icon: FileText },
       { to: '/itsm/reports', label: '自定义报表', icon: BarChart3 },
       {
         label: '服务管理', items: [
@@ -77,8 +78,6 @@ const navGroups: (NavItem | NavGroup)[] = [
         label: '关系与依赖', icon: Network, items: [
           { to: '/cmdb/topology', label: '拓扑可视化', icon: Network },
           { to: '/cmdb/impact', label: '影响分析', icon: AlertTriangle },
-          { to: '/cmdb/change-assess', label: '变更影响评估', icon: FileText },
-          { to: '/cmdb/panorama', label: '可观测全景', icon: Activity },
         ]
       },
       { to: '/cmdb/idc', label: '机房机柜', icon: Building2 },
@@ -112,6 +111,7 @@ const navGroups: (NavItem | NavGroup)[] = [
       { to: '/monitor/plugins', label: '监控插件', icon: Blocks },
       { to: '/monitor/targets', label: '监控配置', icon: Settings },
       { to: '/monitor/predict', label: '趋势预测', icon: TrendingUp },
+      { to: '/monitor/panorama', label: '可观测全景', icon: Activity },
     ]
   },
   {

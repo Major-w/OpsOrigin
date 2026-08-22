@@ -114,6 +114,8 @@ func (s *Service) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/v1/cmdb/ci/batch", s.handleBatchCreateCI)        // F4-B 批量 + D2 修复
 	mux.HandleFunc("POST /api/v1/cmdb/ci/batch-update", s.handleBatchUpdateCI) // 批量改属性
 	mux.HandleFunc("POST /api/v1/cmdb/ci/batch-delete", s.handleBatchDeleteCI) // 批量删除
+	// 自动采集上报：按 模型ID-字段ID/关系ID 定位写入(供 Agent/采集器调用, 与人工建实例解耦)
+	mux.HandleFunc("POST /api/v1/cmdb/collect/report", s.handleCollectReport)
 	mux.HandleFunc("GET /api/v1/cmdb/ci/{id}", s.handleGetCI)
 	mux.HandleFunc("PUT /api/v1/cmdb/ci/{id}", s.handleUpdateCI)
 	mux.HandleFunc("DELETE /api/v1/cmdb/ci/{id}", s.handleDeleteCI)
@@ -462,11 +464,21 @@ func (s *Service) ResolveModelType(ctx context.Context, typeID, tenantID string)
 	merged := map[string]model.AttrDef{}
 	for _, m := range chain { // 从根祖先到当前类型，后者覆盖前者
 		for k, v := range m.Schema {
+			// 兼容旧数据：AttrDef.ID 为空时补全为字段名(稳定机器标识)。
+			if v.ID == "" {
+				v.ID = k
+			}
 			merged[k] = v
 		}
 	}
 	result := chain[len(chain)-1]
 	result.Schema = merged
+	// 兼容旧数据：RelationDef.ID 为空时补全为 RelationType。
+	for i := range result.Relations {
+		if result.Relations[i].ID == "" {
+			result.Relations[i].ID = result.Relations[i].RelationType
+		}
+	}
 	if result.Category == "" {
 		result.Category = model.ModelCategoryPlatform
 	}
@@ -1271,6 +1283,14 @@ func detectDrifts(existing, discovered *model.CIModel) []*model.CMDBDrift {
 // handleIDCPanorama 机房机柜 2D 视图数据(模型驱动):
 // 返回 rack 机柜 CI 与所有带 rack_id 属性的设备 CI, 前端据此渲染
 // 机房平面图 + 机柜正视图 —— 录入模型数据即成图。
+// handleIDCPanorama 机房机柜 2D 视图数据(模型驱动):
+// 返回 rack 机柜 CI 与占用机柜 U 位的设备 CI, 前端据此渲染
+// 机房平面图 + 机柜正视图 —— 录入模型数据即成图。
+//
+// 数据来源兼容两条路径(历史割裂, 此处合并):
+//  1. 设备 CI 自带 rack_id / rack_unit 属性(模型驱动录入);
+//  2. 管理视图通过 U 位分配写入 cmdb_rack_unit 表(ci_id 占用), 设备 CI 本身
+//     不含 rack_id 属性 —— 这条路径也必须被纳入, 否则 2D 视图永远空。
 func (s *Service) handleIDCPanorama(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	tenantID := auth.TenantFromContext(ctx)
@@ -1278,13 +1298,37 @@ func (s *Service) handleIDCPanorama(w http.ResponseWriter, r *http.Request) {
 		httputil.WriteJSON(w, http.StatusOK, map[string]any{"racks": []*model.CIModel{}, "devices": []*model.CIModel{}})
 		return
 	}
+	allRacks, err := s.pg.ListAllRacks(ctx, tenantID)
+	if err != nil {
+		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	// 机柜 CI(type=rack) 注入所属机房(room_id)与 U 位总数(max_units),
+	// 便于前端平面图按 room 维度分组、机柜正视图按 max_units 渲染。
 	racks, err := s.pg.ListCI(ctx, tenantID, "rack")
 	if err != nil {
 		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	// 设备: 各类型中带 rack_id 属性的(占用机柜 U 位)。
-	var devices []*model.CIModel
+	rackMeta := map[string]*model.Rack{} // rackID -> 表记录(含 idc_id/max_units)
+	for _, rk := range allRacks {
+		rackMeta[rk.ID] = rk
+	}
+	for _, rc := range racks {
+		if rc.Attributes == nil {
+			rc.Attributes = map[string]any{}
+		}
+		if meta, ok := rackMeta[rc.ID]; ok {
+			rc.Attributes["room_id"] = meta.IDCRoomID
+			if meta.MaxUnits > 0 {
+				rc.Attributes["max_units"] = meta.MaxUnits
+			}
+		}
+	}
+
+	// 设备: 合并两条来源。
+	devByID := map[string]*model.CIModel{}
+	// 来源1: 各类型中带 rack_id 属性的(模型驱动录入)。
 	for _, t := range []string{"server", "virtual_machine", "storage", "firewall", "load_balancer", "router", "switch", "database", "middleware", "app"} {
 		list, err := s.pg.ListCI(ctx, tenantID, t)
 		if err != nil {
@@ -1292,15 +1336,46 @@ func (s *Service) handleIDCPanorama(w http.ResponseWriter, r *http.Request) {
 		}
 		for _, ci := range list {
 			if rackID, ok := ci.Attributes["rack_id"].(string); ok && rackID != "" {
-				devices = append(devices, ci)
+				devByID[ci.ID] = ci
 			}
 		}
 	}
+	// 来源2: 管理视图 U 位占用表(cmdb_rack_unit.ci_id)。给设备 CI 注入
+	// rack_id / rack_unit 属性, 使前端按相同字段渲染。
+	for _, rk := range allRacks {
+		units, err := s.pg.ListRackUnits(ctx, rk.ID, tenantID)
+		if err != nil {
+			continue
+		}
+		for _, u := range units {
+			if u.CIID == "" {
+				continue
+			}
+			if _, exists := devByID[u.CIID]; exists {
+				// 已存在: 仅补充 rack_unit(来源1 可能未带 U 位)。
+				if _, hasUnit := devByID[u.CIID].Attributes["rack_unit"]; !hasUnit {
+					devByID[u.CIID].Attributes["rack_unit"] = u.Unit
+				}
+				continue
+			}
+			ci, err := s.pg.GetCI(ctx, u.CIID, tenantID)
+			if err != nil || ci == nil {
+				continue
+			}
+			if ci.Attributes == nil {
+				ci.Attributes = map[string]any{}
+			}
+			ci.Attributes["rack_id"] = rk.ID
+			ci.Attributes["rack_unit"] = u.Unit
+			devByID[ci.ID] = ci
+		}
+	}
+	devices := make([]*model.CIModel, 0, len(devByID))
+	for _, d := range devByID {
+		devices = append(devices, d)
+	}
 	if racks == nil {
 		racks = []*model.CIModel{}
-	}
-	if devices == nil {
-		devices = []*model.CIModel{}
 	}
 	httputil.WriteJSON(w, http.StatusOK, map[string]any{"racks": racks, "devices": devices})
 }
@@ -1561,6 +1636,49 @@ func (s *Service) UpdateCI(ctx context.Context, ci *model.CIModel, ch model.Chan
 		s.mem.updateCI(ci)
 	}
 	return nil
+}
+
+// findCIByAttribute 按 类型 + 字段 + 值 定位单个 CI(采集上报 identify 使用)。
+// 字段键支持 field_id 或字段名(经 FieldByNameOrID 解析为实际字段名再比对)。
+// 返回 nil 表示未找到(允许新建)。
+func (s *Service) findCIByAttribute(ctx context.Context, tenantID, typeID, fieldKey string, value any) (*model.CIModel, error) {
+	mt, err := s.ResolveModelType(ctx, typeID, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	if mt == nil {
+		return nil, nil
+	}
+	// 解析为实际字段名
+	realName := fieldKey
+	if def, ok := mt.FieldByNameOrID(fieldKey); ok {
+		// 找到定义, 用 map 的键(字段名)作为比较基准; 需再定位 name。
+		for name := range mt.Schema {
+			if mt.Schema[name].ID == fieldKey || name == fieldKey {
+				realName = name
+				break
+			}
+		}
+		_ = def
+	}
+	var list []*model.CIModel
+	if s.pg != nil {
+		list, err = s.pg.ListCI(ctx, tenantID, typeID)
+		if err != nil {
+			return nil, err
+		}
+	} else if s.mem != nil {
+		list = s.mem.listCIs(tenantID, typeID)
+	}
+	for _, ci := range list {
+		if ci.Attributes == nil {
+			continue
+		}
+		if fmt.Sprintf("%v", ci.Attributes[realName]) == fmt.Sprintf("%v", value) {
+			return ci, nil
+		}
+	}
+	return nil, nil
 }
 
 // UpdateCIAttributes 按 ID 读取 CI 并合并更新其 Attributes 字段(供流程动作库 cmdb_update 调用)。

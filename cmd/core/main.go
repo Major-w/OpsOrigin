@@ -534,6 +534,11 @@ func main() {
 	// 此前 agent_hosts 的资产从没进 CMDB（与云路径的 cloudCMDBAdapter 不对称），此处补齐。
 	agentSvc.SetHostCIWriter(agentCMDBAdapter{pgRepo: pgRepo, cmdbSvc: cmdbSvc})
 
+	// 采集脚本统一规范：cmdb 型采集脚本输出 collect/report 格式(model_id-字段ID) →
+	// 经 cmdbSvc.ApplyCollectReports 泛化 upsert 到任意模型实例(属性/关系,不存在则新增)。
+	// cmdbSvc 已实现 ApplyCollectReports,以鸭子类型注入(agentmgr 不依赖 cmdb 包)。
+	agentSvc.SetCollectReportSink(cmdbSvc)
+
 	// K8s 容器资源纳管：注入经 Agent 通道的发现器（鸭子类型 *agentmgr.Service 满足 cloud.K8sAgentRunner）。
 	cloudSvc.SetK8sDiscoverer(k8s.NewDiscoverer(agentSvc))
 

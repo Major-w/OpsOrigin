@@ -419,6 +419,11 @@ type Service struct {
 	// 由 cmd/core 注入 agentCMDBAdapter;nil 时静默跳过(纯演示环境不阻塞主流程)。
 	hostCIWriter HostCIWriter
 
+	// collectReportSink 把采集脚本输出(统一 collect/report 格式: model_id-字段ID)
+	// 泛化 upsert 到 CMDB 实例的实现。由 cmd/core 注入 cmdbSvc(鸭子类型)。
+	// nil 时 cmdb 型采集仅走旧 host 扁平兼容逻辑,不阻断主流程。
+	collectReportSink CollectReportSink
+
 	// 全局目标版本策略（Agent 版本一致性管理）
 	versionPolicy   string
 	versionPolicyMu sync.Mutex

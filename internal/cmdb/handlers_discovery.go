@@ -190,11 +190,16 @@ func (s *Service) handleRunDiscoveryTask(w http.ResponseWriter, r *http.Request)
 				return
 			}
 			for _, it := range got {
+				// report 格式的 model_id 优先于插件 ciType（统一规范：脚本可直接声明模型类型）。
+				ciType := it.CIType
+				if it.ModelID != "" {
+					ciType = it.ModelID
+				}
 				res := &model.DiscoveryResult{
 					TaskID:       task.ID,
 					TenantID:     tenantID,
 					CIName:       it.Name,
-					CIType:       it.CIType,
+					CIType:       ciType,
 					IPAddress:    it.IPAddress,
 					Attributes:   it.Attributes,
 					Source:       task.Name,

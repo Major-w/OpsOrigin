@@ -2,7 +2,9 @@ package cmdb
 
 import (
 	"bytes"
+	"context"
 	"encoding/csv"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -918,4 +920,282 @@ func (s *Service) handleImportCI(w http.ResponseWriter, r *http.Request) {
 		"updated": updated,
 		"failed":  failed,
 	})
+}
+
+// handleCollectReport 自动采集上报端点(供 Agent / 采集器调用)。
+// 固定格式：按 模型ID-字段ID 定位字段写入、按 模型ID-关系ID 建立关系，
+// 与人工建实例的 handleCreateCI 解耦，使采集端只需记住「模型ID-字段ID」映射。
+//
+// 请求体(单条)：
+//
+//	{
+//	  "model_id": "server",
+//	  "identify": { "field_id": "ip", "value": "10.0.0.1" },  // 定位/新建实例的键
+//	  "name": "web-01",                                       // 新建时使用的展示名(可选, 默认取 identify value)
+//	  "attrs": { "cpu": 32, "mem_gb": 128 },                  // field_id -> 值
+//	  "relations": [{ "relation_id": "hosts", "target": "app-1" }] // relation_id + 目标 CI ID
+//	}
+//
+// 批量：{ "reports": [ ... ] }。
+// handleCollectReport 自动采集上报端点(供 Agent / 采集器调用)。
+// 固定格式：按 模型ID-字段ID 定位字段写入、按 模型ID-关系ID 建立关系，
+// 与人工建实例的 handleCreateCI 解耦，使采集端只需记住「模型ID-字段ID」映射。
+//
+// 请求体(单条)：
+//
+//	{
+//	  "model_id": "server",
+//	  "identify": { "field_id": "ip", "value": "10.0.0.1" },  // 定位/新建实例的键
+//	  "name": "web-01",                                       // 新建时使用的展示名(可选, 默认取 identify value)
+//	  "attrs": { "cpu": 32, "mem_gb": 128 },                  // field_id -> 值
+//	  "relations": [{ "relation_id": "hosts", "target": "app-1" }] // relation_id + 目标 CI ID
+//	}
+//
+// 批量：{ "reports": [ ... ] }。
+func (s *Service) handleCollectReport(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	tenantID := auth.TenantFromContext(ctx)
+
+	var body struct {
+		Reports []collectReportItem `json:"reports"`
+	}
+	// 兼容单条直接传(无 reports 包裹)
+	var single collectReportItem
+	if err := httputil.BindJSON(r, &single); err == nil && single.ModelID != "" {
+		body.Reports = []collectReportItem{single}
+	} else {
+		if err := httputil.BindJSON(r, &body); err != nil {
+			httputil.WriteError(w, http.StatusBadRequest, "invalid request body")
+			return
+		}
+	}
+	if len(body.Reports) == 0 {
+		httputil.WriteError(w, http.StatusBadRequest, "empty reports")
+		return
+	}
+
+	results, ok := s.applyCollectReports(ctx, tenantID, body.Reports)
+	httputil.WriteJSON(w, http.StatusOK, map[string]any{
+		"accepted": len(body.Reports),
+		"ok":       ok,
+		"results":  results,
+	})
+}
+
+// applyCollectReports 批量处理采集上报(按 模型ID-字段ID/关系ID 落库, 不存在则新建)。
+// 抽离自 handleCollectReport, 供 HTTP 端点与 agentmgr 的 CMDBReportSink 共用同一条落库链路,
+// 保证「自定义脚本采集 / 内置发现插件 / 直接 HTTP 上报」三路输出经统一规范写入 CMDB。
+func (s *Service) applyCollectReports(ctx context.Context, tenantID string, reports []collectReportItem) ([]map[string]any, int) {
+	traceID := traceIDFromCtx(ctx)
+	results := make([]map[string]any, 0, len(reports))
+	ok := 0
+
+	for i, rep := range reports {
+		ri := reportResultItem{Index: i}
+		mt, err := s.ResolveModelType(ctx, rep.ModelID, tenantID)
+		if err != nil {
+			ri.Error = "resolve model failed: " + err.Error()
+			results = append(results, toMap(ri))
+			continue
+		}
+		if mt == nil {
+			ri.Error = "model type not found: " + rep.ModelID
+			results = append(results, toMap(ri))
+			continue
+		}
+		if !mt.IsInstantiable() {
+			ri.Error = "model type is abstract (not instantiable): " + rep.ModelID
+			results = append(results, toMap(ri))
+			continue
+		}
+
+		// 解析 attrs：field_id -> 值(按 FieldByNameOrID 回退到 name)
+		attrs := map[string]any{}
+		for key, val := range rep.Attrs {
+			if _, ok := mt.FieldByNameOrID(key); !ok {
+				ri.Error = "unknown field: " + key
+				results = append(results, toMap(ri))
+				continue
+			}
+			attrs[key] = val
+		}
+		if ri.Error != "" {
+			continue
+		}
+
+		// 定位或新建 CI
+		ciID := ""
+		var existing *model.CIModel
+		if rep.Identify != nil && rep.Identify.FieldID != "" {
+			if _, fok := mt.FieldByNameOrID(rep.Identify.FieldID); !fok {
+				ri.Error = "unknown identify field: " + rep.Identify.FieldID
+				results = append(results, toMap(ri))
+				continue
+			}
+			// 按 identify 字段值查已有 CI
+			found, ferr := s.findCIByAttribute(ctx, tenantID, rep.ModelID, rep.Identify.FieldID, rep.Identify.Value)
+			if ferr != nil {
+				ri.Error = "find ci failed: " + ferr.Error()
+				results = append(results, toMap(ri))
+				continue
+			}
+			existing = found
+		}
+
+		if existing != nil {
+			ciID = existing.ID
+			// 合并属性后更新(保留未上报字段)
+			merged := map[string]any{}
+			for k, v := range existing.Attributes {
+				merged[k] = v
+			}
+			for k, v := range attrs {
+				merged[k] = v
+			}
+			if s.pg != nil {
+				if uerr := s.UpdateCIAttributes(ctx, ciID, tenantID, merged); uerr != nil {
+					ri.Error = "update ci failed: " + uerr.Error()
+					results = append(results, toMap(ri))
+					continue
+				}
+			} else if s.mem != nil {
+				s.mem.updateCI(&model.CIModel{ID: ciID, TenantID: tenantID, Attributes: merged})
+			}
+			ri.Action = "updated"
+		} else {
+			name := rep.Name
+			if name == "" && rep.Identify != nil {
+				name = fmt.Sprintf("%v", rep.Identify.Value)
+			}
+			ci := &model.CIModel{
+				TypeID:      rep.ModelID,
+				TenantID:    tenantID,
+				Name:        name,
+				Description: rep.Description,
+				Status:      model.CIStatusActive,
+				Attributes:  attrs,
+				Channel:     model.WeightAutoScript,
+			}
+			if s.pg != nil {
+				if cerr := s.pg.CreateCI(ctx, ci, traceID); cerr != nil {
+					ri.Error = "create ci failed: " + cerr.Error()
+					results = append(results, toMap(ri))
+					continue
+				}
+			} else if s.mem != nil {
+				s.mem.createCI(ci)
+			}
+			ciID = ci.ID
+			ri.Action = "created"
+		}
+		ri.CIID = ciID
+
+		// 建立关系(按 relation_id 解析 RelationType)
+		for _, rel := range rep.Relations {
+			rdef, rok := mt.RelationByID(rel.RelationID)
+			relType := rel.RelationType
+			if rok {
+				relType = rdef.RelationType
+			}
+			if relType == "" {
+				ri.Error = "unknown relation: " + rel.RelationID
+				break
+			}
+			if verr := s.validateRelationCardinality(ctx, tenantID, ciID, rel.Target, relType); verr != nil {
+				ri.Error = "relation validate failed: " + verr.Error()
+				break
+			}
+			relation := &model.CIRelation{
+				TenantID:     tenantID,
+				SourceID:     ciID,
+				TargetID:     rel.Target,
+				RelationType: relType,
+				Properties:   rel.Properties,
+			}
+			if s.pg != nil {
+				if crerr := s.pg.CreateRelation(ctx, relation, traceID); crerr != nil {
+					ri.Error = "create relation failed: " + crerr.Error()
+					break
+				}
+			} else if s.mem != nil {
+				s.mem.createRelation(relation)
+			}
+		}
+		if ri.Error == "" {
+			ok++
+		}
+		results = append(results, toMap(ri))
+	}
+	return results, ok
+}
+
+// ApplyCollectReports 是 agentmgr 侧 CMDBReportSink 接口的实现:
+// 接收通用的 report 单条 map(由 agentmgr 把 Agent 脚本 stdout 解析后得到), 统一经 applyCollectReports 落库。
+// 入参 reports 每条须可被 json 反序列化为 collectReportItem(model_id + identify/attrs/relations)。
+func (s *Service) ApplyCollectReports(ctx context.Context, tenantID string, raw []map[string]any) (int, error) {
+	if len(raw) == 0 {
+		return 0, nil
+	}
+	items := make([]collectReportItem, 0, len(raw))
+	for _, m := range raw {
+		b, err := json.Marshal(m)
+		if err != nil {
+			continue
+		}
+		var item collectReportItem
+		if err := json.Unmarshal(b, &item); err != nil || item.ModelID == "" {
+			continue
+		}
+		items = append(items, item)
+	}
+	if len(items) == 0 {
+		return 0, fmt.Errorf("no valid collect report items")
+	}
+	_, ok := s.applyCollectReports(ctx, tenantID, items)
+	return ok, nil
+}
+
+// reportResultItem 是采集上报单条处理结果(供 applyCollectReports 统一返回)。
+type reportResultItem struct {
+	Index  int    `json:"index"`
+	CIID   string `json:"ci_id,omitempty"`
+	Action string `json:"action,omitempty"` // created | updated | skipped
+	Error  string `json:"error,omitempty"`
+}
+
+// toMap 把 reportResultItem 转为 map(供 applyCollectReports 统一返回)。
+func toMap(ri reportResultItem) map[string]any {
+	m := map[string]any{"index": ri.Index}
+	if ri.CIID != "" {
+		m["ci_id"] = ri.CIID
+	}
+	if ri.Action != "" {
+		m["action"] = ri.Action
+	}
+	if ri.Error != "" {
+		m["error"] = ri.Error
+	}
+	return m
+}
+
+// collectReportItem 采集上报单条结构。
+type collectReportItem struct {
+	ModelID     string                  `json:"model_id"`
+	Name        string                  `json:"name,omitempty"`
+	Description string                  `json:"description,omitempty"`
+	Identify    *collectReportIdentify  `json:"identify,omitempty"`
+	Attrs       map[string]any          `json:"attrs,omitempty"`
+	Relations   []collectReportRelation `json:"relations,omitempty"`
+}
+
+type collectReportIdentify struct {
+	FieldID string `json:"field_id"`
+	Value   any    `json:"value"`
+}
+
+type collectReportRelation struct {
+	RelationID   string         `json:"relation_id"`
+	RelationType string         `json:"relation_type,omitempty"` // 可选, 缺省按 relation_id 解析
+	Target       string         `json:"target"`
+	Properties   map[string]any `json:"properties,omitempty"`
 }

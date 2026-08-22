@@ -31,6 +31,19 @@ type Item struct {
 	CIType     string         // 映射到的 CMDB 模型类型 ID（server/switch/database/middleware/app）
 	IPAddress  string         // 主 IP（可选）
 	Attributes map[string]any // 其余采集属性（vendor/version/port/engine...）
+	// ModelID 是采集脚本按统一规范（collect/report 格式）直接声明的模型类型 ID，
+	// 优先级高于 CIType；为空时回退 CIType。使内置插件脚本可不经插件 ciType 路由直接定位模型。
+	ModelID string
+	// Relations 是采集脚本按统一规范声明的待建关系（relation_id → 目标 CI 标识/ID）。
+	// 与 cmdb.Service.ApplyCollectReports 的 relations 字段语义一致，便于未来平滑迁移到 report 落库。
+	Relations []ItemRelation
+}
+
+// ItemRelation 是 Item 携带的一条待建关系（统一规范）。
+type ItemRelation struct {
+	RelationID   string `json:"relation_id"`             // 关系定义 ID（按模型关系定义定位 RelationType）
+	RelationType string `json:"relation_type,omitempty"` // 兼容：未登记 ID 时直接用类型
+	Target       string `json:"target"`                  // 目标 CI 的标识值或 ID
 }
 
 // Discoverer 是一个自动发现插件：针对某类资源，经探针 Agent 执行脚本并解析出 Item 列表。
