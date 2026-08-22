@@ -18,6 +18,7 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/coder/websocket"
@@ -34,8 +35,8 @@ type AgentConfig struct {
 	ProxyAddr  string // 非空时通过 Proxy 中转,不再直连 Core
 	AgentName  string // optional, defaults to hostname
 	Interval   time.Duration
-	// ResourceGuard 资源自保护: agent 自身进程占用宿主机资源超限后自杀,
-	// 由外部托管(systemd/docker --restart/nohup 父进程)重新拉起以释放资源。
+	// ResourceGuard 资源自保护: agent 自身进程占用宿主机资源超限后,
+	// 由 agent 原地自动重启(syscall.Exec 复用原参数)以释放资源, 不依赖外部托管。
 	// 启动时由命令行 --cpu-limit/--mem-limit 注入,运行时可由服务端心跳响应覆盖。
 	ResourceGuard ResourceGuardConfig
 }
@@ -155,7 +156,7 @@ type Agent struct {
 	pendingCMDB []cachedBatch
 
 	// ResourceGuard 资源自保护: 运行时由服务端心跳响应下发的阈值缓存,
-	// ResourceGuardLoop 据此采样自身资源占用, 超限则自杀由托管重启。
+	// ResourceGuardLoop 据此采样自身资源占用, 超限则 agent 原地自动重启。
 	rgMu  sync.RWMutex
 	rgCfg ResourceGuardConfig
 }
@@ -1359,8 +1360,9 @@ func getPrimaryIP() string {
 
 // --- Resource Guard (资源自保护) ---
 
-// ResourceGuardLoop 周期采样 agent 自身进程资源占用, 一旦超过配置阈值即主动退出,
-// 由外部托管进程(systemd / docker --restart / nohup 父进程)重新拉起以释放泄漏资源。
+// ResourceGuardLoop 周期采样 agent 自身进程资源占用, 一旦超过配置阈值即由 agent
+// 自身原地自动重启(重新 exec 自身二进制, 复用原启动参数), 在新生命周期中释放泄漏的
+// CPU/内存资源。整个过程不依赖外部托管(systemd/docker/nohup 父进程), agent 自己完成重启。
 func (a *Agent) ResourceGuardLoop(ctx context.Context) {
 	a.rgMu.RLock()
 	interval := a.rgCfg.CheckIntervalSec
@@ -1401,13 +1403,35 @@ func (a *Agent) ResourceGuardLoop(ctx context.Context) {
 			}
 
 			if triggered {
-				slog.Warn("resource guard triggered, agent self-terminating for restart",
+				slog.Warn("resource guard triggered, agent restarting itself in-place",
 					"reason", reason, "agent_id", a.agentID)
-				fmt.Printf("[agent] resource guard triggered (%s): exiting so the host service can restart the agent\n", reason)
+				fmt.Printf("[agent] resource guard triggered (%s): restarting agent in-place to release resources\n", reason)
+				// 优雅停掉内部循环/连接, 再原地重启自身(不退出进程组, 由 agent 自己完成)。
 				a.Stop()
+				a.selfRestart()
 				return
 			}
 		}
+	}
+}
+
+// selfRestart 由 agent 自身完成自动重启: 复用原启动参数(os.Args)重新 exec 当前二进制,
+// 新进程继承原 stdin/stdout/stderr 与进程会话, 对外部托管者而言"进程仍在",
+// 但内部已全新启动并释放上一生命周期占用的 CPU/内存。仅在 exec 失败时才回退为退出。
+func (a *Agent) selfRestart() {
+	self, err := os.Executable()
+	if err != nil || self == "" {
+		slog.Error("resource guard: cannot resolve self executable, fallback to exit", "error", err)
+		os.Exit(0)
+		return
+	}
+	slog.Info("resource guard: exec self for in-place restart", "path", self, "args", os.Args)
+	// 继承原环境变量(追加重启标记)与标准流, 新进程无缝接管控制台/日志。
+	err = syscall.Exec(self, os.Args, append(os.Environ(),
+		"OPSORIGIN_AGENT_RESTARTED=1"))
+	if err != nil {
+		slog.Error("resource guard: exec self failed, fallback to exit", "error", err)
+		os.Exit(0)
 	}
 }
 
@@ -1418,7 +1442,7 @@ func (a *Agent) Run(ctx context.Context) error {
 	a.fetchWhitelist(ctx)
 	go a.startWhitelistRefresh(ctx)
 
-	// 启动资源自保护循环: 采样自身 CPU/内存占用, 超阈值则自杀由托管重启。
+	// 启动资源自保护循环: 采样自身 CPU/内存占用, 超阈值则 agent 原地自动重启自身以释放资源。
 	go a.ResourceGuardLoop(ctx)
 
 	// 启动本地任务调度器(内置/自定义任务): 任务归任务、上报归上报(阶段 3)。

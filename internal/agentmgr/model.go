@@ -230,8 +230,8 @@ type CircuitBreakerConfig struct {
 	ConfigLimit         int        `json:"config_limit,omitempty"`
 }
 
-// ResourceGuardConfig Agent 资源自保护配置(agent 自身进程占用宿主机资源超限后自杀,
-// 由外部托管(systemd/docker --restart/nohup 父进程)重新拉起以释放资源)。
+// ResourceGuardConfig Agent 资源自保护配置(agent 自身进程占用宿主机资源超限后,
+// 由 agent 原地自动重启(syscall.Exec 复用原启动参数)以释放资源,不依赖外部托管)。
 // 与 CircuitBreakerConfig(保护 Core 不被打爆/失败熔断)语义不同,此处是 agent 自保护。
 type ResourceGuardConfig struct {
 	AgentID          string `json:"agent_id"`

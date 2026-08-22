@@ -1352,10 +1352,10 @@ kubectl -n opsorigin set env deployment/opsorigin-k8s-gateway OPSORIGIN_PROXY_AD
                   </>
                 )}
 
-                {/* 资源配额(agent 自保护): 与上方熔断语义不同, 此处限制 agent 自身占用宿主机资源, 超限自杀由托管重启 */}
+                {/* 资源配额(agent 自保护): 与上方熔断语义不同, 此处限制 agent 自身占用宿主机资源, 超限由 agent 原地自动重启释放资源 */}
                 <div className="mt-4 pt-4 border-t border-border/60">
                   <p className="text-sm font-semibold mb-1">资源配额（Agent 自保护）</p>
-                  <p className="text-xs text-muted-foreground mb-3">限制 Agent 自身进程占用宿主机的 CPU / 内存，一旦超过上限即主动退出，由外部托管（systemd / docker --restart / nohup 父进程）重新拉起以释放资源。</p>
+                  <p className="text-xs text-muted-foreground mb-3">限制 Agent 自身进程占用宿主机的 CPU / 内存，一旦超过上限即由 Agent 进程原地自动重启（复用原启动参数重新 exec 自身）以释放资源，无需依赖外部托管进程。</p>
                   {rgLoading ? (
                     <p className="text-sm text-muted-foreground">加载中...</p>
                   ) : (
