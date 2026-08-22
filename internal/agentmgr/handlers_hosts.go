@@ -683,11 +683,17 @@ sudo systemctl start opsorigin-agent
 echo "OpsOrigin Agent installed successfully (arch=%s)"`, arch, serverAddr, scheme, arch, proxyFlag, arch)
 	case "container":
 		filename = "install-agent-container.sh"
+		// 镜像名可配置:支持 ?image=<registry>/opsorigin-agent:tag,默认 opsorigin/agent:latest。
+		// 注意:--server 与 OPSORIGIN_SERVER 均**不带 scheme**,agent 内部自行拼接 http://。
+		image := r.URL.Query().Get("image")
+		if image == "" {
+			image = "opsorigin/agent:latest"
+		}
 		script = fmt.Sprintf(`#!/bin/bash
 # OpsOrigin Agent Installer (Container / Docker)
 set -e
 SERVER="%s"
-SCHEME="%s"
+IMAGE="%s"
 
 # 检查 Docker 是否可用
 if ! command -v docker >/dev/null 2>&1; then
@@ -696,20 +702,22 @@ if ! command -v docker >/dev/null 2>&1; then
 fi
 
 # 拉取并运行 Agent 容器(自动注册到 Server)
+# 挂载宿主 /proc、/sys、docker.sock 只读视图以采集宿主机指标;
+# 如需采集容器集群自身,可额外挂载 /var/lib/docker 或改为 DaemonSet 部署。
 docker run -d \
   --name opsorigin-agent \
   --restart always \
-  -e OPSORIGIN_SERVER="$SCHEME://%s" \
+  -e OPSORIGIN_SERVER="%s" \
   -v /etc/hostname:/etc/hostname:ro \
   -v /etc/os-release:/etc/os-release:ro \
   -v /proc:/host/proc:ro \
   -v /sys:/host/sys:ro \
   -v /var/run/docker.sock:/var/run/docker.sock:ro \
-  opsorigin/agent:latest \
-  --server "$SCHEME://%s"%s
+  "$IMAGE" \
+  --server "%s"%s
 
 echo "OpsOrigin Agent container started successfully"
-echo "View logs: docker logs -f opsorigin-agent"`, serverAddr, scheme, serverAddr, serverAddr, proxyFlag)
+echo "View logs: docker logs -f opsorigin-agent"`, serverAddr, image, serverAddr, serverAddr, proxyFlag)
 	case "proxy":
 		proxyID := r.URL.Query().Get("proxy_id")
 		if proxyID == "" {

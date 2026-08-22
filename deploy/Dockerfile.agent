@@ -1,0 +1,27 @@
+# 构建 OpsOrigin Agent 镜像(cmd/agent 是 go.work 聚合的子模块,
+# 与 cmd/{core,proxy,k8s-probe} 的构建方式保持一致)。
+# 用法:
+#   docker build -f deploy/Dockerfile.agent -t <your-registry>/opsorigin-agent:latest .
+#   docker push <your-registry>/opsorigin-agent:latest
+# 然后在安装脚本生成器(internal/agentmgr/handlers_hosts.go 的 container 分支)
+# 或手动 docker run 时引用上面推送的镜像地址。
+#
+# 设计:该镜像以「容器方式」部署 Agent,用于采集宿主机指标(通过挂载
+# /proc、/sys、docker.sock 只读视图),或采集容器集群自身。Agent 仅支持
+# gRPC 接入(直连 --grpc-server 或经 --proxy 中转),--server 仅用于 HTTP
+# 任务上报/指标旁路,且**不带 scheme**(agent 内部自行拼接 http://)。
+FROM golang:1.25-alpine AS builder
+
+WORKDIR /app
+# go.work 聚合根模块 + cmd/{agent,core,k8s-probe,proxy} 四个子模块
+COPY go.mod go.sum go.work go.work.sum ./
+COPY cmd/ ./cmd/
+COPY internal/ ./internal/
+COPY pkg/ ./pkg/
+
+RUN go mod download && CGO_ENABLED=0 go build -o /opsorigin-agent ./cmd/agent
+
+FROM alpine:3.21
+RUN apk add --no-cache ca-certificates tzdata
+COPY --from=builder /opsorigin-agent /usr/local/bin/opsorigin-agent
+ENTRYPOINT ["opsorigin-agent"]
