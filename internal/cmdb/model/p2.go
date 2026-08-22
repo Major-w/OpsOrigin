@@ -67,9 +67,12 @@ type Rack struct {
 
 // RackUnit 是一个 U 位：可被某 CI（设备）占用。
 // (rack_id, unit) 为主键；ci_id 非空表示占用。
+// Units 表示占用 U 位数（默认 1）；>1 时后端展开为连续多条单 U 记录，
+// 前端据此跨 U 渲染设备高度。
 type RackUnit struct {
 	RackID string `json:"rack_id"`
 	Unit   int    `json:"unit"`
+	Units  int    `json:"units,omitempty"` // 占用 U 数，默认 1
 	CIID   string `json:"ci_id,omitempty"` // 占用该 U 位的 CI（设备）ID
 	Label  string `json:"label,omitempty"` // 展示名（未绑 CI 时可手填）
 }

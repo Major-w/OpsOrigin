@@ -384,7 +384,9 @@ func (r *Repository) ListRackUnits(ctx context.Context, rackID, tenantID string)
 	return out, rows.Err()
 }
 
-// AssignRackUnits 批量 upsert U 位占用；检测同一 CI 已占用其它机柜 U 位（非法占用）。
+// AssignRackUnits 批量 upsert U 位占用；支持多 U 区间（u.Units>1 展开为连续单 U 记录）。
+// 约束：区间越界、同一 CI 已占用其它机柜、区间内 U 位已被其它 CI 占用均拒绝；
+// 同一 CI 在本机柜内重新分配（迁移）时先清除旧占用。
 func (r *Repository) AssignRackUnits(ctx context.Context, rackID, tenantID string, units []*model.RackUnit) error {
 	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -398,8 +400,13 @@ func (r *Repository) AssignRackUnits(ctx context.Context, rackID, tenantID strin
 		return errors.New("rack not found")
 	}
 	for _, u := range units {
-		if u.Unit < 1 || u.Unit > maxUnits {
-			return fmt.Errorf("U 位 %d 超出机柜范围 1-%d", u.Unit, maxUnits)
+		span := u.Units
+		if span < 1 {
+			span = 1
+		}
+		end := u.Unit + span - 1
+		if u.Unit < 1 || end > maxUnits {
+			return fmt.Errorf("U 位 %d-%d 超出机柜范围 1-%d", u.Unit, end, maxUnits)
 		}
 		if u.CIID != "" {
 			// 非法占用检测：该 CI 是否已占用其它机柜的 U 位
@@ -413,12 +420,30 @@ func (r *Repository) AssignRackUnits(ctx context.Context, rackID, tenantID strin
 			if !errors.Is(err, sql.ErrNoRows) && err != nil {
 				return fmt.Errorf("check unit conflict: %w", err)
 			}
+			// 区间内冲突检测：目标区间中是否有被其它 CI 占用的 U
+			var conflict int
+			if err := tx.QueryRowContext(ctx, `
+				SELECT count(*) FROM cmdb_rack_unit
+				WHERE rack_id=$1 AND unit BETWEEN $2 AND $3 AND ci_id<>$4`,
+				rackID, u.Unit, end, u.CIID).Scan(&conflict); err != nil {
+				return fmt.Errorf("check span conflict: %w", err)
+			}
+			if conflict > 0 {
+				return fmt.Errorf("U 位 %d-%d 区间内有 U 位已被其它设备占用", u.Unit, end)
+			}
+			// 迁移：清除该 CI 在本机柜的旧占用，避免残留
+			if _, err := tx.ExecContext(ctx, `DELETE FROM cmdb_rack_unit WHERE rack_id=$1 AND ci_id=$2`, rackID, u.CIID); err != nil {
+				return fmt.Errorf("clear old units: %w", err)
+			}
 		}
-		if _, err := tx.ExecContext(ctx, `
-			INSERT INTO cmdb_rack_unit (rack_id, unit, ci_id, label) VALUES ($1,$2,$3,$4)
-			ON CONFLICT (rack_id, unit) DO UPDATE SET ci_id=EXCLUDED.ci_id, label=EXCLUDED.label`,
-			rackID, u.Unit, nullIfEmpty(u.CIID), nullIfEmpty(u.Label)); err != nil {
-			return fmt.Errorf("upsert rack unit: %w", err)
+		// 展开区间逐 U 写入
+		for i := u.Unit; i <= end; i++ {
+			if _, err := tx.ExecContext(ctx, `
+				INSERT INTO cmdb_rack_unit (rack_id, unit, ci_id, label) VALUES ($1,$2,$3,$4)
+				ON CONFLICT (rack_id, unit) DO UPDATE SET ci_id=EXCLUDED.ci_id, label=EXCLUDED.label`,
+				rackID, i, nullIfEmpty(u.CIID), nullIfEmpty(u.Label)); err != nil {
+				return fmt.Errorf("upsert rack unit: %w", err)
+			}
 		}
 	}
 	return tx.Commit()

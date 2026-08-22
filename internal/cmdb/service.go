@@ -1366,6 +1366,7 @@ func (s *Service) handleIDCPanorama(w http.ResponseWriter, r *http.Request) {
 	}
 	// 来源2: 管理视图 U 位占用表(cmdb_rack_unit.ci_id)。给设备 CI 注入
 	// rack_id / rack_unit 属性, 使前端按相同字段渲染。
+	unitCountByCI := map[string]int{} // ciID -> 该 CI 在本机柜占用的 U 位数(多 U 高度)
 	for _, rk := range allRacks {
 		units, err := s.pg.ListRackUnits(ctx, rk.ID, tenantID)
 		if err != nil {
@@ -1375,6 +1376,7 @@ func (s *Service) handleIDCPanorama(w http.ResponseWriter, r *http.Request) {
 			if u.CIID == "" {
 				continue
 			}
+			unitCountByCI[u.CIID]++
 			if _, exists := devByID[u.CIID]; exists {
 				// 已存在: 仅补充 rack_unit(来源1 可能未带 U 位)。
 				if _, hasUnit := devByID[u.CIID].Attributes["rack_unit"]; !hasUnit {
@@ -1396,7 +1398,53 @@ func (s *Service) handleIDCPanorama(w http.ResponseWriter, r *http.Request) {
 	}
 	devices := make([]*model.CIModel, 0, len(devByID))
 	for _, d := range devByID {
+		// 多 U 高度: 优先 CI 属性 u_height, 其次 U 位占用表记录数, 默认 1。
+		h := 1
+		if v, ok := d.Attributes["u_height"]; ok {
+			if n, ok := v.(float64); ok && n >= 1 {
+				h = int(n)
+			}
+		}
+		if c := unitCountByCI[d.ID]; c > h {
+			h = c
+		}
+		if h > 1 {
+			d.Attributes["u_height"] = h
+		}
 		devices = append(devices, d)
+	}
+
+	// 监控联动: 注入设备健康/告警状态(前端据此渲染健康色/角标)。nil 安全。
+	if s.monitor != nil {
+		if snap, err := s.monitor.Snapshot(ctx, tenantID); err == nil && snap != nil {
+			alertsByCI := map[string]struct{ critical, warning int }{}
+			for _, a := range snap.Alerts {
+				k := alertsByCI[a.CIID]
+				switch strings.ToLower(a.Severity) {
+				case "critical":
+					k.critical++
+				case "warning":
+					k.warning++
+				}
+				alertsByCI[a.CIID] = k
+			}
+			for _, d := range devices {
+				if d.Attributes == nil {
+					d.Attributes = map[string]any{}
+				}
+				if st, ok := snap.StatusByCI[d.ID]; ok {
+					d.Attributes["health"] = st
+				}
+				if k, ok := alertsByCI[d.ID]; ok {
+					if k.critical > 0 {
+						d.Attributes["alert_critical"] = k.critical
+					}
+					if k.warning > 0 {
+						d.Attributes["alert_warning"] = k.warning
+					}
+				}
+			}
+		}
 	}
 	httputil.WriteJSON(w, http.StatusOK, map[string]any{"racks": racks, "devices": devices})
 }
