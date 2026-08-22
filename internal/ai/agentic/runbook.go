@@ -104,6 +104,7 @@ func (e *Engine) CreateRunbookFromRemediation(ctx context.Context, a *Remediatio
 		Rollback:    a.Suggestion,
 		RiskLevel:   a.Level,
 		SourceRunID: a.RunID,
+		UseCount:    1, // 由修复动作沉淀而来, 创建即计首次使用
 		CreatedAt:   now,
 		UpdatedAt:   now,
 	}

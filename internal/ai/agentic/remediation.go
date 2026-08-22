@@ -197,7 +197,11 @@ func (e *Engine) ExecuteRemediation(ctx context.Context, tenantID, actionID stri
 		return a, fmt.Errorf("remediation blocked: %s", a.Error)
 	}
 	runner := e.RemediationRunnerFunc
-	autonomy := e.GetAutonomy()
+	// 已持有写锁, 直接读字段避免 GetAutonomy() 内部 RLock 自死锁(写锁未放再取读锁)。
+	autonomy := e.autonomy
+	if autonomy == "" {
+		autonomy = DefaultAutonomy
+	}
 	e.mu.Unlock()
 
 	// 自治档位: notify/suggest 不执行, 仅产出提示。
