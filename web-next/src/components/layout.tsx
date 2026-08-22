@@ -60,7 +60,6 @@ const navGroups: (NavItem | NavGroup)[] = [
       },
       { to: '/itsm/oncall', label: '值班管理', icon: Calendar },
       { to: '/itsm/oncall/calendar', label: '值班日历', icon: Calendar },
-      { to: '/cmdb/change-assess', label: '变更影响评估', icon: FileText },
     ]
   },
   {
@@ -72,21 +71,35 @@ const navGroups: (NavItem | NavGroup)[] = [
   {
     label: 'CMDB', icon: Server, items: [
       { to: '/cmdb', label: '概览', icon: LayoutDashboard },
-      { to: '/cmdb/search', label: '全局搜索', icon: Search },
-      { to: '/cmdb/query', label: '综合查询', icon: GitBranch },
       { to: '/cmdb/instances', label: '实例管理', icon: Server },
       { to: '/cmdb/stats', label: '资源统计', icon: BarChart3 },
-      { to: '/cmdb/topology', label: '拓扑可视化', icon: Network },
-      { to: '/cmdb/panorama', label: '可观测全景', icon: Activity },
-      { to: '/cmdb/quality', label: '数据质量', icon: ShieldAlert },
-      { to: '/cmdb/data-policy', label: '数据权限', icon: ShieldCheck },
+      {
+        label: '关系与依赖', icon: Network, items: [
+          { to: '/cmdb/topology', label: '拓扑可视化', icon: Network },
+          { to: '/cmdb/impact', label: '影响分析', icon: AlertTriangle },
+          { to: '/cmdb/change-assess', label: '变更影响评估', icon: FileText },
+          { to: '/cmdb/panorama', label: '可观测全景', icon: Activity },
+        ]
+      },
       { to: '/cmdb/idc', label: '机房机柜', icon: Building2 },
       {
-        label: '配置项设置', items: [
+        label: '数据治理', icon: ShieldCheck, items: [
+          { to: '/cmdb/quality', label: '数据质量', icon: ShieldAlert },
+          { to: '/cmdb/data-policy', label: '数据权限', icon: ShieldCheck },
+        ]
+      },
+      {
+        label: '配置项设置', icon: Package, items: [
           { to: '/cmdb/models', label: '模型管理', icon: Package },
           { to: '/cmdb/auto-collect', label: '自动采集', icon: Radio },
           { to: '/cmdb/subscriptions', label: '消息订阅', icon: Bell },
           { to: '/cmdb/history', label: '版本追溯', icon: History },
+        ]
+      },
+      {
+        label: '高级检索', icon: Search, items: [
+          { to: '/cmdb/search', label: '全局搜索', icon: Search },
+          { to: '/cmdb/query', label: '综合查询', icon: GitBranch },
         ]
       },
     ]
@@ -99,7 +112,6 @@ const navGroups: (NavItem | NavGroup)[] = [
       { to: '/monitor/plugins', label: '监控插件', icon: Blocks },
       { to: '/monitor/targets', label: '监控配置', icon: Settings },
       { to: '/monitor/predict', label: '趋势预测', icon: TrendingUp },
-      { to: '/cmdb/impact', label: '影响分析', icon: AlertTriangle },
     ]
   },
   {
