@@ -7,6 +7,7 @@ import { Card, CardContent } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { Input } from '@/components/ui/input'
+import { ConfirmDialog } from '@/components/ui/confirm-dialog'
 import { formatTime } from '@/lib/utils'
 import { toast } from '@/stores/toast'
 import { Plus, Trash2, BookOpen, Pencil, FolderPlus, Upload, Loader2, CheckCircle2, Bookmark, Bell, Settings2 } from 'lucide-react'
@@ -56,6 +57,7 @@ export default function KnowledgeListPage() {
   const [searchQ, setSearchQ] = useState('')
   const [importing, setImporting] = useState(false)
   const importRef = useRef<HTMLInputElement | null>(null)
+  const [pendingConfirm, setPendingConfirm] = useState<{ title: string; description: string; onConfirm: () => void | Promise<void> } | null>(null)
 
   // 视图过滤: 全部 / 我的收藏 / 我关注的
   const [view, setView] = useState<'all' | 'bookmarks' | 'follows'>('all')
@@ -103,8 +105,11 @@ export default function KnowledgeListPage() {
   }
 
   const handleDeleteCategory = async (c: Category) => {
-    if (!confirm(`删除分类「${c.name}」？引用该分类的文章分类将被清空`)) return
-    await deleteCategory(c.id)
+    setPendingConfirm({
+      title: '删除分类',
+      description: `删除分类「${c.name}」？引用该分类的文章分类将被清空`,
+      onConfirm: async () => { await deleteCategory(c.id) },
+    })
   }
 
   const handleImportFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -196,7 +201,7 @@ export default function KnowledgeListPage() {
                     ? <Badge variant="success" className="text-[10px]"><CheckCircle2 className="h-2.5 w-2.5 mr-0.5" />已发布</Badge>
                     : <Badge variant="warning" className="text-[10px]">草稿</Badge>}
                   <Button variant="ghost" size="icon" className="h-6 w-6" onClick={e => { e.stopPropagation(); router.push(`/knowledge/${a.id}`) }}><Pencil className="h-3 w-3" /></Button>
-                  <Button variant="ghost" size="icon" className="h-6 w-6 text-red-400" onClick={e => { e.stopPropagation(); confirm('删除?') && remove(a.id) }}><Trash2 className="h-3 w-3" /></Button>
+                  <Button variant="ghost" size="icon" className="h-6 w-6 text-red-400" onClick={e => { e.stopPropagation(); setPendingConfirm({ title: '删除文章', description: '确定删除该文章？', onConfirm: () => { void remove(a.id) } }) }}><Trash2 className="h-3 w-3" /></Button>
                 </div>
               </div>
               <p className="text-xs text-muted-foreground mt-1 line-clamp-2">{a.content ? stripMarkdown(a.content).slice(0, 120) : ''}</p>
@@ -239,10 +244,7 @@ export default function KnowledgeListPage() {
                     variant="ghost"
                     size="icon"
                     className="h-6 w-6 text-red-400"
-                    onClick={() => {
-                      if (!confirm(`删除分类「${name}」？引用该分类的文章分类将被清空`)) return
-                      handleDeleteCategory({ id: cat?.id || '', name, sort_order: 0 } as Category)
-                    }}
+                    onClick={() => handleDeleteCategory({ id: cat?.id || '', name, sort_order: 0 } as Category)}
                     title="删除"
                     disabled={!cat?.id}
                   >
@@ -325,7 +327,7 @@ export default function KnowledgeListPage() {
                   <div className="flex gap-1 shrink-0">
                     <Button variant="outline" size="sm" className="h-7 text-[11px]" onClick={() => runPrecip(r.id || '')} disabled={precipRunId === r.id}>{precipRunId === r.id ? <Loader2 className="h-3 w-3 mr-0.5 animate-spin" /> : null}运行</Button>
                     <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => setPrecipForm({ ...r })} title="编辑"><Pencil className="h-3 w-3" /></Button>
-                    <Button variant="ghost" size="icon" className="h-7 w-7 text-red-400" onClick={async () => { if (confirm('删除该策略?') && r.id) { await deletePrecipitationRule(r.id); await loadPrecip() } }} title="删除"><Trash2 className="h-3 w-3" /></Button>
+                    <Button variant="ghost" size="icon" className="h-7 w-7 text-red-400" onClick={() => { if (r.id) { const rid = r.id; setPendingConfirm({ title: '删除沉淀策略', description: '确定删除该策略？', onConfirm: async () => { await deletePrecipitationRule(rid); await loadPrecip() } }) } }} title="删除"><Trash2 className="h-3 w-3" /></Button>
                   </div>
                 </div>
               ))}
@@ -333,5 +335,14 @@ export default function KnowledgeListPage() {
           )}
       </div>
     </div>}
+
+    <ConfirmDialog
+      open={!!pendingConfirm}
+      title={pendingConfirm?.title || ''}
+      description={pendingConfirm?.description || ''}
+      confirmLabel="删除"
+      onClose={() => setPendingConfirm(null)}
+      onConfirm={async () => { if (pendingConfirm) await pendingConfirm.onConfirm(); setPendingConfirm(null) }}
+    />
   </div>
 }

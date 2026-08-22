@@ -7,6 +7,7 @@ import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { Input } from '@/components/ui/input'
 import { Dialog, DialogFooter } from '@/components/ui/dialog'
+import { ConfirmDialog } from '@/components/ui/confirm-dialog'
 import { Shield, Plus, Trash2, Edit, Lock } from 'lucide-react'
 import { formatTime } from '@/lib/utils'
 import { validateName, sanitizeName, NAME_RULE_TEXT } from '@/lib/validate'
@@ -18,6 +19,7 @@ export default function SystemRolesPage() {
   const [form, setForm] = useState({ name: '', display_name: '', description: '' })
   const [nameError, setNameError] = useState<string | null>(null)
   const [selectedPerms, setSelectedPerms] = useState<string[]>([])
+  const [pendingRole, setPendingRole] = useState<Role | null>(null)
 
   useEffect(() => {
     fetchRoles()
@@ -70,10 +72,10 @@ export default function SystemRolesPage() {
     setDialogOpen(false)
   }
 
-  const handleDelete = async (role: Role) => {
-    if (role.is_built_in) return
-    if (!confirm(`确定删除角色「${role.display_name || role.name}」?`)) return
-    await deleteRole(role.id)
+  const handleDelete = async () => {
+    if (!pendingRole || pendingRole.is_built_in) return
+    await deleteRole(pendingRole.id)
+    setPendingRole(null)
   }
 
   const togglePerm = (perm: string) => {
@@ -135,7 +137,7 @@ export default function SystemRolesPage() {
                     <Edit className="h-3 w-3" />
                   </Button>
                   {!role.is_built_in && (
-                    <Button variant="ghost" size="icon" className="h-6 w-6 text-destructive" onClick={() => handleDelete(role)} title="删除">
+                    <Button variant="ghost" size="icon" className="h-6 w-6 text-destructive" onClick={() => setPendingRole(role)} title="删除">
                       <Trash2 className="h-3 w-3" />
                     </Button>
                   )}
@@ -254,6 +256,8 @@ export default function SystemRolesPage() {
           <Button onClick={handleSave} disabled={!editId && !form.name}>{editId ? '保存' : '创建'}</Button>
         </DialogFooter>
       </Dialog>
+
+      <ConfirmDialog open={!!pendingRole} title="删除角色" description={`确定删除角色「${pendingRole?.display_name || pendingRole?.name}」?`} onClose={() => setPendingRole(null)} onConfirm={handleDelete} />
     </div>
   )
 }

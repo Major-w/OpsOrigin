@@ -7,6 +7,7 @@ import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { Input } from '@/components/ui/input'
 import { Dialog, DialogFooter } from '@/components/ui/dialog'
+import { ConfirmDialog } from '@/components/ui/confirm-dialog'
 import { cn } from '@/lib/utils'
 import { useTeams, type AgentTeam, type TeamMode, type TeamRole, type CreateTeamPayload, type TeamMember } from '@/stores/ai'
 import { Users, Plus, RefreshCw, Trash2, Edit, Bot, Settings2 } from 'lucide-react'
@@ -129,6 +130,7 @@ export default function TeamsPage() {
 
   const [dialogOpen, setDialogOpen] = useState(false)
   const [form, setForm] = useState<TeamForm>(emptyForm())
+  const [pendingDeleteId, setPendingDeleteId] = useState<string | null>(null)
 
   useEffect(() => {
     loadTeams()
@@ -195,9 +197,10 @@ export default function TeamsPage() {
     setForm(emptyForm())
   }
 
-  const handleDelete = async (id: string) => {
-    if (typeof window !== 'undefined' && !window.confirm('确认删除该团队？此操作不可撤销。')) return
-    await deleteTeam(id)
+  const handleDelete = async () => {
+    if (!pendingDeleteId) return
+    await deleteTeam(pendingDeleteId)
+    setPendingDeleteId(null)
   }
 
   return (
@@ -265,7 +268,7 @@ export default function TeamsPage() {
                     </Button>
                     <Button
                       variant="ghost" size="icon" className="h-7 w-7"
-                      onClick={() => handleDelete(team.id)}
+                      onClick={() => setPendingDeleteId(team.id)}
                     >
                       <Trash2 className="h-3 w-3 text-muted-foreground hover:text-destructive" />
                     </Button>
@@ -454,6 +457,15 @@ export default function TeamsPage() {
           <Button onClick={handleSave} disabled={!form.name.trim()}>{form.id ? '保存修改' : '创建团队'}</Button>
         </DialogFooter>
       </Dialog>
+
+      <ConfirmDialog
+        open={!!pendingDeleteId}
+        title="删除团队"
+        description="确认删除该团队？此操作不可撤销。"
+        confirmLabel="删除"
+        onClose={() => setPendingDeleteId(null)}
+        onConfirm={handleDelete}
+      />
     </div>
   )
 }

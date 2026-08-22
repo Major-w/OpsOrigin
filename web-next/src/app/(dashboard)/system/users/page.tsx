@@ -9,6 +9,7 @@ import { Badge } from '@/components/ui/badge'
 import { Input } from '@/components/ui/input'
 import { Select } from '@/components/ui/select'
 import { Dialog, DialogFooter } from '@/components/ui/dialog'
+import { ConfirmDialog } from '@/components/ui/confirm-dialog'
 import { Plus, Trash2, Edit, Search, Shield } from 'lucide-react'
 import { formatTime } from '@/lib/utils'
 import { useCan } from '@/stores/permissions'
@@ -26,6 +27,7 @@ export default function SystemUsersPage() {
   // 角色分配
   const [roleDialogUser, setRoleDialogUser] = useState<User | null>(null)
   const [assignedRoleIds, setAssignedRoleIds] = useState<string[]>([])
+  const [pendingUser, setPendingUser] = useState<User | null>(null)
 
   useEffect(() => {
     fetch()
@@ -70,9 +72,10 @@ export default function SystemUsersPage() {
     setDialogOpen(false)
   }
 
-  const handleDelete = async (user: User) => {
-    if (!confirm(`确定删除用户「${user.username}」?`)) return
-    await remove(user.id)
+  const handleDelete = async () => {
+    if (!pendingUser) return
+    await remove(pendingUser.id)
+    setPendingUser(null)
   }
 
   const openRoleAssign = async (user: User) => {
@@ -154,7 +157,7 @@ export default function SystemUsersPage() {
                         <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => openEdit(u)} title="编辑" disabled={!canWrite}>
                           <Edit className="h-3 w-3" />
                         </Button>
-                        <Button variant="ghost" size="icon" className="h-7 w-7 text-destructive" onClick={() => handleDelete(u)} title="删除" disabled={!canWrite}>
+                        <Button variant="ghost" size="icon" className="h-7 w-7 text-destructive" onClick={() => setPendingUser(u)} title="删除" disabled={!canWrite}>
                           <Trash2 className="h-3 w-3" />
                         </Button>
                       </td>
@@ -260,6 +263,16 @@ export default function SystemUsersPage() {
           <Button onClick={handleSaveRoles} disabled={!canWrite}>保存分配</Button>
         </DialogFooter>
       </Dialog>
+
+      {/* 删除用户确认 */}
+      <ConfirmDialog
+        open={!!pendingUser}
+        title="删除用户"
+        description={`确定删除用户「${pendingUser?.username}」?`}
+        confirmLabel="删除"
+        onClose={() => setPendingUser(null)}
+        onConfirm={handleDelete}
+      />
     </div>
   )
 }

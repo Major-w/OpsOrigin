@@ -16,6 +16,7 @@ import { Input } from '@/components/ui/input'
 import { Select } from '@/components/ui/select'
 import { Switch } from '@/components/ui/switch'
 import { Dialog, DialogFooter } from '@/components/ui/dialog'
+import { ConfirmDialog } from '@/components/ui/confirm-dialog'
 import { useCollectionStore } from '@/stores/collection'
 import { useCan } from '@/stores/permissions'
 import {
@@ -55,6 +56,7 @@ export function ScheduledTaskPanel({ kind }: Props) {
 
   const defaultFreq = kind === 'monitor' ? '5m' : '1h'
   const [dialogOpen, setDialogOpen] = useState(false)
+  const [pendingTask, setPendingTask] = useState<CollectionTask | null>(null)
   const [savedQueries, setSavedQueries] = useState<{ id: string; name: string }[]>([])
   const [form, setForm] = useState<{
     name: string
@@ -99,6 +101,12 @@ export function ScheduledTaskPanel({ kind }: Props) {
       setDialogOpen(false)
       setForm({ name: '', resource_type: 'cloud', target: '', frequency: defaultFreq, enabled: true, target_mode: 'static', target_query: '' })
     }
+  }
+
+  const handleDelete = async () => {
+    if (!pendingTask) return
+    await deleteTask(pendingTask.id)
+    setPendingTask(null)
   }
 
   const statusBadge = (t: CollectionTask) => {
@@ -228,7 +236,7 @@ export function ScheduledTaskPanel({ kind }: Props) {
                             </Button>
                             {canDelete && (
                               <Button variant="ghost" size="sm" className="h-7 w-7 p-0 text-red-500 hover:text-red-600" title="删除任务"
-                                onClick={() => { if (confirm(`确认删除采集任务「${t.name}」？`)) deleteTask(t.id) }}>
+                                onClick={() => setPendingTask(t)}>
                                 <Trash2 className="h-3.5 w-3.5" />
                               </Button>
                             )}
@@ -318,6 +326,15 @@ export function ScheduledTaskPanel({ kind }: Props) {
           </Button>
         </DialogFooter>
       </Dialog>
+
+      <ConfirmDialog
+        open={!!pendingTask}
+        title="删除采集任务"
+        description={`确认删除采集任务「${pendingTask?.name}」？`}
+        confirmLabel="删除"
+        onClose={() => setPendingTask(null)}
+        onConfirm={handleDelete}
+      />
     </div>
   )
 }

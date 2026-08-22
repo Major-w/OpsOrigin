@@ -7,6 +7,7 @@ import { Badge } from '@/components/ui/badge'
 import { Input } from '@/components/ui/input'
 import { Select } from '@/components/ui/select'
 import { Dialog, DialogFooter } from '@/components/ui/dialog'
+import { ConfirmDialog } from '@/components/ui/confirm-dialog'
 import { apiFetch, apiList } from '@/lib/utils'
 import {
   Plus, Trash2, FileText, Pencil, Search, X,
@@ -54,6 +55,7 @@ export default function LowcodePagesPage() {
   const [builderOpen, setBuilderOpen] = useState(false)
   const [builderPage, setBuilderPage] = useState<Page | null>(null)
   const [selectedItem, setSelectedItem] = useState<DragItem | null>(null)
+  const [pendingPageId, setPendingPageId] = useState<string | null>(null)
 
   // 撤销/重做历史记录
   const [history, setHistory] = useState<HistoryRecord[]>([])
@@ -100,9 +102,10 @@ export default function LowcodePagesPage() {
     setDialog(null)
   }
 
-  const handleDelete = async (id: string) => {
-    if (!confirm('确定删除该页面?')) return
-    try { await apiFetch(`/lowcode/pages/${id}`, { method: 'DELETE' }); fetchPages() } catch {}
+  const handleDelete = async () => {
+    if (!pendingPageId) return
+    try { await apiFetch(`/lowcode/pages/${pendingPageId}`, { method: 'DELETE' }); fetchPages() } catch {}
+    setPendingPageId(null)
   }
 
   const openBuilder = (p: Page) => {
@@ -414,7 +417,7 @@ export default function LowcodePagesPage() {
                   </div>
                   <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
                     <Button variant="ghost" size="sm" onClick={() => openEdit(p)}><Pencil className="h-3.5 w-3.5" /></Button>
-                    <Button variant="ghost" size="sm" onClick={() => handleDelete(p.id)}><Trash2 className="h-3.5 w-3.5 text-red-400" /></Button>
+                    <Button variant="ghost" size="sm" onClick={() => setPendingPageId(p.id)}><Trash2 className="h-3.5 w-3.5 text-red-400" /></Button>
                   </div>
                 </div>
               </CardHeader>
@@ -467,6 +470,15 @@ export default function LowcodePagesPage() {
           <Button onClick={handleSave} disabled={!form.name}>{dialog === 'create' ? '创建' : '保存'}</Button>
         </DialogFooter>
       </Dialog>
+
+      <ConfirmDialog
+        open={!!pendingPageId}
+        title="删除页面"
+        description="确定删除该页面? 此操作不可恢复。"
+        confirmLabel="删除"
+        onClose={() => setPendingPageId(null)}
+        onConfirm={handleDelete}
+      />
     </div>
   )
 }

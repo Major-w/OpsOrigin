@@ -7,6 +7,7 @@ import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { Input } from '@/components/ui/input'
 import { Dialog, DialogFooter } from '@/components/ui/dialog'
+import { ConfirmDialog } from '@/components/ui/confirm-dialog'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { apiFetch, apiList } from '@/lib/utils'
 import { Database, Layout, Table2, Plus, Pencil, Trash2, Box, ArrowRight } from 'lucide-react'
@@ -23,6 +24,7 @@ export default function LowcodeIndexPage() {
   const [dialog, setDialog] = useState<'create' | 'edit' | null>(null)
   const [editInstance, setEditInstance] = useState<Instance | null>(null)
   const [formValues, setFormValues] = useState<Record<string, string>>({})
+  const [pendingInstanceId, setPendingInstanceId] = useState<string | null>(null)
 
   const fetchModels = useCallback(() => {
     apiList<Model>('/lowcode/models').then(setModels).catch(() => setModels([]))
@@ -62,9 +64,10 @@ export default function LowcodeIndexPage() {
     setDialog(null)
   }
 
-  const handleDelete = async (id: string) => {
-    if (!confirm('确定删除该实例?')) return
-    try { await apiFetch(`/lowcode/instances/${id}`, { method: 'DELETE' }); fetchInstances() } catch {}
+  const handleDelete = async () => {
+    if (!pendingInstanceId) return
+    try { await apiFetch(`/lowcode/instances/${pendingInstanceId}`, { method: 'DELETE' }); fetchInstances() } catch {}
+    setPendingInstanceId(null)
   }
 
   const fields = selectedModel?.fields || []
@@ -163,7 +166,7 @@ export default function LowcodeIndexPage() {
                             <td className="py-2 px-4">
                               <div className="flex gap-1">
                                 <Button variant="ghost" size="icon" className="h-6 w-6" onClick={() => openEdit(inst)}><Pencil className="h-3 w-3" /></Button>
-                                <Button variant="ghost" size="icon" className="h-6 w-6" onClick={() => handleDelete(inst.id)}><Trash2 className="h-3 w-3 text-red-400" /></Button>
+                                <Button variant="ghost" size="icon" className="h-6 w-6" onClick={() => setPendingInstanceId(inst.id)}><Trash2 className="h-3 w-3 text-red-400" /></Button>
                               </div>
                             </td>
                           </tr>
@@ -231,6 +234,15 @@ export default function LowcodeIndexPage() {
           <Button onClick={handleSave} disabled={fields.length === 0}>{dialog === 'create' ? '创建' : '保存'}</Button>
         </DialogFooter>
       </Dialog>
+
+      <ConfirmDialog
+        open={!!pendingInstanceId}
+        title="删除实例"
+        description="确定删除该实例? 此操作不可恢复。"
+        confirmLabel="删除"
+        onClose={() => setPendingInstanceId(null)}
+        onConfirm={handleDelete}
+      />
     </div>
   )
 }

@@ -10,6 +10,7 @@ import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { Input } from '@/components/ui/input'
 import { Dialog, DialogFooter } from '@/components/ui/dialog'
+import { ConfirmDialog } from '@/components/ui/confirm-dialog'
 import { Bot, Send, History, Settings, Sparkles, Terminal, FileText, Server, ChevronRight, Loader2, User, BarChart3, Users, ThumbsUp, ThumbsDown, Rocket, Target, AlertTriangle, CheckCircle, XCircle, ChevronDown, Trash2, Bookmark, Download, Save, Paperclip, Brain, Share2, Lock } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { apiFetchRaw } from '@/lib/utils'
@@ -145,6 +146,9 @@ export default function AIPage() {
 
   // —— 敏感操作审批弹窗 ——
   const [pendingApproval, setPendingApproval] = useState<any>(null)
+  const [pendingConvId, setPendingConvId] = useState<string | null>(null)
+  const [pendingArtifactId, setPendingArtifactId] = useState<string | null>(null)
+  const [pendingWsFileId, setPendingWsFileId] = useState<string | null>(null)
   const [approvalBusy, setApprovalBusy] = useState(false)
   const { respondApproval } = useAIStore()
 
@@ -199,8 +203,9 @@ export default function AIPage() {
   }
 
   // 删除会话(不可恢复)
-  const handleDeleteConversation = async (id: string) => {
-    if (!confirm('删除该会话？此操作不可恢复。')) return
+  const handleDeleteConversation = async () => {
+    const id = pendingConvId
+    if (!id) return
     try {
       const token = localStorage.getItem('opsorigin_token')
       const resp = await fetch(`${window.location.origin}/api/v1/ai/conversations/${id}`, {
@@ -219,6 +224,7 @@ export default function AIPage() {
     } catch (e: any) {
       toast.error('删除失败: ' + e.message)
     }
+    setPendingConvId(null)
   }
 
   // submitFeedback 上报点赞/点踩
@@ -299,13 +305,15 @@ export default function AIPage() {
     } catch (e: any) { toast.error('下载失败: ' + e.message) }
   }
 
-  const deleteArtifact = async (aid: string) => {
-    if (!confirm('删除该产物文件？')) return
+  const deleteArtifact = async () => {
+    const aid = pendingArtifactId
+    if (!aid) return
     try {
       await fetch(`/api/v1/ai/conversations/${convId}/artifacts/${aid}`, { method: 'DELETE', headers: authHeaders() })
       toast.success('已删除')
       loadArtifacts(convId)
     } catch (e: any) { toast.error('删除失败: ' + e.message) }
+    setPendingArtifactId(null)
   }
 
   // —— 会话工作区(工具产物自动收集) ——
@@ -333,13 +341,15 @@ export default function AIPage() {
     } catch (e: any) { toast.error('下载失败: ' + e.message) }
   }
 
-  const deleteWorkspaceFile = async (fid: string) => {
-    if (!confirm('删除该工作区文件？')) return
+  const deleteWorkspaceFile = async () => {
+    const fid = pendingWsFileId
+    if (!fid) return
     try {
       await fetch(`/api/v1/ai/conversations/${convId}/workspace/${fid}`, { method: 'DELETE', headers: authHeaders() })
       toast.success('已删除')
       loadWorkspace(convId)
     } catch (e: any) { toast.error('删除失败: ' + e.message) }
+    setPendingWsFileId(null)
   }
 
   // 记住这条: 保存为长期记忆(重启不丢, 新开对话自动注入相关记忆)
@@ -699,7 +709,7 @@ export default function AIPage() {
                         )}
                         {(!c.permission || c.permission === 'owner') && (
                           <button
-                            onClick={() => handleDeleteConversation(c.id)}
+                            onClick={() => setPendingConvId(c.id)}
                             className="opacity-0 group-hover:opacity-100 p-1.5 rounded-md text-red-400 hover:bg-red-500/10 transition-opacity"
                             title="删除会话"
                           >
@@ -919,7 +929,7 @@ export default function AIPage() {
                       <span className="text-[10px] text-muted-foreground shrink-0">{f.tool_name} · {(f.file_size / 1024).toFixed(1)} KB</span>
                       <span className="flex gap-2 shrink-0">
                         <button onClick={() => downloadWorkspaceFile(f.id)} className="text-[10px] text-blue-500 hover:underline">下载</button>
-                        <button onClick={() => deleteWorkspaceFile(f.id)} className="text-[10px] text-red-400 hover:underline">删除</button>
+                        <button onClick={() => setPendingWsFileId(f.id)} className="text-[10px] text-red-400 hover:underline">删除</button>
                       </span>
                     </div>
                   ))}
@@ -938,7 +948,7 @@ export default function AIPage() {
                       <span className="text-[10px] text-muted-foreground shrink-0">{(a.file_size / 1024).toFixed(1)} KB</span>
                       <span className="flex gap-2 shrink-0">
                         <button onClick={() => downloadArtifact(a.id)} className="text-[10px] text-blue-500 hover:underline">下载</button>
-                        <button onClick={() => deleteArtifact(a.id)} className="text-[10px] text-red-400 hover:underline">删除</button>
+                        <button onClick={() => setPendingArtifactId(a.id)} className="text-[10px] text-red-400 hover:underline">删除</button>
                       </span>
                     </div>
                   ))}
@@ -1349,6 +1359,32 @@ export default function AIPage() {
           <Button onClick={saveShare}><Share2 className="h-4 w-4 mr-1" />共享</Button>
         </DialogFooter>
       </Dialog>
+
+      {/* 删除确认弹窗 */}
+      <ConfirmDialog
+        open={!!pendingConvId}
+        title="删除会话"
+        description="删除该会话？此操作不可恢复。"
+        confirmLabel="删除"
+        onClose={() => setPendingConvId(null)}
+        onConfirm={handleDeleteConversation}
+      />
+      <ConfirmDialog
+        open={!!pendingArtifactId}
+        title="删除产物文件"
+        description="删除该产物文件？"
+        confirmLabel="删除"
+        onClose={() => setPendingArtifactId(null)}
+        onConfirm={deleteArtifact}
+      />
+      <ConfirmDialog
+        open={!!pendingWsFileId}
+        title="删除工作区文件"
+        description="删除该工作区文件？"
+        confirmLabel="删除"
+        onClose={() => setPendingWsFileId(null)}
+        onConfirm={deleteWorkspaceFile}
+      />
     </div>
   )
 }

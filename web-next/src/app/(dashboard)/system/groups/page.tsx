@@ -8,6 +8,7 @@ import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { Input } from '@/components/ui/input'
 import { Dialog, DialogFooter } from '@/components/ui/dialog'
+import { ConfirmDialog } from '@/components/ui/confirm-dialog'
 import { Users, Plus, Trash2, Edit, Search, UserPlus, X } from 'lucide-react'
 import { formatTime } from '@/lib/utils'
 import { validateName, sanitizeName, NAME_RULE_TEXT } from '@/lib/validate'
@@ -22,6 +23,7 @@ export default function SystemGroupsPage() {
   const [form, setForm] = useState({ name: '', description: '', user_ids: [] as string[] })
   const [nameError, setNameError] = useState<string | null>(null)
   const [memberSearch, setMemberSearch] = useState('')
+  const [pendingGroup, setPendingGroup] = useState<Group | null>(null)
 
   useEffect(() => {
     fetchGroups()
@@ -58,9 +60,10 @@ export default function SystemGroupsPage() {
     setDialogOpen(false)
   }
 
-  const handleDelete = async (group: Group) => {
-    if (!confirm(`确定删除用户组「${group.name}」?`)) return
-    await deleteGroup(group.id)
+  const handleDelete = async () => {
+    if (!pendingGroup) return
+    await deleteGroup(pendingGroup.id)
+    setPendingGroup(null)
   }
 
   const toggleMember = (userId: string) => {
@@ -125,7 +128,7 @@ export default function SystemGroupsPage() {
                 </div>
                 <div className="flex gap-0.5">
                   <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => openEdit(group)} title="编辑"><Edit className="h-3 w-3" /></Button>
-                  <Button variant="ghost" size="icon" className="h-7 w-7 text-destructive" onClick={() => handleDelete(group)} title="删除"><Trash2 className="h-3 w-3" /></Button>
+                  <Button variant="ghost" size="icon" className="h-7 w-7 text-destructive" onClick={() => setPendingGroup(group)} title="删除"><Trash2 className="h-3 w-3" /></Button>
                 </div>
               </div>
 
@@ -224,6 +227,16 @@ export default function SystemGroupsPage() {
           <Button onClick={handleSave} disabled={!form.name}>{editId ? '保存' : '创建'}</Button>
         </DialogFooter>
       </Dialog>
+
+      {/* 删除用户组确认 */}
+      <ConfirmDialog
+        open={!!pendingGroup}
+        title="删除用户组"
+        description={`确定删除用户组「${pendingGroup?.name}」?`}
+        confirmLabel="删除"
+        onClose={() => setPendingGroup(null)}
+        onConfirm={handleDelete}
+      />
     </div>
   )
 }

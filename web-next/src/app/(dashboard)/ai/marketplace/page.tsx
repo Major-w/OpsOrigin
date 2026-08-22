@@ -7,6 +7,7 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Select } from '@/components/ui/select'
 import { Dialog, DialogFooter } from '@/components/ui/dialog'
+import { ConfirmDialog } from '@/components/ui/confirm-dialog'
 import { apiFetch, cn } from '@/lib/utils'
 import { toast } from '@/stores/toast'
 import {
@@ -76,6 +77,7 @@ export default function MarketplacePage() {
   // 版本列表对话框
   const [versionsTarget, setVersionsTarget] = useState<SkillPackage | null>(null)
   const [versions, setVersions] = useState<SkillPackage[]>([])
+  const [pendingUnpublish, setPendingUnpublish] = useState<SkillPackage | null>(null)
   const [versionsLoading, setVersionsLoading] = useState(false)
 
   const loadAll = async () => {
@@ -172,8 +174,9 @@ export default function MarketplacePage() {
     }
   }
 
-  const removePkg = async (p: SkillPackage) => {
-    if (!confirm(`确认下架技能包「${p.name}」？`)) return
+  const removePkg = async () => {
+    if (!pendingUnpublish) return
+    const p = pendingUnpublish
     try {
       await apiFetch(`/ai/skills/${p.id}`, { method: 'DELETE' })
       toast.success('已下架')
@@ -183,6 +186,8 @@ export default function MarketplacePage() {
       loadAll()
     } catch (e: any) {
       toast.error(`下架失败: ${e.message}`)
+    } finally {
+      setPendingUnpublish(null)
     }
   }
 
@@ -395,7 +400,7 @@ export default function MarketplacePage() {
                     <Button variant="outline" size="sm" onClick={() => exportPkg(p)} title="导出 JSON">
                       <Download className="w-3.5 h-3.5" />
                     </Button>
-                    <Button variant="ghost" size="sm" className="text-red-500" onClick={() => removePkg(p)} title="下架">
+                    <Button variant="ghost" size="sm" className="text-red-500" onClick={() => setPendingUnpublish(p)} title="下架">
                       <Trash2 className="w-3.5 h-3.5" />
                     </Button>
                     <Button variant="primary" size="sm" onClick={() => { setInstallTarget(p); setInstallName('') }}>
@@ -534,6 +539,15 @@ export default function MarketplacePage() {
           </>
         )}
       </Dialog>
+
+      <ConfirmDialog
+        open={!!pendingUnpublish}
+        title="下架技能包"
+        description={pendingUnpublish ? `确认下架技能包「${pendingUnpublish.name}」？` : ''}
+        confirmLabel="下架"
+        onClose={() => setPendingUnpublish(null)}
+        onConfirm={removePkg}
+      />
     </div>
   )
 }

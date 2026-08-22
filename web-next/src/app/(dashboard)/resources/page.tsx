@@ -11,6 +11,7 @@ import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { Input } from '@/components/ui/input'
 import { Dialog, DialogFooter } from '@/components/ui/dialog'
+import { ConfirmDialog } from '@/components/ui/confirm-dialog'
 import { SwitchField } from '@/components/ui/switch'
 import { Select } from '@/components/ui/select'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
@@ -134,6 +135,7 @@ export default function ResourcesPage() {
   const [confirmDeleteProxy, setConfirmDeleteProxy] = useState<ProxyInfo | null>(null)
   const [confirmRestart, setConfirmRestart] = useState<AgentHost | null>(null)
   const [confirmUninstall, setConfirmUninstall] = useState<AgentHost | null>(null)
+  const [pendingMerge, setPendingMerge] = useState<AgentHost | null>(null)
 
   // IP 校验：仅支持 IPv4(192.168.1.1)、范围(192.168.1.1-10)、CIDR(192.168.1.0/24)，不支持主机名
   const validateIPs = (ips: string) => {
@@ -321,9 +323,9 @@ export default function ResourcesPage() {
   }
 
   // 合并疑似重复记录:将 a(重复/旧记录)合并进其 duplicate_of 指向的规范记录。
-  const handleMergeAgent = async (a: AgentHost) => {
-    if (!a.duplicate_of) return
-    if (!confirm(`确认将主机「${a.name}」合并到规范记录「${a.duplicate_of}」？\n合并后本条记录(含沙箱等标签)将并入规范记录并删除。`)) return
+  const handleMergeAgent = async () => {
+    const a = pendingMerge
+    if (!a || !a.duplicate_of) return
     setMergingId(a.id)
     try {
       await apiFetch(`/agents/${a.id}/merge`, { method: 'POST', body: JSON.stringify({ target_id: a.duplicate_of }) })
@@ -333,6 +335,7 @@ export default function ResourcesPage() {
       toast.error('合并失败: ' + (e?.message || e))
     } finally {
       setMergingId(null)
+      setPendingMerge(null)
     }
   }
 
@@ -568,7 +571,7 @@ export default function ResourcesPage() {
       <div className="w-24 shrink-0 flex justify-end gap-1">
         <Button variant="ghost" size="icon" className="h-6 w-6" onClick={() => openDetailHost(a)}><Eye className="h-3 w-3" /></Button>
         {a.duplicate_of && (
-          <Button variant="ghost" size="icon" className="h-6 w-6 text-amber-500" title="合并重复记录" disabled={mergingId === a.id} onClick={() => handleMergeAgent(a)}><GitMerge className="h-3 w-3" /></Button>
+          <Button variant="ghost" size="icon" className="h-6 w-6 text-amber-500" title="合并重复记录" disabled={mergingId === a.id} onClick={() => setPendingMerge(a)}><GitMerge className="h-3 w-3" /></Button>
         )}
         <Button variant="ghost" size="icon" className="h-6 w-6" onClick={() => setConfirmDeleteHost(a)}><Trash2 className="h-3 w-3" /></Button>
       </div>
@@ -593,7 +596,7 @@ export default function ResourcesPage() {
         {a.duplicate_of && (
           <div className="flex items-center justify-between gap-2 rounded-md border border-amber-500/30 bg-amber-500/10 px-2 py-1.5">
             <span className="text-xs text-amber-600 dark:text-amber-400">疑似重复记录（同主机名/IP），建议合并</span>
-            <Button size="sm" variant="outline" className="h-6 shrink-0 text-xs" disabled={mergingId === a.id} onClick={() => handleMergeAgent(a)}>
+            <Button size="sm" variant="outline" className="h-6 shrink-0 text-xs" disabled={mergingId === a.id} onClick={() => setPendingMerge(a)}>
               {mergingId === a.id ? '合并中…' : '合并'}
             </Button>
           </div>
@@ -1429,6 +1432,16 @@ kubectl -n opsorigin set env deployment/opsorigin-k8s-gateway OPSORIGIN_PROXY_AD
           <Button onClick={handleRestart}><RotateCcw className="h-3 w-3 mr-1" />确认重启</Button>
         </DialogFooter>
       </Dialog>
+
+      {/* 合并重复记录确认 */}
+      <ConfirmDialog
+        open={!!pendingMerge}
+        title="合并重复记录"
+        description={pendingMerge ? `确认将主机「${pendingMerge.name}」合并到规范记录「${pendingMerge.duplicate_of}」？\n合并后本条记录(含沙箱等标签)将并入规范记录并删除。` : undefined}
+        confirmLabel="合并"
+        onClose={() => setPendingMerge(null)}
+        onConfirm={handleMergeAgent}
+      />
 
       {/* 确认卸载 Agent Dialog */}
       <Dialog open={!!confirmUninstall} onClose={() => setConfirmUninstall(null)} title="确认卸载 Agent">

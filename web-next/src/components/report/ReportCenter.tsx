@@ -23,6 +23,7 @@ import { Input } from '@/components/ui/input'
 import { Select } from '@/components/ui/select'
 import { Badge } from '@/components/ui/badge'
 import { Dialog } from '@/components/ui/dialog'
+import { ConfirmDialog } from '@/components/ui/confirm-dialog'
 import { ReportRenderer } from '@/components/report/ReportRenderer'
 import { AIWorkspace } from '@/components/report/AIWorkspace'
 import { toast } from '@/stores/toast'
@@ -113,6 +114,7 @@ export function ReportCenter({ title = '报表中心', description, modules, sco
   const [widgetTitle, setWidgetTitle] = useState('')
   const [targetDash, setTargetDash] = useState('')
   const [scoped, setScoped] = useState<boolean>(!!modules?.length)
+  const [pendingDashboard, setPendingDashboard] = useState<string | null>(null)
 
   useEffect(() => {
     loadDatasets()
@@ -329,7 +331,7 @@ export function ReportCenter({ title = '报表中心', description, modules, sco
                     className="opacity-0 transition-opacity group-hover:opacity-100"
                     onClick={(e) => {
                       e.stopPropagation()
-                      if (confirm(`确认删除看板「${d.name}」？`)) deleteDashboard(d.id)
+                      setPendingDashboard(d.id)
                     }}
                   >
                     <Trash2 className="h-4 w-4 text-destructive" />
@@ -626,6 +628,16 @@ export function ReportCenter({ title = '报表中心', description, modules, sco
           </div>
         </div>
       </Dialog>
+
+      {/* 删除看板确认 */}
+      <ConfirmDialog
+        open={!!pendingDashboard}
+        title="删除看板"
+        description="确认删除该看板？此操作不可撤销。"
+        confirmLabel="删除"
+        onClose={() => setPendingDashboard(null)}
+        onConfirm={async () => { if (pendingDashboard) { await deleteDashboard(pendingDashboard); setPendingDashboard(null) } }}
+      />
     </div>
   )
 }

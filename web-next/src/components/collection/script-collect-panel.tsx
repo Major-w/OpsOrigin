@@ -13,6 +13,7 @@ import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { Input } from '@/components/ui/input'
 import { Dialog, DialogFooter } from '@/components/ui/dialog'
+import { ConfirmDialog } from '@/components/ui/confirm-dialog'
 import { toast } from '@/stores/toast'
 import { useAgentStore } from '@/stores/agent'
 import { apiFetch, apiList, cn, formatTime } from '@/lib/utils'
@@ -64,6 +65,7 @@ export function ScriptCollectPanel({ type }: Props) {
   const [loading, setLoading] = useState(false)
   const [dialog, setDialog] = useState(false)
   const [runsDialog, setRunsDialog] = useState<string | null>(null)
+  const [pendingId, setPendingId] = useState<string | null>(null)
   const [saving, setSaving] = useState(false)
   const emptyForm = useMemo(() => ({
     name: '', type, script: '', script_type: 'shell',
@@ -108,10 +110,11 @@ export function ScriptCollectPanel({ type }: Props) {
     } catch { toast.error('更新失败') }
   }
 
-  const handleDelete = async (id: string) => {
-    if (!confirm('删除该采集任务？')) return
-    try { await apiFetch(`/collect-tasks/${id}`, { method: 'DELETE' }); toast.success('已删除'); load() }
+  const handleDelete = async () => {
+    if (!pendingId) return
+    try { await apiFetch(`/collect-tasks/${pendingId}`, { method: 'DELETE' }); toast.success('已删除'); load() }
     catch { toast.error('删除失败') }
+    setPendingId(null)
   }
 
   return (
@@ -179,7 +182,7 @@ export function ScriptCollectPanel({ type }: Props) {
                             <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => handleToggle(t)} title={t.enabled ? '暂停' : '启用'}>
                               {t.enabled ? <Pause className="h-3.5 w-3.5 text-amber-500" /> : <Play className="h-3.5 w-3.5 text-emerald-500" />}
                             </Button>
-                            <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => handleDelete(t.id)}><Trash2 className="h-3.5 w-3.5 text-red-400" /></Button>
+                            <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => setPendingId(t.id)}><Trash2 className="h-3.5 w-3.5 text-red-400" /></Button>
                           </div>
                         </td>
                       </tr>
@@ -261,6 +264,15 @@ export function ScriptCollectPanel({ type }: Props) {
         ))}
         <DialogFooter><Button variant="outline" onClick={() => setRunsDialog(null)}>关闭</Button></DialogFooter>
       </Dialog>
+
+      <ConfirmDialog
+        open={!!pendingId}
+        title="删除采集任务"
+        description="删除该采集任务？"
+        confirmLabel="删除"
+        onClose={() => setPendingId(null)}
+        onConfirm={handleDelete}
+      />
     </div>
   )
 }

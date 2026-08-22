@@ -7,6 +7,7 @@ import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { Input } from '@/components/ui/input'
 import { Dialog, DialogFooter } from '@/components/ui/dialog'
+import { ConfirmDialog } from '@/components/ui/confirm-dialog'
 import { Plus, Trash2, Pencil, FolderPlus, GripVertical, Palette } from 'lucide-react'
 import { cn } from '@/lib/utils'
 
@@ -25,6 +26,7 @@ export default function KnowledgeCategoriesPage() {
     color: DEFAULT_COLOR,
   })
   const [searchQ, setSearchQ] = useState('')
+  const [pendingDelete, setPendingDelete] = useState<Category | null>(null)
 
   useEffect(() => {
     fetchCategories()
@@ -58,9 +60,10 @@ export default function KnowledgeCategoriesPage() {
     setDialogOpen(false)
   }
 
-  const handleDelete = async (cat: Category) => {
-    if (!confirm(`删除分类「${cat.name}」？引用该分类的文章分类将被清空`)) return
-    await deleteCategory(cat.id)
+  const handleDelete = async () => {
+    if (!pendingDelete) return
+    await deleteCategory(pendingDelete.id)
+    setPendingDelete(null)
   }
 
   const sorted = [...categoryList]
@@ -150,7 +153,7 @@ export default function KnowledgeCategoriesPage() {
                     variant="ghost"
                     size="sm"
                     className="h-7 text-xs text-red-400 hover:text-red-500"
-                    onClick={() => handleDelete(cat)}
+                    onClick={() => setPendingDelete(cat)}
                   >
                     <Trash2 className="h-3 w-3 mr-1" />
                     删除
@@ -233,6 +236,15 @@ export default function KnowledgeCategoriesPage() {
           </Button>
         </DialogFooter>
       </Dialog>
+
+      <ConfirmDialog
+        open={!!pendingDelete}
+        title="删除分类"
+        description={pendingDelete ? `删除分类「${pendingDelete.name}」？引用该分类的文章分类将被清空` : ''}
+        confirmLabel="删除"
+        onClose={() => setPendingDelete(null)}
+        onConfirm={handleDelete}
+      />
     </div>
   )
 }

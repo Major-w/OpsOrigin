@@ -7,6 +7,7 @@ import { Badge } from '@/components/ui/badge'
 import { Input } from '@/components/ui/input'
 import { Select } from '@/components/ui/select'
 import { Dialog, DialogFooter } from '@/components/ui/dialog'
+import { ConfirmDialog } from '@/components/ui/confirm-dialog'
 import { apiFetch, apiList } from '@/lib/utils'
 import { validateName, sanitizeName, NAME_RULE_TEXT } from '@/lib/validate'
 import {
@@ -56,6 +57,7 @@ export default function LowcodeModelsPage() {
   const [editFieldIdx, setEditFieldIdx] = useState<number>(-1)
   const [fieldForm, setFieldForm] = useState<Field>({ ...emptyField })
   const [optionsInput, setOptionsInput] = useState('')
+  const [pendingModelId, setPendingModelId] = useState<string | null>(null)
 
   const fetchModels = useCallback(() => {
     apiList<Model>('/lowcode/models').then(setModels).catch(() => setModels([]))
@@ -90,9 +92,10 @@ export default function LowcodeModelsPage() {
     setModelDialog(null)
   }
 
-  const handleDeleteModel = async (id: string) => {
-    if (!confirm('确定删除该模型?')) return
-    try { await apiFetch(`/lowcode/models/${id}`, { method: 'DELETE' }); fetchModels() } catch {}
+  const handleDeleteModel = async () => {
+    if (!pendingModelId) return
+    try { await apiFetch(`/lowcode/models/${pendingModelId}`, { method: 'DELETE' }); fetchModels() } catch {}
+    setPendingModelId(null)
   }
 
   const openCreateField = (modelId: string) => {
@@ -159,7 +162,7 @@ export default function LowcodeModelsPage() {
                 </div>
                 <div className="flex items-center gap-1" onClick={e => e.stopPropagation()}>
                   <Button variant="ghost" size="sm" onClick={() => openEditModel(m)}><Pencil className="h-3.5 w-3.5" /></Button>
-                  <Button variant="ghost" size="sm" onClick={() => handleDeleteModel(m.id)}><Trash2 className="h-3.5 w-3.5 text-red-400" /></Button>
+                  <Button variant="ghost" size="sm" onClick={() => setPendingModelId(m.id)}><Trash2 className="h-3.5 w-3.5 text-red-400" /></Button>
                 </div>
               </div>
               {m.description && <p className="text-xs text-muted-foreground mt-1 ml-6">{m.description}</p>}
@@ -281,6 +284,15 @@ export default function LowcodeModelsPage() {
           <Button onClick={handleSaveField} disabled={!fieldForm.name}>{fieldDialog === 'create' ? '添加' : '保存'}</Button>
         </DialogFooter>
       </Dialog>
+
+      <ConfirmDialog
+        open={!!pendingModelId}
+        title="删除模型"
+        description="确定删除该模型? 其下所有字段定义将一并删除，此操作不可恢复。"
+        confirmLabel="删除"
+        onClose={() => setPendingModelId(null)}
+        onConfirm={handleDeleteModel}
+      />
     </div>
   )
 }

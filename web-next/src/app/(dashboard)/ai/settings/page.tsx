@@ -7,6 +7,7 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Badge } from '@/components/ui/badge'
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs'
+import { ConfirmDialog } from '@/components/ui/confirm-dialog'
 import { toast } from '@/stores/toast'
 import { Bot, Plus, Trash2, Save, Wrench, Brain, Settings2, Terminal, Wand2, AlertCircle, CheckCircle2, Loader2, ChevronRight, ShieldCheck, Database, Download, RefreshCw, Sparkles, Copy, Pencil, Star, Search, Package, Eye, Rocket } from 'lucide-react'
 
@@ -240,6 +241,10 @@ export default function AISettingsPage() {
 
   // —— L3-1 微调任务: 数据集 -> 微调 -> 产物注册模型池 ——
   const [finetuneTasks, setFinetuneTasks] = useState<FinetuneTaskItem[]>([])
+  const [pendingEvoId, setPendingEvoId] = useState<string | null>(null)
+  const [pendingPrompt, setPendingPrompt] = useState<PromptTemplate | null>(null)
+  const [pendingDefaultPrompt, setPendingDefaultPrompt] = useState<PromptTemplate | null>(null)
+  const [pendingAgentId, setPendingAgentId] = useState<string | null>(null)
   const [ftForm, setFtForm] = useState({ name: '', base_model: '', method: 'loRA' })
   const [ftCreating, setFtCreating] = useState(false)
   const [ftLoading, setFtLoading] = useState(false)
@@ -387,13 +392,15 @@ export default function AISettingsPage() {
     } catch (e: any) { toast.error('添加失败: ' + e.message) }
   }
 
-  const deleteEvoSource = async (id: string) => {
-    if (!confirm('删除该数据源？')) return
+  const deleteEvoSource = async () => {
+    const id = pendingEvoId
+    if (!id) return
     try {
       await fetch(`/api/v1/ai/evolution/sources/${id}`, { method: 'DELETE' })
       toast.success('已删除')
       loadEvoSources()
     } catch (e: any) { toast.error('删除失败: ' + e.message) }
+    setPendingEvoId(null)
   }
 
   const runEvoFetch = async () => {
@@ -472,8 +479,9 @@ export default function AISettingsPage() {
     } catch (e: any) { toast.error(`保存失败: ${e.message}`) } finally { setPromptSaving(false) }
   }
 
-  const setAsDefault = async (p: PromptTemplate) => {
-    if (!confirm(`将「${p.name}」设为默认系统提示词？所有未单独配置 system_prompt 的 Agent 与对话都会改用它。`)) return
+  const setAsDefault = async () => {
+    const p = pendingDefaultPrompt
+    if (!p) return
     try {
       await apiFetch(`/ai/prompts/${p.id}`, {
         method: 'PUT',
@@ -482,15 +490,18 @@ export default function AISettingsPage() {
       toast.success('已设为默认，立即热生效')
       loadPrompts()
     } catch (e: any) { toast.error(`操作失败: ${e.message}`) }
+    setPendingDefaultPrompt(null)
   }
 
-  const deletePrompt = async (p: PromptTemplate) => {
-    if (!confirm(`确定删除提示词「${p.name}」？`)) return
+  const deletePrompt = async () => {
+    const p = pendingPrompt
+    if (!p) return
     try {
       await apiFetch(`/ai/prompts/${p.id}`, { method: 'DELETE' })
       toast.success('提示词已删除')
       loadPrompts()
     } catch (e: any) { toast.error(`删除失败: ${e.message}`) }
+    setPendingPrompt(null)
   }
 
   const copyPromptContent = async (p: PromptTemplate) => {
@@ -589,11 +600,13 @@ export default function AISettingsPage() {
     if (ok) { setForm({ name: '', model_name: '', system_prompt: '', knowledge_categories: [], tools: [], skills: [] }); fetchAgents() }
   }
 
-  const handleDeleteAgent = async (id: string) => {
-    if (!confirm('确定删除该 Agent？')) return
+  const handleDeleteAgent = async () => {
+    const id = pendingAgentId
+    if (!id) return
     await fetch(`/api/v1/ai/agents/${id}`, { method: 'DELETE' })
     toast.success('Agent 已删除')
     fetchAgents()
+    setPendingAgentId(null)
   }
 
   const handleTestConnection = async () => {
@@ -919,7 +932,7 @@ export default function AISettingsPage() {
                         </div>
                         <div className="flex gap-1 shrink-0">
                           <Button variant="ghost" size="sm" onClick={() => { setEditing(a.id); setEditForm({ name: a.name, model_name: a.model_name || '', system_prompt: a.system_prompt || '', knowledge_categories: a.knowledge_categories || [], tools: a.tools || [], skills: (a.skills || []).map((s: any) => ({ name: s.name || '', description: s.description || '', instructions: s.instructions || '' })) }) }}><Save className="h-3.5 w-3.5" /></Button>
-                          <Button variant="ghost" size="sm" onClick={() => handleDeleteAgent(a.id)}><Trash2 className="h-3.5 w-3.5 text-red-400" /></Button>
+                          <Button variant="ghost" size="sm" onClick={() => setPendingAgentId(a.id)}><Trash2 className="h-3.5 w-3.5 text-red-400" /></Button>
                         </div>
                       </div>
                     )}
@@ -1071,14 +1084,14 @@ export default function AISettingsPage() {
                           <Terminal className="h-3 w-3 mr-1" />复制正文
                         </Button>
                         <div className="flex-1" />
-                        <Button variant="ghost" size="sm" className="h-7 px-2 text-xs" title="设为默认系统提示词" onClick={() => setAsDefault(p)}>
+                        <Button variant="ghost" size="sm" className="h-7 px-2 text-xs" title="设为默认系统提示词" onClick={() => setPendingDefaultPrompt(p)}>
                           <Star className="h-3 w-3" />
                         </Button>
                         <Button
                           variant="ghost" size="sm" className="h-7 px-2"
                           title={p.builtin ? '预置提示词不可删除，可另存副本后修改' : '删除'}
                           disabled={p.builtin}
-                          onClick={() => deletePrompt(p)}
+                          onClick={() => setPendingPrompt(p)}
                         >
                           <Trash2 className={cn('h-3 w-3', p.builtin ? 'text-muted-foreground' : 'text-red-400')} />
                         </Button>
@@ -1575,7 +1588,7 @@ export default function AISettingsPage() {
                         </div>
                         <div className="flex items-center gap-1 shrink-0">
                           <Button variant="ghost" size="icon" className="h-6 w-6" onClick={() => startEditSource(s)} title="编辑策略"><Pencil className="h-3.5 w-3.5" /></Button>
-                          <Button variant="ghost" size="icon" className="h-6 w-6 text-red-400" onClick={() => deleteEvoSource(s.id)} title="删除"><Trash2 className="h-3.5 w-3.5" /></Button>
+                          <Button variant="ghost" size="icon" className="h-6 w-6 text-red-400" onClick={() => setPendingEvoId(s.id)} title="删除"><Trash2 className="h-3.5 w-3.5" /></Button>
                         </div>
                       </div>
                       {editingSrc === s.id ? (
@@ -1743,6 +1756,40 @@ export default function AISettingsPage() {
           </div>
         </div>
       </WideDialog>
+
+      {/* 删除 / 默认确认弹窗 */}
+      <ConfirmDialog
+        open={!!pendingEvoId}
+        title="删除数据源"
+        description="删除该数据源？"
+        confirmLabel="删除"
+        onClose={() => setPendingEvoId(null)}
+        onConfirm={deleteEvoSource}
+      />
+      <ConfirmDialog
+        open={!!pendingPrompt}
+        title="删除提示词"
+        description={pendingPrompt ? `确定删除提示词「${pendingPrompt.name}」？` : undefined}
+        confirmLabel="删除"
+        onClose={() => setPendingPrompt(null)}
+        onConfirm={deletePrompt}
+      />
+      <ConfirmDialog
+        open={!!pendingDefaultPrompt}
+        title="设为默认系统提示词"
+        description={pendingDefaultPrompt ? `将「${pendingDefaultPrompt.name}」设为默认系统提示词？所有未单独配置 system_prompt 的 Agent 与对话都会改用它。` : undefined}
+        confirmLabel="设为默认"
+        onClose={() => setPendingDefaultPrompt(null)}
+        onConfirm={setAsDefault}
+      />
+      <ConfirmDialog
+        open={!!pendingAgentId}
+        title="删除 Agent"
+        description="确定删除该 Agent？此操作不可恢复。"
+        confirmLabel="删除"
+        onClose={() => setPendingAgentId(null)}
+        onConfirm={handleDeleteAgent}
+      />
     </div>
   )
 }

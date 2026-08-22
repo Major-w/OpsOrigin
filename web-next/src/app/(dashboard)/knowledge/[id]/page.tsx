@@ -32,6 +32,7 @@ import {
 } from 'lucide-react'
 import { toast } from '@/stores/toast'
 import { useAuthStore } from '@/stores/auth'
+import { ConfirmDialog } from '@/components/ui/confirm-dialog'
 
 const getCurrentUser = () => useAuthStore.getState().user?.username || 'anonymous'
 
@@ -95,6 +96,7 @@ export default function KnowledgeDetailPage() {
   const [attachments, setAttachments] = useState<ArticleAttachment[]>([])
   const [uploading, setUploading] = useState(false)
   const attInputRef = useRef<HTMLInputElement>(null)
+  const [pendingConfirm, setPendingConfirm] = useState<{ title: string; description: string; onConfirm: () => void | Promise<void> } | null>(null)
 
   const loadAttachments = async () => {
     try {
@@ -141,14 +143,19 @@ export default function KnowledgeDetailPage() {
   }
 
   const handleDeleteAtt = async (a: ArticleAttachment) => {
-    if (!confirm(`删除附件「${a.file_name}」？`)) return
-    try {
-      await apiFetch(`/knowledge/${articleId}/attachments/${a.id}`, { method: 'DELETE' })
-      toast.success('已删除')
-      loadAttachments()
-    } catch (err: any) {
-      toast.error('删除失败: ' + err.message)
-    }
+    setPendingConfirm({
+      title: '删除附件',
+      description: `删除附件「${a.file_name}」？`,
+      onConfirm: async () => {
+        try {
+          await apiFetch(`/knowledge/${articleId}/attachments/${a.id}`, { method: 'DELETE' })
+          toast.success('已删除')
+          loadAttachments()
+        } catch (err: any) {
+          toast.error('删除失败: ' + err.message)
+        }
+      },
+    })
   }
 
   useEffect(() => {
@@ -184,15 +191,20 @@ export default function KnowledgeDetailPage() {
   }
 
   const handleRollback = async (version: number) => {
-    if (!confirm(`确认回滚到 v${version}？当前内容将保存为新版本`)) return
-    setRollingBack(true)
-    const ok = await rollbackVersion(articleId, version)
-    setRollingBack(false)
-    if (ok) {
-      setShowVersions(false)
-      setVersionsLoaded(false)
-      await fetchArticles()
-    }
+    setPendingConfirm({
+      title: '回滚版本',
+      description: `确认回滚到 v${version}？当前内容将保存为新版本`,
+      onConfirm: async () => {
+        setRollingBack(true)
+        const ok = await rollbackVersion(articleId, version)
+        setRollingBack(false)
+        if (ok) {
+          setShowVersions(false)
+          setVersionsLoaded(false)
+          await fetchArticles()
+        }
+      },
+    })
   }
 
   const handleSave = async () => {
@@ -227,9 +239,14 @@ export default function KnowledgeDetailPage() {
   }
 
   const handleDelete = async () => {
-    if (!confirm('确认删除该文章？此操作不可撤销。')) return
-    const ok = await remove(articleId)
-    if (ok) router.push('/knowledge')
+    setPendingConfirm({
+      title: '删除文章',
+      description: '确认删除该文章？此操作不可撤销。',
+      onConfirm: async () => {
+        const ok = await remove(articleId)
+        if (ok) router.push('/knowledge')
+      },
+    })
   }
 
   const handleBookmarkToggle = async () => {
@@ -544,6 +561,15 @@ export default function KnowledgeDetailPage() {
           </CardContent>
         )}
       </Card>
+
+      <ConfirmDialog
+        open={!!pendingConfirm}
+        title={pendingConfirm?.title || ''}
+        description={pendingConfirm?.description || ''}
+        confirmLabel="确认"
+        onClose={() => setPendingConfirm(null)}
+        onConfirm={async () => { if (pendingConfirm) await pendingConfirm.onConfirm(); setPendingConfirm(null) }}
+      />
     </div>
   )
 }

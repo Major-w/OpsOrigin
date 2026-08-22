@@ -24,6 +24,7 @@ import {
   type FormFieldDef,
   type FormFieldType,
 } from './DynamicForm'
+import { ConfirmDialog } from '@/components/ui/confirm-dialog'
 
 const MIME_TYPE = 'application/x-field-type' // 调色板 → 新增字段
 const MIME_FIELD = 'application/x-field-key' // 画布字段卡片重排/跨分区搬运
@@ -77,6 +78,7 @@ export function FormDesigner({
   const [emptySections, setEmptySections] = useState<string[]>([])
   // 分区顺序（含空分区），保证块排序稳定且可被 flatten 持久化
   const [sectionOrder, setSectionOrder] = useState<string[]>(() => deriveSections(fields))
+  const [pendingSection, setPendingSection] = useState<string | null>(null)
 
   const sectionsKey = fields.map(f => f.section || '').join('\u0001')
   useEffect(() => {
@@ -220,9 +222,19 @@ export function FormDesigner({
   const removeSection = (title: string) => {
     const b = blocks.find(x => x.title === title)
     if (!b) return
-    if (b.items.length > 0 && !window.confirm(`删除分区「${title || '默认区'}」将同时删除其中 ${b.items.length} 个字段，确定继续？`)) return
+    if (b.items.length > 0) {
+      setPendingSection(title)
+      return
+    }
     const rest = blocks.filter(x => x.title !== title)
     commit(rest.length > 0 ? rest : [{ title: '', items: [] }])
+  }
+
+  const confirmRemoveSection = () => {
+    if (pendingSection === null) return
+    const rest = blocks.filter(x => x.title !== pendingSection)
+    commit(rest.length > 0 ? rest : [{ title: '', items: [] }])
+    setPendingSection(null)
   }
 
   const moveBlock = (title: string, delta: number) => {
@@ -590,6 +602,14 @@ export function FormDesigner({
           />
         )}
       </div>
+      <ConfirmDialog
+        open={pendingSection !== null}
+        title="删除分区"
+        description={pendingSection ? `删除分区「${pendingSection || '默认区'}」将同时删除其中所有字段，确定继续？` : ''}
+        confirmLabel="删除"
+        onClose={() => setPendingSection(null)}
+        onConfirm={confirmRemoveSection}
+      />
     </div>
   )
 }

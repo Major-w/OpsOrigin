@@ -9,6 +9,7 @@ import { toast } from '@/stores/toast'
 import { Plus, Trash2, Terminal, Wrench, AlertCircle, Loader2, Search, RefreshCw, Boxes, Puzzle, Globe } from 'lucide-react'
 import { cn, apiFetch, apiList } from '@/lib/utils'
 import { useThemeStore } from '@/stores/theme'
+import { ConfirmDialog } from '@/components/ui/confirm-dialog'
 
 // 引擎内建工具: 对模型不可见的底层能力, 不参与 Agent 白名单勾选
 const BUILTIN_TOOLS = new Set(['llm_chat', 'http_get'])
@@ -56,6 +57,7 @@ export default function MCPToolsPage() {
   const [saving, setSaving] = useState(false)
   const [showForm, setShowForm] = useState(false)
   const [form, setForm] = useState({ ...EMPTY_FORM })
+  const [pendingDelete, setPendingDelete] = useState<CustomTool | null>(null)
 
   const load = async () => {
     setLoading(true)
@@ -136,13 +138,15 @@ export default function MCPToolsPage() {
     } catch (e: any) { toast.error(`更新失败: ${e.message}`) }
   }
 
-  const handleDelete = async (t: CustomTool) => {
-    if (!confirm(`删除自定义工具「${t.name}」？删除后 AI 将无法调用，引用该工具的数字员工需自行调整白名单。`)) return
+  const handleDelete = async () => {
+    if (!pendingDelete) return
+    const t = pendingDelete
     try {
       await apiFetch(`/ai/tools/custom/${t.id}`, { method: 'DELETE' })
       toast.success('已删除')
       load()
     } catch (e: any) { toast.error(`删除失败: ${e.message}`) }
+    finally { setPendingDelete(null) }
   }
 
   const surface = theme === 'dark' ? 'bg-white/[0.02] border border-white/[0.04]' : 'bg-gray-50 border border-gray-100'
@@ -356,7 +360,7 @@ export default function MCPToolsPage() {
                     >
                       <span className={cn('absolute top-0.5 h-4 w-4 rounded-full bg-white transition-all', t.enabled ? 'left-[18px]' : 'left-0.5')} />
                     </button>
-                    <Button variant="ghost" size="sm" onClick={() => handleDelete(t)}><Trash2 className="h-3.5 w-3.5 text-red-400" /></Button>
+                    <Button variant="ghost" size="sm" onClick={() => setPendingDelete(t)}><Trash2 className="h-3.5 w-3.5 text-red-400" /></Button>
                   </div>
                 </div>
               ))
@@ -364,6 +368,15 @@ export default function MCPToolsPage() {
           </div>
         </CardContent>
       </Card>
+
+      <ConfirmDialog
+        open={!!pendingDelete}
+        title="删除自定义工具"
+        description={pendingDelete ? `删除自定义工具「${pendingDelete.name}」？删除后 AI 将无法调用，引用该工具的数字员工需自行调整白名单。` : ''}
+        confirmLabel="删除"
+        onClose={() => setPendingDelete(null)}
+        onConfirm={handleDelete}
+      />
     </div>
   )
 }

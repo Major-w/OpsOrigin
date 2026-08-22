@@ -18,6 +18,7 @@ import { Badge } from '@/components/ui/badge'
 import { Input } from '@/components/ui/input'
 import { Select } from '@/components/ui/select'
 import { Dialog, DialogFooter } from '@/components/ui/dialog'
+import { ConfirmDialog } from '@/components/ui/confirm-dialog'
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs'
 import {
   Bell, Plus, Trash2, Edit, Mail, MessageSquare, Webhook, Send,
@@ -73,6 +74,7 @@ function ChannelsTab() {
   const { channels, channelTypes, fetchChannels, deleteChannel } = useNotificationStore()
   const [dialogOpen, setDialogOpen] = useState(false)
   const [editId, setEditId] = useState<string | null>(null)
+  const [pendingChannel, setPendingChannel] = useState<Channel | null>(null)
   const [form, setForm] = useState<{ name: string; type: ChannelType; config: Record<string, string>; enabled: boolean }>({
     name: '', type: 'email', config: {}, enabled: true,
   })
@@ -121,9 +123,10 @@ function ChannelsTab() {
     setDialogOpen(false)
   }
 
-  const handleDelete = async (ch: Channel) => {
-    if (!confirm(`确定删除渠道「${ch.name}」?`)) return
-    await deleteChannel(ch.id)
+  const handleDelete = async () => {
+    if (!pendingChannel) return
+    await deleteChannel(pendingChannel.id)
+    setPendingChannel(null)
   }
 
   const handleTest = async (ch: Channel) => {
@@ -153,7 +156,7 @@ function ChannelsTab() {
               key={ch.id}
               channel={ch}
               onEdit={() => openEdit(ch)}
-              onDelete={() => handleDelete(ch)}
+              onDelete={() => setPendingChannel(ch)}
               onTest={() => handleTest(ch)}
             />
           ))}
@@ -226,6 +229,8 @@ function ChannelsTab() {
           <Button onClick={handleSave} disabled={!form.name}>{editId ? '保存' : '创建'}</Button>
         </DialogFooter>
       </Dialog>
+
+      <ConfirmDialog open={!!pendingChannel} title="删除渠道" description={`确定删除渠道「${pendingChannel?.name}」?`} onClose={() => setPendingChannel(null)} onConfirm={handleDelete} />
     </div>
   )
 }
@@ -290,6 +295,7 @@ function PoliciesTab() {
   const [dialogOpen, setDialogOpen] = useState(false)
   const [editId, setEditId] = useState<string | null>(null)
   const [sendDialogOpen, setSendDialogOpen] = useState(false)
+  const [pendingPolicy, setPendingPolicy] = useState<Policy | null>(null)
   const [sendForm, setSendForm] = useState<{ event: EventType; title: string; content: string }>({
     event: 'alert.triggered', title: '', content: '',
   })
@@ -336,9 +342,10 @@ function PoliciesTab() {
     setDialogOpen(false)
   }
 
-  const handleDelete = async (p: Policy) => {
-    if (!confirm(`确定删除策略「${p.name}」?`)) return
-    await useNotificationStore.getState().deletePolicy(p.id)
+  const handleDelete = async () => {
+    if (!pendingPolicy) return
+    await useNotificationStore.getState().deletePolicy(pendingPolicy.id)
+    setPendingPolicy(null)
   }
 
   const toggleChannel = (id: string) => {
@@ -379,7 +386,7 @@ function PoliciesTab() {
               policy={p}
               channelMap={channelMap}
               onEdit={() => openEdit(p)}
-              onDelete={() => handleDelete(p)}
+              onDelete={() => setPendingPolicy(p)}
             />
           ))}
         </div>
@@ -510,6 +517,8 @@ function PoliciesTab() {
           </Button>
         </DialogFooter>
       </Dialog>
+
+      <ConfirmDialog open={!!pendingPolicy} title="删除策略" description={`确定删除策略「${pendingPolicy?.name}」?`} onClose={() => setPendingPolicy(null)} onConfirm={handleDelete} />
     </div>
   )
 }
