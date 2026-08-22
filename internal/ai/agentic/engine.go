@@ -441,7 +441,57 @@ func (e *Engine) loadFromStore() error {
 			slog.Warn("failed to restore inspection runs", "inspection", in.ID, "tenant", in.TenantID, "err", err)
 		}
 	}
+	// 闭环产物(G4): 重启后恢复修复动作/剧本/RCA/复盘/自治档位, 避免内存态丢失。
+	// 注意: Start() 在调用 loadFromStore 前已持有 e.mu, 此函数内不得重复加锁。
+	e.restoreClosedLoopFromStore(ctx)
 	return nil
+}
+
+// restoreClosedLoopFromStore 恢复闭环产物到内存 map(调用方须已持有 e.mu, 不重复加锁)。
+func (e *Engine) restoreClosedLoopFromStore(ctx context.Context) {
+	if e.store == nil {
+		return
+	}
+	if recs, err := e.store.ListRemediations(ctx, ""); err == nil {
+		for _, r := range recs {
+			e.remediations[r.ID] = r
+		}
+	} else {
+		slog.Warn("failed to restore remediations", "err", err)
+	}
+	if rbs, err := e.store.ListRunbooks(ctx, ""); err == nil {
+		if e.runbooks == nil {
+			e.runbooks = map[string]*Runbook{}
+		}
+		for _, rb := range rbs {
+			e.runbooks[rb.ID] = rb
+		}
+	} else {
+		slog.Warn("failed to restore runbooks", "err", err)
+	}
+	if rs, err := e.store.ListRCARecords(ctx, ""); err == nil {
+		if e.rcaRecords == nil {
+			e.rcaRecords = map[string]*RCARecord{}
+		}
+		for _, rec := range rs {
+			e.rcaRecords[rec.ID] = rec
+		}
+	} else {
+		slog.Warn("failed to restore rca records", "err", err)
+	}
+	if ps, err := e.store.ListPostmortems(ctx, ""); err == nil {
+		if e.postmortems == nil {
+			e.postmortems = map[string]*Postmortem{}
+		}
+		for _, pm := range ps {
+			e.postmortems[pm.ID] = pm
+		}
+	} else {
+		slog.Warn("failed to restore postmortems", "err", err)
+	}
+	if lvl, err := e.store.GetAutonomy(ctx, "default"); err == nil && lvl != "" {
+		e.autonomy = lvl
+	}
 }
 
 // Chat 执行一次单轮(可带历史)的 LLM 推理,供 AI 助手聊天端点使用。

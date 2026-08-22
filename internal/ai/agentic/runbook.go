@@ -77,7 +77,6 @@ func (e *Engine) CreateRunbookFromRemediation(ctx context.Context, a *Remediatio
 		return nil, false
 	}
 	e.mu.Lock()
-	defer e.mu.Unlock()
 	// 幂等: 同租户同前缀已存在 → 更新步骤与风险级, 返回复用
 	for _, rb := range e.runbooks {
 		if rb.TenantID == a.TenantID && rb.TitlePrefix == prefix {
@@ -85,6 +84,13 @@ func (e *Engine) CreateRunbookFromRemediation(ctx context.Context, a *Remediatio
 			rb.Rollback = a.Suggestion // 原文留作回滚参考
 			rb.RiskLevel = a.Level
 			rb.UpdatedAt = time.Now()
+			cp := *rb
+			e.mu.Unlock()
+			if e.store != nil {
+				if err := e.store.SaveRunbook(ctx, &cp); err != nil {
+					slog.Warn("persist runbook reuse failed", "id", rb.ID, "err", err)
+				}
+			}
 			return rb, true
 		}
 	}
@@ -106,6 +112,13 @@ func (e *Engine) CreateRunbookFromRemediation(ctx context.Context, a *Remediatio
 	}
 	e.runbooks[rb.ID] = rb
 	slog.Info("runbook created", "runbook", rb.Name, "title_prefix", prefix)
+	cp := *rb
+	e.mu.Unlock()
+	if e.store != nil {
+		if err := e.store.SaveRunbook(ctx, &cp); err != nil {
+			slog.Warn("persist runbook failed", "id", rb.ID, "err", err)
+		}
+	}
 	return rb, false
 }
 
@@ -113,6 +126,12 @@ func (e *Engine) CreateRunbookFromRemediation(ctx context.Context, a *Remediatio
 func (e *Engine) MatchRunbook(tenantID, findingTitle string) *Runbook {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
+	return e.matchRunbookLocked(tenantID, findingTitle)
+}
+
+// matchRunbookLocked 内部匹配(调用方须已持有 e.mu; 写锁或读锁皆可)。
+// 抽此版本是为了让 GenerateRemediations 在持有写锁时复用匹配逻辑而不死锁(避免 RLock 嵌套)。
+func (e *Engine) matchRunbookLocked(tenantID, findingTitle string) *Runbook {
 	var best *Runbook
 	norm := runbookNormalizeTitle(findingTitle)
 	for _, rb := range e.runbooks {
@@ -184,8 +203,20 @@ func (e *Engine) ExecuteRunbook(ctx context.Context, tenantID, runbookID string)
 		return rb, err
 	}
 	e.mu.Lock()
-	rb.UseCount++
-	rb.UpdatedAt = time.Now()
-	e.mu.Unlock()
+	cur := e.runbooks[runbookID]
+	if cur != nil {
+		// 修正: 原 rb 是 GetRunbook 的浅拷贝, 必须写回真实 map 条目, 否则内存累计丢失。
+		cur.UseCount++
+		cur.UpdatedAt = time.Now()
+		cp := *cur
+		e.mu.Unlock()
+		if e.store != nil {
+			if err := e.store.SaveRunbook(ctx, &cp); err != nil {
+				slog.Warn("persist runbook failed", "id", runbookID, "err", err)
+			}
+		}
+	} else {
+		e.mu.Unlock()
+	}
 	return rb, nil
 }

@@ -69,6 +69,18 @@ type Store interface {
 	CreateInspectionRun(ctx context.Context, run *InspectionRun) error
 	UpdateInspectionRun(ctx context.Context, run *InspectionRun) error
 	ListInspectionRuns(ctx context.Context, inspectionID, tenantID string) ([]*InspectionRun, error)
+
+	// ——— 闭环产物持久化 (G4: 修复/剧本/RCA/复盘/自治档位, 避免进程重启丢失) ———
+	SaveRemediation(ctx context.Context, a *RemediationAction) error
+	ListRemediations(ctx context.Context, tenantID string) ([]*RemediationAction, error)
+	SaveRunbook(ctx context.Context, rb *Runbook) error
+	ListRunbooks(ctx context.Context, tenantID string) ([]*Runbook, error)
+	SaveRCARecord(ctx context.Context, rec *RCARecord) error
+	ListRCARecords(ctx context.Context, tenantID string) ([]*RCARecord, error)
+	SavePostmortem(ctx context.Context, pm *Postmortem) error
+	ListPostmortems(ctx context.Context, tenantID string) ([]*Postmortem, error)
+	SetAutonomy(ctx context.Context, tenantID string, level AutonomyLevel) error
+	GetAutonomy(ctx context.Context, tenantID string) (AutonomyLevel, error)
 }
 
 type AgentRecord struct {
@@ -245,6 +257,30 @@ func (s *PGStore) migrate() {
 		created_at TIMESTAMPTZ DEFAULT NOW(), updated_at TIMESTAMPTZ DEFAULT NOW()
 	)`)
 	s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_ai_prompts_tenant ON ai_prompts(tenant_id)`)
+	// 闭环产物(G4): 整对象 JSONB 持久化, 与 ai_inspections 同构(字段演进频繁, 避免频繁改表)。
+	s.db.Exec(`CREATE TABLE IF NOT EXISTS ai_remediations (
+		id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL DEFAULT 'default',
+		data JSONB NOT NULL DEFAULT '{}', created_at TIMESTAMPTZ DEFAULT NOW()
+	)`)
+	s.db.Exec(`CREATE TABLE IF NOT EXISTS ai_runbooks (
+		id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL DEFAULT 'default',
+		data JSONB NOT NULL DEFAULT '{}', created_at TIMESTAMPTZ DEFAULT NOW(), updated_at TIMESTAMPTZ DEFAULT NOW()
+	)`)
+	s.db.Exec(`CREATE TABLE IF NOT EXISTS ai_rca_records (
+		id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL DEFAULT 'default',
+		data JSONB NOT NULL DEFAULT '{}', created_at TIMESTAMPTZ DEFAULT NOW()
+	)`)
+	s.db.Exec(`CREATE TABLE IF NOT EXISTS ai_postmortems (
+		id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL DEFAULT 'default',
+		data JSONB NOT NULL DEFAULT '{}', created_at TIMESTAMPTZ DEFAULT NOW(), updated_at TIMESTAMPTZ DEFAULT NOW()
+	)`)
+	s.db.Exec(`CREATE TABLE IF NOT EXISTS ai_autonomy (
+		tenant_id TEXT PRIMARY KEY DEFAULT 'default', level TEXT NOT NULL DEFAULT 'act_with_approval'
+	)`)
+	s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_ai_remediations_tenant ON ai_remediations(tenant_id)`)
+	s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_ai_runbooks_tenant ON ai_runbooks(tenant_id)`)
+	s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_ai_rca_records_tenant ON ai_rca_records(tenant_id)`)
+	s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_ai_postmortems_tenant ON ai_postmortems(tenant_id)`)
 }
 
 // ——— 自定义 MCP 工具持久化 (PRD 5.2.2) ———
@@ -782,6 +818,190 @@ func (s *PGStore) UpdateInspectionRun(ctx context.Context, run *InspectionRun) e
 		`UPDATE ai_inspection_runs SET run=$1 WHERE id=$2 AND tenant_id=$3`,
 		body, run.ID, run.TenantID)
 	return err
+}
+
+// ——— 闭环产物持久化 (G4) ——— 整对象 JSONB 与 ai_inspections 同构。
+
+func (s *PGStore) SaveRemediation(ctx context.Context, a *RemediationAction) error {
+	if a.TenantID == "" {
+		a.TenantID = "default"
+	}
+	data, _ := json.Marshal(a)
+	_, err := s.db.ExecContext(ctx,
+		`INSERT INTO ai_remediations(id,tenant_id,data,created_at) VALUES($1,$2,$3,$4)
+		 ON CONFLICT (id) DO UPDATE SET data=EXCLUDED.data`,
+		a.ID, a.TenantID, data, a.CreatedAt)
+	return err
+}
+
+func (s *PGStore) ListRemediations(ctx context.Context, tenantID string) ([]*RemediationAction, error) {
+	var rows *sql.Rows
+	var err error
+	if tenantID == "" {
+		rows, err = s.db.QueryContext(ctx, `SELECT data FROM ai_remediations ORDER BY created_at`)
+	} else {
+		rows, err = s.db.QueryContext(ctx, `SELECT data FROM ai_remediations WHERE tenant_id=$1 ORDER BY created_at`, tenantID)
+	}
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []*RemediationAction
+	for rows.Next() {
+		var data []byte
+		if err := rows.Scan(&data); err != nil {
+			return nil, err
+		}
+		a := &RemediationAction{}
+		if json.Unmarshal(data, a) != nil {
+			continue
+		}
+		out = append(out, a)
+	}
+	return out, rows.Err()
+}
+
+func (s *PGStore) SaveRunbook(ctx context.Context, rb *Runbook) error {
+	if rb.TenantID == "" {
+		rb.TenantID = "default"
+	}
+	data, _ := json.Marshal(rb)
+	_, err := s.db.ExecContext(ctx,
+		`INSERT INTO ai_runbooks(id,tenant_id,data,created_at,updated_at) VALUES($1,$2,$3,$4,$5)
+		 ON CONFLICT (id) DO UPDATE SET data=EXCLUDED.data, updated_at=EXCLUDED.updated_at`,
+		rb.ID, rb.TenantID, data, rb.CreatedAt, rb.UpdatedAt)
+	return err
+}
+
+func (s *PGStore) ListRunbooks(ctx context.Context, tenantID string) ([]*Runbook, error) {
+	var rows *sql.Rows
+	var err error
+	if tenantID == "" {
+		rows, err = s.db.QueryContext(ctx, `SELECT data FROM ai_runbooks ORDER BY updated_at DESC`)
+	} else {
+		rows, err = s.db.QueryContext(ctx, `SELECT data FROM ai_runbooks WHERE tenant_id=$1 ORDER BY updated_at DESC`, tenantID)
+	}
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []*Runbook
+	for rows.Next() {
+		var data []byte
+		if err := rows.Scan(&data); err != nil {
+			return nil, err
+		}
+		rb := &Runbook{}
+		if json.Unmarshal(data, rb) != nil {
+			continue
+		}
+		out = append(out, rb)
+	}
+	return out, rows.Err()
+}
+
+func (s *PGStore) SaveRCARecord(ctx context.Context, rec *RCARecord) error {
+	if rec.TenantID == "" {
+		rec.TenantID = "default"
+	}
+	data, _ := json.Marshal(rec)
+	_, err := s.db.ExecContext(ctx,
+		`INSERT INTO ai_rca_records(id,tenant_id,data,created_at) VALUES($1,$2,$3,$4)
+		 ON CONFLICT (id) DO UPDATE SET data=EXCLUDED.data`,
+		rec.ID, rec.TenantID, data, rec.CreatedAt)
+	return err
+}
+
+func (s *PGStore) ListRCARecords(ctx context.Context, tenantID string) ([]*RCARecord, error) {
+	var rows *sql.Rows
+	var err error
+	if tenantID == "" {
+		rows, err = s.db.QueryContext(ctx, `SELECT data FROM ai_rca_records ORDER BY created_at`)
+	} else {
+		rows, err = s.db.QueryContext(ctx, `SELECT data FROM ai_rca_records WHERE tenant_id=$1 ORDER BY created_at`, tenantID)
+	}
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []*RCARecord
+	for rows.Next() {
+		var data []byte
+		if err := rows.Scan(&data); err != nil {
+			return nil, err
+		}
+		rec := &RCARecord{}
+		if json.Unmarshal(data, rec) != nil {
+			continue
+		}
+		out = append(out, rec)
+	}
+	return out, rows.Err()
+}
+
+func (s *PGStore) SavePostmortem(ctx context.Context, pm *Postmortem) error {
+	if pm.TenantID == "" {
+		pm.TenantID = "default"
+	}
+	data, _ := json.Marshal(pm)
+	_, err := s.db.ExecContext(ctx,
+		`INSERT INTO ai_postmortems(id,tenant_id,data,created_at,updated_at) VALUES($1,$2,$3,$4,$5)
+		 ON CONFLICT (id) DO UPDATE SET data=EXCLUDED.data, updated_at=EXCLUDED.updated_at`,
+		pm.ID, pm.TenantID, data, pm.CreatedAt, pm.UpdatedAt)
+	return err
+}
+
+func (s *PGStore) ListPostmortems(ctx context.Context, tenantID string) ([]*Postmortem, error) {
+	var rows *sql.Rows
+	var err error
+	if tenantID == "" {
+		rows, err = s.db.QueryContext(ctx, `SELECT data FROM ai_postmortems ORDER BY created_at`)
+	} else {
+		rows, err = s.db.QueryContext(ctx, `SELECT data FROM ai_postmortems WHERE tenant_id=$1 ORDER BY created_at`, tenantID)
+	}
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []*Postmortem
+	for rows.Next() {
+		var data []byte
+		if err := rows.Scan(&data); err != nil {
+			return nil, err
+		}
+		pm := &Postmortem{}
+		if json.Unmarshal(data, pm) != nil {
+			continue
+		}
+		out = append(out, pm)
+	}
+	return out, rows.Err()
+}
+
+func (s *PGStore) SetAutonomy(ctx context.Context, tenantID string, level AutonomyLevel) error {
+	if tenantID == "" {
+		tenantID = "default"
+	}
+	_, err := s.db.ExecContext(ctx,
+		`INSERT INTO ai_autonomy(tenant_id,level) VALUES($1,$2)
+		 ON CONFLICT (tenant_id) DO UPDATE SET level=EXCLUDED.level`,
+		tenantID, string(level))
+	return err
+}
+
+func (s *PGStore) GetAutonomy(ctx context.Context, tenantID string) (AutonomyLevel, error) {
+	if tenantID == "" {
+		tenantID = "default"
+	}
+	var level string
+	err := s.db.QueryRowContext(ctx, `SELECT level FROM ai_autonomy WHERE tenant_id=$1`, tenantID).Scan(&level)
+	if err == sql.ErrNoRows {
+		return "", nil
+	}
+	if err != nil {
+		return "", err
+	}
+	return AutonomyLevel(level), nil
 }
 
 func (s *PGStore) CreateAgent(ctx context.Context, a *AgentRecord) error {

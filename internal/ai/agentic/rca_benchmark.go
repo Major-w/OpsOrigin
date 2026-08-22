@@ -1,6 +1,7 @@
 package agentic
 
 import (
+	"context"
 	"fmt"
 	"log/slog"
 	"sort"
@@ -42,11 +43,17 @@ func (e *Engine) RecordRCA(tenantID string, rec *RCARecord) *RCARecord {
 	rec.TenantID = tenantID
 	rec.CreatedAt = time.Now()
 	e.mu.Lock()
-	defer e.mu.Unlock()
 	if e.rcaRecords == nil {
 		e.rcaRecords = map[string]*RCARecord{}
 	}
 	e.rcaRecords[rec.ID] = rec
+	cp := *rec
+	e.mu.Unlock()
+	if e.store != nil {
+		if err := e.store.SaveRCARecord(context.Background(), &cp); err != nil {
+			slog.Warn("persist rca record failed", "id", rec.ID, "err", err)
+		}
+	}
 	slog.Info("rca record created", "incident", rec.IncidentID, "title", rec.Title)
 	return rec
 }
@@ -54,15 +61,22 @@ func (e *Engine) RecordRCA(tenantID string, rec *RCARecord) *RCARecord {
 // LabelRCA 人工标注一条 RCA 是否准确(形成基准)。
 func (e *Engine) LabelRCA(tenantID, id string, accurate bool, note string) (*RCARecord, error) {
 	e.mu.Lock()
-	defer e.mu.Unlock()
 	rec, ok := e.rcaRecords[id]
 	if !ok || rec.TenantID != tenantID {
+		e.mu.Unlock()
 		return nil, fmt.Errorf("rca record not found: %s", id)
 	}
 	now := time.Now()
 	rec.Accurate = &accurate
 	rec.Note = note
 	rec.LabeledAt = &now
+	cp := *rec
+	e.mu.Unlock()
+	if e.store != nil {
+		if err := e.store.SaveRCARecord(context.Background(), &cp); err != nil {
+			slog.Warn("persist rca label failed", "id", id, "err", err)
+		}
+	}
 	return rec, nil
 }
 

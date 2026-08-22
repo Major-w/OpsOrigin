@@ -24,19 +24,30 @@ type memStore struct {
 	insps    map[string]*Inspection
 	inspRuns map[string][]*InspectionRun
 	prompts  map[string]*PromptTemplate
+	// 闭环产物(G4) 测试用内存映射
+	remediations map[string]*RemediationAction
+	runbooks     map[string]*Runbook
+	rcaRecords   map[string]*RCARecord
+	postmortems  map[string]*Postmortem
+	autonomy     map[string]AutonomyLevel
 }
 
 func newMemStore() *memStore {
 	return &memStore{
-		agents:   map[string]*AgentRecord{},
-		teams:    map[string]*TeamRecord{},
-		customs:  map[string]*CustomTool{},
-		skills:   map[string]*SkillPackage{},
-		ratings:  map[string]int{},
-		favs:     map[string]bool{},
-		insps:    map[string]*Inspection{},
-		inspRuns: map[string][]*InspectionRun{},
-		prompts:  map[string]*PromptTemplate{},
+		agents:       map[string]*AgentRecord{},
+		teams:        map[string]*TeamRecord{},
+		customs:      map[string]*CustomTool{},
+		skills:       map[string]*SkillPackage{},
+		ratings:      map[string]int{},
+		favs:         map[string]bool{},
+		insps:        map[string]*Inspection{},
+		inspRuns:     map[string][]*InspectionRun{},
+		prompts:      map[string]*PromptTemplate{},
+		remediations: map[string]*RemediationAction{},
+		runbooks:     map[string]*Runbook{},
+		rcaRecords:   map[string]*RCARecord{},
+		postmortems:  map[string]*Postmortem{},
+		autonomy:     map[string]AutonomyLevel{},
 	}
 }
 
@@ -301,6 +312,63 @@ func (m *memStore) UpdateInspectionRun(_ context.Context, run *InspectionRun) er
 }
 func (m *memStore) ListInspectionRuns(_ context.Context, id, _ string) ([]*InspectionRun, error) {
 	return m.inspRuns[id], nil
+}
+
+// ——— 闭环产物 (G4) ———
+
+func (m *memStore) SaveRemediation(_ context.Context, a *RemediationAction) error {
+	m.remediations[a.ID] = a
+	return nil
+}
+func (m *memStore) ListRemediations(_ context.Context, _ string) ([]*RemediationAction, error) {
+	out := make([]*RemediationAction, 0, len(m.remediations))
+	for _, a := range m.remediations {
+		out = append(out, a)
+	}
+	return out, nil
+}
+func (m *memStore) SaveRunbook(_ context.Context, rb *Runbook) error {
+	m.runbooks[rb.ID] = rb
+	return nil
+}
+func (m *memStore) ListRunbooks(_ context.Context, _ string) ([]*Runbook, error) {
+	out := make([]*Runbook, 0, len(m.runbooks))
+	for _, rb := range m.runbooks {
+		out = append(out, rb)
+	}
+	return out, nil
+}
+func (m *memStore) SaveRCARecord(_ context.Context, rec *RCARecord) error {
+	m.rcaRecords[rec.ID] = rec
+	return nil
+}
+func (m *memStore) ListRCARecords(_ context.Context, _ string) ([]*RCARecord, error) {
+	out := make([]*RCARecord, 0, len(m.rcaRecords))
+	for _, rec := range m.rcaRecords {
+		out = append(out, rec)
+	}
+	return out, nil
+}
+func (m *memStore) SavePostmortem(_ context.Context, pm *Postmortem) error {
+	m.postmortems[pm.ID] = pm
+	return nil
+}
+func (m *memStore) ListPostmortems(_ context.Context, _ string) ([]*Postmortem, error) {
+	out := make([]*Postmortem, 0, len(m.postmortems))
+	for _, pm := range m.postmortems {
+		out = append(out, pm)
+	}
+	return out, nil
+}
+func (m *memStore) SetAutonomy(_ context.Context, tenantID string, level AutonomyLevel) error {
+	m.autonomy[tenantID] = level
+	return nil
+}
+func (m *memStore) GetAutonomy(_ context.Context, tenantID string) (AutonomyLevel, error) {
+	if lvl, ok := m.autonomy[tenantID]; ok {
+		return lvl, nil
+	}
+	return "", nil
 }
 
 // TestSkillMarketFlow 端到端验证技能市场全链路:

@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"syscall"
 	"time"
@@ -1070,6 +1071,59 @@ func main() {
 	aiSvc.Engine.SetWorkspaceSink(aiSvc.SaveWorkspaceFile) // 会话工作区: 工具产物自动沉淀
 	// 长期记忆持久化: AddMemory 落库 + 启动时从 DB 灌回内存(重启不丢)
 	aiSvc.Engine.SetMemoryPersist(aiSvc.PersistMemory)
+	// 注入真实修复执行器: 将修复动作派发为 ITSM 工单(真实落库、可审计), 替代内置演示执行器。
+	// 安全边界: 危险指令已被 classifyRemediationRisk 拦截(blocked 不进入执行); 自治档位 notify/suggest 不执行;
+	// act_with_approval/review 走审批闸门; autonomous 跳过审批但不绕过 blocked。不自动执行任意 shell。
+	aiSvc.Engine.SetRemediationRunner(func(ctx context.Context, action *agentic.RemediationAction) (string, error) {
+		tenantID := action.TenantID
+		tctx := context.WithValue(ctx, "tenant_id", tenantID)
+		// 复用历史剧本步骤(如有), 附到工单描述供人工/下游执行参考
+		var steps []string
+		if action.RunbookID != "" {
+			if rb, ok := aiSvc.Engine.GetRunbook(action.RunbookID); ok {
+				steps = rb.Steps
+			}
+		}
+		desc := action.Suggestion
+		if len(steps) > 0 {
+			desc = "复用历史剧本步骤:\n- " + strings.Join(steps, "\n- ") + "\n\n原始建议: " + action.Suggestion
+		}
+		req := itsmmodel.CreateTicketRequest{
+			Title:         "[自动修复] " + action.Title,
+			Description:   desc,
+			RiskLevel:     itsmmodel.RiskLevel(action.Level),
+			CreatedBy:     "ai-remediation",
+			CreatedByType: "system",
+			Labels: map[string]string{
+				"source":        "ai_remediation",
+				"inspection_id": action.InspectionID,
+				"run_id":        action.RunID,
+			},
+		}
+		ticket, err := itsmSvc.CreateTicket(tctx, req)
+		if err != nil {
+			return "", err
+		}
+		return fmt.Sprintf("已派发修复工单[tid=%s]：%s", ticket.ID, ticket.Title), nil
+	})
+	// 注入真实修复验证器: 回查派发的 ITSM 工单是否真实存在且未拒绝/撤回(替代默认"验证通过")。
+	aiSvc.Engine.SetRemediationVerifier(func(ctx context.Context, action *agentic.RemediationAction) (bool, string, error) {
+		re := regexp.MustCompile(`tid=([^\]]+)`)
+		m := re.FindStringSubmatch(action.Result)
+		if len(m) < 2 || m[1] == "" {
+			return false, "未解析到派发工单ID, 无法验证修复(建议人工确认)", nil
+		}
+		tid := m[1]
+		tctx := context.WithValue(ctx, "tenant_id", action.TenantID)
+		ticket, err := itsmSvc.GetTicket(tctx, action.TenantID, tid)
+		if err != nil || ticket == nil {
+			return false, "派发工单不存在, 验证失败: " + tid, nil
+		}
+		if ticket.Status == itsmmodel.StatusRejected || ticket.Status == itsmmodel.StatusWithdrawn {
+			return false, "派发工单已被拒绝/撤回, 修复未生效, 请人工跟进(" + tid + ")", nil
+		}
+		return true, fmt.Sprintf("已验证: 修复工单 %s 已派发并处于 %s 状态", tid, ticket.Status), nil
+	})
 	// 会话共享按组匹配: 注入用户组查询(iam 组模型 UserIDs 成员列表)
 	aiSvc.SetUserGroupsProvider(func(ctx context.Context, userID string) []string {
 		if iamSvc == nil || userID == "" {

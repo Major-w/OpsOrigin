@@ -1,6 +1,7 @@
 package agentic
 
 import (
+	"context"
 	"fmt"
 	"log/slog"
 	"sort"
@@ -36,11 +37,17 @@ func (e *Engine) CreatePostmortem(tenantID string, pm *Postmortem) *Postmortem {
 	pm.CreatedAt = now
 	pm.UpdatedAt = now
 	e.mu.Lock()
-	defer e.mu.Unlock()
 	if e.postmortems == nil {
 		e.postmortems = map[string]*Postmortem{}
 	}
 	e.postmortems[pm.ID] = pm
+	cp := *pm
+	e.mu.Unlock()
+	if e.store != nil {
+		if err := e.store.SavePostmortem(context.Background(), &cp); err != nil {
+			slog.Warn("persist postmortem failed", "id", pm.ID, "err", err)
+		}
+	}
 	slog.Info("postmortem created", "incident", pm.IncidentID, "title", pm.Title)
 	return pm
 }
@@ -55,7 +62,14 @@ func (e *Engine) PublishPostmortem(tenantID, id string, withMemory bool) (*Postm
 	}
 	pm.Status = "published"
 	pm.UpdatedAt = time.Now()
+	cp := *pm
 	e.mu.Unlock()
+
+	if e.store != nil {
+		if err := e.store.SavePostmortem(context.Background(), &cp); err != nil {
+			slog.Warn("persist postmortem failed", "id", id, "err", err)
+		}
+	}
 
 	if withMemory && pm.RootCause != "" {
 		// 回灌经验记忆: 供后续同因事故快速联想。

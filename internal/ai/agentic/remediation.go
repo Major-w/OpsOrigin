@@ -32,6 +32,7 @@ type RemediationAction struct {
 	Title        string     `json:"title"`                 // 发现标题
 	Suggestion   string     `json:"suggestion"`            // 处置指令(执行内容)
 	Risk         string     `json:"risk"`                  // blocked | auto | review
+	RunbookID    string     `json:"runbook_id,omitempty"`  // 命中复用的历史剧本 ID(G3: 生成时匹配)
 	Status       string     `json:"status"`                // pending | awaiting_approval | approved | rejected | executing | succeeded | failed
 	ApprovalID   string     `json:"approval_id,omitempty"` // 审批单 ID(走审批时)
 	Result       string     `json:"result,omitempty"`
@@ -94,7 +95,6 @@ func (e *Engine) GenerateRemediations(ctx context.Context, tenantID, runID strin
 	_ = json.Unmarshal([]byte(run.Findings), &findings)
 
 	e.mu.Lock()
-	defer e.mu.Unlock()
 	// 幂等: 已生成该 run 动作的直接返回
 	var existing []*RemediationAction
 	for _, a := range e.remediations {
@@ -105,10 +105,13 @@ func (e *Engine) GenerateRemediations(ctx context.Context, tenantID, runID strin
 	}
 	if len(existing) > 0 {
 		sort.Slice(existing, func(i, j int) bool { return existing[i].FindingIdx < existing[j].FindingIdx })
+		e.mu.Unlock()
 		return existing, nil
 	}
 
 	now := time.Now()
+	var created []*RemediationAction
+	var matched []*Runbook
 	for idx, f := range findings {
 		a := &RemediationAction{
 			ID:           uuid.New().String(),
@@ -127,11 +130,36 @@ func (e *Engine) GenerateRemediations(ctx context.Context, tenantID, runID strin
 			a.Status = RemediationFailed
 			a.Error = "危险处置指令已拦截(命中黑名单)"
 		}
+		// G3: 生成时即匹配历史剧本, 命中则关联 RunbookID 并累计复用次数(闭环: 旧成功修复→新同类发现)。
+		// 此处持有写锁, 直接调 matchRunbookLocked 避免 RLock 嵌套死锁。
+		if rb := e.matchRunbookLocked(tenantID, f.Title); rb != nil {
+			a.RunbookID = rb.ID
+			rb.UseCount++
+			matched = append(matched, rb)
+		}
 		e.remediations[a.ID] = a
 		existing = append(existing, a)
+		created = append(created, a)
 	}
 	sort.Slice(existing, func(i, j int) bool { return existing[i].FindingIdx < existing[j].FindingIdx })
-	slog.Info("remediations generated", "run", runID, "count", len(existing))
+	e.mu.Unlock()
+
+	// 落库: 新生成动作 + 命中剧本累计(闭环产物持久化, 进程重启不丢)。
+	for _, a := range created {
+		if e.store != nil {
+			if err := e.store.SaveRemediation(ctx, a); err != nil {
+				slog.Warn("persist remediation failed", "id", a.ID, "err", err)
+			}
+		}
+	}
+	for _, rb := range matched {
+		if e.store != nil {
+			if err := e.store.SaveRunbook(ctx, rb); err != nil {
+				slog.Warn("persist runbook reuse failed", "id", rb.ID, "err", err)
+			}
+		}
+	}
+	slog.Info("remediations generated", "run", runID, "count", len(created))
 	return existing, nil
 }
 
@@ -198,13 +226,13 @@ func (e *Engine) ExecuteRemediation(ctx context.Context, tenantID, actionID stri
 
 // runRemediationWithApproval 审批驱动执行: Request 阻塞, 放 goroutine 等待结果。
 func (e *Engine) runRemediationWithApproval(ctx context.Context, a *RemediationAction, runner RemediationRunnerFunc) (*RemediationAction, error) {
-	e.setRemediationStatus(a.ID, RemediationAwaitingApproval, "", "")
+	e.setRemediationStatus(ctx, a.ID, RemediationAwaitingApproval, "", "")
 	go func() {
 		resp := e.approvals.Request(ctx, a.TenantID, "", "remediation_exec",
 			fmt.Sprintf("finding#%d %s", a.FindingIdx, a.Title),
 			"执行自动修复: "+truncateStr(a.Suggestion, 200), 5*time.Minute)
 		if resp == nil || resp.Action != "approve" {
-			e.setRemediationStatus(a.ID, RemediationRejected, "", "审批未通过或超时")
+			e.setRemediationStatus(context.Background(), a.ID, RemediationRejected, "", "审批未通过或超时")
 			return
 		}
 		e.mu.Lock()
@@ -214,7 +242,7 @@ func (e *Engine) runRemediationWithApproval(ctx context.Context, a *RemediationA
 		if cur == nil {
 			return
 		}
-		e.setRemediationStatus(a.ID, RemediationApproved, "", "")
+		e.setRemediationStatus(context.Background(), a.ID, RemediationApproved, "", "")
 		_, _ = e.runRemediationAction(context.Background(), cur, runnerNow)
 	}()
 	return a, nil
@@ -223,7 +251,7 @@ func (e *Engine) runRemediationWithApproval(ctx context.Context, a *RemediationA
 // runRemediationAction 实际执行修复动作(pending/approved -> executing -> succeeded/failed -> verifying -> verified/verify_failed)。
 // runner 为 nil 时用内置演示执行器(返回"演示执行: 建议截断", 不真实影响系统)。
 func (e *Engine) runRemediationAction(ctx context.Context, a *RemediationAction, runner RemediationRunnerFunc) (*RemediationAction, error) {
-	e.setRemediationStatus(a.ID, RemediationExecuting, "", "")
+	e.setRemediationStatus(ctx, a.ID, RemediationExecuting, "", "")
 	exec := runner
 	if exec == nil {
 		exec = func(ctx context.Context, action *RemediationAction) (string, error) {
@@ -233,10 +261,10 @@ func (e *Engine) runRemediationAction(ctx context.Context, a *RemediationAction,
 	}
 	result, err := exec(ctx, a)
 	if err != nil {
-		e.setRemediationStatus(a.ID, RemediationFailed, "", err.Error())
+		e.setRemediationStatus(ctx, a.ID, RemediationFailed, "", err.Error())
 		return e.remediations[a.ID], nil
 	}
-	e.setRemediationStatus(a.ID, RemediationSucceeded, result, "")
+	e.setRemediationStatus(ctx, a.ID, RemediationSucceeded, result, "")
 	// —— 验证修复闭环: 修复已部署后回查服务健康 ——
 	e.verifyRemediation(ctx, a)
 	// 验证通过 → 自动沉淀可复用剧本(幂等, 复用或新建)。
@@ -263,35 +291,54 @@ func (e *Engine) verifyRemediation(ctx context.Context, a *RemediationAction) {
 		a.VerifyStatus = RemediationVerified
 		a.VerifyNote = "未注入验证器, 默认确认(演示链路)"
 		a.VerifiedAt = &now
+		cp := *a
 		e.mu.Unlock()
+		if e.store != nil {
+			if err := e.store.SaveRemediation(ctx, &cp); err != nil {
+				slog.Warn("persist remediation verify failed", "id", a.ID, "err", err)
+			}
+		}
 		return
 	}
 	e.mu.Unlock()
 	healthy, note, verr := verifier(ctx, a)
 	e.mu.Lock()
-	defer e.mu.Unlock()
 	if verr != nil {
 		a.VerifyStatus = RemediationVerifyFailed
 		a.VerifyNote = "验证器执行失败(建议人工确认): " + verr.Error()
+		cp := *a
+		e.mu.Unlock()
+		if e.store != nil {
+			if err := e.store.SaveRemediation(ctx, &cp); err != nil {
+				slog.Warn("persist remediation verify failed", "id", a.ID, "err", err)
+			}
+		}
 		return
 	}
 	if healthy {
 		a.VerifyStatus = RemediationVerified
 		a.VerifyNote = note
 		a.VerifiedAt = &now
-		return
+	} else {
+		// 未恢复: 升级人工(保留修复结果, 状态置 verify_failed 供前端高亮人工跟进)。
+		a.VerifyStatus = RemediationVerifyFailed
+		a.VerifyNote = note + "（服务未恢复, 请人工跟进）"
 	}
-	// 未恢复: 升级人工(保留修复结果, 状态置 verify_failed 供前端高亮人工跟进)。
-	a.VerifyStatus = RemediationVerifyFailed
-	a.VerifyNote = note + "（服务未恢复, 请人工跟进）"
+	cp := *a
+	e.mu.Unlock()
+	if e.store != nil {
+		if err := e.store.SaveRemediation(ctx, &cp); err != nil {
+			slog.Warn("persist remediation verify failed", "id", a.ID, "err", err)
+		}
+	}
 }
 
-// setRemediationStatus 更新动作状态。
-func (e *Engine) setRemediationStatus(id, status, result, errMsg string) {
+// setRemediationStatus 更新动作状态(解锁后落库, 闭环产物持久化)。
+func (e *Engine) setRemediationStatus(ctx context.Context, id, status, result, errMsg string) {
 	e.mu.Lock()
-	defer e.mu.Unlock()
 	a, ok := e.remediations[id]
 	if !ok {
+		e.mu.Unlock()
 		return
 	}
 	a.Status = status
@@ -304,6 +351,13 @@ func (e *Engine) setRemediationStatus(id, status, result, errMsg string) {
 	if status == RemediationSucceeded || status == RemediationFailed || status == RemediationRejected {
 		now := time.Now()
 		a.FinishedAt = &now
+	}
+	cp := *a
+	e.mu.Unlock()
+	if e.store != nil {
+		if err := e.store.SaveRemediation(ctx, &cp); err != nil {
+			slog.Warn("persist remediation failed", "id", id, "status", status, "err", err)
+		}
 	}
 }
 
