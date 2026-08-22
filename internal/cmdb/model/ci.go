@@ -65,6 +65,25 @@ const (
 	RelationConnects  = "connects"   // 连接：网络拓扑（服务器↔交换机）
 )
 
+// 关系基数（从声明模型视角）。
+const (
+	CardinalityOneToOne   = "one_to_one"   // 一对一：源至多 1 目标，目标至多被 1 源引用
+	CardinalityOneToMany  = "one_to_many"  // 一对多：源可多目标，目标至多被 1 源引用（目标唯一归属）
+	CardinalityManyToMany = "many_to_many" // 多对多：无基数约束
+)
+
+// RelationDef 模型级关系声明（与 Schema 并列，存入 cmdb_ci_model_type.relations）。
+// 声明后，实例间建立该 relation_type 的关系时由后端按 TargetModel + Cardinality 校验。
+// 未在此声明的"自由关系"仍可建立（兼容自动发现/历史关系），但跳过基数约束。
+type RelationDef struct {
+	Name         string `json:"name"`                   // 关系展示名，如 "部署于"
+	RelationType string `json:"relation_type"`          // 关系类型键（自由字符串，建议复用内置常量）
+	TargetModel  string `json:"target_model"`           // 目标模型类型 ID
+	Cardinality  string `json:"cardinality"`            // one_to_one | one_to_many | many_to_many
+	ReverseName  string `json:"reverse_name,omitempty"` // 对端显示名（可选），如 "被部署于"
+	Description  string `json:"description,omitempty"`  // 说明（可选）
+}
+
 // 业务关键性等级（服务建模标准字段 business_criticality 的取值）。
 type Criticality string
 
@@ -92,6 +111,8 @@ type CIModelType struct {
 	Abstract    bool               `json:"abstract"`         // 抽象父类（不可直接实例化，仅作继承基类）
 	Author      string             `json:"author,omitempty"` // 模型作者，内置为 anonymous
 	Schema      map[string]AttrDef `json:"schema"`
+	// Relations 模型级关系声明（与 Schema 并列）。声明后建关系按 TargetModel + 基数校验。
+	Relations []RelationDef `json:"relations,omitempty"`
 
 	// 类型级治理字段（为 AI 自动建模 / 类型注册表打底，与 ci.go 已有的
 	// 字段级治理 AttrMeta{Source,Confidence,LastSeenAt} 平行互补：
@@ -150,6 +171,19 @@ type AttrDef struct {
 	AutoFill []string `json:"autofill,omitempty"`
 	// Options 枚举选项(select/enum 类型), 前端展示为下拉。
 	Options []string `json:"options,omitempty"`
+	// Multi 枚举多选: Type==enum 且 Multi=true 时, 实例值为数组(如 ["prod","dev"])。
+	Multi bool `json:"multi,omitempty"`
+	// Pattern 文本类(string/longtext)正则校验(如邮箱/手机/IP), 前端录入时校验。
+	Pattern string `json:"pattern,omitempty"`
+	// MaxLength 文本类最大长度(string<=256 / longtext<=2000 等语义)。
+	MaxLength int `json:"max_length,omitempty"`
+	// Multiline 长文本标识: Type==longtext 时用多行输入(textarea)。
+	Multiline bool `json:"multiline,omitempty"`
+	// Min/Max 数值类(number/float)取值范围[Min,Max]。
+	Min float64 `json:"min,omitempty"`
+	Max float64 `json:"max,omitempty"`
+	// TimeInclude 日期类含时分秒: Type==datetime 时启用(等价 date + 时间)。
+	TimeInclude bool `json:"time_include,omitempty"`
 	// Aggregate 聚合字段(we-cmdb count/sum/avg 借鉴):
 	// 读取 CI 时按关系链对关联 CI 实时统计, 结果写入响应 CIModel.Aggregates。
 	// 例: 机柜 rack 声明 {op:count, relation:hosts} → 自动统计该机柜下设备数。

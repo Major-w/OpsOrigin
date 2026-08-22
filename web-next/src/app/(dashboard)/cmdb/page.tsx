@@ -23,7 +23,7 @@ import { Input } from '@/components/ui/input'
 import { apiFetch, apiList, cn, formatTime } from '@/lib/utils'
 import {
   Search, Boxes, Database, Share2, Server, BarChart3, Network, Building2,
-  ArrowRight, RefreshCw, Layers, Radio,
+  ArrowRight, RefreshCw, Layers, Radio, Package,
 } from 'lucide-react'
 
 interface Stats {
@@ -107,6 +107,19 @@ export default function CMDBOverviewPage() {
         <button onClick={load} className="inline-flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground">
           <RefreshCw className={cn('h-4 w-4', loading && 'animate-spin')} />刷新
         </button>
+      </div>
+
+      {/* 0. 快速操作：让概览从只读看板变成配置库入口 */}
+      <div className="flex flex-wrap gap-3">
+        <Link href="/cmdb/models">
+          <Button variant="outline" className="h-10"><Package className="h-4 w-4" />新建模型</Button>
+        </Link>
+        <Link href="/cmdb/instances">
+          <Button variant="outline" className="h-10"><Database className="h-4 w-4" />录入实例</Button>
+        </Link>
+        <Link href="/cmdb/auto-collect">
+          <Button variant="outline" className="h-10"><Radio className="h-4 w-4" />配置自动采集</Button>
+        </Link>
       </div>
 
       {/* 1. 全局搜索 */}

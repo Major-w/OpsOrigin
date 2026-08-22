@@ -2,6 +2,7 @@
 
 import { useEffect, useState, useRef } from 'react'
 import { useSearchParams, useRouter } from 'next/navigation'
+import Link from 'next/link'
 import { useCMDBStore, type CIModel, type AttributeChange, type CIRelation } from '@/stores/cmdb'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
@@ -15,7 +16,7 @@ import { useCan } from '@/stores/permissions'
 import { ConfirmDialog } from '@/components/ui/confirm-dialog'
 import TopologyGraph from '@/components/TopologyGraph'
 import { SourceBadge, ProvenanceSummary } from '@/components/cmdb/SourceBadge'
-import { Plus, Pencil, Trash2, Network, Search, ChevronLeft, ChevronRight, Link2, Unlink, AlertTriangle, Download, Upload, Archive, ArchiveRestore, Bookmark, GitMerge } from 'lucide-react'
+import { Plus, Pencil, Trash2, Network, Search, ChevronLeft, ChevronRight, Link2, Unlink, AlertTriangle, Download, Upload, Archive, ArchiveRestore, Bookmark, GitMerge, Radio } from 'lucide-react'
 
 interface TopologyNode { id: string; name: string; type: string }
 interface TopologyEdge { source: string; target: string; type: string }
@@ -31,7 +32,20 @@ interface ModelFieldDef {
   ref_model?: string
   ref_display?: string
 }
-interface ModelInfo { id: string; name: string; category: string; parent_id?: string; abstract?: boolean; fields?: ModelFieldDef[] }
+interface ModelInfo { id: string; name: string; category: string; parent_id?: string; abstract?: boolean; fields?: ModelFieldDef[]; relations?: RelationDef[] }
+
+// 模型级关系定义（与 models 页声明一致）
+type Cardinality = 'one_to_one' | 'one_to_many' | 'many_to_many'
+interface RelationDef {
+  name: string
+  relation_type: string
+  target_model: string
+  cardinality: Cardinality
+  reverse_name?: string
+  description?: string
+}
+const cardinalityLabel = (c: string) =>
+  c === 'one_to_one' ? '1:1 一对一' : c === 'one_to_many' ? '1:N 一对多' : 'M:N 多对多'
 
 const CI_TYPES = ['server', 'web-server', 'database', 'switch', 'loadbalancer', 'dns-server', 'firewall', 'storage']
 const PAGE_SIZE = 20
@@ -105,6 +119,14 @@ export default function CMDBPage() {
   // 提交防重: 各写操作按钮在请求进行中锁定, 防止双击重复提交
   const [submitting, setSubmitting] = useState(false)
   const [relSubmitting, setRelSubmitting] = useState(false)
+  // 按当前 CI 模型的 RelationDef 驱动关系建立
+  const [relCreateForm, setRelCreateForm] = useState<Record<number, { target_id: string }>>({})
+  const modelDef = models.find(m => m.id === selectedCI?.type_id)
+  useEffect(() => {
+    const md = models.find(m => m.id === selectedCI?.type_id)
+    if (!md?.relations) return
+    md.relations.forEach(def => ensureRefOptions(def.target_model))
+  }, [selectedCI, models])
   const [batchRelSubmitting, setBatchRelSubmitting] = useState(false)
   const [sqSubmitting, setSqSubmitting] = useState(false)
 
@@ -413,6 +435,19 @@ export default function CMDBPage() {
     } finally { setRelSubmitting(false) }
   }
 
+  // 按模型 RelationDef 建立关系（后端按目标模型 + 基数校验）
+  const handleCreateDefRel = async (def: RelationDef, targetId?: string) => {
+    if (!targetId || !selectedCI || relSubmitting) return
+    setRelSubmitting(true)
+    try {
+      await createRelation({ source_id: selectedCI.id, target_id: targetId, relation_type: def.relation_type })
+      setRelCreateForm(f => ({ ...f, [modelDef?.relations?.indexOf(def) ?? -1]: { target_id: '' } }))
+      fetchRelations()
+      handleSelectCI(selectedCI)
+      toast.success(`已建立关系：${def.name}`)
+    } catch (e: any) { toast.error('建立失败: ' + e.message) } finally { setRelSubmitting(false) }
+  }
+
   const handleDeleteRel = async (id: string) => {
     await deleteRelation(id)
     fetchRelations()
@@ -450,6 +485,7 @@ export default function CMDBPage() {
           <Button variant="outline" onClick={() => fileRef.current?.click()}><Upload className="h-4 w-4" />导入 CSV</Button>
           <Button variant="outline" onClick={() => setSqDialogOpen(true)}><Bookmark className="h-4 w-4" />保存查询</Button>
           <Button variant="outline" onClick={openReconcile}><GitMerge className="h-4 w-4" />疑似重复</Button>
+          <Link href="/cmdb/auto-collect"><Button variant="outline"><Radio className="h-4 w-4" />配置自动采集</Button></Link>
           <Button onClick={() => { setEditId(null); setForm({ name: '', type_id: 'server', description: '', attributes: {}, labels: {} }); setDialogOpen(true) }}><Plus className="h-4 w-4" />新建配置项</Button>
         </div>
       </div>
@@ -674,24 +710,91 @@ export default function CMDBPage() {
                   </TabsContent>
 
                   <TabsContent value="rels" className="mt-4">
+                    {/* 可建立的关系：按当前 CI 模型的 RelationDef 驱动 */}
+                    {modelDef?.relations && modelDef.relations.length > 0 && (
+                      <div className="space-y-2 mb-4">
+                        <p className="text-xs font-medium text-muted-foreground">可建立的关系</p>
+                        {modelDef.relations.map((def, i) => {
+                          const opts = refOptions[def.target_model] || []
+                          return (
+                            <div key={i} className="flex items-center gap-2">
+                              <span className="text-xs font-medium w-24 truncate">{def.name}</span>
+                              <span className="text-[10px] text-muted-foreground shrink-0">→ {def.target_model}</span>
+                              <Badge variant="secondary" className="text-[9px] shrink-0">{cardinalityLabel(def.cardinality)}</Badge>
+                              <select className="flex-1 h-8 text-xs border rounded-md bg-background px-2"
+                                value={(relCreateForm[i]?.target_id) || ''}
+                                onChange={e => setRelCreateForm(f => ({ ...f, [i]: { target_id: e.target.value } }))}>
+                                <option value="">选择 {def.target_model} 实例...</option>
+                                {opts.map(o => <option key={o.id} value={o.id}>{o.name}</option>)}
+                              </select>
+                              <Button size="sm" variant="outline" disabled={!relCreateForm[i]?.target_id || relSubmitting}
+                                onClick={() => handleCreateDefRel(def, relCreateForm[i]?.target_id)}>建立</Button>
+                            </div>
+                          )
+                        })}
+                      </div>
+                    )}
+
+                    {/* 现有关系：区分出/入向，未建模关系标"未建模" */}
                     {ciRelations.length === 0 ? <p className="text-sm text-muted-foreground">无关联关系。</p> : (
-                      <table className="w-full text-sm">
-                        <thead><tr className="border-b text-muted-foreground"><th className="pb-2 text-left text-xs">源</th><th className="pb-2 text-left text-xs">类型</th><th className="pb-2 text-left text-xs">目标</th><th className="pb-2 text-left text-xs">操作</th></tr></thead>
-                        <tbody>
-                          {ciRelations.map(rel => {
-                            const src = items.find(i => i.id === rel.source_id)
-                            const tgt = items.find(i => i.id === rel.target_id)
-                            return (
-                              <tr key={rel.id} className="border-b last:border-0">
-                                <td className="py-1 text-xs">{src?.name || rel.source_id.slice(0, 8)}</td>
-                                <td className="py-1 text-xs"><Badge variant="outline" className="text-[10px]">{rel.relation_type}</Badge></td>
-                                <td className="py-1 text-xs">{tgt?.name || rel.target_id.slice(0, 8)}</td>
-                                <td className="py-1">{canDelete && <Button variant="ghost" size="icon" className="h-5 w-5" onClick={() => handleDeleteRel(rel.id)}><Unlink className="h-3 w-3" /></Button>}</td>
-                              </tr>
-                            )
-                          })}
-                        </tbody>
-                      </table>
+                      <div className="space-y-4">
+                        {(() => {
+                          const outgoing = ciRelations.filter(r => r.source_id === selectedCI?.id)
+                          const incoming = ciRelations.filter(r => r.target_id === selectedCI?.id)
+                          const displayName = (rel: typeof ciRelations[number], dir: 'out' | 'in') => {
+                            const def = modelDef?.relations?.find(d => d.relation_type === rel.relation_type)
+                            if (!def) return { name: rel.relation_type, unmodeled: true }
+                            return { name: dir === 'out' ? def.name : (def.reverse_name || def.name), unmodeled: false }
+                          }
+                          return (
+                            <>
+                              {outgoing.length > 0 && (
+                                <div>
+                                  <p className="text-xs font-medium text-muted-foreground mb-1">我 → 其它（{outgoing.length}）</p>
+                                  <table className="w-full text-sm">
+                                    <tbody>
+                                      {outgoing.map(rel => {
+                                        const tgt = items.find(i => i.id === rel.target_id)
+                                        const dn = displayName(rel, 'out')
+                                        return (
+                                          <tr key={rel.id} className="border-b last:border-0">
+                                            <td className="py-1 text-xs w-28 font-medium">{dn.name}{dn.unmodeled && <Badge variant="outline" className="text-[9px] ml-1">未建模</Badge>}</td>
+                                            <td className="py-1 text-xs text-muted-foreground">{tgt?.name || rel.target_id.slice(0, 8)}</td>
+                                            <td className="py-1 text-xs"><Badge variant="outline" className="text-[10px]">{rel.relation_type}</Badge></td>
+                                            <td className="py-1 text-right">{canDelete && <Button variant="ghost" size="icon" className="h-5 w-5" onClick={() => handleDeleteRel(rel.id)}><Unlink className="h-3 w-3" /></Button>}</td>
+                                          </tr>
+                                        )
+                                      })}
+                                    </tbody>
+                                  </table>
+                                </div>
+                              )}
+                              {incoming.length > 0 && (
+                                <div>
+                                  <p className="text-xs font-medium text-muted-foreground mb-1">其它 → 我（{incoming.length}）</p>
+                                  <table className="w-full text-sm">
+                                    <tbody>
+                                      {incoming.map(rel => {
+                                        const src = items.find(i => i.id === rel.source_id)
+                                        const dn = displayName(rel, 'in')
+                                        return (
+                                          <tr key={rel.id} className="border-b last:border-0">
+                                            <td className="py-1 text-xs w-28 font-medium">{dn.name}{dn.unmodeled && <Badge variant="outline" className="text-[9px] ml-1">未建模</Badge>}</td>
+                                            <td className="py-1 text-xs text-muted-foreground">{src?.name || rel.source_id.slice(0, 8)}</td>
+                                            <td className="py-1 text-xs"><Badge variant="outline" className="text-[10px]">{rel.relation_type}</Badge></td>
+                                            <td className="py-1 text-right">{canDelete && <Button variant="ghost" size="icon" className="h-5 w-5" onClick={() => handleDeleteRel(rel.id)}><Unlink className="h-3 w-3" /></Button>}</td>
+                                          </tr>
+                                        )
+                                      })}
+                                    </tbody>
+                                  </table>
+                                </div>
+                              )}
+                            </>
+                          )
+                        })()}
+                        <Button variant="outline" size="sm" className="mt-2" onClick={() => { if (selectedCI) setRelForm(f => ({ ...f, source_id: selectedCI.id })); setRelDialogOpen(true) }}><Plus className="h-3 w-3 mr-1" />自定义关系（未建模）</Button>
+                      </div>
                     )}
                   </TabsContent>
 
@@ -834,11 +937,69 @@ export default function CMDBPage() {
                       </div>
                     )
                   }
+                  if (f.type === 'multi-enum' && f.options?.length) {
+                    const cur = Array.isArray(form.attributes[f.name]) ? (form.attributes[f.name] as string[]) : []
+                    return (
+                      <div key={f.name}>
+                        <label className="text-xs font-medium">{f.name}{f.required && ' *'}{f.unique && '（唯一，不可重复）'}</label>
+                        <div className="flex flex-wrap gap-x-3 gap-y-1 mt-1">
+                          {(f.options || []).map(o => (
+                            <label key={o} className="flex items-center gap-1 text-xs">
+                              <input type="checkbox" checked={cur.includes(o)} onChange={e => setAttr(e.target.checked ? [...cur, o] : cur.filter(x => x !== o))} className="rounded" />{o}
+                            </label>
+                          ))}
+                        </div>
+                      </div>
+                    )
+                  }
+                  if (f.type === 'list') {
+                    const cur = Array.isArray(form.attributes[f.name]) ? (form.attributes[f.name] as string[]).join(',') : ((form.attributes[f.name] as string) || '')
+                    return (
+                      <div key={f.name}>
+                        <label className="text-xs font-medium">{f.name}{f.required && ' *'}{f.unique && '（唯一，不可重复）'}</label>
+                        <Input className="mt-1 h-9 text-xs" value={cur}
+                          onChange={e => setAttr(e.target.value.split(',').map(s => s.trim()).filter(Boolean))}
+                          placeholder="逗号分隔，如 a,b,c" />
+                      </div>
+                    )
+                  }
+                  if (f.type === 'longtext') {
+                    return (
+                      <div key={f.name}>
+                        <label className="text-xs font-medium">{f.name}{f.required && ' *'}{f.unique && '（唯一，不可重复）'}</label>
+                        <textarea className="flex h-20 w-full rounded-md border border-input bg-background px-3 py-2 text-sm mt-1" value={(form.attributes[f.name] as string) || ''} onChange={e => setAttr(e.target.value)} placeholder={f.description || ''} />
+                      </div>
+                    )
+                  }
+                  if (f.type === 'date') {
+                    return (
+                      <div key={f.name}>
+                        <label className="text-xs font-medium">{f.name}{f.required && ' *'}{f.unique && '（唯一，不可重复）'}</label>
+                        <input type="date" className="flex h-9 w-full rounded-md border border-input bg-background px-2 py-1 text-xs mt-1" value={(form.attributes[f.name] as string) || ''} onChange={e => setAttr(e.target.value)} />
+                      </div>
+                    )
+                  }
+                  if (f.type === 'datetime') {
+                    return (
+                      <div key={f.name}>
+                        <label className="text-xs font-medium">{f.name}{f.required && ' *'}{f.unique && '（唯一，不可重复）'}</label>
+                        <input type="datetime-local" className="flex h-9 w-full rounded-md border border-input bg-background px-2 py-1 text-xs mt-1" value={(form.attributes[f.name] as string) || ''} onChange={e => setAttr(e.target.value)} />
+                      </div>
+                    )
+                  }
+                  if (f.type === 'float' || f.type === 'number') {
+                    return (
+                      <div key={f.name}>
+                        <label className="text-xs font-medium">{f.name}{f.required && ' *'}{f.unique && '（唯一，不可重复）'}</label>
+                        <input type="number" step="any" className="flex h-9 w-full rounded-md border border-input bg-background px-2 py-1 text-xs mt-1" value={(form.attributes[f.name] as any) ?? ''} onChange={e => setAttr(e.target.value === '' ? '' : Number(e.target.value))} placeholder={f.description || ''} />
+                      </div>
+                    )
+                  }
                   return (
                     <div key={f.name}>
                       <label className="text-xs font-medium">{f.name}{f.required && ' *'}{f.unique && '（唯一，不可重复）'}</label>
                       <Input className="mt-1 h-9 text-xs" value={(form.attributes[f.name] as string) || ''}
-                        onChange={e => setAttr(f.type === 'number' ? Number(e.target.value) : e.target.value)}
+                        onChange={e => setAttr(e.target.value)}
                         placeholder={f.description || ''} />
                     </div>
                   )

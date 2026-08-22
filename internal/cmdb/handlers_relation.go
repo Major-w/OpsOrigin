@@ -1,6 +1,8 @@
 package cmdb
 
 import (
+	"context"
+	"fmt"
 	"log/slog"
 	"net/http"
 
@@ -138,6 +140,13 @@ func (s *Service) handleCreateRelation(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// 模型级关系基数校验：仅当源 CI 模型声明了该 relation_type 时强制，
+	// 未建模(自由)关系放行(兼容自动发现/历史关系)。
+	if verr := s.validateRelationCardinality(ctx, tenantID, req.SourceID, req.TargetID, req.RelationType); verr != nil {
+		httputil.WriteError(w, http.StatusBadRequest, verr.Error())
+		return
+	}
+
 	hasCycle := false
 	if s.dg != nil {
 		var err error
@@ -222,6 +231,11 @@ func (s *Service) handleBatchCreateRelation(w http.ResponseWriter, r *http.Reque
 			failed = append(failed, failure{item.SourceID, item.TargetID, "would create a topological cycle [ASSERT-CMDB-02]"})
 			continue
 		}
+		// 模型级关系基数校验(与单条创建一致, 仅建模关系强制)。
+		if verr := s.validateRelationCardinality(ctx, tenantID, item.SourceID, item.TargetID, item.RelationType); verr != nil {
+			failed = append(failed, failure{item.SourceID, item.TargetID, verr.Error()})
+			continue
+		}
 		rel := &model.CIRelation{
 			TenantID:     tenantID,
 			SourceID:     item.SourceID,
@@ -265,4 +279,65 @@ func (s *Service) handleDeleteRelation(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// validateRelationCardinality 按源 CI 模型的 RelationDef 校验目标模型匹配 + 基数约束。
+// 仅当源模型声明了匹配的 relation_type 时才强制；未建模(自由)关系放行。
+// 无 pg(内存模式)或无法解析模型时直接放行, 不阻断。
+func (s *Service) validateRelationCardinality(ctx context.Context, tenantID, sourceID, targetID, relationType string) error {
+	if s.pg == nil {
+		return nil
+	}
+	src, err := s.pg.GetCI(ctx, sourceID, tenantID)
+	if err != nil || src == nil {
+		return fmt.Errorf("source CI not found")
+	}
+	mt, err := s.ResolveModelType(ctx, src.TypeID, tenantID)
+	if err != nil || mt == nil {
+		return nil // 无法解析模型, 放行
+	}
+	var def *model.RelationDef
+	for i := range mt.Relations {
+		if mt.Relations[i].RelationType == relationType {
+			def = &mt.Relations[i]
+			break
+		}
+	}
+	if def == nil {
+		return nil // 未建模关系, 放行
+	}
+	// 目标模型匹配校验
+	tgt, terr := s.pg.GetCI(ctx, targetID, tenantID)
+	if terr != nil || tgt == nil {
+		return fmt.Errorf("target CI not found")
+	}
+	if tgt.TypeID != def.TargetModel {
+		return fmt.Errorf("关系 %q 要求目标为模型 %s，实际为 %s", def.Name, def.TargetModel, tgt.TypeID)
+	}
+	// 基数约束: 扫描同租户该 relation_type 的既有边
+	rels, rerr := s.pg.ListRelations(ctx, tenantID)
+	if rerr != nil {
+		return nil
+	}
+	switch def.Cardinality {
+	case model.CardinalityOneToOne:
+		for _, r := range rels {
+			if r.RelationType != relationType {
+				continue
+			}
+			if r.SourceID == sourceID || r.TargetID == targetID {
+				return fmt.Errorf("关系 %q 为一对一：源或目标已存在该关系", def.Name)
+			}
+		}
+	case model.CardinalityOneToMany:
+		for _, r := range rels {
+			if r.RelationType != relationType {
+				continue
+			}
+			if r.TargetID == targetID {
+				return fmt.Errorf("关系 %q 为一对多：目标已被其它源占用", def.Name)
+			}
+		}
+	}
+	return nil
 }

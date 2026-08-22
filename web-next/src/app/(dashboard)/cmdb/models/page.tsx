@@ -1,11 +1,13 @@
 'use client'
 
 import { useEffect, useRef, useState } from 'react'
+import Link from 'next/link'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { Input } from '@/components/ui/input'
 import { Dialog, DialogFooter } from '@/components/ui/dialog'
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { apiFetch, apiList } from '@/lib/utils'
 import { Plus, Trash2, GripVertical, Edit2, Download, Upload, Settings2, Shield, History, Gauge } from 'lucide-react'
 import { useCan } from '@/stores/permissions'
@@ -14,17 +16,66 @@ import { toast } from '@/stores/toast'
 import { ConfirmDialog } from '@/components/ui/confirm-dialog'
 import TopologyGraph from '@/components/TopologyGraph'
 
+type FieldType =
+  | 'string' | 'longtext' | 'number' | 'float'
+  | 'enum' | 'multi-enum' | 'boolean'
+  | 'ref' | 'date' | 'datetime' | 'json' | 'list'
+
 interface SchemaField {
   name: string
-  type: 'string' | 'number' | 'boolean' | 'enum' | 'date' | 'json' | 'ref'
+  type: FieldType
   required: boolean
   description: string
   options?: string[]
+  multi?: boolean
   unique?: boolean
   ref_model?: string
   ref_display?: string
   autofill?: string[]
+  pattern?: string
+  maxLength?: number
+  min?: number
+  max?: number
 }
+
+// 模型级关系定义（与属性字段并列，落库到模型类型的 relations）。
+type Cardinality = 'one_to_one' | 'one_to_many' | 'many_to_many'
+interface RelationDef {
+  name: string
+  relation_type: string
+  target_model: string
+  cardinality: Cardinality
+  reverse_name?: string
+  description?: string
+}
+const cardinalityLabel = (c: string) =>
+  c === 'one_to_one' ? '1:1 一对一' : c === 'one_to_many' ? '1:N 一对多' : 'M:N 多对多'
+
+// 字段类型元数据：下拉分组 + 中文标签 + 该类型专属的配置项(选中类型后才显示)。
+type FieldConfigKey = 'options' | 'multi' | 'ref' | 'autofill' | 'pattern' | 'maxLength' | 'minmax'
+interface FieldTypeMeta {
+  value: FieldType
+  label: string
+  group: string
+  desc: string
+  configs: FieldConfigKey[]
+}
+const FIELD_TYPES: FieldTypeMeta[] = [
+  { value: 'string', label: '短文本', group: '文本', desc: '单行文本，如名称、IP、版本号', configs: ['pattern', 'maxLength'] },
+  { value: 'longtext', label: '长文本', group: '文本', desc: '多行文本，如安装路径、备注说明', configs: ['pattern', 'maxLength'] },
+  { value: 'number', label: '整数', group: '数值', desc: '整数，如端口、CPU 核数、连接数', configs: ['minmax'] },
+  { value: 'float', label: '浮点数', group: '数值', desc: '带小数，如内存容量(GB)、使用率(%)', configs: ['minmax'] },
+  { value: 'enum', label: '枚举(单选)', group: '选择', desc: '固定选项下拉，如环境(prod/dev/test)', configs: ['options'] },
+  { value: 'multi-enum', label: '枚举(多选)', group: '选择', desc: '可多选的枚举，实例值存为数组', configs: ['options', 'multi'] },
+  { value: 'boolean', label: '布尔', group: '选择', desc: '是/否开关，如是否开启 binlog', configs: [] },
+  { value: 'ref', label: '引用(CI)', group: '关系', desc: '引用其他模型的 CI 实例，写入校验存在性', configs: ['ref', 'autofill'] },
+  { value: 'date', label: '日期', group: '日期时间', desc: '年-月-日', configs: [] },
+  { value: 'datetime', label: '日期时间', group: '日期时间', desc: '含时分秒的完整时间', configs: [] },
+  { value: 'json', label: 'JSON', group: '特殊', desc: '结构化数据，如配置片段', configs: [] },
+  { value: 'list', label: '列表', group: '特殊', desc: '同构值数组，如标签集合', configs: [] },
+]
+const FIELD_GROUPS = ['文本', '数值', '选择', '关系', '日期时间', '特殊']
+const fieldTypeMeta = (t: FieldType) => FIELD_TYPES.find(m => m.value === t)
 
 interface CIModel {
   id: string
@@ -38,6 +89,7 @@ interface CIModel {
   builtin?: boolean
   author?: string
   fields: SchemaField[]
+  relations: RelationDef[]
   ciCount: number
 }
 
@@ -68,14 +120,19 @@ const ICONS = ['🖥️','🌐','🗄️','🔌','⚖️','📡','🛡️','💾
 function schemaToFields(schema: Record<string, any> = {}): SchemaField[] {
   return Object.entries(schema).map(([name, def]) => ({
     name,
-    type: (def?.type || 'string') as SchemaField['type'],
+    type: (def?.type || 'string') as FieldType,
     required: !!def?.required,
     description: def?.description || '',
     options: def?.options,
+    multi: !!def?.multi,
     unique: !!def?.unique,
     ref_model: def?.ref_model,
     ref_display: def?.ref_display,
     autofill: def?.autofill,
+    pattern: def?.pattern,
+    maxLength: def?.max_length,
+    min: def?.min,
+    max: def?.max,
   }))
 }
 
@@ -84,11 +141,16 @@ function fieldsToSchema(fields: SchemaField[]) {
     ...acc,
     [f.name]: {
       type: f.type, required: f.required, description: f.description,
-      ...(f.options ? { options: f.options } : {}),
+      ...(f.options?.length ? { options: f.options } : {}),
+      ...(f.multi ? { multi: true } : {}),
       ...(f.unique ? { unique: true } : {}),
       ...(f.ref_model ? { ref_model: f.ref_model } : {}),
       ...(f.ref_display ? { ref_display: f.ref_display } : {}),
       ...(f.autofill?.length ? { autofill: f.autofill } : {}),
+      ...(f.pattern ? { pattern: f.pattern } : {}),
+      ...(f.maxLength ? { max_length: f.maxLength } : {}),
+      ...(f.min != null ? { min: f.min } : {}),
+      ...(f.max != null ? { max: f.max } : {}),
     },
   }), {} as Record<string, any>)
 }
@@ -108,9 +170,17 @@ export default function CMDBModelsPage() {
   const [fieldDialogOpen, setFieldDialogOpen] = useState(false)
   const [editFieldIdx, setEditFieldIdx] = useState<number | null>(null)
   const [fieldForm, setFieldForm] = useState<SchemaField>({ name: '', type: 'string', required: false, description: '' })
+  // 模型级关系定义（与属性字段并列）
+  const [modelTab, setModelTab] = useState<'attrs' | 'rels'>('attrs')
+  const [relations, setRelations] = useState<RelationDef[]>([])
+  const [relDialogOpen, setRelDialogOpen] = useState(false)
+  const [editRelIdx, setEditRelIdx] = useState<number | null>(null)
+  const [relForm, setRelForm] = useState<RelationDef>({ name: '', relation_type: '', target_model: '', cardinality: 'one_to_many' })
   const [catDialogOpen, setCatDialogOpen] = useState(false)
   const [viewMode, setViewMode] = useState<'list' | 'graph'>('list')
   const [newCatName, setNewCatName] = useState('')
+  // 新建模型成功后，引导用户去录入该模型的实例（互链：建模→填充）
+  const [createdModel, setCreatedModel] = useState<{ id: string; name: string } | null>(null)
 
   // 模型版本历史(快照/回滚)
   const [verDialogOpen, setVerDialogOpen] = useState(false)
@@ -186,7 +256,7 @@ export default function CMDBModelsPage() {
         icon: m.icon || '📦', category: m.category || '基础设施资源',
         sub_category: m.sub_category || '', show_in_menu: m.show_in_menu !== false,
         parent_id: m.parent_id || '', builtin: !!m.builtin, author: m.author,
-        fields: schemaToFields(m.schema), ciCount: 0,
+        fields: schemaToFields(m.schema), relations: (m.relations || []) as RelationDef[], ciCount: 0,
       })))
     }).catch((e: any) => { toast.error(`加载模型失败: ${e.message}`); setModels([]) })
     // 实例计数（单请求按 type_id 汇总）
@@ -203,6 +273,8 @@ export default function CMDBModelsPage() {
     setEditModel(null)
     setForm({ name: '', description: '', icon: '🖥️', category: categories[0]?.name || '基础设施资源', sub_category: '', show_in_menu: true, parent_id: '' })
     setFields([])
+    setRelations([])
+    setModelTab('attrs')
     setDialogOpen(true)
   }
 
@@ -213,6 +285,8 @@ export default function CMDBModelsPage() {
       sub_category: model.sub_category || '', show_in_menu: model.show_in_menu, parent_id: model.parent_id || '',
     })
     setFields([...model.fields])
+    setRelations([...model.relations])
+    setModelTab('attrs')
     setDialogOpen(true)
   }
 
@@ -223,14 +297,17 @@ export default function CMDBModelsPage() {
       icon: form.icon, category: form.category, sub_category: form.sub_category,
       show_in_menu: form.show_in_menu, parent_id: form.parent_id || null,
       schema: fieldsToSchema(fields),
+      relations,
     }
     try {
       if (editModel) {
         await apiFetch(`/cmdb/model-type/${editModel.id}`, { method: 'PUT', body: JSON.stringify(payload) })
+        toast.success('模型已更新')
       } else {
-        await apiFetch('/cmdb/model-type', { method: 'POST', body: JSON.stringify(payload) })
+        const created = await apiFetch<{ id?: string }>('/cmdb/model-type', { method: 'POST', body: JSON.stringify(payload) })
+        toast.success(`模型「${form.name}」已创建`)
+        if (created?.id) setCreatedModel({ id: created.id, name: form.name })
       }
-      toast.success(editModel ? '模型已更新' : `模型「${form.name}」已创建`)
       setDialogOpen(false)
       loadModels()
     } catch (e: any) {
@@ -244,6 +321,21 @@ export default function CMDBModelsPage() {
   }
 
   const handleDeleteField = (idx: number) => setFields(prev => prev.filter((_, i) => i !== idx))
+
+  const openRelDialog = (idx?: number) => {
+    if (idx !== undefined) { setEditRelIdx(idx); setRelForm({ ...relations[idx] }) }
+    else { setEditRelIdx(null); setRelForm({ name: '', relation_type: '', target_model: '', cardinality: 'one_to_many' }) }
+    setRelDialogOpen(true)
+  }
+
+  const saveRel = () => {
+    if (!relForm.name || !relForm.relation_type || !relForm.target_model) return
+    if (editRelIdx !== null) setRelations(prev => prev.map((r, i) => i === editRelIdx ? { ...relForm } : r))
+    else setRelations(prev => [...prev, { ...relForm }])
+    setRelDialogOpen(false)
+  }
+
+  const handleDeleteRelationDef = (idx: number) => setRelations(prev => prev.filter((_, i) => i !== idx))
 
   const openFieldDialog = (idx?: number) => {
     if (idx !== undefined) { setEditFieldIdx(idx); setFieldForm({ ...fields[idx] }) }
@@ -323,6 +415,17 @@ export default function CMDBModelsPage() {
 
   return (
     <div className="p-6 space-y-4">
+      {createdModel && (
+        <div className="flex items-center justify-between gap-3 rounded-lg border border-emerald-200 dark:border-emerald-500/30 bg-emerald-50 dark:bg-emerald-500/10 px-4 py-3">
+          <p className="text-sm text-emerald-800 dark:text-emerald-200">模型「{createdModel.name}」已创建，现在去录入它的实例吧。</p>
+          <div className="flex items-center gap-2 shrink-0">
+            <Link href={`/cmdb/instances?type=${encodeURIComponent(createdModel.id)}`}>
+              <Button size="sm">去录入实例 →</Button>
+            </Link>
+            <Button variant="ghost" size="sm" onClick={() => setCreatedModel(null)}>稍后</Button>
+          </div>
+        </div>
+      )}
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-2xl font-bold">CI 模型管理</h1>
@@ -514,30 +617,58 @@ export default function CMDBModelsPage() {
             </div>
           </div>
 
-          {/* 字段列表 */}
-          <div>
-            <div className="flex items-center justify-between mb-2">
-              <label className="text-sm font-medium">属性字段 ({fields.length})</label>
-              {canAdmin && <Button variant="outline" size="sm" onClick={() => openFieldDialog()}><Plus className="h-3 w-3" />添加字段</Button>}
-            </div>
-            {fields.length === 0 ? (
-              <div className="text-center py-4 border border-dashed rounded-md text-xs text-muted-foreground">暂无字段，点击上方按钮添加</div>
-            ) : (
-              <div className="border rounded-md divide-y max-h-48 overflow-y-auto">
-                {fields.map((f, idx) => (
-                  <div key={idx} className="flex items-center gap-2 px-3 py-2 text-xs">
-                    <GripVertical className="h-3 w-3 text-muted-foreground/30" />
-                    <span className="font-medium min-w-[80px]">{f.name}</span>
-                    <Badge variant="outline" className="text-[9px]">{f.type}</Badge>
-                    {f.required && <Badge variant="destructive" className="text-[9px]">必填</Badge>}
-                    {f.description && <span className="text-muted-foreground truncate flex-1">{f.description}</span>}
-                    {canAdmin && <Button variant="ghost" size="sm" className="h-5 w-5 p-0" onClick={() => openFieldDialog(idx)}><Edit2 className="h-3 w-3" /></Button>}
-                    {canAdmin && <Button variant="ghost" size="sm" className="h-5 w-5 p-0 text-destructive" onClick={() => handleDeleteField(idx)}><Trash2 className="h-3 w-3" /></Button>}
-                  </div>
-                ))}
+          {/* 字段列表 / 关系定义：两个子页签 */}
+          <Tabs value={modelTab} onValueChange={(v) => setModelTab(v as 'attrs' | 'rels')}>
+            <TabsList>
+              <TabsTrigger value="attrs">属性字段 ({fields.length})</TabsTrigger>
+              <TabsTrigger value="rels">关系 ({relations.length})</TabsTrigger>
+            </TabsList>
+            <TabsContent value="attrs" className="mt-3">
+              <div className="flex items-center justify-between mb-2">
+                <label className="text-sm font-medium">属性字段</label>
+                {canAdmin && <Button variant="outline" size="sm" onClick={() => openFieldDialog()}><Plus className="h-3 w-3" />添加字段</Button>}
               </div>
-            )}
-          </div>
+              {fields.length === 0 ? (
+                <div className="text-center py-4 border border-dashed rounded-md text-xs text-muted-foreground">暂无字段，点击上方按钮添加</div>
+              ) : (
+                <div className="border rounded-md divide-y max-h-48 overflow-y-auto">
+                  {fields.map((f, idx) => (
+                    <div key={idx} className="flex items-center gap-2 px-3 py-2 text-xs">
+                      <GripVertical className="h-3 w-3 text-muted-foreground/30" />
+                      <span className="font-medium min-w-[80px]">{f.name}</span>
+                      <Badge variant="outline" className="text-[9px]">{f.type}</Badge>
+                      {f.required && <Badge variant="destructive" className="text-[9px]">必填</Badge>}
+                      {f.description && <span className="text-muted-foreground truncate flex-1">{f.description ? f.description : ''}</span>}
+                      {canAdmin && <Button variant="ghost" size="sm" className="h-5 w-5 p-0" onClick={() => openFieldDialog(idx)}><Edit2 className="h-3 w-3" /></Button>}
+                      {canAdmin && <Button variant="ghost" size="sm" className="h-5 w-5 p-0 text-destructive" onClick={() => handleDeleteField(idx)}><Trash2 className="h-3 w-3" /></Button>}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </TabsContent>
+            <TabsContent value="rels" className="mt-3">
+              <div className="flex items-center justify-between mb-2">
+                <label className="text-sm font-medium">关系定义（声明关联类型 + 目标模型 + 基数）</label>
+                {canAdmin && <Button variant="outline" size="sm" onClick={() => openRelDialog()}><Plus className="h-3 w-3" />添加关系</Button>}
+              </div>
+              {relations.length === 0 ? (
+                <div className="text-center py-4 border border-dashed rounded-md text-xs text-muted-foreground">暂无关系定义；建立关系时将作为"未建模"自由关系处理</div>
+              ) : (
+                <div className="border rounded-md divide-y max-h-48 overflow-y-auto">
+                  {relations.map((r, idx) => (
+                    <div key={idx} className="flex items-center gap-2 px-3 py-2 text-xs">
+                      <span className="font-medium min-w-[80px]">{r.name}</span>
+                      <Badge variant="outline" className="text-[9px]">{r.relation_type}</Badge>
+                      <span className="text-muted-foreground truncate">→ {r.target_model}</span>
+                      <Badge variant="secondary" className="text-[9px]">{cardinalityLabel(r.cardinality)}</Badge>
+                      {canAdmin && <Button variant="ghost" size="sm" className="h-5 w-5 p-0" onClick={() => openRelDialog(idx)}><Edit2 className="h-3 w-3" /></Button>}
+                      {canAdmin && <Button variant="ghost" size="sm" className="h-5 w-5 p-0 text-destructive" onClick={() => handleDeleteRelationDef(idx)}><Trash2 className="h-3 w-3" /></Button>}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </TabsContent>
+          </Tabs>
         </div>
         <DialogFooter><Button variant="outline" onClick={() => setDialogOpen(false)}>取消</Button><Button onClick={handleSave} disabled={!form.name}>保存</Button></DialogFooter>
       </Dialog>
@@ -546,14 +677,35 @@ export default function CMDBModelsPage() {
       <Dialog open={fieldDialogOpen} onClose={() => setFieldDialogOpen(false)} title={editFieldIdx !== null ? '编辑字段' : '添加字段'}>
         <div className="space-y-3">
           <div><label className="text-sm font-medium">字段名 *</label><Input value={fieldForm.name} onChange={e => setFieldForm(f => ({ ...f, name: e.target.value }))} placeholder="ip_address" /></div>
-          <div><label className="text-sm font-medium">类型</label>
-            <div className="flex gap-1 mt-1 flex-wrap">
-              {(['string', 'number', 'boolean', 'enum', 'date', 'json', 'ref'] as const).map(t => (
-                <button key={t} className={cn("px-2 py-1 rounded text-xs border", fieldForm.type === t ? "border-emerald-500 bg-emerald-50 dark:bg-emerald-500/10 text-emerald-600" : "border-gray-200 dark:border-gray-700")} onClick={() => setFieldForm(f => ({ ...f, type: t }))}>{t}</button>
+          <div>
+            <label className="text-sm font-medium">类型</label>
+            <select
+              value={fieldForm.type}
+              onChange={e => {
+                const t = e.target.value as FieldType
+                // 切换类型时重置专属配置，避免脏数据残留
+                setFieldForm(f => ({ ...f, type: t, options: undefined, multi: false, ref_model: '', ref_display: '', autofill: [], pattern: '', maxLength: undefined, min: undefined, max: undefined }))
+              }}
+              className="w-full h-9 mt-1 text-sm border rounded-md bg-background px-2"
+            >
+              {FIELD_GROUPS.map(g => (
+                <optgroup key={g} label={g}>
+                  {FIELD_TYPES.filter(t => t.group === g).map(t => (
+                    <option key={t.value} value={t.value}>{t.label}（{t.value}）</option>
+                  ))}
+                </optgroup>
               ))}
-            </div>
+            </select>
+            <p className="text-[10px] text-muted-foreground mt-1">{fieldTypeMeta(fieldForm.type)?.desc}</p>
           </div>
-          {fieldForm.type === 'ref' && (
+          {/* 动态配置面板：依据所选类型的 configs 显示对应输入方式（原平铺选中改为下拉+按类型展示） */}
+          {fieldTypeMeta(fieldForm.type)?.configs.includes('options') && (
+            <div><label className="text-sm font-medium">枚举选项（逗号分隔）</label><Input value={(fieldForm.options || []).join(',')} onChange={e => setFieldForm(f => ({ ...f, options: e.target.value.split(',').map(s => s.trim()).filter(Boolean) }))} placeholder="prod,dev,test" /></div>
+          )}
+          {fieldTypeMeta(fieldForm.type)?.configs.includes('multi') && (
+            <div className="flex items-center gap-2"><input type="checkbox" id="field-multi" checked={!!fieldForm.multi} onChange={e => setFieldForm(f => ({ ...f, multi: e.target.checked }))} className="rounded" /><label htmlFor="field-multi" className="text-sm font-medium">允许多选（实例值存为数组）</label></div>
+          )}
+          {fieldTypeMeta(fieldForm.type)?.configs.includes('ref') && (
             <div><label className="text-sm font-medium">引用目标模型 *</label>
               <select value={fieldForm.ref_model || ''} onChange={e => setFieldForm(f => ({ ...f, ref_model: e.target.value }))} className="w-full h-8 text-xs border rounded-md bg-background px-2">
                 <option value="">选择目标模型...</option>
@@ -562,20 +714,54 @@ export default function CMDBModelsPage() {
               <p className="text-[10px] text-muted-foreground mt-1">引用型字段的值取自目标模型的 CI 实例，写入时校验存在性</p>
             </div>
           )}
-          {fieldForm.type === 'ref' && (
+          {fieldTypeMeta(fieldForm.type)?.configs.includes('autofill') && (
             <div><label className="text-sm font-medium">自动填充（目标属性，逗号分隔）</label>
               <Input value={(fieldForm.autofill || []).join(',')} onChange={e => setFieldForm(f => ({ ...f, autofill: e.target.value.split(',').map(x => x.trim()).filter(Boolean) }))} placeholder="room_id,data_center_id" />
               <p className="text-[10px] text-muted-foreground mt-1">选中目标实例后，自动把目标 CI 的这些属性值填入本 CI（如选机柜自动带出机房/数据中心）</p>
             </div>
           )}
-          {fieldForm.type === 'enum' && (
-            <div><label className="text-sm font-medium">枚举选项（逗号分隔）</label><Input value={(fieldForm.options || []).join(',')} onChange={e => setFieldForm(f => ({ ...f, options: e.target.value.split(',').map(s => s.trim()).filter(Boolean) }))} placeholder="prod,dev,test" /></div>
+          {fieldTypeMeta(fieldForm.type)?.configs.includes('pattern') && (
+            <div><label className="text-sm font-medium">格式校验（正则）</label><Input value={fieldForm.pattern || ''} onChange={e => setFieldForm(f => ({ ...f, pattern: e.target.value }))} placeholder="^\d{1,3}(\.\d{1,3}){3}$" /><p className="text-[10px] text-muted-foreground mt-1">录入时按正则校验，常用于邮箱/手机/IP，如 IP：{'^\d{1,3}(\.\d{1,3}){3}$'}</p></div>
+          )}
+          {fieldTypeMeta(fieldForm.type)?.configs.includes('maxLength') && (
+            <div><label className="text-sm font-medium">最大长度</label><Input type="number" value={fieldForm.maxLength ?? ''} onChange={e => setFieldForm(f => ({ ...f, maxLength: e.target.value ? parseInt(e.target.value) : undefined }))} placeholder="短文本 256 / 长文本 2000" /></div>
+          )}
+          {fieldTypeMeta(fieldForm.type)?.configs.includes('minmax') && (
+            <div className="flex gap-2">
+              <div className="flex-1"><label className="text-sm font-medium">最小值</label><Input type="number" value={fieldForm.min ?? ''} onChange={e => setFieldForm(f => ({ ...f, min: e.target.value ? parseFloat(e.target.value) : undefined }))} /></div>
+              <div className="flex-1"><label className="text-sm font-medium">最大值</label><Input type="number" value={fieldForm.max ?? ''} onChange={e => setFieldForm(f => ({ ...f, max: e.target.value ? parseFloat(e.target.value) : undefined }))} /></div>
+            </div>
           )}
           <div className="flex items-center gap-2"><input type="checkbox" id="field-required" checked={fieldForm.required} onChange={e => setFieldForm(f => ({ ...f, required: e.target.checked }))} className="rounded" /><label htmlFor="field-required" className="text-sm font-medium">必填</label></div>
           <div className="flex items-center gap-2"><input type="checkbox" id="field-unique" checked={!!fieldForm.unique} onChange={e => setFieldForm(f => ({ ...f, unique: e.target.checked }))} className="rounded" /><label htmlFor="field-unique" className="text-sm font-medium">唯一（同类型内该字段值不可重复，写入时拦截）</label></div>
           <div><label className="text-sm font-medium">描述</label><Input value={fieldForm.description} onChange={e => setFieldForm(f => ({ ...f, description: e.target.value }))} /></div>
         </div>
         <DialogFooter><Button variant="outline" onClick={() => setFieldDialogOpen(false)}>取消</Button><Button onClick={saveField} disabled={!fieldForm.name}>保存</Button></DialogFooter>
+      </Dialog>
+
+      {/* 关系定义编辑对话框 */}
+      <Dialog open={relDialogOpen} onClose={() => setRelDialogOpen(false)} title={editRelIdx !== null ? '编辑关系' : '添加关系'}>
+        <div className="space-y-3">
+          <div><label className="text-sm font-medium">关系名称 *</label><Input value={relForm.name} onChange={e => setRelForm(f => ({ ...f, name: e.target.value }))} placeholder="部署于" /></div>
+          <div><label className="text-sm font-medium">关系类型键 *</label><Input value={relForm.relation_type} onChange={e => setRelForm(f => ({ ...f, relation_type: e.target.value }))} placeholder="hosts（自由字符串，建议复用 depends_on / hosts / connects）" /></div>
+          <div><label className="text-sm font-medium">目标模型 *</label>
+            <select value={relForm.target_model} onChange={e => setRelForm(f => ({ ...f, target_model: e.target.value }))} className="w-full h-9 text-sm border rounded-md bg-background px-2">
+              <option value="">选择目标模型...</option>
+              {models.map(m => <option key={m.id} value={m.id}>{m.name}（{m.id}）</option>)}
+            </select>
+          </div>
+          <div><label className="text-sm font-medium">基数 *</label>
+            <select value={relForm.cardinality} onChange={e => setRelForm(f => ({ ...f, cardinality: e.target.value as Cardinality }))} className="w-full h-9 text-sm border rounded-md bg-background px-2">
+              <option value="one_to_one">一对一 (1:1)</option>
+              <option value="one_to_many">一对多 (1:N)</option>
+              <option value="many_to_many">多对多 (M:N)</option>
+            </select>
+            <p className="text-[10px] text-muted-foreground mt-1">1:1 源/目标均唯一；1:N 目标唯一归属一个源；M:N 无约束。建关系时后端按此校验。</p>
+          </div>
+          <div><label className="text-sm font-medium">反向名称（对端显示，可选）</label><Input value={relForm.reverse_name || ''} onChange={e => setRelForm(f => ({ ...f, reverse_name: e.target.value }))} placeholder="被部署于" /></div>
+          <div><label className="text-sm font-medium">说明（可选）</label><Input value={relForm.description || ''} onChange={e => setRelForm(f => ({ ...f, description: e.target.value }))} /></div>
+        </div>
+        <DialogFooter><Button variant="outline" onClick={() => setRelDialogOpen(false)}>取消</Button><Button onClick={saveRel} disabled={!relForm.name || !relForm.relation_type || !relForm.target_model}>保存</Button></DialogFooter>
       </Dialog>
 
       {/* 字段级规则权限对话框 */}
