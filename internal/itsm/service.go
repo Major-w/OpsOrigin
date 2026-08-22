@@ -409,6 +409,11 @@ func (s *Service) CreateTicket(ctx context.Context, req model.CreateTicketReques
 	return ticket, nil
 }
 
+// GetTicket 按 ID 查询工单(供 AI 修复验证器等回查派发结果, 复用 store.Get)。
+func (s *Service) GetTicket(ctx context.Context, tenantID, id string) (*model.Ticket, error) {
+	return s.store.Get(ctx, id, tenantID)
+}
+
 // SetKnowledgeArchiver 注入工单完成后的知识库沉淀回调(由 cmd/core 装配)。
 // 仅对来源为 ai_inspection 的工单生效, 且同一工单只沉淀一次(幂等, 通过 labels.kb_archived 标记)。
 func (s *Service) SetKnowledgeArchiver(f func(ctx context.Context, tenantID, title, content string, tags []string) (string, error)) {

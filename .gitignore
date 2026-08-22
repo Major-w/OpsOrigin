@@ -33,6 +33,8 @@ overview.md
 .docs/
 web-next/coverage/
 web-next/.next.bak*/
+# 本地测试工具（一键启动脚本等，不入 git）
+.test/
 # 运行时偶发生成的根目录产物
 /dev
 /ip_address
