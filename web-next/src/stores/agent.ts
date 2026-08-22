@@ -50,6 +50,8 @@ interface AgentState {
   deleteProxy: (id: string) => Promise<boolean>
   getCircuitBreaker: (id: string) => Promise<any>
   setCircuitBreaker: (id: string, data: any) => Promise<boolean>
+  getResourceGuard: (id: string) => Promise<any>
+  setResourceGuard: (id: string, data: any) => Promise<boolean>
   restartAgent: (id: string) => Promise<boolean>
   upgradeAgent: (id: string, targetVersion?: string) => Promise<boolean>
   uninstallAgent: (id: string) => Promise<boolean>
@@ -218,6 +220,24 @@ export const useAgentStore = create<AgentState>((set, get) => ({
       return true
     } catch (e: any) {
       toast.error(`重启代理失败: ${e.message}`)
+      return false
+    }
+  },
+  getResourceGuard: async (id) => {
+    try {
+      return await apiFetch<any>(`/agents/${id}/resource-guard`)
+    } catch (e: any) {
+      toast.error(`加载资源配额失败: ${e.message}`)
+      throw e
+    }
+  },
+  setResourceGuard: async (id, data) => {
+    try {
+      await apiFetch(`/agents/${id}/resource-guard`, { method: 'PUT', body: JSON.stringify(data) })
+      toast.success('资源配额已更新')
+      return true
+    } catch (e: any) {
+      toast.error(`更新资源配额失败: ${e.message}`)
       return false
     }
   },

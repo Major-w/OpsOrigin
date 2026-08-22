@@ -97,9 +97,11 @@ type AgentHost struct {
 	IPs           []string          `json:"ips,omitempty"` // 上报的 IP 列表,用于指纹去重/疑似重复判定
 	// DuplicateOf 非持久化字段:列表/详情时由后端动态计算,指向"疑似重复"的规范记录 ID。
 	// 当前记录与另一条同主机名/IP 的记录撞车且 ID 不同时,前端据此提示用户合并。
-	DuplicateOf string    `json:"duplicate_of,omitempty"`
-	CreatedAt   time.Time `json:"created_at"`
-	UpdatedAt   time.Time `json:"updated_at"`
+	DuplicateOf string `json:"duplicate_of,omitempty"`
+	// ResourceGuard 资源自保护配置(非持久化核心字段,由独立 resource-guard 端点管理)。
+	ResourceGuard *ResourceGuardConfig `json:"resource_guard,omitempty"`
+	CreatedAt     time.Time            `json:"created_at"`
+	UpdatedAt     time.Time            `json:"updated_at"`
 }
 
 type RegisterAgentRequest struct {
@@ -226,6 +228,28 @@ type CircuitBreakerConfig struct {
 	FailCount           int        `json:"fail_count"`
 	LastFail            *time.Time `json:"last_fail,omitempty"`
 	ConfigLimit         int        `json:"config_limit,omitempty"`
+}
+
+// ResourceGuardConfig Agent 资源自保护配置(agent 自身进程占用宿主机资源超限后自杀,
+// 由外部托管(systemd/docker --restart/nohup 父进程)重新拉起以释放资源)。
+// 与 CircuitBreakerConfig(保护 Core 不被打爆/失败熔断)语义不同,此处是 agent 自保护。
+type ResourceGuardConfig struct {
+	AgentID          string `json:"agent_id"`
+	Enabled          bool   `json:"enabled"`            // 是否启用资源自保护
+	CPUPercent       int    `json:"cpu_percent"`        // agent 自身 CPU 占用率上限(%);0=不限制
+	MemMB            int    `json:"mem_mb"`             // agent 自身常驻内存上限(MB);0=不限制
+	CheckIntervalSec int    `json:"check_interval_sec"` // 采样检查间隔(秒),默认 30
+}
+
+// DefaultResourceGuardConfig 返回安全的默认配置(关闭,避免误杀)。
+func DefaultResourceGuardConfig(id string) *ResourceGuardConfig {
+	return &ResourceGuardConfig{
+		AgentID:          id,
+		Enabled:          false,
+		CPUPercent:       80,
+		MemMB:            512,
+		CheckIntervalSec: 30,
+	}
 }
 
 // RegisterProxyRequest Proxy 注册请求

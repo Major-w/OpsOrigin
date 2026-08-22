@@ -356,6 +356,10 @@ func (s *Service) handleHeartbeat(w http.ResponseWriter, r *http.Request) {
 		"restart_requested": false,
 	}
 
+	// 心跳响应注入 ResourceGuard 配置,使 agent 本地缓存资源自保护阈值。
+	rg := s.getOrCreateRG(id)
+	resp["resource_guard"] = rg
+
 	// T12: 心跳响应中注入升级指令
 	if s.upgradeMgr != nil {
 		if upgrade := s.upgradeMgr.CheckEligibility(id); upgrade != nil {

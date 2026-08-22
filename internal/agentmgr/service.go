@@ -392,6 +392,8 @@ type Service struct {
 	hbWriter        *HeartbeatWriter // Redis heartbeat writer (nil if Redis unavailable)
 	circuitBreakers map[string]*CircuitBreakerConfig
 	cbMu            sync.Mutex
+	resourceGuards  map[string]*ResourceGuardConfig
+	rgMu            sync.Mutex
 	// boot_id 追踪:按 host_id 记录最近一次上报的 boot_id 与时间,
 	// 用于检测镜像克隆冲突(同一 host_id 在短时间窗口内来自两个不同的 boot_id)。
 	hostBootID   map[string]bootSeen
@@ -453,6 +455,7 @@ func NewService(db *sql.DB, rdb *redis.Client, entClient *ent.Client) *Service {
 		entClient:       entClient,
 		hbWriter:        NewHeartbeatWriter(rdb, st),
 		circuitBreakers: make(map[string]*CircuitBreakerConfig),
+		resourceGuards:  make(map[string]*ResourceGuardConfig),
 		stopCh:          make(chan struct{}),
 		remoteExec:      remoteexec.NewService(),
 		fileLimiter:     filelimit.New(0, 0), // 0 ⇒ 使用 filelimit 包默认值
@@ -797,6 +800,8 @@ func (s *Service) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/v1/agents/{id}/tasks/{task_id}", s.handleCompleteTask)
 	mux.HandleFunc("GET /api/v1/agents/{id}/circuit-breaker", s.handleGetCB)
 	mux.HandleFunc("PUT /api/v1/agents/{id}/circuit-breaker", s.handleSetCB)
+	mux.HandleFunc("GET /api/v1/agents/{id}/resource-guard", s.handleGetRG)
+	mux.HandleFunc("PUT /api/v1/agents/{id}/resource-guard", s.handleSetRG)
 	mux.HandleFunc("POST /api/v1/agents/{id}/restart", s.handleRestartAgent)
 	mux.HandleFunc("POST /api/v1/agents/{id}/upgrade", s.handleUpgradeAgent)
 	// Agent 全局版本一致性管理

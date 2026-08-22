@@ -34,6 +34,18 @@ type AgentConfig struct {
 	ProxyAddr  string // 非空时通过 Proxy 中转,不再直连 Core
 	AgentName  string // optional, defaults to hostname
 	Interval   time.Duration
+	// ResourceGuard 资源自保护: agent 自身进程占用宿主机资源超限后自杀,
+	// 由外部托管(systemd/docker --restart/nohup 父进程)重新拉起以释放资源。
+	// 启动时由命令行 --cpu-limit/--mem-limit 注入,运行时可由服务端心跳响应覆盖。
+	ResourceGuard ResourceGuardConfig
+}
+
+// ResourceGuardConfig 资源自保护配置(agent 侧镜像,字段与后端对齐)。
+type ResourceGuardConfig struct {
+	Enabled          bool `json:"enabled"`
+	CPUPercent       int  `json:"cpu_percent"`        // agent 自身 CPU 占用率上限(%);0=不限制
+	MemMB            int  `json:"mem_mb"`             // agent 自身常驻内存上限(MB);0=不限制
+	CheckIntervalSec int  `json:"check_interval_sec"` // 采样检查间隔(秒)
 }
 
 // HeartbeatPayload is sent to the server periodically.
@@ -141,6 +153,11 @@ type Agent struct {
 	// cmdb 断连缓存(§4.7.1 QoS): cmdb 任务上报失败时缓存, 重连后补传; monitor 不缓存。
 	cmdbMu      sync.Mutex
 	pendingCMDB []cachedBatch
+
+	// ResourceGuard 资源自保护: 运行时由服务端心跳响应下发的阈值缓存,
+	// ResourceGuardLoop 据此采样自身资源占用, 超限则自杀由托管重启。
+	rgMu  sync.RWMutex
+	rgCfg ResourceGuardConfig
 }
 
 // cachedBatch 断连期间缓存的 cmdb 上报批次。
@@ -154,12 +171,17 @@ type cachedBatch struct {
 
 func NewAgent(cfg AgentConfig) *Agent {
 	baseURL := fmt.Sprintf("http://%s/api/v1", cfg.ServerAddr)
+	rg := cfg.ResourceGuard
+	if rg.CheckIntervalSec <= 0 {
+		rg.CheckIntervalSec = 30
+	}
 	a := &Agent{
 		cfg:     cfg,
 		baseURL: baseURL,
 		pollURL: baseURL + "/agents/tasks",
 		client:  &http.Client{Timeout: 30 * time.Second},
 		stopCh:  make(chan struct{}),
+		rgCfg:   rg,
 	}
 
 	// 稳定指纹 ID:基于主机名+主IP+OS 派生,并落盘持久化。
@@ -687,13 +709,21 @@ func (a *Agent) Heartbeat(ctx context.Context) error {
 	}
 
 	var result struct {
-		Status           string `json:"status"`
-		BreakerOpen      bool   `json:"breaker_open"`
-		RestartRequested bool   `json:"restart_requested"`
+		Status           string               `json:"status"`
+		BreakerOpen      bool                 `json:"breaker_open"`
+		RestartRequested bool                 `json:"restart_requested"`
+		ResourceGuard    *ResourceGuardConfig `json:"resource_guard"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&result); err == nil && result.RestartRequested {
-		fmt.Printf("[agent] restart requested by server, exiting so the host service can restart the agent\n")
-		a.Stop()
+	if err := json.NewDecoder(resp.Body).Decode(&result); err == nil {
+		if result.ResourceGuard != nil {
+			a.rgMu.Lock()
+			a.rgCfg = *result.ResourceGuard
+			a.rgMu.Unlock()
+		}
+		if result.RestartRequested {
+			fmt.Printf("[agent] restart requested by server, exiting so the host service can restart the agent\n")
+			a.Stop()
+		}
 	}
 	return nil
 }
@@ -1327,12 +1357,69 @@ func getPrimaryIP() string {
 	return "127.0.0.1"
 }
 
+// --- Resource Guard (资源自保护) ---
+
+// ResourceGuardLoop 周期采样 agent 自身进程资源占用, 一旦超过配置阈值即主动退出,
+// 由外部托管进程(systemd / docker --restart / nohup 父进程)重新拉起以释放泄漏资源。
+func (a *Agent) ResourceGuardLoop(ctx context.Context) {
+	a.rgMu.RLock()
+	interval := a.rgCfg.CheckIntervalSec
+	a.rgMu.RUnlock()
+	if interval <= 0 {
+		interval = 30
+	}
+	ticker := time.NewTicker(time.Duration(interval) * time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-a.stopCh:
+			return
+		case <-ticker.C:
+			a.rgMu.RLock()
+			cfg := a.rgCfg
+			a.rgMu.RUnlock()
+			if !cfg.Enabled {
+				continue
+			}
+
+			triggered := false
+			var reason string
+			if cfg.CPUPercent > 0 {
+				if cpu, ok := readSelfCPUUsage(); ok && cpu >= float64(cfg.CPUPercent) {
+					triggered = true
+					reason = fmt.Sprintf("cpu %.1f%% >= limit %d%%", cpu, cfg.CPUPercent)
+				}
+			}
+			if !triggered && cfg.MemMB > 0 {
+				if mem, ok := readSelfMemRSSMB(); ok && mem >= float64(cfg.MemMB) {
+					triggered = true
+					reason = fmt.Sprintf("mem %.1fMB >= limit %dMB", mem, cfg.MemMB)
+				}
+			}
+
+			if triggered {
+				slog.Warn("resource guard triggered, agent self-terminating for restart",
+					"reason", reason, "agent_id", a.agentID)
+				fmt.Printf("[agent] resource guard triggered (%s): exiting so the host service can restart the agent\n", reason)
+				a.Stop()
+				return
+			}
+		}
+	}
+}
+
 // --- Main ---
 
 func (a *Agent) Run(ctx context.Context) error {
 	// 启动前拉取命令白名单(§6),并周期刷新;失败不阻塞启动。
 	a.fetchWhitelist(ctx)
 	go a.startWhitelistRefresh(ctx)
+
+	// 启动资源自保护循环: 采样自身 CPU/内存占用, 超阈值则自杀由托管重启。
+	go a.ResourceGuardLoop(ctx)
 
 	// 启动本地任务调度器(内置/自定义任务): 任务归任务、上报归上报(阶段 3)。
 	if a.scheduler != nil {

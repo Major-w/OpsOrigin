@@ -66,7 +66,7 @@ function stringToLabels(s: string): Record<string, string> {
 }
 
 export default function ResourcesPage() {
-  const { agents, proxies, fetch, register, update, remove, batchInstall, testSSH, getInstallScript, fetchProxies, registerProxy, updateProxy, deleteProxy, getCircuitBreaker, setCircuitBreaker, restartAgent, upgradeAgent, uninstallAgent, fetchTasks, createTask } = useAgentStore()
+  const { agents, proxies, fetch, register, update, remove, batchInstall, testSSH, getInstallScript, fetchProxies, registerProxy, updateProxy, deleteProxy, getCircuitBreaker, setCircuitBreaker, getResourceGuard, setResourceGuard, restartAgent, upgradeAgent, uninstallAgent, fetchTasks, createTask } = useAgentStore()
   const { keys, fetch: fetchKeys, create: createKey } = useKeyStore()
   const { providers, resources, fetchProviders, listCredentials, saveCredential, listResources, syncToCMDB } = useCloudStore()
   const { policy: collectPolicy, fetchPolicy, onboardResource } = useCollectionStore()
@@ -118,6 +118,8 @@ export default function ResourcesPage() {
   const [editForm, setEditForm] = useState({ name: '', address: '', port: 22, ssh_user: '', labels: '' })
   const [cbForm, setCbForm] = useState({ max_heartbeats_per_min: 60, max_req_per_min: 60, auto_restart: false, max_consecutive_fails: 5, breaker_open: false, fail_count: 0 })
   const [cbLoading, setCbLoading] = useState(false)
+  const [rgForm, setRgForm] = useState({ enabled: false, cpu_percent: 80, mem_mb: 512, check_interval_sec: 30 })
+  const [rgLoading, setRgLoading] = useState(false)
   const [tasks, setTasks] = useState<TaskInfo[]>([])
   const [tasksLoading, setTasksLoading] = useState(false)
   const [newTaskForm, setNewTaskForm] = useState({ action: '', script: '', timeout: 60 })
@@ -194,6 +196,15 @@ export default function ResourcesPage() {
         fail_count: cb?.fail_count ?? 0
       })
     }).catch(() => {}).finally(() => setCbLoading(false))
+    setRgLoading(true)
+    getResourceGuard(detailHost.id).then(rg => {
+      setRgForm({
+        enabled: rg?.enabled ?? false,
+        cpu_percent: rg?.cpu_percent ?? 80,
+        mem_mb: rg?.mem_mb ?? 512,
+        check_interval_sec: rg?.check_interval_sec ?? 30
+      })
+    }).catch(() => {}).finally(() => setRgLoading(false))
     setTasksLoading(true)
     fetchTasks(detailHost.id).then(t => setTasks(t || [])).catch(() => setTasks([])).finally(() => setTasksLoading(false))
   }, [detailHost, detailDialog])
@@ -294,6 +305,16 @@ export default function ResourcesPage() {
     })
     const cb = await getCircuitBreaker(detailHost.id).catch(() => null)
     if (cb) setCbForm(f => ({ ...f, breaker_open: cb.breaker_open ?? f.breaker_open, fail_count: cb.fail_count ?? f.fail_count }))
+  }
+
+  const handleSaveRG = async () => {
+    if (!detailHost) return
+    await setResourceGuard(detailHost.id, {
+      enabled: rgForm.enabled,
+      cpu_percent: rgForm.cpu_percent,
+      mem_mb: rgForm.mem_mb,
+      check_interval_sec: rgForm.check_interval_sec
+    })
   }
 
   const handleCreateTask = async () => {
@@ -1330,6 +1351,28 @@ kubectl -n opsorigin set env deployment/opsorigin-k8s-gateway OPSORIGIN_PROXY_AD
                     <Button onClick={handleSaveCB}><Save className="h-4 w-4 mr-1" />保存熔断配置</Button>
                   </>
                 )}
+
+                {/* 资源配额(agent 自保护): 与上方熔断语义不同, 此处限制 agent 自身占用宿主机资源, 超限自杀由托管重启 */}
+                <div className="mt-4 pt-4 border-t border-border/60">
+                  <p className="text-sm font-semibold mb-1">资源配额（Agent 自保护）</p>
+                  <p className="text-xs text-muted-foreground mb-3">限制 Agent 自身进程占用宿主机的 CPU / 内存，一旦超过上限即主动退出，由外部托管（systemd / docker --restart / nohup 父进程）重新拉起以释放资源。</p>
+                  {rgLoading ? (
+                    <p className="text-sm text-muted-foreground">加载中...</p>
+                  ) : (
+                    <div className="space-y-3">
+                      <div className="flex items-center gap-2">
+                        <input type="checkbox" id="rg_enabled" checked={rgForm.enabled} onChange={e => setRgForm(f => ({ ...f, enabled: e.target.checked }))} />
+                        <label htmlFor="rg_enabled" className="text-sm cursor-pointer">启用资源自保护</label>
+                      </div>
+                      <div className="grid grid-cols-2 gap-3">
+                        <div><label className="text-sm font-medium">CPU 上限 (%)</label><Input type="number" value={rgForm.cpu_percent} onChange={e => setRgForm(f => ({ ...f, cpu_percent: parseInt(e.target.value) || 0 }))} placeholder="0=不限制" /></div>
+                        <div><label className="text-sm font-medium">内存上限 (MB)</label><Input type="number" value={rgForm.mem_mb} onChange={e => setRgForm(f => ({ ...f, mem_mb: parseInt(e.target.value) || 0 }))} placeholder="0=不限制" /></div>
+                        <div><label className="text-sm font-medium">检查间隔 (秒)</label><Input type="number" value={rgForm.check_interval_sec} onChange={e => setRgForm(f => ({ ...f, check_interval_sec: parseInt(e.target.value) || 30 }))} /></div>
+                      </div>
+                      <Button onClick={handleSaveRG}><Save className="h-4 w-4 mr-1" />保存资源配额</Button>
+                    </div>
+                  )}
+                </div>
               </TabsContent>
 
               {/* 任务 Tab */}

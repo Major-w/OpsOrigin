@@ -2,7 +2,9 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"os"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -19,6 +21,7 @@ type cpuStat struct {
 	mu    sync.Mutex
 	total uint64
 	idle  uint64
+	self  uint64 // 进程自身累计 CPU 滴答(ResourceGuard 用)
 	ok    bool
 }
 
@@ -205,4 +208,97 @@ func CollectSystemMetrics() []MetricPoint {
 		)
 	}
 	return pts
+}
+
+// --- Agent 自身资源采样 (ResourceGuard 自保护用) ---
+
+var lastSelfCPU = &cpuStat{}
+var selfCPUMu sync.Mutex
+
+// readSelfCPUUsage 读取 agent 自身进程的 CPU 占用率(0-100)。
+// 基于 /proc/self/stat 的 utime+stime 差值 / 系统总 CPU 时间差值计算。
+// 非 Linux 平台退化为 0(不限制),避免误杀。
+func readSelfCPUUsage() (float64, bool) {
+	stat, err := os.ReadFile("/proc/self/stat")
+	if err != nil {
+		return 0, false
+	}
+	fields := strings.Fields(string(stat))
+	// /proc/<pid>/stat 第 14(utime) 15(stime) 字段为时钟滴答,第 2 字段是 comm(可能含空格但被 () 包裹)。
+	if len(fields) < 15 {
+		return 0, false
+	}
+	utime, err := strconv.ParseUint(fields[13], 10, 64)
+	if err != nil {
+		return 0, false
+	}
+	stime, err := strconv.ParseUint(fields[14], 10, 64)
+	if err != nil {
+		return 0, false
+	}
+	selfTicks := utime + stime
+
+	// 读系统总 CPU 时间(来自 /proc/stat 第一行)
+	sf, err := os.ReadFile("/proc/stat")
+	if err != nil {
+		return 0, false
+	}
+	sc := bufio.NewScanner(bytes.NewReader(sf))
+	if !sc.Scan() {
+		return 0, false
+	}
+	parts := strings.Fields(sc.Text())
+	if len(parts) < 5 {
+		return 0, false
+	}
+	var sysTotal uint64
+	for i := 1; i < len(parts); i++ {
+		v, err := strconv.ParseUint(parts[i], 10, 64)
+		if err == nil {
+			sysTotal += v
+		}
+	}
+
+	selfCPUMu.Lock()
+	defer selfCPUMu.Unlock()
+	if !lastSelfCPU.ok {
+		lastSelfCPU.total, lastSelfCPU.idle, lastSelfCPU.ok = sysTotal, 0, true
+		lastSelfCPU.self = selfTicks
+		return 0, true // 首轮仅建立基线
+	}
+	dSys := sysTotal - lastSelfCPU.total
+	dSelf := selfTicks - lastSelfCPU.self
+	lastSelfCPU.total, lastSelfCPU.self = sysTotal, selfTicks
+	if dSys == 0 {
+		return 0, true
+	}
+	// 单进程 CPU% = 进程占用滴答 / 系统总滴答 * 100(单核视角,多核可超 100)。
+	usage := 100.0 * float64(dSelf) / float64(dSys)
+	if usage < 0 {
+		usage = 0
+	}
+	return usage, true
+}
+
+// readSelfMemRSSMB 读取 agent 自身进程常驻内存(RSS,单位 MB)。
+// 优先读 /proc/self/statm 第 2 字段(RSS 页数 * page_size);不可用时退化为 runtime.MemStats.Alloc。
+func readSelfMemRSSMB() (float64, bool) {
+	if data, err := os.ReadFile("/proc/self/statm"); err == nil {
+		fields := strings.Fields(string(data))
+		if len(fields) >= 2 {
+			if pages, err := strconv.ParseUint(fields[1], 10, 64); err == nil {
+				var pageSize int64
+				if sz := os.Getpagesize(); sz > 0 {
+					pageSize = int64(sz)
+				} else {
+					pageSize = 4096
+				}
+				return float64(pages*uint64(pageSize)) / (1024 * 1024), true
+			}
+		}
+	}
+	// 退化: 用 Go runtime 堆分配近似(非完整 RSS,但跨平台可用)。
+	var m runtime.MemStats
+	runtime.ReadMemStats(&m)
+	return float64(m.Alloc) / (1024 * 1024), true
 }

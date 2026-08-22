@@ -502,3 +502,53 @@ func (s *Service) handleSetCB(w http.ResponseWriter, r *http.Request) {
 	s.cbMu.Unlock()
 	httputil.WriteJSON(w, http.StatusOK, cb)
 }
+
+// --- Resource Guard (agent 资源自保护) ---
+
+func (s *Service) getOrCreateRG(id string) *ResourceGuardConfig {
+	s.rgMu.Lock()
+	defer s.rgMu.Unlock()
+	rg, ok := s.resourceGuards[id]
+	if !ok {
+		rg = DefaultResourceGuardConfig(id)
+		s.resourceGuards[id] = rg
+	}
+	return rg
+}
+
+func (s *Service) handleGetRG(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	rg := s.getOrCreateRG(id)
+	httputil.WriteJSON(w, http.StatusOK, rg)
+}
+
+func (s *Service) handleSetRG(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	var req struct {
+		Enabled          *bool `json:"enabled"`
+		CPUPercent       *int  `json:"cpu_percent"`
+		MemMB            *int  `json:"mem_mb"`
+		CheckIntervalSec *int  `json:"check_interval_sec"`
+	}
+	httputil.BindJSON(r, &req)
+	s.rgMu.Lock()
+	rg := s.resourceGuards[id]
+	if rg == nil {
+		rg = DefaultResourceGuardConfig(id)
+		s.resourceGuards[id] = rg
+	}
+	if req.Enabled != nil {
+		rg.Enabled = *req.Enabled
+	}
+	if req.CPUPercent != nil && *req.CPUPercent >= 0 && *req.CPUPercent <= 100 {
+		rg.CPUPercent = *req.CPUPercent
+	}
+	if req.MemMB != nil && *req.MemMB >= 0 {
+		rg.MemMB = *req.MemMB
+	}
+	if req.CheckIntervalSec != nil && *req.CheckIntervalSec > 0 {
+		rg.CheckIntervalSec = *req.CheckIntervalSec
+	}
+	s.rgMu.Unlock()
+	httputil.WriteJSON(w, http.StatusOK, rg)
+}

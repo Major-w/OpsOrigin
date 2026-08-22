@@ -33,6 +33,10 @@ func main() {
 	grpcServer := flag.String("grpc-server", "", "gRPC server address (host:port) for direct connection")
 	agentName := flag.String("name", "", "agent name (defaults to hostname)")
 	proxyAddr := flag.String("proxy", "", "proxy address (host:port) for indirect connection, e.g. 10.0.0.1:9090")
+	cpuLimit := flag.Int("cpu-limit", 0, "resource guard: agent self CPU usage limit percent (0=unlimited)")
+	memLimit := flag.Int("mem-limit", 0, "resource guard: agent self RSS memory limit in MB (0=unlimited)")
+	rgInterval := flag.Int("rg-interval", 30, "resource guard: check interval in seconds")
+	rgEnabled := flag.Bool("rg-enabled", false, "resource guard: enable self-terminate on resource limit exceeded")
 	flag.Parse()
 
 	// 优先使用命令行参数,其次环境变量,最后默认值
@@ -80,6 +84,12 @@ func main() {
 		ProxyAddr:  proxy,
 		Interval:   30 * time.Second,
 		AgentName:  name,
+		ResourceGuard: ResourceGuardConfig{
+			Enabled:          *rgEnabled,
+			CPUPercent:       *cpuLimit,
+			MemMB:            *memLimit,
+			CheckIntervalSec: *rgInterval,
+		},
 	}
 
 	agent := NewAgent(agentCfg)
