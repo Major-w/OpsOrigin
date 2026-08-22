@@ -46,11 +46,11 @@ const sections: Section[] = [
         caption: '方式一：一键安装并直连 Core（替换 <CORE_HOST> 为你的 Core 地址）',
         lang: 'bash',
         code: `# 一键安装并接入 Core（gRPC 直连）
-curl -fsSL https://opsorigin.io/install-agent.sh | bash -s -- \\
+curl -fsSL http://<CORE_HOST>/api/v1/agents/install-script?os=linux | sudo bash -s -- \\
   --grpc-server <CORE_HOST>:9091
 
 # 方式二：经 Proxy 中转接入（gRPC 隧道，适用于隔离网段）
-curl -fsSL https://opsorigin.io/install-agent.sh | bash -s -- \\
+curl -fsSL http://<CORE_HOST>/api/v1/agents/install-script?os=linux | sudo bash -s -- \\
   --proxy <PROXY_HOST>:9090`,
       },
       {
@@ -155,18 +155,17 @@ bin/agent --proxy <PROXY_HOST>:9090`,
     Icon: Boxes,
     blocks: [
       {
-        caption: '一键部署探针（替换变量）',
+        caption: '构建探针二进制并生成 DaemonSet 清单后 apply（替换变量）',
         lang: 'bash',
-        code: `kubectl apply -f https://opsorigin.io/k8s-probe.yaml \\
-  --server <CORE> --token <TOKEN> --cluster <集群名>`,
-      },
-      {
-        caption: '或本地生成清单后手动 apply',
-        lang: 'bash',
-        code: `bin/k8s-probe --print-manifest \\
+        code: `# 构建 k8s 探针二进制(产出 bin/k8s-probe)
+make k8s-probe
+
+# 生成 DaemonSet 清单
+bin/k8s-probe --print-manifest \\
   --server <CORE> --token <TOKEN> --cluster <集群名> \\
   > k8s-probe.yaml
 
+# 部署到目标集群
 kubectl apply -f k8s-probe.yaml`,
       },
     ],
