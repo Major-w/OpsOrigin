@@ -936,7 +936,7 @@ func buildBuiltinModelTypes() []model.CIModelType {
 			ID:          model.ModelTypeService,
 			Name:        "服务",
 			Description: "进程级服务（应用由多个服务组成，如订单应用=API服务+Worker服务；自动发现 application 插件产出）",
-			Category:    model.ModelCategoryApp,
+			Category:    model.ModelCategoryService,
 			Icon:        "cog",
 			ShowInMenu:  true,
 			Builtin:     true,

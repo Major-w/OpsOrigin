@@ -21,12 +21,13 @@ const (
 )
 
 // 模型分类（默认 5 大类，用户可扩展）：
-// 业务资源 / 应用资源 / 中间件资源 / 数据库资源 / 基础设施资源。
-// 分类由 cmdb_model_category 表承载（内置 5 类 + 用户自定义），
+// 业务资源 / 应用资源 / 服务资源 / 中间件资源 / 数据库资源 / 基础设施资源。
+// 分类由 cmdb_model_category 表承载（内置 N 类 + 用户自定义），
 // 此处常量仅作内置种子与默认值，不再作为白名单。
 const (
 	ModelCategoryBusiness   = "业务资源"
 	ModelCategoryApp        = "应用资源"
+	ModelCategoryService    = "服务资源"
 	ModelCategoryMiddleware = "中间件资源"
 	ModelCategoryDatabase   = "数据库资源"
 	ModelCategoryInfra      = "基础设施资源"
@@ -39,7 +40,7 @@ const (
 
 // ModelCategories 返回默认内置分类名（前端兜底 / 种子使用）。
 func ModelCategories() []string {
-	return []string{ModelCategoryBusiness, ModelCategoryApp, ModelCategoryMiddleware, ModelCategoryDatabase, ModelCategoryInfra, ModelCategoryContainer, ModelCategoryCloud}
+	return []string{ModelCategoryBusiness, ModelCategoryApp, ModelCategoryService, ModelCategoryMiddleware, ModelCategoryDatabase, ModelCategoryInfra, ModelCategoryContainer, ModelCategoryCloud}
 }
 
 // BuiltinAuthor 是系统内置模型的作者标识（内置模型治理语义）：
@@ -54,7 +55,7 @@ const (
 	ModelTypeDatabase        = "database"         // 数据库资源：数据库实例
 	ModelTypeMiddleware      = "middleware"       // 中间件资源：Redis/Nginx/ES/Kafka 等
 	ModelTypeApp             = "app"              // 应用资源：应用服务实例
-	ModelTypeService         = "service"          // 应用资源：进程级服务（应用由多个服务组成，被 application 插件发现）
+	ModelTypeService         = "service"          // 服务资源：进程级服务（应用由多个服务组成，被 application 插件发现）
 	ModelTypeBusinessService = "business_service" // 业务资源：业务服务（服务建模顶层）
 	ModelTypeKubernetes      = "kubernetes"       // 容器资源：K8S 容器平台（抽象父类，集群/节点/Pod/工作负载等共性承载）
 )

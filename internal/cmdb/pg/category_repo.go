@@ -34,11 +34,12 @@ func (r *Repository) migrateModelCategory(ctx context.Context) error {
 	}{
 		{model.ModelCategoryBusiness, 1},
 		{model.ModelCategoryApp, 2},
-		{model.ModelCategoryMiddleware, 3},
-		{model.ModelCategoryDatabase, 4},
-		{model.ModelCategoryInfra, 5},
-		{model.ModelCategoryContainer, 6},
-		{model.ModelCategoryCloud, 7},
+		{model.ModelCategoryService, 3},
+		{model.ModelCategoryMiddleware, 4},
+		{model.ModelCategoryDatabase, 5},
+		{model.ModelCategoryInfra, 6},
+		{model.ModelCategoryContainer, 7},
+		{model.ModelCategoryCloud, 8},
 	}
 	for _, b := range builtin {
 		if _, err := r.db.ExecContext(ctx, `
