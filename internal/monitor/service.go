@@ -2,6 +2,7 @@ package monitor
 
 import (
 	"context"
+	"database/sql"
 	"github.com/opsorigin/core/pkg/auth"
 	"log/slog"
 	"net/http"
@@ -44,12 +45,12 @@ type Service struct {
 	cmdbEnricher func(ctx context.Context, ciID, tenantID string) map[string]string
 }
 
-func NewService(cfg *config.Config, rdb *redis.Client) *Service {
+func NewService(cfg *config.Config, db *sql.DB, rdb *redis.Client) *Service {
 	topo := NewSimpleTopology()
 	return &Service{
 		cfg:          cfg,
-		discovery:    discovery.NewEngine(rdb),
-		prober:       synthetic.NewProber(),
+		discovery:    discovery.NewEngine(rdb, db),
+		prober:       synthetic.NewProber(db),
 		ebpf:         ebpf.NewCollector(),
 		aggregator:   alert.NewAggregator(topo),
 		topology:     topo,

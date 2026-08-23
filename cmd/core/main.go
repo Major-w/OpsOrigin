@@ -300,7 +300,7 @@ func main() {
 	})
 	cmdbSvc.StartScheduler(ctx)
 
-	monitorSvc := monitor.NewService(cfg, rdb)
+	monitorSvc := monitor.NewService(cfg, db, rdb)
 	server.RegisterService(monitorSvc)
 
 	// 告警富化(消费之道-监控篇场景 2.1): 告警进入时按关联 CI 查 CMDB,

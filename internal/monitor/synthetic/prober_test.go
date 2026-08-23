@@ -13,7 +13,7 @@ import (
 )
 
 func TestProbeUnsupportedProtocol(t *testing.T) {
-	p := NewProber()
+	p := NewProber(nil) // db=nil 退化为纯内存
 	res := p.Probe(context.Background(), &model.ProbeTask{Protocol: model.ProbeProtocol("bogus"), Address: "127.0.0.1"})
 	if res.Success {
 		t.Fatal("expected failure for unsupported protocol")
@@ -33,7 +33,7 @@ func TestProbeHTTP(t *testing.T) {
 		t.Fatal(err)
 	}
 	port, _ := strconv.Atoi(u.Port())
-	p := NewProber()
+	p := NewProber(nil)
 	res := p.Probe(context.Background(), &model.ProbeTask{
 		Protocol: model.ProbeHTTP, Address: u.Hostname(), Port: port, Timeout: 3 * time.Second,
 	})

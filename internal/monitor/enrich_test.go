@@ -11,7 +11,7 @@ import (
 // ingestAlert 富化逻辑: 注入 enricher 后, 告警进入 aggregator 前
 // 应携带 CMDB 上下文(owner/criticality); 未注入时保持原样(nil 安全)。
 func TestIngestAlert_EnrichesWithCMDBContext(t *testing.T) {
-	s := NewService(&config.Config{}, nil)
+	s := NewService(&config.Config{}, nil, nil)
 	// aggregator 可能依赖 redis/时间; 这里只验证富化在 Ingest 前发生。
 	// 用无通知、无拓扑的 aggregator 直接验证 Labels 被写入。
 	s.SetCMDBEnricher(func(ctx context.Context, ciID, tenantID string) map[string]string {
@@ -42,7 +42,7 @@ func TestIngestAlert_EnrichesWithCMDBContext(t *testing.T) {
 }
 
 func TestIngestAlert_NoEnricherKeepsLabels(t *testing.T) {
-	s := NewService(&config.Config{}, nil) // 未注入 enricher
+	s := NewService(&config.Config{}, nil, nil) // 未注入 enricher
 	alert := &model.AlertEvent{
 		TenantID: "default", SourceCIID: "ci-x", RuleName: "r1",
 		Severity: model.AlertWarning, Title: "t",
@@ -58,7 +58,7 @@ func TestIngestAlert_NoEnricherKeepsLabels(t *testing.T) {
 }
 
 func TestIngestAlert_RuleLabelTakesPrecedence(t *testing.T) {
-	s := NewService(&config.Config{}, nil)
+	s := NewService(&config.Config{}, nil, nil)
 	s.SetCMDBEnricher(func(ctx context.Context, ciID, tenantID string) map[string]string {
 		return map[string]string{"owner": "cmdb-owner", "env": "cmdb-env"}
 	})

@@ -2,6 +2,7 @@ package discovery
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"log/slog"
 	"strings"
@@ -27,17 +28,26 @@ type Engine struct {
 	targets  map[string]*model.MonitorTarget
 	handlers []EventHandler
 	rdb      *redis.Client
+	db       *sql.DB // 启动全量重建发现目标用（CMDB 权威源）
 }
 
-func NewEngine(rdb *redis.Client) *Engine {
+func NewEngine(rdb *redis.Client, db *sql.DB) *Engine {
 	return &Engine{
 		targets: make(map[string]*model.MonitorTarget),
 		rdb:     rdb,
+		db:      db,
 	}
 }
 
 func (e *Engine) Start(ctx context.Context) error {
 	slog.Info("discovery engine started")
+
+	if e.db != nil {
+		// 启动从 CMDB 全量重建发现目标（重启恢复，避免仅靠事件增量积累）
+		if err := e.RebuildFromDB(ctx); err != nil {
+			slog.Warn("discovery: rebuild targets from db failed", "error", err)
+		}
+	}
 
 	if e.rdb != nil {
 		go e.subscribeRedisStream(ctx)
@@ -55,6 +65,64 @@ func (e *Engine) Start(ctx context.Context) error {
 			e.processPollCycle(ctx)
 		}
 	}
+}
+
+// RebuildFromDB 从 cmdb_ci 全量加载有 address/ip 的 CI 重建探测目标（启动恢复）。
+// 与 OnChange 的 ci_created/updated 增量路径共用同一构建逻辑，幂等（重建前清空）。
+func (e *Engine) RebuildFromDB(ctx context.Context) error {
+	rows, err := e.db.QueryContext(ctx, `
+		SELECT id, tenant_id, type_id, name, attributes
+		FROM cmdb_ci
+		WHERE attributes ? 'address' OR attributes ? 'ip'`)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	// 重建前清空旧内存态（避免事件残留与 DB 不一致）
+	e.targets = make(map[string]*model.MonitorTarget)
+	added := 0
+	for rows.Next() {
+		var id, tenantID, typeID, name string
+		var attrsJSON []byte
+		if err := rows.Scan(&id, &tenantID, &typeID, &name, &attrsJSON); err != nil {
+			slog.Warn("discovery: scan ci row failed", "error", err)
+			continue
+		}
+		attrs := map[string]any{}
+		_ = json.Unmarshal(attrsJSON, &attrs)
+		address := firstString(attrs, "address", "ip")
+		if address == "" {
+			continue
+		}
+		target := &model.MonitorTarget{
+			ID:        uuid.New().String(),
+			TenantID:  tenantID,
+			CIID:      id,
+			Name:      name,
+			Address:   address,
+			Probes:    e.guessProbes(typeID),
+			Interval:  60 * time.Second,
+			Timeout:   5 * time.Second,
+			Status:    model.TargetUnknown,
+			CreatedAt: time.Now(),
+		}
+		e.targets[target.ID] = target
+		added++
+	}
+	slog.Info("discovery: targets rebuilt from db", "count", added)
+	return rows.Err()
+}
+
+func firstString(attrs map[string]any, keys ...string) string {
+	for _, k := range keys {
+		if v, ok := attrs[k].(string); ok && v != "" {
+			return v
+		}
+	}
+	return ""
 }
 
 func (e *Engine) subscribeRedisStream(ctx context.Context) {
@@ -133,7 +201,7 @@ func (e *Engine) OnChange(event ChangeEvent) {
 	defer e.mu.Unlock()
 
 	switch event.EventType {
-	case "ci.created", "ci.updated":
+	case "ci_created", "ci.created", "ci_updated", "ci.updated":
 		var ciData struct {
 			ID      string            `json:"id"`
 			TypeID  string            `json:"type_id"`
@@ -162,7 +230,7 @@ func (e *Engine) OnChange(event ChangeEvent) {
 		e.targets[target.ID] = target
 		slog.Info("discovery: target added from stream", "name", target.Name, "address", target.Address)
 
-	case "ci.deleted":
+	case "ci_deleted", "ci.deleted":
 		for _, t := range e.targets {
 			if t.CIID == event.CIID {
 				delete(e.targets, t.ID)

@@ -161,6 +161,7 @@ func (s *Service) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/v1/cmdb/model-type", s.handleListModelTypes)
 	mux.HandleFunc("GET /api/v1/cmdb/model-type/{id}", s.handleGetModelType)
 	mux.HandleFunc("GET /api/v1/cmdb/model-type/{id}/field-usage", s.handleFieldUsage)
+	mux.HandleFunc("GET /api/v1/cmdb/model-type/{id}/ci-field-usage", s.handleCIFieldUsage)
 	mux.HandleFunc("PUT /api/v1/cmdb/model-type/{id}", s.handleUpdateModelType)
 	mux.HandleFunc("DELETE /api/v1/cmdb/model-type/{id}", s.handleDeleteModelType)
 	mux.HandleFunc("GET /api/v1/cmdb/model-type/{id}/versions", s.handleListModelTypeVersions)

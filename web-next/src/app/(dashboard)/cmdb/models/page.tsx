@@ -205,6 +205,9 @@ export default function CMDBModelsPage() {
   // 模型级关系定义（与属性字段并列）
   const [modelTab, setModelTab] = useState<'attrs' | 'rels'>('attrs')
   const [relations, setRelations] = useState<RelationDef[]>([])
+  // 实例级字段/关系使用数（删除保护：有实例使用则拦截）
+  const [ciFieldUsage, setCIFieldUsage] = useState<Record<string, number>>({})
+  const [ciRelUsage, setCIRelUsage] = useState<Record<string, number>>({})
   const [relDialogOpen, setRelDialogOpen] = useState(false)
   const [editRelIdx, setEditRelIdx] = useState<number | null>(null)
   const [relForm, setRelForm] = useState<RelationDef>({ name: '', relation_type: '', target_model: '', cardinality: 'one_to_many' })
@@ -323,6 +326,11 @@ export default function CMDBModelsPage() {
     setRelations([...model.relations])
     setModelTab('attrs')
     setDialogOpen(true)
+    // 预取实例级字段/关系使用数（删除保护提示用）
+    setCIFieldUsage({}); setCIRelUsage({})
+    apiFetch<{ fields: Record<string, number>; relations: Record<string, number> }>(`/cmdb/model-type/${model.id}/ci-field-usage`)
+      .then(d => { setCIFieldUsage(d.fields || {}); setCIRelUsage(d.relations || {}) })
+      .catch(() => { /* 统计失败不阻塞编辑 */ })
   }
 
   const handleSave = async () => {
@@ -365,7 +373,15 @@ export default function CMDBModelsPage() {
     setConfirmTarget({ type: 'model', model })
   }
 
-  const handleDeleteField = (idx: number) => setFields(prev => prev.filter((_, i) => i !== idx))
+  const handleDeleteField = (idx: number) => {
+    if (editModel?.builtin) { toast.error('内置模型字段受保护，不可删除'); return }
+    const f = fields[idx]
+    if (f && (ciFieldUsage[f.name] || 0) > 0) {
+      toast.error(`还有 ${ciFieldUsage[f.name]} 条实例正在使用该字段「${f.name}」，请先清理实例数据`)
+      return
+    }
+    setFields(prev => prev.filter((_, i) => i !== idx))
+  }
 
   const openRelDialog = (idx?: number) => {
     if (idx !== undefined) { setEditRelIdx(idx); setRelForm({ ...relations[idx] }) }
@@ -380,7 +396,15 @@ export default function CMDBModelsPage() {
     setRelDialogOpen(false)
   }
 
-  const handleDeleteRelationDef = (idx: number) => setRelations(prev => prev.filter((_, i) => i !== idx))
+  const handleDeleteRelationDef = (idx: number) => {
+    if (editModel?.builtin) { toast.error('内置模型关系受保护，不可删除'); return }
+    const rel = relations[idx]
+    if (rel && (ciRelUsage[rel.relation_type] || 0) > 0) {
+      toast.error(`还有 ${ciRelUsage[rel.relation_type]} 条实例关联使用该关系「${rel.relation_type}」，请先清理关联数据`)
+      return
+    }
+    setRelations(prev => prev.filter((_, i) => i !== idx))
+  }
 
   const openFieldDialog = (idx?: number) => {
     if (idx !== undefined) { setEditFieldIdx(idx); setFieldForm({ ...fields[idx] }) }
@@ -734,7 +758,7 @@ export default function CMDBModelsPage() {
                       {f.required && <Badge variant="destructive" className="text-[9px]">必填</Badge>}
                       {f.description && <span className="text-muted-foreground truncate flex-1">{f.description ? f.description : ''}</span>}
                       {canAdmin && <Button variant="ghost" size="sm" className="h-5 w-5 p-0" onClick={() => openFieldDialog(idx)}><Edit2 className="h-3 w-3" /></Button>}
-                      {canAdmin && <Button variant="ghost" size="sm" className="h-5 w-5 p-0 text-destructive" onClick={() => handleDeleteField(idx)}><Trash2 className="h-3 w-3" /></Button>}
+                      {canAdmin && <Button variant="ghost" size="sm" className="h-5 w-5 p-0 text-destructive" disabled={!!editModel?.builtin} title={editModel?.builtin ? '内置模型字段受保护，不可删除' : '删除字段'} onClick={() => handleDeleteField(idx)}><Trash2 className="h-3 w-3" /></Button>}
                     </div>
                   ))}
                 </div>
@@ -756,7 +780,7 @@ export default function CMDBModelsPage() {
                       <span className="text-muted-foreground truncate">→ {r.target_model}</span>
                       <Badge variant="secondary" className="text-[9px]">{cardinalityLabel(r.cardinality)}</Badge>
                       {canAdmin && <Button variant="ghost" size="sm" className="h-5 w-5 p-0" onClick={() => openRelDialog(idx)}><Edit2 className="h-3 w-3" /></Button>}
-                      {canAdmin && <Button variant="ghost" size="sm" className="h-5 w-5 p-0 text-destructive" onClick={() => handleDeleteRelationDef(idx)}><Trash2 className="h-3 w-3" /></Button>}
+                      {canAdmin && <Button variant="ghost" size="sm" className="h-5 w-5 p-0 text-destructive" disabled={!!editModel?.builtin} title={editModel?.builtin ? '内置模型关系受保护，不可删除' : '删除关系'} onClick={() => handleDeleteRelationDef(idx)}><Trash2 className="h-3 w-3" /></Button>}
                     </div>
                   ))}
                 </div>

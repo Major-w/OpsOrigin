@@ -1413,6 +1413,46 @@ func (r *Repository) CountCIByTypeID(ctx context.Context, typeID, tenantID strin
 	return count, nil
 }
 
+// CountCIByAttr 统计指定模型下 attributes 中包含某字段的 CI 数量（字段删除保护用）。
+func (r *Repository) CountCIByAttr(ctx context.Context, tenantID, typeID, attr string) (int, error) {
+	var count int
+	err := r.db.QueryRowContext(ctx, `
+		SELECT COUNT(*) FROM cmdb_ci WHERE tenant_id = $1 AND type_id = $2 AND attributes ? $3`,
+		tenantID, typeID, attr).Scan(&count)
+	if err != nil {
+		return 0, fmt.Errorf("count ci by attr: %w", err)
+	}
+	return count, nil
+}
+
+// CountRelationTypesForModel 统计该模型全部 CI 作为任一端参与的关系，按 relation_type 计数（关系删除保护用）。
+func (r *Repository) CountRelationTypesForModel(ctx context.Context, tenantID, typeID string) (map[string]int, error) {
+	rows, err := r.db.QueryContext(ctx, `
+		SELECT rel.relation_type, COUNT(*)
+		FROM cmdb_ci_relation rel
+		WHERE rel.tenant_id = $1
+		  AND (rel.source_id IN (SELECT id FROM cmdb_ci WHERE tenant_id = $1 AND type_id = $2)
+		    OR rel.target_id  IN (SELECT id FROM cmdb_ci WHERE tenant_id = $1 AND type_id = $2))
+		GROUP BY rel.relation_type`, tenantID, typeID)
+	if err != nil {
+		return nil, fmt.Errorf("count relation types for model: %w", err)
+	}
+	defer rows.Close()
+	out := make(map[string]int)
+	for rows.Next() {
+		var typ string
+		var n int
+		if err := rows.Scan(&typ, &n); err != nil {
+			return nil, fmt.Errorf("scan relation type count: %w", err)
+		}
+		out[typ] = n
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("count relation types rows: %w", err)
+	}
+	return out, nil
+}
+
 // CountModelChildren 统计直接继承指定模型的子模型数量（父模型保护用）。
 func (r *Repository) CountModelChildren(ctx context.Context, id, tenantID string) (int, error) {
 	var count int

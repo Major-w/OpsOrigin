@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/tls"
 	"crypto/x509"
+	"database/sql"
 	"fmt"
 	"log/slog"
 	"net"
@@ -23,12 +24,14 @@ type Prober struct {
 	failureCount map[string]int
 	onResult     ProbeCallback
 	client       *http.Client
+	db           *sql.DB // 拨测目标持久化（nil 时退化为纯内存）
 }
 
-func NewProber() *Prober {
-	return &Prober{
+func NewProber(db *sql.DB) *Prober {
+	p := &Prober{
 		targets:      make(map[string]*model.MonitorTarget),
 		failureCount: make(map[string]int),
+		db:           db,
 		client: &http.Client{
 			Timeout: 10 * time.Second,
 			CheckRedirect: func(req *http.Request, via []*http.Request) error {
@@ -36,6 +39,18 @@ func NewProber() *Prober {
 			},
 		},
 	}
+	if db != nil {
+		// 启动从 DB 恢复已持久化的拨测目标
+		targets, err := loadTargetsFromDB(context.Background(), db)
+		if err != nil {
+			slog.Warn("monitor: load targets from db failed", "error", err)
+		} else {
+			for _, t := range targets {
+				p.targets[t.ID] = t
+			}
+		}
+	}
+	return p
 }
 
 func (p *Prober) OnResult(cb ProbeCallback) {
@@ -46,15 +61,25 @@ func (p *Prober) OnResult(cb ProbeCallback) {
 
 func (p *Prober) AddTarget(target *model.MonitorTarget) {
 	p.mu.Lock()
-	defer p.mu.Unlock()
 	p.targets[target.ID] = target
+	p.mu.Unlock()
+	if p.db != nil {
+		if err := saveTargetToDB(p.db, target); err != nil {
+			slog.Warn("monitor: persist target failed", "id", target.ID, "error", err)
+		}
+	}
 }
 
 func (p *Prober) RemoveTarget(targetID string) {
 	p.mu.Lock()
-	defer p.mu.Unlock()
 	delete(p.targets, targetID)
 	delete(p.failureCount, targetID)
+	p.mu.Unlock()
+	if p.db != nil {
+		if err := deleteTargetFromDB(p.db, targetID); err != nil {
+			slog.Warn("monitor: delete target from db failed", "id", targetID, "error", err)
+		}
+	}
 }
 
 func (p *Prober) Run(ctx context.Context) error {

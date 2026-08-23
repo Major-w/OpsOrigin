@@ -105,6 +105,44 @@ func (s *Service) handleFieldUsage(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// handleCIFieldUsage 实例级字段/关系使用统计（删除保护用）：
+//   - fields:    该模型各 schema 字段被多少条 CI 实例实际使用（attributes 含该 key）
+//   - relations: 该模型全部 CI 参与的关系按 relation_type 的条数
+//
+// 前端删除属性字段/关系定义前先查此接口，有实例使用则拦截并提示。
+func (s *Service) handleCIFieldUsage(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	id := r.PathValue("id")
+	tenantID := auth.TenantFromContext(ctx)
+
+	mt, err := s.pg.GetCIModelType(ctx, id, tenantID)
+	if err != nil || mt == nil {
+		httputil.WriteError(w, http.StatusNotFound, "model type not found")
+		return
+	}
+
+	fields := make(map[string]int, len(mt.Schema))
+	for name := range mt.Schema {
+		n, cerr := s.pg.CountCIByAttr(ctx, tenantID, id, name)
+		if cerr != nil {
+			slog.Warn("count ci by attr failed", "field", name, "err", cerr)
+			continue
+		}
+		fields[name] = n
+	}
+
+	rels, rerr := s.pg.CountRelationTypesForModel(ctx, tenantID, id)
+	if rerr != nil {
+		slog.Warn("count relation types for model failed", "err", rerr)
+		rels = map[string]int{}
+	}
+
+	httputil.WriteJSON(w, http.StatusOK, map[string]any{
+		"model_type_id": id, "model_name": mt.Name,
+		"fields": fields, "relations": rels,
+	})
+}
+
 func (s *Service) handleGetModelType(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 
