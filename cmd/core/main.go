@@ -274,7 +274,11 @@ func main() {
 	// 经 cloudCMDBAdapter 把发现的资源同步进 CMDB（复用完整 CI 生命周期）。
 	// 注意：云/主机/容器属于「资源纳管」层职责，由 cloudSvc 拉取生成基础 CI；
 	// CMDB 的自动发现(relation/agent/snmp)不重复拉取资源，只在已纳管 CI 之上推断关系。
-	cloudCredStore := cloud.NewMemStore()
+	var cloudCredStore cloud.Store = cloud.NewMemStore()
+	if db != nil {
+		// 生产：凭证持久化到 PG（AES-GCM 加密），重启不丢，云采集任务可持续拉取。
+		cloudCredStore = cloud.NewPGStore(db)
+	}
 	cloudSvc := cloud.NewService(cloudCredStore, cloudCMDBAdapter{pgRepo: pgRepo, cmdbSvc: cmdbSvc})
 	server.RegisterService(cloudSvc)
 
