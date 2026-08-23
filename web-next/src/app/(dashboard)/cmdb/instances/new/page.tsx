@@ -11,10 +11,10 @@ import { useCan } from '@/stores/permissions'
 import { apiFetch, apiList } from '@/lib/utils'
 import { ChevronLeft, Save, Network } from 'lucide-react'
 
-// 与 models 页对齐的字段类型定义(驱动 ref/enum/unique 渲染)
+// 与 models 页对齐的字段类型定义(驱动 ref/enum/unique/user 渲染)
 type FieldType =
   | 'string' | 'longtext' | 'number' | 'float' | 'enum' | 'multi-enum'
-  | 'boolean' | 'ref' | 'date' | 'datetime' | 'json' | 'list'
+  | 'boolean' | 'ref' | 'user' | 'date' | 'datetime' | 'json' | 'list'
 
 interface ModelFieldDef {
   name: string
@@ -101,8 +101,16 @@ export default function NewInstancePage() {
   })
   const [submitting, setSubmitting] = useState(false)
   const [refOptions, setRefOptions] = useState<Record<string, { id: string; name: string; attributes?: Record<string, any> }[]>>({})
+  // user 类型字段: 平台用户列表(存 username)
+  const [userOptions, setUserOptions] = useState<{ id: string; username: string; email?: string }[]>([])
   // 关系预选: 每个模型声明的关系对应一个目标实例选择
   const [pendingRels, setPendingRels] = useState<Record<string, string>>({})
+
+  useEffect(() => {
+    apiList<{ id: string; username: string; email?: string }>('/users')
+      .then(setUserOptions)
+      .catch(() => setUserOptions([]))
+  }, [])
 
   useEffect(() => {
     apiList<ModelInfo>('/cmdb/model-type?limit=1000')
@@ -259,6 +267,19 @@ export default function NewInstancePage() {
                         {opts.map(o => <option key={o.id} value={o.id}>{o.name || o.id}</option>)}
                       </select>
                       <p className="text-[11px] text-muted-foreground mt-0.5">引用 {f.ref_model} 模型实例（{f.description || ''}）</p>
+                    </div>
+                  )
+                }
+                if (f.type === 'user') {
+                  return (
+                    <div key={f.name}>
+                      <label className="text-sm font-medium">{f.name}{f.required && ' *'}{f.unique && '（唯一）'}</label>
+                      <select className="flex h-9 w-full rounded-md border border-input bg-background px-2 py-1 text-sm mt-1"
+                        value={(form.attributes[f.name] as string) || ''} onChange={e => setAttr(f.name, e.target.value)}>
+                        <option value="">选择用户...</option>
+                        {userOptions.map(u => <option key={u.id} value={u.username}>{u.username}{u.email ? `（${u.email}）` : ''}</option>)}
+                      </select>
+                      <p className="text-[11px] text-muted-foreground mt-0.5">{f.description || '从平台用户列表选择（存用户名）'}</p>
                     </div>
                   )
                 }

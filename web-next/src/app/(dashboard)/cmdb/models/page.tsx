@@ -9,7 +9,7 @@ import { Input } from '@/components/ui/input'
 import { Dialog, DialogFooter } from '@/components/ui/dialog'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { apiFetch, apiList } from '@/lib/utils'
-import { Plus, Trash2, GripVertical, Edit2, Download, Upload, Settings2, Shield, History, Gauge } from 'lucide-react'
+import { Plus, Trash2, GripVertical, Edit2, Download, Upload, Settings2, Shield, History, Gauge, Search, ChevronDown, ChevronRight } from 'lucide-react'
 import { useCan } from '@/stores/permissions'
 import { cn } from '@/lib/utils'
 import { toast } from '@/stores/toast'
@@ -19,7 +19,7 @@ import TopologyGraph from '@/components/TopologyGraph'
 type FieldType =
   | 'string' | 'longtext' | 'number' | 'float'
   | 'enum' | 'multi-enum' | 'boolean'
-  | 'ref' | 'date' | 'datetime' | 'json' | 'list'
+  | 'ref' | 'user' | 'date' | 'datetime' | 'json' | 'list'
 
 interface SchemaField {
   name: string
@@ -68,6 +68,7 @@ const FIELD_TYPES: FieldTypeMeta[] = [
   { value: 'enum', label: '枚举(单选)', group: '选择', desc: '固定选项下拉，如环境(prod/dev/test)', configs: ['options'] },
   { value: 'multi-enum', label: '枚举(多选)', group: '选择', desc: '可多选的枚举，实例值存为数组', configs: ['options', 'multi'] },
   { value: 'boolean', label: '布尔', group: '选择', desc: '是/否开关，如是否开启 binlog', configs: [] },
+  { value: 'user', label: '用户', group: '选择', desc: '从平台用户列表选择（存用户名），如负责人、审批人', configs: [] },
   { value: 'date', label: '日期', group: '日期时间', desc: '年-月-日', configs: [] },
   { value: 'datetime', label: '日期时间', group: '日期时间', desc: '含时分秒的完整时间', configs: [] },
   { value: 'json', label: 'JSON', group: '特殊', desc: '结构化数据，如配置片段', configs: [] },
@@ -161,6 +162,12 @@ export default function CMDBModelsPage() {
   const [ciCounts, setCiCounts] = useState<Record<string, number>>({})
   const [dialogOpen, setDialogOpen] = useState(false)
   const [editModel, setEditModel] = useState<CIModel | null>(null)
+  // 模型搜索(按 ID/名称模糊) + 分类折叠(默认收起)
+  const [searchQuery, setSearchQuery] = useState('')
+  const [expandedCats, setExpandedCats] = useState<Set<string>>(new Set())
+  const toggleCat = (name: string) => setExpandedCats(s => {
+    const n = new Set(s); if (n.has(name)) n.delete(name); else n.add(name); return n
+  })
   const [form, setForm] = useState({
     name: '', description: '', icon: '🖥️', category: '基础设施资源',
     sub_category: '', show_in_menu: true, parent_id: '',
@@ -495,7 +502,18 @@ export default function CMDBModelsPage() {
         </Card>
       )}
 
-      {/* 按分类分组展示：分类标题 + 模型卡片 */}
+      {/* 模型搜索 */}
+      <div className="relative max-w-sm">
+        <Search className="h-3.5 w-3.5 absolute left-2.5 top-1/2 -translate-y-1/2 text-muted-foreground" />
+        <Input
+          value={searchQuery}
+          onChange={e => setSearchQuery(e.target.value)}
+          placeholder="搜索模型 ID / 名称（模糊）…"
+          className="pl-8 h-9 text-sm"
+        />
+      </div>
+
+      {/* 按分类分组展示：分类标题(默认收起) + 模型卡片 */}
       {models.length === 0 ? (
         <Card className="text-center py-16">
           <CardContent>
@@ -503,67 +521,83 @@ export default function CMDBModelsPage() {
           </CardContent>
         </Card>
       ) : (() => {
+        const q = searchQuery.trim().toLowerCase()
+        const isSearch = q !== ''
+        const filtered = isSearch ? models.filter(m => m.id.toLowerCase().includes(q) || m.name.toLowerCase().includes(q)) : models
         const groups: { name: string; emoji: string; color: string; list: typeof models }[] = []
         const seen = new Set<string>()
         for (const c of categories) {
-          const list = models.filter(m => m.category === c.name)
+          const list = filtered.filter(m => m.category === c.name)
           if (list.length === 0) continue
           const st = catStyle(c.name)
           groups.push({ name: c.name, emoji: st.emoji, color: st.color, list })
           seen.add(c.name)
         }
-        const rest = models.filter(m => !seen.has(m.category))
+        const rest = filtered.filter(m => !seen.has(m.category))
         if (rest.length > 0) groups.push({ name: '未分类', emoji: '🏷️', color: 'bg-gray-500', list: rest })
+        if (groups.length === 0) {
+          return (
+            <Card className="text-center py-16">
+              <CardContent><p className="text-muted-foreground text-sm">未找到与「{searchQuery}」匹配的模型。</p></CardContent>
+            </Card>
+          )
+        }
         return (
-          <div className="space-y-8">
-            {groups.map(g => (
-              <section key={g.name} className="space-y-3">
-                <div className="flex items-center gap-2">
-                  <span className="text-base">{g.emoji}</span>
-                  <h2 className="text-sm font-semibold">{g.name}</h2>
-                  <span className="text-xs text-muted-foreground">{g.list.length} 个模型</span>
-                  <div className="flex-1 border-t border-border/60" />
-                </div>
-                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
-                  {g.list.map(model => (
-                    <Card key={model.id} className="group hover:shadow-md transition-shadow">
-                      <CardHeader className="py-3">
-                        <div className="flex items-center justify-between">
-                          <CardTitle className="text-sm flex items-center gap-2">
-                            <span className="text-lg">{model.icon}</span>
-                            {model.name}
-                          </CardTitle>
-                          {canAdmin && (
-                            <div className="flex">
-                              <Button variant="ghost" size="sm" className="opacity-0 group-hover:opacity-100 h-7 w-7 p-0" title="字段权限" onClick={() => openFieldRules(model)}><Shield className="h-3.5 w-3.5" /></Button>
-                              <Button variant="ghost" size="sm" className="opacity-0 group-hover:opacity-100 h-7 w-7 p-0" title="版本历史" onClick={() => openVersions(model)}><History className="h-3.5 w-3.5" /></Button>
-                              <Button variant="ghost" size="sm" className="opacity-0 group-hover:opacity-100 h-7 w-7 p-0" title="字段消费度" onClick={() => openUsage(model)}><Gauge className="h-3.5 w-3.5" /></Button>
-                              <Button variant="ghost" size="sm" className="opacity-0 group-hover:opacity-100 h-7 w-7 p-0" onClick={() => openEdit(model)}><Edit2 className="h-3.5 w-3.5" /></Button>
-                              {!model.builtin && (
-                                <Button variant="ghost" size="sm" className="opacity-0 group-hover:opacity-100 h-7 w-7 p-0 text-destructive" onClick={() => handleDelete(model)}><Trash2 className="h-3.5 w-3.5" /></Button>
+          <div className="space-y-6">
+            {groups.map(g => {
+              const open = isSearch || expandedCats.has(g.name)
+              return (
+                <section key={g.name} className="space-y-3">
+                  <div className="flex items-center gap-2 cursor-pointer select-none" onClick={() => toggleCat(g.name)} title={open ? '收起该分类' : '展开该分类'}>
+                    {open ? <ChevronDown className="h-3.5 w-3.5 text-muted-foreground shrink-0" /> : <ChevronRight className="h-3.5 w-3.5 text-muted-foreground shrink-0" />}
+                    <span className="text-base">{g.emoji}</span>
+                    <h2 className="text-sm font-semibold">{g.name}</h2>
+                    <span className="text-xs text-muted-foreground">{g.list.length} 个模型</span>
+                    <div className="flex-1 border-t border-border/60" />
+                  </div>
+                  {open && (
+                    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
+                      {g.list.map(model => (
+                        <Card key={model.id} className="group hover:shadow-md transition-shadow">
+                          <CardHeader className="py-3">
+                            <div className="flex items-center justify-between gap-2">
+                              <CardTitle className="text-sm flex items-center gap-2 min-w-0 flex-1">
+                                <span className="text-lg shrink-0">{model.icon}</span>
+                                <span className="truncate" title={`${model.name}（${model.id}）`}>{model.name}</span>
+                              </CardTitle>
+                              {canAdmin && (
+                                <div className="flex shrink-0">
+                                  <Button variant="ghost" size="sm" className="opacity-0 group-hover:opacity-100 h-7 w-7 p-0" title="字段权限" onClick={() => openFieldRules(model)}><Shield className="h-3.5 w-3.5" /></Button>
+                                  <Button variant="ghost" size="sm" className="opacity-0 group-hover:opacity-100 h-7 w-7 p-0" title="版本历史" onClick={() => openVersions(model)}><History className="h-3.5 w-3.5" /></Button>
+                                  <Button variant="ghost" size="sm" className="opacity-0 group-hover:opacity-100 h-7 w-7 p-0" title="字段消费度" onClick={() => openUsage(model)}><Gauge className="h-3.5 w-3.5" /></Button>
+                                  <Button variant="ghost" size="sm" className="opacity-0 group-hover:opacity-100 h-7 w-7 p-0" onClick={() => openEdit(model)}><Edit2 className="h-3.5 w-3.5" /></Button>
+                                  {!model.builtin && (
+                                    <Button variant="ghost" size="sm" className="opacity-0 group-hover:opacity-100 h-7 w-7 p-0 text-destructive" onClick={() => handleDelete(model)}><Trash2 className="h-3.5 w-3.5" /></Button>
+                                  )}
+                                </div>
                               )}
                             </div>
-                          )}
-                        </div>
-                      </CardHeader>
-                      <CardContent className="space-y-2">
-                        {model.description && <p className="text-xs text-muted-foreground line-clamp-2">{model.description}</p>}
-                        <div className="flex items-center gap-2 flex-wrap">
-                          <Badge className={cn("text-[10px] text-white", g.color)}>{g.emoji} {model.category}</Badge>
-                          {model.sub_category && <Badge variant="outline" className="text-[10px]">{model.sub_category}</Badge>}
-                          {model.parent_id && <Badge variant="secondary" className="text-[10px]">继承</Badge>}
-                          {model.builtin && <Badge variant="secondary" className="text-[10px]">内置</Badge>}
-                        </div>
-                        <div className="flex items-center gap-2">
-                          <Badge variant="secondary" className="text-[10px]">{(ciCounts[model.id] || 0)} 个实例</Badge>
-                          <Badge variant="outline" className="text-[10px]">{model.fields.length} 个字段</Badge>
-                        </div>
-                      </CardContent>
-                    </Card>
-                  ))}
-                </div>
-              </section>
-            ))}
+                          </CardHeader>
+                          <CardContent className="space-y-2">
+                            {model.description && <p className="text-xs text-muted-foreground line-clamp-2">{model.description}</p>}
+                            <div className="flex items-center gap-2 flex-wrap">
+                              <Badge className={cn("text-[10px] text-white", g.color)}>{g.emoji} {model.category}</Badge>
+                              {model.sub_category && <Badge variant="outline" className="text-[10px]">{model.sub_category}</Badge>}
+                              {model.parent_id && <Badge variant="secondary" className="text-[10px]">继承</Badge>}
+                              {model.builtin && <Badge variant="secondary" className="text-[10px]">内置</Badge>}
+                            </div>
+                            <div className="flex items-center gap-2">
+                              <Badge variant="secondary" className="text-[10px]">{(ciCounts[model.id] || 0)} 个实例</Badge>
+                              <Badge variant="outline" className="text-[10px]">{model.fields.length} 个字段</Badge>
+                            </div>
+                          </CardContent>
+                        </Card>
+                      ))}
+                    </div>
+                  )}
+                </section>
+              )
+            })}
           </div>
         )
       })()}
