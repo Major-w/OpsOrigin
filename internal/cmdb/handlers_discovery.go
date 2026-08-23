@@ -227,23 +227,32 @@ func (s *Service) runDiscoveryPlugin(ctx context.Context, task *model.DiscoveryT
 	return d.Discover(ctx, task, s.discoveryRunner)
 }
 
-// EnsureDiscoveryModelTypes 在启动时确保内置模型类型存在（幂等：已存在则跳过）。
+// EnsureDiscoveryModelTypes 在启动时确保内置模型类型存在（幂等）。
+// 已存在的 builtin 模型用代码 seed 同步最新定义（relations/description 等），
+// 使 seed 演进（如新增预置关联路径）能在重启后落地，而非永远停留在首次建表时的旧值。
+// 注意: GetCIModelType 在记录不存在时返回 (nil, nil), 必须按返回值非 nil 判断"已存在"。
 func (s *Service) EnsureDiscoveryModelTypes(ctx context.Context, tenantID string) error {
 	for _, mt := range buildBuiltinModelTypes() {
 		mt.TenantID = tenantID
-		// 注意: GetCIModelType 在记录不存在时返回 (nil, nil),
-		// 必须按返回值非 nil 判断"已存在", 而非 err==nil。
 		existing, err := s.pg.GetCIModelType(ctx, mt.ID, tenantID)
 		if err != nil {
 			return fmt.Errorf("check model type %q: %w", mt.ID, err)
 		}
-		if existing != nil {
-			continue // 已存在，跳过
+		if existing == nil {
+			if err := s.pg.CreateCIModelType(ctx, &mt); err != nil {
+				return fmt.Errorf("ensure model type %q: %w", mt.ID, err)
+			}
+			slog.Info("builtin model type ensured", "id", mt.ID, "tenant", tenantID)
+			continue
 		}
-		if err := s.pg.CreateCIModelType(ctx, &mt); err != nil {
-			return fmt.Errorf("ensure model type %q: %w", mt.ID, err)
+		// builtin 模型定义由代码 seed 权威：已存在时同步最新 schema/relations/元数据。
+		// 保留原记录的 author/builtin（不可被 seed 改写），其余以 seed 为准。
+		mt.Author = existing.Author
+		mt.Builtin = existing.Builtin
+		mt.CreatedAt = existing.CreatedAt
+		if err := s.pg.UpdateCIModelType(ctx, &mt); err != nil {
+			return fmt.Errorf("sync builtin model type %q: %w", mt.ID, err)
 		}
-		slog.Info("builtin model type ensured", "id", mt.ID, "tenant", tenantID)
 	}
 	return nil
 }

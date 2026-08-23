@@ -462,8 +462,13 @@ func (s *Service) ResolveModelType(ctx context.Context, typeID, tenantID string)
 	if len(chain) == 0 {
 		return nil, nil
 	}
+	// chain 当前顺序为 [当前类型, 父, 祖父...]，反转成 [根祖先, ..., 当前类型]，
+	// 使合并时子类覆盖父类同名属性，且返回的 result 为请求的当前类型。
+	for i, j := 0, len(chain)-1; i < j; i, j = i+1, j-1 {
+		chain[i], chain[j] = chain[j], chain[i]
+	}
 	merged := map[string]model.AttrDef{}
-	for _, m := range chain { // 从根祖先到当前类型，后者覆盖前者
+	for _, m := range chain { // 从根祖先到当前类型，后者（子类）覆盖前者（父类）
 		for k, v := range m.Schema {
 			// 兼容旧数据：AttrDef.ID 为空时补全为字段名(稳定机器标识)。
 			if v.ID == "" {
@@ -668,6 +673,10 @@ func buildBuiltinModelTypes() []model.CIModelType {
 				"cpu_cores":  {Type: "int", Description: "CPU 核数"},
 				"memory_gb":  {Type: "int", Description: "内存(GB)"},
 			},
+			// 预置关联路径：服务器位于机柜（设施层级：数据中心→机房→机柜→设备）。
+			Relations: []model.RelationDef{
+				{ID: "srv_in_rack", Name: "位于机柜", RelationType: model.RelationLocatedIn, TargetModel: "rack", Cardinality: model.CardinalityOneToMany, ReverseName: "包含设备"},
+			},
 		},
 		{
 			ID:          model.ModelTypeNetwork,
@@ -682,6 +691,11 @@ func buildBuiltinModelTypes() []model.CIModelType {
 				"vendor":     {Type: "string", Description: "厂商"},
 				"model":      {Type: "string", Description: "型号"},
 				"ip_address": {Type: "string", Description: "管理 IP"},
+			},
+			// 预置关联路径：网络设备位于机柜，且可与其它网络设备互联（自关联）。
+			Relations: []model.RelationDef{
+				{ID: "net_in_rack", Name: "位于机柜", RelationType: model.RelationLocatedIn, TargetModel: "rack", Cardinality: model.CardinalityOneToMany, ReverseName: "包含设备"},
+				{ID: "net_conn_net", Name: "互联", RelationType: model.RelationConnects, TargetModel: model.ModelTypeNetwork, Cardinality: model.CardinalityManyToMany, ReverseName: "互联"},
 			},
 		},
 		{
@@ -703,6 +717,10 @@ func buildBuiltinModelTypes() []model.CIModelType {
 				"password": {Type: "string", Description: "连接密码", Default: ""},
 				"charset":  {Type: "string", Description: "字符集"},
 			},
+			// 预置关联路径：数据库实例部署于服务器（子类 mysql/oracle/postgresql 继承此语义）。
+			Relations: []model.RelationDef{
+				{ID: "db_runs_server", Name: "部署于", RelationType: model.RelationHosts, TargetModel: model.ModelTypeServer, Cardinality: model.CardinalityOneToMany, ReverseName: "承载数据库"},
+			},
 		},
 		{
 			ID:          model.ModelTypeMiddleware,
@@ -722,6 +740,10 @@ func buildBuiltinModelTypes() []model.CIModelType {
 				"account":         {Type: "string", Description: "连接账号"},
 				"password":        {Type: "string", Description: "连接密码", Default: ""},
 				"role":            {Type: "string", Description: "角色（如 redis master/slave）"},
+			},
+			// 预置关联路径：中间件实例部署于服务器（子类 redis/kafka/... 继承此语义）。
+			Relations: []model.RelationDef{
+				{ID: "mw_runs_server", Name: "部署于", RelationType: model.RelationHosts, TargetModel: model.ModelTypeServer, Cardinality: model.CardinalityOneToMany, ReverseName: "承载中间件"},
 			},
 		},
 		// ===== 数据库抽象父类的 leaf 子类（经 ParentID 继承 ip/port/version/engine/account/password/charset）=====
@@ -901,6 +923,39 @@ func buildBuiltinModelTypes() []model.CIModelType {
 				"tech_stack": {Type: "string", Description: "技术栈（java/go/node/php）"},
 				"port":       {Type: "int", Description: "监听端口"},
 			},
+			// 预置关联路径：应用可调用其它应用（自关联），由多个进程服务组成，依赖数据库/中间件，部署于服务器。
+			Relations: []model.RelationDef{
+				{ID: "app_dep_app", Name: "调用应用", RelationType: model.RelationDependsOn, TargetModel: model.ModelTypeApp, Cardinality: model.CardinalityManyToMany, ReverseName: "被调用"},
+				{ID: "app_compose_svc", Name: "包含服务", RelationType: model.RelationComposedOf, TargetModel: model.ModelTypeService, Cardinality: model.CardinalityOneToMany, ReverseName: "隶属应用"},
+				{ID: "app_dep_db", Name: "依赖数据库", RelationType: model.RelationDependsOn, TargetModel: model.ModelTypeDatabase, Cardinality: model.CardinalityManyToMany, ReverseName: "被应用依赖"},
+				{ID: "app_dep_mw", Name: "依赖中间件", RelationType: model.RelationDependsOn, TargetModel: model.ModelTypeMiddleware, Cardinality: model.CardinalityManyToMany, ReverseName: "被应用依赖"},
+				{ID: "app_runs_server", Name: "部署于", RelationType: model.RelationHosts, TargetModel: model.ModelTypeServer, Cardinality: model.CardinalityOneToMany, ReverseName: "承载应用"},
+			},
+		},
+		{
+			ID:          model.ModelTypeService,
+			Name:        "服务",
+			Description: "进程级服务（应用由多个服务组成，如订单应用=API服务+Worker服务；自动发现 application 插件产出）",
+			Category:    model.ModelCategoryApp,
+			Icon:        "cog",
+			ShowInMenu:  true,
+			Builtin:     true,
+			Author:      model.BuiltinAuthor,
+			Schema: map[string]model.AttrDef{
+				"process_name": {Type: "string", Description: "进程名/服务名"},
+				"listen_port":  {Type: "int", Description: "监听端口"},
+				"start_cmd":    {Type: "string", Description: "启动命令"},
+				"pid":          {Type: "int", Description: "进程 PID"},
+				"status":       {Type: "string", Description: "运行状态（running/stopped）"},
+				"language":     {Type: "string", Description: "实现语言（java/go/node/...）"},
+			},
+			// 预置关联路径：服务运行于服务器/虚拟机（进程落地到资源，一台机器可承载多个服务），
+			// 并可依赖其它服务（服务间调用，自关联）。
+			Relations: []model.RelationDef{
+				{ID: "svc_runs_server", Name: "运行于", RelationType: model.RelationRunsOn, TargetModel: model.ModelTypeServer, Cardinality: model.CardinalityManyToMany, ReverseName: "承载服务"},
+				{ID: "svc_runs_vm", Name: "运行于", RelationType: model.RelationRunsOn, TargetModel: "virtual_machine", Cardinality: model.CardinalityManyToMany, ReverseName: "承载服务"},
+				{ID: "svc_dep_svc", Name: "依赖服务", RelationType: model.RelationDependsOn, TargetModel: model.ModelTypeService, Cardinality: model.CardinalityManyToMany, ReverseName: "被服务依赖"},
+			},
 		},
 		{
 			ID:          model.ModelTypeBusinessService,
@@ -915,6 +970,11 @@ func buildBuiltinModelTypes() []model.CIModelType {
 				model.AttrKeyCriticality: {Type: "string", Default: "medium", Description: "业务关键性（critical/high/medium/low）"},
 				"owner":                  {Type: "string", Description: "业务负责人"},
 				"department":             {Type: "string", Description: "所属部门"},
+			},
+			// 预置关联路径：业务可依赖其它业务（自关联），也可依赖应用服务。
+			Relations: []model.RelationDef{
+				{ID: "bs_dep_bs", Name: "依赖业务", RelationType: model.RelationDependsOn, TargetModel: model.ModelTypeBusinessService, Cardinality: model.CardinalityManyToMany, ReverseName: "被依赖于"},
+				{ID: "bs_dep_app", Name: "依赖应用", RelationType: model.RelationDependsOn, TargetModel: model.ModelTypeApp, Cardinality: model.CardinalityManyToMany, ReverseName: "支撑业务"},
 			},
 		},
 		{
@@ -931,6 +991,10 @@ func buildBuiltinModelTypes() []model.CIModelType {
 				"capacity_tb":  {Type: "number", Description: "总容量(TB)"},
 				"vendor":       {Type: "string", Description: "厂商"},
 				"ip_address":   {Type: "string", Description: "管理 IP"},
+			},
+			// 预置关联路径：存储设备位于机柜（设施层级）。
+			Relations: []model.RelationDef{
+				{ID: "stor_in_rack", Name: "位于机柜", RelationType: model.RelationLocatedIn, TargetModel: "rack", Cardinality: model.CardinalityOneToMany, ReverseName: "包含设备"},
 			},
 		},
 		{
@@ -950,6 +1014,10 @@ func buildBuiltinModelTypes() []model.CIModelType {
 				"ip_address": {Type: "string", Description: "IP 地址"},
 				"rack_id":    {Type: "string", Description: "所在机柜(rack 模型 CI ID)"},
 				"rack_unit":  {Type: "int", Description: "占用 U 位"},
+			},
+			// 预置关联路径：虚拟机运行于物理服务器（虚拟化承载）。
+			Relations: []model.RelationDef{
+				{ID: "vm_runs_server", Name: "运行于", RelationType: model.RelationHosts, TargetModel: model.ModelTypeServer, Cardinality: model.CardinalityOneToMany, ReverseName: "承载虚拟机"},
 			},
 		},
 		{
@@ -1001,7 +1069,7 @@ func buildBuiltinModelTypes() []model.CIModelType {
 		{
 			ID:          "data_center",
 			Name:        "数据中心",
-			Description: "数据中心（物理机房建筑，含多个机房）",
+			Description: "数据中心（物理机房建筑，顶层设施节点，内含多个机房）",
 			Category:    model.ModelCategoryInfra,
 			Icon:        "building",
 			ShowInMenu:  true,
@@ -1011,11 +1079,15 @@ func buildBuiltinModelTypes() []model.CIModelType {
 				"location": {Type: "string", Description: "地理位置"},
 				"owner":    {Type: "string", Description: "负责人"},
 			},
+			// 预置关联路径：机房位于数据中心（设施层级顶层：数据中心→机房→机柜→设备）。
+			Relations: []model.RelationDef{
+				{ID: "dc_has_room", Name: "包含机房", RelationType: model.RelationLocatedIn, TargetModel: "idc_room", Cardinality: model.CardinalityOneToMany, ReverseName: "位于数据中心"},
+			},
 		},
 		{
 			ID:          "idc_room",
 			Name:        "机房",
-			Description: "数据中心内的机房/楼层（含机柜）",
+			Description: "数据中心内的机房/楼层（含机柜，隶属于某数据中心）",
 			Category:    model.ModelCategoryInfra,
 			Icon:        "warehouse",
 			ShowInMenu:  true,
@@ -1027,11 +1099,15 @@ func buildBuiltinModelTypes() []model.CIModelType {
 				"rows":           {Type: "int", Description: "机柜行数(平面图)"},
 				"cols":           {Type: "int", Description: "机柜列数(平面图)"},
 			},
+			// 预置关联路径：机柜位于机房（设施层级中层）。
+			Relations: []model.RelationDef{
+				{ID: "room_has_rack", Name: "包含机柜", RelationType: model.RelationLocatedIn, TargetModel: "rack", Cardinality: model.CardinalityOneToMany, ReverseName: "位于机房"},
+			},
 		},
 		{
 			ID:          "rack",
 			Name:        "机柜",
-			Description: "标准机柜（42U），设备按 rack_id + rack_unit 属性落位",
+			Description: "标准机柜（42U），设备按 rack_id + rack_unit 属性落位，隶属于某机房",
 			Category:    model.ModelCategoryInfra,
 			Icon:        "rows",
 			ShowInMenu:  true,
@@ -1044,6 +1120,7 @@ func buildBuiltinModelTypes() []model.CIModelType {
 				"max_units": {Type: "int", Default: "42", Description: "U 位总数"},
 				"rack_type": {Type: "string", Description: "类型（标准/高密/网络）"},
 			},
+			// 设施层次底层：机柜是被包含节点，设备位于机柜的关系在 server/storage/switch 模型声明。
 		},
 		// ===== K8S 容器系列（kubernetes 抽象父类 + 7 个 leaf 子类，经 ParentID 继承）=====
 		{

@@ -54,18 +54,22 @@ const (
 	ModelTypeDatabase        = "database"         // 数据库资源：数据库实例
 	ModelTypeMiddleware      = "middleware"       // 中间件资源：Redis/Nginx/ES/Kafka 等
 	ModelTypeApp             = "app"              // 应用资源：应用服务实例
+	ModelTypeService         = "service"          // 应用资源：进程级服务（应用由多个服务组成，被 application 插件发现）
 	ModelTypeBusinessService = "business_service" // 业务资源：业务服务（服务建模顶层）
 	ModelTypeKubernetes      = "kubernetes"       // 容器资源：K8S 容器平台（抽象父类，集群/节点/Pod/工作负载等共性承载）
 )
 
 // 预置关系类型（RelationType 仍为自由字符串，常量仅规范服务建模链语义）：
 //
-//	业务服务 -depends_on-> 应用服务 -hosts-> 服务器
+//	业务服务 -depends_on-> 应用服务 -composed_of-> 服务 -runs_on-> 服务器
 //	应用服务 -depends_on-> 数据库 / 中间件
 const (
-	RelationDependsOn = "depends_on" // 依赖：A 依赖 B，B 故障向上影响 A
-	RelationHosts     = "hosts"      // 承载：服务器承载应用/中间件
-	RelationConnects  = "connects"   // 连接：网络拓扑（服务器↔交换机）
+	RelationDependsOn  = "depends_on"  // 依赖：A 依赖 B，B 故障向上影响 A
+	RelationHosts      = "hosts"       // 承载：服务器承载应用/中间件
+	RelationConnects   = "connects"    // 连接：网络拓扑（服务器↔交换机）
+	RelationLocatedIn  = "located_in"  // 位于：设备位于机柜/机房/数据中心（设施层级包含）
+	RelationComposedOf = "composed_of" // 组成：应用由多个进程服务组成（应用→服务）
+	RelationRunsOn     = "runs_on"     // 运行于：进程服务运行于服务器/虚拟机（服务→资源）
 )
 
 // 关系基数（从声明模型视角）。

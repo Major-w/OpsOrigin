@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"strings"
 
 	"github.com/opsorigin/core/pkg/auth"
 
@@ -296,48 +297,84 @@ func (s *Service) validateRelationCardinality(ctx context.Context, tenantID, sou
 	if err != nil || mt == nil {
 		return nil // 无法解析模型, 放行
 	}
-	var def *model.RelationDef
-	for i := range mt.Relations {
-		if mt.Relations[i].RelationType == relationType {
-			def = &mt.Relations[i]
-			break
+	// 收集源模型声明的所有同名 relation_type 的 RelationDef（一个模型可对同一
+	// 关系类型声明多个目标，如 business_service 既 depends_on 业务又 depends_on 应用）。
+	var defs []model.RelationDef
+	for _, r := range mt.Relations {
+		if r.RelationType == relationType {
+			defs = append(defs, r)
 		}
 	}
-	if def == nil {
+	if len(defs) == 0 {
 		return nil // 未建模关系, 放行
 	}
-	// 目标模型匹配校验
+	// 目标模型匹配校验（支持子类）：目标只需匹配任一声明（或其子类）即放行。
+	// 例：app 声明 depends_on → database（抽象父类），实际目标为 mysql 实例（子类）应放行。
 	tgt, terr := s.pg.GetCI(ctx, targetID, tenantID)
 	if terr != nil || tgt == nil {
 		return fmt.Errorf("target CI not found")
 	}
-	if tgt.TypeID != def.TargetModel {
-		return fmt.Errorf("关系 %q 要求目标为模型 %s，实际为 %s", def.Name, def.TargetModel, tgt.TypeID)
+	matched := false
+	for _, d := range defs {
+		if s.modelIsOrExtends(ctx, tgt.TypeID, d.TargetModel, tenantID) {
+			matched = true
+			break
+		}
 	}
-	// 基数约束: 扫描同租户该 relation_type 的既有边
+	if !matched {
+		allowed := make([]string, 0, len(defs))
+		for _, d := range defs {
+			allowed = append(allowed, d.TargetModel)
+		}
+		return fmt.Errorf("关系 %q 要求目标为以下模型之一（或其子类）：%s，实际为 %s", defs[0].Name, strings.Join(allowed, " / "), tgt.TypeID)
+	}
+	// 基数约束: 扫描同租户该 relation_type 的既有边，对每条命中的声明分别检查。
 	rels, rerr := s.pg.ListRelations(ctx, tenantID)
 	if rerr != nil {
 		return nil
 	}
-	switch def.Cardinality {
-	case model.CardinalityOneToOne:
-		for _, r := range rels {
-			if r.RelationType != relationType {
-				continue
+	for _, d := range defs {
+		switch d.Cardinality {
+		case model.CardinalityOneToOne:
+			for _, r := range rels {
+				if r.RelationType != relationType {
+					continue
+				}
+				if r.SourceID == sourceID || r.TargetID == targetID {
+					return fmt.Errorf("关系 %q 为一对一：源或目标已存在该关系", d.Name)
+				}
 			}
-			if r.SourceID == sourceID || r.TargetID == targetID {
-				return fmt.Errorf("关系 %q 为一对一：源或目标已存在该关系", def.Name)
-			}
-		}
-	case model.CardinalityOneToMany:
-		for _, r := range rels {
-			if r.RelationType != relationType {
-				continue
-			}
-			if r.TargetID == targetID {
-				return fmt.Errorf("关系 %q 为一对多：目标已被其它源占用", def.Name)
+		case model.CardinalityOneToMany:
+			for _, r := range rels {
+				if r.RelationType != relationType {
+					continue
+				}
+				if r.TargetID == targetID {
+					return fmt.Errorf("关系 %q 为一对多：目标已被其它源占用", d.Name)
+				}
 			}
 		}
 	}
 	return nil
+}
+
+// modelIsOrExtends 判断 typeID 是否等于 base 或沿 ParentID 继承链是 base 的子类。
+// 用于关系目标模型校验时允许"目标是抽象父类（如 database）的子类（如 mysql）"。
+// 带深度上限防止 ParentID 异常成环。
+func (s *Service) modelIsOrExtends(ctx context.Context, typeID, base, tenantID string) bool {
+	if typeID == base {
+		return true
+	}
+	cur := typeID
+	for depth := 0; depth < 16; depth++ {
+		mt, err := s.ResolveModelType(ctx, cur, tenantID)
+		if err != nil || mt == nil || mt.ParentID == "" {
+			return false
+		}
+		if mt.ParentID == base {
+			return true
+		}
+		cur = mt.ParentID
+	}
+	return false
 }

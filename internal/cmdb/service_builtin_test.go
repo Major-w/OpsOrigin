@@ -25,17 +25,28 @@ func TestBuildBuiltinModelTypes_AlignsWithDiscoveryPlugins(t *testing.T) {
 	if _, ok := byID[model.ModelTypeBusinessService]; !ok {
 		t.Error("内置模型缺少 business_service(服务建模层)")
 	}
+	if _, ok := byID[model.ModelTypeService]; !ok {
+		t.Error("内置模型缺少 service(应用下一层进程级服务)")
+	}
+	// service 应声明 runs_on 关系(进程落地到资源)
+	rels := map[string]bool{}
+	for _, r := range byID[model.ModelTypeService].Relations {
+		rels[r.RelationType] = true
+	}
+	if !rels[model.RelationRunsOn] {
+		t.Error("service 模型应声明 runs_on 关系")
+	}
 }
 
 func TestBuildBuiltinModelTypes_AllBuiltinAndCategorized(t *testing.T) {
 	types := buildBuiltinModelTypes()
-	// 5 个顶层大类(server/switch/database/middleware/app) + business_service
+	// 5 个顶层大类(server/switch/database/middleware/app) + business_service + service
 	// + 9 个 leaf 子类(mysql/oracle/postgresql/redis/kafka/nginx/elasticsearch/zookeeper/rabbitmq)
 	// + storage/vm/firewall/lb/router/dc/room/rack(8)
-	// + K8S 容器系列(kubernetes 抽象父类 + 7 leaf) = 31
+	// + K8S 容器系列(kubernetes 抽象父类 + 7 leaf) = 32
 	// + 云资源系列(11 厂商抽象父类 + 公有云 6×10 + 私有云 5×4 = 80 leaf) = 91
-	if len(types) != 122 {
-		t.Fatalf("应内置 122 类模型(31 + 云资源系列 91), got %d", len(types))
+	if len(types) != 123 {
+		t.Fatalf("应内置 123 类模型(32 + 云资源系列 91), got %d", len(types))
 	}
 	categorySeen := map[string]bool{}
 	for _, mt := range types {
