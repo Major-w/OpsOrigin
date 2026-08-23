@@ -186,6 +186,17 @@ func (s *Service) handleUpdateModelType(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
+	// 父模型保护：有子模型继承时禁止修改（结构由子模型依赖，防破坏继承链）
+	children, err := s.pg.CountModelChildren(r.Context(), id, tenantID)
+	if err != nil {
+		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if children > 0 {
+		httputil.WriteError(w, http.StatusBadRequest, fmt.Sprintf("父模型受保护，存在 %d 个子模型，不可修改", children))
+		return
+	}
+
 	var mt model.CIModelType
 	if err := httputil.BindJSON(r, &mt); err != nil {
 		httputil.WriteError(w, http.StatusBadRequest, "invalid request body")
@@ -284,6 +295,30 @@ func (s *Service) handleRollbackModelType(w http.ResponseWriter, r *http.Request
 func (s *Service) handleDeleteModelType(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	tenantID := auth.TenantFromContext(r.Context())
+
+	// 内置模型 / 父模型保护：禁止删除
+	existing, err := s.pg.GetCIModelType(r.Context(), id, tenantID)
+	if err != nil {
+		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if existing == nil {
+		httputil.WriteError(w, http.StatusNotFound, "model type not found")
+		return
+	}
+	if existing.Builtin {
+		httputil.WriteError(w, http.StatusBadRequest, "内置模型受保护，不可删除")
+		return
+	}
+	children, err := s.pg.CountModelChildren(r.Context(), id, tenantID)
+	if err != nil {
+		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if children > 0 {
+		httputil.WriteError(w, http.StatusBadRequest, fmt.Sprintf("父模型受保护，存在 %d 个子模型，不可删除", children))
+		return
+	}
 
 	// 检查是否有CI实例使用此模型类型
 	count, err := s.pg.CountCIByTypeID(r.Context(), id, tenantID)

@@ -119,6 +119,29 @@ function catStyle(name: string) {
 
 const ICONS = ['🖥️','🌐','🗄️','🔌','⚖️','📡','🛡️','💾','☸️','📱','⚙️','🔗','📦','🏢','🔧','📊']
 
+// 内置模型 icon 字段存 lucide 图标名，映射为语义 emoji 展示（自定义模型直接选 emoji，不受影响）
+const LUCIDE_EMOJI: Record<string, string> = {
+  server: '🖥️',
+  cpu: '🖥️',
+  network: '🌐',
+  database: '🗄️',
+  layers: '📦',
+  warehouse: '🏭',
+  shield: '🛡️',
+  scale: '⚖️',
+  rows: '🗃️',
+  route: '🛣️',
+  'hard-drive': '💾',
+  building: '🏢',
+  briefcase: '💼',
+  'app-window': '📱',
+}
+
+// 模型图标渲染：emoji 直接显示；lucide 名走映射；未知兜底 📦
+function modelIcon(icon: string) {
+  return ICONS.includes(icon) ? icon : LUCIDE_EMOJI[icon] || '📦'
+}
+
 function schemaToFields(schema: Record<string, any> = {}): SchemaField[] {
   return Object.entries(schema).map(([name, def]) => ({
     name,
@@ -163,6 +186,8 @@ export default function CMDBModelsPage() {
   const [ciCounts, setCiCounts] = useState<Record<string, number>>({})
   const [dialogOpen, setDialogOpen] = useState(false)
   const [editModel, setEditModel] = useState<CIModel | null>(null)
+  // 父模型集合：被其他模型继承的模型（受保护：不可删除/修改，醒目标识）
+  const parentIds = new Set(models.filter(m => m.parent_id).map(m => m.parent_id as string))
   // 模型搜索(按 ID/名称模糊) + 分类折叠(默认收起)
   const [searchQuery, setSearchQuery] = useState('')
   const [expandedCats, setExpandedCats] = useState<Set<string>>(new Set())
@@ -285,6 +310,10 @@ export default function CMDBModelsPage() {
   }
 
   const openEdit = (model: CIModel) => {
+    if (parentIds.has(model.id)) {
+      toast.error('父模型受保护，不可修改')
+      return
+    }
     setEditModel(model)
     setForm({
       name: model.name, description: model.description, icon: model.icon, category: model.category,
@@ -323,6 +352,10 @@ export default function CMDBModelsPage() {
 
   const handleDelete = async (model: CIModel) => {
     if (model.builtin) return
+    if (parentIds.has(model.id)) {
+      toast.error('父模型受保护，不可删除')
+      return
+    }
     setConfirmTarget({ type: 'model', model })
   }
 
@@ -558,14 +591,17 @@ export default function CMDBModelsPage() {
                   </div>
                   {open && (
                     <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
-                      {g.list.map(model => (
-                        <Card key={model.id} className="group hover:shadow-md transition-shadow">
+                      {g.list.map(model => {
+                        const isParent = parentIds.has(model.id)
+                        return (
+                        <Card key={model.id} className={`group hover:shadow-md transition-shadow ${isParent ? 'ring-1 ring-amber-400/60 dark:ring-amber-500/40' : ''}`}>
                           <CardHeader className="py-3">
                             <div className="flex items-start justify-between gap-2">
                               <CardTitle className="text-sm min-w-0 flex-1">
-                                <div className="flex items-center gap-2">
-                                  <span className="text-lg shrink-0">{ICONS.includes(model.icon) ? model.icon : '📦'}</span>
+                                <div className="flex items-center gap-2 flex-wrap">
+                                  <span className="text-lg shrink-0">{modelIcon(model.icon)}</span>
                                   <span className="font-medium break-words">{model.name}</span>
+                                  {isParent && <Badge className="bg-amber-500 text-white text-[10px] shrink-0">父模型</Badge>}
                                 </div>
                                 <p className="text-[10px] text-muted-foreground font-normal mt-0.5 break-all">{model.id}</p>
                               </CardTitle>
@@ -574,9 +610,9 @@ export default function CMDBModelsPage() {
                                   <Button variant="ghost" size="sm" className="opacity-0 group-hover:opacity-100 h-7 w-7 p-0" title="字段权限" onClick={() => openFieldRules(model)}><Shield className="h-3.5 w-3.5" /></Button>
                                   <Button variant="ghost" size="sm" className="opacity-0 group-hover:opacity-100 h-7 w-7 p-0" title="版本历史" onClick={() => openVersions(model)}><History className="h-3.5 w-3.5" /></Button>
                                   <Button variant="ghost" size="sm" className="opacity-0 group-hover:opacity-100 h-7 w-7 p-0" title="字段消费度" onClick={() => openUsage(model)}><Gauge className="h-3.5 w-3.5" /></Button>
-                                  <Button variant="ghost" size="sm" className="opacity-0 group-hover:opacity-100 h-7 w-7 p-0" onClick={() => openEdit(model)}><Edit2 className="h-3.5 w-3.5" /></Button>
-                                  {!model.builtin && (
-                                    <Button variant="ghost" size="sm" className="opacity-0 group-hover:opacity-100 h-7 w-7 p-0 text-destructive" onClick={() => handleDelete(model)}><Trash2 className="h-3.5 w-3.5" /></Button>
+                                  <Button variant="ghost" size="sm" className="opacity-0 group-hover:opacity-100 h-7 w-7 p-0" title={isParent ? '父模型受保护，不可修改' : '编辑'} disabled={isParent} onClick={() => openEdit(model)}><Edit2 className="h-3.5 w-3.5" /></Button>
+                                  {!model.builtin && !isParent && (
+                                    <Button variant="ghost" size="sm" className="opacity-0 group-hover:opacity-100 h-7 w-7 p-0 text-destructive" title="删除" onClick={() => handleDelete(model)}><Trash2 className="h-3.5 w-3.5" /></Button>
                                   )}
                                 </div>
                               )}
@@ -596,7 +632,8 @@ export default function CMDBModelsPage() {
                             </div>
                           </CardContent>
                         </Card>
-                      ))}
+                      )
+                      })}
                     </div>
                   )}
                 </section>

@@ -1413,6 +1413,17 @@ func (r *Repository) CountCIByTypeID(ctx context.Context, typeID, tenantID strin
 	return count, nil
 }
 
+// CountModelChildren 统计直接继承指定模型的子模型数量（父模型保护用）。
+func (r *Repository) CountModelChildren(ctx context.Context, id, tenantID string) (int, error) {
+	var count int
+	err := r.db.QueryRowContext(ctx, `
+		SELECT COUNT(*) FROM cmdb_ci_model_type WHERE parent_id = $1 AND tenant_id = $2`, id, tenantID).Scan(&count)
+	if err != nil {
+		return 0, fmt.Errorf("count model children: %w", err)
+	}
+	return count, nil
+}
+
 // ============================================================
 // Version History
 // ============================================================
