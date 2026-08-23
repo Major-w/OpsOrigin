@@ -1424,6 +1424,28 @@ func (r *Repository) CountModelChildren(ctx context.Context, id, tenantID string
 	return count, nil
 }
 
+// ListModelChildren 返回直接继承指定模型的子模型名称列表（父模型删除提示用）。
+func (r *Repository) ListModelChildren(ctx context.Context, id, tenantID string) ([]string, error) {
+	rows, err := r.db.QueryContext(ctx, `
+		SELECT name FROM cmdb_ci_model_type WHERE parent_id = $1 AND tenant_id = $2 ORDER BY name`, id, tenantID)
+	if err != nil {
+		return nil, fmt.Errorf("list model children: %w", err)
+	}
+	defer rows.Close()
+	var names []string
+	for rows.Next() {
+		var n string
+		if err := rows.Scan(&n); err != nil {
+			return nil, fmt.Errorf("scan model child: %w", err)
+		}
+		names = append(names, n)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("list model children rows: %w", err)
+	}
+	return names, nil
+}
+
 // ============================================================
 // Version History
 // ============================================================

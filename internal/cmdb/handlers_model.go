@@ -316,7 +316,16 @@ func (s *Service) handleDeleteModelType(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	if children > 0 {
-		httputil.WriteError(w, http.StatusBadRequest, fmt.Sprintf("父模型受保护，存在 %d 个子模型，不可删除", children))
+		childNames, cerr := s.pg.ListModelChildren(r.Context(), id, tenantID)
+		if cerr != nil {
+			httputil.WriteError(w, http.StatusInternalServerError, cerr.Error())
+			return
+		}
+		msg := fmt.Sprintf("该模型为父模型，还有 %d 个子模型在使用该模型", children)
+		if len(childNames) > 0 {
+			msg += "：「" + strings.Join(childNames, "」「") + "」，请先删除这些子模型"
+		}
+		httputil.WriteError(w, http.StatusBadRequest, msg)
 		return
 	}
 

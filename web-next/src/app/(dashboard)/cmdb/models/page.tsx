@@ -353,7 +353,8 @@ export default function CMDBModelsPage() {
   const handleDelete = async (model: CIModel) => {
     if (model.builtin) return
     if (parentIds.has(model.id)) {
-      toast.error('父模型受保护，不可删除')
+      const kids = models.filter(m => m.parent_id === model.id).map(m => m.name)
+      toast.error(`该模型为父模型，还有 ${kids.length} 个子模型「${kids.join('」「')}」在使用该模型，请先删除这些子模型`)
       return
     }
     setConfirmTarget({ type: 'model', model })
@@ -558,17 +559,25 @@ export default function CMDBModelsPage() {
         const q = searchQuery.trim().toLowerCase()
         const isSearch = q !== ''
         const filtered = isSearch ? models.filter(m => m.id.toLowerCase().includes(q) || m.name.toLowerCase().includes(q)) : models
-        const groups: { name: string; emoji: string; color: string; list: typeof models }[] = []
+        // 一级分类分组；分类内再按二级分类 sub_category 分子组（云资源按厂商分组）
+        const groups: { name: string; emoji: string; color: string; subs: { name: string; list: typeof models }[] }[] = []
         const seen = new Set<string>()
         for (const c of categories) {
           const list = filtered.filter(m => m.category === c.name)
           if (list.length === 0) continue
           const st = catStyle(c.name)
-          groups.push({ name: c.name, emoji: st.emoji, color: st.color, list })
+          const subMap = new Map<string, typeof models>()
+          for (const m of list) {
+            const key = m.sub_category || ''
+            if (!subMap.has(key)) subMap.set(key, [])
+            subMap.get(key)!.push(m)
+          }
+          const subs = [...subMap.entries()].map(([name, l]) => ({ name, list: l }))
+          groups.push({ name: c.name, emoji: st.emoji, color: st.color, subs })
           seen.add(c.name)
         }
         const rest = filtered.filter(m => !seen.has(m.category))
-        if (rest.length > 0) groups.push({ name: '未分类', emoji: '🏷️', color: 'bg-gray-500', list: rest })
+        if (rest.length > 0) groups.push({ name: '未分类', emoji: '🏷️', color: 'bg-gray-500', subs: [{ name: '', list: rest }] })
         if (groups.length === 0) {
           return (
             <Card className="text-center py-16">
@@ -580,60 +589,74 @@ export default function CMDBModelsPage() {
           <div className="space-y-6">
             {groups.map(g => {
               const open = isSearch || expandedCats.has(g.name)
+              const total = g.subs.reduce((a, s) => a + s.list.length, 0)
               return (
                 <section key={g.name} className="space-y-3">
                   <div className="flex items-center gap-2 cursor-pointer select-none" onClick={() => toggleCat(g.name)} title={open ? '收起该分类' : '展开该分类'}>
                     {open ? <ChevronDown className="h-3.5 w-3.5 text-muted-foreground shrink-0" /> : <ChevronRight className="h-3.5 w-3.5 text-muted-foreground shrink-0" />}
                     <span className="text-base">{g.emoji}</span>
                     <h2 className="text-sm font-semibold">{g.name}</h2>
-                    <span className="text-xs text-muted-foreground">{g.list.length} 个模型</span>
+                    <span className="text-xs text-muted-foreground">{total} 个模型</span>
                     <div className="flex-1 border-t border-border/60" />
                   </div>
                   {open && (
-                    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
-                      {g.list.map(model => {
-                        const isParent = parentIds.has(model.id)
-                        return (
-                        <Card key={model.id} className={`group hover:shadow-md transition-shadow ${isParent ? 'ring-1 ring-amber-400/60 dark:ring-amber-500/40' : ''}`}>
-                          <CardHeader className="py-3">
-                            <div className="flex items-start justify-between gap-2">
-                              <CardTitle className="text-sm min-w-0 flex-1">
-                                <div className="flex items-center gap-2 flex-wrap">
-                                  <span className="text-lg shrink-0">{modelIcon(model.icon)}</span>
-                                  <span className="font-medium break-words">{model.name}</span>
-                                  {isParent && <Badge className="bg-amber-500 text-white text-[10px] shrink-0">父模型</Badge>}
-                                </div>
-                                <p className="text-[10px] text-muted-foreground font-normal mt-0.5 break-all">{model.id}</p>
-                              </CardTitle>
-                              {canAdmin && (
-                                <div className="flex shrink-0 pt-0.5">
-                                  <Button variant="ghost" size="sm" className="opacity-0 group-hover:opacity-100 h-7 w-7 p-0" title="字段权限" onClick={() => openFieldRules(model)}><Shield className="h-3.5 w-3.5" /></Button>
-                                  <Button variant="ghost" size="sm" className="opacity-0 group-hover:opacity-100 h-7 w-7 p-0" title="版本历史" onClick={() => openVersions(model)}><History className="h-3.5 w-3.5" /></Button>
-                                  <Button variant="ghost" size="sm" className="opacity-0 group-hover:opacity-100 h-7 w-7 p-0" title="字段消费度" onClick={() => openUsage(model)}><Gauge className="h-3.5 w-3.5" /></Button>
-                                  <Button variant="ghost" size="sm" className="opacity-0 group-hover:opacity-100 h-7 w-7 p-0" title={isParent ? '父模型受保护，不可修改' : '编辑'} disabled={isParent} onClick={() => openEdit(model)}><Edit2 className="h-3.5 w-3.5" /></Button>
-                                  {!model.builtin && !isParent && (
-                                    <Button variant="ghost" size="sm" className="opacity-0 group-hover:opacity-100 h-7 w-7 p-0 text-destructive" title="删除" onClick={() => handleDelete(model)}><Trash2 className="h-3.5 w-3.5" /></Button>
-                                  )}
-                                </div>
-                              )}
-                            </div>
-                          </CardHeader>
-                          <CardContent className="space-y-2">
-                            {model.description && <p className="text-xs text-muted-foreground line-clamp-2">{model.description}</p>}
-                            <div className="flex items-center gap-2 flex-wrap">
-                              <Badge className={cn("text-[10px] text-white", g.color)}>{g.emoji} {model.category}</Badge>
-                              {model.sub_category && <Badge variant="outline" className="text-[10px]">{model.sub_category}</Badge>}
-                              {model.parent_id && <Badge variant="secondary" className="text-[10px]">继承</Badge>}
-                              {model.builtin && <Badge variant="secondary" className="text-[10px]">内置</Badge>}
-                            </div>
+                    <div className="space-y-4">
+                      {g.subs.map(sub => (
+                        <div key={sub.name || 'default'} className="space-y-2">
+                          {sub.name && (
                             <div className="flex items-center gap-2">
-                              <Badge variant="secondary" className="text-[10px]">{(ciCounts[model.id] || 0)} 个实例</Badge>
-                              <Badge variant="outline" className="text-[10px]">{model.fields.length} 个字段</Badge>
+                              <span className="text-xs font-medium text-muted-foreground">{sub.name}</span>
+                              <span className="text-[10px] text-muted-foreground">{sub.list.length} 个模型</span>
+                              <div className="flex-1 border-t border-border/40" />
                             </div>
-                          </CardContent>
-                        </Card>
-                      )
-                      })}
+                          )}
+                          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
+                            {sub.list.map(model => {
+                              const isParent = parentIds.has(model.id)
+                              return (
+                              <Card key={model.id} className={`group hover:shadow-md transition-shadow ${isParent ? 'ring-1 ring-amber-400/60 dark:ring-amber-500/40' : ''}`}>
+                                <CardHeader className="py-3">
+                                  <div className="flex items-start justify-between gap-2">
+                                    <CardTitle className="text-sm min-w-0 flex-1">
+                                      <div className="flex items-center gap-2 flex-wrap">
+                                        <span className="text-lg shrink-0">{modelIcon(model.icon)}</span>
+                                        <span className="font-medium break-words">{model.name}</span>
+                                        {isParent && <Badge className="bg-amber-500 text-white text-[10px] shrink-0">父模型</Badge>}
+                                      </div>
+                                      <p className="text-[10px] text-muted-foreground font-normal mt-0.5 break-all">{model.id}</p>
+                                    </CardTitle>
+                                    {canAdmin && (
+                                      <div className="flex shrink-0 pt-0.5">
+                                        <Button variant="ghost" size="sm" className="opacity-0 group-hover:opacity-100 h-7 w-7 p-0" title="字段权限" onClick={() => openFieldRules(model)}><Shield className="h-3.5 w-3.5" /></Button>
+                                        <Button variant="ghost" size="sm" className="opacity-0 group-hover:opacity-100 h-7 w-7 p-0" title="版本历史" onClick={() => openVersions(model)}><History className="h-3.5 w-3.5" /></Button>
+                                        <Button variant="ghost" size="sm" className="opacity-0 group-hover:opacity-100 h-7 w-7 p-0" title="字段消费度" onClick={() => openUsage(model)}><Gauge className="h-3.5 w-3.5" /></Button>
+                                        <Button variant="ghost" size="sm" className="opacity-0 group-hover:opacity-100 h-7 w-7 p-0" title={isParent ? '父模型受保护，不可修改' : '编辑'} disabled={isParent} onClick={() => openEdit(model)}><Edit2 className="h-3.5 w-3.5" /></Button>
+                                        {!model.builtin && (
+                                          <Button variant="ghost" size="sm" className="opacity-0 group-hover:opacity-100 h-7 w-7 p-0 text-destructive" title="删除" onClick={() => handleDelete(model)}><Trash2 className="h-3.5 w-3.5" /></Button>
+                                        )}
+                                      </div>
+                                    )}
+                                  </div>
+                                </CardHeader>
+                                <CardContent className="space-y-2">
+                                  {model.description && <p className="text-xs text-muted-foreground line-clamp-2">{model.description}</p>}
+                                  <div className="flex items-center gap-2 flex-wrap">
+                                    <Badge className={cn("text-[10px] text-white", g.color)}>{g.emoji} {model.category}</Badge>
+                                    {model.sub_category && <Badge variant="outline" className="text-[10px]">{model.sub_category}</Badge>}
+                                    {model.parent_id && <Badge variant="secondary" className="text-[10px]">继承</Badge>}
+                                    {model.builtin && <Badge variant="secondary" className="text-[10px]">内置</Badge>}
+                                  </div>
+                                  <div className="flex items-center gap-2">
+                                    <Badge variant="secondary" className="text-[10px]">{(ciCounts[model.id] || 0)} 个实例</Badge>
+                                    <Badge variant="outline" className="text-[10px]">{model.fields.length} 个字段</Badge>
+                                  </div>
+                                </CardContent>
+                              </Card>
+                            )
+                            })}
+                          </div>
+                        </div>
+                      ))}
                     </div>
                   )}
                 </section>
