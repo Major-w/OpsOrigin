@@ -560,13 +560,16 @@ export default function CMDBModelsPage() {
                       {g.list.map(model => (
                         <Card key={model.id} className="group hover:shadow-md transition-shadow">
                           <CardHeader className="py-3">
-                            <div className="flex items-center justify-between gap-2">
-                              <CardTitle className="text-sm flex items-center gap-2 min-w-0 flex-1">
-                                <span className="text-lg shrink-0">{model.icon}</span>
-                                <span className="truncate" title={`${model.name}（${model.id}）`}>{model.name}</span>
+                            <div className="flex items-start justify-between gap-2">
+                              <CardTitle className="text-sm min-w-0 flex-1">
+                                <div className="flex items-center gap-2">
+                                  <span className="text-lg shrink-0">{model.icon}</span>
+                                  <span className="font-medium break-words">{model.name}</span>
+                                </div>
+                                <p className="text-[10px] text-muted-foreground font-normal mt-0.5 break-all">{model.id}</p>
                               </CardTitle>
                               {canAdmin && (
-                                <div className="flex shrink-0">
+                                <div className="flex shrink-0 pt-0.5">
                                   <Button variant="ghost" size="sm" className="opacity-0 group-hover:opacity-100 h-7 w-7 p-0" title="字段权限" onClick={() => openFieldRules(model)}><Shield className="h-3.5 w-3.5" /></Button>
                                   <Button variant="ghost" size="sm" className="opacity-0 group-hover:opacity-100 h-7 w-7 p-0" title="版本历史" onClick={() => openVersions(model)}><History className="h-3.5 w-3.5" /></Button>
                                   <Button variant="ghost" size="sm" className="opacity-0 group-hover:opacity-100 h-7 w-7 p-0" title="字段消费度" onClick={() => openUsage(model)}><Gauge className="h-3.5 w-3.5" /></Button>
