@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"sort"
@@ -956,15 +957,21 @@ func (s *Service) handleCollectReport(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	tenantID := auth.TenantFromContext(ctx)
 
+	// 只读一次 body（r.Body 是流，不可重复 BindJSON），分别尝试批量/单条解析。
+	raw, err := io.ReadAll(r.Body)
+	if err != nil {
+		httputil.WriteError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
 	var body struct {
 		Reports []collectReportItem `json:"reports"`
 	}
-	// 兼容单条直接传(无 reports 包裹)
-	var single collectReportItem
-	if err := httputil.BindJSON(r, &single); err == nil && single.ModelID != "" {
-		body.Reports = []collectReportItem{single}
-	} else {
-		if err := httputil.BindJSON(r, &body); err != nil {
+	// 优先按批量格式 {reports:[...]} 解析；为空则回退单条直接传(无 reports 包裹)。
+	if err := json.Unmarshal(raw, &body); err != nil || len(body.Reports) == 0 {
+		var single collectReportItem
+		if err2 := json.Unmarshal(raw, &single); err2 == nil && single.ModelID != "" {
+			body.Reports = []collectReportItem{single}
+		} else {
 			httputil.WriteError(w, http.StatusBadRequest, "invalid request body")
 			return
 		}

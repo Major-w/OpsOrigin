@@ -8,7 +8,7 @@ import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { DataList, type ViewMode, type Column, type FilterOption, type BulkAction } from '@/components/ui/data-list'
 import { Code2, Terminal, Hash, Clock, GitBranch, Star, Download, Upload, Plus, Trash2, Copy, Pencil, Loader2, FileCode, CheckCircle, FileText } from 'lucide-react'
-import { cn, formatTime } from '@/lib/utils'
+import { cn, formatTime, apiFetch } from '@/lib/utils'
 import { toast } from '@/stores/toast'
 
 const SCRIPT_TYPES = [
@@ -81,7 +81,7 @@ export default function ScriptsPage() {
   // 批准 AI 生成/待审批的脚本
   const handleApprove = async (sc: Script) => {
     try {
-      await window.fetch(`/api/v1/scripts/${sc.id}/approve`, { method: 'POST' })
+      await apiFetch(`/api/v1/scripts/${sc.id}/approve`, { method: 'POST' })
       toast.success(`已批准脚本「${sc.name}」，现在可被 AI 与自动化调用`)
       fetch()
     } catch {
