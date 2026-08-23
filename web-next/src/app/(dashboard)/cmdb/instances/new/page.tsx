@@ -100,6 +100,8 @@ export default function NewInstancePage() {
     name: '', type_id: preType, description: '', attributes: {}, labels: {},
   })
   const [submitting, setSubmitting] = useState(false)
+  // 自定义属性(模型未定义字段的兜底录入), 与结构化字段隔离, 避免互相覆盖
+  const [customAttrs, setCustomAttrs] = useState<{ key: string; value: string }[]>([])
   const [refOptions, setRefOptions] = useState<Record<string, { id: string; name: string; attributes?: Record<string, any> }[]>>({})
   // user 类型字段: 平台用户列表(存 username)
   const [userOptions, setUserOptions] = useState<{ id: string; username: string; email?: string }[]>([])
@@ -147,10 +149,22 @@ export default function NewInstancePage() {
     if (!form.type_id) { toast.error('请选择类型'); return }
     setSubmitting(true)
     try {
-      // 1) 创建 CI
+      // 合并结构化字段(attributes)与自定义属性(兜底), 二者隔离不互相覆盖
+      const extra: Record<string, any> = {}
+      for (const { key, value } of customAttrs) {
+        const k = key.trim()
+        if (!k) continue
+        // 尝试按类型解析: 数字/布尔/JSON, 失败则按字符串
+        if (value === 'true') extra[k] = true
+        else if (value === 'false') extra[k] = false
+        else if (value !== '' && !isNaN(Number(value))) extra[k] = Number(value)
+        else {
+          try { extra[k] = JSON.parse(value) } catch { extra[k] = value }
+        }
+      }
       const created = await apiFetch<{ id?: string }>('/cmdb/ci', {
         method: 'POST',
-        body: JSON.stringify({ ...form, channel: 100 }),
+        body: JSON.stringify({ ...form, attributes: { ...form.attributes, ...extra }, channel: 100 }),
       })
       const ciID = created?.id
       // 2) 建立关系(按模型 relations 预选的目标)
@@ -210,6 +224,7 @@ export default function NewInstancePage() {
               onChange={e => {
                 const t = e.target.value
                 setForm(f => ({ ...f, type_id: t, attributes: {} }))
+                setCustomAttrs([])
                 const m = models.find(x => x.id === t)
                 ;(m?.fields || []).forEach(f => { if (f.ref_model) ensureRefOptions(f.ref_model) })
               }}>
@@ -403,12 +418,36 @@ export default function NewInstancePage() {
         <CardHeader><CardTitle className="text-base">高级</CardTitle></CardHeader>
         <CardContent className="space-y-3">
           <div>
-            <label className="text-sm font-medium">自定义属性 (JSON)</label>
-            <textarea
-              className="flex h-24 w-full rounded-md border border-input bg-background px-3 py-2 text-sm font-mono"
-              value={JSON.stringify(form.attributes, null, 2)}
-              onChange={e => { try { setForm(f => ({ ...f, attributes: JSON.parse(e.target.value) })) } catch { } }}
-              placeholder='{"ip": "10.0.0.1", "os": "Ubuntu 22.04"}' />
+            <div className="flex items-center justify-between">
+              <label className="text-sm font-medium">自定义属性</label>
+              <Button type="button" variant="outline" size="sm" onClick={() => setCustomAttrs(a => [...a, { key: '', value: '' }])}>
+                添加属性
+              </Button>
+            </div>
+            <p className="text-[11px] text-muted-foreground mt-0.5 mb-2">用于录入模型未定义的自由字段，与上方结构化字段互不影响。</p>
+            {customAttrs.length === 0 ? (
+              <p className="text-[11px] text-muted-foreground border border-dashed rounded-md px-3 py-4 text-center">暂无自定义属性，点击「添加属性」新增。</p>
+            ) : (
+              <div className="space-y-2">
+                {customAttrs.map((item, idx) => (
+                  <div key={idx} className="flex items-center gap-2">
+                    <Input
+                      className="w-2/5 font-mono"
+                      value={item.key}
+                      onChange={e => setCustomAttrs(a => a.map((x, i) => i === idx ? { ...x, key: e.target.value } : x))}
+                      placeholder="属性名" />
+                    <Input
+                      className="flex-1"
+                      value={item.value}
+                      onChange={e => setCustomAttrs(a => a.map((x, i) => i === idx ? { ...x, value: e.target.value } : x))}
+                      placeholder="属性值（自动识别数字/布尔/JSON）" />
+                    <Button type="button" variant="ghost" size="icon" onClick={() => setCustomAttrs(a => a.filter((_, i) => i !== idx))}>
+                      <span className="text-muted-foreground">×</span>
+                    </Button>
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
           <div>
             <label className="text-sm font-medium">标签 (key=value, 逗号分隔)</label>
