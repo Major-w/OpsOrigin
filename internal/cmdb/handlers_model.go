@@ -336,7 +336,7 @@ func (s *Service) handleDeleteModelType(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	if count > 0 {
-		httputil.WriteError(w, http.StatusBadRequest, fmt.Sprintf("cannot delete model type with %d CI instances", count))
+		httputil.WriteError(w, http.StatusBadRequest, fmt.Sprintf("该模型下还有 %d 条实例记录，请先删除这些实例后再删除模型", count))
 		return
 	}
 

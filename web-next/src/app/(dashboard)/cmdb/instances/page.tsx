@@ -428,7 +428,9 @@ export default function CMDBPage() {
         onClose={() => setBatchDeleteOpen(false)}
         onConfirm={confirmBatchDelete}
         title="确认批量删除"
-        description={`将永久删除选中的 ${checkedList().length} 个配置项，此操作不可撤销。`}
+        description={`将永久删除选中的 ${checkedList().length} 个配置项，此操作不可撤销。请输入选中数量以确认删除。`}
+        requireText={String(checkedList().length)}
+        requireLabel={`${checkedList().length}（选中数量）`}
         confirmLabel="删除"
         loading={batchDeleteSubmitting}
       />

@@ -56,6 +56,9 @@ export default function CIInstanceDetailPage() {
   const [driftList, setDriftList] = useState<{ id: string; field: string; expected: string; actual: string; created_at: string }[]>([])
   const [editAttrsOpen, setEditAttrsOpen] = useState(false)
   const [attrForm, setAttrForm] = useState<Record<string, string>>({})
+  // 删除实例二次确认（需输入实例名称）
+  const [delOpen, setDelOpen] = useState(false)
+  const [delSubmitting, setDelSubmitting] = useState(false)
   // 引用型字段的目标模型实例缓存
   const [refOptions, setRefOptions] = useState<Record<string, { id: string; name: string; attributes?: Record<string, any> }[]>>({})
   const [relSubmitting, setRelSubmitting] = useState(false)
@@ -234,7 +237,7 @@ export default function CIInstanceDetailPage() {
           {selectedCI.status === 'archived'
             ? <Button variant="outline" size="sm" onClick={() => handleRestore(selectedCI.id)}><ArchiveRestore className="h-3 w-3" />恢复</Button>
             : <Button variant="outline" size="sm" onClick={() => handleArchive(selectedCI.id)}><Archive className="h-3 w-3" />归档</Button>}
-          {canDelete && <Button variant="outline" size="sm" onClick={() => { remove(selectedCI.id); router.push('/cmdb/instances') }}><Trash2 className="h-3 w-3" /></Button>}
+          {canDelete && <Button variant="outline" size="sm" onClick={() => setDelOpen(true)} title="删除该配置项"><Trash2 className="h-3 w-3" /></Button>}
         </div>
       </div>
 
@@ -495,6 +498,26 @@ export default function CIInstanceDetailPage() {
         </div>
         <DialogFooter><Button variant="outline" onClick={() => setRelDialogOpen(false)} disabled={relSubmitting}>取消</Button><Button onClick={handleCreateRel} disabled={!relForm.source_id || !relForm.target_id || relSubmitting}>创建{relSubmitting ? '…' : ''}</Button></DialogFooter>
       </Dialog>
+
+      <ConfirmDialog
+        open={delOpen}
+        onClose={() => setDelOpen(false)}
+        onConfirm={async () => {
+          setDelSubmitting(true)
+          const ok = await remove(selectedCI?.id || '')
+          if (ok) {
+            setDelOpen(false)
+            router.push('/cmdb/instances')
+          }
+          setDelSubmitting(false)
+        }}
+        title="确认删除配置项"
+        description={`将永久删除配置项「${selectedCI?.name || ''}」，此操作不可撤销。请输入实例名称以确认删除。`}
+        requireText={selectedCI?.name || ''}
+        requireLabel="实例名称"
+        confirmLabel="删除"
+        loading={delSubmitting}
+      />
     </div>
   )
 }

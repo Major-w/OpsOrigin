@@ -352,6 +352,11 @@ export default function CMDBModelsPage() {
 
   const handleDelete = async (model: CIModel) => {
     if (model.builtin) return
+    const ciCount = ciCounts[model.id] || 0
+    if (ciCount > 0) {
+      toast.error(`该模型下还有 ${ciCount} 条实例记录，请先删除这些实例后再删除模型`)
+      return
+    }
     if (parentIds.has(model.id)) {
       const kids = models.filter(m => m.parent_id === model.id).map(m => m.name)
       toast.error(`该模型为父模型，还有 ${kids.length} 个子模型「${kids.join('」「')}」在使用该模型，请先删除这些子模型`)
@@ -923,7 +928,9 @@ export default function CMDBModelsPage() {
         onClose={() => setConfirmTarget(null)}
         onConfirm={confirmAction}
         title={confirmTarget?.type === 'rollback' ? '确认回滚' : confirmTarget?.type === 'model' ? '确认删除模型' : '确认删除分类'}
-        description={confirmTarget?.type === 'rollback' && verModel ? `回滚「${verModel.name}」到 v${confirmTarget.version}？当前 schema 会留痕为下一个版本。` : confirmTarget?.type === 'model' ? `确认删除模型「${confirmTarget.model.name}」？` : confirmTarget?.type === 'category' ? `确认删除分类「${confirmTarget.cat.name}」？` : ''}
+        description={confirmTarget?.type === 'rollback' && verModel ? `回滚「${verModel.name}」到 v${confirmTarget.version}？当前 schema 会留痕为下一个版本。` : confirmTarget?.type === 'model' ? `确认删除模型「${confirmTarget.model.name}」？此操作不可撤销，子模型与实例将一并受限。` : confirmTarget?.type === 'category' ? `确认删除分类「${confirmTarget.cat.name}」？` : ''}
+        requireText={confirmTarget?.type === 'model' ? confirmTarget.model.name : undefined}
+        requireLabel="模型名称"
         confirmLabel="确定"
         loading={confirmSubmitting}
       />
