@@ -32,9 +32,10 @@ func TestBuildBuiltinModelTypes_AllBuiltinAndCategorized(t *testing.T) {
 	// 5 个顶层大类(server/switch/database/middleware/app) + business_service
 	// + 9 个 leaf 子类(mysql/oracle/postgresql/redis/kafka/nginx/elasticsearch/zookeeper/rabbitmq)
 	// + storage/vm/firewall/lb/router/dc/room/rack(8)
-	// + K8S 容器系列(kubernetes 抽象父类 + cluster/namespace/node/workload/pod/service/container 7 leaf) = 31
-	if len(types) != 31 {
-		t.Fatalf("应内置 31 类模型(5 顶层 + business_service + 9 leaf 子类 + storage/vm/firewall/lb/router/dc/room/rack + K8S 容器系列 8), got %d", len(types))
+	// + K8S 容器系列(kubernetes 抽象父类 + 7 leaf) = 31
+	// + 云资源系列(11 厂商抽象父类 + 公有云 6×10 + 私有云 5×4 = 80 leaf) = 91
+	if len(types) != 122 {
+		t.Fatalf("应内置 122 类模型(31 + 云资源系列 91), got %d", len(types))
 	}
 	categorySeen := map[string]bool{}
 	for _, mt := range types {

@@ -31,14 +31,12 @@ type CIMapping struct {
 }
 
 // CITypeOf 返回资源对应的 CMDB CI 类型。
+// 云资源类（vm/database/load_balancer 等）厂商化命名 <provider>_<type>（如 aliyun_vm），
+// 与内置云资源模型（一级分类=云资源，二级分类=厂商）对齐，云纳管同步结果可直接落库；
+// Provider 为空时回退通用 cloud_* 命名（兼容无厂商上下文）。
+// K8s 资源类保持 k8s_* 固定命名（经 Agent 通道发现，不厂商化）。
 func CITypeOf(res Resource) string {
 	switch res.Type {
-	case TypeVM:
-		return CITypeVM
-	case TypeDatabase:
-		return CITypeDatabase
-	case TypeLoadBalancer:
-		return CITypeLoadBalancer
 	case TypeK8sCluster:
 		return CITypeK8sCluster
 	case TypeK8sNamespace:
@@ -49,9 +47,12 @@ func CITypeOf(res Resource) string {
 		return CITypeK8sPod
 	case TypeK8sContainer:
 		return CITypeK8sContainer
-	default:
-		return "cloud_" + string(res.Type)
 	}
+	t := string(res.Type)
+	if res.Provider != "" {
+		return res.Provider + "_" + t
+	}
+	return "cloud_" + t
 }
 
 // resourceNaturalKey 生成资源自然键 "<provider>:<type>:<id>"，用于 upsert 去重。

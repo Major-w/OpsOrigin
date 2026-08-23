@@ -650,7 +650,7 @@ func (s *Service) handleListDiscoveryTypes(w http.ResponseWriter, r *http.Reques
 // 承载业务服务→应用→技术组件的依赖链与业务关键性。
 // 纯函数, 便于单测; 幂等种子由 EnsureDiscoveryModelTypes 负责。
 func buildBuiltinModelTypes() []model.CIModelType {
-	return []model.CIModelType{
+	types := []model.CIModelType{
 		{
 			ID:          model.ModelTypeServer,
 			Name:        "服务器",
@@ -1205,6 +1205,144 @@ func buildBuiltinModelTypes() []model.CIModelType {
 			},
 		},
 	}
+	return append(types, cloudModelTypes()...)
+}
+
+// ===== 云资源系列（按厂商×资源类型生成，一级分类=云资源，二级分类=厂商）=====
+
+// cloudVendors 云资源厂商与支持类型（公有云对齐 cloud 模块 types.go 全 10 类；
+// 私有云聚焦 vm/vpc/disk/load_balancer）。模型 ID 形如 <vendor>_<type>（aliyun_vm），
+// 与 internal/cloud/cmdb_sync.go 的 CITypeOf 厂商化映射对齐，云纳管同步结果可直接落库。
+var cloudVendors = []struct {
+	vendor        string
+	name          string
+	subCategory   string
+	resourceTypes []string
+}{
+	{"aliyun", "阿里云", "阿里云资源", []string{"vm", "database", "load_balancer", "vpc", "bucket", "disk", "firewall", "nat_gateway", "cdn", "dns"}},
+	{"tencent", "腾讯云", "腾讯云资源", []string{"vm", "database", "load_balancer", "vpc", "bucket", "disk", "firewall", "nat_gateway", "cdn", "dns"}},
+	{"huawei", "华为云", "华为云资源", []string{"vm", "database", "load_balancer", "vpc", "bucket", "disk", "firewall", "nat_gateway", "cdn", "dns"}},
+	{"aws", "AWS", "AWS 资源", []string{"vm", "database", "load_balancer", "vpc", "bucket", "disk", "firewall", "nat_gateway", "cdn", "dns"}},
+	{"azure", "Azure", "Azure 资源", []string{"vm", "database", "load_balancer", "vpc", "bucket", "disk", "firewall", "nat_gateway", "cdn", "dns"}},
+	{"volcano", "火山引擎", "火山引擎资源", []string{"vm", "database", "load_balancer", "vpc", "bucket", "disk", "firewall", "nat_gateway", "cdn", "dns"}},
+	{"openstack", "OpenStack", "OpenStack 资源", []string{"vm", "vpc", "disk", "load_balancer"}},
+	{"vmware", "VMware", "VMware 资源", []string{"vm", "vpc", "disk", "load_balancer"}},
+	{"zstack", "ZStack", "ZStack 资源", []string{"vm", "vpc", "disk", "load_balancer"}},
+	{"sangfor", "深信服超融合", "深信服超融合资源", []string{"vm", "vpc", "disk", "load_balancer"}},
+	{"proxmox", "Proxmox", "Proxmox 资源", []string{"vm", "vpc", "disk", "load_balancer"}},
+}
+
+// cloudResourceTypes 资源类型显示名与类型专属字段（公共字段见 cloudBaseSchema）。
+var cloudResourceTypes = map[string]struct {
+	label  string
+	fields map[string]model.AttrDef
+}{
+	"vm": {"云主机", map[string]model.AttrDef{
+		"instance_type": {Type: "string", Description: "实例规格"},
+		"public_ip":     {Type: "string", Description: "公网 IP"},
+		"private_ip":    {Type: "string", Description: "内网 IP"},
+		"vpc_id":        {Type: "string", Description: "所属 VPC"},
+		"cpu_cores":     {Type: "int", Description: "CPU 核数"},
+		"memory_gb":     {Type: "int", Description: "内存(GB)"},
+		"disk_gb":       {Type: "int", Description: "系统盘(GB)"},
+	}},
+	"database": {"云数据库", map[string]model.AttrDef{
+		"engine":        {Type: "string", Description: "引擎（mysql/pg/redis 等）"},
+		"version":       {Type: "string", Description: "版本"},
+		"instance_type": {Type: "string", Description: "规格"},
+		"endpoint":      {Type: "string", Description: "连接地址"},
+		"port":          {Type: "int", Description: "端口"},
+		"storage_gb":    {Type: "int", Description: "存储(GB)"},
+	}},
+	"load_balancer": {"负载均衡", map[string]model.AttrDef{
+		"scheme":    {Type: "string", Description: "类型（公网/内网）"},
+		"address":   {Type: "string", Description: "服务地址"},
+		"listeners": {Type: "string", Description: "监听器(JSON)"},
+	}},
+	"vpc": {"私有网络", map[string]model.AttrDef{
+		"cidr_block": {Type: "string", Description: "网段"},
+		"gateway":    {Type: "string", Description: "网关"},
+	}},
+	"bucket": {"对象存储", map[string]model.AttrDef{
+		"storage_class": {Type: "string", Description: "存储类型"},
+		"endpoint":      {Type: "string", Description: "访问端点"},
+	}},
+	"disk": {"云硬盘", map[string]model.AttrDef{
+		"size_gb":     {Type: "int", Description: "容量(GB)"},
+		"disk_type":   {Type: "string", Description: "类型（SSD/高效云盘）"},
+		"attached_vm": {Type: "string", Description: "挂载的云主机"},
+	}},
+	"firewall": {"安全组", map[string]model.AttrDef{
+		"rules": {Type: "string", Description: "规则(JSON)"},
+	}},
+	"nat_gateway": {"NAT 网关", map[string]model.AttrDef{
+		"eip": {Type: "string", Description: "弹性公网 IP"},
+	}},
+	"cdn": {"CDN", map[string]model.AttrDef{
+		"domain": {Type: "string", Description: "加速域名"},
+		"cname":  {Type: "string", Description: "CNAME"},
+	}},
+	"dns": {"DNS 解析", map[string]model.AttrDef{
+		"domain":       {Type: "string", Description: "域名"},
+		"record_count": {Type: "int", Description: "解析记录数"},
+	}},
+}
+
+// cloudBaseSchema 云资源公共字段（所有云模型共有）。
+func cloudBaseSchema() map[string]model.AttrDef {
+	return map[string]model.AttrDef{
+		"resource_id": {Type: "string", Description: "云资源唯一 ID（provider:type:id）"},
+		"provider":    {Type: "string", Description: "云厂商"},
+		"region":      {Type: "string", Description: "地域"},
+		"zone":        {Type: "string", Description: "可用区"},
+		"status":      {Type: "string", Description: "状态"},
+	}
+}
+
+// cloudModelTypes 生成云资源系列内置模型：每厂商 1 个抽象父类（云平台）+ 各资源类型 leaf。
+func cloudModelTypes() []model.CIModelType {
+	out := make([]model.CIModelType, 0, len(cloudVendors)*6)
+	for _, v := range cloudVendors {
+		// 厂商抽象父类（不可直接实例化，作厂商云平台实体）
+		out = append(out, model.CIModelType{
+			ID:          v.vendor,
+			Name:        v.name,
+			Description: v.name + "云平台（抽象父类，承载" + v.name + "各类云资源）",
+			Category:    model.ModelCategoryCloud,
+			SubCategory: v.subCategory,
+			Icon:        "☁️",
+			ShowInMenu:  true,
+			Builtin:     true,
+			Abstract:    true,
+			Author:      model.BuiltinAuthor,
+			Schema:      cloudBaseSchema(),
+		})
+		for _, rt := range v.resourceTypes {
+			meta, ok := cloudResourceTypes[rt]
+			if !ok {
+				continue
+			}
+			schema := cloudBaseSchema()
+			for k, def := range meta.fields {
+				schema[k] = def
+			}
+			out = append(out, model.CIModelType{
+				ID:          v.vendor + "_" + rt,
+				Name:        v.name + " " + meta.label,
+				Description: v.name + meta.label + "（" + rt + "）",
+				ParentID:    v.vendor,
+				Category:    model.ModelCategoryCloud,
+				SubCategory: v.subCategory,
+				Icon:        "☁️",
+				ShowInMenu:  true,
+				Builtin:     true,
+				Author:      model.BuiltinAuthor,
+				Source:      "seed",
+				Schema:      schema,
+			})
+		}
+	}
+	return out
 }
 
 // enrichImpactWithBusiness 为影响分析结果补充业务视角：

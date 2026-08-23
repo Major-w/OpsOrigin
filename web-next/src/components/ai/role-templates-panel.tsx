@@ -43,6 +43,7 @@ const ROLE_THEME: Record<string, { ring: string; glow: string; text: string; chi
   中间件资源: { ring: 'ring-amber-500/30', glow: 'from-amber-500/15', text: 'text-amber-500', chip: 'bg-amber-500/10 text-amber-600 dark:text-amber-400' },
   应用资源: { ring: 'ring-rose-500/30', glow: 'from-rose-500/15', text: 'text-rose-500', chip: 'bg-rose-500/10 text-rose-600 dark:text-rose-400' },
   容器资源: { ring: 'ring-teal-500/30', glow: 'from-teal-500/15', text: 'text-teal-500', chip: 'bg-teal-500/10 text-teal-600 dark:text-teal-400' },
+  云资源: { ring: 'ring-cyan-500/30', glow: 'from-cyan-500/15', text: 'text-cyan-500', chip: 'bg-cyan-500/10 text-cyan-600 dark:text-cyan-400' },
 }
 const DEFAULT_THEME = { ring: 'ring-primary/30', glow: 'from-primary/15', text: 'text-primary', chip: 'bg-primary/10 text-primary' }
 

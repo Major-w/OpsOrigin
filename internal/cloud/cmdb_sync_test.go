@@ -8,22 +8,28 @@ import (
 // TestCITypeOf 验证资源类型 -> CMDB CI 类型常量的映射正确性。
 func TestCITypeOf(t *testing.T) {
 	cases := []struct {
-		typ  ResourceType
-		want string
+		typ      ResourceType
+		provider string
+		want     string
 	}{
-		{TypeVM, CITypeVM},
-		{TypeDatabase, CITypeDatabase},
-		{TypeLoadBalancer, CITypeLoadBalancer},
-		// 默认分支：cloud_<type>
-		{TypeVPC, "cloud_vpc"},
-		{TypeBucket, "cloud_bucket"},
-		// K8s 类型经 Agent 通道发现（非 Provider），有显式映射分支，不带 cloud_ 前缀
-		{TypeK8sCluster, CITypeK8sCluster},
+		// 有 Provider：厂商化命名 <provider>_<type>（与内置云资源模型对齐）
+		{TypeVM, "aliyun", "aliyun_vm"},
+		{TypeDatabase, "tencent", "tencent_database"},
+		{TypeLoadBalancer, "aws", "aws_load_balancer"},
+		{TypeVPC, "openstack", "openstack_vpc"},
+		// 无 Provider：回退通用 cloud_<type>
+		{TypeVM, "", CITypeVM},
+		{TypeDatabase, "", CITypeDatabase},
+		{TypeLoadBalancer, "", CITypeLoadBalancer},
+		{TypeVPC, "", "cloud_vpc"},
+		{TypeBucket, "", "cloud_bucket"},
+		// K8s 类型经 Agent 通道发现（非 Provider），有显式映射分支，不带厂商/cloud_ 前缀
+		{TypeK8sCluster, "k8s", CITypeK8sCluster},
 	}
 	for _, c := range cases {
-		got := CITypeOf(Resource{Type: c.typ})
+		got := CITypeOf(Resource{Type: c.typ, Provider: c.provider})
 		if got != c.want {
-			t.Errorf("CITypeOf(%q) = %q, want %q", c.typ, got, c.want)
+			t.Errorf("CITypeOf(%q, provider=%q) = %q, want %q", c.typ, c.provider, got, c.want)
 		}
 	}
 }
@@ -62,8 +68,8 @@ func TestToCIMapping(t *testing.T) {
 	}
 	m := ToCIMapping(res, "tenantA")
 
-	if m.TypeID != CITypeVM {
-		t.Errorf("TypeID = %q, want %q", m.TypeID, CITypeVM)
+	if m.TypeID != "aws_vm" {
+		t.Errorf("TypeID = %q, want %q", m.TypeID, "aws_vm")
 	}
 	if m.TenantID != "tenantA" {
 		t.Errorf("TenantID = %q, want %q", m.TenantID, "tenantA")
@@ -109,8 +115,8 @@ func TestToCIMappingNameFallback(t *testing.T) {
 	if m.Name != "db-1" {
 		t.Errorf("Name should fallback to ID, got %q", m.Name)
 	}
-	if m.TypeID != CITypeDatabase {
-		t.Errorf("TypeID = %q, want %q", m.TypeID, CITypeDatabase)
+	if m.TypeID != "aws_database" {
+		t.Errorf("TypeID = %q, want %q", m.TypeID, "aws_database")
 	}
 	if m.Status != "active" {
 		t.Errorf("Status = %q, want %q", m.Status, "active")

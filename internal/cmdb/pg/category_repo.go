@@ -27,7 +27,7 @@ func (r *Repository) migrateModelCategory(ctx context.Context) error {
 		return fmt.Errorf("create cmdb_model_category: %w", err)
 	}
 
-	// 种子：内置 6 分类（幂等）
+	// 种子：内置 7 分类（幂等）
 	builtin := []struct {
 		name  string
 		order int
@@ -38,6 +38,7 @@ func (r *Repository) migrateModelCategory(ctx context.Context) error {
 		{model.ModelCategoryDatabase, 4},
 		{model.ModelCategoryInfra, 5},
 		{model.ModelCategoryContainer, 6},
+		{model.ModelCategoryCloud, 7},
 	}
 	for _, b := range builtin {
 		if _, err := r.db.ExecContext(ctx, `

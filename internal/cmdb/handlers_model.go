@@ -124,8 +124,8 @@ func (s *Service) handleGetModelType(w http.ResponseWriter, r *http.Request) {
 func (s *Service) handleListModelTypes(w http.ResponseWriter, r *http.Request) {
 	tenantID := auth.TenantFromContext(r.Context())
 
-	// 获取分页参数
-	limit := 100
+	// 获取分页参数（默认 500：内置模型 122+，避免默认值截断模型清单）
+	limit := 500
 	offset := 0
 	if l := r.URL.Query().Get("limit"); l != "" {
 		if parsed, err := strconv.Atoi(l); err == nil && parsed > 0 {

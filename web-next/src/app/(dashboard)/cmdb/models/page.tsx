@@ -107,6 +107,7 @@ const DEFAULT_CATEGORIES = [
   { name: '数据库资源', emoji: '🗄️', color: 'bg-amber-500' },
   { name: '基础设施资源', emoji: '🖥️', color: 'bg-slate-500' },
   { name: '容器资源', emoji: '☸️', color: 'bg-teal-500' },
+  { name: '云资源', emoji: '☁️', color: 'bg-cyan-500' },
 ] as const
 
 // 自定义分类的兜底样式
@@ -566,7 +567,6 @@ export default function CMDBModelsPage() {
                                   <span className="text-lg shrink-0">{model.icon}</span>
                                   <span className="font-medium break-words">{model.name}</span>
                                 </div>
-                                <p className="text-[10px] text-muted-foreground font-normal mt-0.5 break-all">{model.id}</p>
                               </CardTitle>
                               {canAdmin && (
                                 <div className="flex shrink-0 pt-0.5">
