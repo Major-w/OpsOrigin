@@ -51,6 +51,7 @@ const BuiltinAuthor = "anonymous"
 // 由 EnsureDiscoveryModelTypes 启动时确保存在，发现结果方可落库）。
 const (
 	ModelTypeServer          = "server"           // 基础设施：物理服务器 / 裸金属
+	ModelTypeHost            = "host"             // 基础设施：操作系统级主机（Agent/Agentless 接入，涵盖物理机/VM/云主机）
 	ModelTypeNetwork         = "switch"           // 基础设施：网络设备（交换机/路由器）
 	ModelTypeDatabase        = "database"         // 数据库资源：数据库实例
 	ModelTypeMiddleware      = "middleware"       // 中间件资源：Redis/Nginx/ES/Kafka 等

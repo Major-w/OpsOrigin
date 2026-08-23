@@ -17,7 +17,7 @@ interface Rack { id: string; idc_id: string; name: string; row?: string; col?: s
 interface RackUnit { rack_id: string; unit: number; ci_id?: string; label?: string }
 interface CIModel { id: string; name: string; type_id?: string; status?: string }
 
-const DEVICE_TYPES = ['server', 'virtual_machine', 'storage', 'firewall', 'load_balancer', 'router', 'switch', 'database', 'middleware', 'app']
+const DEVICE_TYPES = ['server', 'host', 'storage', 'firewall', 'load_balancer', 'router', 'switch', 'database', 'middleware', 'app']
 
 // 连续 U 位推荐：返回满足设备高度的可用起始 U 位（升序），对齐业界 findAvailablePositions。
 function findAvailablePositions(deviceUnit: number, maxUnits: number, occupied: Set<number>): number[] {
@@ -55,7 +55,7 @@ export default function CMDBIDCPage() {
   }
   const rackDevices = (rackID: string) => panorama.devices.filter(d => d.attributes?.rack_id === rackID)
   const deviceColor = (t: string) =>
-    t === 'server' || t === 'virtual_machine' ? 'bg-sky-500' :
+    t === 'server' || t === 'host' ? 'bg-sky-500' :
     t === 'database' || t === 'middleware' ? 'bg-violet-500' :
     t === 'storage' ? 'bg-amber-500' :
     t === 'firewall' || t === 'load_balancer' || t === 'router' || t === 'switch' ? 'bg-emerald-500' : 'bg-slate-400'

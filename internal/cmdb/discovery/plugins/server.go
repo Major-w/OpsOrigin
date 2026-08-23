@@ -7,14 +7,15 @@ import (
 	"github.com/opsorigin/core/internal/cmdb/model"
 )
 
-// ServerDiscoverer 发现物理服务器 / 裸金属主机：在探针 Agent（即为目标主机自身或其可达跳板）上
-// 采集系统信息（hostname/os/kernel/CPU/内存/磁盘/序列号/厂商）。CI 映射到模型类型 server。
+// ServerDiscoverer 发现操作系统级主机（无论底层是物理机还是虚拟机）：在探针 Agent
+// （即目标主机自身或其可达跳板）上采集系统信息（hostname/os/kernel/CPU/内存/磁盘/序列号/厂商）。
+// CI 映射到模型类型 host（与 cmd/core/agent_cmdb_adapter.SyncHost 落库目标一致，统一主机模型）。
 type ServerDiscoverer struct{}
 
-func (d *ServerDiscoverer) Types() []string { return []string{"server", "host"} }
+func (d *ServerDiscoverer) Types() []string { return []string{"host", "server"} }
 
 func (d *ServerDiscoverer) Discover(ctx context.Context, task *model.DiscoveryTask, runner discovery.ScriptRunner) ([]*discovery.Item, error) {
-	return wrapDiscover(ctx, task, runner, renderServerScript, nil, "server")
+	return wrapDiscover(ctx, task, runner, renderServerScript, nil, "host")
 }
 
 // renderServerScript 在探针 Agent 本地采集主机硬件与系统信息。

@@ -68,7 +68,7 @@ func TestPluginParse(t *testing.T) {
 			name:   "server",
 			task:   newTask("server", "10.0.0.5", "a1", map[string]any{"agent_id": "a1"}),
 			out:    `{"name":"node-1","ip":"10.0.0.5","attrs":{"os":"linux","vendor":"dell"}}`,
-			wantCI: "server", wantIP: "10.0.0.5", wantKey: "vendor",
+			wantCI: "host", wantIP: "10.0.0.5", wantKey: "vendor",
 		},
 		{
 			name:   "network",

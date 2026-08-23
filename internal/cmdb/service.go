@@ -627,8 +627,8 @@ func (s *Service) handleListDiscoveryTypes(w http.ResponseWriter, r *http.Reques
 		Channel string `json:"channel"` // snmp=网络协议直连 / agent=探针 Agent 脚本
 		Note    string `json:"note"`
 	}{
-		"server":      {Label: "物理服务器/裸金属", CIType: "server", Channel: "agent", Note: "探针 Agent 本地采集硬件/系统信息（dmidecode 需权限）"},
-		"host":        {Label: "物理服务器（别名）", CIType: "server", Channel: "agent", Note: "与 server 同实现"},
+		"host":        {Label: "主机（操作系统级）", CIType: "host", Channel: "agent", Note: "探针 Agent 本地采集硬件/系统信息（dmidecode 需权限），涵盖物理机/VM/云主机"},
+		"server":      {Label: "物理服务器/裸金属（别名）", CIType: "host", Channel: "agent", Note: "与 host 同实现，语义指向物理机"},
 		"snmp":        {Label: "网络设备（SNMP）", CIType: "switch", Channel: "snmp", Note: "交换机/路由器/防火墙，需 community"},
 		"network":     {Label: "网络设备（别名）", CIType: "switch", Channel: "snmp", Note: "与 snmp 同实现"},
 		"database":    {Label: "数据库实例", CIType: "database", Channel: "agent", Note: "MySQL/PostgreSQL/Oracle 探测（需客户端与账号）"},
@@ -717,9 +717,9 @@ func buildBuiltinModelTypes() []model.CIModelType {
 				"password": {Type: "string", Description: "连接密码", Default: ""},
 				"charset":  {Type: "string", Description: "字符集"},
 			},
-			// 预置关联路径：数据库实例部署于服务器（子类 mysql/oracle/postgresql 继承此语义）。
+			// 预置关联路径：数据库实例部署于主机（子类 mysql/oracle/postgresql 继承此语义；host 涵盖物理机/VM/云主机）。
 			Relations: []model.RelationDef{
-				{ID: "db_runs_server", Name: "部署于", RelationType: model.RelationHosts, TargetModel: model.ModelTypeServer, Cardinality: model.CardinalityOneToMany, ReverseName: "承载数据库"},
+				{ID: "db_runs_host", Name: "部署于", RelationType: model.RelationHosts, TargetModel: model.ModelTypeHost, Cardinality: model.CardinalityOneToMany, ReverseName: "承载数据库"},
 			},
 		},
 		{
@@ -741,9 +741,9 @@ func buildBuiltinModelTypes() []model.CIModelType {
 				"password":        {Type: "string", Description: "连接密码", Default: ""},
 				"role":            {Type: "string", Description: "角色（如 redis master/slave）"},
 			},
-			// 预置关联路径：中间件实例部署于服务器（子类 redis/kafka/... 继承此语义）。
+			// 预置关联路径：中间件实例部署于主机（子类 redis/kafka/... 继承此语义；host 涵盖物理机/VM/云主机）。
 			Relations: []model.RelationDef{
-				{ID: "mw_runs_server", Name: "部署于", RelationType: model.RelationHosts, TargetModel: model.ModelTypeServer, Cardinality: model.CardinalityOneToMany, ReverseName: "承载中间件"},
+				{ID: "mw_runs_host", Name: "部署于", RelationType: model.RelationHosts, TargetModel: model.ModelTypeHost, Cardinality: model.CardinalityOneToMany, ReverseName: "承载中间件"},
 			},
 		},
 		// ===== 数据库抽象父类的 leaf 子类（经 ParentID 继承 ip/port/version/engine/account/password/charset）=====
@@ -929,7 +929,7 @@ func buildBuiltinModelTypes() []model.CIModelType {
 				{ID: "app_compose_svc", Name: "包含服务", RelationType: model.RelationComposedOf, TargetModel: model.ModelTypeService, Cardinality: model.CardinalityOneToMany, ReverseName: "隶属应用"},
 				{ID: "app_dep_db", Name: "依赖数据库", RelationType: model.RelationDependsOn, TargetModel: model.ModelTypeDatabase, Cardinality: model.CardinalityManyToMany, ReverseName: "被应用依赖"},
 				{ID: "app_dep_mw", Name: "依赖中间件", RelationType: model.RelationDependsOn, TargetModel: model.ModelTypeMiddleware, Cardinality: model.CardinalityManyToMany, ReverseName: "被应用依赖"},
-				{ID: "app_runs_server", Name: "部署于", RelationType: model.RelationHosts, TargetModel: model.ModelTypeServer, Cardinality: model.CardinalityOneToMany, ReverseName: "承载应用"},
+				{ID: "app_runs_host", Name: "部署于", RelationType: model.RelationHosts, TargetModel: model.ModelTypeHost, Cardinality: model.CardinalityOneToMany, ReverseName: "承载应用"},
 			},
 		},
 		{
@@ -949,11 +949,10 @@ func buildBuiltinModelTypes() []model.CIModelType {
 				"status":       {Type: "string", Description: "运行状态（running/stopped）"},
 				"language":     {Type: "string", Description: "实现语言（java/go/node/...）"},
 			},
-			// 预置关联路径：服务运行于服务器/虚拟机（进程落地到资源，一台机器可承载多个服务），
+			// 预置关联路径：服务运行于主机（进程落地到资源，一台机器可承载多个服务；host 涵盖物理机/VM/云主机），
 			// 并可依赖其它服务（服务间调用，自关联）。
 			Relations: []model.RelationDef{
-				{ID: "svc_runs_server", Name: "运行于", RelationType: model.RelationRunsOn, TargetModel: model.ModelTypeServer, Cardinality: model.CardinalityManyToMany, ReverseName: "承载服务"},
-				{ID: "svc_runs_vm", Name: "运行于", RelationType: model.RelationRunsOn, TargetModel: "virtual_machine", Cardinality: model.CardinalityManyToMany, ReverseName: "承载服务"},
+				{ID: "svc_runs_host", Name: "运行于", RelationType: model.RelationRunsOn, TargetModel: model.ModelTypeHost, Cardinality: model.CardinalityManyToMany, ReverseName: "承载服务"},
 				{ID: "svc_dep_svc", Name: "依赖服务", RelationType: model.RelationDependsOn, TargetModel: model.ModelTypeService, Cardinality: model.CardinalityManyToMany, ReverseName: "被服务依赖"},
 			},
 		},
@@ -998,26 +997,29 @@ func buildBuiltinModelTypes() []model.CIModelType {
 			},
 		},
 		{
-			ID:          "virtual_machine",
-			Name:        "虚拟机",
-			Description: "虚拟机实例（VMware/KVM/OpenStack 等虚拟化平台）",
+			ID:          "host",
+			Name:        "主机",
+			Description: "操作系统级主机（无论底层是物理机还是虚拟机，均由 Agent / Agentless 接入；承载应用/数据库/中间件/服务）",
 			Category:    model.ModelCategoryInfra,
-			Icon:        "cpu",
+			Icon:        "hard-drive",
 			ShowInMenu:  true,
 			Builtin:     true,
 			Author:      model.BuiltinAuthor,
 			Schema: map[string]model.AttrDef{
-				"hypervisor": {Type: "string", Description: "虚拟化平台（vmware/kvm/openstack）"},
-				"vcpu":       {Type: "int", Description: "vCPU 数"},
-				"memory_gb":  {Type: "int", Description: "内存(GB)"},
-				"host_name":  {Type: "string", Description: "宿主机"},
-				"ip_address": {Type: "string", Description: "IP 地址"},
-				"rack_id":    {Type: "string", Description: "所在机柜(rack 模型 CI ID)"},
-				"rack_unit":  {Type: "int", Description: "占用 U 位"},
+				"resource_id": {Type: "string", Description: "资产自然键（host:<agentID>）"},
+				"hostname":    {Type: "string", Description: "主机名"},
+				"os":          {Type: "string", Description: "操作系统类型"},
+				"os_version":  {Type: "string", Description: "操作系统版本"},
+				"cpu":         {Type: "string", Description: "CPU 信息"},
+				"memory":      {Type: "string", Description: "内存信息"},
+				"disk":        {Type: "string", Description: "磁盘信息"},
+				"ip":          {Type: "string", Description: "管理 IP"},
+				"agent_id":    {Type: "string", Description: "接入 Agent ID"},
+				"labels":      {Type: "string", Description: "标签(JSON)"},
 			},
-			// 预置关联路径：虚拟机运行于物理服务器（虚拟化承载）。
+			// 预置关联路径：主机位于机柜（设施层级），并可被业务资源部署/运行于（见 server/db/mw/app/svc 的关系锚点统一指向 host）。
 			Relations: []model.RelationDef{
-				{ID: "vm_runs_server", Name: "运行于", RelationType: model.RelationHosts, TargetModel: model.ModelTypeServer, Cardinality: model.CardinalityOneToMany, ReverseName: "承载虚拟机"},
+				{ID: "host_in_rack", Name: "位于机柜", RelationType: model.RelationLocatedIn, TargetModel: "rack", Cardinality: model.CardinalityOneToMany, ReverseName: "包含设备"},
 			},
 		},
 		{
@@ -1729,7 +1731,7 @@ func (s *Service) handleIDCPanorama(w http.ResponseWriter, r *http.Request) {
 	// 设备: 合并两条来源。
 	devByID := map[string]*model.CIModel{}
 	// 来源1: 各类型中带 rack_id 属性的(模型驱动录入)。
-	for _, t := range []string{"server", "virtual_machine", "storage", "firewall", "load_balancer", "router", "switch", "database", "middleware", "app"} {
+	for _, t := range []string{"server", "host", "storage", "firewall", "load_balancer", "router", "switch", "database", "middleware", "app"} {
 		list, err := s.pg.ListCI(ctx, tenantID, t)
 		if err != nil {
 			continue
