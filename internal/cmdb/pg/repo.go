@@ -212,9 +212,13 @@ func (r *Repository) CreateCIModelType(ctx context.Context, mt *model.CIModelTyp
 		relationsJSON = []byte("[]")
 	}
 
+	// ON CONFLICT (id) DO NOTHING: 主键幂等兜底。内置模型由 EnsureDiscoveryModelTypes
+	// 管理(id 固定)，即便逻辑分支失误重复调用 Create，也不会产生重复行或报错中断 seed。
+	// 用户自建模型走 UUID(id 不会冲突)，不受影响。
 	_, err = r.db.ExecContext(ctx, `
 		INSERT INTO cmdb_ci_model_type (id, tenant_id, name, description, parent_id, schema, relations, category, sub_category, icon, show_in_menu, builtin, author, abstract, source, discovered_by, confidence, evidence, version, suggested_collectors, created_at, updated_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22)`,
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22)
+		ON CONFLICT (id) DO NOTHING`,
 		mt.ID, mt.TenantID, mt.Name, nullIfEmpty(mt.Description), nullIfEmpty(mt.ParentID),
 		schemaJSON, relationsJSON, nullIfEmpty(mt.Category), nullIfEmpty(mt.SubCategory), nullIfEmpty(mt.Icon),
 		mt.ShowInMenu, mt.Builtin, nullIfEmpty(mt.Author),
