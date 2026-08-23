@@ -68,13 +68,12 @@ const FIELD_TYPES: FieldTypeMeta[] = [
   { value: 'enum', label: '枚举(单选)', group: '选择', desc: '固定选项下拉，如环境(prod/dev/test)', configs: ['options'] },
   { value: 'multi-enum', label: '枚举(多选)', group: '选择', desc: '可多选的枚举，实例值存为数组', configs: ['options', 'multi'] },
   { value: 'boolean', label: '布尔', group: '选择', desc: '是/否开关，如是否开启 binlog', configs: [] },
-  { value: 'ref', label: '引用(CI)', group: '关系', desc: '引用其他模型的 CI 实例，写入校验存在性', configs: ['ref', 'autofill'] },
   { value: 'date', label: '日期', group: '日期时间', desc: '年-月-日', configs: [] },
   { value: 'datetime', label: '日期时间', group: '日期时间', desc: '含时分秒的完整时间', configs: [] },
   { value: 'json', label: 'JSON', group: '特殊', desc: '结构化数据，如配置片段', configs: [] },
   { value: 'list', label: '列表', group: '特殊', desc: '同构值数组，如标签集合', configs: [] },
 ]
-const FIELD_GROUPS = ['文本', '数值', '选择', '关系', '日期时间', '特殊']
+const FIELD_GROUPS = ['文本', '数值', '选择', '日期时间', '特殊']
 const fieldTypeMeta = (t: FieldType) => FIELD_TYPES.find(m => m.value === t)
 
 interface CIModel {
@@ -162,7 +161,6 @@ export default function CMDBModelsPage() {
   const [ciCounts, setCiCounts] = useState<Record<string, number>>({})
   const [dialogOpen, setDialogOpen] = useState(false)
   const [editModel, setEditModel] = useState<CIModel | null>(null)
-  const [categoryFilter, setCategoryFilter] = useState<string>('all')
   const [form, setForm] = useState({
     name: '', description: '', icon: '🖥️', category: '基础设施资源',
     sub_category: '', show_in_menu: true, parent_id: '',
@@ -229,7 +227,6 @@ export default function CMDBModelsPage() {
         if (t.cat.builtin) return
         await apiFetch(`/cmdb/model-categories/${t.cat.id}`, { method: 'DELETE' })
         toast.success('分类已删除'); loadCategories()
-        if (categoryFilter === t.cat.name) setCategoryFilter('all')
       }
       setConfirmTarget(null)
     } catch (e: any) { toast.error(e.message || '操作失败') } finally { setConfirmSubmitting(false) }
@@ -412,8 +409,6 @@ export default function CMDBModelsPage() {
     e.target.value = ''
   }
 
-  const visible = models.filter(m => categoryFilter === 'all' || m.category === categoryFilter)
-
   return (
     <div className="p-6 space-y-4">
       {createdModel && (
@@ -500,83 +495,78 @@ export default function CMDBModelsPage() {
         </Card>
       )}
 
-      {/* 分类过滤（动态，含自定义） */}
-      <div className="flex gap-2 flex-wrap items-center">
-        <button onClick={() => setCategoryFilter('all')} className={cn("px-3 py-1 rounded-full text-xs border", categoryFilter === 'all' ? "border-emerald-500 bg-emerald-50 dark:bg-emerald-500/10 text-emerald-600" : "border-gray-200 dark:border-gray-700")}>全部 {models.length}</button>
-        {categories.map(c => {
-          const style = catStyle(c.name)
-          return (
-            <button key={c.id} onClick={() => setCategoryFilter(c.name)} className={cn("px-3 py-1 rounded-full text-xs border flex items-center gap-1", categoryFilter === c.name ? "border-emerald-500 bg-emerald-50 dark:bg-emerald-500/10 text-emerald-600" : "border-gray-200 dark:border-gray-700")}>
-              <span>{style.emoji}</span>{c.name}
-              {!c.builtin && <span className="text-[9px] text-violet-500">自定义</span>}
-            </button>
-          )
-        })}
-      </div>
-
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
-        {visible.map(model => {
-          const style = catStyle(model.category)
-          return (
-            <Card key={model.id} className="group hover:shadow-md transition-shadow">
-              <CardHeader className="py-3">
-                <div className="flex items-center justify-between">
-                  <CardTitle className="text-sm flex items-center gap-2">
-                    <span className="text-lg">{model.icon}</span>
-                    {model.name}
-                  </CardTitle>
-                  {canAdmin && (
-                    <div className="flex">
-                      <Button variant="ghost" size="sm" className="opacity-0 group-hover:opacity-100 h-7 w-7 p-0" title="字段权限" onClick={() => openFieldRules(model)}><Shield className="h-3.5 w-3.5" /></Button>
-                      <Button variant="ghost" size="sm" className="opacity-0 group-hover:opacity-100 h-7 w-7 p-0" title="版本历史" onClick={() => openVersions(model)}><History className="h-3.5 w-3.5" /></Button>
-                      <Button variant="ghost" size="sm" className="opacity-0 group-hover:opacity-100 h-7 w-7 p-0" title="字段消费度" onClick={() => openUsage(model)}><Gauge className="h-3.5 w-3.5" /></Button>
-                      <Button variant="ghost" size="sm" className="opacity-0 group-hover:opacity-100 h-7 w-7 p-0" onClick={() => openEdit(model)}><Edit2 className="h-3.5 w-3.5" /></Button>
-                      {!model.builtin && (
-                        <Button variant="ghost" size="sm" className="opacity-0 group-hover:opacity-100 h-7 w-7 p-0 text-destructive" onClick={() => handleDelete(model)}><Trash2 className="h-3.5 w-3.5" /></Button>
-                      )}
-                    </div>
-                  )}
-                </div>
-              </CardHeader>
-              <CardContent className="space-y-2">
-                {model.description && <p className="text-xs text-muted-foreground">{model.description}</p>}
-                <div className="flex items-center gap-2 flex-wrap">
-                  <Badge className={cn("text-[10px] text-white", style.color)}>{style.emoji} {model.category}</Badge>
-                  {model.sub_category && <Badge variant="outline" className="text-[10px]">{model.sub_category}</Badge>}
-                  {model.parent_id && <Badge variant="secondary" className="text-[10px]">继承</Badge>}
-                  {model.builtin && <Badge variant="secondary" className="text-[10px]">内置</Badge>}
-                </div>
-                <div className="flex items-center gap-2">
-                  <Badge variant="secondary" className="text-[10px]">{(ciCounts[model.id] || 0)} 个实例</Badge>
-                  <Badge variant="outline" className="text-[10px]">{model.fields.length} 个字段</Badge>
-                </div>
-                {model.fields.length > 0 && (
-                  <div className="space-y-0.5 max-h-32 overflow-y-auto">
-                    {model.fields.slice(0, 5).map(f => (
-                      <div key={f.name} className="flex items-center gap-1.5 text-[11px] py-0.5">
-                        <span className="font-medium truncate">{f.name}</span>
-                        <Badge variant="outline" className="text-[9px] px-1">{f.type}</Badge>
-                        {f.required && <span className="text-destructive text-[10px]">*</span>}
-                      </div>
-                    ))}
-                    {model.fields.length > 5 && <p className="text-[10px] text-muted-foreground">+{model.fields.length - 5} 更多...</p>}
-                  </div>
-                )}
-              </CardContent>
-            </Card>
-          )
-        })}
-      </div>
-
-      {visible.length === 0 && (
+      {/* 按分类分组展示：分类标题 + 模型卡片 */}
+      {models.length === 0 ? (
         <Card className="text-center py-16">
           <CardContent>
-            <p className="text-muted-foreground text-sm">
-              {models.length === 0 ? '还没有任何模型，点击右上角「新建模型」创建第一个 CI 模型。' : '当前分类下没有模型。'}
-            </p>
+            <p className="text-muted-foreground text-sm">还没有任何模型，点击右上角「新建模型」创建第一个 CI 模型。</p>
           </CardContent>
         </Card>
-      )}
+      ) : (() => {
+        const groups: { name: string; emoji: string; color: string; list: typeof models }[] = []
+        const seen = new Set<string>()
+        for (const c of categories) {
+          const list = models.filter(m => m.category === c.name)
+          if (list.length === 0) continue
+          const st = catStyle(c.name)
+          groups.push({ name: c.name, emoji: st.emoji, color: st.color, list })
+          seen.add(c.name)
+        }
+        const rest = models.filter(m => !seen.has(m.category))
+        if (rest.length > 0) groups.push({ name: '未分类', emoji: '🏷️', color: 'bg-gray-500', list: rest })
+        return (
+          <div className="space-y-8">
+            {groups.map(g => (
+              <section key={g.name} className="space-y-3">
+                <div className="flex items-center gap-2">
+                  <span className="text-base">{g.emoji}</span>
+                  <h2 className="text-sm font-semibold">{g.name}</h2>
+                  <span className="text-xs text-muted-foreground">{g.list.length} 个模型</span>
+                  <div className="flex-1 border-t border-border/60" />
+                </div>
+                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
+                  {g.list.map(model => (
+                    <Card key={model.id} className="group hover:shadow-md transition-shadow">
+                      <CardHeader className="py-3">
+                        <div className="flex items-center justify-between">
+                          <CardTitle className="text-sm flex items-center gap-2">
+                            <span className="text-lg">{model.icon}</span>
+                            {model.name}
+                          </CardTitle>
+                          {canAdmin && (
+                            <div className="flex">
+                              <Button variant="ghost" size="sm" className="opacity-0 group-hover:opacity-100 h-7 w-7 p-0" title="字段权限" onClick={() => openFieldRules(model)}><Shield className="h-3.5 w-3.5" /></Button>
+                              <Button variant="ghost" size="sm" className="opacity-0 group-hover:opacity-100 h-7 w-7 p-0" title="版本历史" onClick={() => openVersions(model)}><History className="h-3.5 w-3.5" /></Button>
+                              <Button variant="ghost" size="sm" className="opacity-0 group-hover:opacity-100 h-7 w-7 p-0" title="字段消费度" onClick={() => openUsage(model)}><Gauge className="h-3.5 w-3.5" /></Button>
+                              <Button variant="ghost" size="sm" className="opacity-0 group-hover:opacity-100 h-7 w-7 p-0" onClick={() => openEdit(model)}><Edit2 className="h-3.5 w-3.5" /></Button>
+                              {!model.builtin && (
+                                <Button variant="ghost" size="sm" className="opacity-0 group-hover:opacity-100 h-7 w-7 p-0 text-destructive" onClick={() => handleDelete(model)}><Trash2 className="h-3.5 w-3.5" /></Button>
+                              )}
+                            </div>
+                          )}
+                        </div>
+                      </CardHeader>
+                      <CardContent className="space-y-2">
+                        {model.description && <p className="text-xs text-muted-foreground line-clamp-2">{model.description}</p>}
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <Badge className={cn("text-[10px] text-white", g.color)}>{g.emoji} {model.category}</Badge>
+                          {model.sub_category && <Badge variant="outline" className="text-[10px]">{model.sub_category}</Badge>}
+                          {model.parent_id && <Badge variant="secondary" className="text-[10px]">继承</Badge>}
+                          {model.builtin && <Badge variant="secondary" className="text-[10px]">内置</Badge>}
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <Badge variant="secondary" className="text-[10px]">{(ciCounts[model.id] || 0)} 个实例</Badge>
+                          <Badge variant="outline" className="text-[10px]">{model.fields.length} 个字段</Badge>
+                        </div>
+                      </CardContent>
+                    </Card>
+                  ))}
+                </div>
+              </section>
+            ))}
+          </div>
+        )
+      })()}
 
       {/* 模型编辑对话框 */}
       <Dialog open={dialogOpen} onClose={() => setDialogOpen(false)} title={editModel ? `编辑模型：${editModel.name}` : '新建模型'}>
@@ -689,6 +679,9 @@ export default function CMDBModelsPage() {
               }}
               className="w-full h-9 mt-1 text-sm border rounded-md bg-background px-2"
             >
+              {!FIELD_TYPES.some(t => t.value === fieldForm.type) && (
+                <option value={fieldForm.type} disabled>{fieldForm.type}（旧类型，兼容展示，保存后请改为新类型）</option>
+              )}
               {FIELD_GROUPS.map(g => (
                 <optgroup key={g} label={g}>
                   {FIELD_TYPES.filter(t => t.group === g).map(t => (
