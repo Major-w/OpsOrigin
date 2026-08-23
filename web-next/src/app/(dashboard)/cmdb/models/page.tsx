@@ -564,9 +564,10 @@ export default function CMDBModelsPage() {
                             <div className="flex items-start justify-between gap-2">
                               <CardTitle className="text-sm min-w-0 flex-1">
                                 <div className="flex items-center gap-2">
-                                  <span className="text-lg shrink-0">{model.icon}</span>
+                                  <span className="text-lg shrink-0">{ICONS.includes(model.icon) ? model.icon : '📦'}</span>
                                   <span className="font-medium break-words">{model.name}</span>
                                 </div>
+                                <p className="text-[10px] text-muted-foreground font-normal mt-0.5 break-all">{model.id}</p>
                               </CardTitle>
                               {canAdmin && (
                                 <div className="flex shrink-0 pt-0.5">
