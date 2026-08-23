@@ -351,7 +351,7 @@ export default function CMDBModelsPage() {
   }
 
   const handleDelete = async (model: CIModel) => {
-    if (model.builtin) { toast.error('内置模型受保护，不可删除'); return }
+    if (model.builtin) return
     const ciCount = ciCounts[model.id] || 0
     if (ciCount > 0) {
       toast.error(`该模型下还有 ${ciCount} 条实例记录，请先删除这些实例后再删除模型`)
@@ -636,7 +636,9 @@ export default function CMDBModelsPage() {
                                         <Button variant="ghost" size="sm" className="opacity-0 group-hover:opacity-100 h-7 w-7 p-0" title="版本历史" onClick={() => openVersions(model)}><History className="h-3.5 w-3.5" /></Button>
                                         <Button variant="ghost" size="sm" className="opacity-0 group-hover:opacity-100 h-7 w-7 p-0" title="字段消费度" onClick={() => openUsage(model)}><Gauge className="h-3.5 w-3.5" /></Button>
                                         <Button variant="ghost" size="sm" className="opacity-0 group-hover:opacity-100 h-7 w-7 p-0" title={isParent ? '父模型受保护，不可修改' : '编辑'} disabled={isParent} onClick={() => openEdit(model)}><Edit2 className="h-3.5 w-3.5" /></Button>
-                                        <Button variant="ghost" size="sm" className="opacity-0 group-hover:opacity-100 h-7 w-7 p-0 text-destructive" title="删除" onClick={() => handleDelete(model)}><Trash2 className="h-3.5 w-3.5" /></Button>
+                                        {!model.builtin && (
+                                          <Button variant="ghost" size="sm" className="opacity-0 group-hover:opacity-100 h-7 w-7 p-0 text-destructive" title="删除" onClick={() => handleDelete(model)}><Trash2 className="h-3.5 w-3.5" /></Button>
+                                        )}
                                       </div>
                                     )}
                                   </div>
