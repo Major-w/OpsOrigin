@@ -12,6 +12,7 @@ const (
 	ChannelWeCom    ChannelType = "wecom"    // 企业微信群机器人
 	ChannelFeishu   ChannelType = "feishu"   // 飞书自定义机器人
 	ChannelWebhook  ChannelType = "webhook"  // 通用 HTTP Webhook
+	ChannelScript   ChannelType = "script"   // 脚本执行（从脚本库选择）
 )
 
 // EventType 标识可触发通知的平台事件类型。与 Policy 关联,
@@ -54,7 +55,7 @@ func AllEventTypes() []EventType {
 // AllChannelTypes 返回所有支持的渠道类型。
 func AllChannelTypes() []ChannelType {
 	return []ChannelType{
-		ChannelEmail, ChannelDingTalk, ChannelWeCom, ChannelFeishu, ChannelWebhook,
+		ChannelEmail, ChannelDingTalk, ChannelWeCom, ChannelFeishu, ChannelWebhook, ChannelScript,
 	}
 }
 

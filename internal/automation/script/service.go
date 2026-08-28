@@ -215,6 +215,7 @@ func snapshot(sc *Script, at time.Time, changeNote, createdBy string) *ScriptVer
 // AgentRunner 把脚本下发到被管主机上的 Agent 执行。
 type AgentRunner interface {
 	RunScriptOnAgent(ctx context.Context, agentID, tenantID, content string, params map[string]string, timeout int, runAs string) (output string, exitCode int, err error)
+	RunScriptOnAgentWithType(ctx context.Context, agentID, tenantID, content string, params map[string]string, timeout int, runAs string, scriptType string) (output string, exitCode int, err error)
 }
 
 // SandboxRunner 是 AgentRunner 的可选扩展:把脚本以"沙箱模式"下发到带沙箱标签
@@ -566,7 +567,7 @@ func (s *Service) executeScript(sc *Script, req *ExecuteRequest) *ExecutionResul
 		if tid == "" {
 			tid = auth.TenantFromContext(context.Background())
 		}
-		output, exitCode, rerr := s.agentRunner.RunScriptOnAgent(context.Background(), req.AgentID, tid, sc.Content, req.Params, to, ra)
+		output, exitCode, rerr := s.agentRunner.RunScriptOnAgentWithType(context.Background(), req.AgentID, tid, sc.Content, req.Params, to, ra, string(sc.Type))
 		if rerr != nil {
 			result.finish("failed", exitCode, rerr.Error(), started)
 			return result
@@ -585,7 +586,7 @@ func (s *Service) executeScript(sc *Script, req *ExecuteRequest) *ExecutionResul
 	}
 	pattern := "opsorigin-script-*.sh"
 	switch sc.Type {
-	case ScriptTypePython:
+	case ScriptTypePython, ScriptTypePython2, ScriptTypePython3:
 		pattern = "opsorigin-script-*.py"
 	case ScriptTypeBat:
 		pattern = "opsorigin-script-*.bat"
@@ -613,8 +614,10 @@ func (s *Service) executeScript(sc *Script, req *ExecuteRequest) *ExecutionResul
 		switch sc.Type {
 		case ScriptTypeShell:
 			checkCmd = "bash"
-		case ScriptTypePython:
+		case ScriptTypePython, ScriptTypePython3:
 			checkCmd = "python3"
+		case ScriptTypePython2:
+			checkCmd = "python2"
 		case ScriptTypeBat:
 			checkCmd = "cmd"
 		}
@@ -641,11 +644,17 @@ func (s *Service) executeScript(sc *Script, req *ExecuteRequest) *ExecutionResul
 		} else {
 			cmd = exec.CommandContext(ctx, "bash", tmpPath)
 		}
-	case ScriptTypePython:
+	case ScriptTypePython, ScriptTypePython3:
 		if runAs != "" {
 			cmd = exec.CommandContext(ctx, "sudo", "-u", runAs, "python3", tmpPath)
 		} else {
 			cmd = exec.CommandContext(ctx, "python3", tmpPath)
+		}
+	case ScriptTypePython2:
+		if runAs != "" {
+			cmd = exec.CommandContext(ctx, "sudo", "-u", runAs, "python2", tmpPath)
+		} else {
+			cmd = exec.CommandContext(ctx, "python2", tmpPath)
 		}
 	case ScriptTypeBat:
 		if runAs != "" {

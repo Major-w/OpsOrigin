@@ -5,9 +5,11 @@ import "time"
 type ScriptType string
 
 const (
-	ScriptTypeShell  ScriptType = "shell"
-	ScriptTypePython ScriptType = "python"
-	ScriptTypeBat    ScriptType = "bat"
+	ScriptTypeShell   ScriptType = "shell"
+	ScriptTypePython  ScriptType = "python"
+	ScriptTypePython2 ScriptType = "python2"
+	ScriptTypePython3 ScriptType = "python3"
+	ScriptTypeBat     ScriptType = "bat"
 )
 
 type ParamDef struct {

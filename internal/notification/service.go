@@ -225,6 +225,13 @@ func NewService(db *sql.DB) *Service {
 	}
 }
 
+// SetScriptExecutor 注入脚本执行器到 ScriptSender，供脚本执行渠道使用。
+func (s *Service) SetScriptExecutor(exec ScriptExecutor) {
+	if ss, ok := s.senders[ChannelScript].(*ScriptSender); ok {
+		ss.SetExecutor(exec)
+	}
+}
+
 // RegisterRoutes 注册所有通知路由。
 // 注意 "channels" / "policies" / "history" / "events" 都是字面量段,
 // 在 Go 1.22+ ServeMux 中优先于 {id} 通配符匹配。

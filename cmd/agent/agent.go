@@ -858,7 +858,19 @@ func (a *Agent) executeScript(task *TaskRequest) TaskResponse {
 	case runtime.GOOS == "windows":
 		cmd = exec.CommandContext(execCtx, "cmd", "/C", task.Script)
 	default:
-		cmd = exec.CommandContext(execCtx, "/bin/sh", "-c", task.Script)
+		scriptType := strings.ToLower(strings.TrimSpace(task.ScriptType))
+		switch scriptType {
+		case "python3":
+			cmd = exec.CommandContext(execCtx, "python3", "-c", task.Script)
+		case "python2":
+			cmd = exec.CommandContext(execCtx, "python2", "-c", task.Script)
+		case "python", "py":
+			cmd = exec.CommandContext(execCtx, "python3", "-c", task.Script)
+		case "bat", "cmd":
+			cmd = exec.CommandContext(execCtx, "cmd", "/C", task.Script)
+		default: // shell
+			cmd = exec.CommandContext(execCtx, "/bin/sh", "-c", task.Script)
+		}
 	}
 
 	var stdout, stderr bytes.Buffer

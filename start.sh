@@ -208,8 +208,8 @@ start_frontend() {
     warn "前端已在运行（PID $(cat "$FRONTEND_PID_FILE")）"
     return 0
   fi
-  info "启动前端（web-next，端口 ${FRONTEND_PORT}）..."
-  cd "$ROOT_DIR/web-next"
+  info "启动前端（web，端口 ${FRONTEND_PORT}）..."
+  cd "$ROOT_DIR/web"
   if [[ ! -d node_modules ]]; then
     info "首次运行，安装依赖..."
     npm install
@@ -244,7 +244,7 @@ stop_frontend() {
   else
     dim "前端未运行"
   fi
-  # 端口兜底: 清理占用 3000 的残留(next dev 子进程)
+  # 端口兜底: 清理占用 3000 的残留(vite 子进程)
   sleep 1
   local port_pids
   port_pids="$(lsof -tiTCP:${FRONTEND_PORT} -sTCP:LISTEN 2>/dev/null || true)"

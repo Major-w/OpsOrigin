@@ -183,6 +183,47 @@ func (r *Repository) Migrate(ctx context.Context) error {
 	if err := r.migrateModelCategory(ctx); err != nil {
 		return err
 	}
+	// CI 审计日志表（记录每次属性变更的 before/after 快照）。
+	if _, err := r.db.ExecContext(ctx, `
+		CREATE TABLE IF NOT EXISTS cmdb_ci_audit (
+			id          BIGSERIAL PRIMARY KEY,
+			ci_id       TEXT NOT NULL REFERENCES cmdb_ci(id),
+			attr_name   TEXT NOT NULL,
+			old_value   TEXT,
+			new_value   TEXT,
+			channel     INT NOT NULL DEFAULT 100,
+			trace_id    TEXT NOT NULL DEFAULT 'unknown',
+			changed_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+		)`); err != nil {
+		return fmt.Errorf("create cmdb_ci_audit table: %w", err)
+	}
+	if _, err := r.db.ExecContext(ctx, `CREATE INDEX IF NOT EXISTS idx_cmdb_ci_audit_ci ON cmdb_ci_audit(ci_id)`); err != nil {
+		return fmt.Errorf("create ci audit index: %w", err)
+	}
+	if _, err := r.db.ExecContext(ctx, `CREATE INDEX IF NOT EXISTS idx_cmdb_ci_audit_trace ON cmdb_ci_audit(trace_id)`); err != nil {
+		return fmt.Errorf("create ci audit trace index: %w", err)
+	}
+	// CI 版本历史表（完整快照，用于版本追溯）。
+	if _, err := r.db.ExecContext(ctx, `
+		CREATE TABLE IF NOT EXISTS cmdb_ci_version (
+			id          TEXT PRIMARY KEY,
+			ci_id       TEXT NOT NULL REFERENCES cmdb_ci(id),
+			tenant_id   TEXT NOT NULL DEFAULT 'default',
+			version     INTEGER NOT NULL DEFAULT 1,
+			name        TEXT NOT NULL,
+			type_id     TEXT NOT NULL,
+			status      TEXT NOT NULL DEFAULT 'active',
+			attributes  JSONB NOT NULL DEFAULT '{}',
+			labels      JSONB NOT NULL DEFAULT '{}',
+			operator    TEXT NOT NULL DEFAULT '',
+			change_type TEXT NOT NULL DEFAULT 'update',
+			created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+		)`); err != nil {
+		return fmt.Errorf("create cmdb_ci_version table: %w", err)
+	}
+	if _, err := r.db.ExecContext(ctx, `CREATE INDEX IF NOT EXISTS idx_civ_ci ON cmdb_ci_version(ci_id, version)`); err != nil {
+		return fmt.Errorf("create ci version index: %w", err)
+	}
 	// P2 大块：统计/IDC/字段规则/消息订阅表
 	if err := r.migrateP2(ctx); err != nil {
 		return err
@@ -315,6 +356,25 @@ func (r *Repository) CreateCI(ctx context.Context, ci *model.CIModel, traceID st
 		string(ci.Status), attrsJSON, labelsJSON, int(ci.Channel), ci.CreatedAt, ci.UpdatedAt, metaJSON)
 	if err != nil {
 		return fmt.Errorf("insert ci: %w", err)
+	}
+
+	// 记录版本快照（create）
+	if ci.Attributes == nil {
+		ci.Attributes = map[string]any{}
+	}
+	if ci.Labels == nil {
+		ci.Labels = map[string]string{}
+	}
+	{
+		vAttrsJSON, _ := json.Marshal(ci.Attributes)
+		vLabelsJSON, _ := json.Marshal(ci.Labels)
+		if _, err := tx.ExecContext(ctx, `
+			INSERT INTO cmdb_ci_version (id, ci_id, tenant_id, version, name, type_id, status, attributes, labels, operator, change_type, created_at)
+			VALUES ($1, $2, $3, 1, $4, $5, $6, $7, $8, $9, 'create', $10)`,
+			uuid.New().String(), ci.ID, ci.TenantID, ci.Name, ci.TypeID, string(ci.Status),
+			vAttrsJSON, vLabelsJSON, traceID, ci.CreatedAt); err != nil {
+			return fmt.Errorf("insert ci version (create): %w", err)
+		}
 	}
 
 	payload, _ := json.Marshal(map[string]any{
@@ -517,6 +577,27 @@ func (r *Repository) UpdateCI(ctx context.Context, ci *model.CIModel, channel mo
 		}
 	}
 
+	// 记录版本快照（update）
+	{
+		var latestVer int
+		_ = tx.QueryRowContext(ctx, `SELECT COALESCE(MAX(version), 0) FROM cmdb_ci_version WHERE ci_id=$1`, ci.ID).Scan(&latestVer)
+		if ci.Attributes == nil {
+			ci.Attributes = map[string]any{}
+		}
+		if ci.Labels == nil {
+			ci.Labels = map[string]string{}
+		}
+		vAttrsJSON, _ := json.Marshal(ci.Attributes)
+		vLabelsJSON, _ := json.Marshal(ci.Labels)
+		if _, err := tx.ExecContext(ctx, `
+			INSERT INTO cmdb_ci_version (id, ci_id, tenant_id, version, name, type_id, status, attributes, labels, operator, change_type, created_at)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 'update', $11)`,
+			uuid.New().String(), ci.ID, ci.TenantID, latestVer+1, ci.Name, ci.TypeID, string(ci.Status),
+			vAttrsJSON, vLabelsJSON, traceID, ci.UpdatedAt); err != nil {
+			return fmt.Errorf("insert ci version (update): %w", err)
+		}
+	}
+
 	payload, _ := json.Marshal(map[string]any{
 		"ci_id":      ci.ID,
 		"change_log": changeLog,
@@ -643,6 +724,25 @@ func (r *Repository) DeleteCI(ctx context.Context, id, tenantID, traceID string)
 		return fmt.Errorf("begin tx: %w", err)
 	}
 	defer tx.Rollback()
+
+	// 在删除前记录最终版本快照（delete）
+	{
+		var name, typeID, status string
+		var attrsJSON, labelsJSON []byte
+		err := tx.QueryRowContext(ctx, `SELECT name, type_id, status, attributes, labels FROM cmdb_ci WHERE id=$1 AND tenant_id=$2`,
+			id, tenantID).Scan(&name, &typeID, &status, &attrsJSON, &labelsJSON)
+		if err == nil {
+			var latestVer int
+			_ = tx.QueryRowContext(ctx, `SELECT COALESCE(MAX(version), 0) FROM cmdb_ci_version WHERE ci_id=$1`, id).Scan(&latestVer)
+			if _, err := tx.ExecContext(ctx, `
+				INSERT INTO cmdb_ci_version (id, ci_id, tenant_id, version, name, type_id, status, attributes, labels, operator, change_type, created_at)
+				VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 'delete', NOW())`,
+				uuid.New().String(), id, tenantID, latestVer+1, name, typeID, status,
+				attrsJSON, labelsJSON, traceID); err != nil {
+				return fmt.Errorf("insert ci version (delete): %w", err)
+			}
+		}
+	}
 
 	_, err = tx.ExecContext(ctx, `DELETE FROM cmdb_ci_relation WHERE source_id=$1 AND tenant_id=$2`, id, tenantID)
 	if err != nil {

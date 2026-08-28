@@ -1,6 +1,6 @@
 # 后端镜像构建上下文 = 仓库根目录
 # 排除非源码/大体积目录, 保留 Go 编译所需全部源码(api/ internal/ pkg/ cmd/ ...)
-web-next/
+web/
 .git/
 .workbuddy/
 outputs/

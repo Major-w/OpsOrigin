@@ -312,6 +312,12 @@ func (s *Service) CreateArticle(ctx context.Context, a *Article) error {
 	if a.Author == "" {
 		a.Author = "system"
 	}
+	if a.ViewPermission == "" {
+		a.ViewPermission = "all"
+	}
+	if a.EditPermission == "" {
+		a.EditPermission = "owner"
+	}
 	return s.store.Create(ctx, a)
 }
 
@@ -475,6 +481,18 @@ func (s *Service) handleUpdate(w http.ResponseWriter, r *http.Request) {
 	a.Version = existing.Version // 版本递增由 store 内部处理
 	if a.Status == "" {
 		a.Status = existing.Status // 未显式传状态时不降级(如 published → draft)
+	}
+	// 权限字段: 未显式传时保留原值
+	if a.ViewPermission == "" {
+		a.ViewPermission = existing.ViewPermission
+	}
+	if a.EditPermission == "" {
+		a.EditPermission = existing.EditPermission
+	}
+	// ExpiresAt: 前端传 null/undefined 表示清除有效期; 传 existing 值表示保留
+	if a.ExpiresAt == nil && r.Body != nil {
+		// 如果请求体中没有 expires_at 字段, 保留原值
+		a.ExpiresAt = existing.ExpiresAt
 	}
 	s.store.Update(r.Context(), &a)
 	// 文章更新后, 通知关注者(关注更新)

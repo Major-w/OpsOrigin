@@ -143,11 +143,11 @@ services:
 
   frontend:
     build:
-      context: ../web-next
+      context: ../web
       dockerfile: Dockerfile.web
     restart: unless-stopped
     # 日志固定输出文件: stdout 重定向到挂载卷内 frontend.log
-    command: ["sh", "-c", "npm run dev -- -H 0.0.0.0 >> /var/log/opsorigin/frontend.log 2>&1"]
+    command: ["sh", "-c", "npm run dev -- --host 0.0.0.0 >> /var/log/opsorigin/frontend.log 2>&1"]
     deploy:
       resources:
         limits:
@@ -156,11 +156,11 @@ services:
     ports:
       - "3000:3000"
     environment:
-      # 容器内前端 next 代理转发到 core 服务名; 与 go run 本地直跑(默认 localhost:8080)解耦
+      # 容器内前端 vite 代理转发到 core 服务名; 与 go run 本地直跑(默认 localhost:8080)解耦
       BACKEND_URL: http://core:8080
     volumes:
       # 源码挂载热重载; node_modules 用匿名卷隔离, 避免被 bind 覆盖
-      - ../web-next:/app
+      - ../web:/app
       - /app/node_modules
       # 日志持久化: 固定目录(与 core 共用 opsorigin_logs)
       - opsorigin_logs:/var/log/opsorigin

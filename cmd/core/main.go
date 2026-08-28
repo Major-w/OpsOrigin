@@ -656,6 +656,10 @@ func main() {
 
 		notifySvc = notification.NewService(db)
 		server.RegisterService(notifySvc)
+		// 脚本执行渠道: 注入 script 服务作为脚本执行器
+		if scriptSvc != nil {
+			notifySvc.SetScriptExecutor(scriptSvc)
+		}
 
 		inboundStore = inboundconfig.NewStore(db)
 		server.RegisterService(inboundStore)

@@ -97,6 +97,34 @@ func (a *Agent) runScriptIsolated(task *TaskRequest, mode string) TaskResponse {
 	var cmd *exec.Cmd
 
 	switch scriptType {
+	case "python3":
+		interp, log, err := a.preparePythonVenv(ctx, dir, task.Requirements)
+		setupLog = log
+		if err != nil {
+			return TaskResponse{TaskID: task.TaskID, Success: false, ExitCode: -1,
+				Output: setupLog, Error: err.Error(),
+				Duration: time.Since(start).Milliseconds()}
+		}
+		scriptPath := filepath.Join(dir, "main.py")
+		if err := os.WriteFile(scriptPath, []byte(task.Script), 0o600); err != nil {
+			return TaskResponse{TaskID: task.TaskID, Success: false, ExitCode: -1,
+				Error: fmt.Sprintf("write script: %v", err)}
+		}
+		cmd = exec.CommandContext(ctx, interp, scriptPath)
+
+	case "python2":
+		python2Bin := lookupPython2()
+		if python2Bin == "" {
+			return TaskResponse{TaskID: task.TaskID, Success: false, ExitCode: -1,
+				Error: "python2 not found on this system"}
+		}
+		scriptPath := filepath.Join(dir, "main.py")
+		if err := os.WriteFile(scriptPath, []byte(task.Script), 0o600); err != nil {
+			return TaskResponse{TaskID: task.TaskID, Success: false, ExitCode: -1,
+				Error: fmt.Sprintf("write script: %v", err)}
+		}
+		cmd = exec.CommandContext(ctx, python2Bin, scriptPath)
+
 	case "python", "py":
 		interp, log, err := a.preparePythonVenv(ctx, dir, task.Requirements)
 		setupLog = log
@@ -231,6 +259,15 @@ func (a *Agent) preparePythonVenv(ctx context.Context, dir string, requirements 
 // lookupPython 优先 python3,回退 python。
 func lookupPython() string {
 	for _, name := range []string{"python3", "python"} {
+		if p, err := exec.LookPath(name); err == nil {
+			return p
+		}
+	}
+	return ""
+}
+
+func lookupPython2() string {
+	for _, name := range []string{"python2", "python2.7"} {
 		if p, err := exec.LookPath(name); err == nil {
 			return p
 		}

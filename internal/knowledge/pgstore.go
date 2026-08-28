@@ -62,6 +62,10 @@ func (s *pgStore) init(ctx context.Context) {
 	s.db.ExecContext(ctx, `ALTER TABLE knowledge_articles ADD COLUMN IF NOT EXISTS views INT DEFAULT 0`)
 	s.db.ExecContext(ctx, `ALTER TABLE knowledge_articles ADD COLUMN IF NOT EXISTS status TEXT DEFAULT 'draft'`)
 	s.db.ExecContext(ctx, `ALTER TABLE knowledge_articles ADD COLUMN IF NOT EXISTS version INT DEFAULT 1`)
+	// 知识有效期 + 查看/编辑权限(兼容老库补列)
+	s.db.ExecContext(ctx, `ALTER TABLE knowledge_articles ADD COLUMN IF NOT EXISTS expires_at TIMESTAMPTZ`)
+	s.db.ExecContext(ctx, `ALTER TABLE knowledge_articles ADD COLUMN IF NOT EXISTS view_permission TEXT DEFAULT 'all'`)
+	s.db.ExecContext(ctx, `ALTER TABLE knowledge_articles ADD COLUMN IF NOT EXISTS edit_permission TEXT DEFAULT 'owner'`)
 
 	// —— 尝试启用 pgvector 语义检索(可选,失败则降级为 ILIKE 关键词匹配) ——
 	if _, err := s.db.ExecContext(ctx, `CREATE EXTENSION IF NOT EXISTS vector`); err != nil {
@@ -229,9 +233,9 @@ func (s *pgStore) Create(ctx context.Context, a *Article) error {
 	b, _ := json.Marshal(a.Tags)
 	// 文章落库(块级向量在 syncChunks 中处理, 不再写 articles.embedding)
 	if _, err := s.db.ExecContext(ctx,
-		`INSERT INTO knowledge_articles(id,tenant_id,title,content,category,tags,status,version,created_at,updated_at)
-		 VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) ON CONFLICT(id) DO NOTHING`,
-		a.ID, a.TenantID, a.Title, a.Content, a.Category, b, a.Status, a.Version, a.CreatedAt, a.UpdatedAt); err != nil {
+		`INSERT INTO knowledge_articles(id,tenant_id,title,content,category,tags,status,version,expires_at,view_permission,edit_permission,created_at,updated_at)
+		 VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) ON CONFLICT(id) DO NOTHING`,
+		a.ID, a.TenantID, a.Title, a.Content, a.Category, b, a.Status, a.Version, a.ExpiresAt, a.ViewPermission, a.EditPermission, a.CreatedAt, a.UpdatedAt); err != nil {
 		return err
 	}
 	// 同步分块; 块向量缺失(embed 失败)时入异步重试队列补算
@@ -244,8 +248,8 @@ func (s *pgStore) Create(ctx context.Context, a *Article) error {
 func (s *pgStore) Get(ctx context.Context, id, tenantID string) (*Article, error) {
 	a := &Article{}
 	var tags []byte
-	err := s.db.QueryRowContext(ctx, `SELECT id,tenant_id,title,content,category,tags,views,status,version,created_at,updated_at FROM knowledge_articles WHERE id=$1 AND tenant_id=$2`, id, tenantID).
-		Scan(&a.ID, &a.TenantID, &a.Title, &a.Content, &a.Category, &tags, &a.Views, &a.Status, &a.Version, &a.CreatedAt, &a.UpdatedAt)
+	err := s.db.QueryRowContext(ctx, `SELECT id,tenant_id,title,content,category,tags,views,status,version,expires_at,view_permission,edit_permission,created_at,updated_at FROM knowledge_articles WHERE id=$1 AND tenant_id=$2`, id, tenantID).
+		Scan(&a.ID, &a.TenantID, &a.Title, &a.Content, &a.Category, &tags, &a.Views, &a.Status, &a.Version, &a.ExpiresAt, &a.ViewPermission, &a.EditPermission, &a.CreatedAt, &a.UpdatedAt)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -257,7 +261,7 @@ func (s *pgStore) Get(ctx context.Context, id, tenantID string) (*Article, error
 }
 
 func (s *pgStore) List(ctx context.Context, tenantID, category string) ([]*Article, error) {
-	q := `SELECT id,tenant_id,title,content,category,tags,views,status,version,created_at,updated_at FROM knowledge_articles WHERE tenant_id=$1`
+	q := `SELECT id,tenant_id,title,content,category,tags,views,status,version,expires_at,view_permission,edit_permission,created_at,updated_at FROM knowledge_articles WHERE tenant_id=$1`
 	args := []any{tenantID}
 	if category != "" {
 		q += ` AND category=$2`
@@ -273,7 +277,7 @@ func (s *pgStore) List(ctx context.Context, tenantID, category string) ([]*Artic
 	for rows.Next() {
 		a := &Article{}
 		var tags []byte
-		if err := rows.Scan(&a.ID, &a.TenantID, &a.Title, &a.Content, &a.Category, &tags, &a.Views, &a.Status, &a.Version, &a.CreatedAt, &a.UpdatedAt); err != nil {
+		if err := rows.Scan(&a.ID, &a.TenantID, &a.Title, &a.Content, &a.Category, &tags, &a.Views, &a.Status, &a.Version, &a.ExpiresAt, &a.ViewPermission, &a.EditPermission, &a.CreatedAt, &a.UpdatedAt); err != nil {
 			return nil, err
 		}
 		_ = json.Unmarshal(tags, &a.Tags)
@@ -304,8 +308,8 @@ func (s *pgStore) Update(ctx context.Context, a *Article) error {
 	}
 	b, _ := json.Marshal(a.Tags)
 	if _, err := s.db.ExecContext(ctx,
-		`UPDATE knowledge_articles SET title=$2,content=$3,category=$4,tags=$5,status=$6,version=$7,updated_at=$8 WHERE id=$1 AND tenant_id=$9`,
-		a.ID, a.Title, a.Content, a.Category, b, a.Status, a.Version, a.UpdatedAt, a.TenantID); err != nil {
+		`UPDATE knowledge_articles SET title=$2,content=$3,category=$4,tags=$5,status=$6,version=$7,expires_at=$8,view_permission=$9,edit_permission=$10,updated_at=$11 WHERE id=$1 AND tenant_id=$12`,
+		a.ID, a.Title, a.Content, a.Category, b, a.Status, a.Version, a.ExpiresAt, a.ViewPermission, a.EditPermission, a.UpdatedAt, a.TenantID); err != nil {
 		return err
 	}
 	// 同步分块; 块向量缺失时入异步重试队列补算

@@ -12,12 +12,12 @@
 - 禁裸 SQL 拼接：数据库访问统一走 store 层 + 参数化查询
 - 错误处理：不吞错误（不用 `_ = err` 丢弃可恢复错误），HTTP 层统一用 `pkg/httputil` 响应
 
-### 前端（Next.js / TypeScript）
+### 前端（Vite + React / TypeScript）
 
 - TypeScript 严格模式，避免 `any`（业务数据定义接口类型）
 - 组件化：单文件超过 400 行请拆分子组件
 - API 调用统一走 `src/lib/utils.ts` 的 `apiFetch`，不散落 fetch
-- 提交前通过：`npm run build`（含 `next build` + tsc）
+- 提交前通过：`npm run build`（含 `vite build` + tsc）
 
 ### 提交信息
 
@@ -31,7 +31,7 @@
 1. Fork 本仓库并 clone 到本地
 2. 新建分支：`git checkout -b feat/your-feature`
 3. 本地起依赖：`docker compose -f deploy/docker-compose.yml up -d postgres redis`（可选 dgraph）
-4. 后端：`go run ./cmd/core`；前端：`cd web-next && npm run dev`
+4. 后端：`go run ./cmd/core`；前端：`cd web && npm run dev`
 5. 完成开发后自测（见下），推送分支并提交 Pull Request
 6. PR 需通过 CI（lint / build / test / integration）方可合并
 
@@ -45,7 +45,7 @@ go test ./...
 make test-integration
 
 # 前端
-cd web-next
+cd web
 npm test
 npm run build
 ```

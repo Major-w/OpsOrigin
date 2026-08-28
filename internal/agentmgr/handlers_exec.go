@@ -268,6 +268,12 @@ func (s *Service) RunScriptOnAgent(ctx context.Context, agentID, tenantID, conte
 		ScriptRunOptions{Timeout: timeout, RunAs: runAs})
 }
 
+// RunScriptOnAgentWithType 与 RunScriptOnAgent 相同，但额外指定脚本类型(shell/python/bat)。
+func (s *Service) RunScriptOnAgentWithType(ctx context.Context, agentID, tenantID, content string, params map[string]string, timeout int, runAs string, scriptType string) (string, int, error) {
+	return s.RunScriptOnAgentWithOptions(ctx, agentID, tenantID, content, params,
+		ScriptRunOptions{Timeout: timeout, RunAs: runAs, ScriptType: scriptType})
+}
+
 // RunScriptOnAgentSandboxed 以沙箱模式把脚本下发到带沙箱标签的真实 Agent,
 // 由其在目标主机上创建真实隔离环境执行。实现 script.SandboxRunner。
 func (s *Service) RunScriptOnAgentSandboxed(ctx context.Context, agentID, tenantID, content string, params map[string]string, timeout int, scriptType string, requirements []string) (string, int, error) {

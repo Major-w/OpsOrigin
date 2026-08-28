@@ -3,7 +3,7 @@
 > 下一代 AI 原生全自动运维控制面（AIOps Control Plane）
 
 [![Go](https://img.shields.io/badge/Go-1.25+-00ADD8?logo=go&logoColor=white)](https://go.dev)
-[![Next.js](https://img.shields.io/badge/Next.js-14-000000?logo=nextdotjs&logoColor=white)](https://nextjs.org)
+[![Vite](https://img.shields.io/badge/Vite-6-646CFF?logo=vite&logoColor=white)](https://vitejs.dev)
 [![License](https://img.shields.io/badge/License-GPL--3.0-blue.svg)](LICENSE)
 [![CI](https://img.shields.io/github/actions/workflow/status/Major-w/OpsOrigin/ci.yml?branch=dev&label=CI)](https://github.com/Major-w/OpsOrigin/actions)
 
@@ -58,7 +58,7 @@ OpsOrigin 是面向企业 IT 运维的 **AI 原生控制面底座**：以 Go 高
 cp .env.example .env
 docker compose -f deploy/docker-compose.yml up -d postgres dgraph-zero dgraph-alpha redis
 go run ./cmd/core                       # 后端 :8080
-cd web-next && npm install && npm run dev   # 前端 :3000
+cd web && npm install && npm run dev   # 前端 :3000
 ```
 
 ### 构建与测试

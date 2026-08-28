@@ -42,6 +42,7 @@ func Senders() map[ChannelType]Sender {
 		ChannelWeCom:    &WeComSender{},
 		ChannelFeishu:   &FeishuSender{},
 		ChannelWebhook:  &WebhookSender{},
+		ChannelScript:   &ScriptSender{},
 	}
 }
 
@@ -264,6 +265,66 @@ func (s *WebhookSender) Send(ch *Channel, title, content string) error {
 		return fmt.Errorf("webhook returned %d", resp.StatusCode)
 	}
 	return nil
+}
+
+// ---------- ScriptSender (脚本执行) ----------
+
+// ScriptExecutor 是脚本执行器的接口,由外部注入（复用 automation/script.Service 的 Execute 方法）。
+type ScriptExecutor interface {
+	Execute(scriptID string, params map[string]string, timeout int, runAs, agentID, tenantID string) (output string, exitCode int, err error)
+}
+
+// ScriptSender 通过执行自动化脚本来投递通知。
+// 配置字段: script_id(必填), params(JSON 可选), timeout(秒,可选), agent_id(可选)。
+type ScriptSender struct {
+	executor ScriptExecutor
+}
+
+// SetExecutor 注入脚本执行器。
+func (s *ScriptSender) SetExecutor(exec ScriptExecutor) {
+	s.executor = exec
+}
+
+func (s *ScriptSender) RequiredFields() []FieldSpec {
+	return []FieldSpec{
+		{Name: "script_id", Label: "脚本", Placeholder: "从脚本库选择", Required: true},
+		{Name: "params", Label: "执行参数 (JSON)", Placeholder: `{"key":"value"}`, Required: false},
+		{Name: "timeout", Label: "超时 (秒)", Placeholder: "3600", Required: false},
+		{Name: "agent_id", Label: "目标 Agent ID (留空=本机)", Placeholder: "可选", Required: false},
+	}
+}
+
+func (s *ScriptSender) Validate(config map[string]string) error {
+	if config["script_id"] == "" {
+		return errors.New("script_id is required")
+	}
+	return nil
+}
+
+func (s *ScriptSender) Send(ch *Channel, title, content string) error {
+	if s.executor == nil {
+		return errors.New("script executor not configured")
+	}
+	scriptID := ch.Config["script_id"]
+	if scriptID == "" {
+		return errors.New("script_id not set in channel config")
+	}
+	timeout := 3600
+	if t := ch.Config["timeout"]; t != "" {
+		fmt.Sscanf(t, "%d", &timeout)
+	}
+	params := map[string]string{"title": title, "content": content}
+	if p := ch.Config["params"]; p != "" {
+		var extra map[string]string
+		if err := json.Unmarshal([]byte(p), &extra); err == nil {
+			for k, v := range extra {
+				params[k] = v
+			}
+		}
+	}
+	agentID := ch.Config["agent_id"]
+	_, _, err := s.executor.Execute(scriptID, params, timeout, "", agentID, "")
+	return err
 }
 
 // ---------- 辅助函数 ----------

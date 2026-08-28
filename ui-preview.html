@@ -1,0 +1,543 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>OpsOrigin UI Style Preview</title>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+/* ============================================================
+   方案 A：经典蓝 (Ant Design Pro)
+   ============================================================ */
+.theme-a:root,
+.theme-a {
+  --bg: #F7F8FA; --fg: #1D2129;
+  --card: #FFFFFF; --card-bd: #E5E6EB; --card-hover: #C9CDD4;
+  --primary: #2B5AED; --primary-fg: #FFFFFF;
+  --secondary: #F2F3F5; --secondary-fg: #4E5969;
+  --muted: #F2F3F5; --muted-fg: #86909C;
+  --accent-bg: #E8F3FF; --accent-fg: #2B5AED;
+  --destructive: #F53F3F; --warning: #FF7D00;
+  --border: #E5E6EB; --ring: rgba(43,90,237,0.3);
+  --sidebar-bg: #001529; --sidebar-bd: #0D2137; --sidebar-fg: #8B9EB5;
+  --sidebar-active-bg: rgba(43,90,237,0.15);
+  --table-header: #F2F3F5;
+  --radius: 6px;
+}
+
+/* ============================================================
+   方案 B：深邃暗色 (Datadog / Grafana)
+   ============================================================ */
+.theme-b:root,
+.theme-b {
+  --bg: #F8F9FB; --fg: #1A1D23;
+  --card: #FFFFFF; --card-bd: #E1E4EA; --card-hover: #C2C6D0;
+  --primary: #6C5CE7; --primary-fg: #FFFFFF;
+  --secondary: #F1F3F5; --secondary-fg: #5C6370;
+  --muted: #F1F3F5; --muted-fg: #8B92A0;
+  --accent-bg: #F0ECFF; --accent-fg: #6C5CE7;
+  --destructive: #E53E3E; --warning: #ECC94B;
+  --border: #E1E4EA; --ring: rgba(108,92,231,0.3);
+  --sidebar-bg: #1A1D23; --sidebar-bd: #2A2D35; --sidebar-fg: #8B92A0;
+  --sidebar-active-bg: rgba(108,92,231,0.12);
+  --table-header: #F1F3F5;
+  --radius: 8px;
+}
+
+/* ============================================================
+   方案 C：高密度 (AWS Console / GitHub)
+   ============================================================ */
+.theme-c:root,
+.theme-c {
+  --bg: #FFFFFF; --fg: #24292F;
+  --card: #FFFFFF; --card-bd: #D0D7DE; --card-hover: #AFB8C1;
+  --primary: #0969DA; --primary-fg: #FFFFFF;
+  --secondary: #F6F8FA; --secondary-fg: #57606A;
+  --muted: #F6F8FA; --muted-fg: #6E7781;
+  --accent-bg: #DDF4FF; --accent-fg: #0969DA;
+  --destructive: #CF222E; --warning: #9A6700;
+  --border: #D0D7DE; --ring: rgba(9,105,218,0.3);
+  --sidebar-bg: #F6F8FA; --sidebar-bd: #D0D7DE; --sidebar-fg: #57606A;
+  --sidebar-active-bg: #DDF4FF;
+  --table-header: #F6F8FA;
+  --radius: 4px;
+}
+
+/* ============================================================
+   当前样式 (Emerald Glassmorphism)
+   ============================================================ */
+.theme-current:root,
+.theme-current {
+  --bg: #FFFFFF; --fg: #1E293B;
+  --card: #FFFFFF; --card-bd: #E2E8F0; --card-hover: rgba(52,211,153,0.3);
+  --primary: #10B981; --primary-fg: #FFFFFF;
+  --secondary: #F1F5F9; --secondary-fg: #475569;
+  --muted: #F1F5F9; --muted-fg: #64748B;
+  --accent-bg: rgba(52,211,153,0.1); --accent-fg: #059669;
+  --destructive: #EF4444; --warning: #F59E0B;
+  --border: #E2E8F0; --ring: rgba(16,185,129,0.4);
+  --sidebar-bg: rgba(11,15,25,0.8); --sidebar-bd: rgba(255,255,255,0.04); --sidebar-fg: #94A3B8;
+  --sidebar-active-bg: rgba(52,211,153,0.1);
+  --table-header: #F1F5F9;
+  --radius: 12px;
+}
+
+/* ============================================================
+   通用样式
+   ============================================================ */
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { font-family: 'Inter', system-ui, sans-serif; background: var(--bg); color: var(--fg); }
+
+/* Switcher */
+.switcher {
+  position: fixed; top: 0; left: 0; right: 0; z-index: 100;
+  display: flex; align-items: center; gap: 8px;
+  padding: 10px 20px;
+  background: var(--card); border-bottom: 1px solid var(--border);
+  box-shadow: 0 1px 3px rgba(0,0,0,0.08);
+}
+.switcher label { font-size: 13px; font-weight: 600; color: var(--fg); margin-right: 4px; }
+.switcher button {
+  padding: 5px 14px; border-radius: 4px; border: 1px solid var(--border);
+  background: var(--secondary); color: var(--secondary-fg);
+  font-size: 12px; font-weight: 500; cursor: pointer; transition: all 0.15s;
+}
+.switcher button:hover { border-color: var(--primary); color: var(--primary); }
+.switcher button.active {
+  background: var(--primary); color: var(--primary-fg); border-color: var(--primary);
+}
+.switcher .dot {
+  width: 8px; height: 8px; border-radius: 50%; display: inline-block; margin-right: 5px;
+}
+.dot-a { background: #2B5AED; }
+.dot-b { background: #6C5CE7; }
+.dot-c { background: #0969DA; }
+.dot-cur { background: #10B981; }
+
+/* Layout */
+.layout { display: flex; height: 100vh; padding-top: 46px; }
+
+/* Sidebar */
+.sidebar {
+  width: 240px; flex-shrink: 0; background: var(--sidebar-bg);
+  border-right: 1px solid var(--sidebar-bd); display: flex; flex-direction: column;
+  overflow-y: auto;
+}
+.sidebar-logo {
+  height: 56px; display: flex; align-items: center; gap: 10px;
+  padding: 0 20px; border-bottom: 1px solid var(--sidebar-bd);
+}
+.sidebar-logo .icon {
+  width: 28px; height: 28px; border-radius: 6px; background: var(--primary);
+  display: flex; align-items: center; justify-content: center;
+  color: var(--primary-fg); font-size: 10px; font-weight: 700;
+}
+.sidebar-logo span { color: #fff; font-size: 14px; font-weight: 600; }
+.sidebar-logo small { color: var(--sidebar-fg); font-size: 10px; text-transform: uppercase; letter-spacing: 0.05em; }
+
+.sidebar-nav { flex: 1; padding: 12px 8px; }
+.nav-group-title {
+  font-size: 11px; font-weight: 600; color: var(--sidebar-fg);
+  text-transform: uppercase; letter-spacing: 0.06em;
+  padding: 8px 12px 4px; margin-top: 4px;
+}
+.nav-item {
+  display: flex; align-items: center; gap: 8px;
+  padding: 7px 12px; border-radius: var(--radius);
+  font-size: 13px; color: var(--sidebar-fg); cursor: pointer;
+  transition: all 0.15s; text-decoration: none;
+}
+.nav-item:hover { background: var(--sidebar-active-bg); color: #fff; }
+.nav-item.active {
+  background: var(--sidebar-active-bg); color: var(--primary); font-weight: 500;
+}
+.nav-item .nav-icon {
+  width: 16px; height: 16px; border-radius: 3px;
+  background: currentColor; opacity: 0.5;
+}
+.nav-item.active .nav-icon { opacity: 0.8; }
+.nav-item .badge {
+  margin-left: auto; font-size: 10px; padding: 1px 6px;
+  border-radius: 10px; background: var(--destructive); color: #fff;
+}
+
+/* Main */
+.main { flex: 1; overflow-y: auto; padding: 24px; }
+
+/* Header */
+.page-header {
+  display: flex; align-items: center; justify-content: space-between;
+  margin-bottom: 20px;
+}
+.page-header h1 { font-size: 20px; font-weight: 700; }
+.page-header .breadcrumb { font-size: 12px; color: var(--muted-fg); }
+
+/* Metric cards */
+.metrics { display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; margin-bottom: 24px; }
+.metric-card {
+  background: var(--card); border: 1px solid var(--card-bd);
+  border-radius: var(--radius); padding: 16px 20px;
+  transition: border-color 0.2s;
+}
+.metric-card:hover { border-color: var(--card-hover); }
+.metric-card .label { font-size: 12px; color: var(--muted-fg); margin-bottom: 6px; }
+.metric-card .value {
+  font-family: 'JetBrains Mono', monospace; font-size: 24px;
+  font-weight: 700; letter-spacing: -0.02em;
+}
+.metric-card .trend {
+  font-size: 11px; margin-top: 4px; font-weight: 500;
+}
+.metric-card .trend.up { color: #10B981; }
+.metric-card .trend.down { color: var(--destructive); }
+.metric-card .sparkline {
+  margin-top: 8px; height: 32px; background: var(--accent-bg);
+  border-radius: 4px; position: relative; overflow: hidden;
+}
+.metric-card .sparkline::after {
+  content: ''; position: absolute; bottom: 0; left: 0; right: 0;
+  height: 60%; background: var(--primary); opacity: 0.15;
+  border-radius: 4px 4px 0 0;
+}
+
+/* Cards grid */
+.cards-row { display: grid; grid-template-columns: 2fr 1fr; gap: 16px; margin-bottom: 24px; }
+.card {
+  background: var(--card); border: 1px solid var(--card-bd);
+  border-radius: var(--radius); overflow: hidden;
+}
+.card-header {
+  padding: 12px 16px; border-bottom: 1px solid var(--border);
+  display: flex; align-items: center; justify-content: space-between;
+}
+.card-header h3 { font-size: 14px; font-weight: 600; }
+.card-body { padding: 16px; }
+.card-body p { font-size: 13px; color: var(--muted-fg); line-height: 1.6; }
+
+/* Table */
+.table-wrap { overflow-x: auto; }
+table { width: 100%; border-collapse: collapse; font-size: 13px; }
+table th {
+  text-align: left; padding: 8px 12px; font-weight: 600;
+  font-size: 11px; text-transform: uppercase; letter-spacing: 0.04em;
+  color: var(--muted-fg); background: var(--table-header);
+  border-bottom: 1px solid var(--border);
+}
+table td {
+  padding: 10px 12px; border-bottom: 1px solid var(--border);
+  vertical-align: middle;
+}
+table tbody tr:hover { background: var(--secondary); }
+.status {
+  display: inline-flex; align-items: center; gap: 5px;
+  font-size: 12px; font-weight: 500; padding: 2px 8px;
+  border-radius: 10px;
+}
+.status.ok { background: #DCFCE7; color: #166534; }
+.status.warn { background: #FEF3C7; color: #92400E; }
+.status.err { background: #FEE2E2; color: #991B1B; }
+.status .dot { width: 6px; height: 6px; border-radius: 50%; }
+.status.ok .dot { background: #22C55E; }
+.status.warn .dot { background: #F59E0B; }
+.status.err .dot { background: #EF4444; }
+
+/* Buttons */
+.btn {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 6px 14px; border-radius: var(--radius);
+  font-size: 13px; font-weight: 500; cursor: pointer;
+  border: 1px solid transparent; transition: all 0.15s;
+}
+.btn-primary { background: var(--primary); color: var(--primary-fg); }
+.btn-primary:hover { opacity: 0.9; }
+.btn-secondary { background: var(--secondary); color: var(--secondary-fg); border-color: var(--border); }
+.btn-secondary:hover { border-color: var(--primary); color: var(--primary); }
+.btn-ghost { background: transparent; color: var(--muted-fg); }
+.btn-ghost:hover { background: var(--secondary); color: var(--fg); }
+
+/* Alert bar */
+.alert-bar {
+  display: flex; align-items: center; gap: 10px;
+  padding: 10px 16px; border-radius: var(--radius);
+  font-size: 13px; margin-bottom: 16px;
+}
+.alert-bar.info { background: var(--accent-bg); color: var(--accent-fg); border: 1px solid var(--accent-fg); border-opacity: 0.2; }
+.alert-bar.warn { background: #FEF3C7; color: #92400E; border: 1px solid #F59E0B; }
+.alert-bar .alert-icon { font-size: 16px; }
+
+/* Current theme extra effects */
+.theme-current .sidebar { backdrop-filter: blur(24px); -webkit-backdrop-filter: blur(24px); }
+.theme-current .sidebar-logo { backdrop-filter: blur(24px); }
+.theme-current .card { box-shadow: 0 1px 3px rgba(0,0,0,0.08), 0 1px 2px rgba(0,0,0,0.06); }
+.theme-current .metric-card { box-shadow: 0 1px 3px rgba(0,0,0,0.08), 0 1px 2px rgba(0,0,0,0.06); }
+.theme-current .nav-item.active { border: 1px solid rgba(52,211,153,0.2); }
+.theme-current .sidebar-logo .icon { animation: breathe 3s ease-in-out infinite; }
+@keyframes breathe {
+  0%, 100% { opacity: 0.9; }
+  50% { opacity: 0.7; transform: scale(1.03); }
+}
+.theme-current .metric-card .value { color: var(--primary); }
+
+/* Section label */
+.section-label {
+  font-size: 11px; font-weight: 600; color: var(--muted-fg);
+  text-transform: uppercase; letter-spacing: 0.06em;
+  margin-bottom: 10px; margin-top: 8px;
+}
+</style>
+</head>
+<body class="theme-current" id="app">
+
+<!-- Style Switcher -->
+<div class="switcher">
+  <label>切换风格：</label>
+  <button class="active" onclick="switchTheme('current', this)"><span class="dot dot-cur"></span>当前 (Emerald)</button>
+  <button onclick="switchTheme('a', this)"><span class="dot dot-a"></span>A. 经典蓝</button>
+  <button onclick="switchTheme('b', this)"><span class="dot dot-b"></span>B. 深邃紫</button>
+  <button onclick="switchTheme('c', this)"><span class="dot dot-c"></span>C. 高密度</button>
+</div>
+
+<div class="layout">
+  <!-- Sidebar -->
+  <aside class="sidebar">
+    <div class="sidebar-logo">
+      <div class="icon">ON</div>
+      <div>
+        <span>OpsOrigin</span><br>
+        <small>Control Plane</small>
+      </div>
+    </div>
+    <nav class="sidebar-nav">
+      <div class="nav-group-title">概览</div>
+      <a class="nav-item active"><div class="nav-icon"></div>仪表盘</a>
+      <a class="nav-item"><div class="nav-icon"></div>报表中心</a>
+
+      <div class="nav-group-title">ITSM</div>
+      <a class="nav-item"><div class="nav-icon"></div>服务总览</a>
+      <a class="nav-item"><div class="nav-icon"></div>工单列表 <span class="badge">12</span></a>
+      <a class="nav-item"><div class="nav-icon"></div>变更日历</a>
+      <a class="nav-item"><div class="nav-icon"></div>SLA 管理</a>
+
+      <div class="nav-group-title">CMDB</div>
+      <a class="nav-item"><div class="nav-icon"></div>实例管理</a>
+      <a class="nav-item"><div class="nav-icon"></div>拓扑可视化</a>
+      <a class="nav-item"><div class="nav-icon"></div>数据质量</a>
+
+      <div class="nav-group-title">监控中心</div>
+      <a class="nav-item"><div class="nav-icon"></div>监控总览</a>
+      <a class="nav-item"><div class="nav-icon"></div>告警中心 <span class="badge">3</span></a>
+      <a class="nav-item"><div class="nav-icon"></div>可观测全景</a>
+
+      <div class="nav-group-title">系统管理</div>
+      <a class="nav-item"><div class="nav-icon"></div>用户管理</a>
+      <a class="nav-item"><div class="nav-icon"></div>审计日志</a>
+    </nav>
+  </aside>
+
+  <!-- Main Content -->
+  <main class="main">
+    <div class="page-header">
+      <div>
+        <div class="breadcrumb">首页 / 仪表盘</div>
+        <h1>运维总览</h1>
+      </div>
+      <div style="display:flex;gap:8px;">
+        <button class="btn btn-secondary">导出报表</button>
+        <button class="btn btn-primary">+ 新建工单</button>
+      </div>
+    </div>
+
+    <!-- Alert -->
+    <div class="alert-bar info">
+      <span class="alert-icon">ℹ</span>
+      <span>系统已更新至 v1.2.0，新增 AI 智能告警降噪功能。</span>
+    </div>
+
+    <!-- Metrics -->
+    <div class="metrics">
+      <div class="metric-card">
+        <div class="label">活跃工单</div>
+        <div class="value">128</div>
+        <div class="trend up">↑ 12% 较昨日</div>
+        <div class="sparkline"></div>
+      </div>
+      <div class="metric-card">
+        <div class="label">SLA 达标率</div>
+        <div class="value">96.4%</div>
+        <div class="trend up">↑ 2.1% 较上周</div>
+        <div class="sparkline"></div>
+      </div>
+      <div class="metric-card">
+        <div class="label">CMDB 覆盖率</div>
+        <div class="value">89.2%</div>
+        <div class="trend down">↓ 0.3% 较上月</div>
+        <div class="sparkline"></div>
+      </div>
+      <div class="metric-card">
+        <div class="label">告警数 (24h)</div>
+        <div class="value">342</div>
+        <div class="trend down">↓ 18% 较昨日</div>
+        <div class="sparkline"></div>
+      </div>
+    </div>
+
+    <!-- Cards Row -->
+    <div class="cards-row">
+      <div class="card">
+        <div class="card-header">
+          <h3>最近工单</h3>
+          <button class="btn btn-ghost">查看全部</button>
+        </div>
+        <div class="card-body" style="padding:0;">
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>工单号</th>
+                  <th>标题</th>
+                  <th>状态</th>
+                  <th>优先级</th>
+                  <th>负责人</th>
+                  <th>更新时间</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td style="font-family:'JetBrains Mono',monospace;font-size:12px;color:var(--accent-fg)">#ITSM-2847</td>
+                  <td>数据库主从切换异常</td>
+                  <td><span class="status err"><span class="dot"></span>处理中</span></td>
+                  <td style="color:var(--destructive);font-weight:600;">P1</td>
+                  <td>张工</td>
+                  <td style="color:var(--muted-fg);font-size:12px;">5 分钟前</td>
+                </tr>
+                <tr>
+                  <td style="font-family:'JetBrains Mono',monospace;font-size:12px;color:var(--accent-fg)">#ITSM-2846</td>
+                  <td>nginx 配置变更申请</td>
+                  <td><span class="status warn"><span class="dot"></span>待审批</span></td>
+                  <td style="color:var(--warning);font-weight:600;">P2</td>
+                  <td>李工</td>
+                  <td style="color:var(--muted-fg);font-size:12px;">23 分钟前</td>
+                </tr>
+                <tr>
+                  <td style="font-family:'JetBrains Mono',monospace;font-size:12px;color:var(--accent-fg)">#ITSM-2845</td>
+                  <td>新服务器上架申请</td>
+                  <td><span class="status ok"><span class="dot"></span>已完成</span></td>
+                  <td style="font-weight:600;">P3</td>
+                  <td>王工</td>
+                  <td style="color:var(--muted-fg);font-size:12px;">1 小时前</td>
+                </tr>
+                <tr>
+                  <td style="font-family:'JetBrains Mono',monospace;font-size:12px;color:var(--accent-fg)">#ITSM-2844</td>
+                  <td>监控告警规则调整</td>
+                  <td><span class="status ok"><span class="dot"></span>已完成</span></td>
+                  <td style="font-weight:600;">P3</td>
+                  <td>赵工</td>
+                  <td style="color:var(--muted-fg);font-size:12px;">2 小时前</td>
+                </tr>
+                <tr>
+                  <td style="font-family:'JetBrains Mono',monospace;font-size:12px;color:var(--accent-fg)">#ITSM-2843</td>
+                  <td>Redis 集群扩容方案评审</td>
+                  <td><span class="status ok"><span class="dot"></span>已完成</span></td>
+                  <td style="font-weight:600;">P3</td>
+                  <td>孙工</td>
+                  <td style="color:var(--muted-fg);font-size:12px;">3 小时前</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-header">
+          <h3>系统状态</h3>
+        </div>
+        <div class="card-body">
+          <div style="display:flex;flex-direction:column;gap:14px;">
+            <div>
+              <div style="display:flex;justify-content:space-between;font-size:13px;margin-bottom:4px;">
+                <span>CPU 使用率</span>
+                <span style="font-family:'JetBrains Mono',monospace;font-weight:600;">67%</span>
+              </div>
+              <div style="height:6px;background:var(--secondary);border-radius:3px;overflow:hidden;">
+                <div style="height:100%;width:67%;background:var(--primary);border-radius:3px;"></div>
+              </div>
+            </div>
+            <div>
+              <div style="display:flex;justify-content:space-between;font-size:13px;margin-bottom:4px;">
+                <span>内存使用率</span>
+                <span style="font-family:'JetBrains Mono',monospace;font-weight:600;">82%</span>
+              </div>
+              <div style="height:6px;background:var(--secondary);border-radius:3px;overflow:hidden;">
+                <div style="height:100%;width:82%;background:var(--warning);border-radius:3px;"></div>
+              </div>
+            </div>
+            <div>
+              <div style="display:flex;justify-content:space-between;font-size:13px;margin-bottom:4px;">
+                <span>磁盘使用率</span>
+                <span style="font-family:'JetBrains Mono',monospace;font-weight:600;">45%</span>
+              </div>
+              <div style="height:6px;background:var(--secondary);border-radius:3px;overflow:hidden;">
+                <div style="height:100%;width:45%;background:#22C55E;border-radius:3px;"></div>
+              </div>
+            </div>
+            <div>
+              <div style="display:flex;justify-content:space-between;font-size:13px;margin-bottom:4px;">
+                <span>网络带宽</span>
+                <span style="font-family:'JetBrains Mono',monospace;font-weight:600;">34%</span>
+              </div>
+              <div style="height:6px;background:var(--secondary);border-radius:3px;overflow:hidden;">
+                <div style="height:100%;width:34%;background:#22C55E;border-radius:3px;"></div>
+              </div>
+            </div>
+            <div style="border-top:1px solid var(--border);padding-top:12px;margin-top:4px;">
+              <div style="display:flex;justify-content:space-between;font-size:12px;color:var(--muted-fg);">
+                <span>节点总数</span>
+                <span style="font-family:'JetBrains Mono',monospace;color:var(--fg);font-weight:600;">24</span>
+              </div>
+              <div style="display:flex;justify-content:space-between;font-size:12px;color:var(--muted-fg);margin-top:6px;">
+                <span>在线</span>
+                <span style="font-family:'JetBrains Mono',monospace;color:#22C55E;font-weight:600;">22</span>
+              </div>
+              <div style="display:flex;justify-content:space-between;font-size:12px;color:var(--muted-fg);margin-top:6px;">
+                <span>离线</span>
+                <span style="font-family:'JetBrains Mono',monospace;color:var(--destructive);font-weight:600;">2</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Buttons showcase -->
+    <div class="section-label">按钮样式</div>
+    <div style="display:flex;gap:10px;margin-bottom:24px;align-items:center;">
+      <button class="btn btn-primary">主要操作</button>
+      <button class="btn btn-secondary">次要操作</button>
+      <button class="btn btn-ghost">文本按钮</button>
+      <button class="btn btn-primary" style="background:var(--destructive);">危险操作</button>
+      <button class="btn btn-secondary" disabled style="opacity:0.5;cursor:not-allowed;">禁用状态</button>
+    </div>
+
+    <!-- Tag showcase -->
+    <div class="section-label">状态标签</div>
+    <div style="display:flex;gap:10px;margin-bottom:24px;align-items:center;">
+      <span class="status ok"><span class="dot"></span>运行中</span>
+      <span class="status warn"><span class="dot"></span>告警</span>
+      <span class="status err"><span class="dot"></span>故障</span>
+      <span style="font-size:12px;padding:2px 10px;border-radius:10px;background:var(--secondary);color:var(--secondary-fg);font-weight:500;">已归档</span>
+      <span style="font-size:12px;padding:2px 10px;border-radius:10px;background:var(--accent-bg);color:var(--accent-fg);font-weight:500;">进行中</span>
+    </div>
+  </main>
+</div>
+
+<script>
+function switchTheme(theme, btn) {
+  const app = document.getElementById('app');
+  app.className = 'theme-' + theme;
+  document.querySelectorAll('.switcher button').forEach(b => b.classList.remove('active'));
+  btn.classList.add('active');
+}
+</script>
+</body>
+</html>

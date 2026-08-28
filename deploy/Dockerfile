@@ -1,7 +1,7 @@
 FROM golang:1.25-alpine AS builder
 
 WORKDIR /app
-# 复制全部仓库源码; 由仓库根 .dockerignore 排除 web-next/.git/.run/二进制等非源码
+# 复制全部仓库源码; 由仓库根 .dockerignore 排除 web/.git/.run/二进制等非源码
 COPY . .
 ENV GOPROXY=https://goproxy.cn,direct
 ENV GOSUMDB=sum.golang.org
