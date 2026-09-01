@@ -1,13 +1,13 @@
 
-import { useEffect, useState, useMemo } from 'react'
+import { useEffect, useState, useMemo, useRef } from 'react'
 import { useDeployStore, type ReleaseHistory, type ReleaseStatus } from '@/stores/deploy'
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
-import { Button, Badge, Modal, Tag, Popconfirm, message } from 'antd'
-import { DataList, type ViewMode, type Column, type FilterOption } from '@/components/ui/data-list'
+import { ProTable, type ProColumns, type ActionType } from '@ant-design/pro-components'
 import { StatisticCardGroup, StatisticCard } from '@/components/ui/statistic-card'
-import { History, RotateCcw, Clock, CheckCircle, XCircle, AlertCircle, Loader2 } from 'lucide-react'
+import { Button, Modal, Tag, message } from 'antd'
+import { History, RotateCcw, Clock, CheckCircle, XCircle, Loader2 } from 'lucide-react'
 import { cn, formatTime } from '@/lib/utils'
 import { getMessage } from '@/lib/message'
+
 const STATUS_META: Record<ReleaseStatus, { label: string; color: string; icon: any }> = {
   draft: { label: '草稿', color: 'bg-slate-500/10 text-slate-600 border-slate-500/20', icon: History },
   pending_approval: { label: '待审批', color: 'bg-amber-500/10 text-amber-600 border-amber-500/20', icon: Clock },
@@ -29,7 +29,7 @@ const ENV_COLORS: Record<string, string> = {
 
 export default function HistoryPage() {
   const { history, loading, fetchHistory, rollbackRelease } = useDeployStore()
-  const [viewMode, setViewMode] = useState<ViewMode>('list')
+  const actionRef = useRef<ActionType>()
   const [detail, setDetail] = useState<ReleaseHistory | null>(null)
   const [confirmRollback, setConfirmRollback] = useState<ReleaseHistory | null>(null)
 
@@ -42,84 +42,91 @@ export default function HistoryPage() {
     prod: history.filter(h => h.env === 'prod').length,
   }), [history])
 
-  const columns: Column<ReleaseHistory>[] = [
-    { key: 'app_name', label: '应用', sortable: true, filterable: true },
-    { key: 'version', label: '版本', sortable: true },
-    { key: 'env', label: '环境', sortable: true, filterable: true },
-    { key: 'status', label: '状态', sortable: true, filterable: true },
-    { key: 'operator', label: '发布人', filterable: true },
-    { key: 'created_at', label: '发布时间', sortable: true },
-  ]
-
-  const filters: FilterOption[] = [
-    { key: 'env', label: '环境', type: 'select', options: Object.entries(ENV_LABELS).map(([v, l]) => ({ label: l, value: v })) },
-    { key: 'status', label: '状态', type: 'select', options: [{ label: '已成功', value: 'succeeded' }, { label: '已回滚', value: 'rolled_back' }, { label: '已失败', value: 'failed' }] },
-  ]
-
-  const renderListItem = (h: ReleaseHistory) => {
-    const sm = STATUS_META[h.status]
-    const SIcon = sm.icon
-    return (
-      <>
-        <div className="flex items-center gap-2 min-w-0 flex-1">
-          <SIcon className={cn('h-4 w-4 shrink-0', sm.color.split(' ')[1])} />
-          <span className="text-sm font-medium truncate cursor-pointer hover:text-blue-500" onClick={(e) => { e.stopPropagation(); setDetail(h) }}>{h.app_name}</span>
-        </div>
-        <div className="w-24 shrink-0 text-xs font-mono text-muted-foreground">{h.version}</div>
-        <div className="w-16 shrink-0"><span className={cn("text-[10px] px-1.5 py-0.5 rounded border", ENV_COLORS[h.env])}>{ENV_LABELS[h.env]}</span></div>
-        <div className="w-20 shrink-0"><Tag className={cn("text-[10px] px-1.5 py-0", sm.color)}>{sm.label}</Tag></div>
-        <div className="w-20 shrink-0 text-xs text-muted-foreground hidden lg:block">{h.operator}</div>
-        <div className="w-32 shrink-0 text-xs text-muted-foreground/70 hidden md:block">{formatTime(h.created_at)}</div>
-        <div className="w-20 shrink-0 flex justify-end gap-1">
-          {h.status === 'succeeded' && (
-            <Button type="text" size="middle" className="text-orange-500" onClick={(e) => { e.stopPropagation(); setConfirmRollback(h) }} title="回滚">
-              <RotateCcw className="h-3 w-3" />
-            </Button>
-          )}
-        </div>
-      </>
-    )
-  }
-
-  const renderGridItem = (h: ReleaseHistory) => {
-    const sm = STATUS_META[h.status]
-    const SIcon = sm.icon
-    return (
-      <Card key={h.id} className="hover:border-blue-500/20 transition-colors cursor-pointer" onClick={() => setDetail(h)}>
-        <CardHeader className="py-3 pb-2">
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-2 min-w-0">
-              <SIcon className={cn('h-4 w-4 shrink-0', sm.color.split(' ')[1])} />
-              <span className="text-sm font-medium truncate">{h.app_name}</span>
-            </div>
-            <Tag className={cn("text-[10px]", sm.color)}>{sm.label}</Tag>
-          </div>
-        </CardHeader>
-        <CardContent className="space-y-2 pt-0">
-          <div className="flex items-center gap-2 text-xs">
-            <span className="font-mono text-muted-foreground">{h.version}</span>
-            <span className={cn("text-[10px] px-1.5 py-0.5 rounded border", ENV_COLORS[h.env])}>{ENV_LABELS[h.env]}</span>
-          </div>
-          <div className="flex items-center justify-between text-[10px] text-muted-foreground/70 pt-1 border-t">
-            <span>{h.operator}</span>
-            <span>{formatTime(h.created_at)}</span>
-          </div>
-          {h.status === 'succeeded' && (
-            <Button size="middle" className="w-full h-6 text-xs text-orange-500" onClick={(e) => { e.stopPropagation(); setConfirmRollback(h) }}>
-              <RotateCcw className="h-3 w-3 mr-1" />回滚到此版本
-            </Button>
-          )}
-        </CardContent>
-      </Card>
-    )
-  }
-
   const handleRollback = async () => {
     if (!confirmRollback) return
     if (!confirmRollback.release_id) { getMessage().error('该历史记录缺少关联发布单，无法回滚'); return }
     const ok = await rollbackRelease(confirmRollback.release_id)
     if (ok) setConfirmRollback(null)
   }
+
+  const columns: ProColumns<ReleaseHistory>[] = [
+    {
+      title: '应用',
+      dataIndex: 'app_name',
+      fixed: 'left',
+      width: 200,
+      render: (_, h) => {
+        const sm = STATUS_META[h.status]
+        const SIcon = sm.icon
+        return (
+          <div className="flex items-center gap-2 min-w-0">
+            <SIcon className={cn('h-4 w-4 shrink-0', sm.color.split(' ')[1])} />
+            <span className="text-sm font-medium truncate cursor-pointer hover:text-blue-500" onClick={(e) => { e.stopPropagation(); setDetail(h) }}>{h.app_name}</span>
+          </div>
+        )
+      },
+      fieldProps: { placeholder: '搜索应用名称' },
+    },
+    {
+      title: '版本',
+      dataIndex: 'version',
+      width: 120,
+      search: false,
+      render: (_, h) => <span className="text-xs font-mono text-muted-foreground">{h.version}</span>,
+    },
+    {
+      title: '环境',
+      dataIndex: 'env',
+      width: 80,
+      filters: Object.entries(ENV_LABELS).map(([v, l]) => ({ text: l, value: v })),
+      onFilter: (value, record) => record.env === value,
+      render: (_, h) => <span className={cn("text-[10px] px-1.5 py-0.5 rounded border", ENV_COLORS[h.env])}>{ENV_LABELS[h.env]}</span>,
+    },
+    {
+      title: '状态',
+      dataIndex: 'status',
+      width: 100,
+      filters: Object.entries(STATUS_META).map(([v, m]) => ({ text: m.label, value: v })),
+      onFilter: (value, record) => record.status === value,
+      render: (_, h) => {
+        const sm = STATUS_META[h.status]
+        return <Tag className={cn("text-[10px] px-1.5 py-0", sm.color)}>{sm.label}</Tag>
+      },
+    },
+    {
+      title: '发布人',
+      dataIndex: 'operator',
+      width: 100,
+      search: false,
+      render: (_, h) => <span className="text-xs text-muted-foreground hidden lg:block">{h.operator}</span>,
+    },
+    {
+      title: '发布时间',
+      dataIndex: 'created_at',
+      width: 160,
+      search: false,
+      sorter: (a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime(),
+      render: (_, h) => <span className="text-xs text-muted-foreground/70 hidden md:block">{formatTime(h.created_at)}</span>,
+    },
+    {
+      title: '操作',
+      valueType: 'option',
+      fixed: 'right',
+      width: 60,
+      render: (_, h) => [
+        h.status === 'succeeded' && (
+          <button
+            key="rollback"
+            className="h-6 w-6 inline-flex items-center justify-center rounded text-orange-500 hover:bg-orange-500/10 cursor-pointer"
+            onClick={(e) => { e.stopPropagation(); setConfirmRollback(h) }}
+            title="回滚"
+          >
+            <RotateCcw className="h-3 w-3" />
+          </button>
+        ),
+      ],
+    },
+  ]
 
   return (
     <div className="p-6 space-y-4">
@@ -137,17 +144,16 @@ export default function HistoryPage() {
         <StatisticCard title="生产发布" value={stats.prod} icon={<Clock className="h-3 w-3" />} className="text-red-500" />
       </StatisticCardGroup>
 
-      <DataList
-        data={history}
-        loading={loading}
+      <ProTable<ReleaseHistory>
+        actionRef={actionRef}
         columns={columns}
-        viewMode={viewMode}
-        filters={filters}
-        listView={renderListItem}
-        gridView={renderGridItem}
-        emptyMessage="暂无发布历史"
-        searchPlaceholder="搜索应用/版本/发布人..."
-        onRefresh={() => fetchHistory()}
+        dataSource={history}
+        loading={loading}
+        rowKey="id"
+        search={{ labelWidth: 'auto', defaultCollapsed: false }}
+        pagination={{ defaultPageSize: 20, showSizeChanger: true, showTotal: (total) => `共 ${total} 条` }}
+        options={{ density: true, fullScreen: true, reload: () => fetchHistory(), setting: true }}
+        headerTitle={false}
       />
 
       <Modal title={detail?.app_name} open={!!detail} onCancel={() => setDetail(null)} footer={null} width={640}>

@@ -1,14 +1,14 @@
 
-import { useEffect, useState, useMemo } from 'react'
+import { useEffect, useState, useMemo, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useDeployStore, type DeployApp, type AppType, type DeployEnv } from '@/stores/deploy'
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
-import { Button, Badge, Modal, Input, Select, Tag, Popconfirm, message } from 'antd'
-import { DataList, type ViewMode, type Column, type FilterOption, type BulkAction } from '@/components/ui/data-list'
+import { ProTable, type ProColumns, type ActionType } from '@ant-design/pro-components'
 import { StatisticCardGroup, StatisticCard } from '@/components/ui/statistic-card'
-import { AppWindow, Plus, Trash2, Pencil, GitBranch, Code2, Server, Box, Container, FileType, Loader2, Power, FileText } from 'lucide-react'
+import { Button, Modal, Input, Select, Tag, Popconfirm, message } from 'antd'
+import { AppWindow, Plus, Trash2, Pencil, GitBranch, Code2, Server, Box, Container, FileType, Power, FileText } from 'lucide-react'
 import { cn, formatTime } from '@/lib/utils'
 import { getMessage } from '@/lib/message'
+
 const APP_TYPES: { value: AppType; label: string; icon: any; color: string }[] = [
   { value: 'java', label: 'Java', icon: Box, color: 'text-orange-500' },
   { value: 'go', label: 'Go', icon: Server, color: 'text-cyan-500' },
@@ -38,10 +38,11 @@ const ENV_COLORS: Record<string, string> = {
 export default function AppsPage() {
   const navigate = useNavigate()
   const { apps, loading, fetchApps, deleteApp, createApp } = useDeployStore()
-  const [viewMode, setViewMode] = useState<ViewMode>('list')
+  const actionRef = useRef<ActionType>()
   const [confirmDelete, setConfirmDelete] = useState<DeployApp | null>(null)
   const [createOpen, setCreateOpen] = useState(false)
   const [form, setForm] = useState({ name: '', code: '', type: 'java' as AppType, repo_url: '', branch: 'main', build_cmd: '', description: '', owner: '', envs: ['dev'] as DeployEnv[] })
+  const [selectedRowKeys, setSelectedRowKeys] = useState<React.Key[]>([])
 
   useEffect(() => { fetchApps() }, [])
 
@@ -55,28 +56,6 @@ export default function AppsPage() {
 
   const typeMeta = (t: string) => APP_TYPES.find(at => at.value === t)
 
-  const columns: Column<DeployApp>[] = [
-    { key: 'name', label: '应用名称', sortable: true, filterable: true },
-    { key: 'type', label: '类型', sortable: true, filterable: true },
-    { key: 'envs', label: '环境' },
-    { key: 'prod_version', label: '生产版本', sortable: true },
-    { key: 'owner', label: '负责人', filterable: true },
-    { key: 'updated_at', label: '更新时间', sortable: true },
-  ]
-
-  const filters: FilterOption[] = [
-    { key: 'type', label: '类型', type: 'select', options: APP_TYPES.map(t => ({ label: t.label, value: t.value })) },
-    { key: 'status', label: '状态', type: 'select', options: [{ label: '启用', value: 'enabled' }, { label: '禁用', value: 'disabled' }] },
-  ]
-
-  const bulkActions: BulkAction[] = [
-    {
-      key: 'delete', label: '批量删除', icon: <Trash2 className="h-3 w-3 mr-1" />, variant: 'destructive',
-      confirmMessage: '确认删除选中的应用？关联的发布单将保留但无法再发布。',
-      onClick: async (items) => { for (const item of items) { await deleteApp((item as DeployApp).id) } },
-    },
-  ]
-
   const toggleEnv = (env: DeployEnv) => {
     setForm(f => ({ ...f, envs: f.envs.includes(env) ? f.envs.filter(e => e !== env) : [...f.envs, env] }))
   }
@@ -87,89 +66,109 @@ export default function AppsPage() {
     if (id) { setCreateOpen(false); setForm({ name: '', code: '', type: 'java', repo_url: '', branch: 'main', build_cmd: '', description: '', owner: '', envs: ['dev'] as DeployEnv[] }) }
   }
 
-  const renderListItem = (app: DeployApp) => {
-    const tm = typeMeta(app.type)
-    const Icon = tm?.icon || AppWindow
-    return (
-      <>
-        <div className="flex items-center gap-2 min-w-0 flex-1">
-          <Icon className={cn('h-4 w-4 shrink-0', tm?.color)} />
-          <span className="text-sm font-medium truncate cursor-pointer hover:text-blue-500"
-            onClick={(e) => { e.stopPropagation(); navigate(`/deploy/apps/${app.id}`) }}>
-            {app.name}
-          </span>
-          <span className="text-[10px] text-muted-foreground/60 font-mono">{app.code}</span>
-        </div>
-        <div className="w-20 shrink-0">
-          <Tag className={cn("text-[10px] px-1.5 py-0", TYPE_BADGE[app.type])}>{tm?.label || app.type}</Tag>
-        </div>
-        <div className="w-32 shrink-0 flex gap-1">
-          {app.envs.map(env => (
-            <span key={env} className={cn("text-[10px] px-1.5 py-0.5 rounded border", ENV_COLORS[env])} title={ENV_LABELS[env]}>{ENV_LABELS[env]}</span>
-          ))}
-        </div>
-        <div className="w-20 shrink-0 text-xs font-mono text-muted-foreground">
-          {app.current_versions.prod ? app.current_versions.prod : <span className="text-muted-foreground/40">-</span>}
-        </div>
-        <div className="w-16 shrink-0 text-xs text-muted-foreground">{app.owner || '-'}</div>
-        <div className="w-28 shrink-0 text-xs text-muted-foreground/70 hidden md:block">{formatTime(app.updated_at)}</div>
-        <div className="w-28 shrink-0 flex justify-end gap-1">
-          <Button type="text" size="middle" className="text-gray-500 hover:text-gray-900 dark:text-gray-400 dark:hover:text-white" onClick={(e) => { e.stopPropagation(); navigate(`/deploy/apps/${app.id}`) }} title="编辑">
-            <Pencil className="h-3 w-3" />
-          </Button>
-          <Popconfirm title="确认删除该应用？" onConfirm={() => deleteApp(app.id)}>
-            <Button type="text" danger size="middle" className="text-red-400 hover:text-red-600 dark:text-red-400 dark:hover:text-red-300" onClick={(e) => e.stopPropagation()} title="删除">
-              <Trash2 className="h-3 w-3" />
-            </Button>
-          </Popconfirm>
-        </div>
-      </>
-    )
-  }
-
-  const renderGridItem = (app: DeployApp) => {
-    const tm = typeMeta(app.type)
-    const Icon = tm?.icon || AppWindow
-    return (
-      <Card key={app.id} className={cn("hover:border-blue-500/20 transition-colors cursor-pointer", app.status === 'disabled' && 'opacity-60')} onClick={() => navigate(`/deploy/apps/${app.id}`)}>
-        <CardHeader className="py-3 pb-2">
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-2 min-w-0">
-              <Icon className={cn('h-4 w-4 shrink-0', tm?.color)} />
-              <span className="text-sm font-medium truncate">{app.name}</span>
-              {app.status === 'disabled' && <Power className="h-3 w-3 text-muted-foreground" />}
-            </div>
-            <div className="flex gap-0.5 shrink-0" onClick={(e) => e.stopPropagation()}>
-              <Popconfirm title="确认删除该应用？" onConfirm={() => deleteApp(app.id)}>
-                <Button type="text" danger size="middle" className="text-red-400 hover:text-red-600 dark:text-red-400 dark:hover:text-red-300" title="删除">
-                  <Trash2 className="h-3 w-3" />
-                </Button>
-              </Popconfirm>
-            </div>
-          </div>
-        </CardHeader>
-        <CardContent className="space-y-2 pt-0">
-          <div className="flex items-center gap-2">
-            <Tag className={cn("text-[10px]", TYPE_BADGE[app.type])}>{tm?.label}</Tag>
-            {app.envs.map(env => (
-              <span key={env} className={cn("text-[10px] px-1.5 py-0.5 rounded border", ENV_COLORS[env])}>{ENV_LABELS[env]}</span>
-            ))}
-          </div>
-          {app.description && <p className="text-xs text-muted-foreground line-clamp-2">{app.description}</p>}
-          <div className="flex items-center gap-2 text-[10px] text-muted-foreground/70 pt-1 border-t">
-            <GitBranch className="h-2.5 w-2.5" /><span className="font-mono">{app.branch}</span>
-            {app.current_versions.prod && <><span>·</span><span>prod: {app.current_versions.prod}</span></>}
-          </div>
-        </CardContent>
-      </Card>
-    )
-  }
-
   const handleConfirmDelete = async () => {
     if (!confirmDelete) return
     const ok = await deleteApp(confirmDelete.id)
     if (ok) setConfirmDelete(null)
   }
+
+  const columns: ProColumns<DeployApp>[] = [
+    {
+      title: '应用名称',
+      dataIndex: 'name',
+      fixed: 'left',
+      width: 240,
+      render: (_, app) => {
+        const tm = typeMeta(app.type)
+        const Icon = tm?.icon || AppWindow
+        return (
+          <div className="flex items-center gap-2 min-w-0">
+            <Icon className={cn('h-4 w-4 shrink-0', tm?.color)} />
+            <span className="text-sm font-medium truncate cursor-pointer hover:text-blue-500"
+              onClick={(e) => { e.stopPropagation(); navigate(`/deploy/apps/${app.id}`) }}>
+              {app.name}
+            </span>
+            <span className="text-[10px] text-muted-foreground/60 font-mono">{app.code}</span>
+          </div>
+        )
+      },
+      fieldProps: { placeholder: '搜索应用名称/代码' },
+    },
+    {
+      title: '类型',
+      dataIndex: 'type',
+      width: 100,
+      filters: APP_TYPES.map(t => ({ text: t.label, value: t.value })),
+      onFilter: (value, record) => record.type === value,
+      render: (_, app) => {
+        const tm = typeMeta(app.type)
+        return <Tag className={cn("text-[10px] px-1.5 py-0", TYPE_BADGE[app.type])}>{tm?.label || app.type}</Tag>
+      },
+    },
+    {
+      title: '环境',
+      dataIndex: 'envs',
+      width: 160,
+      search: false,
+      render: (_, app) => (
+        <div className="flex gap-1">
+          {app.envs.map(env => (
+            <span key={env} className={cn("text-[10px] px-1.5 py-0.5 rounded border", ENV_COLORS[env])} title={ENV_LABELS[env]}>{ENV_LABELS[env]}</span>
+          ))}
+        </div>
+      ),
+    },
+    {
+      title: '生产版本',
+      dataIndex: 'current_versions',
+      width: 100,
+      search: false,
+      render: (_, app) => (
+        <span className="text-xs font-mono text-muted-foreground">
+          {app.current_versions.prod ? app.current_versions.prod : <span className="text-muted-foreground/40">-</span>}
+        </span>
+      ),
+    },
+    {
+      title: '负责人',
+      dataIndex: 'owner',
+      width: 80,
+      render: (_, app) => <span className="text-xs text-muted-foreground">{app.owner || '-'}</span>,
+    },
+    {
+      title: '更新时间',
+      dataIndex: 'updated_at',
+      width: 160,
+      search: false,
+      sorter: (a, b) => new Date(a.updated_at).getTime() - new Date(b.updated_at).getTime(),
+      render: (_, app) => <span className="text-xs text-muted-foreground/70 hidden md:block">{formatTime(app.updated_at)}</span>,
+    },
+    {
+      title: '操作',
+      valueType: 'option',
+      fixed: 'right',
+      width: 80,
+      render: (_, app) => [
+        <button
+          key="edit"
+          className="h-6 w-6 inline-flex items-center justify-center rounded text-gray-500 hover:text-gray-900 hover:bg-gray-100 dark:text-gray-400 dark:hover:text-white dark:hover:bg-white/5 cursor-pointer"
+          onClick={(e) => { e.stopPropagation(); navigate(`/deploy/apps/${app.id}`) }}
+          title="编辑"
+        >
+          <Pencil className="h-3 w-3" />
+        </button>,
+        <Popconfirm key="delete" title="确认删除该应用？" onConfirm={() => deleteApp(app.id)}>
+          <button
+            className="h-6 w-6 inline-flex items-center justify-center rounded text-red-400 hover:text-red-600 hover:bg-red-50 dark:hover:bg-red-500/10 cursor-pointer"
+            onClick={(e) => e.stopPropagation()}
+            title="删除"
+          >
+            <Trash2 className="h-3 w-3" />
+          </button>
+        </Popconfirm>,
+      ],
+    },
+  ]
 
   return (
     <div className="p-6 space-y-4">
@@ -188,25 +187,38 @@ export default function AppsPage() {
         <StatisticCard title="已禁用" value={stats.disabled} icon={<Power className="h-3 w-3" />} className="text-muted-foreground" />
       </StatisticCardGroup>
 
-      <DataList
-        data={apps}
-        loading={loading}
+      <ProTable<DeployApp>
+        actionRef={actionRef}
         columns={columns}
-        viewMode={viewMode}
-        filters={filters}
-        bulkActions={bulkActions}
-        listView={renderListItem}
-        gridView={renderGridItem}
-        emptyMessage="暂无应用,点击「新建应用」创建"
-        searchPlaceholder="搜索应用名称/代码/负责人..."
-        onRefresh={() => fetchApps()}
-        customHeader={
-          <div className="flex items-center gap-2">
-            <Button type="primary" size="middle" onClick={() => setCreateOpen(true)}>
-              <Plus className="h-3.5 w-3.5 mr-1" />新建应用
-            </Button>
-          </div>
-        }
+        dataSource={apps}
+        loading={loading}
+        rowKey="id"
+        search={{ labelWidth: 'auto', defaultCollapsed: false }}
+        pagination={{ defaultPageSize: 20, showSizeChanger: true, showTotal: (total) => `共 ${total} 条` }}
+        rowSelection={{ selectedRowKeys, onChange: setSelectedRowKeys }}
+        toolBarRender={() => [
+          selectedRowKeys.length > 0 && (
+            <Popconfirm
+              key="bulk-delete"
+              title={`确认删除选中的 ${selectedRowKeys.length} 个应用？`}
+              onConfirm={async () => {
+                for (const key of selectedRowKeys) { await deleteApp(key as string) }
+                setSelectedRowKeys([])
+              }}
+              okText="确认"
+              cancelText="取消"
+            >
+              <Button danger size="middle">
+                <Trash2 className="h-3.5 w-3.5 mr-1" />批量删除 ({selectedRowKeys.length})
+              </Button>
+            </Popconfirm>
+          ),
+          <Button key="new" type="primary" size="middle" onClick={() => setCreateOpen(true)}>
+            <Plus className="h-3.5 w-3.5 mr-1" />新建应用
+          </Button>,
+        ].filter(Boolean)}
+        options={{ density: true, fullScreen: true, reload: () => fetchApps(), setting: true }}
+        headerTitle={false}
       />
 
       <Modal title="新建应用" open={createOpen} onCancel={() => setCreateOpen(false)} footer={null}>

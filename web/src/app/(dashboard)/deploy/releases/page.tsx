@@ -1,12 +1,12 @@
 
-import { useEffect, useState, useMemo } from 'react'
-import { useDeployStore, type ReleaseTicket, type ReleaseStatus, type DeployEnv, type ReleaseStrategy, type DeployEnvironment, type DeployMode } from '@/stores/deploy'
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
-import { Button, Badge, Modal, Input, Select, Tag, Popconfirm, message } from 'antd'
-import { DataList, type ViewMode, type Column, type FilterOption, type BulkAction } from '@/components/ui/data-list'
+import { useEffect, useState, useMemo, useRef } from 'react'
+import { useDeployStore, type ReleaseTicket, type ReleaseStatus, type DeployEnv, type DeployEnvironment, type DeployMode } from '@/stores/deploy'
+import { ProTable, type ProColumns, type ActionType } from '@ant-design/pro-components'
 import { StatisticCardGroup, StatisticCard } from '@/components/ui/statistic-card'
+import { Button, Modal, Input, Select, Tag, message } from 'antd'
 import { FileCheck2, Trash2, Check, Ban, Play, RotateCcw, GitBranch, Clock, AlertCircle, CheckCircle, XCircle, Loader2, Rocket, Box, Server, Container } from 'lucide-react'
 import { cn, formatTime } from '@/lib/utils'
+
 const STATUS_META: Record<ReleaseStatus, { label: string; color: string; icon: any }> = {
   draft: { label: '草稿', color: 'bg-slate-500/10 text-slate-600 border-slate-500/20', icon: FileCheck2 },
   pending_approval: { label: '待审批', color: 'bg-amber-500/10 text-amber-600 border-amber-500/20', icon: Clock },
@@ -40,8 +40,8 @@ const STEP_ICONS: Record<string, any> = {
 }
 
 export default function ReleasesPage() {
-  const { releases, environments, loading, fetchReleases, fetchEnvs, approveRelease, rejectRelease, deployRelease, rollbackRelease, createRelease } = useDeployStore()
-  const [viewMode, setViewMode] = useState<ViewMode>('list')
+  const { releases, environments, apps, loading, fetchReleases, fetchEnvs, approveRelease, rejectRelease, deployRelease, rollbackRelease, createRelease } = useDeployStore()
+  const actionRef = useRef<ActionType>()
   const [detail, setDetail] = useState<ReleaseTicket | null>(null)
   const [rejectTarget, setRejectTarget] = useState<ReleaseTicket | null>(null)
   const [rejectReason, setRejectReason] = useState('')
@@ -63,115 +63,118 @@ export default function ReleasesPage() {
     failed: releases.filter(r => r.status === 'failed' || r.status === 'rolled_back').length,
   }), [releases])
 
-  const columns: Column<ReleaseTicket>[] = [
-    { key: 'title', label: '发布标题', sortable: true, filterable: true },
-    { key: 'app_name', label: '应用', sortable: true, filterable: true },
-    { key: 'version', label: '版本', sortable: true },
-    { key: 'env', label: '环境', sortable: true, filterable: true },
-    { key: 'strategy', label: '策略', sortable: true },
-    { key: 'status', label: '状态', sortable: true, filterable: true },
-    { key: 'created_at', label: '创建时间', sortable: true },
-  ]
-
-  const filters: FilterOption[] = [
-    { key: 'env', label: '环境', type: 'select', options: Object.entries(ENV_LABELS).map(([v, l]) => ({ label: l, value: v })) },
-    { key: 'status', label: '状态', type: 'select', options: Object.entries(STATUS_META).map(([v, m]) => ({ label: m.label, value: v })) },
-  ]
-
-  const bulkActions: BulkAction[] = []
-
-  const renderListItem = (rel: ReleaseTicket) => {
-    const sm = STATUS_META[rel.status]
-    const SIcon = sm.icon
-    const mode = envModeOf[rel.env]
-    const MIcon = mode ? MODE_META[mode].icon : Server
-    return (
-      <>
-        <div className="flex items-center gap-2 min-w-0 flex-1">
-          <SIcon className={cn('h-4 w-4 shrink-0', rel.status === 'deploying' && 'animate-spin', sm.color.split(' ')[1])} />
-          <span className="text-sm font-medium truncate cursor-pointer hover:text-blue-500"
-            onClick={(e) => { e.stopPropagation(); setDetail(rel) }}>
-            {rel.title}
-          </span>
-        </div>
-        <div className="w-28 shrink-0 text-xs text-muted-foreground truncate hidden lg:block">{rel.app_name}</div>
-        <div className="w-20 shrink-0 text-xs font-mono text-muted-foreground">{rel.version}</div>
-        <div className="w-16 shrink-0"><span className={cn("text-[10px] px-1.5 py-0.5 rounded border", ENV_COLORS[rel.env])}>{ENV_LABELS[rel.env]}</span></div>
-        {mode && <div className="w-14 shrink-0"><MIcon className={cn("h-3 w-3", MODE_META[mode].color.split(' ')[1])} /></div>}
-        <div className="w-24 shrink-0 text-xs text-muted-foreground hidden md:block">{STRATEGY_LABELS[rel.strategy]}</div>
-        <div className="w-20 shrink-0"><Tag className={cn("text-[10px] px-1.5 py-0", sm.color)}>{sm.label}</Tag></div>
-        <div className="w-28 shrink-0 text-xs text-muted-foreground/70 hidden md:block">{formatTime(rel.created_at)}</div>
-        <div className="w-32 shrink-0 flex justify-end gap-1">
-          {rel.status === 'pending_approval' && (
-            <>
-              <Button type="text" size="middle" className="text-blue-500" onClick={(e) => { e.stopPropagation(); approveRelease(rel.id) }} title="审批通过">
-                <Check className="h-3 w-3" />
-              </Button>
-              <Button type="text" size="middle" danger className="text-red-400 hover:text-red-600 dark:text-red-400 dark:hover:text-red-300" onClick={(e) => { e.stopPropagation(); setRejectTarget(rel); setRejectReason('') }} title="驳回">
-                <Ban className="h-3 w-3" />
-              </Button>
-            </>
-          )}
-          {rel.status === 'approved' && (
-            <Button type="text" size="middle" className="text-cyan-500" onClick={(e) => { e.stopPropagation(); deployRelease(rel.id) }} title="执行发布">
-              <Play className="h-3 w-3" />
-            </Button>
-          )}
-          {(rel.status === 'succeeded' || rel.status === 'rolled_back') && (
-            <Button type="text" size="middle" className="text-orange-500" onClick={(e) => { e.stopPropagation(); rollbackRelease(rel.id) }} title="回滚">
-              <RotateCcw className="h-3 w-3" />
-            </Button>
-          )}
-          <Button type="text" size="middle" className="text-gray-500 hover:text-gray-900 dark:text-gray-400 dark:hover:text-white" onClick={(e) => { e.stopPropagation(); setDetail(rel) }} title="详情">
-            <FileCheck2 className="h-3 w-3" />
-          </Button>
-        </div>
-      </>
-    )
-  }
-
-  const renderGridItem = (rel: ReleaseTicket) => {
-    const sm = STATUS_META[rel.status]
-    const SIcon = sm.icon
-    const mode = envModeOf[rel.env]
-    const MIcon = mode ? MODE_META[mode].icon : Server
-    return (
-      <Card key={rel.id} className="hover:border-blue-500/20 transition-colors cursor-pointer" onClick={() => setDetail(rel)}>
-        <CardHeader className="py-3 pb-2">
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-2 min-w-0">
-              <SIcon className={cn('h-4 w-4 shrink-0', rel.status === 'deploying' && 'animate-spin', sm.color.split(' ')[1])} />
-              <span className="text-sm font-medium truncate">{rel.title}</span>
-            </div>
-            <Tag className={cn("text-[10px]", sm.color)}>{sm.label}</Tag>
-          </div>
-        </CardHeader>
-        <CardContent className="space-y-2 pt-0">
-          <div className="flex items-center gap-2 text-xs">
-            <span className="text-muted-foreground">{rel.app_name}</span>
-            <span className="font-mono text-muted-foreground/70">{rel.version}</span>
-            {mode && <MIcon className={cn("h-3 w-3", MODE_META[mode].color.split(' ')[1])} />}
-          </div>
-          <div className="flex items-center gap-2">
-            <span className={cn("text-[10px] px-1.5 py-0.5 rounded border", ENV_COLORS[rel.env])}>{ENV_LABELS[rel.env]}</span>
-            <span className="text-[10px] text-muted-foreground">{STRATEGY_LABELS[rel.strategy]}</span>
-          </div>
-          {rel.commit_msg && <p className="text-[10px] text-muted-foreground line-clamp-1 font-mono">{rel.commit_msg}</p>}
-          <div className="flex items-center gap-2 text-[10px] text-muted-foreground/70 pt-1 border-t">
-            <span>{rel.operator}</span>
-            <span>·</span>
-            <span>{formatTime(rel.created_at)}</span>
-          </div>
-        </CardContent>
-      </Card>
-    )
-  }
-
   const handleReject = async () => {
     if (!rejectTarget) return
     const ok = await rejectRelease(rejectTarget.id, rejectReason || '未填写原因')
     if (ok) { setRejectTarget(null); setRejectReason('') }
   }
+
+  const columns: ProColumns<ReleaseTicket>[] = [
+    {
+      title: '发布标题',
+      dataIndex: 'title',
+      fixed: 'left',
+      width: 220,
+      render: (_, rel) => {
+        const sm = STATUS_META[rel.status]
+        const SIcon = sm.icon
+        return (
+          <div className="flex items-center gap-2 min-w-0">
+            <SIcon className={cn('h-4 w-4 shrink-0', rel.status === 'deploying' && 'animate-spin', sm.color.split(' ')[1])} />
+            <span className="text-sm font-medium truncate cursor-pointer hover:text-blue-500"
+              onClick={(e) => { e.stopPropagation(); setDetail(rel) }}>
+              {rel.title}
+            </span>
+          </div>
+        )
+      },
+      fieldProps: { placeholder: '搜索发布标题' },
+    },
+    {
+      title: '应用',
+      dataIndex: 'app_name',
+      width: 140,
+      search: false,
+      render: (_, rel) => <span className="text-xs text-muted-foreground truncate hidden lg:block">{rel.app_name}</span>,
+    },
+    {
+      title: '版本',
+      dataIndex: 'version',
+      width: 100,
+      search: false,
+      render: (_, rel) => <span className="text-xs font-mono text-muted-foreground">{rel.version}</span>,
+    },
+    {
+      title: '环境',
+      dataIndex: 'env',
+      width: 80,
+      filters: Object.entries(ENV_LABELS).map(([v, l]) => ({ text: l, value: v })),
+      onFilter: (value, record) => record.env === value,
+      render: (_, rel) => <span className={cn("text-[10px] px-1.5 py-0.5 rounded border", ENV_COLORS[rel.env])}>{ENV_LABELS[rel.env]}</span>,
+    },
+    {
+      title: '策略',
+      dataIndex: 'strategy',
+      width: 100,
+      search: false,
+      render: (_, rel) => <span className="text-xs text-muted-foreground hidden md:block">{STRATEGY_LABELS[rel.strategy]}</span>,
+    },
+    {
+      title: '状态',
+      dataIndex: 'status',
+      width: 100,
+      filters: Object.entries(STATUS_META).map(([v, m]) => ({ text: m.label, value: v })),
+      onFilter: (value, record) => record.status === value,
+      render: (_, rel) => {
+        const sm = STATUS_META[rel.status]
+        return <Tag className={cn("text-[10px] px-1.5 py-0", sm.color)}>{sm.label}</Tag>
+      },
+    },
+    {
+      title: '创建时间',
+      dataIndex: 'created_at',
+      width: 160,
+      search: false,
+      sorter: (a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime(),
+      render: (_, rel) => <span className="text-xs text-muted-foreground/70 hidden md:block">{formatTime(rel.created_at)}</span>,
+    },
+    {
+      title: '操作',
+      valueType: 'option',
+      fixed: 'right',
+      width: 120,
+      render: (_, rel) => [
+        rel.status === 'pending_approval' && (
+          <button key="approve" className="h-6 w-6 inline-flex items-center justify-center rounded text-blue-500 hover:bg-blue-500/10 cursor-pointer"
+            onClick={(e) => { e.stopPropagation(); approveRelease(rel.id) }} title="审批通过">
+            <Check className="h-3 w-3" />
+          </button>
+        ),
+        rel.status === 'pending_approval' && (
+          <button key="reject" className="h-6 w-6 inline-flex items-center justify-center rounded text-red-400 hover:text-red-600 hover:bg-red-50 dark:hover:bg-red-500/10 cursor-pointer"
+            onClick={(e) => { e.stopPropagation(); setRejectTarget(rel); setRejectReason('') }} title="驳回">
+            <Ban className="h-3 w-3" />
+          </button>
+        ),
+        rel.status === 'approved' && (
+          <button key="deploy" className="h-6 w-6 inline-flex items-center justify-center rounded text-cyan-500 hover:bg-cyan-500/10 cursor-pointer"
+            onClick={(e) => { e.stopPropagation(); deployRelease(rel.id) }} title="执行发布">
+            <Play className="h-3 w-3" />
+          </button>
+        ),
+        (rel.status === 'succeeded' || rel.status === 'rolled_back') && (
+          <button key="rollback" className="h-6 w-6 inline-flex items-center justify-center rounded text-orange-500 hover:bg-orange-500/10 cursor-pointer"
+            onClick={(e) => { e.stopPropagation(); rollbackRelease(rel.id) }} title="回滚">
+            <RotateCcw className="h-3 w-3" />
+          </button>
+        ),
+        <button key="detail" className="h-6 w-6 inline-flex items-center justify-center rounded text-gray-500 hover:text-gray-900 hover:bg-gray-100 dark:text-gray-400 dark:hover:text-white dark:hover:bg-white/5 cursor-pointer"
+          onClick={(e) => { e.stopPropagation(); setDetail(rel) }} title="详情">
+          <FileCheck2 className="h-3 w-3" />
+        </button>,
+      ],
+    },
+  ]
 
   return (
     <div className="p-6 space-y-4">
@@ -180,7 +183,6 @@ export default function ReleasesPage() {
           <h1 className="text-2xl font-bold">发布单</h1>
           <p className="text-sm text-muted-foreground">应用版本发布流程，含审批、执行、回滚；支持主机环境与容器环境</p>
         </div>
-        <Button type="primary" size="middle" onClick={() => setCreateOpen(true)}><Rocket className="h-3.5 w-3.5 mr-1" />新建发布单</Button>
       </div>
 
       <StatisticCardGroup loading={loading} columns={5}>
@@ -191,18 +193,21 @@ export default function ReleasesPage() {
         <StatisticCard title="失败/回滚" value={stats.failed} icon={<XCircle className="h-3 w-3" />} className="text-red-500" />
       </StatisticCardGroup>
 
-      <DataList
-        data={releases}
-        loading={loading}
+      <ProTable<ReleaseTicket>
+        actionRef={actionRef}
         columns={columns}
-        viewMode={viewMode}
-        filters={filters}
-        bulkActions={bulkActions}
-        listView={renderListItem}
-        gridView={renderGridItem}
-        emptyMessage="暂无发布单"
-        searchPlaceholder="搜索发布标题/应用/版本..."
-        onRefresh={() => { fetchReleases(); fetchEnvs() }}
+        dataSource={releases}
+        loading={loading}
+        rowKey="id"
+        search={{ labelWidth: 'auto', defaultCollapsed: false }}
+        pagination={{ defaultPageSize: 20, showSizeChanger: true, showTotal: (total) => `共 ${total} 条` }}
+        toolBarRender={() => [
+          <Button key="new" type="primary" size="middle" onClick={() => setCreateOpen(true)}>
+            <Rocket className="h-3.5 w-3.5 mr-1" />新建发布单
+          </Button>,
+        ]}
+        options={{ density: true, fullScreen: true, reload: () => { fetchReleases(); fetchEnvs() }, setting: true }}
+        headerTitle={false}
       />
 
       <Modal title={detail?.title} open={!!detail} onCancel={() => setDetail(null)} footer={null} width={640}>
@@ -223,33 +228,22 @@ export default function ReleasesPage() {
             {detail.changelog && <div><span className="text-xs text-muted-foreground">变更日志</span><pre className="text-xs mt-1 bg-muted/30 rounded p-2 whitespace-pre-wrap">{detail.changelog}</pre></div>}
             {detail.approved_by && <div className="text-xs text-muted-foreground">审批人: <span className="font-medium text-foreground">{detail.approved_by}</span> · {formatTime(detail.approved_at || '')}</div>}
             {detail.reject_reason && <div className="text-xs text-destructive">驳回原因: {detail.reject_reason}</div>}
-
             <div>
               <span className="text-xs font-medium">部署步骤</span>
               <div className="mt-2 space-y-1.5">
                 {(detail.steps || []).map(step => {
                   const StepIcon = STEP_ICONS[step.id] || FileCheck2
-                  const stepColor = step.status === 'succeeded' ? 'text-blue-500' : step.status === 'failed' ? 'text-red-500' : step.status === 'running' ? 'text-cyan-500' : step.status === 'skipped' ? 'text-muted-foreground' : 'text-muted-foreground'
+                  const stepColor = step.status === 'succeeded' ? 'text-blue-500' : step.status === 'failed' ? 'text-red-500' : step.status === 'running' ? 'text-cyan-500' : 'text-muted-foreground'
                   return (
                     <div key={step.id} className="flex items-center gap-2 text-xs">
                       <StepIcon className={cn('h-3 w-3', stepColor, step.status === 'running' && 'animate-spin')} />
                       <span className="flex-1">{step.name}</span>
-                      <span className={cn(stepColor)}>{step.status === 'succeeded' ? '成功' : step.status === 'failed' ? '失败' : step.status === 'running' ? '进行中' : step.status === 'skipped' ? '跳过' : '等待'}</span>
+                      <span className={cn(stepColor)}>{step.status === 'succeeded' ? '成功' : step.status === 'failed' ? '失败' : step.status === 'running' ? '进行中' : '等待'}</span>
                     </div>
                   )
                 })}
               </div>
-              {(detail.steps || []).some(s => s.output) && (
-                <div className="mt-2 space-y-1">
-                  {(detail.steps || []).filter(s => s.output).map(s => (
-                    <div key={s.id} className="text-[10px] font-mono bg-muted/30 rounded p-1.5">
-                      <span className="text-muted-foreground">{s.name}: </span>{s.output}
-                    </div>
-                  ))}
-                </div>
-              )}
             </div>
-
             <div className="flex justify-end gap-2 pt-2 border-t">
               {detail.status === 'pending_approval' && (
                 <>
