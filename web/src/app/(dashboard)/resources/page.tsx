@@ -1,5 +1,5 @@
 
-import { useEffect, useState } from 'react'
+import { useEffect, useState, useRef } from 'react'
 import { useAgentStore, type AgentHost, type ProxyInfo, type TaskInfo } from '@/stores/agent'
 import { useKeyStore } from '@/stores/keys'
 import { useCloudStore } from '@/stores/cloud'
@@ -9,7 +9,8 @@ import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/com
 import { Button, Input, Tag, Space, Modal, Popconfirm, Tooltip, message } from 'antd'
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs'
 import { SwitchField } from '@/components/ui/switch'
-import { ViewToggle, DataList, type ViewMode, type Column, type FilterOption, type BulkAction } from '@/components/ui/data-list'
+import { ViewToggle, type ViewMode } from '@/components/ui/data-list'
+import { ProTable, type ProColumns, type ActionType } from '@ant-design/pro-components'
 import { StatisticCardGroup, StatisticCard } from '@/components/ui/statistic-card'
 import { formatTime, apiBase, apiFetch } from '@/lib/utils'
 import { validateHostName, sanitizeHostName, HOST_NAME_RULE_TEXT } from '@/lib/validate'
@@ -89,7 +90,7 @@ export default function ResourcesPage() {
   const serverBase = typeof window !== 'undefined' ? `${window.location.protocol}//${window.location.host}` : ''
   const [mainTab, setMainTab] = useState('host')
   const [hostTab, setHostTab] = useState<string>('list')
-  const [agentViewMode, setAgentViewMode] = useState<ViewMode>('list')
+  const agentActionRef = useRef<ActionType>()
   const [proxyViewMode, setProxyViewMode] = useState<ViewMode>('list')
 
   const [regMethod, setRegMethod] = useState<'auto' | 'manual' | 'ssh'>('auto')
@@ -538,36 +539,93 @@ export default function ResourcesPage() {
   const agentlessCount = agents.filter(a => a.type === 'agentless').length
 
   // 主机列表列定义
-  const agentColumns: Column<AgentHost>[] = [
-    { key: 'name', label: '名称', sortable: true, filterable: true },
-    { key: 'status', label: '状态', sortable: true, filterable: true, width: 'w-16 shrink-0' },
-    { key: 'type', label: '类型', sortable: true, filterable: true, width: 'w-20 shrink-0' },
-    { key: 'address', label: '地址', sortable: true, filterable: true },
-    { key: 'os_type', label: '操作系统', sortable: true, width: 'w-24 shrink-0' },
-    { key: 'cpu', label: 'CPU', width: 'w-24 shrink-0' },
-    { key: 'memory', label: '内存', width: 'w-20 shrink-0' },
-    { key: 'last_heartbeat', label: '最后心跳', sortable: true, width: 'w-28 shrink-0' },
-    { key: '_actions', label: '操作', width: 'w-24 shrink-0' },
-  ]
-
-  // 主机列表筛选
-  const agentFilters: FilterOption[] = [
-    { key: 'status', label: '状态', type: 'select', options: [{ label: '在线', value: 'online' }, { label: '离线', value: 'offline' }] },
-    { key: 'type', label: '类型', type: 'select', options: [{ label: 'Agent', value: 'agent' }, { label: 'Agentless', value: 'agentless' }] },
-  ]
-
-  // 批量操作
-  const agentBulkActions: BulkAction[] = [
+  const agentColumns: ProColumns<AgentHost>[] = [
     {
-      key: 'delete',
-      label: '批量删除',
-      icon: <Trash2 className="h-3 w-3 mr-1" />,
-      variant: 'destructive',
-      confirmMessage: '确认删除选中的主机？此操作不可恢复。',
-      onClick: async (items) => {
-        for (const item of items) { await remove(item.id) }
-        refresh()
-      }
+      title: '名称',
+      dataIndex: 'name',
+      fixed: 'left',
+      width: 200,
+      render: (_, a) => (
+        <div className="flex items-center gap-2 min-w-0">
+          {a.type === 'agent' ? <Terminal className="h-4 w-4 text-blue-400 shrink-0" /> : <Monitor className="h-4 w-4 text-blue-400 shrink-0" />}
+          <span className="text-sm font-medium truncate min-w-0">{a.name}</span>
+        </div>
+      ),
+      fieldProps: { placeholder: '搜索主机名/IP' },
+    },
+    {
+      title: '状态',
+      dataIndex: 'status',
+      width: 80,
+      filters: [{ text: '在线', value: 'online' }, { text: '离线', value: 'offline' }],
+      onFilter: (value, record) => record.status === value,
+      render: (_, a) => <Tag color={statusColor(a.status)} className="text-xs">{statusLabel(a.status)}</Tag>,
+    },
+    {
+      title: '类型',
+      dataIndex: 'type',
+      width: 100,
+      filters: [{ text: 'Agent', value: 'agent' }, { text: 'Agentless', value: 'agentless' }],
+      onFilter: (value, record) => record.type === value,
+      render: (_, a) => <Tag className="text-xs">{a.type === 'agent' ? 'Agent' : 'Agentless'}</Tag>,
+    },
+    {
+      title: '地址',
+      dataIndex: 'address',
+      search: false,
+      render: (_, a) => <span className="text-xs text-muted-foreground truncate">{a.address}{a.port && a.port !== 22 ? `:${a.port}` : ''}</span>,
+    },
+    {
+      title: '操作系统',
+      dataIndex: 'os_type',
+      width: 120,
+      search: false,
+      render: (_, a) => <span className="text-xs text-muted-foreground truncate">{a.os_type || '-'}</span>,
+    },
+    {
+      title: 'CPU',
+      dataIndex: 'cpu',
+      width: 100,
+      search: false,
+      render: (_, a) => <span className="text-xs text-muted-foreground truncate">{a.cpu || '-'}</span>,
+    },
+    {
+      title: '内存',
+      dataIndex: 'memory',
+      width: 80,
+      search: false,
+      render: (_, a) => <span className="text-xs text-muted-foreground truncate">{a.memory || '-'}</span>,
+    },
+    {
+      title: '最后心跳',
+      dataIndex: 'last_heartbeat',
+      width: 140,
+      search: false,
+      sorter: (a, b) => new Date(a.last_heartbeat || 0).getTime() - new Date(b.last_heartbeat || 0).getTime(),
+      render: (_, a) => (
+        <span className="text-xs text-muted-foreground/50">
+          <Clock className="h-3 w-3 inline mr-0.5" />{a.last_heartbeat ? formatTime(a.last_heartbeat) : '无心跳'}
+        </span>
+      ),
+    },
+    {
+      title: '操作',
+      valueType: 'option',
+      fixed: 'right',
+      width: 80,
+      render: (_, a) => [
+        <button key="detail" className="h-6 w-6 inline-flex items-center justify-center rounded text-gray-500 hover:text-gray-900 hover:bg-gray-100 dark:text-gray-400 dark:hover:text-white dark:hover:bg-white/5 cursor-pointer" onClick={() => openDetailHost(a)}>
+          <Eye className="h-3.5 w-3.5" />
+        </button>,
+        a.duplicate_of && (
+          <button key="merge" className="h-6 w-6 inline-flex items-center justify-center rounded text-amber-500 hover:text-amber-600 hover:bg-amber-50 dark:hover:bg-amber-500/10 cursor-pointer" title="合并重复记录" disabled={mergingId === a.id} onClick={() => setPendingMerge(a)}>
+            <GitMerge className="h-3.5 w-3.5" />
+          </button>
+        ),
+        <button key="delete" className="h-6 w-6 inline-flex items-center justify-center rounded text-red-400 hover:text-red-600 hover:bg-red-50 dark:hover:bg-red-500/10 cursor-pointer" onClick={() => setConfirmDeleteHost(a)}>
+          <Trash2 className="h-3.5 w-3.5" />
+        </button>,
+      ],
     },
   ]
 
@@ -689,21 +747,22 @@ export default function ResourcesPage() {
             </TabsList>
 
             <TabsContent value="list" className="mt-4">
-              <DataList
-                data={agents}
-                loading={loading}
+              <ProTable<AgentHost>
+                actionRef={agentActionRef}
                 columns={agentColumns}
-                viewMode={agentViewMode}
-                filters={agentFilters}
-                bulkActions={agentBulkActions}
-                listView={renderAgentListItem}
-                gridView={renderAgentGridItem}
-                emptyMessage="暂无主机数据。"
-                searchPlaceholder="搜索主机名/IP..."
-                onRefresh={refresh}
-                customHeader={
-                  <Button size="middle" onClick={() => setHostTab('register')}><Plus className="h-4 w-4 mr-1" />注册主机</Button>
-                }
+                dataSource={agents}
+                loading={loading}
+                rowKey="id"
+                search={{ labelWidth: 'auto', defaultCollapsed: false }}
+                pagination={{ defaultPageSize: 20, showSizeChanger: true, showTotal: (total) => `共 ${total} 条` }}
+                rowSelection={{}}
+                toolBarRender={() => [
+                  <Button key="register" size="middle" onClick={() => setHostTab('register')}>
+                    <Plus className="h-4 w-4 mr-1" />注册主机
+                  </Button>,
+                ]}
+                options={{ density: true, fullScreen: true, reload: () => refresh(), setting: true }}
+                headerTitle={false}
               />
             </TabsContent>
 
