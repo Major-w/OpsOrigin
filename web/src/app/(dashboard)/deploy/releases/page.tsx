@@ -4,6 +4,7 @@ import { useDeployStore, type ReleaseTicket, type ReleaseStatus, type DeployEnv,
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button, Badge, Modal, Input, Select, Tag, Popconfirm, message } from 'antd'
 import { DataList, type ViewMode, type Column, type FilterOption, type BulkAction } from '@/components/ui/data-list'
+import { StatisticCardGroup, StatisticCard } from '@/components/ui/statistic-card'
 import { FileCheck2, Trash2, Check, Ban, Play, RotateCcw, GitBranch, Clock, AlertCircle, CheckCircle, XCircle, Loader2, Rocket, Box, Server, Container } from 'lucide-react'
 import { cn, formatTime } from '@/lib/utils'
 const STATUS_META: Record<ReleaseStatus, { label: string; color: string; icon: any }> = {
@@ -39,7 +40,7 @@ const STEP_ICONS: Record<string, any> = {
 }
 
 export default function ReleasesPage() {
-  const { releases, environments, fetchReleases, fetchEnvs, approveRelease, rejectRelease, deployRelease, rollbackRelease, createRelease } = useDeployStore()
+  const { releases, environments, loading, fetchReleases, fetchEnvs, approveRelease, rejectRelease, deployRelease, rollbackRelease, createRelease } = useDeployStore()
   const [viewMode, setViewMode] = useState<ViewMode>('list')
   const [detail, setDetail] = useState<ReleaseTicket | null>(null)
   const [rejectTarget, setRejectTarget] = useState<ReleaseTicket | null>(null)
@@ -182,16 +183,17 @@ export default function ReleasesPage() {
         <Button type="primary" size="middle" onClick={() => setCreateOpen(true)}><Rocket className="h-3.5 w-3.5 mr-1" />新建发布单</Button>
       </div>
 
-      <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-3">
-        <Card><CardHeader className="py-3"><CardTitle className="text-xs text-muted-foreground"><FileCheck2 className="h-3 w-3 inline mr-1" />发布单总数</CardTitle></CardHeader><CardContent className="pt-0"><span className="text-2xl font-bold">{stats.total}</span></CardContent></Card>
-        <Card><CardHeader className="py-3"><CardTitle className="text-xs text-muted-foreground"><Clock className="h-3 w-3 inline mr-1" />待审批</CardTitle></CardHeader><CardContent className="pt-0"><span className="text-2xl font-bold text-amber-500">{stats.pending}</span></CardContent></Card>
-        <Card><CardHeader className="py-3"><CardTitle className="text-xs text-muted-foreground"><Loader2 className="h-3 w-3 inline mr-1" />发布中</CardTitle></CardHeader><CardContent className="pt-0"><span className="text-2xl font-bold text-cyan-500">{stats.deploying}</span></CardContent></Card>
-        <Card><CardHeader className="py-3"><CardTitle className="text-xs text-muted-foreground"><CheckCircle className="h-3 w-3 inline mr-1" />已成功</CardTitle></CardHeader><CardContent className="pt-0"><span className="text-2xl font-bold text-blue-500">{stats.succeeded}</span></CardContent></Card>
-        <Card><CardHeader className="py-3"><CardTitle className="text-xs text-muted-foreground"><XCircle className="h-3 w-3 inline mr-1" />失败/回滚</CardTitle></CardHeader><CardContent className="pt-0"><span className="text-2xl font-bold text-red-500">{stats.failed}</span></CardContent></Card>
-      </div>
+      <StatisticCardGroup loading={loading} columns={5}>
+        <StatisticCard title="发布单总数" value={stats.total} icon={<FileCheck2 className="h-3 w-3" />} />
+        <StatisticCard title="待审批" value={stats.pending} icon={<Clock className="h-3 w-3" />} className="text-amber-500" />
+        <StatisticCard title="发布中" value={stats.deploying} icon={<Loader2 className="h-3 w-3" />} className="text-cyan-500" />
+        <StatisticCard title="已成功" value={stats.succeeded} icon={<CheckCircle className="h-3 w-3" />} className="text-blue-500" />
+        <StatisticCard title="失败/回滚" value={stats.failed} icon={<XCircle className="h-3 w-3" />} className="text-red-500" />
+      </StatisticCardGroup>
 
       <DataList
         data={releases}
+        loading={loading}
         columns={columns}
         viewMode={viewMode}
         filters={filters}

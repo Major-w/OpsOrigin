@@ -8,7 +8,7 @@ import { Select } from '@/components/ui/select'
 import { DEFAULT_PLATFORM_POLICY, FREQUENCY_PRESETS, validateFrequency, type PlatformPolicy } from '@/lib/collection'
 import { Save, Loader2, Settings2 } from 'lucide-react'
 import { useCollectionStore } from '@/stores/collection'
-import { message } from 'antd'
+import { getMessage } from '@/lib/message'
 /**
  * 平台级全局默认采集策略卡片（与后端 /cmdb/collection-policy 对齐）。
  * 资源纳管表单的采集开关预填此处默认值，可逐资源覆盖。
@@ -31,7 +31,7 @@ export function CollectionPolicyCard() {
   }, [])
 
   const handleSavePolicy = async () => {
-    if (policyFreqErr) { message.error('采集频率格式无效'); return }
+    if (policyFreqErr) { getMessage().error('采集频率格式无效'); return }
     await savePolicy(policyDraft)
   }
 

@@ -6,6 +6,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button, Badge, Input, Select, Tag, message } from 'antd'
 import { ArrowLeft, GitBranch, Server, Globe, Terminal, Heart, Save, Power, Rocket, RotateCcw, Check, Ban, Play, Clock, CheckCircle, XCircle, Loader2, Boxes } from 'lucide-react'
 import { cn, formatTime } from '@/lib/utils'
+import { getMessage } from '@/lib/message'
 const APP_TYPES: { value: AppType; label: string }[] = [
   { value: 'java', label: 'Java' }, { value: 'go', label: 'Go' }, { value: 'python', label: 'Python' },
   { value: 'nodejs', label: 'Node.js' }, { value: 'static', label: '静态' }, { value: 'container', label: '容器' },
@@ -68,7 +69,7 @@ export default function AppDetailPage() {
   const toggleStatus = async () => {
     const newStatus = app.status === 'enabled' ? 'disabled' : 'enabled'
     await updateApp(app.id, { status: newStatus })
-    message.success(newStatus === 'enabled' ? '应用已启用' : '应用已禁用')
+    getMessage().success(newStatus === 'enabled' ? '应用已启用' : '应用已禁用')
   }
 
   return (

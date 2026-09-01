@@ -3,11 +3,12 @@ import { useEffect, useState, useRef, useMemo } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useScriptStore, type Script } from '@/stores/script'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
-import { Button, Tag, Modal } from 'antd'
 import { DataList, type ViewMode, type Column, type FilterOption, type BulkAction } from '@/components/ui/data-list'
-import { Code2, Terminal, Hash, Clock, GitBranch, Star, Download, Upload, Plus, Trash2, Copy, Pencil, Loader2, FileCode, CheckCircle, FileText } from 'lucide-react'
+import { StatisticCardGroup, StatisticCard } from '@/components/ui/statistic-card'
+import { Code2, Terminal, Hash, Clock, GitBranch, Star, Download, Upload as UploadIcon, Plus, Trash2, Copy, Pencil, Loader2, FileCode, CheckCircle, FileText } from 'lucide-react'
 import { cn, formatTime, apiFetch } from '@/lib/utils'
-import { message } from 'antd'
+import { getMessage } from '@/lib/message'
+import { Button, Modal, Tag, Upload } from 'antd'
 const SCRIPT_TYPES = [
   { value: 'shell', label: 'Shell', color: 'text-blue-500' },
   { value: 'python', label: 'Python', color: 'text-blue-500' },
@@ -41,7 +42,7 @@ function saveStarred(ids: Set<string>) {
 
 export default function ScriptsPage() {
   const navigate = useNavigate()
-  const { scripts, fetch, remove, duplicate } = useScriptStore()
+  const { scripts, loading, fetch, remove, duplicate } = useScriptStore()
   const [viewMode, setViewMode] = useState<ViewMode>('list')
   const [starredIds, setStarredIds] = useState<Set<string>>(new Set())
   const [importing, setImporting] = useState(false)
@@ -79,11 +80,11 @@ export default function ScriptsPage() {
   const handleApprove = async (sc: Script) => {
     try {
       await apiFetch(`/scripts/${sc.id}/approve`, { method: 'POST' })
-      message.success(`已批准脚本「${sc.name}」，现在可被 AI 与自动化调用`)
+      getMessage().success(`已批准脚本「${sc.name}」，现在可被 AI 与自动化调用`)
       fetch()
     } catch (e: any) {
       console.error('approve error:', e)
-      message.error(`批准失败: ${e.message || '未知错误'}`)
+      getMessage().error(`批准失败: ${e.message || '未知错误'}`)
     }
   }
 
@@ -135,7 +136,7 @@ export default function ScriptsPage() {
       onClick: (items) => {
         const list = items as Script[]
         if (list.length === 0) {
-          message.warning('没有可导出的脚本')
+          getMessage().warning('没有可导出的脚本')
           return
         }
         const exportData = list.map(s => ({
@@ -154,7 +155,7 @@ export default function ScriptsPage() {
         a.click()
         document.body.removeChild(a)
         URL.revokeObjectURL(url)
-        message.success(`已导出 ${exportData.length} 个脚本`)
+        getMessage().success(`已导出 ${exportData.length} 个脚本`)
       },
     },
   ]
@@ -176,7 +177,7 @@ export default function ScriptsPage() {
         arr = JSON.parse(text)
         if (!Array.isArray(arr)) throw new Error('导入文件不是有效的脚本数组')
       } catch (err: any) {
-        message.error(`导入失败: ${err.message}`)
+        getMessage().error(`导入失败: ${err.message}`)
         return
       }
       const existingNames = new Set(scripts.map(s => s.name))
@@ -202,10 +203,10 @@ export default function ScriptsPage() {
         if (ok) { success++; existingNames.add(name) }
         else errors.push(`第 ${i + 1} 条 (${name}): 创建失败`)
       }
-      if (success > 0) message.success(`成功导入 ${success} 个脚本`)
-      if (errors.length > 0) message.error(`导入错误 ${errors.length} 条: ${errors[0]}`)
+      if (success > 0) getMessage().success(`成功导入 ${success} 个脚本`)
+      if (errors.length > 0) getMessage().error(`导入错误 ${errors.length} 条: ${errors[0]}`)
     } catch (err: any) {
-      message.error(`导入失败: ${err.message}`)
+      getMessage().error(`导入失败: ${err.message}`)
     } finally {
       setImporting(false)
     }
@@ -354,32 +355,18 @@ export default function ScriptsPage() {
       </div>
 
       {/* 统计卡片 */}
-      <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-3">
-        <Card>
-          <CardHeader className="py-3"><CardTitle className="text-xs text-muted-foreground"><FileCode className="h-3 w-3 inline mr-1" />脚本总数</CardTitle></CardHeader>
-          <CardContent className="pt-0"><span className="text-2xl font-bold">{stats.total}</span></CardContent>
-        </Card>
-        <Card>
-          <CardHeader className="py-3"><CardTitle className="text-xs text-muted-foreground"><Terminal className="h-3 w-3 inline mr-1" />Shell</CardTitle></CardHeader>
-          <CardContent className="pt-0"><span className="text-2xl font-bold text-blue-500">{stats.shell}</span></CardContent>
-        </Card>
-        <Card>
-          <CardHeader className="py-3"><CardTitle className="text-xs text-muted-foreground"><Code2 className="h-3 w-3 inline mr-1" />Python</CardTitle></CardHeader>
-          <CardContent className="pt-0"><span className="text-2xl font-bold text-blue-500">{stats.python}</span></CardContent>
-        </Card>
-        <Card>
-          <CardHeader className="py-3"><CardTitle className="text-xs text-muted-foreground"><FileText className="h-3 w-3 inline mr-1" />其他类型</CardTitle></CardHeader>
-          <CardContent className="pt-0"><span className="text-2xl font-bold text-amber-500">{stats.other}</span></CardContent>
-        </Card>
-        <Card>
-          <CardHeader className="py-3"><CardTitle className="text-xs text-muted-foreground"><Star className="h-3 w-3 inline mr-1" />已收藏</CardTitle></CardHeader>
-          <CardContent className="pt-0"><span className="text-2xl font-bold text-amber-500">{stats.starred}</span></CardContent>
-        </Card>
-      </div>
+      <StatisticCardGroup loading={loading} columns={5}>
+        <StatisticCard title="脚本总数" value={stats.total} icon={<FileCode className="h-3 w-3" />} />
+        <StatisticCard title="Shell" value={stats.shell} icon={<Terminal className="h-3 w-3" />} className="text-blue-500" />
+        <StatisticCard title="Python" value={stats.python} icon={<Code2 className="h-3 w-3" />} className="text-blue-500" />
+        <StatisticCard title="其他类型" value={stats.other} icon={<FileText className="h-3 w-3" />} className="text-amber-500" />
+        <StatisticCard title="已收藏" value={stats.starred} icon={<Star className="h-3 w-3" />} className="text-amber-500" />
+      </StatisticCardGroup>
 
       {/* 列表 */}
       <DataList
         data={scripts}
+        loading={loading}
         columns={columns}
         viewMode={viewMode}
         filters={filters}
@@ -392,11 +379,11 @@ export default function ScriptsPage() {
         customHeader={
           <div className="flex items-center gap-2">
             <Button type="default" size="middle" onClick={handleImportClick} disabled={importing}>
-              {importing ? <Loader2 className="h-4 w-4 mr-1 animate-spin" /> : <Upload className="h-4 w-4 mr-1" />}
+              {importing ? <Loader2 className="h-4 w-4 mr-1 animate-spin" /> : <UploadIcon className="h-4 w-4 mr-1" />}
               导入
             </Button>
             <Button type="default" size="middle" onClick={() => {
-              if (scripts.length === 0) { message.warning('没有可导出的脚本'); return }
+              if (scripts.length === 0) { getMessage().warning('没有可导出的脚本'); return }
               const exportData = scripts.map(s => ({
                 name: s.name, type: s.type, content: s.content, description: s.description,
                 timeout: s.timeout, input_params: s.input_params, output_params: s.output_params,
@@ -413,7 +400,7 @@ export default function ScriptsPage() {
               a.click()
               document.body.removeChild(a)
               URL.revokeObjectURL(url)
-              message.success(`已导出 ${exportData.length} 个脚本`)
+              getMessage().success(`已导出 ${exportData.length} 个脚本`)
             }}>
               <Download className="h-4 w-4 mr-1" />导出
             </Button>

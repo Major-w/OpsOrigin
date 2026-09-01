@@ -2,7 +2,7 @@
 import { create } from 'zustand'
 import { apiFetch, apiBase, apiList } from '@/lib/utils'
 import { useAgentStore } from '@/stores/agent'
-import { message } from 'antd'
+import { getMessage } from '@/lib/message'
 export interface FileItem {
   id: string; original_name: string; size_bytes: number
   checksum: string; checksum_algo: string; tenant_id: string; created_at: string
@@ -22,7 +22,7 @@ export const useFileStore = create<FileState>((set, get) => ({
     try {
       const files = await apiList<FileItem>('/files')
       set({ files, loading: false })
-    } catch (e: any) { set({ loading: false }); message.error('加载文件列表失败: ' + e.message) }
+    } catch (e: any) { set({ loading: false }); getMessage().error('加载文件列表失败: ' + e.message) }
   },
   upload: async (file) => {
     const form = new FormData(); form.append('file', file)
@@ -34,17 +34,17 @@ export const useFileStore = create<FileState>((set, get) => ({
       })
       if (!res.ok) throw new Error((await res.json()).error || 'upload failed')
       const meta = await res.json()
-      message.success(`文件已上传: ${meta.original_name}`)
+      getMessage().success(`文件已上传: ${meta.original_name}`)
       await get().fetch()
       return meta
-    } catch (e: any) { message.error('上传失败: ' + e.message); return null }
+    } catch (e: any) { getMessage().error('上传失败: ' + e.message); return null }
   },
   remove: async (id) => {
     try {
       await apiFetch(`/files/${id}`, { method: 'DELETE' })
-      message.success('文件已删除')
+      getMessage().success('文件已删除')
       await get().fetch()
       return true
-    } catch (e: any) { message.error('删除失败: ' + e.message); return false }
+    } catch (e: any) { getMessage().error('删除失败: ' + e.message); return false }
   },
 }))

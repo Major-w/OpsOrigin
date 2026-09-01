@@ -4,7 +4,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button, Input, Tag } from 'antd'
 import { apiFetch } from '@/lib/utils'
 import { TrendingUp, TrendingDown, Minus, AlarmClock, Loader2, Activity } from 'lucide-react'
-import { message } from 'antd'
+import { getMessage } from '@/lib/message'
 
 interface PredictResult {
   slope: number
@@ -27,7 +27,7 @@ export default function PredictPage() {
 
   const runPredict = async () => {
     const series = seriesText.split(',').map(s => parseFloat(s.trim())).filter(n => !isNaN(n))
-    if (series.length < 2) return message.error('至少输入 2 个数据点（逗号分隔）')
+    if (series.length < 2) return getMessage().error('至少输入 2 个数据点（逗号分隔）')
     setLoading(true)
     try {
       const r = await apiFetch<PredictResult>('/monitor/predict', {
@@ -36,7 +36,7 @@ export default function PredictPage() {
       })
       setResult(r)
     } catch (e: unknown) {
-      message.error(`预测失败: ${(e as Error).message}`)
+      getMessage().error(`预测失败: ${(e as Error).message}`)
     } finally {
       setLoading(false)
     }

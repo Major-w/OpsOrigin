@@ -1,5 +1,4 @@
 
-import { message } from 'antd'
 import { useCallback, useEffect, useState } from 'react'
 import {
   Sparkles,
@@ -23,6 +22,7 @@ import {
   type Result,
   type WorkspaceSuggestion,
 } from '@/stores/report'
+import { getMessage } from '@/lib/message'
 
 interface PreviewState {
   data?: Result
@@ -76,7 +76,7 @@ export function AIWorkspace({ onSaved }: { onSaved?: () => void }) {
 
   const handleGenerate = async () => {
     const p = prompt.trim()
-    if (!p) return message.error('先描述一下你想看什么数据')
+    if (!p) return getMessage().error('先描述一下你想看什么数据')
     setGenerating(true)
     setDraft(null)
     setPreviews({})
@@ -86,7 +86,7 @@ export function AIWorkspace({ onSaved }: { onSaved?: () => void }) {
       setName(d.dashboard.name || '')
       await runPreviews(d)
     } catch (e) {
-      message.error('生成失败: ' + (e as Error).message)
+      getMessage().error('生成失败: ' + (e as Error).message)
     } finally {
       setGenerating(false)
     }
@@ -95,7 +95,7 @@ export function AIWorkspace({ onSaved }: { onSaved?: () => void }) {
   const handleSave = async () => {
     if (!draft) return
     const finalName = name.trim() || draft.dashboard.name
-    if (!finalName) return message.error('请填写看板名称')
+    if (!finalName) return getMessage().error('请填写看板名称')
     setSaving(true)
     try {
       await createDashboard({
@@ -108,7 +108,7 @@ export function AIWorkspace({ onSaved }: { onSaved?: () => void }) {
       setPrompt('')
       onSaved?.()
     } catch (e) {
-      message.error('保存失败: ' + (e as Error).message)
+      getMessage().error('保存失败: ' + (e as Error).message)
     } finally {
       setSaving(false)
     }
@@ -126,7 +126,7 @@ export function AIWorkspace({ onSaved }: { onSaved?: () => void }) {
     a.download = `dashboard-draft-${Date.now()}.json`
     a.click()
     URL.revokeObjectURL(url)
-    message.success('草稿已导出为 JSON')
+    getMessage().success('草稿已导出为 JSON')
   }
 
   return (

@@ -5,8 +5,10 @@ import { useDeployStore, type DeployApp, type AppType, type DeployEnv } from '@/
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button, Badge, Modal, Input, Select, Tag, Popconfirm, message } from 'antd'
 import { DataList, type ViewMode, type Column, type FilterOption, type BulkAction } from '@/components/ui/data-list'
+import { StatisticCardGroup, StatisticCard } from '@/components/ui/statistic-card'
 import { AppWindow, Plus, Trash2, Pencil, GitBranch, Code2, Server, Box, Container, FileType, Loader2, Power, FileText } from 'lucide-react'
 import { cn, formatTime } from '@/lib/utils'
+import { getMessage } from '@/lib/message'
 const APP_TYPES: { value: AppType; label: string; icon: any; color: string }[] = [
   { value: 'java', label: 'Java', icon: Box, color: 'text-orange-500' },
   { value: 'go', label: 'Go', icon: Server, color: 'text-cyan-500' },
@@ -35,7 +37,7 @@ const ENV_COLORS: Record<string, string> = {
 
 export default function AppsPage() {
   const navigate = useNavigate()
-  const { apps, fetchApps, deleteApp, createApp } = useDeployStore()
+  const { apps, loading, fetchApps, deleteApp, createApp } = useDeployStore()
   const [viewMode, setViewMode] = useState<ViewMode>('list')
   const [confirmDelete, setConfirmDelete] = useState<DeployApp | null>(null)
   const [createOpen, setCreateOpen] = useState(false)
@@ -80,7 +82,7 @@ export default function AppsPage() {
   }
 
   const handleCreate = async () => {
-    if (!form.name.trim() || !form.code.trim()) { message.error('应用名称和代码不能为空'); return }
+    if (!form.name.trim() || !form.code.trim()) { getMessage().error('应用名称和代码不能为空'); return }
     const id = await createApp(form)
     if (id) { setCreateOpen(false); setForm({ name: '', code: '', type: 'java', repo_url: '', branch: 'main', build_cmd: '', description: '', owner: '', envs: ['dev'] as DeployEnv[] }) }
   }
@@ -178,16 +180,17 @@ export default function AppsPage() {
         </div>
       </div>
 
-      <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-3">
-        <Card><CardHeader className="py-3"><CardTitle className="text-xs text-muted-foreground"><AppWindow className="h-3 w-3 inline mr-1" />应用总数</CardTitle></CardHeader><CardContent className="pt-0"><span className="text-2xl font-bold">{stats.total}</span></CardContent></Card>
-        <Card><CardHeader className="py-3"><CardTitle className="text-xs text-muted-foreground"><Power className="h-3 w-3 inline mr-1" />启用</CardTitle></CardHeader><CardContent className="pt-0"><span className="text-2xl font-bold text-blue-500">{stats.enabled}</span></CardContent></Card>
-        <Card><CardHeader className="py-3"><CardTitle className="text-xs text-muted-foreground"><Box className="h-3 w-3 inline mr-1" />Java</CardTitle></CardHeader><CardContent className="pt-0"><span className="text-2xl font-bold text-orange-500">{stats.java}</span></CardContent></Card>
-        <Card><CardHeader className="py-3"><CardTitle className="text-xs text-muted-foreground"><GitBranch className="h-3 w-3 inline mr-1" />已上线生产</CardTitle></CardHeader><CardContent className="pt-0"><span className="text-2xl font-bold text-red-500">{stats.prod}</span></CardContent></Card>
-        <Card><CardHeader className="py-3"><CardTitle className="text-xs text-muted-foreground"><Power className="h-3 w-3 inline mr-1" />已禁用</CardTitle></CardHeader><CardContent className="pt-0"><span className="text-2xl font-bold text-muted-foreground">{stats.disabled}</span></CardContent></Card>
-      </div>
+      <StatisticCardGroup loading={loading} columns={5}>
+        <StatisticCard title="应用总数" value={stats.total} icon={<AppWindow className="h-3 w-3" />} />
+        <StatisticCard title="启用" value={stats.enabled} icon={<Power className="h-3 w-3" />} className="text-blue-500" />
+        <StatisticCard title="Java" value={stats.java} icon={<Box className="h-3 w-3" />} className="text-orange-500" />
+        <StatisticCard title="已上线生产" value={stats.prod} icon={<GitBranch className="h-3 w-3" />} className="text-red-500" />
+        <StatisticCard title="已禁用" value={stats.disabled} icon={<Power className="h-3 w-3" />} className="text-muted-foreground" />
+      </StatisticCardGroup>
 
       <DataList
         data={apps}
+        loading={loading}
         columns={columns}
         viewMode={viewMode}
         filters={filters}

@@ -6,7 +6,6 @@
 import { useEffect, useState, useCallback, useMemo } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
-import { Tag, Button, Input, Tabs } from 'antd'
 import { apiList, apiFetch } from '@/lib/utils'
 import {
   Package, ChevronRight, ChevronDown, Loader2, FolderTree, Search,
@@ -18,7 +17,8 @@ import type { Process } from '@/stores/itsm/types'
 import { useAuthStore } from '@/stores/auth'
 import { DynamicForm, withBuiltinFields, splitBuiltinValues, type FormSchema } from '@/components/itsm/DynamicForm'
 import ProcessFlowView from '@/components/itsm/ProcessFlowView'
-import { message } from 'antd'
+import { getMessage } from '@/lib/message'
+import { Button, Form, Input, Tabs, Tag } from 'antd'
 
 interface ServiceItem {
   id: string
@@ -65,7 +65,7 @@ export default function ITSMPortalPage() {
     try {
       const svc = await apiList<ServiceItem>('/itsm/catalog/visible')
       setServices(svc || [])
-    } catch { message.error('加载服务目录失败') }
+    } catch { getMessage().error('加载服务目录失败') }
     setLoading(false)
   }, [])
 
@@ -211,7 +211,7 @@ export default function ITSMPortalPage() {
       const v = formValues[f.key]
       return v === undefined || v === null || v === '' || (Array.isArray(v) && v.length === 0)
     })
-    if (missing) { message.error(`请填写必填项：${missing.label}`); return }
+    if (missing) { getMessage().error(`请填写必填项：${missing.label}`); return }
     setSubmitting(true)
     try {
       const { builtin, custom } = splitBuiltinValues(formValues)
@@ -226,9 +226,9 @@ export default function ITSMPortalPage() {
         }),
       })
       setCreatedId(tk?.id || '')
-      message.success('申请已提交')
+      getMessage().success('申请已提交')
     } catch (e: any) {
-      message.error(`提交失败: ${e.message}`)
+      getMessage().error(`提交失败: ${e.message}`)
     }
     setSubmitting(false)
   }

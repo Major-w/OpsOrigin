@@ -2,7 +2,7 @@
 import { create } from 'zustand'
 import { apiFetch, apiList } from '@/lib/utils'
 import type { AttrMeta } from '@/components/cmdb/SourceBadge'
-import { message } from 'antd'
+import { getMessage } from '@/lib/message'
 
 export interface CIModel {
   id: string
@@ -123,7 +123,7 @@ export const useCMDBStore = create<CMDBState>((set, get) => ({
       set({ items, total: items.length, loading: false })
     } catch (e: any) {
       set({ loading: false })
-      message.error(`加载CMDB实例失败: ${e.message}`)
+      getMessage().error(`加载CMDB实例失败: ${e.message}`)
     }
   },
   search: async (q, type_id, archived) => {
@@ -137,28 +137,28 @@ export const useCMDBStore = create<CMDBState>((set, get) => ({
       set({ items, total: items.length, loading: false })
     } catch (e: any) {
       set({ loading: false })
-      message.error(`搜索CMDB实例失败: ${e.message}`)
+      getMessage().error(`搜索CMDB实例失败: ${e.message}`)
     }
   },
   create: async (data) => {
     try {
       await apiFetch('/cmdb/ci', { method: 'POST', body: JSON.stringify({ ...data, channel: 100 }) })
-      message.success('创建资产成功')
+      getMessage().success('创建资产成功')
       await get().fetch()
       return true
     } catch (e: any) {
-      message.error(`创建资产失败: ${e.message}`)
+      getMessage().error(`创建资产失败: ${e.message}`)
       return false
     }
   },
   update: async (id, data) => {
     try {
       await apiFetch(`/cmdb/ci/${id}`, { method: 'PUT', body: JSON.stringify({ ...data, channel: 100 }) })
-      message.success('更新资产成功')
+      getMessage().success('更新资产成功')
       await get().fetch()
       return true
     } catch (e: any) {
-      message.error(`更新资产失败: ${e.message}`)
+      getMessage().error(`更新资产失败: ${e.message}`)
       return false
     }
   },
@@ -166,10 +166,10 @@ export const useCMDBStore = create<CMDBState>((set, get) => ({
     try {
       await apiFetch(`/cmdb/ci/${id}`, { method: 'DELETE' })
       set((s) => ({ items: s.items.filter(i => i.id !== id), total: Math.max(0, s.total - 1) }))
-      message.success('删除资产成功')
+      getMessage().success('删除资产成功')
       return true
     } catch (e: any) {
-      message.error(`删除资产失败: ${e.message}`)
+      getMessage().error(`删除资产失败: ${e.message}`)
       return false
     }
   },
@@ -177,7 +177,7 @@ export const useCMDBStore = create<CMDBState>((set, get) => ({
     try {
       return await apiList<AttributeChange>(`/cmdb/ci/${id}/audit`)
     } catch (e: any) {
-      message.error(`加载变更记录失败: ${e.message}`)
+      getMessage().error(`加载变更记录失败: ${e.message}`)
       throw e
     }
   },
@@ -186,17 +186,17 @@ export const useCMDBStore = create<CMDBState>((set, get) => ({
       const relations = await apiList<CIRelation>('/cmdb/relation')
       set({ relations })
     } catch (e: any) {
-      message.error(`加载关联关系失败: ${e.message}`)
+      getMessage().error(`加载关联关系失败: ${e.message}`)
     }
   },
   createRelation: async (data) => {
     try {
       await apiFetch('/cmdb/relation', { method: 'POST', body: JSON.stringify(data) })
-      message.success('创建关联成功')
+      getMessage().success('创建关联成功')
       await get().fetchRelations()
       return true
     } catch (e: any) {
-      message.error(`创建关联失败: ${e.message}`)
+      getMessage().error(`创建关联失败: ${e.message}`)
       return false
     }
   },
@@ -204,10 +204,10 @@ export const useCMDBStore = create<CMDBState>((set, get) => ({
     try {
       await apiFetch(`/cmdb/relation/${id}`, { method: 'DELETE' })
       set((s) => ({ relations: s.relations.filter(r => r.id !== id) }))
-      message.success('删除关联成功')
+      getMessage().success('删除关联成功')
       return true
     } catch (e: any) {
-      message.error(`删除关联失败: ${e.message}`)
+      getMessage().error(`删除关联失败: ${e.message}`)
       return false
     }
   },
@@ -222,16 +222,16 @@ export const useCMDBStore = create<CMDBState>((set, get) => ({
       }
       set({ modelTypes: Array.from(types.values()) })
     } catch (e: any) {
-      message.error(`加载模型类型失败: ${e.message}`)
+      getMessage().error(`加载模型类型失败: ${e.message}`)
     }
   },
   createModelType: async (data) => {
     try {
       await apiFetch('/cmdb/model-type', { method: 'POST', body: JSON.stringify(data) })
-      message.success('创建模型类型成功')
+      getMessage().success('创建模型类型成功')
       return true
     } catch (e: any) {
-      message.error(`创建模型类型失败: ${e.message}`)
+      getMessage().error(`创建模型类型失败: ${e.message}`)
       return false
     }
   },
@@ -242,7 +242,7 @@ export const useCMDBStore = create<CMDBState>((set, get) => ({
       set({ topology: result })
       return result
     } catch (e: any) {
-      message.error(`加载拓扑图失败: ${e.message}`)
+      getMessage().error(`加载拓扑图失败: ${e.message}`)
       return null
     }
   },
@@ -253,7 +253,7 @@ export const useCMDBStore = create<CMDBState>((set, get) => ({
       set({ impactResult: result })
       return result
     } catch (e: any) {
-      message.error(`影响分析失败: ${e.message}`)
+      getMessage().error(`影响分析失败: ${e.message}`)
       return null
     }
   },

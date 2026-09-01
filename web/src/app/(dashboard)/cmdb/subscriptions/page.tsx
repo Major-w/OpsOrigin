@@ -5,6 +5,7 @@ import { Button, Tag, Input, Modal, Select, Popconfirm, message } from 'antd'
 import { apiFetch, apiList } from '@/lib/utils'
 import { Plus, Trash2, Bell, Send, RefreshCw, Play } from 'lucide-react'
 import { cn } from '@/lib/utils'
+import { getMessage } from '@/lib/message'
 
 interface Subscription {
   id: string; name: string; model_type_id?: string; event_type: string
@@ -36,17 +37,17 @@ export default function SubscriptionPage() {
   useEffect(() => { load() }, [])
 
   const create = async () => {
-    if (!form.name.trim()) { message.error('请输入订阅名称'); return }
-    if (form.channel === 'webhook' && !form.target.trim()) { message.error('webhook 需要目标 URL'); return }
+    if (!form.name.trim()) { getMessage().error('请输入订阅名称'); return }
+    if (form.channel === 'webhook' && !form.target.trim()) { getMessage().error('webhook 需要目标 URL'); return }
     try {
       await apiFetch('/cmdb/subscriptions', { method: 'POST', body: JSON.stringify({ ...form, model_type_id: form.model_type_id || undefined, target: form.target.trim() }) })
-      message.success('订阅已创建'); setDialogOpen(false); setForm({ name: '', model_type_id: '', event_type: '*', channel: 'webhook', target: '', enabled: true }); load()
-    } catch (e: any) { message.error(e.message) }
+      getMessage().success('订阅已创建'); setDialogOpen(false); setForm({ name: '', model_type_id: '', event_type: '*', channel: 'webhook', target: '', enabled: true }); load()
+    } catch (e: any) { getMessage().error(e.message) }
   }
 
   const toggle = async (sub: Subscription) => {
     try { await apiFetch(`/cmdb/subscriptions/${sub.id}`, { method: 'PUT', body: JSON.stringify({ enabled: !sub.enabled }) }); load() }
-    catch (e: any) { message.error(e.message) }
+    catch (e: any) { getMessage().error(e.message) }
   }
 
   const [delTarget, setDelTarget] = useState<Subscription | null>(null)
@@ -55,17 +56,17 @@ export default function SubscriptionPage() {
   const confirmRemove = async () => {
     if (!delTarget) return
     setDelSubmitting(true)
-    try { await apiFetch(`/cmdb/subscriptions/${delTarget.id}`, { method: 'DELETE' }); message.success('已删除'); load(); setDelTarget(null) }
-    catch (e: any) { message.error(e.message) } finally { setDelSubmitting(false) }
+    try { await apiFetch(`/cmdb/subscriptions/${delTarget.id}`, { method: 'DELETE' }); getMessage().success('已删除'); load(); setDelTarget(null) }
+    catch (e: any) { getMessage().error(e.message) } finally { setDelSubmitting(false) }
   }
 
   const test = async (sub: Subscription) => {
     try {
       const d = await apiFetch<Delivery>(`/cmdb/subscriptions/${sub.id}/test`, { method: 'POST' })
-      if (d.status === 'success') message.success('测试投递成功')
-      else message.error('测试投递失败: ' + (d.error || '未知错误'))
+      if (d.status === 'success') getMessage().success('测试投递成功')
+      else getMessage().error('测试投递失败: ' + (d.error || '未知错误'))
       load()
-    } catch (e: any) { message.error(e.message) }
+    } catch (e: any) { getMessage().error(e.message) }
   }
 
   const subName = (id: string) => subs.find(s => s.id === id)?.name || id.slice(0, 8)

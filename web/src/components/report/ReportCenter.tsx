@@ -2,7 +2,6 @@
 // 报表中心（可复用）：自助看板 + 数据探索 + AI 生成。
 // 既作为全局「报表中心」页面主体，也可被各业务模块作为「自定义报表」入口内嵌，
 // 通过 modules 限定可选数据集范围（默认可一键切回全部数据集）。
-import { message } from 'antd'
 import { useEffect, useMemo, useState } from 'react'
 import {
   BarChart3,
@@ -34,6 +33,7 @@ import {
   type Widget,
   type Granularity,
 } from '@/stores/report'
+import { getMessage } from '@/lib/message'
 
 const WIDGET_TYPES = [
   { value: 'line', label: '折线图' },
@@ -117,7 +117,7 @@ export function ReportCenter({ title = '报表中心', description, modules, sco
 
   useEffect(() => {
     loadDatasets()
-    listDashboards().catch((e) => message.error('加载看板失败: ' + (e as Error).message))
+    listDashboards().catch((e) => getMessage().error('加载看板失败: ' + (e as Error).message))
   }, [loadDatasets, listDashboards])
 
   // 按模块过滤可选数据集（仅影响探索器下拉，不影响已有看板）
@@ -154,34 +154,34 @@ export function ReportCenter({ title = '报表中心', description, modules, sco
   })
 
   const handleRun = async () => {
-    if (!dsName) return message.error('请先选择数据集')
-    if (mets.length === 0) return message.error('请至少选择一个指标')
+    if (!dsName) return getMessage().error('请先选择数据集')
+    if (mets.length === 0) return getMessage().error('请至少选择一个指标')
     setRunning(true)
     try {
       const res = await runQuery(buildQuery())
       setPreview(res)
     } catch (e) {
-      message.error('查询失败: ' + (e as Error).message)
+      getMessage().error('查询失败: ' + (e as Error).message)
     } finally {
       setRunning(false)
     }
   }
 
   const handleCreate = async () => {
-    if (!newName.trim()) return message.error('请填写看板名称')
+    if (!newName.trim()) return getMessage().error('请填写看板名称')
     try {
       await createDashboard({ name: newName.trim(), description: newDesc.trim(), widgets: [] })
       setCreateOpen(false)
       setNewName('')
       setNewDesc('')
     } catch (e) {
-      message.error('创建失败: ' + (e as Error).message)
+      getMessage().error('创建失败: ' + (e as Error).message)
     }
   }
 
   const handleAddWidget = async () => {
     const dashID = targetDash || current?.id
-    if (!dashID) return message.error('请选择目标看板')
+    if (!dashID) return getMessage().error('请选择目标看板')
     const dash = dashID === current?.id ? current : null
     try {
       // 需要完整看板对象才能追加 widget
@@ -189,7 +189,7 @@ export function ReportCenter({ title = '报表中心', description, modules, sco
         await getDashboard(dashID)
         return useReportStore.getState().current
       })())
-      if (!base) return message.error('目标看板不存在')
+      if (!base) return getMessage().error('目标看板不存在')
 
       const w: Widget = {
         id: newWidgetID(),
@@ -207,7 +207,7 @@ export function ReportCenter({ title = '报表中心', description, modules, sco
       setWidgetTitle('')
       setTab('dashboards')
     } catch (e) {
-      message.error('加入看板失败: ' + (e as Error).message)
+      getMessage().error('加入看板失败: ' + (e as Error).message)
     }
   }
 
@@ -220,7 +220,7 @@ export function ReportCenter({ title = '报表中心', description, modules, sco
         widgets: (current.widgets || []).filter((w) => w.id !== wid),
       })
     } catch (e) {
-      message.error('删除图表失败: ' + (e as Error).message)
+      getMessage().error('删除图表失败: ' + (e as Error).message)
     }
   }
 

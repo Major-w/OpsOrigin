@@ -4,8 +4,10 @@ import { useDeployStore, type ReleaseHistory, type ReleaseStatus } from '@/store
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button, Badge, Modal, Tag, Popconfirm, message } from 'antd'
 import { DataList, type ViewMode, type Column, type FilterOption } from '@/components/ui/data-list'
+import { StatisticCardGroup, StatisticCard } from '@/components/ui/statistic-card'
 import { History, RotateCcw, Clock, CheckCircle, XCircle, AlertCircle, Loader2 } from 'lucide-react'
 import { cn, formatTime } from '@/lib/utils'
+import { getMessage } from '@/lib/message'
 const STATUS_META: Record<ReleaseStatus, { label: string; color: string; icon: any }> = {
   draft: { label: '草稿', color: 'bg-slate-500/10 text-slate-600 border-slate-500/20', icon: History },
   pending_approval: { label: '待审批', color: 'bg-amber-500/10 text-amber-600 border-amber-500/20', icon: Clock },
@@ -26,7 +28,7 @@ const ENV_COLORS: Record<string, string> = {
 }
 
 export default function HistoryPage() {
-  const { history, fetchHistory, rollbackRelease } = useDeployStore()
+  const { history, loading, fetchHistory, rollbackRelease } = useDeployStore()
   const [viewMode, setViewMode] = useState<ViewMode>('list')
   const [detail, setDetail] = useState<ReleaseHistory | null>(null)
   const [confirmRollback, setConfirmRollback] = useState<ReleaseHistory | null>(null)
@@ -114,7 +116,7 @@ export default function HistoryPage() {
 
   const handleRollback = async () => {
     if (!confirmRollback) return
-    if (!confirmRollback.release_id) { message.error('该历史记录缺少关联发布单，无法回滚'); return }
+    if (!confirmRollback.release_id) { getMessage().error('该历史记录缺少关联发布单，无法回滚'); return }
     const ok = await rollbackRelease(confirmRollback.release_id)
     if (ok) setConfirmRollback(null)
   }
@@ -128,15 +130,16 @@ export default function HistoryPage() {
         </div>
       </div>
 
-      <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3">
-        <Card><CardHeader className="py-3"><CardTitle className="text-xs text-muted-foreground"><History className="h-3 w-3 inline mr-1" />发布记录</CardTitle></CardHeader><CardContent className="pt-0"><span className="text-2xl font-bold">{stats.total}</span></CardContent></Card>
-        <Card><CardHeader className="py-3"><CardTitle className="text-xs text-muted-foreground"><CheckCircle className="h-3 w-3 inline mr-1" />成功</CardTitle></CardHeader><CardContent className="pt-0"><span className="text-2xl font-bold text-blue-500">{stats.succeeded}</span></CardContent></Card>
-        <Card><CardHeader className="py-3"><CardTitle className="text-xs text-muted-foreground"><RotateCcw className="h-3 w-3 inline mr-1" />已回滚</CardTitle></CardHeader><CardContent className="pt-0"><span className="text-2xl font-bold text-orange-500">{stats.rolledBack}</span></CardContent></Card>
-        <Card><CardHeader className="py-3"><CardTitle className="text-xs text-muted-foreground"><Clock className="h-3 w-3 inline mr-1" />生产发布</CardTitle></CardHeader><CardContent className="pt-0"><span className="text-2xl font-bold text-red-500">{stats.prod}</span></CardContent></Card>
-      </div>
+      <StatisticCardGroup loading={loading} columns={4}>
+        <StatisticCard title="发布记录" value={stats.total} icon={<History className="h-3 w-3" />} />
+        <StatisticCard title="成功" value={stats.succeeded} icon={<CheckCircle className="h-3 w-3" />} className="text-blue-500" />
+        <StatisticCard title="已回滚" value={stats.rolledBack} icon={<RotateCcw className="h-3 w-3" />} className="text-orange-500" />
+        <StatisticCard title="生产发布" value={stats.prod} icon={<Clock className="h-3 w-3" />} className="text-red-500" />
+      </StatisticCardGroup>
 
       <DataList
         data={history}
+        loading={loading}
         columns={columns}
         viewMode={viewMode}
         filters={filters}

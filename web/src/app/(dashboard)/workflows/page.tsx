@@ -3,11 +3,11 @@ import { useEffect, useState, useMemo } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useWorkflowStore, type Workflow, type WorkflowStep, type StepType, type StepApproval } from '@/stores/workflow'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
-import { Button, Tag } from 'antd'
 import { DataList, type ViewMode, type Column, type FilterOption, type BulkAction } from '@/components/ui/data-list'
+import { StatisticCardGroup, StatisticCard } from '@/components/ui/statistic-card'
 import { Plus, Trash2, GitBranch, Code, CheckSquare, Split, Clock, Workflow as WorkflowIcon, FileText, Check, Ban, Flag, Loader2, Pencil, Play } from 'lucide-react'
 import { cn, formatTime } from '@/lib/utils'
-import { message } from 'antd'
+import { Button, Tag, message } from 'antd'
 const NODE_META: Record<string, { label: string; icon: any; color: string }> = {
   script:    { label: '脚本节点',  icon: Code,      color: 'text-blue-500' },
   approval:  { label: '人工审批',  icon: CheckSquare, color: 'text-amber-500' },
@@ -19,7 +19,7 @@ const NODE_META: Record<string, { label: string; icon: any; color: string }> = {
 export default function WorkflowsPage() {
   const navigate = useNavigate()
   const {
-    workflows, approvals,
+    workflows, approvals, loading,
     fetch, remove, fetchApprovals, approve, reject,
   } = useWorkflowStore()
   const [viewMode, setViewMode] = useState<ViewMode>('list')
@@ -199,32 +199,18 @@ export default function WorkflowsPage() {
       </div>
 
       {/* 统计卡片 */}
-      <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-3">
-        <Card>
-          <CardHeader className="py-3"><CardTitle className="text-xs text-muted-foreground"><WorkflowIcon className="h-3 w-3 inline mr-1" />流程总数</CardTitle></CardHeader>
-          <CardContent className="pt-0"><span className="text-2xl font-bold">{stats.total}</span></CardContent>
-        </Card>
-        <Card>
-          <CardHeader className="py-3"><CardTitle className="text-xs text-muted-foreground"><Code className="h-3 w-3 inline mr-1" />脚本节点</CardTitle></CardHeader>
-          <CardContent className="pt-0"><span className="text-2xl font-bold text-blue-500">{stats.scriptCount}</span></CardContent>
-        </Card>
-        <Card>
-          <CardHeader className="py-3"><CardTitle className="text-xs text-muted-foreground"><CheckSquare className="h-3 w-3 inline mr-1" />审批节点</CardTitle></CardHeader>
-          <CardContent className="pt-0"><span className="text-2xl font-bold text-amber-500">{stats.approvalCount}</span></CardContent>
-        </Card>
-        <Card>
-          <CardHeader className="py-3"><CardTitle className="text-xs text-muted-foreground"><GitBranch className="h-3 w-3 inline mr-1" />总步骤数</CardTitle></CardHeader>
-          <CardContent className="pt-0"><span className="text-2xl font-bold">{stats.stepsTotal}</span></CardContent>
-        </Card>
-        <Card>
-          <CardHeader className="py-3"><CardTitle className="text-xs text-muted-foreground"><Flag className="h-3 w-3 inline mr-1" />待审批</CardTitle></CardHeader>
-          <CardContent className="pt-0"><span className={cn("text-2xl font-bold", stats.pendingApprovals > 0 ? "text-red-500" : "")}>{stats.pendingApprovals}</span></CardContent>
-        </Card>
-      </div>
+      <StatisticCardGroup loading={loading} columns={5}>
+        <StatisticCard title="流程总数" value={stats.total} icon={<WorkflowIcon className="h-3 w-3" />} />
+        <StatisticCard title="脚本节点" value={stats.scriptCount} icon={<Code className="h-3 w-3" />} className="text-blue-500" />
+        <StatisticCard title="审批节点" value={stats.approvalCount} icon={<CheckSquare className="h-3 w-3" />} className="text-amber-500" />
+        <StatisticCard title="总步骤数" value={stats.stepsTotal} icon={<GitBranch className="h-3 w-3" />} />
+        <StatisticCard title="待审批" value={stats.pendingApprovals} icon={<Flag className="h-3 w-3" />} className={cn(stats.pendingApprovals > 0 ? "text-red-500" : "")} />
+      </StatisticCardGroup>
 
       {/* 列表 */}
       <DataList
         data={workflows}
+        loading={loading}
         columns={columns}
         viewMode={viewMode}
         filters={filters}

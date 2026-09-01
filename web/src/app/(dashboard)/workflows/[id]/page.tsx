@@ -36,6 +36,7 @@ import {
 } from 'lucide-react'
 
 import { Position, MarkerType, BackgroundVariant, type NodeProps, type Node, type Edge, type Connection } from '@xyflow/react'
+import { getMessage } from '@/lib/message'
 
 // 画布节点 data 为展示用途,字段松散;用宽松类型规避 @xyflow/react v12 严格的 NodeProps 默认类型
 type FlowNodeData = Record<string, any>
@@ -556,7 +557,7 @@ export default function WorkflowDetailPage() {
   useEffect(() => { if (isNew) { setLoading(false); return }; setLoading(true); Promise.all([fetch(),fetchScripts(),fetchApprovals(),fetchChannels(),fetchFiles()]).then(()=>setLoading(false)) }, [workflowId,isNew])
   useEffect(() => { if(isNew||loading)return; const wf=workflows.find(w=>w.id===workflowId); if(wf){setViewWF(wf);fetchExecutions(wf.id)} }, [workflows,workflowId,isNew,loading])
 
-  const handleCreate = async () => { const err=validateName(createForm.name,'流程名称'); if(err){message.error(err);return}; setCreating(true); const id=await create({name:createForm.name,description:createForm.description,steps:[],input_params:[]}); setCreating(false); if(id) navigate(`/workflows/${id}`) }
+  const handleCreate = async () => { const err=validateName(createForm.name,'流程名称'); if(err){getMessage().error(err);return}; setCreating(true); const id=await create({name:createForm.name,description:createForm.description,steps:[],input_params:[]}); setCreating(false); if(id) navigate(`/workflows/${id}`) }
   const handleExecute = async () => { if(!viewWF)return; await execute(viewWF.id,execAgents,execInputs); setExecDialog(false); await fetchExecutions(viewWF.id); await fetchApprovals() }
   const handleCanvasSave = async (steps: WorkflowStep[]) => { if(!viewWF)return; const ok=await update(viewWF.id,{...viewWF,steps}); if(ok) setViewWF({...viewWF,steps}) }
   const pendingApprovals = approvals.filter(a=>a.status==='pending')

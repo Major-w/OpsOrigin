@@ -95,7 +95,7 @@ export function MessageBell() {
       </button>
 
       {open && (
-        <div className="absolute bottom-full right-0 mb-2 w-80 max-h-[70vh] flex flex-col rounded-xl border border-gray-200 bg-white shadow-2xl shadow-black/20 dark:border-white/10 dark:bg-[#111827] overflow-hidden z-50">
+        <div className="absolute bottom-full right-0 mb-2 w-80 max-h-[70vh] flex flex-col rounded-xl border border-gray-200 bg-white shadow-2xl shadow-black/20 dark:border-white/10 dark:bg-[var(--popover)] overflow-hidden z-50">
           <div className="flex items-center justify-between px-3 py-2.5 border-b border-gray-100 dark:border-white/10">
             <div className="flex items-center gap-2">
               <Bell className="w-4 h-4 text-blue-500" />

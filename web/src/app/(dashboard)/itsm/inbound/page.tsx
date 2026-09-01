@@ -1,11 +1,11 @@
 
 import { useEffect, useState } from 'react'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
-import { Button, Input, Tag, Switch } from 'antd'
 import { Mail, MessageSquare, Webhook, Save, CheckCircle2, Loader2 } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
 import { apiFetch, apiList } from '@/lib/utils'
-import { message } from 'antd'
+import { getMessage } from '@/lib/message'
+import { Button, Input, Switch, Tag } from 'antd'
 interface Channel {
   id: string
   type: string
@@ -109,7 +109,7 @@ export default function InboundConfigPage() {
         }
         setEditors(init)
       })
-      .catch(() => message.error('加载入站渠道失败'))
+      .catch(() => getMessage().error('加载入站渠道失败'))
   }, [])
 
   const toggleEnabled = (id: string, val: boolean) =>
@@ -133,9 +133,9 @@ export default function InboundConfigPage() {
       await apiFetch(`/automation/inbound/channels/${c.id}`, { method: 'PUT', body: JSON.stringify(body) })
       setChannels(prev => prev.map(x => x.id === c.id ? { ...x, enabled: ed.enabled, config: body.config } : x))
       setSavedAt(prev => ({ ...prev, [c.id]: Date.now() }))
-      message.success(`${c.name} 已保存`)
+      getMessage().success(`${c.name} 已保存`)
     } catch (e: any) {
-      message.error('保存失败: ' + e.message)
+      getMessage().error('保存失败: ' + e.message)
     } finally {
       setSavingId(null)
     }

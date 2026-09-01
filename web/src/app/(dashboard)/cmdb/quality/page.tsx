@@ -7,6 +7,7 @@ import { useCan } from '@/stores/permissions'
 import { RefreshCw, ShieldAlert, CheckCircle2, GitMerge, Trash2 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { ErrorState } from '@/components/ui/error-state'
+import { getMessage } from '@/lib/message'
 
 interface QualityIssue {
   ci_id?: string
@@ -49,7 +50,7 @@ export default function CMDBQualityPage() {
       setReport(await apiFetch<QualityReport>('/cmdb/quality'))
     } catch (e: any) {
       setLoadError(e.message || '质量扫描失败')
-      message.error('质量扫描失败: ' + e.message)
+      getMessage().error('质量扫描失败: ' + e.message)
     } finally { setLoading(false) }
   }
 
@@ -57,7 +58,7 @@ export default function CMDBQualityPage() {
 
   const openFix = (issue: QualityIssue) => {
     if (issue.dimension === 'uniqueness') {
-      message.info('重复 IP/名称请使用实例管理的「疑似重复」做调解合并')
+      getMessage().info('重复 IP/名称请使用实例管理的「疑似重复」做调解合并')
       return
     }
     if (!issue.relation_id) return
@@ -72,10 +73,10 @@ export default function CMDBQualityPage() {
       const res = await apiFetch<{ fixed: boolean; dimension: string }>('/cmdb/quality/fix', {
         method: 'POST', body: JSON.stringify({ dimension: issue.dimension, relation_id: issue.relation_id }),
       })
-      message.success(res.fixed ? '已修复孤儿关系' : '无需处理')
+      getMessage().success(res.fixed ? '已修复孤儿关系' : '无需处理')
       setFixTarget(null)
       load()
-    } catch (e: any) { message.error('修复失败: ' + e.message) } finally { setFixSubmitting(false) }
+    } catch (e: any) { getMessage().error('修复失败: ' + e.message) } finally { setFixSubmitting(false) }
   }
 
   const scoreColor = (s: number) => s >= 85 ? 'text-blue-600' : s >= 60 ? 'text-amber-600' : 'text-red-600'

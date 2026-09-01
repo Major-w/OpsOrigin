@@ -5,6 +5,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button, Badge, Modal, Input, Select, Tag, Popconfirm, message } from 'antd'
 import { Cloud, Plus, Trash2, Pencil, Server, Globe, Shield, Clock, CheckCircle, AlertTriangle, History, Container, Boxes } from 'lucide-react'
 import { cn, formatTime } from '@/lib/utils'
+import { getMessage } from '@/lib/message'
 const ENV_LABELS: Record<string, string> = { dev: '开发', test: '测试', staging: '预发', prod: '生产' }
 
 const ENV_COLOR_MAP: Record<string, { bg: string; border: string; text: string; dot: string }> = {
@@ -55,7 +56,7 @@ export default function EnvironmentsPage() {
   }
 
   const handleSave = async () => {
-    if (!form.name?.trim()) { message.error('环境名称不能为空'); return }
+    if (!form.name?.trim()) { getMessage().error('环境名称不能为空'); return }
     const hosts = hostInput.split(',').map(s => s.trim()).filter(Boolean)
     const agent_ids = agentInput.split(',').map(s => s.trim()).filter(Boolean)
     const data = { ...form, hosts, agent_ids }

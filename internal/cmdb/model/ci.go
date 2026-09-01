@@ -109,6 +109,8 @@ const (
 // AttrKeyCriticality 是业务服务等模型的标准关键性字段名。
 const AttrKeyCriticality = "business_criticality"
 
+// CIModelType 配置项模型类型
+// @Description CI 模型类型定义，包含属性 schema 和关系声明
 type CIModelType struct {
 	ID          string             `json:"id"`
 	TenantID    string             `json:"tenant_id"`
@@ -192,6 +194,8 @@ func (t CIModelType) RelationByID(key string) (RelationDef, bool) {
 	return RelationDef{}, false
 }
 
+// AttrDef 属性定义
+// @Description CI 模型属性定义，包含类型、校验规则、UI 元数据等
 type AttrDef struct {
 	// ID 是属性的稳定机器标识(属性级寻址), 供采集上报按 模型ID-字段ID 定位写入、
 	// 以及属性级权限按字段引用。业务主键仍是字段 Name(前端寻址/展示);
@@ -244,6 +248,8 @@ type AttrAggregate struct {
 	Direction string `json:"direction,omitempty"`
 }
 
+// CIModel 配置项实例
+// @Description CI 实例，包含属性、标签、状态等信息
 type CIModel struct {
 	ID            string              `json:"id"`
 	TypeID        string              `json:"type_id"`

@@ -7,8 +7,8 @@ const badgeVariants = {
   success: "border-blue-200 bg-blue-50 text-blue-700 dark:border-blue-500/30 dark:bg-blue-500/10 dark:text-blue-400",
   destructive: "border-red-200 bg-red-50 text-red-700 dark:border-red-500/30 dark:bg-red-500/10 dark:text-red-400",
   warning: "border-amber-200 bg-amber-50 text-amber-700 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-400",
-  secondary: "border-gray-200 bg-gray-100 text-gray-600 dark:border-[rgba(255,255,255,0.08)] dark:bg-[rgba(255,255,255,0.04)] dark:text-[#94A3B8]",
-  outline: "border-gray-300 text-gray-600 dark:border-[rgba(255,255,255,0.1)] dark:text-[#94A3B8]",
+  secondary: "border-gray-200 bg-gray-100 text-gray-600 dark:border-[var(--border)] dark:bg-[rgba(255,255,255,0.04)] dark:text-[var(--secondary-foreground)]",
+  outline: "border-gray-300 text-gray-600 dark:border-[var(--input)] dark:text-[var(--secondary-foreground)]",
   info: "border-violet-200 bg-violet-50 text-violet-700 dark:border-violet-500/30 dark:bg-violet-500/10 dark:text-violet-400",
 }
 

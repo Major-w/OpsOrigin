@@ -1,6 +1,7 @@
 # 前端开发契约（Frontend Contract）
 
-> 适用范围：`web-next/src/**`。依据 `docs/frontend-review-checklist.md` 五支柱扩展为可执行契约。
+> 适用范围：`web/src/**`。
+> 技术栈：React 18 + Vite 6 + React Router 6 + antd 6 + zustand 4 + Tailwind 3 + TypeScript 5
 > 校验：`make contract` 自动化 + 本文件逐条人工自查。
 
 ## F1 用户旅程闭环
@@ -11,7 +12,7 @@
 
 ## F2 操作逻辑闭环
 
-- **F2.1 危险操作二次确认**：删除/合并/批量删除/批量覆盖等**破坏性操作必须用 `components/ui/confirm-dialog.tsx`**，禁止原生 `confirm()`。校验：`grep -r "confirm(" web-next/src` 必须为 0。
+- **F2.1 危险操作二次确认**：删除/合并/批量删除/批量覆盖等**破坏性操作必须用 `components/ui/confirm-dialog.tsx`**，禁止原生 `confirm()`。校验：`grep -r "confirm(" web/src` 必须为 0。
 - **F2.2 提交防重**：所有写操作（提交/保存/创建/批量）必须带 `submitting` 锁态：按钮 `disabled={... || submitting}` + 进行中文案 `…`，入口处 `if (submitting) return`。校验：人工 + grep 抽查。
 - **F2.3 反馈三件套**：写操作完成后必须「toast 结果 + 数据刷新（loadData/fetch）+ 状态迁移（关 Dialog/清选中）」，三者缺一不可。
 - **F2.4 权限门控**：页级读视图用 `useCan('xxx:read')` + 无权限态 UI；破坏性按钮额外 `useCan('xxx:write'|'delete'|'admin')`。权限 key 必须与 `docs/contracts/api.md` 权限点注册表一致。校验：grep 页面是否 import `useCan`。
@@ -31,7 +32,7 @@
 
 ## F5 色彩语义
 
-- **F5.1 变量驱动**：颜色只能引用 `globals.css` 的 CSS 变量（`--primary/--destructive/--warning/--muted/--accent/...`），**禁止在组件内硬编码 hex**（含 `bg-[#...]`、`text-[#...]`、`style={{color:'#...'}}`）。校验：grep `#[0-9a-fA-F]{6}` 于 `web-next/src`（白名单：`globals.css` 变量定义、`lib/graph-colors.ts`）。
+- **F5.1 变量驱动**：颜色只能引用 `globals.css` 的 CSS 变量（`--primary/--destructive/--warning/--muted/--accent/...`），**禁止在组件内硬编码 hex**（含 `bg-[#...]`、`text-[#...]`、`style={{color:'#...'}}`）。校验：grep `#[0-9a-fA-F]{6}` 于 `web/src`（白名单：`globals.css` 变量定义、`lib/graph-colors.ts`）。
 - **F5.2 语义色受控**：语义色 ≤5（主/危险/告警/次要/强调），红=危险、琥珀=告警、主色=健康/正常，符合运维语义。
 - **F5.3 图表色 token 化**：拓扑/全景等图形颜色一律集中到 `lib/graph-colors.ts`（`RELATION_COLORS`/`HEALTH_COLOR`/`GRAPH_DEFAULT_COLOR`），禁止页面内散落图形色字面量。
 
@@ -44,8 +45,8 @@
 ## F7 校验清单（提交前自查）
 
 ```bash
-grep -rn "confirm(" web-next/src                    # 必须 0 命中
-grep -rnE "bg-\[#|text-\[#|border-\[#" web-next/src # 必须 0 命中（SVG 图元必要除外）
-npx tsc --noEmit                                    # 0 error（在 web-next 下）
+grep -rn "confirm(" web/src                    # 必须 0 命中
+grep -rnE "bg-\[#|text-\[#|border-\[#" web/src # 必须 0 命中（SVG 图元必要除外）
+npx tsc --noEmit                                    # 0 error（在 web 下）
 ```
 完整校验：`make contract`。

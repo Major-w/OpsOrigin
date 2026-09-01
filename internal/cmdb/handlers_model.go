@@ -17,6 +17,17 @@ import (
 	"github.com/opsorigin/core/pkg/httputil"
 )
 
+// handleCreateModelType godoc
+// @Summary 创建模型类型
+// @Description 创建新的 CI 模型类型
+// @Tags CMDB
+// @Accept json
+// @Produce json
+// @Param model body model.CIModelType true "模型类型信息"
+// @Success 201 {object} model.CIModelType
+// @Failure 400 {object} map[string]string
+// @Router /api/v1/cmdb/models [post]
+// @Security BearerAuth
 func (s *Service) handleCreateModelType(w http.ResponseWriter, r *http.Request) {
 	var mt model.CIModelType
 	if err := httputil.BindJSON(r, &mt); err != nil {

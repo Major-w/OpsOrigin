@@ -1,7 +1,7 @@
 
 import { create } from 'zustand'
 import { apiFetch, apiList } from '@/lib/utils'
-import { message } from 'antd'
+import { getMessage } from '@/lib/message'
 // ============================================================================
 // AI 数字员工 & 主动巡检（P0）
 // 与后端契约对齐：
@@ -196,7 +196,7 @@ export const useWorkforceStore = create<WorkforceState>((set, get) => ({
       set({ templates, templatesLoading: false })
     } catch (e: unknown) {
       set({ templatesLoading: false })
-      message.error(`加载岗位模板失败: ${(e as Error).message}`)
+      getMessage().error(`加载岗位模板失败: ${(e as Error).message}`)
     }
   },
 
@@ -207,13 +207,13 @@ export const useWorkforceStore = create<WorkforceState>((set, get) => ({
         body: JSON.stringify({ name: name || '', with_inspection: withInspection ?? true }),
       })
       if (resp.inspection) {
-        message.success(`数字员工已上岗，并自动创建巡检「${resp.inspection.name}」`)
+        getMessage().success(`数字员工已上岗，并自动创建巡检「${resp.inspection.name}」`)
       } else {
-        message.success('数字员工已上岗')
+        getMessage().success('数字员工已上岗')
       }
       return true
     } catch (e: unknown) {
-      message.error(`上岗失败: ${(e as Error).message}`)
+      getMessage().error(`上岗失败: ${(e as Error).message}`)
       return false
     }
   },
@@ -225,7 +225,7 @@ export const useWorkforceStore = create<WorkforceState>((set, get) => ({
       const sceneTemplates = await apiList<SceneTemplate>('/ai/scene-templates')
       set({ sceneTemplates })
     } catch (e: unknown) {
-      message.error(`加载场景包失败: ${(e as Error).message}`)
+      getMessage().error(`加载场景包失败: ${(e as Error).message}`)
     }
   },
 
@@ -243,14 +243,14 @@ export const useWorkforceStore = create<WorkforceState>((set, get) => ({
         body: JSON.stringify({ name: name || '', auto_create_tickets: autoCreateTickets ?? false }),
       })
       const inspCount = (resp.inspections?.length || 0) + (resp.inspection ? 1 : 0)
-      message.success(
+      getMessage().success(
         resp.agent
           ? `场景已启用: 数字员工「${resp.agent.name}」+ ${inspCount} 项巡检${resp.created_catalog ? ` + ${resp.created_catalog} 个工单类型` : ''}`
           : '场景已启用',
       )
       return true
     } catch (e: unknown) {
-      message.error(`启用场景失败: ${(e as Error).message}`)
+      getMessage().error(`启用场景失败: ${(e as Error).message}`)
       return false
     } finally {
       set(s => ({ sceneLaunching: s.sceneLaunching.filter(x => x !== id) }))
@@ -264,7 +264,7 @@ export const useWorkforceStore = create<WorkforceState>((set, get) => ({
       const inspectionTemplates = await apiList<InspectionTemplate>('/ai/inspection-templates')
       set({ inspectionTemplates })
     } catch (e: unknown) {
-      message.error(`加载巡检模板失败: ${(e as Error).message}`)
+      getMessage().error(`加载巡检模板失败: ${(e as Error).message}`)
     }
   },
 
@@ -275,18 +275,18 @@ export const useWorkforceStore = create<WorkforceState>((set, get) => ({
       set({ inspections, inspectionsLoading: false })
     } catch (e: unknown) {
       set({ inspectionsLoading: false })
-      message.error(`加载巡检任务失败: ${(e as Error).message}`)
+      getMessage().error(`加载巡检任务失败: ${(e as Error).message}`)
     }
   },
 
   createInspection: async (payload) => {
     try {
       await apiFetch('/ai/inspections', { method: 'POST', body: JSON.stringify(payload) })
-      message.success('巡检任务已创建')
+      getMessage().success('巡检任务已创建')
       await get().loadInspections()
       return true
     } catch (e: unknown) {
-      message.error(`创建失败: ${(e as Error).message}`)
+      getMessage().error(`创建失败: ${(e as Error).message}`)
       return false
     }
   },
@@ -294,11 +294,11 @@ export const useWorkforceStore = create<WorkforceState>((set, get) => ({
   updateInspection: async (id, payload) => {
     try {
       await apiFetch(`/ai/inspections/${id}`, { method: 'PUT', body: JSON.stringify(payload) })
-      message.success('巡检任务已更新')
+      getMessage().success('巡检任务已更新')
       await get().loadInspections()
       return true
     } catch (e: unknown) {
-      message.error(`更新失败: ${(e as Error).message}`)
+      getMessage().error(`更新失败: ${(e as Error).message}`)
       return false
     }
   },
@@ -306,7 +306,7 @@ export const useWorkforceStore = create<WorkforceState>((set, get) => ({
   deleteInspection: async (id) => {
     try {
       await apiFetch(`/ai/inspections/${id}`, { method: 'DELETE' })
-      message.success('巡检任务已删除')
+      getMessage().success('巡检任务已删除')
       set(s => {
         const runs = { ...s.runs }
         delete runs[id]
@@ -314,7 +314,7 @@ export const useWorkforceStore = create<WorkforceState>((set, get) => ({
       })
       return true
     } catch (e: unknown) {
-      message.error(`删除失败: ${(e as Error).message}`)
+      getMessage().error(`删除失败: ${(e as Error).message}`)
       return false
     }
   },
@@ -324,15 +324,15 @@ export const useWorkforceStore = create<WorkforceState>((set, get) => ({
     try {
       const run = await apiFetch<InspectionRun>(`/ai/inspections/${id}/run`, { method: 'POST' })
       if (run.status === 'failed') {
-        message.error(`巡检执行失败: ${run.error || '未知错误'}`)
+        getMessage().error(`巡检执行失败: ${run.error || '未知错误'}`)
       } else {
-        message.success('巡检完成，已生成报告')
+        getMessage().success('巡检完成，已生成报告')
       }
       // 刷新任务状态与该任务的运行历史
       await Promise.all([get().loadInspections(), get().loadRuns(id)])
       return run.status !== 'failed'
     } catch (e: unknown) {
-      message.error(`巡检执行失败: ${(e as Error).message}`)
+      getMessage().error(`巡检执行失败: ${(e as Error).message}`)
       return false
     } finally {
       set(s => ({ running: s.running.filter(r => r !== id) }))
@@ -347,14 +347,14 @@ export const useWorkforceStore = create<WorkforceState>((set, get) => ({
         body: JSON.stringify(meta),
       })
       if (run.status === 'failed') {
-        message.error(`实验执行失败: ${run.error || '未知错误'}`)
+        getMessage().error(`实验执行失败: ${run.error || '未知错误'}`)
       } else {
-        message.success('实验运行完成，已与基线并列展示')
+        getMessage().success('实验运行完成，已与基线并列展示')
       }
       await Promise.all([get().loadInspections(), get().loadRuns(id)])
       return run.status === 'failed' ? null : run
     } catch (e: unknown) {
-      message.error(`实验执行失败: ${(e as Error).message}`)
+      getMessage().error(`实验执行失败: ${(e as Error).message}`)
       return null
     } finally {
       set(s => ({ running: s.running.filter(r => r !== id) }))
@@ -366,7 +366,7 @@ export const useWorkforceStore = create<WorkforceState>((set, get) => ({
       const list = await apiList<InspectionRun>(`/ai/inspections/${id}/runs`)
       set(s => ({ runs: { ...s.runs, [id]: list } }))
     } catch (e: unknown) {
-      message.error(`加载巡检历史失败: ${(e as Error).message}`)
+      getMessage().error(`加载巡检历史失败: ${(e as Error).message}`)
     }
   },
 
@@ -378,11 +378,11 @@ export const useWorkforceStore = create<WorkforceState>((set, get) => ({
         body: JSON.stringify({ severity }),
       })
       const n = (run.escalations || []).length
-      message.success(n > 0 ? `已转 ${n} 条发现为 ITSM 工单` : '已无新的可转发现')
+      getMessage().success(n > 0 ? `已转 ${n} 条发现为 ITSM 工单` : '已无新的可转发现')
       await get().loadRuns(inspectionId)
       return run
     } catch (e: unknown) {
-      message.error(`转工单失败: ${(e as Error).message}`)
+      getMessage().error(`转工单失败: ${(e as Error).message}`)
       return null
     } finally {
       set(s => ({ escalating: s.escalating.filter(r => r !== runId) }))

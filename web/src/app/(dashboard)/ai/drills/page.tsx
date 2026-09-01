@@ -1,11 +1,11 @@
 
 import { useEffect, useState } from 'react'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
-import { Tag, Button, Input } from 'antd'
 import { useInspections } from '@/stores/aiWorkforce'
 import { apiFetch, cn } from '@/lib/utils'
 import { FlaskConical, RefreshCw, Play, RotateCcw, AlertTriangle, CheckCircle2, Loader2 } from 'lucide-react'
-import { message } from 'antd'
+import { getMessage } from '@/lib/message'
+import { Button, Input, Tag } from 'antd'
 
 // L3-2 仿真验证飞轮: 故障注入 -> Agent 处置评估 -> 报告/回滚
 interface FaultScenario {
@@ -57,7 +57,7 @@ export default function FaultSimPage() {
       setScenarios(scs)
       setRuns(rs)
     } catch (e: any) {
-      message.error(`加载演练数据失败: ${e.message}`)
+      getMessage().error(`加载演练数据失败: ${e.message}`)
     } finally {
       setLoading(false)
     }
@@ -66,7 +66,7 @@ export default function FaultSimPage() {
   useEffect(() => { loadAll(); loadInspections() }, [])
 
   const startInjection = async () => {
-    if (!form.scenario_id) return message.error('请选择故障场景')
+    if (!form.scenario_id) return getMessage().error('请选择故障场景')
     setStarting(true)
     try {
       const run = await apiFetch<InjectionRun>('/ai/faultsim/injections', {
@@ -78,7 +78,7 @@ export default function FaultSimPage() {
           inspection_id: form.inspection_id || undefined,
         }),
       })
-      message.success(`已注入「${run.scenario_name}」，Agent 正在评估处置`)
+      getMessage().success(`已注入「${run.scenario_name}」，Agent 正在评估处置`)
       setForm(f => ({ ...f, scenario_id: '', target_id: '', target_name: '' }))
       loadAll()
       // 轮询等待评估完成
@@ -91,7 +91,7 @@ export default function FaultSimPage() {
       }, 1500)
       setTimeout(() => clearInterval(poll), 30000)
     } catch (e: any) {
-      message.error(`注入失败: ${e.message}`)
+      getMessage().error(`注入失败: ${e.message}`)
     } finally {
       setStarting(false)
     }
@@ -100,10 +100,10 @@ export default function FaultSimPage() {
   const recover = async (id: string) => {
     try {
       await apiFetch(`/ai/faultsim/injections/${id}/recover`, { method: 'POST' })
-      message.success('演练已恢复（解除注入）')
+      getMessage().success('演练已恢复（解除注入）')
       loadAll()
     } catch (e: any) {
-      message.error(`恢复失败: ${e.message}`)
+      getMessage().error(`恢复失败: ${e.message}`)
     }
   }
 

@@ -16,7 +16,7 @@ import { ConfirmDialog } from '@/components/ui/confirm-dialog'
 import { useAgentStore } from '@/stores/agent'
 import { apiFetch, apiList, cn, formatTime } from '@/lib/utils'
 import { Activity, Database, Gauge, History, Loader2, Pause, Play, Plus, Trash2 } from 'lucide-react'
-import { message } from 'antd'
+import { getMessage } from '@/lib/message'
 
 export type ScriptCollectType = 'cmdb' | 'metric'
 
@@ -87,7 +87,7 @@ export function ScriptCollectPanel({ type }: Props) {
     setLoading(true)
     try {
       setTasks(await apiList<CollectTask>('/collect-tasks'))
-    } catch { message.error('加载脚本采集任务失败') }
+    } catch { getMessage().error('加载脚本采集任务失败') }
     setLoading(false)
   }, [])
 
@@ -103,27 +103,27 @@ export function ScriptCollectPanel({ type }: Props) {
   }
 
   const handleCreate = async () => {
-    if (!form.name.trim()) return message.error('请输入任务名称')
-    if (!form.script.trim()) return message.error('请输入采集脚本')
+    if (!form.name.trim()) return getMessage().error('请输入任务名称')
+    if (!form.script.trim()) return getMessage().error('请输入采集脚本')
     setSaving(true)
     try {
       await apiFetch('/collect-tasks', { method: 'POST', body: JSON.stringify({ ...form, type }) })
-      message.success('采集任务已创建')
+      getMessage().success('采集任务已创建')
       setDialog(false); setForm(emptyForm); load()
-    } catch (e: any) { message.error(e?.message || '创建失败') } finally { setSaving(false) }
+    } catch (e: any) { getMessage().error(e?.message || '创建失败') } finally { setSaving(false) }
   }
 
   const handleToggle = async (t: CollectTask) => {
     try {
       await apiFetch(`/collect-tasks/${t.id}`, { method: 'PUT', body: JSON.stringify({ ...t, enabled: !t.enabled }) })
       load()
-    } catch { message.error('更新失败') }
+    } catch { getMessage().error('更新失败') }
   }
 
   const handleDelete = async () => {
     if (!pendingId) return
-    try { await apiFetch(`/collect-tasks/${pendingId}`, { method: 'DELETE' }); message.success('已删除'); load() }
-    catch { message.error('删除失败') }
+    try { await apiFetch(`/collect-tasks/${pendingId}`, { method: 'DELETE' }); getMessage().success('已删除'); load() }
+    catch { getMessage().error('删除失败') }
     setPendingId(null)
   }
 

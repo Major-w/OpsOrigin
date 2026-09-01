@@ -15,7 +15,7 @@ import {
   Bot, RefreshCw, UserPlus, Sparkles, Wrench, BookOpen, CheckCircle2, Brain, Trash2, Store,
 } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
-import { message } from 'antd'
+import { getMessage } from '@/lib/message'
 
 // P0-1 长期记忆条目
 interface ExperienceMemory {
@@ -69,21 +69,21 @@ export default function RoleTemplatesPanel() {
     try {
       const q = agentId ? `?agent_id=${encodeURIComponent(agentId)}` : ''
       setMemories(await apiFetch<ExperienceMemory[]>(`/ai/memory${q}`))
-    } catch (e: any) { message.error(`加载记忆失败: ${e.message}`) }
+    } catch (e: any) { getMessage().error(`加载记忆失败: ${e.message}`) }
   }
   const addMemory = async () => {
-    if (!memForm.problem.trim() || !memForm.resolution.trim()) return message.error('请填写问题与处置方案')
+    if (!memForm.problem.trim() || !memForm.resolution.trim()) return getMessage().error('请填写问题与处置方案')
     setMemSaving(true)
     try {
       await apiFetch('/ai/memory', { method: 'POST', body: JSON.stringify(memForm) })
-      message.success('经验已记录，后续同类问题将自动复用')
+      getMessage().success('经验已记录，后续同类问题将自动复用')
       setMemForm({ agent_id: '', problem: '', resolution: '' })
       loadMemories(memAgent)
-    } catch (e: any) { message.error(`记录失败: ${e.message}`) } finally { setMemSaving(false) }
+    } catch (e: any) { getMessage().error(`记录失败: ${e.message}`) } finally { setMemSaving(false) }
   }
   const deleteMemory = async (id: string) => {
     try { await apiFetch(`/ai/memory/${id}`, { method: 'DELETE' }); setMemories(ms => ms.filter(m => m.id !== id)) }
-    catch (e: any) { message.error(`删除失败: ${e.message}`) }
+    catch (e: any) { getMessage().error(`删除失败: ${e.message}`) }
   }
 
   const [hireTarget, setHireTarget] = useState<AgentTemplate | null>(null)
@@ -99,7 +99,7 @@ export default function RoleTemplatesPanel() {
   const [publishing, setPublishing] = useState(false)
 
   const doPublish = async () => {
-    if (!publishAgent) return message.error('请选择要发布的数字员工')
+    if (!publishAgent) return getMessage().error('请选择要发布的数字员工')
     setPublishing(true)
     try {
       await apiFetch('/ai/skills/publish', {
@@ -114,12 +114,12 @@ export default function RoleTemplatesPanel() {
           tags: publishMeta.tags ? publishMeta.tags.split(/[,\s]+/).filter(Boolean) : undefined,
         }),
       })
-      message.success('已发布到技能市场，可在「技能市场」页浏览与安装')
+      getMessage().success('已发布到技能市场，可在「技能市场」页浏览与安装')
       setPublishOpen(false)
       setPublishAgent('')
       setPublishMeta({ name: '', version: '1.0.0', author: '', description: '', category: '', tags: '' })
     } catch (e: any) {
-      message.error(`发布失败: ${e.message}`)
+      getMessage().error(`发布失败: ${e.message}`)
     } finally {
       setPublishing(false)
     }

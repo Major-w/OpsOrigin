@@ -1,15 +1,15 @@
 
 import { useEffect, useState, useCallback } from 'react'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
-import { Button, Tag, Input, Select, Modal, Popconfirm } from 'antd'
 import { apiFetch, apiList } from '@/lib/utils'
 import { validateName, sanitizeName, NAME_RULE_TEXT } from '@/lib/validate'
-import { message } from 'antd'
+import { getMessage } from '@/lib/message'
 import {
   Plus, Trash2, Database, ChevronDown, ChevronRight,
   Pencil, Search, X, Hash, CheckSquare, Calendar, Mail,
   Phone, Link, FileText, Code, Layers, List,
 } from 'lucide-react'
+import { Button, Input, Modal, Popconfirm, Select, Tag } from 'antd'
 
 const FIELD_TYPES = [
   { value: 'text', label: 'Text' }, { value: 'number', label: 'Number' },
@@ -75,7 +75,7 @@ export default function LowcodeModelsPage() {
 
   const handleSaveModel = async () => {
     const err = validateName(modelForm.name, '模型名称')
-    if (err) { message.warning(err); return }
+    if (err) { getMessage().warning(err); return }
     try {
       if (modelDialog === 'create') {
         await apiFetch('/lowcode/models', { method: 'POST', body: JSON.stringify(modelForm) })

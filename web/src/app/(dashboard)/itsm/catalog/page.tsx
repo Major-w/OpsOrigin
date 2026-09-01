@@ -5,13 +5,13 @@
 // 服务对象(用户/用户组)决定哪些人能在门户看到该项，为空 = 全员可见。
 import { useEffect, useMemo, useState } from 'react'
 import { Card, CardContent } from '@/components/ui/card'
-import { Button, Tag, Input, Modal, Popconfirm } from 'antd'
 import { FolderTree, FolderPlus, Package, Plus, Trash2, Pencil, Search, Users, ArrowUpCircle, ArrowDownCircle, Globe, FileText, Star, ChevronRight, CornerDownRight, Layers } from 'lucide-react'
 import { apiFetch, apiList } from '@/lib/utils'
 import { useProcessStore } from '@/stores/itsm/processes'
 import { useIAMStore } from '@/stores/iam'
 import { useUserStore } from '@/stores/user'
-import { message } from 'antd'
+import { getMessage } from '@/lib/message'
+import { Button, Input, Modal, Popconfirm, Tag } from 'antd'
 
 interface Audience { user_ids?: string[]; group_ids?: string[] }
 interface CatalogUsage { catalog_id: string; ticket_count: number; avg_satisfaction: number; rated_count: number }
@@ -70,7 +70,7 @@ export default function ITSMCatalogPage() {
   const [selectedFolderId, setSelectedFolderId] = useState<string>('')
 
   const load = () => {
-    apiList<ServiceItem>('/itsm/catalog').then(list => setItems(list || [])).catch(() => message.error('加载失败'))
+    apiList<ServiceItem>('/itsm/catalog').then(list => setItems(list || [])).catch(() => getMessage().error('加载失败'))
     apiList<CatalogUsage>('/itsm/catalog/usage').then(list => {
       const m: Record<string, CatalogUsage> = {}
       ;(list || []).forEach(u => { m[u.catalog_id] = u })
@@ -144,7 +144,7 @@ export default function ITSMCatalogPage() {
   const isEdit = !!draft.id
   const openCreateFolder = () => { setDraftKind('folder'); setDraft({ ...emptyFolder(selectedFolder || undefined), enabled: true }); setAudFilter(''); setAudTab('group'); setDialogOpen(true) }
   const openCreateService = () => {
-    if (!selectedFolder) { message.error('请先在左侧选择一个目录，再在其中新增服务项'); return }
+    if (!selectedFolder) { getMessage().error('请先在左侧选择一个目录，再在其中新增服务项'); return }
     setDraftKind('service'); setDraft({ ...emptyService(selectedFolder), enabled: true }); setAudFilter(''); setAudTab('group'); setDialogOpen(true)
   }
   const openEdit = (it: ServiceItem) => {
@@ -161,9 +161,9 @@ export default function ITSMCatalogPage() {
   }, [folders, draftKind, draft.id])
 
   const save = async () => {
-    if (!draft.name?.trim()) { message.error('请填写名称'); return }
+    if (!draft.name?.trim()) { getMessage().error('请填写名称'); return }
     const folderMode = draftKind === 'folder'
-    if (!folderMode && !draft.process_id) { message.error('请选择关联流程模板：服务目录必须绑定流程才能上线'); return }
+    if (!folderMode && !draft.process_id) { getMessage().error('请选择关联流程模板：服务目录必须绑定流程才能上线'); return }
     setSaving(true)
     try {
       const payload = {
@@ -181,15 +181,15 @@ export default function ITSMCatalogPage() {
       }
       if (isEdit) {
         await apiFetch(`/itsm/catalog/${draft.id}`, { method: 'PUT', body: JSON.stringify(payload) })
-        message.success(folderMode ? '目录已更新' : '服务目录已更新')
+        getMessage().success(folderMode ? '目录已更新' : '服务目录已更新')
       } else {
         await apiFetch('/itsm/catalog', { method: 'POST', body: JSON.stringify(payload) })
-        message.success(folderMode ? '目录已创建' : '服务目录已创建')
+        getMessage().success(folderMode ? '目录已创建' : '服务目录已创建')
       }
       setDialogOpen(false)
       load()
     } catch (e: any) {
-      message.error(`保存失败: ${e?.message || e}`)
+      getMessage().error(`保存失败: ${e?.message || e}`)
     }
     setSaving(false)
   }
@@ -197,7 +197,7 @@ export default function ITSMCatalogPage() {
   // 服务项上线 / 下线（目录无此语义）
   const toggleEnabled = async (it: ServiceItem) => {
     if (!it.enabled && !it.process_id) {
-      message.error('该服务目录未关联流程模板，无法上线（请先编辑并关联流程）')
+      getMessage().error('该服务目录未关联流程模板，无法上线（请先编辑并关联流程）')
       return
     }
     const next = !it.enabled
@@ -212,17 +212,17 @@ export default function ITSMCatalogPage() {
           audience: { user_ids: it.audience?.user_ids || [], group_ids: it.audience?.group_ids || [] },
         }),
       })
-      message.success(next ? `「${it.name}」已上线，员工可在服务门户申请` : `「${it.name}」已下线`)
+      getMessage().success(next ? `「${it.name}」已上线，员工可在服务门户申请` : `「${it.name}」已下线`)
     } catch (e: any) {
       setItems(prev => prev.map(x => x.id === it.id ? { ...x, enabled: !next } : x))
-      message.error(`操作失败: ${e?.message || e}`)
+      getMessage().error(`操作失败: ${e?.message || e}`)
     }
   }
 
   const remove = async (it: ServiceItem) => {
     const hasKids = (subfoldersUnder.get(it.id)?.length || 0) + (servicesUnder.get(it.id)?.length || 0) > 0
     if (hasKids) {
-      message.error(isFolder(it) ? '该目录下还有子目录或服务项，请先移除其下内容后再删除' : '该服务项下还有子项，请先移除后再删除')
+      getMessage().error(isFolder(it) ? '该目录下还有子目录或服务项，请先移除其下内容后再删除' : '该服务项下还有子项，请先移除后再删除')
       return
     }
     setDeleteTarget(it)
@@ -231,9 +231,9 @@ export default function ITSMCatalogPage() {
     if (!deleteTarget) return
     try {
       await apiFetch(`/itsm/catalog/${deleteTarget.id}`, { method: 'DELETE' })
-      message.success('已删除'); load()
+      getMessage().success('已删除'); load()
       if (deleteTarget.id === selectedFolderId) setSelectedFolderId('')
-    } catch (e: any) { message.error(`删除失败: ${e?.message || e}`) }
+    } catch (e: any) { getMessage().error(`删除失败: ${e?.message || e}`) }
     setDeleteTarget(null)
   }
 

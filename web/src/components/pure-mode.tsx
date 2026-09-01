@@ -429,7 +429,7 @@ export default function PureMode({ onExitPure }: { onExitPure: () => void }) {
   const isDark = theme === 'dark'
 
   return (
-    <div className={cn('flex h-screen overflow-hidden', isDark ? 'bg-[#0B0F19] text-white' : 'bg-gray-50 text-gray-900')}>
+    <div className={cn('flex h-screen overflow-hidden', isDark ? 'bg-[var(--background)] text-white' : 'bg-gray-50 text-gray-900')}>
       {/* ============ 左侧功能区 ============ */}
       <aside className={cn(
         'relative z-10 w-60 flex flex-col border-r backdrop-blur-2xl shrink-0',
@@ -464,7 +464,7 @@ export default function PureMode({ onExitPure }: { onExitPure: () => void }) {
                   'group flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-all duration-200 w-full text-left',
                   active
                     ? isDark ? 'bg-blue-500/10 text-blue-400 border border-blue-500/20' : 'bg-blue-50 text-blue-600 border border-blue-200'
-                    : isDark ? 'text-[#94A3B8] hover:text-white hover:bg-white/[0.03]' : 'text-gray-600 hover:text-gray-900 hover:bg-gray-100',
+                    : isDark ? 'text-[var(--secondary-foreground)] hover:text-white hover:bg-white/[0.03]' : 'text-gray-600 hover:text-gray-900 hover:bg-gray-100',
                 )}
               >
                 <Icon className="h-4 w-4" strokeWidth={1.5} />
@@ -666,7 +666,7 @@ export default function PureMode({ onExitPure }: { onExitPure: () => void }) {
             {showHistory && (
               <div className="absolute inset-0 z-20 flex">
                 <div className="w-72 h-full overflow-y-auto p-3 space-y-2 shrink-0 backdrop-blur-2xl"
-                  style={{ background: isDark ? 'rgba(11,15,25,0.96)' : 'rgba(255,255,255,0.97)', borderColor: isDark ? 'rgba(255,255,255,0.06)' : '#e5e7eb', borderRightWidth: 1, borderRightStyle: 'solid' }}>
+                  style={{ background: isDark ? 'rgba(11,15,25,0.96)' : 'rgba(255,255,255,0.97)', borderColor: isDark ? 'var(--border)' : 'var(--border)', borderRightWidth: 1, borderRightStyle: 'solid' }}>
                   <div className="flex items-center justify-between mb-2">
                     <span className="text-sm font-medium">会话历史</span>
                     <button onClick={() => setShowHistory(false)} className="p-1 rounded hover:bg-black/5 dark:hover:bg-white/10 text-muted-foreground" title="收起">
@@ -900,7 +900,7 @@ export default function PureMode({ onExitPure }: { onExitPure: () => void }) {
                           <p className="text-xs text-red-500 whitespace-pre-wrap">{a.error}</p>
                         ) : (
                           <div
-                            className="text-xs text-gray-700 dark:text-[#C7D2E0] whitespace-pre-wrap"
+                            className="text-xs text-gray-700 dark:text-[var(--foreground)] whitespace-pre-wrap"
                             dangerouslySetInnerHTML={{ __html: renderMarkdown(a.text) }}
                           />
                         )}

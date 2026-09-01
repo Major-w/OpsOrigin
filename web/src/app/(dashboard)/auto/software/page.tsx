@@ -6,7 +6,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button, Badge, Input, Modal, Tag, Checkbox } from 'antd'
 import { apiFetch } from '@/lib/utils'
 import { Upload, Trash2, Send, FileText, HardDrive, RefreshCw, X, CheckCircle, Loader2 } from 'lucide-react'
-import { message } from 'antd'
+import { getMessage } from '@/lib/message'
 
 function fmtSize(bytes: number) {
   if (bytes < 1024) return `${bytes} B`
@@ -54,7 +54,7 @@ export default function SoftwarePage() {
           ok++
         } catch (e: any) { errs.push(e.message) }
       }
-      message.success(`已分发到 ${ok} 个节点` + (errs.length ? `, ${errs.length} 失败` : ''))
+      getMessage().success(`已分发到 ${ok} 个节点` + (errs.length ? `, ${errs.length} 失败` : ''))
       setDialogOpen(false)
     } finally { setDistributing(false) }
   }

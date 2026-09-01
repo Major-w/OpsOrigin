@@ -44,7 +44,7 @@ export function renderPlanBlock(content: string): string {
       <span class="text-[10px] font-semibold uppercase tracking-wide text-blue-600 dark:text-blue-400">📋 执行计划</span>
       <span class="text-[10px] text-muted-foreground">(${lines.length} 步)</span>
     </div>
-    <ol class="space-y-1.5">${lines.map((l, i) => `<li class="flex gap-2 text-xs"><span class="shrink-0 h-4 w-4 rounded-full bg-blue-500 text-white text-[9px] flex items-center justify-center mt-px font-semibold">${i + 1}</span><span class="text-gray-700 dark:text-[#C7D2E0]">${renderInlineMd(l)}</span></li>`).join('')}</ol>
+    <ol class="space-y-1.5">${lines.map((l, i) => `<li class="flex gap-2 text-xs"><span class="shrink-0 h-4 w-4 rounded-full bg-blue-500 text-white text-[9px] flex items-center justify-center mt-px font-semibold">${i + 1}</span><span class="text-gray-700 dark:text-[var(--foreground)]">${renderInlineMd(l)}</span></li>`).join('')}</ol>
   </div>`
 }
 
@@ -54,7 +54,7 @@ export function renderReportBlock(content: string): string {
     <div class="flex items-center gap-1.5 mb-2">
       <span class="text-[10px] font-semibold uppercase tracking-wide text-purple-600 dark:text-purple-400">📄 执行报告</span>
     </div>
-    <div class="text-xs text-gray-700 dark:text-[#C7D2E0] leading-relaxed">${renderInlineMd(content)}</div>
+    <div class="text-xs text-gray-700 dark:text-[var(--foreground)] leading-relaxed">${renderInlineMd(content)}</div>
   </div>`
 }
 

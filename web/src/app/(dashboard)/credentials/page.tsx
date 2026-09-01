@@ -5,11 +5,11 @@ import { useScriptStore } from '@/stores/script'
 import { useAgentStore } from '@/stores/agent'
 import { formatTime, cn } from '@/lib/utils'
 import { Card, CardContent } from '@/components/ui/card'
-import { Button, Tag, Input, Modal, Popconfirm } from 'antd'
 import { ViewToggle, type ViewMode } from '@/components/ui/data-list'
 import type { KeyEntry } from '@/stores/keys'
 import { Copy, Eye, EyeOff, Key, Lock, Database, Fingerprint, Plus, Trash2, Edit, CheckSquare, Square, Search, X, Wifi, CheckCircle, XCircle, Loader2 } from 'lucide-react'
-import { message } from 'antd'
+import { getMessage } from '@/lib/message'
+import { Button, Input, Modal, Popconfirm, Tag } from 'antd'
 
 const credentialTypeLabels: Record<string, string> = {
   ssh_private: 'SSH私钥',
@@ -163,7 +163,7 @@ export default function CredentialsPage() {
 
   const handleCopy = (content: string) => {
     navigator.clipboard.writeText(content)
-    message.success('已复制到剪贴板')
+    getMessage().success('已复制到剪贴板')
   }
 
   const handleTestSSH = async (form: CredentialForm) => {
@@ -177,9 +177,9 @@ export default function CredentialsPage() {
       const result = await testSSH(payload)
       setTestResult({ reachable: !!result?.reachable, detail: result?.detail })
       if (result?.reachable) {
-        message.success('SSH 连接测试成功')
+        getMessage().success('SSH 连接测试成功')
       } else {
-        message.error(`SSH 连接失败: ${result?.detail || '不可达'}`)
+        getMessage().error(`SSH 连接失败: ${result?.detail || '不可达'}`)
       }
     } catch (e: any) {
       setTestResult({ reachable: false, detail: e.message })

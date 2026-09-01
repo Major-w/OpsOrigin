@@ -1,13 +1,14 @@
 
 import { useEffect, useMemo, useState } from 'react'
 import { Card, CardContent } from '@/components/ui/card'
-import { Button, Input, Tag, Select, Space, Modal, Popconfirm, message, Tooltip } from 'antd'
+import { Button, Input, Tag, Select, Space, Modal, Popconfirm,  Tooltip } from 'antd'
 import { ReloadOutlined, PlusOutlined, DeleteOutlined, EditOutlined, EyeOutlined, DownloadOutlined, StarOutlined, ThunderboltOutlined, CheckCircleOutlined, CloudOutlined, ToolOutlined } from '@ant-design/icons'
 import { apiFetch, cn } from '@/lib/utils'
 import {
   Store, RefreshCw, Download, Upload, Trash2, Package, User, Search,
   Heart, Star, GitBranch,
 } from 'lucide-react'
+import { getMessage } from '@/lib/message'
 
 // 技能市场 (L4: MCP 打包共享, 数字员工 + 依赖工具打包成可分享的市场形态)
 interface AgentPayload {
@@ -80,7 +81,7 @@ export default function MarketplacePage() {
       const q = category ? `?category=${encodeURIComponent(category)}` : ''
       setPackages(await apiFetch<SkillPackage[]>(`/ai/skills${q}`))
     } catch (e: any) {
-      message.error(`加载技能市场失败: ${e.message}`)
+      getMessage().error(`加载技能市场失败: ${e.message}`)
     } finally {
       setLoading(false)
     }
@@ -142,11 +143,11 @@ export default function MarketplacePage() {
         method: 'POST',
         body: JSON.stringify({ name: installName || undefined }),
       })
-      message.success(`已安装为数字员工「${ag.name}」`)
+      getMessage().success(`已安装为数字员工「${ag.name}」`)
       setInstallTarget(null)
       setInstallName('')
     } catch (e: any) {
-      message.error(`安装失败: ${e.message}`)
+      getMessage().error(`安装失败: ${e.message}`)
     } finally {
       setInstalling(false)
     }
@@ -162,9 +163,9 @@ export default function MarketplacePage() {
       a.download = `${slugify(p.name)}.json`
       a.click()
       URL.revokeObjectURL(url)
-      message.success('技能包已导出')
+      getMessage().success('技能包已导出')
     } catch (e: any) {
-      message.error(`导出失败: ${e.message}`)
+      getMessage().error(`导出失败: ${e.message}`)
     }
   }
 
@@ -173,13 +174,13 @@ export default function MarketplacePage() {
     const p = pendingUnpublish
     try {
       await apiFetch(`/ai/skills/${p.id}`, { method: 'DELETE' })
-      message.success('已下架')
+      getMessage().success('已下架')
       setFavIds(prev => {
         const n = new Set(prev); n.delete(p.id); return n
       })
       loadAll()
     } catch (e: any) {
-      message.error(`下架失败: ${e.message}`)
+      getMessage().error(`下架失败: ${e.message}`)
     } finally {
       setPendingUnpublish(null)
     }
@@ -202,7 +203,7 @@ export default function MarketplacePage() {
         if (prev) n.add(p.id); else n.delete(p.id)
         return n
       })
-      message.error(`收藏操作失败: ${e.message}`)
+      getMessage().error(`收藏操作失败: ${e.message}`)
     }
   }
 
@@ -225,10 +226,10 @@ export default function MarketplacePage() {
         body: JSON.stringify({ score }),
       })
       setMyScore(score)
-      message.success(`已评 ${score} 星`)
+      getMessage().success(`已评 ${score} 星`)
       loadAll()
     } catch (e: any) {
-      message.error(`评分失败: ${e.message}`)
+      getMessage().error(`评分失败: ${e.message}`)
     } finally {
       setRateSubmitting(false)
     }
@@ -242,14 +243,14 @@ export default function MarketplacePage() {
     try {
       setVersions(await apiFetch<SkillPackage[]>(`/ai/skills/${p.id}/versions`))
     } catch (e: any) {
-      message.error(`加载版本失败: ${e.message}`)
+      getMessage().error(`加载版本失败: ${e.message}`)
     } finally {
       setVersionsLoading(false)
     }
   }
 
   const doImport = async () => {
-    if (!importFile) return message.error('请选择技能包 JSON 文件')
+    if (!importFile) return getMessage().error('请选择技能包 JSON 文件')
     setImporting(true)
     try {
       const text = await importFile.text()
@@ -257,12 +258,12 @@ export default function MarketplacePage() {
         method: 'POST',
         body: JSON.stringify({ data: text }),
       })
-      message.success(`已导入技能包「${pkg.name}」`)
+      getMessage().success(`已导入技能包「${pkg.name}」`)
       setImportOpen(false)
       setImportFile(null)
       loadAll()
     } catch (e: any) {
-      message.error(`导入失败: ${e.message}`)
+      getMessage().error(`导入失败: ${e.message}`)
     } finally {
       setImporting(false)
     }

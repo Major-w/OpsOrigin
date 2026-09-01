@@ -4,12 +4,12 @@ import { cn } from "@/lib/utils"
 
 const buttonVariants = {
   default: "bg-blue-50 text-blue-600 border border-blue-200 hover:bg-blue-100 dark:bg-blue-500/15 dark:text-blue-400 dark:border-blue-500/25 dark:hover:bg-blue-500/20",
-  primary: "bg-blue-500 text-white font-semibold hover:bg-blue-600 border border-blue-500 shadow-sm dark:bg-blue-500 dark:hover:bg-blue-400 dark:text-[#0B0F19]",
+  primary: "bg-blue-500 text-white font-semibold hover:bg-blue-600 border border-blue-500 shadow-sm dark:bg-blue-500 dark:hover:bg-blue-400 dark:text-[var(--primary-foreground)]",
   destructive: "bg-red-50 text-red-600 border border-red-200 hover:bg-red-100 dark:bg-red-500/15 dark:text-red-400 dark:border-red-500/25 dark:hover:bg-red-500/20",
-  outline: "bg-transparent text-gray-600 border border-gray-200 hover:text-gray-900 hover:border-gray-300 dark:text-[#94A3B8] dark:border-[rgba(255,255,255,0.08)] dark:hover:text-white dark:hover:border-[rgba(255,255,255,0.15)]",
-  secondary: "bg-gray-100 text-gray-600 border border-gray-200 hover:bg-gray-200 dark:bg-[rgba(255,255,255,0.04)] dark:text-[#94A3B8] dark:border-[rgba(255,255,255,0.06)] dark:hover:text-white dark:hover:bg-[rgba(255,255,255,0.08)]",
-  ghost: "bg-transparent text-gray-600 hover:text-gray-900 hover:bg-gray-100 dark:text-[#94A3B8] dark:hover:text-white dark:hover:bg-[rgba(255,255,255,0.04)]",
-  text: "bg-transparent text-gray-600 hover:text-gray-900 hover:bg-gray-100 dark:text-[#94A3B8] dark:hover:text-white dark:hover:bg-[rgba(255,255,255,0.06)]",
+  outline: "bg-transparent text-gray-600 border border-gray-200 hover:text-gray-900 hover:border-gray-300 dark:text-[var(--secondary-foreground)] dark:border-[var(--input)] dark:hover:text-white dark:hover:border-[rgba(255,255,255,0.15)]",
+  secondary: "bg-gray-100 text-gray-600 border border-gray-200 hover:bg-gray-200 dark:bg-[rgba(255,255,255,0.04)] dark:text-[var(--secondary-foreground)] dark:border-[var(--border)] dark:hover:text-white dark:hover:bg-[rgba(255,255,255,0.08)]",
+  ghost: "bg-transparent text-gray-600 hover:text-gray-900 hover:bg-gray-100 dark:text-[var(--secondary-foreground)] dark:hover:text-white dark:hover:bg-[rgba(255,255,255,0.04)]",
+  text: "bg-transparent text-gray-600 hover:text-gray-900 hover:bg-gray-100 dark:text-[var(--secondary-foreground)] dark:hover:text-white dark:hover:bg-[rgba(255,255,255,0.06)]",
   link: "text-blue-600 underline-offset-4 hover:underline dark:text-blue-400",
 }
 

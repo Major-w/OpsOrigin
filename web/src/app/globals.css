@@ -29,6 +29,11 @@
   --ring: rgba(59, 130, 246, 0.4);
   --radius: 0.75rem;
 
+  --success: #22C55E;
+  --success-foreground: #FFFFFF;
+  --surface-elevated: #FFFFFF;
+  --border-strong: #CBD5E1;
+
   --card-shadow: 0 1px 3px rgba(0, 0, 0, 0.08), 0 1px 2px rgba(0, 0, 0, 0.06);
   --blue-glow: 0 0 24px rgba(96, 165, 250, 0.15);
 }
@@ -56,6 +61,11 @@
   --border: rgba(255, 255, 255, 0.06);
   --input: rgba(255, 255, 255, 0.08);
   --ring: rgba(96, 165, 250, 0.3);
+
+  --success: #4ADE80;
+  --success-foreground: #0B0F19;
+  --surface-elevated: #161B22;
+  --border-strong: #30363D;
 
   --card-shadow: 0 0 0 1px rgba(255, 255, 255, 0.03), 0 8px 32px rgba(0, 0, 0, 0.3);
 }
@@ -224,7 +234,7 @@
   }
   .markdown-body pre code {
     background: transparent;
-    color: #E2E8F0;
+    color: var(--foreground);
     padding: 0;
     font-size: 0.825rem;
   }

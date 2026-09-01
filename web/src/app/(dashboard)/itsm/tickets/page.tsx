@@ -17,6 +17,7 @@ import { useUserStore } from '@/stores/user'
 import { useWebSocket } from '@/lib/useWebSocket'
 import { Plus, Check, X, Play, RotateCcw, Clock, FileText, Activity, ChevronRight, Paperclip, MessageSquare, Upload, Download, Trash2, FileUp, FileDown, BookOpen, BookOpenCheck, Send, UserPlus, CheckCircle2, ListChecks, Bell, Link2 } from 'lucide-react'
 import { RISK_LABELS, STATUS_LABELS, RISK_BADGE_VARIANT, parseFormSchema, applyStepFieldPerms } from '@/lib/itsm-constants'
+import { getMessage } from '@/lib/message'
 const SLA_BY_RISK: Record<string, string> = { critical: '4小时', high: '24小时', medium: '48小时', low: '72小时' }
 
 interface Comment {
@@ -191,12 +192,12 @@ export default function ITSMPage() {
           })
         }
       } else if (data.type === 'ola_breached') {
-        message.error(`OLA 超时: 工单 ${data.ticket_id} — ${data.policy || ''}`)
+        getMessage().error(`OLA 超时: 工单 ${data.ticket_id} — ${data.policy || ''}`)
         fetch()
       } else if (data.type === 'ola_warning') {
-        message.warning(`OLA 预警: 工单 ${data.ticket_id} — ${data.policy || ''}`)
+        getMessage().warning(`OLA 预警: 工单 ${data.ticket_id} — ${data.policy || ''}`)
       } else if (data.type === 'hold_resumed') {
-        message.success(`工单 ${data.ticket_id} 已自动恢复`)
+        getMessage().success(`工单 ${data.ticket_id} 已自动恢复`)
         fetch()
       }
     },
@@ -208,21 +209,21 @@ export default function ITSMPage() {
     try {
       const data = await apiList<Comment>(`/itsm/tickets/${ticketId}/comments`)
       setComments(data || [])
-    } catch { setComments([]); message.error('加载评论失败') }
+    } catch { setComments([]); getMessage().error('加载评论失败') }
   }, [])
 
   const fetchAttachments = useCallback(async (ticketId: string) => {
     try {
       const data = await apiList<Attachment>(`/itsm/tickets/${ticketId}/attachments`)
       setAttachments(data || [])
-    } catch { setAttachments([]); message.error('加载附件失败') }
+    } catch { setAttachments([]); getMessage().error('加载附件失败') }
   }, [])
 
   const fetchSubtasks = useCallback(async (ticketId: string) => {
     try {
       const data = await apiList<Subtask>(`/itsm/tickets/${ticketId}/subtasks`)
       setSubtasks(data || [])
-    } catch { setSubtasks([]); message.error('加载子任务失败') }
+    } catch { setSubtasks([]); getMessage().error('加载子任务失败') }
   }, [])
 
   useEffect(() => { fetch(); fetchStats(); fetchProcesses() }, [])
@@ -244,7 +245,7 @@ export default function ITSMPage() {
           await fetchProcesses() // 先备好流程定义，详情才能按主表单+节点权限渲染
           const t = await getTicket(tid)
           if (t) await handleSelectTicket(t)
-        } catch { message.error('工单不存在或无权访问') }
+        } catch { getMessage().error('工单不存在或无权访问') }
       })()
     } catch { /* ignore */ }
   }, [])
@@ -396,7 +397,7 @@ export default function ITSMPage() {
         const parsed = JSON.parse(configJson) as FormSchema
         setConfigSchema({ version: parsed.version || 1, scope: resolveConfigScope(), fields: parsed.fields || [] })
       } catch {
-        message.error('JSON 格式错误，无法切回可视化模式')
+        getMessage().error('JSON 格式错误，无法切回可视化模式')
         return
       }
     }
@@ -411,17 +412,17 @@ export default function ITSMPage() {
         const parsed = JSON.parse(configJson) as FormSchema
         next = { version: parsed.version || 1, scope, fields: parsed.fields || [] }
       } catch {
-        message.error('JSON 格式错误，请检查')
+        getMessage().error('JSON 格式错误，请检查')
         return
       }
     }
     const keys = (next.fields || []).map(f => (f.key || '').trim())
     if (keys.some(k => !k)) {
-      message.error('存在未填写字段标识 key 的字段')
+      getMessage().error('存在未填写字段标识 key 的字段')
       return
     }
     if (new Set(keys).size !== keys.length) {
-      message.error('字段标识 key 存在重复，请修正')
+      getMessage().error('字段标识 key 存在重复，请修正')
       return
     }
     setConfigSaving(true)
@@ -547,7 +548,7 @@ export default function ITSMPage() {
     try {
       await apiFetch('/knowledge', { method: 'POST', body: JSON.stringify({ title: ticket.title + ' - 处理总结', content, category: '故障处理', tags: [ticket.risk_level, '工单转换'], author: me?.username || 'anonymous' }) })
       navigate('/knowledge')
-    } catch (e: any) { message.error('转换失败: ' + e.message) }
+    } catch (e: any) { getMessage().error('转换失败: ' + e.message) }
   }
 
   const handleAddComment = async () => {
@@ -561,7 +562,7 @@ export default function ITSMPage() {
       setCommentContent('')
       setMentionOpen(false)
       fetchComments(selectedTicket.id)
-    } catch { message.error('添加评论失败') }
+    } catch { getMessage().error('添加评论失败') }
     setCommentLoading(false)
   }
 
@@ -605,7 +606,7 @@ export default function ITSMPage() {
     try {
       await apiFetch(`/itsm/tickets/${selectedTicket.id}/comments/${cid}`, { method: 'DELETE' })
       fetchComments(selectedTicket.id)
-    } catch { message.error('删除评论失败') }
+    } catch { getMessage().error('删除评论失败') }
   }
 
   // --- Subtasks ---
@@ -628,7 +629,7 @@ export default function ITSMPage() {
       setSubtaskDialog(false); setSubtaskTitle(''); setSubtaskDesc(''); setSubtaskAssignee(''); setSubtaskDue('')
       setSubtaskSync([]); setSubtaskCloseWithParent(true)
       fetchSubtasks(selectedTicket.id)
-    } catch { message.error('创建子任务失败') }
+    } catch { getMessage().error('创建子任务失败') }
     setSubtaskSaving(false)
   }
 
@@ -654,10 +655,10 @@ export default function ITSMPage() {
           updated_by: me?.username || 'anonymous',
         }),
       })
-      message.success('已保存处理情况')
+      getMessage().success('已保存处理情况')
       setSubtaskDetailOpen(false)
       fetchSubtasks(selectedTicket.id)
-    } catch { message.error('保存处理情况失败') }
+    } catch { getMessage().error('保存处理情况失败') }
     setSubtaskDetailSaving(false)
   }
 
@@ -683,7 +684,7 @@ export default function ITSMPage() {
         body: JSON.stringify({ status: next }),
       })
       fetchSubtasks(selectedTicket.id)
-    } catch { message.error('更新子任务失败') }
+    } catch { getMessage().error('更新子任务失败') }
   }
 
   const handleSetSubtaskStatus = async (st: Subtask, status: string) => {
@@ -694,7 +695,7 @@ export default function ITSMPage() {
         body: JSON.stringify({ status }),
       })
       fetchSubtasks(selectedTicket.id)
-    } catch { message.error('更新子任务失败') }
+    } catch { getMessage().error('更新子任务失败') }
   }
 
   const handleDeleteSubtask = async (sid: number) => {
@@ -702,7 +703,7 @@ export default function ITSMPage() {
     try {
       await apiFetch(`/itsm/tickets/${selectedTicket.id}/subtasks/${sid}`, { method: 'DELETE' })
       fetchSubtasks(selectedTicket.id)
-    } catch { message.error('删除子任务失败') }
+    } catch { getMessage().error('删除子任务失败') }
   }
 
   const handleUploadFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -719,7 +720,7 @@ export default function ITSMPage() {
         body: formData,
       })
       fetchAttachments(selectedTicket.id)
-    } catch { message.error('上传附件失败') }
+    } catch { getMessage().error('上传附件失败') }
     setUploading(false)
     if (fileInputRef.current) fileInputRef.current.value = ''
   }
@@ -729,7 +730,7 @@ export default function ITSMPage() {
     try {
       await apiFetch(`/itsm/tickets/${selectedTicket.id}/attachments/${aid}`, { method: 'DELETE' })
       fetchAttachments(selectedTicket.id)
-    } catch { message.error('删除附件失败') }
+    } catch { getMessage().error('删除附件失败') }
   }
 
   const addCiId = () => {
@@ -754,7 +755,7 @@ export default function ITSMPage() {
       setImportDialog(true)
       fetch()
       fetchStats()
-    } catch { message.error('CSV 导入失败') }
+    } catch { getMessage().error('CSV 导入失败') }
     setImporting(false)
     if (importFileRef.current) importFileRef.current.value = ''
   }

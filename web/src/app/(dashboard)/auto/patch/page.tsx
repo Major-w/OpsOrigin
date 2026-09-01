@@ -6,7 +6,7 @@ import { useScriptStore } from '@/stores/script'
 import { useAgentStore } from '@/stores/agent'
 import { apiFetch } from '@/lib/utils'
 import { Download, Play, CheckCircle, XCircle, Terminal } from 'lucide-react'
-import { message } from 'antd'
+import { getMessage } from '@/lib/message'
 
 export default function PatchPage() {
   const { scripts, fetch: fetchScripts } = useScriptStore()
@@ -22,7 +22,7 @@ export default function PatchPage() {
   useEffect(() => { fetchScripts(); fetchAgents() }, [])
 
   const run = async () => {
-    if (!scriptId || agentIds.length === 0) { message.error('请选择补丁脚本和目标主机'); return }
+    if (!scriptId || agentIds.length === 0) { getMessage().error('请选择补丁脚本和目标主机'); return }
     setRunning(true); setResults([])
     const newLog: typeof patchLog = []
     for (const aid of agentIds) {
@@ -38,7 +38,7 @@ export default function PatchPage() {
     }
     setPatchLog(prev => [...newLog, ...prev].slice(0, 50))
     setRunning(false)
-    message.success(`补丁执行完成: ${newLog.filter(l=>l.status==='success').length}/${newLog.length} 成功`)
+    getMessage().success(`补丁执行完成: ${newLog.filter(l=>l.status==='success').length}/${newLog.length} 成功`)
   }
 
   const parseParams = (p: string) => { try { return JSON.parse(p) } catch { return {} } }

@@ -6,7 +6,7 @@ import { Button, Tag, Input, Modal, Popconfirm } from 'antd'
 import { Plus, Trash2, Pencil, FolderPlus, GripVertical, Palette } from 'lucide-react'
 import { cn } from '@/lib/utils'
 
-const DEFAULT_COLOR = '#3B82F6'
+const DEFAULT_COLOR = 'var(--primary)'
 
 export default function KnowledgeCategoriesPage() {
   const { categoryList, fetchCategories, saveCategory, updateCategory, deleteCategory } =
@@ -215,7 +215,7 @@ export default function KnowledgeCategoriesPage() {
                   className="w-9 h-9 rounded cursor-pointer border-0 p-0"
                 />
                 <Input
-                  placeholder="#3B82F6"
+                  placeholder="var(--primary)"
                   value={form.color || ''}
                   onChange={e => setForm({ ...form, color: e.target.value })}
                   className="flex-1 font-mono text-xs"

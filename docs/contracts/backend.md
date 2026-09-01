@@ -1,6 +1,7 @@
 # 后端开发契约（Backend Contract）
 
-> 适用范围：`internal/**` `pkg/**` `cmd/**`。从既有代码实践中提炼的强制约定。
+> 适用范围：`internal/**` `pkg/**` `cmd/**`。
+> 技术栈：Go 1.26 stdlib net/http（Go 1.22 ServeMux）+ ent ORM + PostgreSQL + Redis + Dgraph
 > 校验：`make contract` 自动化 + 本文件逐条人工自查。
 
 ## B1 统一响应

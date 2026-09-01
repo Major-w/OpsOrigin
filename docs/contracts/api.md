@@ -1,6 +1,6 @@
 # API 契约（跨端 REST 契约）
 
-> 适用范围：前后端交界的一切 HTTP 交互。前端实现见 `web-next/src/lib/utils.ts`（统一 `apiFetch/apiList`），后端实现见 `cmd/core/server.go` 路由注册。
+> 适用范围：前后端交界的一切 HTTP 交互。前端实现见 `web/src/lib/utils.ts`（统一 `apiFetch/apiList`），后端实现见 `cmd/core/server.go` 路由注册。
 > 校验：`make contract` + 新增端点对照 `docs/api-routes.md` 与 `docs/swagger/`。
 
 ## A1 路径与方法
@@ -42,6 +42,6 @@
 
 ```bash
 # 前端绕过 apiFetch？应 0 命中（apiFetchRaw 例外）
-grep -rn "fetch(" web-next/src --include="*.tsx" --include="*.ts" | grep -v "apiFetch\|apiFetchRaw\|fetch(" | head
+grep -rn "fetch(" web/src --include="*.tsx" --include="*.ts" | grep -v "apiFetch\|apiFetchRaw\|fetch(" | head
 ```
 完整校验：`make contract`。

@@ -7,7 +7,7 @@ import { useAgentStore } from '@/stores/agent'
 import { useSchedulerStore } from '@/stores/scheduler'
 import { apiFetch } from '@/lib/utils'
 import { Scan, Play, Clock, CheckCircle, XCircle, Loader2 } from 'lucide-react'
-import { message } from 'antd'
+import { getMessage } from '@/lib/message'
 
 export default function InspectionPage() {
   const { scripts, fetch: fetchScripts } = useScriptStore()
@@ -24,7 +24,7 @@ export default function InspectionPage() {
   useEffect(() => { fetchScripts(); fetchAgents(); fetchSchedules() }, [])
 
   const runNow = async () => {
-    if (!scriptId || agentIds.length === 0) { message.error('请选择巡检脚本和目标主机'); return }
+    if (!scriptId || agentIds.length === 0) { getMessage().error('请选择巡检脚本和目标主机'); return }
     setRunning(true); setResult(null)
     try {
       const r = await apiFetch<any>(`/scripts/${scriptId}/execute`, {
@@ -32,16 +32,16 @@ export default function InspectionPage() {
         body: JSON.stringify({ agent_id: agentIds[0], timeout: 600, params: {} }),
       })
       setResult(r)
-      message.success(r.exit_code === 0 ? '巡检通过' : `巡检完成, exitCode=${r.exit_code}`)
-    } catch (e: any) { message.error('执行失败: ' + e.message) }
+      getMessage().success(r.exit_code === 0 ? '巡检通过' : `巡检完成, exitCode=${r.exit_code}`)
+    } catch (e: any) { getMessage().error('执行失败: ' + e.message) }
     setRunning(false)
   }
 
   const schedule = async () => {
-    if (!scriptId || !schedName.trim() || !cron.trim()) { message.error('请填写完整'); return }
+    if (!scriptId || !schedName.trim() || !cron.trim()) { getMessage().error('请填写完整'); return }
     await create({ name: schedName, cron_expr: cron, task_type: 'script', target_id: scriptId, agent_ids: agentIds, enabled: true })
     setSchedName('')
-    message.success('巡检计划已创建')
+    getMessage().success('巡检计划已创建')
     fetchSchedules()
   }
 

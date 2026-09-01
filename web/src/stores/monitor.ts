@@ -1,7 +1,7 @@
 
 import { create } from 'zustand'
 import { apiFetch, apiList } from '@/lib/utils'
-import { message } from 'antd'
+import { getMessage } from '@/lib/message'
 export interface ProbeResult {
   success: boolean
   latency_ms: number
@@ -97,17 +97,17 @@ export const useMonitorStore = create<MonitorState>((set, get) => ({
       set({ targets, loading: false })
     } catch (e: any) {
       set({ loading: false })
-      message.error(`加载监控目标失败: ${e.message}`)
+      getMessage().error(`加载监控目标失败: ${e.message}`)
     }
   },
   addTarget: async (data) => {
     try {
       await apiFetch('/monitor/targets', { method: 'POST', body: JSON.stringify(data) })
-      message.success('新增监控目标成功')
+      getMessage().success('新增监控目标成功')
       await get().fetchTargets()
       return true
     } catch (e: any) {
-      message.error(`新增监控目标失败: ${e.message}`)
+      getMessage().error(`新增监控目标失败: ${e.message}`)
       return false
     }
   },
@@ -115,10 +115,10 @@ export const useMonitorStore = create<MonitorState>((set, get) => ({
     try {
       await apiFetch(`/monitor/targets/${id}`, { method: 'DELETE' })
       set(s => ({ targets: s.targets.filter(t => t.id !== id) }))
-      message.success('删除监控目标成功')
+      getMessage().success('删除监控目标成功')
       return true
     } catch (e: any) {
-      message.error(`删除监控目标失败: ${e.message}`)
+      getMessage().error(`删除监控目标失败: ${e.message}`)
       return false
     }
   },
@@ -129,7 +129,7 @@ export const useMonitorStore = create<MonitorState>((set, get) => ({
       set({ alerts, loading: false })
     } catch (e: any) {
       set({ loading: false })
-      message.error(`加载监控告警失败: ${e.message}`)
+      getMessage().error(`加载监控告警失败: ${e.message}`)
     }
   },
   fetchAlertHistory: async () => {
@@ -137,7 +137,7 @@ export const useMonitorStore = create<MonitorState>((set, get) => ({
       const history = await apiList<AlertEvent>('/monitor/alerts?status=history')
       set({ alertHistory: history })
     } catch (e: any) {
-      message.error(`加载告警历史失败: ${e.message}`)
+      getMessage().error(`加载告警历史失败: ${e.message}`)
     }
   },
   fetchAlertStats: async () => {
@@ -147,7 +147,7 @@ export const useMonitorStore = create<MonitorState>((set, get) => ({
       set({ alertStats: stats, loading: false })
     } catch (e: any) {
       set({ loading: false })
-      message.error(`加载告警统计失败: ${e.message}`)
+      getMessage().error(`加载告警统计失败: ${e.message}`)
     }
   },
   fetchRCA: async () => {
@@ -155,28 +155,28 @@ export const useMonitorStore = create<MonitorState>((set, get) => ({
       const entries = await apiList<RCAEntry>('/monitor/alerts/rca')
       set({ rcaEntries: entries || [] })
     } catch (e: any) {
-      message.error(`加载根因分析失败: ${e.message}`)
+      getMessage().error(`加载根因分析失败: ${e.message}`)
     }
   },
   ackAlert: async (id) => {
     try {
       await apiFetch(`/monitor/alerts/${id}/ack`, { method: 'POST', body: JSON.stringify({ acknowledged_by: 'admin' }) })
-      message.success('确认告警成功')
+      getMessage().success('确认告警成功')
       await get().fetchAlerts()
       return true
     } catch (e: any) {
-      message.error(`确认告警失败: ${e.message}`)
+      getMessage().error(`确认告警失败: ${e.message}`)
       return false
     }
   },
   resolveAlert: async (id) => {
     try {
       await apiFetch(`/monitor/alerts/${id}/resolve`, { method: 'POST' })
-      message.success('解决告警成功')
+      getMessage().success('解决告警成功')
       await get().fetchAlerts()
       return true
     } catch (e: any) {
-      message.error(`解决告警失败: ${e.message}`)
+      getMessage().error(`解决告警失败: ${e.message}`)
       return false
     }
   },
@@ -187,17 +187,17 @@ export const useMonitorStore = create<MonitorState>((set, get) => ({
       set({ rules, loading: false })
     } catch (e: any) {
       set({ loading: false })
-      message.error(`加载告警规则失败: ${e.message}`)
+      getMessage().error(`加载告警规则失败: ${e.message}`)
     }
   },
   createRule: async (data) => {
     try {
       await apiFetch('/monitor/rules', { method: 'POST', body: JSON.stringify(data) })
-      message.success('创建告警规则成功')
+      getMessage().success('创建告警规则成功')
       await get().fetchRules()
       return true
     } catch (e: any) {
-      message.error(`创建告警规则失败: ${e.message}`)
+      getMessage().error(`创建告警规则失败: ${e.message}`)
       return false
     }
   },
@@ -205,10 +205,10 @@ export const useMonitorStore = create<MonitorState>((set, get) => ({
     try {
       await apiFetch(`/monitor/rules/${id}`, { method: 'DELETE' })
       set(s => ({ rules: s.rules.filter(r => r.id !== id) }))
-      message.success('删除告警规则成功')
+      getMessage().success('删除告警规则成功')
       return true
     } catch (e: any) {
-      message.error(`删除告警规则失败: ${e.message}`)
+      getMessage().error(`删除告警规则失败: ${e.message}`)
       return false
     }
   },
@@ -220,7 +220,7 @@ export const useMonitorStore = create<MonitorState>((set, get) => ({
       return result
     } catch (e: any) {
       set({ error: e.message, loading: false })
-      message.error(`探测失败: ${e.message}`)
+      getMessage().error(`探测失败: ${e.message}`)
       return null
     }
   },
@@ -231,7 +231,7 @@ export const useMonitorStore = create<MonitorState>((set, get) => ({
       set({ probeResults: results, loading: false })
     } catch (e: any) {
       set({ loading: false })
-      message.error(`加载监控指标失败: ${e.message}`)
+      getMessage().error(`加载监控指标失败: ${e.message}`)
     }
   },
 }))

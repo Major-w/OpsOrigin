@@ -1,7 +1,7 @@
 
 import { create } from 'zustand'
 import { apiFetch, apiList } from '@/lib/utils'
-import { message } from 'antd'
+import { getMessage } from '@/lib/message'
 // ============ Types (matching Go backend) ============
 
 export type AppType = 'java' | 'go' | 'python' | 'nodejs' | 'static' | 'container'
@@ -76,74 +76,74 @@ export const useDeployStore = create<DeployState>((set, get) => ({
   fetchApps: async () => {
     set({ loading: true })
     try { set({ apps: await apiList<DeployApp>('/deploy/apps'), loading: false }) }
-    catch (e: any) { set({ loading: false }); message.error('加载应用失败: ' + e.message) }
+    catch (e: any) { set({ loading: false }); getMessage().error('加载应用失败: ' + e.message) }
   },
   createApp: async (d) => {
-    try { await apiFetch('/deploy/apps', { method: 'POST', body: JSON.stringify(d) }); message.success('应用已创建'); await get().fetchApps(); return true }
-    catch (e: any) { message.error('创建失败: ' + e.message); return false }
+    try { await apiFetch('/deploy/apps', { method: 'POST', body: JSON.stringify(d) }); getMessage().success('应用已创建'); await get().fetchApps(); return true }
+    catch (e: any) { getMessage().error('创建失败: ' + e.message); return false }
   },
   updateApp: async (id, d) => {
-    try { await apiFetch(`/deploy/apps/${id}`, { method: 'PUT', body: JSON.stringify(d) }); message.success('应用已更新'); await get().fetchApps(); return true }
-    catch (e: any) { message.error('更新失败: ' + e.message); return false }
+    try { await apiFetch(`/deploy/apps/${id}`, { method: 'PUT', body: JSON.stringify(d) }); getMessage().success('应用已更新'); await get().fetchApps(); return true }
+    catch (e: any) { getMessage().error('更新失败: ' + e.message); return false }
   },
   deleteApp: async (id) => {
-    try { await apiFetch(`/deploy/apps/${id}`, { method: 'DELETE' }); set(s => ({ apps: s.apps.filter(a => a.id !== id) })); message.success('已删除'); return true }
-    catch (e: any) { message.error('删除失败: ' + e.message); return false }
+    try { await apiFetch(`/deploy/apps/${id}`, { method: 'DELETE' }); set(s => ({ apps: s.apps.filter(a => a.id !== id) })); getMessage().success('已删除'); return true }
+    catch (e: any) { getMessage().error('删除失败: ' + e.message); return false }
   },
 
   fetchReleases: async () => {
     set({ loading: true })
     try { set({ releases: await apiList<ReleaseTicket>('/deploy/releases'), loading: false }) }
-    catch (e: any) { set({ loading: false }); message.error('加载发布单失败: ' + e.message) }
+    catch (e: any) { set({ loading: false }); getMessage().error('加载发布单失败: ' + e.message) }
   },
   createRelease: async (d) => {
-    try { await apiFetch('/deploy/releases', { method: 'POST', body: JSON.stringify(d) }); message.success('发布单已创建'); await get().fetchReleases(); return true }
-    catch (e: any) { message.error('创建失败: ' + e.message); return false }
+    try { await apiFetch('/deploy/releases', { method: 'POST', body: JSON.stringify(d) }); getMessage().success('发布单已创建'); await get().fetchReleases(); return true }
+    catch (e: any) { getMessage().error('创建失败: ' + e.message); return false }
   },
   updateRelease: async (id, d) => {
-    try { await apiFetch(`/deploy/releases/${id}`, { method: 'PUT', body: JSON.stringify(d) }); message.success('已更新'); await get().fetchReleases(); return true }
-    catch (e: any) { message.error('更新失败: ' + e.message); return false }
+    try { await apiFetch(`/deploy/releases/${id}`, { method: 'PUT', body: JSON.stringify(d) }); getMessage().success('已更新'); await get().fetchReleases(); return true }
+    catch (e: any) { getMessage().error('更新失败: ' + e.message); return false }
   },
   deleteRelease: async (id) => {
-    try { await apiFetch(`/deploy/releases/${id}`, { method: 'DELETE' }); set(s => ({ releases: s.releases.filter(r => r.id !== id) })); message.success('已删除'); return true }
-    catch (e: any) { message.error('删除失败: ' + e.message); return false }
+    try { await apiFetch(`/deploy/releases/${id}`, { method: 'DELETE' }); set(s => ({ releases: s.releases.filter(r => r.id !== id) })); getMessage().success('已删除'); return true }
+    catch (e: any) { getMessage().error('删除失败: ' + e.message); return false }
   },
   approveRelease: async (id) => {
-    try { await apiFetch(`/deploy/releases/${id}/approve`, { method: 'POST' }); message.success('已审批'); await get().fetchReleases(); return true }
-    catch (e: any) { message.error('审批失败: ' + e.message); return false }
+    try { await apiFetch(`/deploy/releases/${id}/approve`, { method: 'POST' }); getMessage().success('已审批'); await get().fetchReleases(); return true }
+    catch (e: any) { getMessage().error('审批失败: ' + e.message); return false }
   },
   rejectRelease: async (id, reason) => {
-    try { await apiFetch(`/deploy/releases/${id}/reject`, { method: 'POST', body: JSON.stringify({ reason }) }); message.success('已驳回'); await get().fetchReleases(); return true }
-    catch (e: any) { message.error('驳回失败: ' + e.message); return false }
+    try { await apiFetch(`/deploy/releases/${id}/reject`, { method: 'POST', body: JSON.stringify({ reason }) }); getMessage().success('已驳回'); await get().fetchReleases(); return true }
+    catch (e: any) { getMessage().error('驳回失败: ' + e.message); return false }
   },
   deployRelease: async (id) => {
-    try { await apiFetch(`/deploy/releases/${id}/deploy`, { method: 'POST' }); message.success('部署已启动'); await get().fetchReleases(); await get().fetchHistory(); return true }
-    catch (e: any) { message.error('部署失败: ' + e.message); return false }
+    try { await apiFetch(`/deploy/releases/${id}/deploy`, { method: 'POST' }); getMessage().success('部署已启动'); await get().fetchReleases(); await get().fetchHistory(); return true }
+    catch (e: any) { getMessage().error('部署失败: ' + e.message); return false }
   },
   rollbackRelease: async (id) => {
-    try { await apiFetch(`/deploy/releases/${id}/rollback`, { method: 'POST' }); message.success('已回滚'); await get().fetchReleases(); await get().fetchHistory(); return true }
-    catch (e: any) { message.error('回滚失败: ' + e.message); return false }
+    try { await apiFetch(`/deploy/releases/${id}/rollback`, { method: 'POST' }); getMessage().success('已回滚'); await get().fetchReleases(); await get().fetchHistory(); return true }
+    catch (e: any) { getMessage().error('回滚失败: ' + e.message); return false }
   },
 
   fetchEnvs: async () => {
     try { set({ environments: await apiList<DeployEnvironment>('/deploy/environments') }) }
-    catch (e: any) { message.error('加载环境失败: ' + e.message) }
+    catch (e: any) { getMessage().error('加载环境失败: ' + e.message) }
   },
   createEnv: async (d) => {
-    try { await apiFetch('/deploy/environments', { method: 'POST', body: JSON.stringify(d) }); message.success('环境已创建'); await get().fetchEnvs(); return true }
-    catch (e: any) { message.error('创建失败: ' + e.message); return false }
+    try { await apiFetch('/deploy/environments', { method: 'POST', body: JSON.stringify(d) }); getMessage().success('环境已创建'); await get().fetchEnvs(); return true }
+    catch (e: any) { getMessage().error('创建失败: ' + e.message); return false }
   },
   updateEnv: async (id, d) => {
-    try { await apiFetch(`/deploy/environments/${id}`, { method: 'PUT', body: JSON.stringify(d) }); message.success('已更新'); await get().fetchEnvs(); return true }
-    catch (e: any) { message.error('更新失败: ' + e.message); return false }
+    try { await apiFetch(`/deploy/environments/${id}`, { method: 'PUT', body: JSON.stringify(d) }); getMessage().success('已更新'); await get().fetchEnvs(); return true }
+    catch (e: any) { getMessage().error('更新失败: ' + e.message); return false }
   },
   deleteEnv: async (id) => {
-    try { await apiFetch(`/deploy/environments/${id}`, { method: 'DELETE' }); set(s => ({ environments: s.environments.filter(e => e.id !== id) })); message.success('已删除'); return true }
-    catch (e: any) { message.error('删除失败: ' + e.message); return false }
+    try { await apiFetch(`/deploy/environments/${id}`, { method: 'DELETE' }); set(s => ({ environments: s.environments.filter(e => e.id !== id) })); getMessage().success('已删除'); return true }
+    catch (e: any) { getMessage().error('删除失败: ' + e.message); return false }
   },
 
   fetchHistory: async () => {
     try { set({ history: await apiList<ReleaseHistory>('/deploy/history') }) }
-    catch (e: any) { message.error('加载历史失败: ' + e.message) }
+    catch (e: any) { getMessage().error('加载历史失败: ' + e.message) }
   },
 }))

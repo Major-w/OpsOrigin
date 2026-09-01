@@ -17,6 +17,7 @@ const PieChartView = dynamic(() => import('@/components/charts').then(m => ({ de
 const BarChartView = dynamic(() => import('@/components/charts').then(m => ({ default: m.BarChartView })), { ssr: false })
 import type { ITSMStats, SLAStats } from '@/stores/itsm/types'
 import { STATUS_LABELS, RISK_LABELS, CHANNEL_LABELS } from '@/lib/itsm-constants'
+import { getMessage } from '@/lib/message'
 const fmtMs = (ms: number) => {
   if (!ms) return '-'
   const s = Math.round(ms / 1000)
@@ -39,7 +40,7 @@ export default function ITSMOverviewPage() {
       ])
       setStats(s)
       setSla(sl)
-    } catch { message.error('加载统计数据失败') }
+    } catch { getMessage().error('加载统计数据失败') }
     setLoading(false)
   }, [])
 

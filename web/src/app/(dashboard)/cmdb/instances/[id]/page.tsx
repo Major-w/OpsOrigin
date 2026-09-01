@@ -10,6 +10,7 @@ import { useCan } from '@/stores/permissions'
 import TopologyGraph from '@/components/TopologyGraph'
 import { SourceBadge, ProvenanceSummary } from '@/components/cmdb/SourceBadge'
 import { Pencil, Trash2, Unlink, AlertTriangle, Archive, ArchiveRestore, ChevronLeft, Plus } from 'lucide-react'
+import { getMessage } from '@/lib/message'
 
 interface TopologyNode { id: string; name: string; type: string }
 interface TopologyEdge { source: string; target: string; type: string }
@@ -67,9 +68,9 @@ export default function CIInstanceDetailPage() {
   const resolveDrift = async (id: string) => {
     try {
       await apiFetch(`/cmdb/drift/${id}/resolve`, { method: 'POST' })
-      message.success('已标记解决')
+      getMessage().success('已标记解决')
       if (selectedCI) handleDrift(selectedCI.id)
-    } catch (e: any) { message.error('操作失败: ' + e.message) }
+    } catch (e: any) { getMessage().error('操作失败: ' + e.message) }
   }
 
   const ensureRefOptions = async (refModel: string) => {
@@ -81,12 +82,12 @@ export default function CIInstanceDetailPage() {
   }
 
   const handleArchive = async (id: string) => {
-    try { await apiFetch(`/cmdb/ci/${id}/archive`, { method: 'POST' }); message.success('已归档'); loadCI() }
-    catch (e: any) { message.error('归档失败: ' + e.message) }
+    try { await apiFetch(`/cmdb/ci/${id}/archive`, { method: 'POST' }); getMessage().success('已归档'); loadCI() }
+    catch (e: any) { getMessage().error('归档失败: ' + e.message) }
   }
   const handleRestore = async (id: string) => {
-    try { await apiFetch(`/cmdb/ci/${id}/restore`, { method: 'POST' }); message.success('已恢复'); loadCI() }
-    catch (e: any) { message.error('恢复失败: ' + e.message) }
+    try { await apiFetch(`/cmdb/ci/${id}/restore`, { method: 'POST' }); getMessage().success('已恢复'); loadCI() }
+    catch (e: any) { getMessage().error('恢复失败: ' + e.message) }
   }
 
   const loadCI = async () => {
@@ -101,7 +102,7 @@ export default function CIInstanceDetailPage() {
       setAuditLog(audit || [])
       setCiRelations((rels || []).filter((r: CIRelation) => r.source_id === ciID || r.target_id === ciID))
     } catch (e: any) {
-      message.error('加载配置项失败: ' + e.message)
+      getMessage().error('加载配置项失败: ' + e.message)
     } finally { setLoading(false) }
   }
 
@@ -160,8 +161,8 @@ export default function CIInstanceDetailPage() {
       await createRelation({ source_id: selectedCI.id, target_id: targetId, relation_type: def.relation_type })
       fetchRelations()
       loadCI()
-      message.success(`已建立关系：${def.name}`)
-    } catch (e: any) { message.error('建立失败: ' + e.message) } finally { setRelSubmitting(false) }
+      getMessage().success(`已建立关系：${def.name}`)
+    } catch (e: any) { getMessage().error('建立失败: ' + e.message) } finally { setRelSubmitting(false) }
   }
 
   const handleDeleteRel = async (id: string) => {
@@ -188,7 +189,7 @@ export default function CIInstanceDetailPage() {
     await update(selectedCI.id, { ...selectedCI, name: selectedCI.name, description: selectedCI.description, attributes: parsed, labels: selectedCI.labels, channel: 100 })
     setEditAttrsOpen(false)
     loadCI()
-    message.success('属性已更新')
+    getMessage().success('属性已更新')
   }
 
   const statusVariant = (s: string): string => {
@@ -241,209 +242,209 @@ export default function CIInstanceDetailPage() {
         </CardHeader>
         <CardContent>
           <Tabs activeKey={detailTab} onChange={setDetailTab} items={[
-            { key: 'attrs', label: '属性' },
-            { key: 'rels', label: `关系 (${ciRelations.length})` },
-            { key: 'audit', label: `审计 (${auditLog.length})` },
-            { key: 'topo', label: '拓扑' },
-            { key: 'impact', label: <><AlertTriangle className="w-3 h-3 mr-1" />影响</> },
-            { key: 'drift', label: `漂移 (${driftList.length})` },
-          ]} />
-
-            <div className="mt-4 space-y-3">
-              <div className="grid grid-cols-2 gap-2 text-sm">
-                <div><span className="text-muted-foreground">名称:</span> {selectedCI.name}</div>
-                <div><span className="text-muted-foreground">类型:</span> <Tag>{selectedCI.type_id}</Tag></div>
-                <div><span className="text-muted-foreground">状态:</span> <Tag color={statusVariant(selectedCI.status)}>{selectedCI.status}</Tag></div>
-                <div><span className="text-muted-foreground">信道:</span> {selectedCI.channel}</div>
-                <div className="col-span-2"><span className="text-muted-foreground">描述:</span> {selectedCI.description || '无'}</div>
-                <div className="col-span-2"><span className="text-muted-foreground">创建:</span> {formatTime(selectedCI.created_at)}</div>
-                <div className="col-span-2"><span className="text-muted-foreground">更新:</span> {formatTime(selectedCI.updated_at)}</div>
-              </div>
-              {(selectedCI as any)?.aggregates && Object.keys((selectedCI as any).aggregates).length > 0 && (
-                <div className="border rounded-md p-3 bg-muted/20 space-y-1">
-                  <p className="text-xs font-medium text-muted-foreground">聚合统计（自动计算）</p>
-                  <div className="flex flex-wrap gap-2">
-                    {Object.entries((selectedCI as any).aggregates).map(([k, v]) => (
-                      <span key={k} className="text-xs"><span className="text-muted-foreground">{k}:</span> <strong>{String(v)}</strong></span>
-                    ))}
-                  </div>
+            { key: 'attrs', label: '属性', children: (
+              <div className="mt-4 space-y-3">
+                <div className="grid grid-cols-2 gap-2 text-sm">
+                  <div><span className="text-muted-foreground">名称:</span> {selectedCI.name}</div>
+                  <div><span className="text-muted-foreground">类型:</span> <Tag>{selectedCI.type_id}</Tag></div>
+                  <div><span className="text-muted-foreground">状态:</span> <Tag color={statusVariant(selectedCI.status)}>{selectedCI.status}</Tag></div>
+                  <div><span className="text-muted-foreground">信道:</span> {selectedCI.channel}</div>
+                  <div className="col-span-2"><span className="text-muted-foreground">描述:</span> {selectedCI.description || '无'}</div>
+                  <div className="col-span-2"><span className="text-muted-foreground">创建:</span> {formatTime(selectedCI.created_at)}</div>
+                  <div className="col-span-2"><span className="text-muted-foreground">更新:</span> {formatTime(selectedCI.updated_at)}</div>
                 </div>
-              )}
-              <ProvenanceSummary meta={selectedCI.attribute_meta} />
-              {Object.keys(selectedCI.attributes || {}).length > 0 && (
-                <div>
-                  <h4 className="text-sm font-medium mb-2">自定义属性</h4>
-                  <table className="w-full text-sm border">
-                    <thead><tr className="bg-muted"><th className="px-2 py-1 text-left text-xs">属性</th><th className="px-2 py-1 text-left text-xs">值</th><th className="px-2 py-1 text-left text-xs">来源</th><th className="px-2 py-1 text-left text-xs">访问</th></tr></thead>
+                {(selectedCI as any)?.aggregates && Object.keys((selectedCI as any).aggregates).length > 0 && (
+                  <div className="border rounded-md p-3 bg-muted/20 space-y-1">
+                    <p className="text-xs font-medium text-muted-foreground">聚合统计（自动计算）</p>
+                    <div className="flex flex-wrap gap-2">
+                      {Object.entries((selectedCI as any).aggregates).map(([k, v]) => (
+                        <span key={k} className="text-xs"><span className="text-muted-foreground">{k}:</span> <strong>{String(v)}</strong></span>
+                      ))}
+                    </div>
+                  </div>
+                )}
+                <ProvenanceSummary meta={selectedCI.attribute_meta} />
+                {Object.keys(selectedCI.attributes || {}).length > 0 && (
+                  <div>
+                    <h4 className="text-sm font-medium mb-2">自定义属性</h4>
+                    <table className="w-full text-sm border">
+                      <thead><tr className="bg-muted"><th className="px-2 py-1 text-left text-xs">属性</th><th className="px-2 py-1 text-left text-xs">值</th><th className="px-2 py-1 text-left text-xs">来源</th><th className="px-2 py-1 text-left text-xs">访问</th></tr></thead>
+                      <tbody>
+                        {Object.entries(selectedCI.attributes || {}).map(([k, v]) => {
+                          const meta = selectedCI.attribute_meta?.[k]
+                          const low = meta ? meta.confidence < 0.5 : false
+                          const access = (selectedCI as any).field_access?.[k]
+                          return (
+                            <tr key={k} className={`border-t ${low ? 'bg-amber-50 dark:bg-amber-500/5' : ''}`}>
+                              <td className="px-2 py-1 text-xs font-medium">{k}</td>
+                              <td className="px-2 py-1 text-xs">{typeof v === 'object' ? JSON.stringify(v) : String(v)}</td>
+                              <td className="px-2 py-1"><SourceBadge meta={meta} /></td>
+                              <td className="px-2 py-1">{access === 'readonly' && <Tag className="text-[9px] text-amber-500">只读</Tag>}</td>
+                            </tr>
+                          )
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+                {Object.keys(selectedCI.labels || {}).length > 0 && (
+                  <div>
+                    <h4 className="text-sm font-medium mb-2">标签</h4>
+                    <div className="flex gap-1 flex-wrap">
+                      {Object.entries(selectedCI.labels || {}).map(([k, v]) => (
+                        <Tag key={k} className="text-xs">{k}={v}</Tag>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
+            ) },
+            { key: 'rels', label: `关系 (${ciRelations.length})`, children: (
+              <div className="mt-4">
+                {modelDef?.relations && modelDef.relations.length > 0 && (
+                  <div className="space-y-2 mb-4">
+                    <p className="text-xs font-medium text-muted-foreground">可建立的关系</p>
+                    {modelDef.relations.map((def, i) => {
+                      const opts = refOptions[def.target_model] || []
+                      return (
+                        <div key={i} className="flex items-center gap-2">
+                          <span className="text-xs font-medium w-24 truncate">{def.name}</span>
+                          <span className="text-[10px] text-muted-foreground shrink-0">→ {def.target_model}</span>
+                          <Tag className="text-[9px] shrink-0">{cardinalityLabel(def.cardinality)}</Tag>
+                          <select className="flex-1 h-8 text-xs border rounded-md bg-background px-2"
+                            value={relCreateForm[i] || ''} onChange={e => setRelCreateForm(f => ({ ...f, [i]: e.target.value }))}>
+                            <option value="">选择 {def.target_model} 实例...</option>
+                            {opts.map(o => <option key={o.id} value={o.id}>{o.name}</option>)}
+                          </select>
+                          <Button size="middle" type="default" disabled={!relCreateForm[i] || relSubmitting}
+                            onClick={() => handleCreateDefRel(def, relCreateForm[i])}>建立</Button>
+                        </div>
+                      )
+                    })}
+                  </div>
+                )}
+
+                {ciRelations.length === 0 ? <p className="text-sm text-muted-foreground">无关联关系。</p> : (
+                  <div className="space-y-4">
+                    {(() => {
+                      const outgoing = ciRelations.filter(r => r.source_id === selectedCI?.id)
+                      const incoming = ciRelations.filter(r => r.target_id === selectedCI?.id)
+                      const displayName = (rel: typeof ciRelations[number], dir: 'out' | 'in') => {
+                        const def = modelDef?.relations?.find(d => d.relation_type === rel.relation_type)
+                        if (!def) return { name: rel.relation_type, unmodeled: true }
+                        return { name: dir === 'out' ? def.name : (def.reverse_name || def.name), unmodeled: false }
+                      }
+                      return (
+                        <>
+                          {outgoing.length > 0 && (
+                            <div>
+                              <p className="text-xs font-medium text-muted-foreground mb-1">我 → 其它（{outgoing.length}）</p>
+                              <table className="w-full text-sm">
+                                <tbody>
+                                  {outgoing.map(rel => (
+                                    <tr key={rel.id} className="border-b last:border-0">
+                                      <td className="py-1 text-xs w-28 font-medium">{displayName(rel, 'out').name}{displayName(rel, 'out').unmodeled && <Tag className="text-[9px] ml-1">未建模</Tag>}</td>
+                                      <td className="py-1 text-xs text-muted-foreground">{rel.target_id.slice(0, 8)}</td>
+                                      <td className="py-1 text-xs"><Tag className="text-[10px]">{rel.relation_type}</Tag></td>
+                                      <td className="py-1 text-right">{canDelete && <Button type="text" icon={<Unlink className="h-3 w-3" />} className="h-5 w-5 p-0" onClick={() => handleDeleteRel(rel.id)} />}</td>
+                                    </tr>
+                                  ))}
+                                </tbody>
+                              </table>
+                            </div>
+                          )}
+                          {incoming.length > 0 && (
+                            <div>
+                              <p className="text-xs font-medium text-muted-foreground mb-1">其它 → 我（{incoming.length}）</p>
+                              <table className="w-full text-sm">
+                                <tbody>
+                                  {incoming.map(rel => (
+                                    <tr key={rel.id} className="border-b last:border-0">
+                                      <td className="py-1 text-xs w-28 font-medium">{displayName(rel, 'in').name}{displayName(rel, 'in').unmodeled && <Tag className="text-[9px] ml-1">未建模</Tag>}</td>
+                                      <td className="py-1 text-xs text-muted-foreground">{rel.source_id.slice(0, 8)}</td>
+                                      <td className="py-1 text-xs"><Tag className="text-[10px]">{rel.relation_type}</Tag></td>
+                                      <td className="py-1 text-right">{canDelete && <Button type="text" icon={<Unlink className="h-3 w-3" />} className="h-5 w-5 p-0" onClick={() => handleDeleteRel(rel.id)} />}</td>
+                                    </tr>
+                                  ))}
+                                </tbody>
+                              </table>
+                            </div>
+                          )}
+                        </>
+                      )
+                    })()}
+                    <Button type="default" size="middle" className="mt-2" onClick={() => { if (selectedCI) setRelForm(f => ({ ...f, source_id: selectedCI.id })); setRelDialogOpen(true) }}><Plus className="h-3 w-3 mr-1" />自定义关系（未建模）</Button>
+                  </div>
+                )}
+              </div>
+            ) },
+            { key: 'audit', label: `审计 (${auditLog.length})`, children: (
+              <div className="mt-4">
+                {auditLog.length === 0 ? <p className="text-sm text-muted-foreground">无变更记录。</p> : (
+                  <table className="w-full text-sm">
+                    <thead><tr className="border-b text-muted-foreground"><th className="pb-2 text-left text-xs">属性</th><th className="pb-2 text-left text-xs">旧值</th><th className="pb-2 text-left text-xs">新值</th><th className="pb-2 text-left text-xs">信道</th><th className="pb-2 text-left text-xs">时间</th></tr></thead>
                     <tbody>
-                      {Object.entries(selectedCI.attributes || {}).map(([k, v]) => {
-                        const meta = selectedCI.attribute_meta?.[k]
-                        const low = meta ? meta.confidence < 0.5 : false
-                        const access = (selectedCI as any).field_access?.[k]
-                        return (
-                          <tr key={k} className={`border-t ${low ? 'bg-amber-50 dark:bg-amber-500/5' : ''}`}>
-                            <td className="px-2 py-1 text-xs font-medium">{k}</td>
-                            <td className="px-2 py-1 text-xs">{typeof v === 'object' ? JSON.stringify(v) : String(v)}</td>
-                            <td className="px-2 py-1"><SourceBadge meta={meta} /></td>
-                            <td className="px-2 py-1">{access === 'readonly' && <Tag className="text-[9px] text-amber-500">只读</Tag>}</td>
-                          </tr>
-                        )
-                      })}
+                      {auditLog.map((ch, i) => (
+                        <tr key={i} className="border-b last:border-0">
+                          <td className="py-1 text-xs font-medium">{ch.attr_name}</td>
+                          <td className="py-1 text-xs text-muted-foreground">{String(ch.old_value || '').slice(0, 40)}</td>
+                          <td className="py-1 text-xs">{String(ch.new_value || '').slice(0, 40)}</td>
+                          <td className="py-1 text-xs"><Tag className="text-[10px]">{ch.channel}</Tag></td>
+                          <td className="py-1 text-xs text-muted-foreground">{formatTime(ch.changed_at)}</td>
+                        </tr>
+                      ))}
                     </tbody>
                   </table>
-                </div>
-              )}
-              {Object.keys(selectedCI.labels || {}).length > 0 && (
-                <div>
-                  <h4 className="text-sm font-medium mb-2">标签</h4>
-                  <div className="flex gap-1 flex-wrap">
-                    {Object.entries(selectedCI.labels || {}).map(([k, v]) => (
-                      <Tag key={k} className="text-xs">{k}={v}</Tag>
-                    ))}
+                )}
+              </div>
+            ) },
+            { key: 'topo', label: '拓扑', children: (
+              <div className="mt-4">
+                {topoLoading ? <p className="text-sm text-muted-foreground">加载中...</p> : topology.nodes.length === 0 ? <p className="text-sm text-muted-foreground">无拓扑数据。</p> : (
+                  <div className="border rounded-lg bg-muted/20" style={{ minHeight: 300 }}>
+                    <TopologyGraph data={topology} width={700} height={320} />
                   </div>
-                </div>
-              )}
-            </div>
-
-            <div className="mt-4">
-              {modelDef?.relations && modelDef.relations.length > 0 && (
-                <div className="space-y-2 mb-4">
-                  <p className="text-xs font-medium text-muted-foreground">可建立的关系</p>
-                  {modelDef.relations.map((def, i) => {
-                    const opts = refOptions[def.target_model] || []
-                    return (
-                      <div key={i} className="flex items-center gap-2">
-                        <span className="text-xs font-medium w-24 truncate">{def.name}</span>
-                        <span className="text-[10px] text-muted-foreground shrink-0">→ {def.target_model}</span>
-                        <Tag className="text-[9px] shrink-0">{cardinalityLabel(def.cardinality)}</Tag>
-                        <select className="flex-1 h-8 text-xs border rounded-md bg-background px-2"
-                          value={relCreateForm[i] || ''} onChange={e => setRelCreateForm(f => ({ ...f, [i]: e.target.value }))}>
-                          <option value="">选择 {def.target_model} 实例...</option>
-                          {opts.map(o => <option key={o.id} value={o.id}>{o.name}</option>)}
-                        </select>
-                        <Button size="middle" type="default" disabled={!relCreateForm[i] || relSubmitting}
-                          onClick={() => handleCreateDefRel(def, relCreateForm[i])}>建立</Button>
-                      </div>
-                    )
-                  })}
-                </div>
-              )}
-
-              {ciRelations.length === 0 ? <p className="text-sm text-muted-foreground">无关联关系。</p> : (
-                <div className="space-y-4">
-                  {(() => {
-                    const outgoing = ciRelations.filter(r => r.source_id === selectedCI?.id)
-                    const incoming = ciRelations.filter(r => r.target_id === selectedCI?.id)
-                    const displayName = (rel: typeof ciRelations[number], dir: 'out' | 'in') => {
-                      const def = modelDef?.relations?.find(d => d.relation_type === rel.relation_type)
-                      if (!def) return { name: rel.relation_type, unmodeled: true }
-                      return { name: dir === 'out' ? def.name : (def.reverse_name || def.name), unmodeled: false }
-                    }
-                    return (
-                      <>
-                        {outgoing.length > 0 && (
-                          <div>
-                            <p className="text-xs font-medium text-muted-foreground mb-1">我 → 其它（{outgoing.length}）</p>
-                            <table className="w-full text-sm">
-                              <tbody>
-                                {outgoing.map(rel => (
-                                  <tr key={rel.id} className="border-b last:border-0">
-                                    <td className="py-1 text-xs w-28 font-medium">{displayName(rel, 'out').name}{displayName(rel, 'out').unmodeled && <Tag className="text-[9px] ml-1">未建模</Tag>}</td>
-                                    <td className="py-1 text-xs text-muted-foreground">{rel.target_id.slice(0, 8)}</td>
-                                    <td className="py-1 text-xs"><Tag className="text-[10px]">{rel.relation_type}</Tag></td>
-                                    <td className="py-1 text-right">{canDelete && <Button type="text" icon={<Unlink className="h-3 w-3" />} className="h-5 w-5 p-0" onClick={() => handleDeleteRel(rel.id)} />}</td>
-                                  </tr>
-                                ))}
-                              </tbody>
-                            </table>
-                          </div>
-                        )}
-                        {incoming.length > 0 && (
-                          <div>
-                            <p className="text-xs font-medium text-muted-foreground mb-1">其它 → 我（{incoming.length}）</p>
-                            <table className="w-full text-sm">
-                              <tbody>
-                                {incoming.map(rel => (
-                                  <tr key={rel.id} className="border-b last:border-0">
-                                    <td className="py-1 text-xs w-28 font-medium">{displayName(rel, 'in').name}{displayName(rel, 'in').unmodeled && <Tag className="text-[9px] ml-1">未建模</Tag>}</td>
-                                    <td className="py-1 text-xs text-muted-foreground">{rel.source_id.slice(0, 8)}</td>
-                                    <td className="py-1 text-xs"><Tag className="text-[10px]">{rel.relation_type}</Tag></td>
-                                    <td className="py-1 text-right">{canDelete && <Button type="text" icon={<Unlink className="h-3 w-3" />} className="h-5 w-5 p-0" onClick={() => handleDeleteRel(rel.id)} />}</td>
-                                  </tr>
-                                ))}
-                              </tbody>
-                            </table>
-                          </div>
-                        )}
-                      </>
-                    )
-                  })()}
-                  <Button type="default" size="middle" className="mt-2" onClick={() => { if (selectedCI) setRelForm(f => ({ ...f, source_id: selectedCI.id })); setRelDialogOpen(true) }}><Plus className="h-3 w-3 mr-1" />自定义关系（未建模）</Button>
-                </div>
-              )}
-            </div>
-
-            <div className="mt-4">
-              {auditLog.length === 0 ? <p className="text-sm text-muted-foreground">无变更记录。</p> : (
-                <table className="w-full text-sm">
-                  <thead><tr className="border-b text-muted-foreground"><th className="pb-2 text-left text-xs">属性</th><th className="pb-2 text-left text-xs">旧值</th><th className="pb-2 text-left text-xs">新值</th><th className="pb-2 text-left text-xs">信道</th><th className="pb-2 text-left text-xs">时间</th></tr></thead>
-                  <tbody>
-                    {auditLog.map((ch, i) => (
-                      <tr key={i} className="border-b last:border-0">
-                        <td className="py-1 text-xs font-medium">{ch.attr_name}</td>
-                        <td className="py-1 text-xs text-muted-foreground">{String(ch.old_value || '').slice(0, 40)}</td>
-                        <td className="py-1 text-xs">{String(ch.new_value || '').slice(0, 40)}</td>
-                        <td className="py-1 text-xs"><Tag className="text-[10px]">{ch.channel}</Tag></td>
-                        <td className="py-1 text-xs text-muted-foreground">{formatTime(ch.changed_at)}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              )}
-            </div>
-
-            <div className="mt-4">
-              {topoLoading ? <p className="text-sm text-muted-foreground">加载中...</p> : topology.nodes.length === 0 ? <p className="text-sm text-muted-foreground">无拓扑数据。</p> : (
-                <div className="border rounded-lg bg-muted/20" style={{ minHeight: 300 }}>
-                  <TopologyGraph data={topology} width={700} height={320} />
-                </div>
-              )}
-            </div>
-
-            <div className="mt-4">
-              {topoLoading ? <p className="text-sm text-muted-foreground">分析中...</p> : !impactResult ? <p className="text-sm text-muted-foreground">无法分析影响范围。</p> : (
-                <div className="space-y-3">
-                  <div className="flex items-center gap-2">
-                    <AlertTriangle className="h-4 w-4 text-amber-400" />
-                    <span className="text-sm font-medium">影响分析: {selectedCI.name}</span>
-                    {impactResult.has_cycle && <Tag color="error" className="text-xs">检测到拓扑环</Tag>}
-                  </div>
-                  <p className="text-sm">深度影响 <strong>{impactResult.affected_ci?.length || 0}</strong> 个资产:</p>
-                  <div className="flex flex-wrap gap-1">
-                    {(impactResult.affected_ci || []).map(ciId => (
-                      <Link key={ciId} to={`/cmdb/instances/${ciId}`}><Tag className="text-xs cursor-pointer hover:border-blue-500">{ciId.slice(0, 8)}</Tag></Link>
-                    ))}
-                  </div>
-                </div>
-              )}
-            </div>
-
-            <div className="mt-4">
-              {driftList.length === 0 ? <p className="text-sm text-muted-foreground">无配置漂移（发现值均与 CMDB 一致）</p> : (
-                <div className="space-y-2">
-                  {driftList.map(d => (
-                    <div key={d.id} className="border rounded-md p-3 text-xs flex items-center gap-3">
-                      <div className="flex-1 min-w-0">
-                        <p className="font-medium">{d.field}</p>
-                        <p className="text-muted-foreground truncate">CMDB: <span className="text-blue-600">{d.expected}</span> → 发现: <span className="text-amber-600">{d.actual}</span></p>
-                        <p className="text-[10px] text-muted-foreground">{d.created_at?.slice(0, 19)?.replace('T', ' ')}</p>
-                      </div>
-                      <Button type="default" size="middle" className="h-6 text-xs shrink-0" onClick={() => resolveDrift(d.id)}>已处理</Button>
+                )}
+              </div>
+            ) },
+            { key: 'impact', label: <><AlertTriangle className="w-3 h-3 mr-1" />影响</>, children: (
+              <div className="mt-4">
+                {topoLoading ? <p className="text-sm text-muted-foreground">分析中...</p> : !impactResult ? <p className="text-sm text-muted-foreground">无法分析影响范围。</p> : (
+                  <div className="space-y-3">
+                    <div className="flex items-center gap-2">
+                      <AlertTriangle className="h-4 w-4 text-amber-400" />
+                      <span className="text-sm font-medium">影响分析: {selectedCI.name}</span>
+                      {impactResult.has_cycle && <Tag color="error" className="text-xs">检测到拓扑环</Tag>}
                     </div>
-                  ))}
-                </div>
-              )}
-            </div>
+                    <p className="text-sm">深度影响 <strong>{impactResult.affected_ci?.length || 0}</strong> 个资产:</p>
+                    <div className="flex flex-wrap gap-1">
+                      {(impactResult.affected_ci || []).map(ciId => (
+                        <Link key={ciId} to={`/cmdb/instances/${ciId}`}><Tag className="text-xs cursor-pointer hover:border-blue-500">{ciId.slice(0, 8)}</Tag></Link>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
+            ) },
+            { key: 'drift', label: `漂移 (${driftList.length})`, children: (
+              <div className="mt-4">
+                {driftList.length === 0 ? <p className="text-sm text-muted-foreground">无配置漂移（发现值均与 CMDB 一致）</p> : (
+                  <div className="space-y-2">
+                    {driftList.map(d => (
+                      <div key={d.id} className="border rounded-md p-3 text-xs flex items-center gap-3">
+                        <div className="flex-1 min-w-0">
+                          <p className="font-medium">{d.field}</p>
+                          <p className="text-muted-foreground truncate">CMDB: <span className="text-blue-600">{d.expected}</span> → 发现: <span className="text-amber-600">{d.actual}</span></p>
+                          <p className="text-[10px] text-muted-foreground">{d.created_at?.slice(0, 19)?.replace('T', ' ')}</p>
+                        </div>
+                        <Button type="default" size="middle" className="h-6 text-xs shrink-0" onClick={() => resolveDrift(d.id)}>已处理</Button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            ) },
+          ]} />
         </CardContent>
       </Card>
 

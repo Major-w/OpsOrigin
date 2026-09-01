@@ -11,11 +11,11 @@ type Article struct {
 	Tags           []string   `json:"tags,omitempty"`
 	Author         string     `json:"author"`
 	Views          int        `json:"views"`
-	Status         string     `json:"status"`  // draft(默认) | published
-	Version        int        `json:"version"` // 当前版本号, 每次更新 +1
-	ExpiresAt      *time.Time `json:"expires_at,omitempty"`      // 知识有效期, nil=永不过期
-	ViewPermission string     `json:"view_permission"`           // all(默认) | team | owner
-	EditPermission string     `json:"edit_permission"`           // owner(默认) | team | all
+	Status         string     `json:"status"`               // draft(默认) | published
+	Version        int        `json:"version"`              // 当前版本号, 每次更新 +1
+	ExpiresAt      *time.Time `json:"expires_at,omitempty"` // 知识有效期, nil=永不过期
+	ViewPermission string     `json:"view_permission"`      // all(默认) | team | owner
+	EditPermission string     `json:"edit_permission"`      // owner(默认) | team | all
 	CreatedAt      time.Time  `json:"created_at"`
 	UpdatedAt      time.Time  `json:"updated_at"`
 }

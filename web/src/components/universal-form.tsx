@@ -1,6 +1,7 @@
 
-import { useState, useCallback, type ReactNode } from 'react'
-import { Modal, Button, Input, Select, Switch, message } from 'antd'
+import { useState, useCallback, useMemo, type ReactNode } from 'react'
+import { Modal, Button, Input, Select, Switch } from 'antd'
+import { getMessage } from '@/lib/message'
 
 export type FormFieldType =
   | 'text'
@@ -124,11 +125,16 @@ export function UniversalForm<T extends Record<string, any>>({
     try {
       await onSubmit(form)
     } catch (e: any) {
-      message.error(e.message || '保存失败')
+      getMessage().error(e.message || '保存失败')
     }
   }, [loading, validateForm, onSubmit, form])
 
-  const canSave = validateForm() && !loading
+  const canSave = useMemo(() => {
+    for (const field of fields) {
+      if (validateField(field, form[field.name])) return !loading
+    }
+    return !loading
+  }, [fields, form, validateField, loading])
 
   const getFieldComponent = (field: FormField) => {
     const value = form[field.name]
@@ -136,7 +142,7 @@ export function UniversalForm<T extends Record<string, any>>({
     const commonProps = {
       placeholder: field.placeholder,
       disabled: field.disabled,
-      style: error ? { borderColor: '#ff4d4f' } : undefined,
+      style: error ? { borderColor: 'var(--destructive)' } : undefined,
       onChange: (e: any) => {
         const newValue = e?.target?.value ?? e
         const newForm = { ...form, [field.name]: newValue } as T
@@ -172,7 +178,7 @@ export function UniversalForm<T extends Record<string, any>>({
             value={value}
             placeholder={field.placeholder}
             disabled={field.disabled}
-            style={{ width: '100%', ...(error ? { borderColor: '#ff4d4f' } : undefined) }}
+            style={{ width: '100%', ...(error ? { borderColor: 'var(--destructive)' } : undefined) }}
             onChange={(v) => {
               const newForm = { ...form, [field.name]: v } as T
               field.onChange?.(v)

@@ -1,9 +1,9 @@
 
 import { create } from 'zustand'
 import { apiFetch, apiList } from '@/lib/utils'
-import { message } from 'antd'
 import type { AgentTeam, CreateTeamPayload, UpdateTeamPayload, ChatMessage, TeamStreamEvent } from './types'
 import { isTeamStreamEvent } from './types'
+import { getMessage } from '@/lib/message'
 
 interface TeamState {
   teams: AgentTeam[]
@@ -32,7 +32,7 @@ export const useTeamStore = create<TeamState>((set, get) => ({
       set({ teams: teams || [], loading: false })
     } catch (e: any) {
       set({ loading: false, error: e.message || '加载团队失败' })
-      message.error(`加载团队失败: ${e.message}`)
+      getMessage().error(`加载团队失败: ${e.message}`)
     }
   },
   createTeam: async (payload) => {
@@ -41,11 +41,11 @@ export const useTeamStore = create<TeamState>((set, get) => ({
         method: 'POST',
         body: JSON.stringify(payload),
       })
-      message.success('创建团队成功')
+      getMessage().success('创建团队成功')
       await get().loadTeams()
       return team
     } catch (e: any) {
-      message.error(`创建团队失败: ${e.message}`)
+      getMessage().error(`创建团队失败: ${e.message}`)
       return null
     }
   },
@@ -55,21 +55,21 @@ export const useTeamStore = create<TeamState>((set, get) => ({
         method: 'PUT',
         body: JSON.stringify(payload),
       })
-      message.success('更新团队成功')
+      getMessage().success('更新团队成功')
       await get().loadTeams()
       return team
     } catch (e: any) {
-      message.error(`更新团队失败: ${e.message}`)
+      getMessage().error(`更新团队失败: ${e.message}`)
       return null
     }
   },
   deleteTeam: async (id) => {
     try {
       await apiFetch<void>(`/ai/teams/${encodeURIComponent(id)}`, { method: 'DELETE' })
-      message.success('删除团队成功')
+      getMessage().success('删除团队成功')
       return true
     } catch (e: any) {
-      message.error(`删除团队失败: ${e.message}`)
+      getMessage().error(`删除团队失败: ${e.message}`)
       return false
     }
   },

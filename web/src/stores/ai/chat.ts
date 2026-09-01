@@ -1,8 +1,8 @@
 
 import { create } from 'zustand'
 import { apiFetch, apiList } from '@/lib/utils'
-import { message } from 'antd'
 import type { ModelInfo, PendingApproval } from './types'
+import { getMessage } from '@/lib/message'
 
 interface ChatState {
   models: ModelInfo[]
@@ -53,7 +53,7 @@ export const useChatStore = create<ChatState>((set) => ({
       })
       return res.content
     } catch (e: any) {
-      message.error(`AI 响应失败: ${e.message}`)
+      getMessage().error(`AI 响应失败: ${e.message}`)
       return null
     }
   },
@@ -74,7 +74,7 @@ export const useChatStore = create<ChatState>((set) => ({
       })
       if (!resp.ok) {
         const errMsg = `AI 响应失败: ${resp.status}`
-        message.error(errMsg)
+        getMessage().error(errMsg)
         onError?.(errMsg)
         onDone()
         return
@@ -139,7 +139,7 @@ export const useChatStore = create<ChatState>((set) => ({
         onDone()
         return
       }
-      message.error(`AI 流式响应失败: ${e.message}`)
+      getMessage().error(`AI 流式响应失败: ${e.message}`)
       onError?.(`AI 流式响应失败: ${e.message}`)
       onDone()
     }
@@ -168,10 +168,10 @@ export const useChatStore = create<ChatState>((set) => ({
         method: 'POST',
         body: JSON.stringify(params),
       })
-      message.success(params.rating === 'up' ? '感谢你的认可！' : '感谢反馈，我们会持续改进')
+      getMessage().success(params.rating === 'up' ? '感谢你的认可！' : '感谢反馈，我们会持续改进')
       return true
     } catch (e: any) {
-      message.error(`反馈提交失败: ${e.message}`)
+      getMessage().error(`反馈提交失败: ${e.message}`)
       return false
     }
   },

@@ -20,6 +20,7 @@ import { cn, apiFetch, apiList } from '@/lib/utils'
 import { useThemeStore } from '@/stores/theme'
 import { useAIStore, type ApprovalMode } from '@/stores/ai'
 import RoleTemplatesPanel from '@/components/ai/role-templates-panel'
+import { getMessage } from '@/lib/message'
 const APPROVAL_MODES: { value: ApprovalMode; label: string; desc: string }[] = [
   { value: 'sensitive_only', label: '仅敏感操作询问', desc: '默认安全策略：script_run 等写/执行类操作弹窗确认，只读操作直接执行' },
   { value: 'always_ask', label: '每次询问', desc: '所有 AI 操作执行前都须人工确认，最严格' },
@@ -204,7 +205,7 @@ export default function AISettingsPage() {
       const d = await r.json()
       setDatasetStats(d.summary)
     } catch (e: any) {
-      message.error(`获取数据集统计失败: ${e.message}`)
+      getMessage().error(`获取数据集统计失败: ${e.message}`)
     } finally {
       setDatasetLoading(false)
     }
@@ -222,8 +223,8 @@ export default function AISettingsPage() {
       a.download = 'ai-dataset.ndjson'
       a.click()
       URL.revokeObjectURL(url)
-      message.success('数据集已导出')    } catch (e: any) {
-      message.error(`导出失败: ${e.message}`)
+      getMessage().success('数据集已导出')    } catch (e: any) {
+      getMessage().error(`导出失败: ${e.message}`)
     } finally {
       setDatasetLoading(false)
     }
@@ -249,8 +250,8 @@ export default function AISettingsPage() {
   }
 
   const createFinetuneTask = async () => {
-    if (!ftForm.name.trim()) return message.error('请填写任务名')
-    if (!ftForm.base_model) return message.error('请选择基座模型')
+    if (!ftForm.name.trim()) return getMessage().error('请填写任务名')
+    if (!ftForm.base_model) return getMessage().error('请选择基座模型')
     setFtCreating(true)
     try {
       const r = await fetch('/api/v1/ai/finetune/tasks', {
@@ -259,11 +260,11 @@ export default function AISettingsPage() {
         body: JSON.stringify({ name: ftForm.name, base_model: ftForm.base_model, method: ftForm.method }),
       })
       const d = await r.json().catch(() => ({}))
-      if (!r.ok) { message.error(`创建失败: ${d.error || r.status}`); return }
-      message.success('微调任务已创建，产物将自动注册进模型池')
+      if (!r.ok) { getMessage().error(`创建失败: ${d.error || r.status}`); return }
+      getMessage().success('微调任务已创建，产物将自动注册进模型池')
       setFtForm({ name: '', base_model: '', method: 'loRA' })
       loadFinetuneTasks()
-    } catch (e: any) { message.error(`创建失败: ${e.message}`) } finally { setFtCreating(false) }
+    } catch (e: any) { getMessage().error(`创建失败: ${e.message}`) } finally { setFtCreating(false) }
   }
 
   // —— 提示词库: 列表 / 编辑 / 默认提示词热更新 / 插入 Agent ——
@@ -335,9 +336,9 @@ export default function AISettingsPage() {
         }),
       })
       if (!r.ok) throw new Error(`保存失败(${r.status})`)
-      message.success('全局策略已保存，即时生效')
+      getMessage().success('全局策略已保存，即时生效')
       loadEvoPolicy()
-    } catch (e: any) { message.error('保存失败: ' + e.message) }
+    } catch (e: any) { getMessage().error('保存失败: ' + e.message) }
   }
 
   const startEditSource = (s: typeof evoSources[number]) => {
@@ -362,24 +363,24 @@ export default function AISettingsPage() {
         }),
       })
       if (!r.ok) throw new Error(`保存失败(${r.status})`)
-      message.success('已更新')
+      getMessage().success('已更新')
       setEditingSrc(null)
       loadEvoSources()
-    } catch (e: any) { message.error('更新失败: ' + e.message) }
+    } catch (e: any) { getMessage().error('更新失败: ' + e.message) }
   }
 
   const saveEvoSource = async () => {
-    if (!evoForm.name.trim() || !evoForm.source.trim()) { message.error('请填写名称与源地址'); return }
+    if (!evoForm.name.trim() || !evoForm.source.trim()) { getMessage().error('请填写名称与源地址'); return }
     try {
       const r = await fetch('/api/v1/ai/evolution/sources', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(evoForm),
       })
       if (!r.ok) throw new Error(`保存失败(${r.status})`)
-      message.success('数据源已添加')
+      getMessage().success('数据源已添加')
       setEvoForm({ name: '', type: 'rss', source: '', enabled: true, interval_hours: 0, target_category: '', min_score: 0 })
       loadEvoSources()
-    } catch (e: any) { message.error('添加失败: ' + e.message) }
+    } catch (e: any) { getMessage().error('添加失败: ' + e.message) }
   }
 
   const deleteEvoSource = async () => {
@@ -387,9 +388,9 @@ export default function AISettingsPage() {
     if (!id) return
     try {
       await fetch(`/api/v1/ai/evolution/sources/${id}`, { method: 'DELETE' })
-      message.success('已删除')
+      getMessage().success('已删除')
       loadEvoSources()
-    } catch (e: any) { message.error('删除失败: ' + e.message) }
+    } catch (e: any) { getMessage().error('删除失败: ' + e.message) }
     setPendingEvoId(null)
   }
 
@@ -401,8 +402,8 @@ export default function AISettingsPage() {
       const d = await r.json()
       if (!r.ok) throw new Error(d.error || `执行失败(${r.status})`)
       setEvoResults(d.results || [])
-      message.success('主动进化执行完成')
-    } catch (e: any) { message.error('执行失败: ' + e.message) }
+      getMessage().success('主动进化执行完成')
+    } catch (e: any) { getMessage().error('执行失败: ' + e.message) }
     setEvoFetching(false)
   }
 
@@ -414,7 +415,7 @@ export default function AISettingsPage() {
       const def = list.find(p => p.is_default)
       setDefaultDraft(def?.content || '')
     } catch (e: any) {
-      message.error(`加载提示词失败: ${e.message}`)
+      getMessage().error(`加载提示词失败: ${e.message}`)
     } finally { setPromptLoading(false) }
   }
 
@@ -433,8 +434,8 @@ export default function AISettingsPage() {
   }
 
   const submitPrompt = async () => {
-    if (!promptForm.name.trim()) return message.error('请填写提示词名称')
-    if (!promptForm.content.trim()) return message.error('请填写提示词正文')
+    if (!promptForm.name.trim()) return getMessage().error('请填写提示词名称')
+    if (!promptForm.content.trim()) return getMessage().error('请填写提示词正文')
     setPromptSaving(true)
     try {
       const body = JSON.stringify({
@@ -446,15 +447,15 @@ export default function AISettingsPage() {
       })
       if (promptForm.id) await apiFetch(`/ai/prompts/${promptForm.id}`, { method: 'PUT', body })
       else await apiFetch('/ai/prompts', { method: 'POST', body })
-      message.success(promptForm.is_default ? '已保存并设为默认，立即热生效' : '提示词已保存')
+      getMessage().success(promptForm.is_default ? '已保存并设为默认，立即热生效' : '提示词已保存')
       setPromptDialogOpen(false)
       loadPrompts()
-    } catch (e: any) { message.error(`保存失败: ${e.message}`) } finally { setPromptSaving(false) }
+    } catch (e: any) { getMessage().error(`保存失败: ${e.message}`) } finally { setPromptSaving(false) }
   }
 
   const saveDefaultPrompt = async () => {
     if (!defaultPrompt) return
-    if (!defaultDraft.trim()) return message.error('默认系统提示词不能为空')
+    if (!defaultDraft.trim()) return getMessage().error('默认系统提示词不能为空')
     setPromptSaving(true)
     try {
       await apiFetch(`/ai/prompts/${defaultPrompt.id}`, {
@@ -464,9 +465,9 @@ export default function AISettingsPage() {
           description: defaultPrompt.description || '', content: defaultDraft, is_default: true,
         }),
       })
-      message.success('默认系统提示词已保存，立即热生效（无需重启 Core）')
+      getMessage().success('默认系统提示词已保存，立即热生效（无需重启 Core）')
       loadPrompts()
-    } catch (e: any) { message.error(`保存失败: ${e.message}`) } finally { setPromptSaving(false) }
+    } catch (e: any) { getMessage().error(`保存失败: ${e.message}`) } finally { setPromptSaving(false) }
   }
 
   const setAsDefault = async () => {
@@ -477,9 +478,9 @@ export default function AISettingsPage() {
         method: 'PUT',
         body: JSON.stringify({ name: p.name, scene: p.scene || '', description: p.description || '', content: p.content, is_default: true }),
       })
-      message.success('已设为默认，立即热生效')
+      getMessage().success('已设为默认，立即热生效')
       loadPrompts()
-    } catch (e: any) { message.error(`操作失败: ${e.message}`) }
+    } catch (e: any) { getMessage().error(`操作失败: ${e.message}`) }
     setPendingDefaultPrompt(null)
   }
 
@@ -488,17 +489,17 @@ export default function AISettingsPage() {
     if (!p) return
     try {
       await apiFetch(`/ai/prompts/${p.id}`, { method: 'DELETE' })
-      message.success('提示词已删除')
+      getMessage().success('提示词已删除')
       loadPrompts()
-    } catch (e: any) { message.error(`删除失败: ${e.message}`) }
+    } catch (e: any) { getMessage().error(`删除失败: ${e.message}`) }
     setPendingPrompt(null)
   }
 
   const copyPromptContent = async (p: PromptTemplate) => {
     try {
       await navigator.clipboard.writeText(p.content)
-      message.success('提示词正文已复制到剪贴板')
-    } catch { message.error('复制失败，请手动选择文本') }
+      getMessage().success('提示词正文已复制到剪贴板')
+    } catch { getMessage().error('复制失败，请手动选择文本') }
   }
 
   // 插入 Agent 系统提示词: 走后端 render 端点(计入引用次数), 未填变量的占位原样保留待人工补全
@@ -507,13 +508,13 @@ export default function AISettingsPage() {
     try {
       const r = await apiFetch<{ content: string }>(`/ai/prompts/${id}/render`, { method: 'POST', body: JSON.stringify({ variables: {} }) })
       const text = r?.content || ''
-      if (!text) return message.error('提示词内容为空')
+      if (!text) return getMessage().error('提示词内容为空')
       const merge = (prev: string) => (prev.trim() ? `${prev.trimEnd()}\n\n${text}` : text)
       if (target === 'create') setForm(f => ({ ...f, system_prompt: merge(f.system_prompt) }))
       else setEditForm(f => ({ ...f, system_prompt: merge(f.system_prompt) }))
-      message.success('已插入提示词，{{变量}} 占位请按需替换为实际值')
+      getMessage().success('已插入提示词，{{变量}} 占位请按需替换为实际值')
       loadPrompts()
-    } catch (e: any) { message.error(`插入失败: ${e.message}`) }
+    } catch (e: any) { getMessage().error(`插入失败: ${e.message}`) }
   }
 
   const loadKbCategories = async () => {
@@ -576,7 +577,7 @@ export default function AISettingsPage() {
   }
 
   const handleCreateAgent = async () => {
-    if (!form.name.trim()) return message.error('请输入 Agent 名称')
+    if (!form.name.trim()) return getMessage().error('请输入 Agent 名称')
     setSaving(true)
     const ok = await createAgent({
       name: form.name,
@@ -594,7 +595,7 @@ export default function AISettingsPage() {
     const id = pendingAgentId
     if (!id) return
     await fetch(`/api/v1/ai/agents/${id}`, { method: 'DELETE' })
-    message.success('Agent 已删除')
+    getMessage().success('Agent 已删除')
     fetchAgents()
     setPendingAgentId(null)
   }
@@ -622,7 +623,7 @@ export default function AISettingsPage() {
         skills: editForm.skills.filter(s => s.name.trim()),
       }),
     })
-    message.success('Agent 已更新')
+    getMessage().success('Agent 已更新')
     setSaving(false); setEditing(null); fetchAgents()
   }
 
@@ -646,11 +647,11 @@ export default function AISettingsPage() {
         body: JSON.stringify({ updates: { OPSORIGIN_LLM_PROVIDERS: JSON.stringify(clean) } }),
       })
       if (!r.ok) throw new Error(`保存失败(${r.status})`)
-      message.success('模型池已保存，即时生效')
+      getMessage().success('模型池已保存，即时生效')
       loadSysConfig()
       loadModelPool()
     } catch (e: any) {
-      message.error('保存模型池失败: ' + e.message)
+      getMessage().error('保存模型池失败: ' + e.message)
     }
     setPoolSaving(false)
   }
@@ -663,9 +664,9 @@ export default function AISettingsPage() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ updates: { [`OPSORIGIN_LLM_${key.toUpperCase()}`]: key === 'timeout' ? String(parseInt(value)||60) : value } }),
       })
-      message.success(`${key} 已更新，即时生效`)
+      getMessage().success(`${key} 已更新，即时生效`)
       loadSysConfig()
-    } catch { message.error('保存失败') }
+    } catch { getMessage().error('保存失败') }
     setSaving(false)
   }
 

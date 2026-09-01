@@ -1,8 +1,8 @@
 
 import { create } from 'zustand'
 import { apiFetch, apiList } from '@/lib/utils'
-import { message as antdMessage } from 'antd'
 import type { Process, ProcessVersion, ProcessInstance, FormSchema, FormFieldOption } from './types'
+import { getMessage } from '@/lib/message'
 
 const FORM_OPTIONS_TTL_MS = 30_000
 const formOptionsCache = new Map<string, { options: FormFieldOption[]; expireAt: number }>()
@@ -38,47 +38,47 @@ export const useProcessStore = create<ProcessState>((set, get) => ({
       set({ processes, loading: false })
     } catch (e: any) {
       set({ loading: false })
-      antdMessage.error(`加载流程列表失败: ${e.message}`)
+      getMessage().error(`加载流程列表失败: ${e.message}`)
     }
   },
   getProcess: async (id) => {
     try {
       return await apiFetch<Process>(`/itsm/processes/${id}`)
     } catch (e: any) {
-      antdMessage.error(`加载流程详情失败: ${e.message}`)
+      getMessage().error(`加载流程详情失败: ${e.message}`)
       return null
     }
   },
   createProcess: async (data) => {
     try {
       const result = await apiFetch<{ id: string }>('/itsm/processes', { method: 'POST', body: JSON.stringify(data) })
-      antdMessage.success('创建流程成功')
+      getMessage().success('创建流程成功')
       await get().fetchProcesses()
       return result.id
     } catch (e: any) {
-      antdMessage.error(`创建流程失败: ${e.message}`)
+      getMessage().error(`创建流程失败: ${e.message}`)
       return null
     }
   },
   updateProcess: async (id, data) => {
     try {
       await apiFetch(`/itsm/processes/${id}`, { method: 'PUT', body: JSON.stringify(data) })
-      antdMessage.success('更新流程成功')
+      getMessage().success('更新流程成功')
       await get().fetchProcesses()
       return true
     } catch (e: any) {
-      antdMessage.error(`更新流程失败: ${e.message}`)
+      getMessage().error(`更新流程失败: ${e.message}`)
       return false
     }
   },
   deleteProcess: async (id) => {
     try {
       await apiFetch(`/itsm/processes/${id}`, { method: 'DELETE' })
-      antdMessage.success('删除流程成功')
+      getMessage().success('删除流程成功')
       await get().fetchProcesses()
       return true
     } catch (e: any) {
-      antdMessage.error(`删除流程失败: ${e.message}`)
+      getMessage().error(`删除流程失败: ${e.message}`)
       return false
     }
   },
@@ -86,7 +86,7 @@ export const useProcessStore = create<ProcessState>((set, get) => ({
     try {
       return await apiList<ProcessVersion>(`/itsm/processes/${id}/versions`)
     } catch (e: any) {
-      antdMessage.error(`加载版本历史失败: ${e.message}`)
+      getMessage().error(`加载版本历史失败: ${e.message}`)
       return []
     }
   },
@@ -94,7 +94,7 @@ export const useProcessStore = create<ProcessState>((set, get) => ({
     try {
       return await apiFetch<ProcessVersion>(`/itsm/processes/${id}/versions/${version}`)
     } catch (e: any) {
-      antdMessage.error(`加载版本详情失败: ${e.message}`)
+      getMessage().error(`加载版本详情失败: ${e.message}`)
       return null
     }
   },
@@ -122,10 +122,10 @@ export const useProcessStore = create<ProcessState>((set, get) => ({
   upsertFormSchema: async (scope, schema) => {
     try {
       await apiFetch(`/itsm/forms/${scope}`, { method: 'PUT', body: JSON.stringify(schema) })
-      antdMessage.success('表单 schema 已保存')
+      getMessage().success('表单 schema 已保存')
       return true
     } catch (e: any) {
-      antdMessage.error(`保存表单失败: ${e.message}`)
+      getMessage().error(`保存表单失败: ${e.message}`)
       return false
     }
   },
@@ -157,7 +157,7 @@ export const useProcessStore = create<ProcessState>((set, get) => ({
       await apiFetch(`/itsm/tickets/${ticketId}/custom-fields`, { method: 'PUT', body: JSON.stringify({ scope, fields }) })
       return true
     } catch (e: any) {
-      antdMessage.error(`更新自定义字段失败: ${e.message}`)
+      getMessage().error(`更新自定义字段失败: ${e.message}`)
       return false
     }
   },

@@ -7,6 +7,7 @@ import { Button, Input, Select, message } from 'antd'
 import { useCan } from '@/stores/permissions'
 import { apiFetch, apiList } from '@/lib/utils'
 import { ChevronLeft, Save, Network } from 'lucide-react'
+import { getMessage } from '@/lib/message'
 
 // 与 models 页对齐的字段类型定义(驱动 ref/enum/unique/user 渲染)
 type FieldType =
@@ -141,9 +142,9 @@ export default function NewInstancePage() {
     setForm(f => ({ ...f, attributes: { ...f.attributes, [name]: v } }))
 
   const handleSubmit = async () => {
-    if (!canWrite) { message.error('无写入权限'); return }
-    if (!form.name.trim()) { message.error('请填写名称'); return }
-    if (!form.type_id) { message.error('请选择类型'); return }
+    if (!canWrite) { getMessage().error('无写入权限'); return }
+    if (!form.name.trim()) { getMessage().error('请填写名称'); return }
+    if (!form.type_id) { getMessage().error('请选择类型'); return }
     setSubmitting(true)
     try {
       // 合并结构化字段(attributes)与自定义属性(兜底), 二者隔离不互相覆盖
@@ -178,14 +179,14 @@ export default function NewInstancePage() {
               body: JSON.stringify({ source_id: ciID, target_id: r.target, relation_type: r.relation_type }),
             })
           } catch (e: any) {
-            message.error(`关系「${r.relation_type}」建立失败: ${e.message}`)
+            getMessage().error(`关系「${r.relation_type}」建立失败: ${e.message}`)
           }
         }
       }
-      message.success('配置项创建成功')
+      getMessage().success('配置项创建成功')
       navigate('/cmdb/instances')
     } catch (e: any) {
-      message.error('创建失败: ' + e.message)
+      getMessage().error('创建失败: ' + e.message)
     } finally {
       setSubmitting(false)
     }

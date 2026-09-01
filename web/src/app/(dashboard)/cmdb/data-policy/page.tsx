@@ -4,6 +4,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button, Tag, Input, Modal, Select, Popconfirm, message } from 'antd'
 import { apiFetch, apiList } from '@/lib/utils'
 import { Plus, Trash2, ShieldCheck } from 'lucide-react'
+import { getMessage } from '@/lib/message'
 
 interface PolicyCondition { attr: string; op: string; value: string }
 interface DataPolicy { id: string; role: string; model_type_id: string; condition: PolicyCondition[]; action: string; created_at: string }
@@ -26,13 +27,13 @@ export default function CMDBDataPolicyPage() {
   }, [])
 
   const save = async () => {
-    if (!form.role.trim() || !form.model_type_id) { message.error('角色与模型必填'); return }
+    if (!form.role.trim() || !form.model_type_id) { getMessage().error('角色与模型必填'); return }
     const condition = form.condition.filter(c => c.attr.trim())
     try {
       await apiFetch('/cmdb/data-policies', { method: 'POST', body: JSON.stringify({ ...form, condition }) })
-      message.success('数据权限已保存')
+      getMessage().success('数据权限已保存')
       setDialogOpen(false); load()
-    } catch (e: any) { message.error('保存失败: ' + e.message) }
+    } catch (e: any) { getMessage().error('保存失败: ' + e.message) }
   }
 
   const [delTarget, setDelTarget] = useState<DataPolicy | null>(null)
@@ -42,8 +43,8 @@ export default function CMDBDataPolicyPage() {
     if (!delTarget) return
     setDelSubmitting(true)
     try {
-      await apiFetch(`/cmdb/data-policies/${delTarget.id}`, { method: 'DELETE' }); message.success('已删除'); load(); setDelTarget(null)
-    } catch (e: any) { message.error('删除失败: ' + e.message) } finally { setDelSubmitting(false) }
+      await apiFetch(`/cmdb/data-policies/${delTarget.id}`, { method: 'DELETE' }); getMessage().success('已删除'); load(); setDelTarget(null)
+    } catch (e: any) { getMessage().error('删除失败: ' + e.message) } finally { setDelSubmitting(false) }
   }
 
   const condText = (c: PolicyCondition[]) => c.map(x => `${x.attr} ${x.op === 'in' ? '∈' : '='} ${x.value}`).join(' 且 ') || '全部数据'

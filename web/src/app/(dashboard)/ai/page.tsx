@@ -12,6 +12,7 @@ import { apiFetchRaw } from '@/lib/utils'
 import { AiMarkdown } from '@/components/ai-markdown'
 import { useThemeStore } from '@/stores/theme'
 import { renderMarkdown, renderExploreContent } from '@/lib/ai-render'
+import { getMessage } from '@/lib/message'
 
 // ============================================================================
 // 类型与本地工具
@@ -207,7 +208,7 @@ export default function AIPage() {
         headers: token ? { Authorization: `Bearer ${token}` } : undefined,
       })
       if (!resp.ok) throw new Error(`删除失败(${resp.status})`)
-      message.success('会话已删除')
+      getMessage().success('会话已删除')
       if (id === convId) {
         // 删的是当前会话: 重置为新对话
         setConvId('')
@@ -216,7 +217,7 @@ export default function AIPage() {
       const convs = await loadConversations(selectedAgent?.id)
       setConversations(convs)
     } catch (e: any) {
-      message.error('删除失败: ' + e.message)
+      getMessage().error('删除失败: ' + e.message)
     }
     setPendingConvId(null)
   }
@@ -238,8 +239,8 @@ export default function AIPage() {
         }),
       })
       if (!r.ok) throw new Error(`保存失败(${r.status})`)
-      message.success('已保存到知识库（分类「AI 对话沉淀」）')
-    } catch (e: any) { message.error('保存失败: ' + e.message) }
+      getMessage().success('已保存到知识库（分类「AI 对话沉淀」）')
+    } catch (e: any) { getMessage().error('保存失败: ' + e.message) }
   }
 
   // 下载 AI 回复为 Markdown 文件
@@ -271,16 +272,16 @@ export default function AIPage() {
   // 保存 AI 回复为归档文件(落 MinIO)
   const saveMsgAsArtifact = async (msg: Message) => {
     if (!msg.content.trim()) return
-    if (!convId) { message.error('请先新建或选择对话会话'); return }
+    if (!convId) { getMessage().error('请先新建或选择对话会话'); return }
     try {
       const r = await fetch(`/api/v1/ai/conversations/${convId}/artifacts`, {
         method: 'POST', headers: { 'Content-Type': 'application/json', ...authHeaders() },
         body: JSON.stringify({ message_id: msg.id, file_name: `ai-${msg.id}.md`, content: msg.content }),
       })
       if (!r.ok) throw new Error(`保存失败(${r.status})`)
-      message.success('已归档到对象存储（本会话产物区可下载）')
+      getMessage().success('已归档到对象存储（本会话产物区可下载）')
       loadArtifacts(convId)
-    } catch (e: any) { message.error('归档失败: ' + e.message) }
+    } catch (e: any) { getMessage().error('归档失败: ' + e.message) }
   }
 
   const downloadArtifact = async (aid: string) => {
@@ -296,7 +297,7 @@ export default function AIPage() {
       a.download = decodeURIComponent(name)
       a.click()
       URL.revokeObjectURL(url)
-    } catch (e: any) { message.error('下载失败: ' + e.message) }
+    } catch (e: any) { getMessage().error('下载失败: ' + e.message) }
   }
 
   const deleteArtifact = async () => {
@@ -304,9 +305,9 @@ export default function AIPage() {
     if (!aid) return
     try {
       await fetch(`/api/v1/ai/conversations/${convId}/artifacts/${aid}`, { method: 'DELETE', headers: authHeaders() })
-      message.success('已删除')
+      getMessage().success('已删除')
       loadArtifacts(convId)
-    } catch (e: any) { message.error('删除失败: ' + e.message) }
+    } catch (e: any) { getMessage().error('删除失败: ' + e.message) }
     setPendingArtifactId(null)
   }
 
@@ -332,7 +333,7 @@ export default function AIPage() {
       a.download = decodeURIComponent(name)
       a.click()
       URL.revokeObjectURL(url)
-    } catch (e: any) { message.error('下载失败: ' + e.message) }
+    } catch (e: any) { getMessage().error('下载失败: ' + e.message) }
   }
 
   const deleteWorkspaceFile = async () => {
@@ -340,9 +341,9 @@ export default function AIPage() {
     if (!fid) return
     try {
       await fetch(`/api/v1/ai/conversations/${convId}/workspace/${fid}`, { method: 'DELETE', headers: authHeaders() })
-      message.success('已删除')
+      getMessage().success('已删除')
       loadWorkspace(convId)
-    } catch (e: any) { message.error('删除失败: ' + e.message) }
+    } catch (e: any) { getMessage().error('删除失败: ' + e.message) }
     setPendingWsFileId(null)
   }
 
@@ -363,8 +364,8 @@ export default function AIPage() {
         body: JSON.stringify({ agent_id: selectedAgent?.id || '', category: '对话要点', problem, resolution: msg.content.slice(0, 500) }),
       })
       if (!r.ok) throw new Error(`保存失败(${r.status})`)
-      message.success('已记住（长期记忆，重启不丢）')
-    } catch (e: any) { message.error('保存失败: ' + e.message) }
+      getMessage().success('已记住（长期记忆，重启不丢）')
+    } catch (e: any) { getMessage().error('保存失败: ' + e.message) }
   }
 
   // 重试失败消息: 重新发送该错误消息之前的最后一条用户消息
@@ -381,17 +382,17 @@ export default function AIPage() {
 
   // 分享会话(仅属主): 目标用户/组 + 权限 view/edit
   const saveShare = async () => {
-    if (!shareConv || !shareForm.target_id.trim()) { message.error('请填写目标用户/组 ID'); return }
+    if (!shareConv || !shareForm.target_id.trim()) { getMessage().error('请填写目标用户/组 ID'); return }
     try {
       const r = await fetch(`/api/v1/ai/conversations/${shareConv.id}/shares`, {
         method: 'POST', headers: { 'Content-Type': 'application/json', ...authHeaders() },
         body: JSON.stringify(shareForm),
       })
       if (!r.ok) throw new Error(`共享失败(${r.status})`)
-      message.success(shareForm.permission === 'edit' ? '已共享（可继续对话）' : '已共享（仅查看）')
+      getMessage().success(shareForm.permission === 'edit' ? '已共享（可继续对话）' : '已共享（仅查看）')
       setShareConv(null)
       setShareForm({ target_type: 'user', target_id: '', permission: 'view' })
-    } catch (e: any) { message.error('共享失败: ' + e.message) }
+    } catch (e: any) { getMessage().error('共享失败: ' + e.message) }
   }
 
   const sendMessage = async (text: string) => {
@@ -428,7 +429,7 @@ export default function AIPage() {
       const omitted = history.length - trimmed.length
       if (omitted > 0) {
         history = [{ role: 'assistant', content: `⚠️ 上下文过长，更早的 ${omitted} 条消息已自动省略（估算约 ${(histTokens / 1000).toFixed(1)}k tokens）。如需完整上下文请新开对话。` }, ...trimmed]
-        message.info('上下文过长，已自动压缩早期消息')
+        getMessage().info('上下文过长，已自动压缩早期消息')
       }
     }
 
@@ -1076,7 +1077,7 @@ export default function AIPage() {
                         正在规划执行方案...
                       </div>
                     ) : (
-                      <div className="text-sm text-gray-700 dark:text-[#C7D2E0] leading-relaxed" dangerouslySetInnerHTML={{ __html: renderExploreContent(run.content) }} />
+                      <div className="text-sm text-gray-700 dark:text-[var(--foreground)] leading-relaxed" dangerouslySetInnerHTML={{ __html: renderExploreContent(run.content) }} />
                     )}
                   </div>
                 </div>
@@ -1216,7 +1217,7 @@ export default function AIPage() {
                         <p className="text-xs text-red-500 whitespace-pre-wrap">{a.error}</p>
                       ) : (
                         <div
-                          className="text-xs text-gray-700 dark:text-[#C7D2E0] whitespace-pre-wrap"
+                          className="text-xs text-gray-700 dark:text-[var(--foreground)] whitespace-pre-wrap"
                           dangerouslySetInnerHTML={{ __html: renderMarkdown(a.text) }}
                         />
                       )}

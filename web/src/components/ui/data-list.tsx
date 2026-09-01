@@ -1,12 +1,13 @@
 
 import { useState, useMemo, useCallback } from 'react'
-import { LayoutGrid, List, SlidersHorizontal, ChevronsUpDown, Settings, Search, X, ChevronDown } from 'lucide-react'
+import { LayoutGrid, List, SlidersHorizontal, ChevronsUpDown, Settings, Search, X, ChevronDown, Rows3, Rows2, Rows } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { Input } from '@/components/ui/input'
 import { cn } from '@/lib/utils'
 
 export type ViewMode = 'list' | 'grid'
+export type Density = 'default' | 'compact' | 'loose'
 
 export interface Column<T> {
   key: string
@@ -57,6 +58,43 @@ export function ViewToggle({ value, onChange, className }: ViewToggleProps) {
       <Button variant="ghost" size="icon" className={cn("h-7 w-7", mode === 'grid' && "bg-white dark:bg-[rgba(255,255,255,0.08)] shadow-sm")} onClick={() => handleChange('grid')}>
         <LayoutGrid className="h-3.5 w-3.5" />
       </Button>
+    </div>
+  )
+}
+
+// 密度切换组件
+export function DensityToggle({ value, onChange, className }: { value?: Density; onChange?: (d: Density) => void; className?: string }) {
+  const [internal, setInternal] = useState<Density>('default')
+  const density = value ?? internal
+
+  const handleChange = (d: Density) => {
+    setInternal(d)
+    onChange?.(d)
+  }
+
+  const options: { key: Density; icon: typeof Rows; label: string }[] = [
+    { key: 'compact', icon: Rows2, label: '紧凑' },
+    { key: 'default', icon: Rows3, label: '默认' },
+    { key: 'loose', icon: Rows, label: '宽松' },
+  ]
+
+  return (
+    <div className={cn("flex items-center gap-1 p-0.5 rounded-md bg-gray-100 dark:bg-[rgba(255,255,255,0.04)]", className)}>
+      {options.map(opt => (
+        <button
+          key={opt.key}
+          onClick={() => handleChange(opt.key)}
+          title={opt.label}
+          className={cn(
+            "p-1 rounded transition-colors",
+            density === opt.key
+              ? "bg-white dark:bg-[rgba(255,255,255,0.08)] shadow-sm text-foreground"
+              : "text-muted-foreground hover:text-foreground"
+          )}
+        >
+          <opt.icon className="h-3.5 w-3.5" />
+        </button>
+      ))}
     </div>
   )
 }
@@ -169,6 +207,7 @@ interface DataListProps<T extends ListItem> {
   data: T[]
   columns: Column<T>[]
   viewMode: ViewMode
+  density?: Density
   filters?: FilterOption[]
   bulkActions?: BulkAction[]
   listView: (item: T, selectedColumns: Column<T>[]) => React.ReactNode
@@ -178,12 +217,26 @@ interface DataListProps<T extends ListItem> {
   className?: string
   onRefresh?: () => void
   customHeader?: React.ReactNode
+  loading?: boolean
+}
+
+// 密度行高映射
+const DENSITY_CLASSES: Record<Density, string> = {
+  compact: 'py-1.5',
+  default: 'py-3',
+  loose: 'py-4',
+}
+
+const DENSITY_HEADER_CLASSES: Record<Density, string> = {
+  compact: 'py-1.5',
+  default: 'py-2.5',
+  loose: 'py-3',
 }
 
 export function DataList<T extends ListItem>({
-  data, columns, viewMode, filters = [], bulkActions = [],
+  data, columns, viewMode, density = 'default', filters = [], bulkActions = [],
   listView, gridView, emptyMessage = '暂无数据', searchPlaceholder = '搜索...',
-  className, onRefresh, customHeader
+  className, onRefresh, customHeader, loading = false
 }: DataListProps<T>) {
   const [searchQ, setSearchQ] = useState('')
   const [filterValues, setFilterValues] = useState<Record<string, string>>({})
@@ -293,6 +346,8 @@ export function DataList<T extends ListItem>({
           />
         )}
 
+        <DensityToggle />
+
         <ColumnSelector columns={localColumns} onChange={setLocalColumns} />
 
         {onRefresh && (
@@ -329,11 +384,22 @@ export function DataList<T extends ListItem>({
         </div>
       )}
 
-      {filtered.length === 0 ? (
+      {loading ? (
+        <div className="space-y-1">
+          {[1, 2, 3, 4, 5].map(i => (
+            <div key={i} className="flex items-center gap-4 px-4 animate-pulse">
+              <div className="h-4 w-4 rounded bg-gray-200 dark:bg-gray-700" />
+              {visibleColumns.map(col => (
+                <div key={col.key} className={cn("h-4 rounded bg-gray-200 dark:bg-gray-700", col.width || "flex-1")} style={{ maxWidth: col.width ? undefined : '200px' }} />
+              ))}
+            </div>
+          ))}
+        </div>
+      ) : filtered.length === 0 ? (
         <div className="py-12 text-center text-muted-foreground">{emptyMessage}</div>
       ) : viewMode === 'list' ? (
         <div className="space-y-1 overflow-x-auto">
-          <div className="flex items-center gap-4 px-4 py-2.5 text-xs text-muted-foreground font-medium border-b min-w-max">
+          <div className={cn("flex items-center gap-4 px-4 text-xs text-muted-foreground font-medium border-b min-w-max", DENSITY_HEADER_CLASSES[density])}>
             <input
               type="checkbox"
               checked={isAllSelected}
@@ -359,7 +425,8 @@ export function DataList<T extends ListItem>({
           </div>
           {filtered.map(item => (
             <div key={item.id} className={cn(
-              "flex items-center gap-4 px-4 py-3 border-b border-gray-50 dark:border-[rgba(255,255,255,0.02)] hover:bg-gray-50 dark:hover:bg-[rgba(255,255,255,0.02)] transition-colors min-w-max",
+              "flex items-center gap-4 px-4 border-b border-gray-50 dark:border-[rgba(255,255,255,0.02)] hover:bg-gray-50 dark:hover:bg-[rgba(255,255,255,0.02)] transition-colors min-w-max",
+              DENSITY_CLASSES[density],
               selectedIds.has(item.id) && "bg-blue-50/50 dark:bg-blue-500/5"
             )}>
               <input

@@ -153,9 +153,9 @@ func (s *Server) GracefulStop() {
 type swaggerRegistrar struct{}
 
 func (s *swaggerRegistrar) RegisterRoutes(mux *http.ServeMux) {
-	// 服务 swagger.json 文件
+	// 从文件系统服务 swagger.json (构建时确保 docs/swagger/ 存在)
 	mux.HandleFunc("GET /swagger/doc.json", func(w http.ResponseWriter, r *http.Request) {
-		http.ServeFile(w, r, "docs/swagger/swagger.json")
+		http.ServeFile(w, r, "../../docs/swagger/swagger.json")
 	})
 	// 服务 Swagger UI
 	mux.Handle("/swagger/", httpSwagger.Handler(

@@ -1,7 +1,7 @@
 
 import { create } from 'zustand'
 import { apiFetch, apiList } from '@/lib/utils'
-import { message } from 'antd'
+import { getMessage } from '@/lib/message'
 
 interface AgentState {
   agents: any[]
@@ -29,7 +29,7 @@ export const useAgentAIStore = create<AgentState>((set, get) => ({
       set({ agents, loading: false })
     } catch (e: any) {
       set({ loading: false })
-      message.error(`加载AI代理失败: ${e.message}`)
+      getMessage().error(`加载AI代理失败: ${e.message}`)
     }
   },
   fetchTools: async () => {
@@ -39,7 +39,7 @@ export const useAgentAIStore = create<AgentState>((set, get) => ({
       set({ tools, loading: false })
     } catch (e: any) {
       set({ loading: false })
-      message.error(`加载AI工具失败: ${e.message}`)
+      getMessage().error(`加载AI工具失败: ${e.message}`)
     }
   },
   fetchPlans: async () => {
@@ -49,28 +49,28 @@ export const useAgentAIStore = create<AgentState>((set, get) => ({
       set({ plans, loading: false })
     } catch (e: any) {
       set({ loading: false })
-      message.error(`加载执行计划失败: ${e.message}`)
+      getMessage().error(`加载执行计划失败: ${e.message}`)
     }
   },
   createAgent: async (data) => {
     try {
       await apiFetch('/ai/agents', { method: 'POST', body: JSON.stringify(data) })
-      message.success('创建AI代理成功')
+      getMessage().success('创建AI代理成功')
       await get().fetchAgents()
       return true
     } catch (e: any) {
-      message.error(`创建AI代理失败: ${e.message}`)
+      getMessage().error(`创建AI代理失败: ${e.message}`)
       return false
     }
   },
   executePlan: async (data) => {
     try {
       await apiFetch('/ai/plans', { method: 'POST', body: JSON.stringify(data) })
-      message.success('执行计划成功')
+      getMessage().success('执行计划成功')
       await get().fetchPlans()
       return true
     } catch (e: any) {
-      message.error(`执行计划失败: ${e.message}`)
+      getMessage().error(`执行计划失败: ${e.message}`)
       return false
     }
   },

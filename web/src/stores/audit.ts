@@ -1,7 +1,7 @@
 
 import { create } from 'zustand'
 import { apiFetch, apiList } from '@/lib/utils'
-import { message } from 'antd'
+import { getMessage } from '@/lib/message'
 export interface AuditActor {
   type: string
   id: string
@@ -88,7 +88,7 @@ export const useAuditStore = create<AuditState>((set) => ({
       set({ events: data?.items || [], total: data?.total || 0, loading: false })
     } catch (e: any) {
       set({ loading: false })
-      message.error(`加载审计事件失败: ${e.message}`)
+      getMessage().error(`加载审计事件失败: ${e.message}`)
     }
   },
 

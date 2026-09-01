@@ -17,6 +17,7 @@ import {
   RadarIcon, Plus, RefreshCw, Play, Trash2, Edit, History,
   AlertTriangle, CheckCircle2, XCircle, Clock, FileText, ArrowUpRight, FlaskConical, Wrench,
 } from 'lucide-react'
+import { getMessage } from '@/lib/message'
 
 // ----------------------------- 常量与工具 -----------------------------
 
@@ -274,9 +275,9 @@ export default function InspectionsPage() {
     try {
       const rs = await apiFetch<RemediationAction[]>(`/ai/inspections/${report.inspection_id}/runs/${report.id}/remediate/generate`, { method: 'POST' })
       setRemediations(rs)
-      message.success(`已生成 ${rs.length} 条修复动作`)
+      getMessage().success(`已生成 ${rs.length} 条修复动作`)
     } catch (e: unknown) {
-      message.error(`生成失败: ${(e as Error).message}`)
+      getMessage().error(`生成失败: ${(e as Error).message}`)
     } finally {
       setRemedLoading(false)
     }
@@ -287,12 +288,12 @@ export default function InspectionsPage() {
     try {
       const updated = await apiFetch<RemediationAction>(`/ai/remediate/${actionId}/execute`, { method: 'POST' })
       setRemediations(list => list.map(a => a.id === actionId ? updated : a))
-      if (updated.status === 'succeeded') message.success('修复执行成功')
-      else if (updated.status === 'awaiting_approval') message.success('已发起审批，等待人工确认')
-      else if (updated.status === 'rejected') message.error('审批未通过')
-      else if (updated.status === 'failed') message.error(`执行失败: ${updated.error || ''}`)
+      if (updated.status === 'succeeded') getMessage().success('修复执行成功')
+      else if (updated.status === 'awaiting_approval') getMessage().success('已发起审批，等待人工确认')
+      else if (updated.status === 'rejected') getMessage().error('审批未通过')
+      else if (updated.status === 'failed') getMessage().error(`执行失败: ${updated.error || ''}`)
     } catch (e: unknown) {
-      message.error(`执行失败: ${(e as Error).message}`)
+      getMessage().error(`执行失败: ${(e as Error).message}`)
     } finally {
       setRemediating(ids => ids.filter(id => id !== actionId))
     }

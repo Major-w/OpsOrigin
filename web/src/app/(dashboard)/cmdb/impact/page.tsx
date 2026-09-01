@@ -110,7 +110,7 @@ export default function CMDBImpactPage() {
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-2xl font-bold">影响分析</h1>
-          <p className="text-sm text-muted-foreground">给定某 CI 故障，自动分析受影响的上下游 CI 及业务（服务建模：沿依赖链向上聚合业务服务）</p>
+          <p className="text-sm text-muted-foreground">给定某 CI 故障，自动分析受影响的上下游 CI 及业务（服务建模：沿依赖链向上聚合业务）</p>
         </div>
         <Button type="default" size="middle" onClick={() => setSearch('')}><RefreshCw className="h-3.5 w-3.5 mr-1" />刷新</Button>
       </div>
@@ -171,7 +171,7 @@ export default function CMDBImpactPage() {
                 <Card className="w-44">
                   <CardContent className="p-4 text-center">
                     <p className="text-3xl font-bold text-orange-600">{result.affectedServices.length}</p>
-                    <p className="text-xs text-muted-foreground mt-1">受影响业务服务</p>
+                    <p className="text-xs text-muted-foreground mt-1">受影响业务</p>
                   </CardContent>
                 </Card>
               </div>
@@ -216,13 +216,13 @@ export default function CMDBImpactPage() {
 
               <div className="grid grid-cols-2 gap-4">
                 <Card>
-                  <CardHeader className="py-3"><CardTitle className="text-sm">受影响业务服务（按关键性排序）</CardTitle></CardHeader>
+                  <CardHeader className="py-3"><CardTitle className="text-sm">受影响业务（按关键性排序）</CardTitle></CardHeader>
                   <CardContent>
                     <div className="flex flex-wrap gap-1.5">
                       {result.affectedServices.map(s => (
                         <Tag key={s} className="text-xs">{s}</Tag>
                       ))}
-                      {result.affectedServices.length === 0 && <p className="text-xs text-muted-foreground">未关联业务服务（在「业务资源」分类下创建业务服务并建立依赖链）</p>}
+                      {result.affectedServices.length === 0 && <p className="text-xs text-muted-foreground">未关联业务（在「业务资源」分类下创建业务并建立依赖链）</p>}
                     </div>
                   </CardContent>
                 </Card>
@@ -231,8 +231,8 @@ export default function CMDBImpactPage() {
                   <CardContent>
                     <div className="space-y-1.5 text-xs text-muted-foreground">
                       <div className="flex items-start gap-2"><ArrowRight className="h-3 w-3 mt-0.5 shrink-0" /><span>影响分析沿依赖链（depends_on / hosts / connects）双向遍历，深度 3。</span></div>
-                      <div className="flex items-start gap-2"><ArrowRight className="h-3 w-3 mt-0.5 shrink-0" /><span>「业务服务」模型（business_service）带 business_criticality 字段，故障时按关键性聚合影响等级。</span></div>
-                      <div className="flex items-start gap-2"><ArrowRight className="h-3 w-3 mt-0.5 shrink-0" /><span>内置模型：服务器 / 网络设备 / 数据库 / 中间件 / 应用 / 业务服务，启动时自动创建。</span></div>
+                      <div className="flex items-start gap-2"><ArrowRight className="h-3 w-3 mt-0.5 shrink-0" /><span>「业务」模型（business_service）带 business_criticality 字段，故障时按关键性聚合影响等级。</span></div>
+                      <div className="flex items-start gap-2"><ArrowRight className="h-3 w-3 mt-0.5 shrink-0" /><span>内置模型：服务器 / 网络设备 / 数据库 / 中间件 / 应用 / 业务，启动时自动创建。</span></div>
                     </div>
                   </CardContent>
                 </Card>

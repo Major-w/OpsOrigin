@@ -5,6 +5,7 @@ import { Button, Tag, Input, Select, message } from 'antd'
 import { apiFetch, apiList } from '@/lib/utils'
 import { GitBranch, Plus, Trash2, Play, Network } from 'lucide-react'
 import { cn } from '@/lib/utils'
+import { getMessage } from '@/lib/message'
 
 interface ModelInfo { id: string; name: string; category: string; parent_id?: string }
 interface ChainHop { relation: string; direction: string }
@@ -27,7 +28,7 @@ export default function CMDBChainQueryPage() {
 
   const run = async () => {
     if (!startType) return
-    if (!hops.length) { message.error('请至少添加一跳关系'); return }
+    if (!hops.length) { getMessage().error('请至少添加一跳关系'); return }
     setLoading(true)
     try {
       const path = hops.map(h => ({ relation: h.relation, direction: h.direction }))
@@ -35,7 +36,7 @@ export default function CMDBChainQueryPage() {
         method: 'POST', body: JSON.stringify({ start_type: startType, path, max_depth: hops.length }),
       })
       setLayers(data.layers)
-    } catch (e: any) { message.error('查询失败: ' + e.message) }
+    } catch (e: any) { getMessage().error('查询失败: ' + e.message) }
     finally { setLoading(false) }
   }
 
@@ -77,7 +78,7 @@ export default function CMDBChainQueryPage() {
 
           <div className="flex items-center gap-2">
             <Button onClick={run} disabled={loading}><Play className="h-3.5 w-3.5 mr-1" />{loading ? '查询中...' : '执行查询'}</Button>
-            <span className="text-xs text-muted-foreground">示例：业务服务 → depends_on → 应用 → hosts → 服务器（机柜）</span>
+            <span className="text-xs text-muted-foreground">示例：业务 → depends_on → 应用 → hosts → 服务器（机柜）</span>
           </div>
         </CardContent>
       </Card>

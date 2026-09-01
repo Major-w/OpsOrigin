@@ -21,6 +21,7 @@ import {
   Clock, Edit, Trash2,
 } from 'lucide-react'
 import { formatTime } from '@/lib/utils'
+import { getMessage } from '@/lib/message'
 
 export default function SystemNotificationsPage() {
   const store = useNotificationStore()
@@ -115,7 +116,7 @@ function ChannelsTab() {
 
   const handleTest = async (ch: Channel) => {
     if (!ch.enabled) {
-      message.warning('该渠道未启用,无法测试发送。请先编辑启用')
+      getMessage().warning('该渠道未启用,无法测试发送。请先编辑启用')
       return
     }
     await useNotificationStore.getState().testChannel(ch.id)

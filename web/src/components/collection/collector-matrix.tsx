@@ -11,7 +11,7 @@ import { Card, CardContent } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import { CheckCircle2, CircleDashed } from 'lucide-react'
 import { apiList } from '@/lib/utils'
-import { message } from 'antd'
+import { getMessage } from '@/lib/message'
 interface CollectorInfo {
   kind: string
   resource_type: string
@@ -35,7 +35,7 @@ export function CollectorMatrix({ kind }: Props) {
   useEffect(() => {
     apiList<CollectorInfo>('/cmdb/collectors')
       .then(setCollectors)
-      .catch(() => message.error('加载采集器失败'))
+      .catch(() => getMessage().error('加载采集器失败'))
       .finally(() => setLoaded(true))
   }, [])
 

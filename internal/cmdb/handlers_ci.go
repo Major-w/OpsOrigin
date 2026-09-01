@@ -93,6 +93,17 @@ func (s *Service) handleCreateCI(w http.ResponseWriter, r *http.Request) {
 // handleBatchCreateCI 批量创建 CI(F4-B 决策 B: 异步化)。
 // 请求体为 CI 数组; 每条经最小校验后提交到 ingest 缓冲(202 立即返回),
 // 由后台 flush 批量落库, 绝不阻塞调用方。缓冲满时该条计入 ingest_dropped_total。
+// handleBatchCreateCI godoc
+// @Summary 批量创建 CI
+// @Description 批量创建配置项
+// @Tags CMDB
+// @Accept json
+// @Produce json
+// @Param cis body array true "CI 列表"
+// @Success 201 {array} model.CIModel
+// @Failure 400 {object} map[string]string
+// @Router /api/v1/cmdb/ci/batch [post]
+// @Security BearerAuth
 func (s *Service) handleBatchCreateCI(w http.ResponseWriter, r *http.Request) {
 	tenantID := auth.TenantFromContext(r.Context())
 
@@ -259,6 +270,16 @@ func (s *Service) handleChainQuery(w http.ResponseWriter, r *http.Request) {
 	httputil.WriteJSON(w, http.StatusOK, map[string]any{"layers": layers, "total_layers": len(layers)})
 }
 
+// handleGetCI godoc
+// @Summary 获取 CI 详情
+// @Description 根据 ID 获取配置项详情
+// @Tags CMDB
+// @Produce json
+// @Param id path string true "CI ID"
+// @Success 200 {object} model.CIModel
+// @Failure 404 {object} map[string]string
+// @Router /api/v1/cmdb/ci/{id} [get]
+// @Security BearerAuth
 func (s *Service) handleGetCI(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	tenantID := auth.TenantFromContext(r.Context())
@@ -290,6 +311,19 @@ func (s *Service) handleGetCI(w http.ResponseWriter, r *http.Request) {
 	httputil.WriteJSON(w, http.StatusOK, ci)
 }
 
+// handleUpdateCI godoc
+// @Summary 更新 CI
+// @Description 更新配置项信息
+// @Tags CMDB
+// @Accept json
+// @Produce json
+// @Param id path string true "CI ID"
+// @Param ci body object true "更新信息"
+// @Success 200 {object} model.CIModel
+// @Failure 400 {object} map[string]string
+// @Failure 404 {object} map[string]string
+// @Router /api/v1/cmdb/ci/{id} [put]
+// @Security BearerAuth
 func (s *Service) handleUpdateCI(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	ctx := r.Context()
@@ -383,6 +417,15 @@ func (s *Service) handleUpdateCI(w http.ResponseWriter, r *http.Request) {
 	httputil.WriteJSON(w, http.StatusOK, ci)
 }
 
+// handleDeleteCI godoc
+// @Summary 删除 CI
+// @Description 删除配置项
+// @Tags CMDB
+// @Param id path string true "CI ID"
+// @Success 204
+// @Failure 404 {object} map[string]string
+// @Router /api/v1/cmdb/ci/{id} [delete]
+// @Security BearerAuth
 func (s *Service) handleDeleteCI(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	tenantID := auth.TenantFromContext(r.Context())
@@ -435,6 +478,20 @@ func (s *Service) handleDeleteCI(w http.ResponseWriter, r *http.Request) {
 // @Failure 500 {object} map[string]string
 // @Router /api/v1/cmdb/ci [get]
 // @Security BearerAuth
+// handleListCI godoc
+// @Summary 获取 CI 列表
+// @Description 获取配置项列表，支持分页、排序、过滤
+// @Tags CMDB
+// @Produce json
+// @Param type_id query string false "CI 类型 ID"
+// @Param sort_by query string false "排序字段"
+// @Param sort_order query string false "排序方向 (asc/desc)"
+// @Param limit query int false "每页数量 (默认 20)"
+// @Param offset query int false "偏移量 (默认 0)"
+// @Param archived query string false "归档过滤 (true/false)"
+// @Success 200 {array} model.CIModel
+// @Router /api/v1/cmdb/ci [get]
+// @Security BearerAuth
 func (s *Service) handleListCI(w http.ResponseWriter, r *http.Request) {
 	tenantID := auth.TenantFromContext(r.Context())
 	typeID := r.URL.Query().Get("type_id")
@@ -482,6 +539,7 @@ func (s *Service) handleListCI(w http.ResponseWriter, r *http.Request) {
 func (s *Service) handleCIAudit(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	tenantID := auth.TenantFromContext(r.Context())
+	slog.Info("[cmdb] audit", "ci_id", id, "tenant", tenantID)
 
 	if s.pg == nil {
 		httputil.WriteJSON(w, http.StatusOK, []*model.AttributeChange{})
@@ -489,6 +547,10 @@ func (s *Service) handleCIAudit(w http.ResponseWriter, r *http.Request) {
 	}
 	changes, err := s.pg.GetCIAudit(r.Context(), id, tenantID)
 	if err != nil {
+		if r.Context().Err() != nil {
+			return
+		}
+		slog.Error("[cmdb] audit error", "err", err)
 		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
@@ -498,6 +560,16 @@ func (s *Service) handleCIAudit(w http.ResponseWriter, r *http.Request) {
 	httputil.WriteJSON(w, http.StatusOK, changes)
 }
 
+// handleSearchCI godoc
+// @Summary 搜索 CI
+// @Description 全文搜索配置项
+// @Tags CMDB
+// @Produce json
+// @Param q query string true "搜索关键词"
+// @Param limit query int false "每页数量 (默认 20)"
+// @Success 200 {array} model.CIModel
+// @Router /api/v1/cmdb/ci/search [get]
+// @Security BearerAuth
 func (s *Service) handleSearchCI(w http.ResponseWriter, r *http.Request) {
 	tenantID := auth.TenantFromContext(r.Context())
 	q := r.URL.Query().Get("q")

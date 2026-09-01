@@ -1,7 +1,7 @@
 
 import { create } from 'zustand'
 import { apiFetch, apiList } from '@/lib/utils'
-import { message } from 'antd'
+import { getMessage } from '@/lib/message'
 export interface Script {
   id: string; name: string; type: string; content: string; description?: string
   input_params?: { name: string; type: string; required: boolean; description?: string; default?: string }[]
@@ -55,28 +55,28 @@ export const useScriptStore = create<ScriptState>((set, get) => ({
       set({ scripts, loading: false })
     } catch (e: any) {
       set({ loading: false })
-      message.error(`加载脚本列表失败: ${e.message}`)
+      getMessage().error(`加载脚本列表失败: ${e.message}`)
     }
   },
   create: async (data) => {
     try {
       await apiFetch('/scripts', { method: 'POST', body: JSON.stringify(data) })
-      message.success('脚本创建成功')
+      getMessage().success('脚本创建成功')
       await get().fetch()
       return true
     } catch (e: any) {
-      message.error(`创建失败: ${e.message}`)
+      getMessage().error(`创建失败: ${e.message}`)
       return false
     }
   },
   update: async (id, data, changeNote) => {
     try {
       await apiFetch(`/scripts/${id}`, { method: 'PUT', body: JSON.stringify({ ...data, change_note: changeNote }) })
-      message.success('脚本更新成功')
+      getMessage().success('脚本更新成功')
       await get().fetch()
       return true
     } catch (e: any) {
-      message.error(`更新失败: ${e.message}`)
+      getMessage().error(`更新失败: ${e.message}`)
       return false
     }
   },
@@ -84,10 +84,10 @@ export const useScriptStore = create<ScriptState>((set, get) => ({
     try {
       await apiFetch(`/scripts/${id}`, { method: 'DELETE' })
       set(s => ({ scripts: s.scripts.filter(sc => sc.id !== id) }))
-      message.success('脚本已删除')
+      getMessage().success('脚本已删除')
       return true
     } catch (e: any) {
-      message.error(`删除失败: ${e.message}`)
+      getMessage().error(`删除失败: ${e.message}`)
       return false
     }
   },
@@ -97,21 +97,21 @@ export const useScriptStore = create<ScriptState>((set, get) => ({
       const source = scripts.find(s => s.id === id)
       if (!source) throw new Error('源脚本不存在')
       await apiFetch('/scripts', { method: 'POST', body: JSON.stringify({ ...source, name: `${source.name} (副本)`, id: undefined }) })
-      message.success('脚本已复制')
+      getMessage().success('脚本已复制')
       await get().fetch()
       return true
     } catch (e: any) {
-      message.error(`复制失败: ${e.message}`)
+      getMessage().error(`复制失败: ${e.message}`)
       return false
     }
   },
   execute: async (id, data) => {
     try {
       const result = await apiFetch<ExecutionResult>(`/scripts/${id}/execute`, { method: 'POST', body: JSON.stringify(data) })
-      message.success(result.status === 'success' ? '脚本执行成功' : `执行状态: ${result.status}`)
+      getMessage().success(result.status === 'success' ? '脚本执行成功' : `执行状态: ${result.status}`)
       return result
     } catch (e: any) {
-      message.error(`执行失败: ${e.message}`)
+      getMessage().error(`执行失败: ${e.message}`)
       return null
     }
   },
@@ -119,7 +119,7 @@ export const useScriptStore = create<ScriptState>((set, get) => ({
     try {
       return await apiList<ExecutionResult>(`/scripts/${id}/executions`)
     } catch (e: any) {
-      message.error(`加载执行历史失败: ${e.message}`)
+      getMessage().error(`加载执行历史失败: ${e.message}`)
       return []
     }
   },
@@ -127,7 +127,7 @@ export const useScriptStore = create<ScriptState>((set, get) => ({
     try {
       return await apiList<ScriptVersion>(`/scripts/${id}/versions`)
     } catch (e: any) {
-      message.error(`加载版本历史失败: ${e.message}`)
+      getMessage().error(`加载版本历史失败: ${e.message}`)
       return []
     }
   },
@@ -136,7 +136,7 @@ export const useScriptStore = create<ScriptState>((set, get) => ({
       const result = await apiFetch<{ changes: DiffEntry[] }>(`/scripts/${id}/diff?from=${from}&to=${to}`)
       return result.changes || []
     } catch (e: any) {
-      message.error(`版本比对失败: ${e.message}`)
+      getMessage().error(`版本比对失败: ${e.message}`)
       return []
     }
   },
@@ -144,7 +144,7 @@ export const useScriptStore = create<ScriptState>((set, get) => ({
     try {
       return await apiFetch<CheckResult>('/scripts/check', { method: 'POST', body: JSON.stringify(data) })
     } catch (e: any) {
-      message.error(`语法检查失败: ${e.message}`)
+      getMessage().error(`语法检查失败: ${e.message}`)
       return null
     }
   },

@@ -8,6 +8,7 @@ import { Plus, Trash2, GripVertical, Edit2, Download, Upload, Settings2, Shield,
 import { useCan } from '@/stores/permissions'
 import { cn } from '@/lib/utils'
 import TopologyGraph from '@/components/TopologyGraph'
+import { getMessage } from '@/lib/message'
 
 type FieldType =
   | 'string' | 'longtext' | 'number' | 'float'
@@ -219,7 +220,7 @@ export default function CMDBModelsPage() {
     setVerModel(model); setVerDialogOpen(true)
     try {
       setVersions(await apiList<{ version: number; name: string; created_at: string; schema: Record<string, any> }>(`/cmdb/model-type/${model.id}/versions`))
-    } catch (e: any) { setVersions([]); message.error('加载版本失败: ' + e.message) }
+    } catch (e: any) { setVersions([]); getMessage().error('加载版本失败: ' + e.message) }
   }
 
   // 字段消费度(MVD): 保存查询/表单引用统计
@@ -231,7 +232,7 @@ export default function CMDBModelsPage() {
     try {
       const data = await apiFetch<{ fields: typeof fieldUsage; unused_count: number }>(`/cmdb/model-type/${model.id}/field-usage`)
       setFieldUsage(data.fields)
-    } catch (e: any) { setFieldUsage([]); message.error('加载字段消费度失败: ' + e.message) }
+    } catch (e: any) { setFieldUsage([]); getMessage().error('加载字段消费度失败: ' + e.message) }
   }
 
   // 危险操作二次确认（回滚/删模型/删分类统一 ConfirmDialog）
@@ -246,19 +247,19 @@ export default function CMDBModelsPage() {
       if (t.type === 'rollback') {
         if (!verModel) return
         await apiFetch(`/cmdb/model-type/${verModel.id}/rollback/${t.version}`, { method: 'POST' })
-        message.success(`已回滚到 v${t.version}`)
+        getMessage().success(`已回滚到 v${t.version}`)
         setVerDialogOpen(false); loadModels()
       } else if (t.type === 'model') {
         if (t.model.builtin) return
         await apiFetch(`/cmdb/model-type/${t.model.id}`, { method: 'DELETE' })
-        message.success('模型已删除'); loadModels()
+        getMessage().success('模型已删除'); loadModels()
       } else {
         if (t.cat.builtin) return
         await apiFetch(`/cmdb/model-categories/${t.cat.id}`, { method: 'DELETE' })
-        message.success('分类已删除'); loadCategories()
+        getMessage().success('分类已删除'); loadCategories()
       }
       setConfirmTarget(null)
-    } catch (e: any) { message.error(e.message || '操作失败') } finally { setConfirmSubmitting(false) }
+    } catch (e: any) { getMessage().error(e.message || '操作失败') } finally { setConfirmSubmitting(false) }
   }
   // P2-4 字段级规则权限
   const [ruleDialogOpen, setRuleDialogOpen] = useState(false)
@@ -285,7 +286,7 @@ export default function CMDBModelsPage() {
         parent_id: m.parent_id || '', builtin: !!m.builtin, author: m.author,
         fields: schemaToFields(m.schema), relations: (m.relations || []) as RelationDef[], ciCount: 0,
       })))
-    }).catch((e: any) => { message.error(`加载模型失败: ${e.message}`); setModels([]) })
+    }).catch((e: any) => { getMessage().error(`加载模型失败: ${e.message}`); setModels([]) })
     // 实例计数（单请求按 type_id 汇总）
     apiList<any>('/cmdb/ci?limit=2000').then(items => {
       const counts: Record<string, number> = {}
@@ -307,7 +308,7 @@ export default function CMDBModelsPage() {
 
   const openEdit = (model: CIModel) => {
     if (parentIds.has(model.id)) {
-      message.error('父模型受保护，不可修改')
+      getMessage().error('父模型受保护，不可修改')
       return
     }
     setEditModel(model)
@@ -338,16 +339,16 @@ export default function CMDBModelsPage() {
     try {
       if (editModel) {
         await apiFetch(`/cmdb/model-type/${editModel.id}`, { method: 'PUT', body: JSON.stringify(payload) })
-        message.success('模型已更新')
+        getMessage().success('模型已更新')
       } else {
         const created = await apiFetch<{ id?: string }>('/cmdb/model-type', { method: 'POST', body: JSON.stringify(payload) })
-        message.success(`模型「${form.name}」已创建`)
+        getMessage().success(`模型「${form.name}」已创建`)
         if (created?.id) setCreatedModel({ id: created.id, name: form.name })
       }
       setDialogOpen(false)
       loadModels()
     } catch (e: any) {
-      message.error(`保存模型失败: ${e.message}`)
+      getMessage().error(`保存模型失败: ${e.message}`)
     }
   }
 
@@ -355,22 +356,22 @@ export default function CMDBModelsPage() {
     if (model.builtin) return
     const ciCount = ciCounts[model.id] || 0
     if (ciCount > 0) {
-      message.error(`该模型下还有 ${ciCount} 条实例记录，请先删除这些实例后再删除模型`)
+      getMessage().error(`该模型下还有 ${ciCount} 条实例记录，请先删除这些实例后再删除模型`)
       return
     }
     if (parentIds.has(model.id)) {
       const kids = models.filter(m => m.parent_id === model.id).map(m => m.name)
-      message.error(`该模型为父模型，还有 ${kids.length} 个子模型「${kids.join('」「')}」在使用该模型，请先删除这些子模型`)
+      getMessage().error(`该模型为父模型，还有 ${kids.length} 个子模型「${kids.join('」「')}」在使用该模型，请先删除这些子模型`)
       return
     }
     setConfirmTarget({ type: 'model', model })
   }
 
   const handleDeleteField = (idx: number) => {
-    if (editModel?.builtin) { message.error('内置模型字段受保护，不可删除'); return }
+    if (editModel?.builtin) { getMessage().error('内置模型字段受保护，不可删除'); return }
     const f = fields[idx]
     if (f && (ciFieldUsage[f.name] || 0) > 0) {
-      message.error(`还有 ${ciFieldUsage[f.name]} 条实例正在使用该字段「${f.name}」，请先清理实例数据`)
+      getMessage().error(`还有 ${ciFieldUsage[f.name]} 条实例正在使用该字段「${f.name}」，请先清理实例数据`)
       return
     }
     setFields(prev => prev.filter((_, i) => i !== idx))
@@ -390,10 +391,10 @@ export default function CMDBModelsPage() {
   }
 
   const handleDeleteRelationDef = (idx: number) => {
-    if (editModel?.builtin) { message.error('内置模型关系受保护，不可删除'); return }
+    if (editModel?.builtin) { getMessage().error('内置模型关系受保护，不可删除'); return }
     const rel = relations[idx]
     if (rel && (ciRelUsage[rel.relation_type] || 0) > 0) {
-      message.error(`还有 ${ciRelUsage[rel.relation_type]} 条实例关联使用该关系「${rel.relation_type}」，请先清理关联数据`)
+      getMessage().error(`还有 ${ciRelUsage[rel.relation_type]} 条实例关联使用该关系「${rel.relation_type}」，请先清理关联数据`)
       return
     }
     setRelations(prev => prev.filter((_, i) => i !== idx))
@@ -414,17 +415,17 @@ export default function CMDBModelsPage() {
 
   const handleAddCategory = async () => {
     const name = newCatName.trim()
-    if (!name) { message.error('请输入分类名称'); return }
+    if (!name) { getMessage().error('请输入分类名称'); return }
     try {
       await apiFetch('/cmdb/model-categories', { method: 'POST', body: JSON.stringify({ name }) })
-      message.success(`分类「${name}」已创建`)
+      getMessage().success(`分类「${name}」已创建`)
       setNewCatName('')
       loadCategories()
-    } catch (e: any) { message.error(e.message) }
+    } catch (e: any) { getMessage().error(e.message) }
   }
 
   const handleDeleteCategory = async (c: Category) => {
-    if (c.builtin) { message.error('内置分类不可删除'); return }
+    if (c.builtin) { getMessage().error('内置分类不可删除'); return }
     setConfirmTarget({ type: 'category', cat: c })
   }
 
@@ -441,14 +442,14 @@ export default function CMDBModelsPage() {
     if (!ruleModel || !ruleForm.field) return
     try {
       await apiFetch('/cmdb/field-rules', { method: 'POST', body: JSON.stringify({ model_type_id: ruleModel.id, ...ruleForm }) })
-      message.success('字段规则已添加')
+      getMessage().success('字段规则已添加')
       apiList<{ id: string; field: string; permission: string; action: 'hidden' | 'readonly' }>(`/cmdb/field-rules?model_type_id=${ruleModel.id}`).then(setRules)
-    } catch (e: any) { message.error(e.message) }
+    } catch (e: any) { getMessage().error(e.message) }
   }
 
   const handleDeleteFieldRule = async (id: string) => {
     try { await apiFetch(`/cmdb/field-rules/${id}`, { method: 'DELETE' }); setRules(prev => prev.filter(r => r.id !== id)) }
-    catch (e: any) { message.error(e.message) }
+    catch (e: any) { getMessage().error(e.message) }
   }
 
   const handleExport = async () => {
@@ -727,53 +728,65 @@ export default function CMDBModelsPage() {
           </div>
 
           {/* 字段列表 / 关系定义：两个子页签 */}
-          <Tabs activeKey={modelTab} onChange={(v) => setModelTab(v as 'attrs' | 'rels')} style={{ marginTop: 12 }}>
-            <Tabs.TabPane tab={`属性字段 (${fields.length})`} key="attrs">
-              <div className="flex items-center justify-between mb-2">
-                <label className="text-sm font-medium">属性字段</label>
-                {canAdmin && <Button type="default" size="middle" onClick={() => openFieldDialog()}><Plus className="h-3 w-3" />添加字段</Button>}
-              </div>
-              {fields.length === 0 ? (
-                <div className="text-center py-4 border border-dashed rounded-md text-xs text-muted-foreground">暂无字段，点击上方按钮添加</div>
-              ) : (
-                <div className="border rounded-md divide-y max-h-48 overflow-y-auto">
-                  {fields.map((f, idx) => (
-                    <div key={idx} className="flex items-center gap-2 px-3 py-2 text-xs">
-                      <GripVertical className="h-3 w-3 text-muted-foreground/30" />
-                      <span className="font-medium min-w-[80px]">{f.name}</span>
-                      <Tag className="text-[9px]">{f.type}</Tag>
-                      {f.required && <Tag color="error" className="text-[9px]">必填</Tag>}
-                      {f.description && <span className="text-muted-foreground truncate flex-1">{f.description ? f.description : ''}</span>}
-                      {canAdmin && <Button type="text" size="middle" className="h-5 w-5 p-0 text-gray-500 hover:text-gray-900 dark:text-gray-400 dark:hover:text-white" onClick={() => openFieldDialog(idx)}><Edit2 className="h-3 w-3" /></Button>}
-                      {canAdmin && <Button type="text" size="middle" danger className="h-5 w-5 p-0 text-red-400 hover:text-red-600 dark:text-red-400 dark:hover:text-red-300" disabled={!!editModel?.builtin} title={editModel?.builtin ? '内置模型字段受保护，不可删除' : '删除字段'} onClick={() => handleDeleteField(idx)}><Trash2 className="h-3 w-3" /></Button>}
+          <Tabs activeKey={modelTab} onChange={(v) => setModelTab(v as 'attrs' | 'rels')} style={{ marginTop: 12 }} items={[
+            {
+              key: 'attrs',
+              label: `属性字段 (${fields.length})`,
+              children: (
+                <>
+                  <div className="flex items-center justify-between mb-2">
+                    <label className="text-sm font-medium">属性字段</label>
+                    {canAdmin && <Button type="default" size="middle" onClick={() => openFieldDialog()}><Plus className="h-3 w-3" />添加字段</Button>}
+                  </div>
+                  {fields.length === 0 ? (
+                    <div className="text-center py-4 border border-dashed rounded-md text-xs text-muted-foreground">暂无字段，点击上方按钮添加</div>
+                  ) : (
+                    <div className="border rounded-md divide-y max-h-48 overflow-y-auto">
+                      {fields.map((f, idx) => (
+                        <div key={idx} className="flex items-center gap-2 px-3 py-2 text-xs">
+                          <GripVertical className="h-3 w-3 text-muted-foreground/30" />
+                          <span className="font-medium min-w-[80px]">{f.name}</span>
+                          <Tag className="text-[9px]">{f.type}</Tag>
+                          {f.required && <Tag color="error" className="text-[9px]">必填</Tag>}
+                          {f.description && <span className="text-muted-foreground truncate flex-1">{f.description ? f.description : ''}</span>}
+                          {canAdmin && <Button type="text" size="middle" className="h-5 w-5 p-0 text-gray-500 hover:text-gray-900 dark:text-gray-400 dark:hover:text-white" onClick={() => openFieldDialog(idx)}><Edit2 className="h-3 w-3" /></Button>}
+                          {canAdmin && <Button type="text" size="middle" danger className="h-5 w-5 p-0 text-red-400 hover:text-red-600 dark:text-red-400 dark:hover:text-red-300" disabled={!!editModel?.builtin} title={editModel?.builtin ? '内置模型字段受保护，不可删除' : '删除字段'} onClick={() => handleDeleteField(idx)}><Trash2 className="h-3 w-3" /></Button>}
+                        </div>
+                      ))}
                     </div>
-                  ))}
-                </div>
-              )}
-            </Tabs.TabPane>
-            <Tabs.TabPane tab={`关系 (${relations.length})`} key="rels">
-              <div className="flex items-center justify-between mb-2">
-                <label className="text-sm font-medium">关系定义（声明关联类型 + 目标模型 + 基数）</label>
-                {canAdmin && <Button type="default" size="middle" onClick={() => openRelDialog()}><Plus className="h-3 w-3" />添加关系</Button>}
-              </div>
-              {relations.length === 0 ? (
-                <div className="text-center py-4 border border-dashed rounded-md text-xs text-muted-foreground">暂无关系定义；建立关系时将作为"未建模"自由关系处理</div>
-              ) : (
-                <div className="border rounded-md divide-y max-h-48 overflow-y-auto">
-                  {relations.map((r, idx) => (
-                    <div key={idx} className="flex items-center gap-2 px-3 py-2 text-xs">
-                      <span className="font-medium min-w-[80px]">{r.name}</span>
-                      <Tag className="text-[9px]">{r.relation_type}</Tag>
-                      <span className="text-muted-foreground truncate">→ {r.target_model}</span>
-                      <Tag className="text-[9px]">{cardinalityLabel(r.cardinality)}</Tag>
-                      {canAdmin && <Button type="text" size="middle" className="h-5 w-5 p-0 text-gray-500 hover:text-gray-900 dark:text-gray-400 dark:hover:text-white" onClick={() => openRelDialog(idx)}><Edit2 className="h-3 w-3" /></Button>}
-                      {canAdmin && <Button type="text" size="middle" danger className="h-5 w-5 p-0 text-red-400 hover:text-red-600 dark:text-red-400 dark:hover:text-red-300" disabled={!!editModel?.builtin} title={editModel?.builtin ? '内置模型关系受保护，不可删除' : '删除关系'} onClick={() => handleDeleteRelationDef(idx)}><Trash2 className="h-3 w-3" /></Button>}
+                  )}
+                </>
+              ),
+            },
+            {
+              key: 'rels',
+              label: `关系 (${relations.length})`,
+              children: (
+                <>
+                  <div className="flex items-center justify-between mb-2">
+                    <label className="text-sm font-medium">关系定义（声明关联类型 + 目标模型 + 基数）</label>
+                    {canAdmin && <Button type="default" size="middle" onClick={() => openRelDialog()}><Plus className="h-3 w-3" />添加关系</Button>}
+                  </div>
+                  {relations.length === 0 ? (
+                    <div className="text-center py-4 border border-dashed rounded-md text-xs text-muted-foreground">暂无关系定义；建立关系时将作为"未建模"自由关系处理</div>
+                  ) : (
+                    <div className="border rounded-md divide-y max-h-48 overflow-y-auto">
+                      {relations.map((r, idx) => (
+                        <div key={idx} className="flex items-center gap-2 px-3 py-2 text-xs">
+                          <span className="font-medium min-w-[80px]">{r.name}</span>
+                          <Tag className="text-[9px]">{r.relation_type}</Tag>
+                          <span className="text-muted-foreground truncate">→ {r.target_model}</span>
+                          <Tag className="text-[9px]">{cardinalityLabel(r.cardinality)}</Tag>
+                          {canAdmin && <Button type="text" size="middle" className="h-5 w-5 p-0 text-gray-500 hover:text-gray-900 dark:text-gray-400 dark:hover:text-white" onClick={() => openRelDialog(idx)}><Edit2 className="h-3 w-3" /></Button>}
+                          {canAdmin && <Button type="text" size="middle" danger className="h-5 w-5 p-0 text-red-400 hover:text-red-600 dark:text-red-400 dark:hover:text-red-300" disabled={!!editModel?.builtin} title={editModel?.builtin ? '内置模型关系受保护，不可删除' : '删除关系'} onClick={() => handleDeleteRelationDef(idx)}><Trash2 className="h-3 w-3" /></Button>}
+                        </div>
+                      ))}
                     </div>
-                  ))}
-                </div>
-              )}
-            </Tabs.TabPane>
-          </Tabs>
+                  )}
+                </>
+              ),
+            },
+          ]} />
         </div>
         <div className="flex justify-end gap-2 mt-4"><Button type="default" onClick={() => setDialogOpen(false)}>取消</Button><Button type="primary" onClick={handleSave} disabled={!form.name}>保存</Button></div>
       </Modal>

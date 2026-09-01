@@ -1,7 +1,7 @@
 
 import { create } from 'zustand'
 import { apiFetch, apiList } from '@/lib/utils'
-import { message } from 'antd'
+import { getMessage } from '@/lib/message'
 // 通知渠道类型(与后端 ChannelType 一一对应)
 export type ChannelType = 'email' | 'dingtalk' | 'wecom' | 'feishu' | 'webhook' | 'script'
 
@@ -119,18 +119,18 @@ export const useNotificationStore = create<NotificationState>((set, get) => ({
       set({ channels, loading: false })
     } catch (e: any) {
       set({ loading: false })
-      message.error(`加载通知渠道失败: ${e.message}`)
+      getMessage().error(`加载通知渠道失败: ${e.message}`)
     }
   },
 
   createChannel: async (data) => {
     try {
       const channel = await apiFetch<Channel>('/notification/channels', { method: 'POST', body: JSON.stringify(data) })
-      message.success('通知渠道创建成功')
+      getMessage().success('通知渠道创建成功')
       await get().fetchChannels()
       return channel.id
     } catch (e: any) {
-      message.error(`创建通知渠道失败: ${e.message}`)
+      getMessage().error(`创建通知渠道失败: ${e.message}`)
       return null
     }
   },
@@ -138,11 +138,11 @@ export const useNotificationStore = create<NotificationState>((set, get) => ({
   updateChannel: async (id, data) => {
     try {
       await apiFetch(`/notification/channels/${id}`, { method: 'PUT', body: JSON.stringify(data) })
-      message.success('通知渠道更新成功')
+      getMessage().success('通知渠道更新成功')
       await get().fetchChannels()
       return true
     } catch (e: any) {
-      message.error(`更新通知渠道失败: ${e.message}`)
+      getMessage().error(`更新通知渠道失败: ${e.message}`)
       return false
     }
   },
@@ -151,10 +151,10 @@ export const useNotificationStore = create<NotificationState>((set, get) => ({
     try {
       await apiFetch(`/notification/channels/${id}`, { method: 'DELETE' })
       set(s => ({ channels: s.channels.filter(c => c.id !== id) }))
-      message.success('通知渠道已删除')
+      getMessage().success('通知渠道已删除')
       return true
     } catch (e: any) {
-      message.error(`删除通知渠道失败: ${e.message}`)
+      getMessage().error(`删除通知渠道失败: ${e.message}`)
       return false
     }
   },
@@ -166,13 +166,13 @@ export const useNotificationStore = create<NotificationState>((set, get) => ({
         body: JSON.stringify({ title, content }),
       })
       if (res.success) {
-        message.success('测试通知发送成功')
+        getMessage().success('测试通知发送成功')
       } else {
-        message.error(`测试发送失败: ${res.error || '未知错误'}`)
+        getMessage().error(`测试发送失败: ${res.error || '未知错误'}`)
       }
       return res
     } catch (e: any) {
-      message.error(`测试发送异常: ${e.message}`)
+      getMessage().error(`测试发送异常: ${e.message}`)
       return null
     }
   },
@@ -186,18 +186,18 @@ export const useNotificationStore = create<NotificationState>((set, get) => ({
       set({ policies, loading: false })
     } catch (e: any) {
       set({ loading: false })
-      message.error(`加载通知策略失败: ${e.message}`)
+      getMessage().error(`加载通知策略失败: ${e.message}`)
     }
   },
 
   createPolicy: async (data) => {
     try {
       const policy = await apiFetch<Policy>('/notification/policies', { method: 'POST', body: JSON.stringify(data) })
-      message.success('通知策略创建成功')
+      getMessage().success('通知策略创建成功')
       await get().fetchPolicies()
       return policy.id
     } catch (e: any) {
-      message.error(`创建通知策略失败: ${e.message}`)
+      getMessage().error(`创建通知策略失败: ${e.message}`)
       return null
     }
   },
@@ -205,11 +205,11 @@ export const useNotificationStore = create<NotificationState>((set, get) => ({
   updatePolicy: async (id, data) => {
     try {
       await apiFetch(`/notification/policies/${id}`, { method: 'PUT', body: JSON.stringify(data) })
-      message.success('通知策略更新成功')
+      getMessage().success('通知策略更新成功')
       await get().fetchPolicies()
       return true
     } catch (e: any) {
-      message.error(`更新通知策略失败: ${e.message}`)
+      getMessage().error(`更新通知策略失败: ${e.message}`)
       return false
     }
   },
@@ -218,10 +218,10 @@ export const useNotificationStore = create<NotificationState>((set, get) => ({
     try {
       await apiFetch(`/notification/policies/${id}`, { method: 'DELETE' })
       set(s => ({ policies: s.policies.filter(p => p.id !== id) }))
-      message.success('通知策略已删除')
+      getMessage().success('通知策略已删除')
       return true
     } catch (e: any) {
-      message.error(`删除通知策略失败: ${e.message}`)
+      getMessage().error(`删除通知策略失败: ${e.message}`)
       return false
     }
   },
@@ -233,7 +233,7 @@ export const useNotificationStore = create<NotificationState>((set, get) => ({
       const types = await apiList<ChannelTypeMeta>('/notification/channel-types')
       set({ channelTypes: types })
     } catch (e: any) {
-      message.error(`加载渠道类型失败: ${e.message}`)
+      getMessage().error(`加载渠道类型失败: ${e.message}`)
     }
   },
 
@@ -242,7 +242,7 @@ export const useNotificationStore = create<NotificationState>((set, get) => ({
       const events = await apiList<EventType>('/notification/events')
       set({ events })
     } catch (e: any) {
-      message.error(`加载事件类型失败: ${e.message}`)
+      getMessage().error(`加载事件类型失败: ${e.message}`)
     }
   },
 
@@ -253,7 +253,7 @@ export const useNotificationStore = create<NotificationState>((set, get) => ({
       const notifications = await apiList<NotificationRecord>(`/notification/history?limit=${limit}`)
       set({ notifications })
     } catch (e: any) {
-      message.error(`加载发送历史失败: ${e.message}`)
+      getMessage().error(`加载发送历史失败: ${e.message}`)
     }
   },
 
@@ -266,14 +266,14 @@ export const useNotificationStore = create<NotificationState>((set, get) => ({
         body: JSON.stringify({ event, title, content }),
       })
       if (res.failed > 0) {
-        message.warning(`事件已分发: 成功 ${res.sent} 条,失败 ${res.failed} 条`)
+        getMessage().warning(`事件已分发: 成功 ${res.sent} 条,失败 ${res.failed} 条`)
       } else {
-        message.success(`事件已分发至 ${res.sent} 个渠道`)
+        getMessage().success(`事件已分发至 ${res.sent} 个渠道`)
       }
       await get().fetchHistory()
       return res
     } catch (e: any) {
-      message.error(`事件触发失败: ${e.message}`)
+      getMessage().error(`事件触发失败: ${e.message}`)
       return null
     }
   },

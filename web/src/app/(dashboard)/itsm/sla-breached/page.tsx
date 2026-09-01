@@ -6,6 +6,7 @@ import { AlertTriangle, Search, Clock, ExternalLink } from 'lucide-react'
 import { apiList, formatTime } from '@/lib/utils'
 import { useNavigate } from 'react-router-dom'
 import { RISK_LABELS, STATUS_LABELS, RISK_BADGE_VARIANT } from '@/lib/itsm-constants'
+import { getMessage } from '@/lib/message'
 
 interface Ticket {
   id: string
@@ -32,7 +33,7 @@ export default function SLABreachedPage() {
       const data = await apiList<Ticket>('/itsm/sla/breached')
       setTickets(data || [])
     } catch {
-      message.error('加载 SLA 违规列表失败')
+      getMessage().error('加载 SLA 违规列表失败')
     } finally {
       setLoading(false)
     }

@@ -14,6 +14,15 @@ import (
 	"github.com/opsorigin/core/pkg/httputil"
 )
 
+// handleGetTopology godoc
+// @Summary 获取拓扑图
+// @Description 获取 CI 的拓扑关系图（3 层深度）
+// @Tags CMDB
+// @Produce json
+// @Param id path string true "CI ID"
+// @Success 200 {object} map[string]any "nodes: 节点列表, edges: 边列表"
+// @Router /api/v1/cmdb/ci/{id}/topology [get]
+// @Security BearerAuth
 func (s *Service) handleGetTopology(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	tenantID := auth.TenantFromContext(r.Context())

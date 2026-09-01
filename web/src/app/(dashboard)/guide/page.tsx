@@ -3,28 +3,28 @@ import React, { useState } from 'react'
 import { Copy, Check, Terminal, Server, Cloud, Network, ShieldCheck, Rocket, Cpu, Database, Globe, AlertTriangle, BookOpen, Boxes, Container, ArrowRight } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
 import { Card, CardHeader, CardTitle, CardDescription, CardContent } from '@/components/ui/card'
-import { Button, Tag, Tabs } from 'antd'
 import { useThemeStore } from '@/stores/theme'
-import { message } from 'antd'
+import { getMessage } from '@/lib/message'
+import { Button, Tabs, Tag } from 'antd'
 
 function CodeBlock({ code, lang = 'bash' }: { code: string; lang?: string }) {
   const [copied, setCopied] = useState(false)
   const copy = () => {
     navigator.clipboard.writeText(code)
     setCopied(true)
-    message.success('已复制到剪贴板')
+    getMessage().success('已复制到剪贴板')
     setTimeout(() => setCopied(false), 1500)
   }
   return (
     <div className="relative rounded-xl overflow-hidden border border-white/5 bg-[#0B0F19]">
       <div className="flex items-center justify-between px-4 py-2 border-b border-white/5">
-        <span className="text-[11px] font-mono text-[#64748B]">{lang}</span>
-        <Button type="text" size="middle" className="h-7 text-[#94A3B8] hover:text-white" onClick={copy}>
+        <span className="text-[11px] font-mono text-[var(--muted-foreground)]">{lang}</span>
+        <Button type="text" size="middle" className="h-7 text-[var(--secondary-foreground)] hover:text-white" onClick={copy}>
           {copied ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}
           {copied ? '已复制' : '复制'}
         </Button>
       </div>
-      <pre className="overflow-x-auto p-4 text-xs font-mono leading-relaxed text-[#E2E8F0]"><code>{code}</code></pre>
+      <pre className="overflow-x-auto p-4 text-xs font-mono leading-relaxed text-[var(--foreground)]"><code>{code}</code></pre>
     </div>
   )
 }
@@ -277,7 +277,7 @@ export default function GuidePage() {
                     (isActive
                       ? 'bg-blue-50 text-blue-600 border border-blue-200 dark:bg-blue-500/10 dark:text-blue-400 dark:border-blue-500/20'
                       : theme === 'dark'
-                        ? 'text-[#94A3B8] hover:text-white hover:bg-white/[0.03] border border-transparent'
+                        ? 'text-[var(--secondary-foreground)] hover:text-white hover:bg-white/[0.03] border border-transparent'
                         : 'text-gray-600 hover:text-gray-900 hover:bg-gray-100 border border-transparent')
                   }
                 >

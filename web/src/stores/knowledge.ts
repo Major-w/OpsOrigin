@@ -2,7 +2,7 @@
 import { create } from 'zustand'
 import { apiFetch, apiList } from '@/lib/utils'
 import { useAuthStore } from '@/stores/auth'
-import { message } from 'antd'
+import { getMessage } from '@/lib/message'
 
 const getCurrentUser = () => useAuthStore.getState().user?.username || 'anonymous'
 
@@ -96,28 +96,28 @@ export const useKnowledgeStore = create<KnowledgeState>((set, get) => ({
       set({ articles, loading: false })
     } catch (e: any) {
       set({ loading: false })
-      message.error(`加载知识库文章失败: ${e.message}`)
+      getMessage().error(`加载知识库文章失败: ${e.message}`)
     }
   },
   create: async (data) => {
     try {
       await apiFetch('/knowledge', { method: 'POST', body: JSON.stringify(data) })
-      message.success('创建文章成功')
+      getMessage().success('创建文章成功')
       await get().fetch()
       return true
     } catch (e: any) {
-      message.error(`创建文章失败: ${e.message}`)
+      getMessage().error(`创建文章失败: ${e.message}`)
       return false
     }
   },
   update: async (id, data) => {
     try {
       await apiFetch(`/knowledge/${id}`, { method: 'PUT', body: JSON.stringify(data) })
-      message.success('更新文章成功')
+      getMessage().success('更新文章成功')
       await get().fetch()
       return true
     } catch (e: any) {
-      message.error(`更新文章失败: ${e.message}`)
+      getMessage().error(`更新文章失败: ${e.message}`)
       return false
     }
   },
@@ -125,10 +125,10 @@ export const useKnowledgeStore = create<KnowledgeState>((set, get) => ({
     try {
       await apiFetch(`/knowledge/${id}`, { method: 'DELETE' })
       set(s => ({ articles: s.articles.filter(a => a.id !== id) }))
-      message.success('删除文章成功')
+      getMessage().success('删除文章成功')
       return true
     } catch (e: any) {
-      message.error(`删除文章失败: ${e.message}`)
+      getMessage().error(`删除文章失败: ${e.message}`)
       return false
     }
   },
@@ -146,33 +146,33 @@ export const useKnowledgeStore = create<KnowledgeState>((set, get) => ({
   saveCategory: async (data) => {
     try {
       await apiFetch('/knowledge/categories', { method: 'POST', body: JSON.stringify(data) })
-      message.success('分类已保存')
+      getMessage().success('分类已保存')
       await get().fetchCategories()
       return true
     } catch (e: any) {
-      message.error(`保存分类失败: ${e.message}`)
+      getMessage().error(`保存分类失败: ${e.message}`)
       return false
     }
   },
   updateCategory: async (id, data) => {
     try {
       await apiFetch(`/knowledge/categories/${id}`, { method: 'PUT', body: JSON.stringify(data) })
-      message.success('分类已更新')
+      getMessage().success('分类已更新')
       await get().fetchCategories()
       return true
     } catch (e: any) {
-      message.error(`更新分类失败: ${e.message}`)
+      getMessage().error(`更新分类失败: ${e.message}`)
       return false
     }
   },
   deleteCategory: async (id) => {
     try {
       await apiFetch(`/knowledge/categories/${id}`, { method: 'DELETE' })
-      message.success('分类已删除')
+      getMessage().success('分类已删除')
       await get().fetchCategories()
       return true
     } catch (e: any) {
-      message.error(`删除分类失败: ${e.message}`)
+      getMessage().error(`删除分类失败: ${e.message}`)
       return false
     }
   },
@@ -186,11 +186,11 @@ export const useKnowledgeStore = create<KnowledgeState>((set, get) => ({
   rollbackVersion: async (id, version) => {
     try {
       await apiFetch(`/knowledge/${id}/versions/${version}/rollback`, { method: 'POST' })
-      message.success(`已回滚到 v${version}`)
+      getMessage().success(`已回滚到 v${version}`)
       await get().fetch()
       return true
     } catch (e: any) {
-      message.error(`回滚失败: ${e.message}`)
+      getMessage().error(`回滚失败: ${e.message}`)
       return false
     }
   },
@@ -202,7 +202,7 @@ export const useKnowledgeStore = create<KnowledgeState>((set, get) => ({
       await get().fetch()
       return res
     } catch (e: any) {
-      message.error(`导入失败: ${e.message}`)
+      getMessage().error(`导入失败: ${e.message}`)
       return { imported: 0, errors: [e.message] }
     }
   },
@@ -223,7 +223,7 @@ export const useKnowledgeStore = create<KnowledgeState>((set, get) => ({
       await get().fetch()
       return res
     } catch (e: any) {
-      message.error(`导入失败: ${e.message}`)
+      getMessage().error(`导入失败: ${e.message}`)
       return { imported: 0, errors: [e.message] }
     }
   },
@@ -242,7 +242,7 @@ export const useKnowledgeStore = create<KnowledgeState>((set, get) => ({
       const res = await apiFetch<{ followed: boolean }>(`/knowledge/${id}/follow?user=${encodeURIComponent(user || getCurrentUser())}`, { method: 'POST' })
       return res.followed
     } catch (e: any) {
-      message.error(`操作失败: ${e.message}`)
+      getMessage().error(`操作失败: ${e.message}`)
       return false
     }
   },
@@ -282,7 +282,7 @@ export const useKnowledgeStore = create<KnowledgeState>((set, get) => ({
       const res = await apiFetch<{ liked: boolean }>(`/knowledge/${id}/like?user=${encodeURIComponent(user || getCurrentUser())}`, { method: 'POST' })
       return res.liked
     } catch (e: any) {
-      message.error(`操作失败: ${e.message}`)
+      getMessage().error(`操作失败: ${e.message}`)
       return false
     }
   },
@@ -291,9 +291,9 @@ export const useKnowledgeStore = create<KnowledgeState>((set, get) => ({
       await apiFetch(`/knowledge/${id}/rate?user=${encodeURIComponent(user || getCurrentUser())}`, {
         method: 'POST', body: JSON.stringify({ rating, comment }),
       })
-      message.success('评分成功')
+      getMessage().success('评分成功')
     } catch (e: any) {
-      message.error(`评分失败: ${e.message}`)
+      getMessage().error(`评分失败: ${e.message}`)
     }
   },
   getComments: async (id) => {
@@ -309,7 +309,7 @@ export const useKnowledgeStore = create<KnowledgeState>((set, get) => ({
         method: 'POST', body: JSON.stringify({ content, parent_id: parentId }),
       })
     } catch (e: any) {
-      message.error(`评论失败: ${e.message}`)
+      getMessage().error(`评论失败: ${e.message}`)
       return null
     }
   },
@@ -319,7 +319,7 @@ export const useKnowledgeStore = create<KnowledgeState>((set, get) => ({
     try {
       return await apiList<PrecipitationRule>('/knowledge/precipitation-rules')
     } catch (e: any) {
-      message.error(`加载沉淀策略失败: ${e.message}`)
+      getMessage().error(`加载沉淀策略失败: ${e.message}`)
       return []
     }
   },
@@ -329,19 +329,19 @@ export const useKnowledgeStore = create<KnowledgeState>((set, get) => ({
       method: isNew ? 'POST' : 'PUT',
       body: JSON.stringify(rule),
     })
-    message.success(isNew ? '策略已创建' : '策略已更新')
+    getMessage().success(isNew ? '策略已创建' : '策略已更新')
     return res
   },
   deletePrecipitationRule: async (id) => {
     await apiFetch(`/knowledge/precipitation-rules/${id}`, { method: 'DELETE' })
-    message.success('策略已删除')
+    getMessage().success('策略已删除')
   },
   runPrecipitationRule: async (id, vars = {}) => {
     const res = await apiFetch<{ article_id: string }>(`/knowledge/precipitation-rules/${id}/run`, {
       method: 'POST',
       body: JSON.stringify({ vars }),
     })
-    message.success('已按策略沉淀一篇知识文章')
+    getMessage().success('已按策略沉淀一篇知识文章')
     return res
   },
 }))

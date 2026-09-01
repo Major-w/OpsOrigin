@@ -1,9 +1,8 @@
 
-import { message } from 'antd'
 import { useEffect, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useKnowledgeStore } from '@/stores/knowledge'
-import { Button, Input } from 'antd'
+import { Button, Image, Input, Upload } from 'antd'
 import { apiFetch } from '@/lib/utils'
 import { useAuthStore } from '@/stores/auth'
 import { MarkdownViewer } from '@/components/markdown-viewer'
@@ -15,8 +14,9 @@ import { cn } from '@/lib/utils'
 import {
   ArrowLeft, Save, Loader2, Sparkles, Wand2, Eye, EyeOff,
   PenLine, AlignLeft, MoveHorizontal, MoveVertical, X,
-  Image as ImageIcon, Upload, Link2, CheckCircle2,
+  Image as ImageIcon, Link2, CheckCircle2, Upload as UploadIcon,
 } from 'lucide-react'
+import { getMessage } from '@/lib/message'
 
 const getKBUser = () => useAuthStore.getState().user?.username || 'anonymous'
 
@@ -95,7 +95,7 @@ export default function KnowledgeNewPage() {
       insertMdAtCursor(`![图片](${src})`)
       setMdImgMenu(false)
     } catch (err: any) {
-      message.error('图片插入失败: ' + err.message)
+      getMessage().error('图片插入失败: ' + err.message)
     }
   }
 
@@ -107,7 +107,7 @@ export default function KnowledgeNewPage() {
 
   const handleAIGenerate = async () => {
     if (!form.title.trim() && !aiPrompt.trim()) {
-      message.error('请先填写标题或AI提示词')
+      getMessage().error('请先填写标题或AI提示词')
       return
     }
     setAiGen(true)
@@ -122,12 +122,12 @@ export default function KnowledgeNewPage() {
       const content = res.content || ''
       if (content) {
         setForm(f => ({ ...f, content }))
-        message.success('AI 草稿已生成')
+        getMessage().success('AI 草稿已生成')
       } else {
-        message.error('AI 未返回内容')
+        getMessage().error('AI 未返回内容')
       }
     } catch (e: any) {
-      message.error('AI生成失败: ' + e.message)
+      getMessage().error('AI生成失败: ' + e.message)
     }
     setAiGen(false)
   }
@@ -135,7 +135,7 @@ export default function KnowledgeNewPage() {
   const handleSave = async (status: 'draft' | 'published' = 'draft') => {
     if (!form.title.trim()) {
       setFormError('标题不能为空')
-      message.error('标题不能为空')
+      getMessage().error('标题不能为空')
       return
     }
     setSaving(true)
@@ -252,7 +252,7 @@ export default function KnowledgeNewPage() {
             <Button size="middle" type={mdImgMenu ? 'primary' : 'default'} onClick={() => setMdImgMenu(v => !v)} title="插入图片"><ImageIcon className="h-3.5 w-3.5 mr-1" />插入图片</Button>
             {mdImgMenu && (
               <div className="absolute left-0 top-full z-20 mt-1 w-44 rounded-md border border-border bg-background shadow-lg p-1">
-                <button type="button" className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-xs hover:bg-muted" onClick={() => { setMdImgMenu(false); mdImgInputRef.current?.click() }}><Upload className="h-3.5 w-3.5" />上传图片</button>
+                <button type="button" className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-xs hover:bg-muted" onClick={() => { setMdImgMenu(false); mdImgInputRef.current?.click() }}><UploadIcon className="h-3.5 w-3.5" />上传图片</button>
                 <button type="button" className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-xs hover:bg-muted" onClick={insertMdImageByUrl}><Link2 className="h-3.5 w-3.5" />图片URL</button>
               </div>
             )}

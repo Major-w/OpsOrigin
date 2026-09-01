@@ -1,8 +1,8 @@
 
 import { create } from 'zustand'
 import { apiFetch, apiList } from '@/lib/utils'
-import { message } from 'antd'
 import type { ApprovalPolicy, ApprovalMode, PendingApproval } from './types'
+import { getMessage } from '@/lib/message'
 
 interface ApprovalState {
   getApprovalPolicy: (agentId?: string) => Promise<ApprovalPolicy | null>
@@ -18,7 +18,7 @@ export const useApprovalStore = create<ApprovalState>(() => ({
       const d = await apiFetch<any>(`/ai/approval-policy${q}`)
       return d?.policy || null
     } catch (e: any) {
-      message.error(`加载审批策略失败: ${e.message}`)
+      getMessage().error(`加载审批策略失败: ${e.message}`)
       return null
     }
   },
@@ -28,10 +28,10 @@ export const useApprovalStore = create<ApprovalState>(() => ({
         method: 'PUT',
         body: JSON.stringify(data),
       })
-      message.success('审批策略已保存，即时生效')
+      getMessage().success('审批策略已保存，即时生效')
       return d?.policy || null
     } catch (e: any) {
-      message.error(`保存审批策略失败: ${e.message}`)
+      getMessage().error(`保存审批策略失败: ${e.message}`)
       return null
     }
   },
@@ -43,7 +43,7 @@ export const useApprovalStore = create<ApprovalState>(() => ({
       })
       return true
     } catch (e: any) {
-      message.error(`响应审批失败: ${e.message}`)
+      getMessage().error(`响应审批失败: ${e.message}`)
       return false
     }
   },

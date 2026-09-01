@@ -1,12 +1,12 @@
 
 import { useEffect, useState } from 'react'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
-import { Button, Tag, Input, Modal } from 'antd'
 import { FileText, Search, AlertTriangle, CheckCircle, Clock, GitBranch, ArrowRight, Link2 } from 'lucide-react'
 import { apiFetch, apiList } from '@/lib/utils'
 import { useCan } from '@/stores/permissions'
 import { cn } from '@/lib/utils'
-import { message } from 'antd'
+import { getMessage } from '@/lib/message'
+import { Button, Input, Modal, Tag } from 'antd'
 
 interface CI { id: string; name: string; type_id?: string }
 interface ImpactResult { source_ci: string; affected_ci: string[]; depth: number; has_cycle: boolean }
@@ -34,7 +34,7 @@ export default function CMDBChangeAssessPage() {
   const [form, setForm] = useState({ title: '', type: 'infrastructure', source_ci: '' })
 
   useEffect(() => {
-    apiList<ChangeRequest>('/cmdb/change-requests').then(setChanges).catch(() => message.error('加载变更请求失败'))
+    apiList<ChangeRequest>('/cmdb/change-requests').then(setChanges).catch(() => getMessage().error('加载变更请求失败'))
     apiList<CI>('/cmdb/ci?limit=500').then(setCis).catch(() => {})
   }, [])
 
@@ -53,7 +53,7 @@ export default function CMDBChangeAssessPage() {
         } catch { setCiNames(prev => ({ ...prev, [id]: id })) }
       }))
     } catch (e: any) {
-      message.error('影响分析失败: ' + e.message)
+      getMessage().error('影响分析失败: ' + e.message)
       setImpact(null)
     }
   }
@@ -77,20 +77,20 @@ export default function CMDBChangeAssessPage() {
       setChanges(prev => prev.map(x => x.id === id ? updated : x))
       setSelected(updated)
       setImpact(res)
-      message.success('评估完成')
-    } catch (e: any) { message.error('评估失败: ' + e.message) }
+      getMessage().success('评估完成')
+    } catch (e: any) { getMessage().error('评估失败: ' + e.message) }
     finally { setAssessing(false) }
   }
 
   const handleCreate = async () => {
-    if (!form.title || !form.source_ci) { message.error('请填写标题与源 CI'); return }
+    if (!form.title || !form.source_ci) { getMessage().error('请填写标题与源 CI'); return }
     try {
       const created = await apiFetch<ChangeRequest>('/cmdb/change-requests', { method: 'POST', body: JSON.stringify(form) })
       setChanges(prev => [created, ...prev])
       setDialogOpen(false)
       setForm({ title: '', type: 'infrastructure', source_ci: '' })
-      message.success('变更请求已创建')
-    } catch (e: any) { message.error('创建失败: ' + e.message) }
+      getMessage().success('变更请求已创建')
+    } catch (e: any) { getMessage().error('创建失败: ' + e.message) }
   }
 
   const handleDelete = async (id: string) => {
@@ -98,8 +98,8 @@ export default function CMDBChangeAssessPage() {
       await apiFetch(`/cmdb/change-requests/${id}`, { method: 'DELETE' })
       setChanges(prev => prev.filter(x => x.id !== id))
       if (selected?.id === id) setSelected(null)
-      message.success('已删除')
-    } catch (e: any) { message.error('删除失败: ' + e.message) }
+      getMessage().success('已删除')
+    } catch (e: any) { getMessage().error('删除失败: ' + e.message) }
   }
 
   const statusConfig: Record<string, { label: string; color: string; icon: any }> = {

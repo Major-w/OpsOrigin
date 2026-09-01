@@ -8,7 +8,7 @@ import { formatTime } from '@/lib/utils'
 import { Plus, Trash2, BookOpen, Pencil, FolderPlus, Upload, Loader2, CheckCircle2, Bookmark, Bell, Settings2, ThumbsUp, MessageSquare, CalendarOff } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { useAuthStore } from '@/stores/auth'
-import { message } from 'antd'
+import { getMessage } from '@/lib/message'
 
 const getKBUser = () => useAuthStore.getState().user?.username || 'anonymous'
 
@@ -109,7 +109,7 @@ export default function KnowledgeListPage() {
   useEffect(() => { if (precipOpen) loadPrecip() }, [precipOpen, listPrecipitationRules])
 
   const handleSaveCategory = async () => {
-    if (!catForm.name.trim()) return message.warning('请输入分类名称')
+    if (!catForm.name.trim()) return getMessage().warning('请输入分类名称')
     if (catForm.id) {
       await updateCategory(catForm.id, catForm)
     } else {
@@ -133,24 +133,24 @@ export default function KnowledgeListPage() {
     setImporting(true)
     try {
       const res = await importFile(file, categories[0] || '')
-      if (res.imported > 0) message.success(`成功导入 ${res.imported} 篇`)
-      if (res.errors.length > 0) message.error(`导入错误 ${res.errors.length} 条: ${res.errors[0]}`)
+      if (res.imported > 0) getMessage().success(`成功导入 ${res.imported} 篇`)
+      if (res.errors.length > 0) getMessage().error(`导入错误 ${res.errors.length} 条: ${res.errors[0]}`)
     } catch (err: any) {
-      message.error(`导入失败: ${err.message}`)
+      getMessage().error(`导入失败: ${err.message}`)
     } finally {
       setImporting(false)
     }
   }
 
   const savePrecip = async () => {
-    if (!precipForm || !precipForm.name?.trim()) { message.warning('请填写策略名称'); return }
+    if (!precipForm || !precipForm.name?.trim()) { getMessage().warning('请填写策略名称'); return }
     setPrecipSaving(true)
     try {
       await savePrecipitationRule(precipForm)
       setPrecipForm(null)
       await loadPrecip()
     } catch (e: any) {
-      message.error('保存失败: ' + e.message)
+      getMessage().error('保存失败: ' + e.message)
     }
     setPrecipSaving(false)
   }
@@ -257,7 +257,7 @@ export default function KnowledgeListPage() {
             return (
               <div key={cat?.id || name} className="flex items-center justify-between px-3 py-2 rounded-lg border border-gray-200 dark:border-gray-800">
                 <div className="flex items-center gap-2 min-w-0">
-                  <div className="w-3 h-3 rounded-full shrink-0" style={{ backgroundColor: cat?.color || '#6b7280' }} />
+                  <div className="w-3 h-3 rounded-full shrink-0" style={{ backgroundColor: cat?.color || 'var(--muted-foreground)' }} />
                   <span className="text-sm truncate">{name}</span>
                   <span className="text-[10px] text-muted-foreground">{hasArticles ? '有文章' : '空'}</span>
                 </div>
@@ -292,7 +292,7 @@ export default function KnowledgeListPage() {
           <div className="flex gap-2">
             <input
               type="color"
-              value={catForm.color || '#3B82F6'}
+              value={catForm.color || 'var(--primary)'}
               onChange={e => setCatForm({ ...catForm, color: e.target.value })}
               className="w-8 h-8 rounded cursor-pointer border-0"
             />

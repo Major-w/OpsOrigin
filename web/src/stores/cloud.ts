@@ -2,7 +2,7 @@
 import { create } from 'zustand'
 import { apiFetch } from '@/lib/utils'
 import type { CloudProvider, CloudCredential, CloudResource, SyncResult } from '@/lib/cloud'
-import { message } from 'antd'
+import { getMessage } from '@/lib/message'
 
 interface CloudState {
   providers: CloudProvider[]
@@ -48,7 +48,7 @@ export const useCloudStore = create<CloudState>((set, get) => ({
       set({ providers: res.providers || [], loading: false })
     } catch (e: any) {
       set({ loading: false })
-      message.error(`加载云商列表失败: ${e.message}`)
+      getMessage().error(`加载云商列表失败: ${e.message}`)
     }
   },
 
@@ -57,18 +57,18 @@ export const useCloudStore = create<CloudState>((set, get) => ({
       const res = await apiFetch<{ credentials: CloudCredential[] }>('/cloud/credentials')
       set({ credentials: res.credentials || [] })
     } catch (e: any) {
-      message.error(`加载凭证失败: ${e.message}`)
+      getMessage().error(`加载凭证失败: ${e.message}`)
     }
   },
 
   saveCredential: async (data) => {
     try {
       await apiFetch('/cloud/credentials', { method: 'POST', body: JSON.stringify(data) })
-      message.success('凭证已保存')
+      getMessage().success('凭证已保存')
       await get().listCredentials()
       return true
     } catch (e: any) {
-      message.error(`保存凭证失败: ${e.message}`)
+      getMessage().error(`保存凭证失败: ${e.message}`)
       return false
     }
   },
@@ -76,11 +76,11 @@ export const useCloudStore = create<CloudState>((set, get) => ({
   deleteCredential: async (id) => {
     try {
       await apiFetch(`/cloud/credentials/${id}`, { method: 'DELETE' })
-      message.success('凭证已删除')
+      getMessage().success('凭证已删除')
       await get().listCredentials()
       return true
     } catch (e: any) {
-      message.error(`删除凭证失败: ${e.message}`)
+      getMessage().error(`删除凭证失败: ${e.message}`)
       return false
     }
   },
@@ -95,7 +95,7 @@ export const useCloudStore = create<CloudState>((set, get) => ({
       set({ resources })
       return resources
     } catch (e: any) {
-      message.error(`发现资源失败: ${e.message}`)
+      getMessage().error(`发现资源失败: ${e.message}`)
       return []
     }
   },
@@ -108,7 +108,7 @@ export const useCloudStore = create<CloudState>((set, get) => ({
       })
       return res
     } catch (e: any) {
-      message.error(`同步 CMDB 失败: ${e.message}`)
+      getMessage().error(`同步 CMDB 失败: ${e.message}`)
       return null
     }
   },

@@ -193,7 +193,7 @@ export function DiscoveryPanel() {
                 <div className="h-14 w-14 rounded-full flex items-center justify-center text-lg font-bold"
                   style={{
                     background: quality.score >= 80 ? 'rgba(59,130,246,.15)' : quality.score >= 60 ? 'rgba(245,158,11,.15)' : 'rgba(239,68,68,.15)',
-                    color: quality.score >= 80 ? '#2563EB' : quality.score >= 60 ? '#d97706' : '#dc2626',
+                    color: quality.score >= 80 ? 'var(--primary)' : quality.score >= 60 ? 'var(--warning)' : 'var(--destructive)',
                   }}>
                   {quality.score.toFixed(0)}
                 </div>

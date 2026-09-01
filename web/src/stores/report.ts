@@ -1,7 +1,7 @@
 
 import { create } from 'zustand'
 import { apiFetch, apiList } from '@/lib/utils'
-import { message } from 'antd'
+import { getMessage } from '@/lib/message'
 // —— 类型：与后端 internal/report 模型对齐 ——
 
 export type FieldType = 'string' | 'number' | 'time' | 'bool'
@@ -188,7 +188,7 @@ export const useReportStore = create<ReportState>((set, get) => ({
       const ds = await apiList<Dataset>('/report/datasets')
       set({ datasets: ds })
     } catch (e) {
-      message.error('加载数据集失败: ' + (e as Error).message)
+      getMessage().error('加载数据集失败: ' + (e as Error).message)
     }
   },
 
@@ -204,7 +204,7 @@ export const useReportStore = create<ReportState>((set, get) => ({
       set({ current: d })
       await get().renderDashboard(id)
     } catch (e) {
-      message.error('打开看板失败: ' + (e as Error).message)
+      getMessage().error('打开看板失败: ' + (e as Error).message)
     } finally {
       set({ loading: false })
     }
@@ -218,7 +218,7 @@ export const useReportStore = create<ReportState>((set, get) => ({
       )
       set({ rendered: res.widgets || [] })
     } catch (e) {
-      message.error('渲染看板失败: ' + (e as Error).message)
+      getMessage().error('渲染看板失败: ' + (e as Error).message)
     } finally {
       set({ rendering: false })
     }
@@ -237,7 +237,7 @@ export const useReportStore = create<ReportState>((set, get) => ({
     await get().listDashboards()
     set({ current: created })
     await get().renderDashboard(created.id)
-    message.success('看板已创建')
+    getMessage().success('看板已创建')
     return created
   },
 
@@ -249,7 +249,7 @@ export const useReportStore = create<ReportState>((set, get) => ({
     set({ current: updated })
     await get().renderDashboard(id)
     await get().listDashboards()
-    message.success('看板已保存')
+    getMessage().success('看板已保存')
     return updated
   },
 
@@ -257,7 +257,7 @@ export const useReportStore = create<ReportState>((set, get) => ({
     await apiFetch(`/report/dashboards/${id}`, { method: 'DELETE' })
     if (get().current?.id === id) set({ current: null, rendered: [] })
     await get().listDashboards()
-    message.success('看板已删除')
+    getMessage().success('看板已删除')
   },
 
   runQuery: async (q: Query) => {

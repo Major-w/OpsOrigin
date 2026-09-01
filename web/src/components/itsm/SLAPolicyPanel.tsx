@@ -7,7 +7,7 @@ import { Input } from '@/components/ui/input'
 import { Clock, Plus, Trash2, Link2 } from 'lucide-react'
 import { apiFetch, apiList } from '@/lib/utils'
 import { Dialog, DialogFooter } from '@/components/ui/dialog'
-import { message } from 'antd'
+import { getMessage } from '@/lib/message'
 
 export interface SLAPolicy {
   id: string; name: string; risk_level: string
@@ -31,7 +31,7 @@ export function SLAPolicyPanel() {
   const [form, setForm] = useState<Partial<SLAPolicy>>(emptyForm())
 
   useEffect(() => {
-    apiList<SLAPolicy>('/itsm/sla/policies').then(setPolicies).catch(() => message.error('加载SLA失败'))
+    apiList<SLAPolicy>('/itsm/sla/policies').then(setPolicies).catch(() => getMessage().error('加载SLA失败'))
     apiList<ProcOpt>('/itsm/processes').then(setProcesses).catch(() => {})
   }, [])
 
@@ -41,27 +41,27 @@ export function SLAPolicyPanel() {
   const openEdit = (p: SLAPolicy) => { setEditingId(p.id); setForm({ ...p }); setDialogOpen(true) }
 
   const save = async () => {
-    if (!form.name) { message.error('请填写 SLA 名称'); return }
+    if (!form.name) { getMessage().error('请填写 SLA 名称'); return }
     try {
       if (editingId) {
         const updated = await apiFetch<SLAPolicy>(`/itsm/sla/policies/${editingId}`, { method: 'PUT', body: JSON.stringify(form) })
         setPolicies(prev => prev.map(p => p.id === editingId ? updated : p))
-        message.success('SLA 已更新')
+        getMessage().success('SLA 已更新')
       } else {
         const created = await apiFetch<SLAPolicy>('/itsm/sla/policies', { method: 'POST', body: JSON.stringify(form) })
         setPolicies(prev => [...prev, created])
-        message.success('SLA 已创建')
+        getMessage().success('SLA 已创建')
       }
       setDialogOpen(false)
-    } catch (e: any) { message.error('保存失败: ' + e.message) }
+    } catch (e: any) { getMessage().error('保存失败: ' + e.message) }
   }
 
   const handleDelete = async (id: string) => {
     try {
       await apiFetch(`/itsm/sla/policies/${id}`, { method: 'DELETE' })
       setPolicies(prev => prev.filter(p => p.id !== id))
-      message.success('SLA 已删除')
-    } catch (e: any) { message.error('删除失败: ' + e.message) }
+      getMessage().success('SLA 已删除')
+    } catch (e: any) { getMessage().error('删除失败: ' + e.message) }
   }
 
   return <div className="space-y-4">

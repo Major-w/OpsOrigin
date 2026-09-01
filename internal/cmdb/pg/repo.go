@@ -778,7 +778,7 @@ func (r *Repository) DeleteCI(ctx context.Context, id, tenantID, traceID string)
 
 func (r *Repository) GetCIAudit(ctx context.Context, ciID, tenantID string) ([]*model.AttributeChange, error) {
 	rows, err := r.db.QueryContext(ctx, `
-		SELECT id, ci_id, attr_name, old_value, new_value, channel, trace_id, changed_at
+		SELECT a.id, a.ci_id, a.attr_name, a.old_value, a.new_value, a.channel, a.changed_at
 		FROM cmdb_ci_audit a
 		JOIN cmdb_ci c ON a.ci_id = c.id
 		WHERE a.ci_id = $1 AND c.tenant_id = $2
@@ -793,8 +793,7 @@ func (r *Repository) GetCIAudit(ctx context.Context, ciID, tenantID string) ([]*
 		var ch model.AttributeChange
 		var oldVal, newVal sql.NullString
 		var id int
-		var traceID string
-		if err := rows.Scan(&id, &ch.CIID, &ch.AttrName, &oldVal, &newVal, &ch.Channel, &traceID, &ch.ChangedAt); err != nil {
+		if err := rows.Scan(&id, &ch.CIID, &ch.AttrName, &oldVal, &newVal, &ch.Channel, &ch.ChangedAt); err != nil {
 			return nil, fmt.Errorf("scan audit: %w", err)
 		}
 		if oldVal.Valid {

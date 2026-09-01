@@ -12,6 +12,7 @@ const CodeEditor = dynamic(() => import('@/components/ui/code-editor').then(m =>
 import { Plus, Trash2, Code2, FileText, Copy, Clock, Play, History, Pencil, Terminal, Hash, ChevronRight, GitBranch, GitCompare, CheckCircle, XCircle, Eye, Loader2, Star, ChevronLeft, Save, X, AlertCircle, Sparkles } from 'lucide-react'
 import { cn, formatTime, apiFetch, apiList } from '@/lib/utils'
 import { validateName, sanitizeName, NAME_RULE_TEXT } from '@/lib/validate'
+import { getMessage } from '@/lib/message'
 
 const SCRIPT_TYPES = [
   { value: 'shell', label: 'Shell', color: 'text-blue-500' },
@@ -295,15 +296,15 @@ export default function ScriptDetailPage() {
   }
 
   const handleCheck = async () => {
-    if (!form.content.trim()) { message.error('脚本内容不能为空'); return }
+    if (!form.content.trim()) { getMessage().error('脚本内容不能为空'); return }
     setChecking(true); setCheckResult(null)
     try {
       const res = await check({ type: form.type, content: form.content })
       setCheckResult(res)
       if (res?.valid) {
-        message.success('语法检查通过')
+        getMessage().success('语法检查通过')
       } else if (res?.errors?.length) {
-        message.warning(`发现 ${res.errors.length} 个语法错误`)
+        getMessage().warning(`发现 ${res.errors.length} 个语法错误`)
       }
     } finally {
       setChecking(false)
@@ -312,7 +313,7 @@ export default function ScriptDetailPage() {
 
   const handleAIGenerate = async () => {
     const nameErr = validateName(form.name, '脚本名称')
-    if (nameErr) { message.error(nameErr); return }
+    if (nameErr) { getMessage().error(nameErr); return }
     setAiGenerating(true)
     try {
       const lang = form.type === 'shell' ? 'bash' : form.type === 'python' ? 'python' : 'batch'
@@ -323,20 +324,20 @@ export default function ScriptDetailPage() {
       if (res.content) {
         let code = res.content.replace(/```[\s\S]*?\n/g, '').replace(/```/g, '').trim()
         setForm(f => ({ ...f, content: code }))
-        message.success('AI 已生成脚本代码')
+        getMessage().success('AI 已生成脚本代码')
       }
-    } catch (e: any) { message.error('AI 生成失败: ' + e.message) }
+    } catch (e: any) { getMessage().error('AI 生成失败: ' + e.message) }
     setAiGenerating(false)
   }
 
   const handleSave = async () => {
     const nameErr = validateName(form.name, '脚本名称')
     if (nameErr) {
-      message.error(nameErr)
+      getMessage().error(nameErr)
       return
     }
     if (!form.content.trim()) {
-      message.error('脚本内容不能为空')
+      getMessage().error('脚本内容不能为空')
       return
     }
     const data = {
@@ -347,13 +348,13 @@ export default function ScriptDetailPage() {
     if (isNew) {
       const ok = await create(data)
       if (ok) {
-        message.success('脚本创建成功')
+        getMessage().success('脚本创建成功')
         navigate('/scripts')
       }
     } else {
       const ok = await update(scriptId, data, changeNote || undefined)
       if (ok) {
-        message.success('脚本保存成功')
+        getMessage().success('脚本保存成功')
         setChangeNote('')
         setEditing(false)
         // 刷新 viewScript
@@ -387,7 +388,7 @@ export default function ScriptDetailPage() {
 
   const copyToClipboard = (text: string) => {
     navigator.clipboard.writeText(text)
-    message.success('已复制到剪贴板')
+    getMessage().success('已复制到剪贴板')
   }
 
   const openExecute = () => {

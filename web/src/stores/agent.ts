@@ -1,7 +1,7 @@
 
 import { create } from 'zustand'
 import { apiFetch, apiList } from '@/lib/utils'
-import { message } from 'antd'
+import { getMessage } from '@/lib/message'
 export interface AgentHost {
   id: string; name: string; type: string; address: string; port: number
   os_type?: string; os_version?: string; hostname?: string
@@ -72,28 +72,28 @@ export const useAgentStore = create<AgentState>((set, get) => ({
       set({ agents, loading: false })
     } catch (e: any) {
       set({ loading: false })
-      message.error(`加载代理列表失败: ${e.message}`)
+      getMessage().error(`加载代理列表失败: ${e.message}`)
     }
   },
   register: async (data) => {
     try {
       await apiFetch<AgentHost>('/agents', { method: 'POST', body: JSON.stringify(data) })
-      message.success('注册代理成功')
+      getMessage().success('注册代理成功')
       await get().fetch()
       return true
     } catch (e: any) {
-      message.error(`注册代理失败: ${e.message}`)
+      getMessage().error(`注册代理失败: ${e.message}`)
       return false
     }
   },
   update: async (id, data) => {
     try {
       await apiFetch(`/agents/${id}`, { method: 'PUT', body: JSON.stringify(data) })
-      message.success('更新代理成功')
+      getMessage().success('更新代理成功')
       await get().fetch()
       return true
     } catch (e: any) {
-      message.error(`更新代理失败: ${e.message}`)
+      getMessage().error(`更新代理失败: ${e.message}`)
       return false
     }
   },
@@ -101,10 +101,10 @@ export const useAgentStore = create<AgentState>((set, get) => ({
     try {
       await apiFetch(`/agents/${id}`, { method: 'DELETE' })
       set(s => ({ agents: s.agents.filter(a => a.id !== id) }))
-      message.success('删除代理成功')
+      getMessage().success('删除代理成功')
       return true
     } catch (e: any) {
-      message.error(`删除代理失败: ${e.message}`)
+      getMessage().error(`删除代理失败: ${e.message}`)
       return false
     }
   },
@@ -114,7 +114,7 @@ export const useAgentStore = create<AgentState>((set, get) => ({
       await get().fetch()
       return result
     } catch (e: any) {
-      message.error(`批量安装失败: ${e.message}`)
+      getMessage().error(`批量安装失败: ${e.message}`)
       throw e
     }
   },
@@ -122,7 +122,7 @@ export const useAgentStore = create<AgentState>((set, get) => ({
     try {
       return await apiFetch<any>('/agents/test-ssh', { method: 'POST', body: JSON.stringify(data) })
     } catch (e: any) {
-      message.error(`SSH 测试失败: ${e.message}`)
+      getMessage().error(`SSH 测试失败: ${e.message}`)
       throw e
     }
   },
@@ -146,7 +146,7 @@ export const useAgentStore = create<AgentState>((set, get) => ({
       const resp = await fetch(`/api/v1/agents/install-script?os=${os}`, { headers })
       return await resp.text()
     } catch (e: any) {
-      message.error(`获取安装脚本失败: ${e.message}`)
+      getMessage().error(`获取安装脚本失败: ${e.message}`)
       throw e
     }
   },
@@ -157,28 +157,28 @@ export const useAgentStore = create<AgentState>((set, get) => ({
       set({ proxies, loading: false })
     } catch (e: any) {
       set({ loading: false })
-      message.error(`加载代理网关失败: ${e.message}`)
+      getMessage().error(`加载代理网关失败: ${e.message}`)
     }
   },
   registerProxy: async (data) => {
     try {
       await apiFetch('/proxies', { method: 'POST', body: JSON.stringify(data) })
-      message.success('Proxy 注册成功')
+      getMessage().success('Proxy 注册成功')
       await get().fetchProxies()
       return true
     } catch (e: any) {
-      message.error(`Proxy 注册失败: ${e.message}`)
+      getMessage().error(`Proxy 注册失败: ${e.message}`)
       return false
     }
   },
   updateProxy: async (id, data) => {
     try {
       await apiFetch(`/proxies/${id}`, { method: 'PUT', body: JSON.stringify(data) })
-      message.success('Proxy 更新成功')
+      getMessage().success('Proxy 更新成功')
       await get().fetchProxies()
       return true
     } catch (e: any) {
-      message.error(`Proxy 更新失败: ${e.message}`)
+      getMessage().error(`Proxy 更新失败: ${e.message}`)
       return false
     }
   },
@@ -186,10 +186,10 @@ export const useAgentStore = create<AgentState>((set, get) => ({
     try {
       await apiFetch(`/proxies/${id}`, { method: 'DELETE' })
       set(s => ({ proxies: s.proxies.filter(p => p.id !== id) }))
-      message.success('Proxy 已删除')
+      getMessage().success('Proxy 已删除')
       return true
     } catch (e: any) {
-      message.error(`删除 Proxy 失败: ${e.message}`)
+      getMessage().error(`删除 Proxy 失败: ${e.message}`)
       return false
     }
   },
@@ -197,27 +197,27 @@ export const useAgentStore = create<AgentState>((set, get) => ({
     try {
       return await apiFetch<any>(`/agents/${id}/circuit-breaker`)
     } catch (e: any) {
-      message.error(`加载熔断状态失败: ${e.message}`)
+      getMessage().error(`加载熔断状态失败: ${e.message}`)
       throw e
     }
   },
   setCircuitBreaker: async (id, data) => {
     try {
       await apiFetch(`/agents/${id}/circuit-breaker`, { method: 'PUT', body: JSON.stringify(data) })
-      message.success('熔断配置已更新')
+      getMessage().success('熔断配置已更新')
       return true
     } catch (e: any) {
-      message.error(`更新熔断配置失败: ${e.message}`)
+      getMessage().error(`更新熔断配置失败: ${e.message}`)
       return false
     }
   },
   restartAgent: async (id) => {
     try {
       await apiFetch(`/agents/${id}/restart`, { method: 'POST' })
-      message.success('重启指令已下发')
+      getMessage().success('重启指令已下发')
       return true
     } catch (e: any) {
-      message.error(`重启代理失败: ${e.message}`)
+      getMessage().error(`重启代理失败: ${e.message}`)
       return false
     }
   },
@@ -225,38 +225,38 @@ export const useAgentStore = create<AgentState>((set, get) => ({
     try {
       return await apiFetch<any>(`/agents/${id}/resource-guard`)
     } catch (e: any) {
-      message.error(`加载资源配额失败: ${e.message}`)
+      getMessage().error(`加载资源配额失败: ${e.message}`)
       throw e
     }
   },
   setResourceGuard: async (id, data) => {
     try {
       await apiFetch(`/agents/${id}/resource-guard`, { method: 'PUT', body: JSON.stringify(data) })
-      message.success('资源配额已更新')
+      getMessage().success('资源配额已更新')
       return true
     } catch (e: any) {
-      message.error(`更新资源配额失败: ${e.message}`)
+      getMessage().error(`更新资源配额失败: ${e.message}`)
       return false
     }
   },
   upgradeAgent: async (id, targetVersion) => {
     try {
       await apiFetch(`/agents/${id}/upgrade`, { method: 'POST', body: JSON.stringify({ target_version: targetVersion || '' }) })
-      message.success('升级指令已下发')
+      getMessage().success('升级指令已下发')
       return true
     } catch (e: any) {
-      message.error(`升级失败: ${e.message}`)
+      getMessage().error(`升级失败: ${e.message}`)
       return false
     }
   },
   uninstallAgent: async (id) => {
     try {
       await apiFetch(`/agents/${id}/uninstall`, { method: 'POST' })
-      message.success('卸载指令已下发')
+      getMessage().success('卸载指令已下发')
       await get().fetch()
       return true
     } catch (e: any) {
-      message.error(`卸载失败: ${e.message}`)
+      getMessage().error(`卸载失败: ${e.message}`)
       return false
     }
   },
@@ -264,17 +264,17 @@ export const useAgentStore = create<AgentState>((set, get) => ({
     try {
       return await apiList<TaskInfo>(`/agents/${id}/tasks`)
     } catch (e: any) {
-      message.error(`加载任务列表失败: ${e.message}`)
+      getMessage().error(`加载任务列表失败: ${e.message}`)
       return []
     }
   },
   createTask: async (id, data) => {
     try {
       await apiFetch(`/agents/${id}/tasks`, { method: 'POST', body: JSON.stringify(data) })
-      message.success('任务已下发')
+      getMessage().success('任务已下发')
       return true
     } catch (e: any) {
-      message.error(`任务下发失败: ${e.message}`)
+      getMessage().error(`任务下发失败: ${e.message}`)
       return false
     }
   },
@@ -289,28 +289,28 @@ export const useAgentStore = create<AgentState>((set, get) => ({
     try {
       return await apiFetch<{ target_version: string; agents_total: number; on_target: number; pending: number }>('/agents/version-policy')
     } catch (e: any) {
-      message.error(`加载版本策略失败: ${e.message}`)
+      getMessage().error(`加载版本策略失败: ${e.message}`)
       return null
     }
   },
   setVersionPolicy: async (targetVersion) => {
     try {
       await apiFetch('/agents/version-policy', { method: 'PUT', body: JSON.stringify({ target_version: targetVersion }) })
-      message.success('版本策略已更新')
+      getMessage().success('版本策略已更新')
       return true
     } catch (e: any) {
-      message.error(`设置版本策略失败: ${e.message}`)
+      getMessage().error(`设置版本策略失败: ${e.message}`)
       return false
     }
   },
   batchUpgradeAgents: async () => {
     try {
       const res = await apiFetch<{ upgrade_queued: number; skipped: number }>('/agents/batch-upgrade', { method: 'POST' })
-      message.success(`批量升级已下发: ${res.upgrade_queued} 个排队, ${res.skipped} 个跳过`)
+      getMessage().success(`批量升级已下发: ${res.upgrade_queued} 个排队, ${res.skipped} 个跳过`)
       await get().fetch()
       return res
     } catch (e: any) {
-      message.error(`批量升级失败: ${e.message}`)
+      getMessage().error(`批量升级失败: ${e.message}`)
       return null
     }
   },

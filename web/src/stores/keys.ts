@@ -1,7 +1,7 @@
 
 import { create } from 'zustand'
 import { apiFetch, apiList } from '@/lib/utils'
-import { message } from 'antd'
+import { getMessage } from '@/lib/message'
 export interface KeyEntry {
   id: string; name: string; type: string; content: string
   fingerprint: string; size: number; algorithm?: string
@@ -27,28 +27,28 @@ export const useKeyStore = create<KeyState>((set, get) => ({
       set({ keys, loading: false })
     } catch (e: any) {
       set({ loading: false })
-      message.error(`加载凭证列表失败: ${e.message}`)
+      getMessage().error(`加载凭证列表失败: ${e.message}`)
     }
   },
   create: async (data) => {
     try {
       await apiFetch('/keys', { method: 'POST', body: JSON.stringify(data) })
-      message.success('创建凭证成功')
+      getMessage().success('创建凭证成功')
       await get().fetch()
       return true
     } catch (e: any) {
-      message.error(`创建凭证失败: ${e.message}`)
+      getMessage().error(`创建凭证失败: ${e.message}`)
       return false
     }
   },
   update: async (id, data) => {
     try {
       await apiFetch(`/keys/${id}`, { method: 'PUT', body: JSON.stringify(data) })
-      message.success('更新凭证成功')
+      getMessage().success('更新凭证成功')
       await get().fetch()
       return true
     } catch (e: any) {
-      message.error(`更新凭证失败: ${e.message}`)
+      getMessage().error(`更新凭证失败: ${e.message}`)
       return false
     }
   },
@@ -56,10 +56,10 @@ export const useKeyStore = create<KeyState>((set, get) => ({
     try {
       await apiFetch(`/keys/${id}`, { method: 'DELETE' })
       set(s => ({ keys: s.keys.filter(k => k.id !== id) }))
-      message.success('删除凭证成功')
+      getMessage().success('删除凭证成功')
       return true
     } catch (e: any) {
-      message.error(`删除凭证失败: ${e.message}`)
+      getMessage().error(`删除凭证失败: ${e.message}`)
       return false
     }
   },

@@ -9,6 +9,7 @@ import { Button, Input, Modal, Select, Tag, Checkbox, message } from 'antd'
 import { formatTime } from '@/lib/utils'
 import { validateName, sanitizeName, NAME_RULE_TEXT } from '@/lib/validate'
 import { Plus, Trash2, Clock, Timer } from 'lucide-react'
+import { getMessage } from '@/lib/message'
 
 export default function SchedulesPage() {
   const { tasks, fetch, create, update, remove } = useSchedulerStore()
@@ -23,7 +24,7 @@ export default function SchedulesPage() {
 
   const handleSave = async () => {
     const err = validateName(form.name, '任务名称')
-    if (err) { message.warning(err); return }
+    if (err) { getMessage().warning(err); return }
     await create(form)
     setDialogOpen(false); setForm({ name: '', cron_expr: '0 * * * *', task_type: 'script', target_id: '', agent_ids: [], inputs: {}, max_retries: 0, retry_delay_secs: 60, alert_on_failure: false })
   }

@@ -1,7 +1,7 @@
 
 import { create } from 'zustand'
 import { apiFetch, apiList } from '@/lib/utils'
-import { message } from 'antd'
+import { getMessage } from '@/lib/message'
 export type StepType =
   | 'start' | 'end'
   | 'script' | 'condition' | 'wait' | 'approval'
@@ -139,18 +139,18 @@ export const useWorkflowStore = create<WorkflowState>((set, get) => ({
       set({ workflows, loading: false })
     } catch (e: any) {
       set({ loading: false })
-      message.error(`加载工作流失败: ${e.message}`)
+      getMessage().error(`加载工作流失败: ${e.message}`)
     }
   },
 
   create: async (data) => {
     try {
       const wf = await apiFetch<Workflow>('/workflows', { method: 'POST', body: JSON.stringify(data) })
-      message.success('创建工作流成功')
+      getMessage().success('创建工作流成功')
       await get().fetch()
       return wf.id
     } catch (e: any) {
-      message.error(`创建工作流失败: ${e.message}`)
+      getMessage().error(`创建工作流失败: ${e.message}`)
       return null
     }
   },
@@ -158,11 +158,11 @@ export const useWorkflowStore = create<WorkflowState>((set, get) => ({
   update: async (id, data) => {
     try {
       await apiFetch(`/workflows/${id}`, { method: 'PUT', body: JSON.stringify(data) })
-      message.success('保存工作流成功')
+      getMessage().success('保存工作流成功')
       await get().fetch()
       return true
     } catch (e: any) {
-      message.error(`保存工作流失败: ${e.message}`)
+      getMessage().error(`保存工作流失败: ${e.message}`)
       return false
     }
   },
@@ -171,10 +171,10 @@ export const useWorkflowStore = create<WorkflowState>((set, get) => ({
     try {
       await apiFetch(`/workflows/${id}`, { method: 'DELETE' })
       set(s => ({ workflows: s.workflows.filter(w => w.id !== id) }))
-      message.success('删除工作流成功')
+      getMessage().success('删除工作流成功')
       return true
     } catch (e: any) {
-      message.error(`删除工作流失败: ${e.message}`)
+      getMessage().error(`删除工作流失败: ${e.message}`)
       return false
     }
   },
@@ -186,15 +186,15 @@ export const useWorkflowStore = create<WorkflowState>((set, get) => ({
         body: JSON.stringify({ agent_ids, inputs }),
       })
       if (exec.status === 'waiting') {
-        message.success('流程已暂停，等待审批')
+        getMessage().success('流程已暂停，等待审批')
       } else if (exec.status === 'succeeded') {
-        message.success('流程执行成功')
+        getMessage().success('流程执行成功')
       } else if (exec.status === 'failed') {
-        message.error('流程执行失败')
+        getMessage().error('流程执行失败')
       }
       return exec
     } catch (e: any) {
-      message.error(`执行工作流失败: ${e.message}`)
+      getMessage().error(`执行工作流失败: ${e.message}`)
       return null
     }
   },
@@ -206,7 +206,7 @@ export const useWorkflowStore = create<WorkflowState>((set, get) => ({
       set({ executions, loading: false })
     } catch (e: any) {
       set({ loading: false })
-      message.error(`加载执行记录失败: ${e.message}`)
+      getMessage().error(`加载执行记录失败: ${e.message}`)
     }
   },
 
@@ -215,7 +215,7 @@ export const useWorkflowStore = create<WorkflowState>((set, get) => ({
       const approvals = await apiList<StepApproval>('/workflows/approvals')
       set({ approvals })
     } catch (e: any) {
-      message.error(`加载审批列表失败: ${e.message}`)
+      getMessage().error(`加载审批列表失败: ${e.message}`)
     }
   },
 
@@ -225,11 +225,11 @@ export const useWorkflowStore = create<WorkflowState>((set, get) => ({
         method: 'POST',
         body: JSON.stringify({ comment }),
       })
-      message.success('审批通过')
+      getMessage().success('审批通过')
       await get().fetchApprovals()
       return true
     } catch (e: any) {
-      message.error(`审批操作失败: ${e.message}`)
+      getMessage().error(`审批操作失败: ${e.message}`)
       return false
     }
   },
@@ -240,20 +240,20 @@ export const useWorkflowStore = create<WorkflowState>((set, get) => ({
         method: 'POST',
         body: JSON.stringify({ comment }),
       })
-      message.success('审批已驳回')
+      getMessage().success('审批已驳回')
       await get().fetchApprovals()
       return true
     } catch (e: any) {
-      message.error(`驳回操作失败: ${e.message}`)
+      getMessage().error(`驳回操作失败: ${e.message}`)
       return false
     }
   },
   cancelExecution: async (execId) => {
     try {
       await apiFetch(`/workflows/executions/${execId}/cancel`, { method: 'POST' })
-      message.success('执行已取消')
+      getMessage().success('执行已取消')
       return true
-    } catch (e: any) { message.error('取消失败: ' + e.message); return false }
+    } catch (e: any) { getMessage().error('取消失败: ' + e.message); return false }
   },
   fetchTemplates: async () => {
     try {

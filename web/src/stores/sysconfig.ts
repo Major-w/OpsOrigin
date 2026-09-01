@@ -1,7 +1,7 @@
 
 import { create } from 'zustand'
 import { apiFetch, apiList } from '@/lib/utils'
-import { message } from 'antd'
+import { getMessage } from '@/lib/message'
 export interface ConfigItem {
   key: string
   category: string
@@ -40,7 +40,7 @@ export const useSysConfigStore = create<SysConfigState>((set, get) => ({
       set({ groups: groups.filter(g => g.category !== 'llm'), loading: false })
     } catch (e: any) {
       set({ loading: false })
-      message.error(`加载系统配置失败: ${e.message}`)
+      getMessage().error(`加载系统配置失败: ${e.message}`)
     }
   },
   update: async (updates) => {
@@ -51,13 +51,13 @@ export const useSysConfigStore = create<SysConfigState>((set, get) => ({
         body: JSON.stringify({ updates }),
       })
       set({ saving: false })
-      message.success(result.message || '配置已更新')
+      getMessage().success(result.message || '配置已更新')
       // 重新加载配置
       await get().fetch()
       return result
     } catch (e: any) {
       set({ saving: false })
-      message.error(`更新配置失败: ${e.message}`)
+      getMessage().error(`更新配置失败: ${e.message}`)
       return null
     }
   },

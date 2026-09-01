@@ -8,7 +8,7 @@
 
 | 文档 | 约束对象 | 核心内容 |
 |---|---|---|
-| [`frontend.md`](frontend.md) | `web-next/src` | 五支柱 UI 规范 + 本次整改沉淀的硬规则（ConfirmDialog 统一、提交防重、四态完备、CSS 变量、URL 状态延续、表单复用） |
+| [`frontend.md`](frontend.md) | `web/src` | 五支柱 UI 规范 + 本次整改沉淀的硬规则（ConfirmDialog 统一、提交防重、四态完备、CSS 变量、URL 状态延续、表单复用） |
 | [`backend.md`](backend.md) | `internal/` `pkg/` `cmd/` | Go 侧契约：统一响应、context 透传、权限点注册、SQL 安全红线、分层与依赖方向、共享基础设施红线 |
 | [`api.md`](api.md) | 前后端交界 | REST 契约：路径/方法、错误结构、分页、权限点注册表、TS 类型同步 |
 | [`workflow.md`](workflow.md) | 一切开发动作 | 开发前/中/后流程：读契约 → 按契约实现 → `make contract` 校验 → 提交规范 → 推送验证 |

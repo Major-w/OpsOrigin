@@ -5,6 +5,7 @@ import { Button, Input, Tag, Space, Popconfirm, message } from 'antd'
 import { Plus, Trash2, Terminal, Wrench, AlertCircle, Loader2, Search, RefreshCw, Boxes, Puzzle, Globe } from 'lucide-react'
 import { cn, apiFetch, apiList } from '@/lib/utils'
 import { useThemeStore } from '@/stores/theme'
+import { getMessage } from '@/lib/message'
 
 // 引擎内建工具: 对模型不可见的底层能力, 不参与 Agent 白名单勾选
 const BUILTIN_TOOLS = new Set(['llm_chat', 'http_get'])
@@ -64,7 +65,7 @@ export default function MCPToolsPage() {
       setTools(reg)
       setCustomTools(custom)
     } catch (e: any) {
-      message.error(`加载失败: ${e.message}`)
+      getMessage().error(`加载失败: ${e.message}`)
     } finally {
       setLoading(false)
     }
@@ -94,9 +95,9 @@ export default function MCPToolsPage() {
   }, [tools, customNames])
 
   const handleCreate = async () => {
-    if (!form.name.trim()) return message.error('请输入工具名（小写字母开头）')
-    if (form.type === 'http' && !form.http_url.trim()) return message.error('HTTP 工具必须填写 URL')
-    if (form.type === 'cli' && !form.cli_command.trim()) return message.error('CLI 工具必须填写命令模板')
+    if (!form.name.trim()) return getMessage().error('请输入工具名（小写字母开头）')
+    if (form.type === 'http' && !form.http_url.trim()) return getMessage().error('HTTP 工具必须填写 URL')
+    if (form.type === 'cli' && !form.cli_command.trim()) return getMessage().error('CLI 工具必须填写命令模板')
     setSaving(true)
     try {
       await apiFetch('/ai/tools/custom', {
@@ -114,12 +115,12 @@ export default function MCPToolsPage() {
           cli_command: form.cli_command,
         }),
       })
-      message.success('自定义工具已注册，AI 即刻可调用')
+      getMessage().success('自定义工具已注册，AI 即刻可调用')
       setForm({ ...EMPTY_FORM })
       setShowForm(false)
       load()
     } catch (e: any) {
-      message.error(`创建失败: ${e.message}`)
+      getMessage().error(`创建失败: ${e.message}`)
     } finally {
       setSaving(false)
     }
@@ -128,9 +129,9 @@ export default function MCPToolsPage() {
   const handleToggle = async (t: CustomTool) => {
     try {
       await apiFetch(`/ai/tools/custom/${t.id}`, { method: 'PUT', body: JSON.stringify({ ...t, enabled: !t.enabled }) })
-      message.success(t.enabled ? '工具已禁用' : '工具已启用')
+      getMessage().success(t.enabled ? '工具已禁用' : '工具已启用')
       load()
-    } catch (e: any) { message.error(`更新失败: ${e.message}`) }
+    } catch (e: any) { getMessage().error(`更新失败: ${e.message}`) }
   }
 
   const handleDelete = async () => {
@@ -138,9 +139,9 @@ export default function MCPToolsPage() {
     const t = pendingDelete
     try {
       await apiFetch(`/ai/tools/custom/${t.id}`, { method: 'DELETE' })
-      message.success('已删除')
+      getMessage().success('已删除')
       load()
-    } catch (e: any) { message.error(`删除失败: ${e.message}`) }
+    } catch (e: any) { getMessage().error(`删除失败: ${e.message}`) }
     finally { setPendingDelete(null) }
   }
 

@@ -113,7 +113,7 @@ class ErrorBoundary extends React.Component<
       return (
         <div style={{ padding: 32, textAlign: 'center' }}>
           <h1>Something went wrong</h1>
-          <pre style={{ marginTop: 16, color: '#ef4444' }}>
+          <pre style={{ marginTop: 16, color: 'var(--destructive)' }}>
             {this.state.error?.message}
           </pre>
           <button

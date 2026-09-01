@@ -56,9 +56,9 @@ make contract
 
 | 欠账 | 数量 | 分布 | 消化方式 | 状态 |
 |---|---|---|---|---|
-| 原生 `confirm(` 残留（F2.1 违规） | 31 | ai(5 文件) / knowledge(3) / lowcode(3) / system(4) / resources(1) / 组件(scheduled-task-panel、script-collect-panel、FormDesigner、ReportCenter) | 统一替换为 `ConfirmDialog`（参照 `cmdb/instances` 模式：state + confirmXxx + JSX），按模块分批 | 进行中 |
-| 前端硬编码色（F5.1 违规） | ~10 | guide(5) / login(3) / ai(2) | login 独立深色布局可改主题变量；guide 语法高亮/ai 深色代码块属必要豁免 → 标注豁免或改 token | 待评估 |
+| 原生 `confirm(` 残留（F2.1 违规） | 0 | — | 统一替换为 `ConfirmDialog`（参照 `cmdb/instances` 模式） | **已完成** |
+| 前端硬编码色（F5.1 违规） | 31+ | button(6) / badge(2) / card(1) / layout(7+) / pure-mode(3) / login(3) / guide(5) / ai(2+) / message-bell(1) / ai-render(2) | 主要为暗色主题 override（`#0B0F19` 背景、`#94A3B8` 次要文字、`#C7D2E0` 辅助文字）→ 收敛到 `globals.css` CSS 变量；2.5D 图形渲染色豁免 | 待收敛 |
 | 后端裸 SQL（B4） | 8 处 | `internal/vuln/store/pg.go` | 已确认全部使用 `$N` 占位符 + 租户条件强制注入，**符合红线**，仅需人工复核时抽查 | 已确认合规 |
-| `context.Background()`（B2.1） | 7 处 | vuln 初始化/测试、ent 生成代码 | 均为无请求上下文的初始化/定时/测试/生成代码场景，**符合豁免** | 已确认豁免 |
+| `context.Background()`（B2.1） | 25+ 生产 / 7 测试+生成 | agentmgr(5) / monitor(2) / deploy(4) / vuln(1) / keystore/notification/oncall 初始化 / cmd/core 启动 / ent 生成 | 生产代码中多数为后台 goroutine/定时任务/启动初始化，**符合豁免**（无请求上下文场景）；agentmgr 后台协程建议后续传入 lifecycle context | 已确认豁免 |
 
 > 消化进度会反映在 `make contract` 输出中；WARN 级项（SQL/context/硬编码色）不阻塞提交，但须在提交说明注明理由。

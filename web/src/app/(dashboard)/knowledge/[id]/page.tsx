@@ -38,7 +38,7 @@ import {
   CheckCircle2,
 } from 'lucide-react'
 import { useAuthStore } from '@/stores/auth'
-import { message } from 'antd'
+import { getMessage } from '@/lib/message'
 
 const getCurrentUser = () => useAuthStore.getState().user?.username || 'anonymous'
 
@@ -167,10 +167,10 @@ export default function KnowledgeDetailPage() {
       fd.append('uploaded_by', getCurrentUser())
       const res = await apiFetchRaw(`/knowledge/${articleId}/attachments`, { method: 'POST', body: fd })
       if (!res.ok) throw new Error(`上传失败(${res.status})`)
-      message.success('附件已上传')
+      getMessage().success('附件已上传')
       loadAttachments()
     } catch (err: any) {
-      message.error('上传失败: ' + err.message)
+      getMessage().error('上传失败: ' + err.message)
     }
     setUploading(false)
   }
@@ -178,7 +178,7 @@ export default function KnowledgeDetailPage() {
   const handleDownloadAtt = async (a: ArticleAttachment) => {
     try {
       const res = await apiFetchRaw(`/knowledge/${articleId}/attachments/${a.id}`)
-      if (!res.ok) { message.error('下载失败'); return }
+      if (!res.ok) { getMessage().error('下载失败'); return }
       const blob = await res.blob()
       const url = URL.createObjectURL(blob)
       const link = document.createElement('a')
@@ -187,7 +187,7 @@ export default function KnowledgeDetailPage() {
       link.click()
       URL.revokeObjectURL(url)
     } catch (err: any) {
-      message.error('下载失败: ' + err.message)
+      getMessage().error('下载失败: ' + err.message)
     }
   }
 
@@ -198,10 +198,10 @@ export default function KnowledgeDetailPage() {
       onConfirm: async () => {
         try {
           await apiFetch(`/knowledge/${articleId}/attachments/${a.id}`, { method: 'DELETE' })
-          message.success('已删除')
+          getMessage().success('已删除')
           loadAttachments()
         } catch (err: any) {
-          message.error('删除失败: ' + err.message)
+          getMessage().error('删除失败: ' + err.message)
         }
       },
     })
@@ -268,7 +268,7 @@ export default function KnowledgeDetailPage() {
 
   const handleSave = async () => {
     if (!form.title.trim()) {
-      message.error('标题不能为空')
+      getMessage().error('标题不能为空')
       return
     }
     setSaving(true)
@@ -291,7 +291,7 @@ export default function KnowledgeDetailPage() {
     setSaving(false)
     if (ok) {
       await fetchArticles()
-      message.success('文章已发布')
+      getMessage().success('文章已发布')
     }
   }
 
@@ -330,13 +330,13 @@ export default function KnowledgeDetailPage() {
       { method: 'POST' }
     )
     setBookmarked(res.bookmarked)
-    message.success(res.bookmarked ? '已收藏' : '已取消收藏')
+    getMessage().success(res.bookmarked ? '已收藏' : '已取消收藏')
   }
 
   const handleFollowToggle = async () => {
     const ok = await toggleFollow(articleId, getCurrentUser())
     setFollowed(ok)
-    message.success(ok ? '已关注，文章更新将通知你' : '已取消关注')
+    getMessage().success(ok ? '已关注，文章更新将通知你' : '已取消关注')
   }
 
   const handleLikeToggle = async () => {
@@ -361,7 +361,7 @@ export default function KnowledgeDetailPage() {
       setComments(prev => [...prev, c])
       setCommentText('')
       setReplyTo(null)
-      message.success('评论已发布')
+      getMessage().success('评论已发布')
     }
   }
 
@@ -369,13 +369,13 @@ export default function KnowledgeDetailPage() {
     const url = `${window.location.origin}/knowledge/${articleId}`
     try {
       await navigator.clipboard.writeText(url)
-      message.success('链接已复制到剪贴板')
+      getMessage().success('链接已复制到剪贴板')
     } catch {
       // fallback
       const input = document.createElement('input')
       input.value = url; document.body.appendChild(input); input.select()
       document.execCommand('copy'); document.body.removeChild(input)
-      message.success('链接已复制到剪贴板')
+      getMessage().success('链接已复制到剪贴板')
     }
   }
 

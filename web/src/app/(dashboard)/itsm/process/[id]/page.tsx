@@ -1,5 +1,4 @@
 
-import { message } from 'antd'
 import { useEffect, useState, useMemo, useCallback, useRef } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import dynamic from '@/lib/dynamic'
@@ -22,19 +21,20 @@ import { useNotificationStore } from '@/stores/notification'
 import { useUserStore } from '@/stores/user'
 import { useIAMStore } from '@/stores/iam'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
-import { Button, Input, Tag, Modal } from 'antd'
 import { formatTime } from '@/lib/utils'
 import { apiList, apiFetch } from '@/lib/utils'
 import { NOTIFY_CHANNEL_LABELS } from '@/lib/itsm-constants'
 import { FormDesigner } from '@/components/itsm/FormDesigner'
 import { type FormSchema } from '@/components/itsm/DynamicForm'
 import { parseFormSchema, type StepFieldPerm } from '@/lib/itsm-constants'
+import { getMessage } from '@/lib/message'
 import {
   Plus, Trash2, Save, X, Pencil, ChevronLeft, Loader2,
   PlayCircle, StopCircle, UserCheck, GitBranch,
   Clock, Bell, Server, FolderTree, FileText, Settings2, ChevronRight, ChevronLeft as CL,
   Grid3x3, Undo2, Redo2, Users, Search, Route, AlertTriangle,
 } from 'lucide-react'
+import { App, Button, Form, Input, Modal, Tag } from 'antd'
 
 // ---- types & meta ----
 type ItStepType = ProcessStep['type']
@@ -1085,7 +1085,7 @@ export default function ITSMProcessDetailPage() {
   const handleSave = async () => {
     if (!proc) return
     const err = validateFlow(steps)
-    if (err) { message.error(err); return }
+    if (err) { getMessage().error(err); return }
     const payload = {
       ...proc,
       steps,

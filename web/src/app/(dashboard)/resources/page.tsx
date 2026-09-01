@@ -10,9 +10,11 @@ import { Button, Input, Tag, Space, Modal, Popconfirm, Tooltip, message } from '
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs'
 import { SwitchField } from '@/components/ui/switch'
 import { ViewToggle, DataList, type ViewMode, type Column, type FilterOption, type BulkAction } from '@/components/ui/data-list'
+import { StatisticCardGroup, StatisticCard } from '@/components/ui/statistic-card'
 import { formatTime, apiBase, apiFetch } from '@/lib/utils'
 import { validateHostName, sanitizeHostName, HOST_NAME_RULE_TEXT } from '@/lib/validate'
 import { Plus, Trash2, Terminal, Monitor, RefreshCw, Download, CheckCircle, XCircle, Clock, Eye, Cpu, HardDrive, MemoryStick, Copy, Server, Wifi, WifiOff, Cloud, Container, Pencil, RotateCcw, Zap, ListChecks, AlertTriangle, Save, Play, ArrowUp, BookOpen, GitMerge, Database, ArrowRight } from 'lucide-react'
+import { getMessage } from '@/lib/message'
 function statusColor(s: string): string {
   if (s === 'online') return 'green'
   if (s === 'offline') return 'red'
@@ -58,7 +60,7 @@ function stringToLabels(s: string): Record<string, string> {
 }
 
 export default function ResourcesPage() {
-  const { agents, proxies, fetch, register, update, remove, batchInstall, testSSH, getInstallScript, fetchProxies, registerProxy, updateProxy, deleteProxy, getCircuitBreaker, setCircuitBreaker, getResourceGuard, setResourceGuard, restartAgent, upgradeAgent, uninstallAgent, fetchTasks, createTask } = useAgentStore()
+  const { agents, proxies, loading, fetch, register, update, remove, batchInstall, testSSH, getInstallScript, fetchProxies, registerProxy, updateProxy, deleteProxy, getCircuitBreaker, setCircuitBreaker, getResourceGuard, setResourceGuard, restartAgent, upgradeAgent, uninstallAgent, fetchTasks, createTask } = useAgentStore()
   const { keys, fetch: fetchKeys, create: createKey } = useKeyStore()
   const { providers, resources, fetchProviders, listCredentials, saveCredential, listResources, syncToCMDB } = useCloudStore()
   const { policy: collectPolicy, fetchPolicy, onboardResource } = useCollectionStore()
@@ -221,9 +223,9 @@ export default function ResourcesPage() {
       const labels = { ...(detailHost.labels || {}) }
       if (enabled) labels.sandbox = 'true'; else delete labels.sandbox
       setDetailHost({ ...detailHost, labels })
-      message.success(enabled ? '已标记为沙箱环境' : '已取消沙箱环境标记')
+      getMessage().success(enabled ? '已标记为沙箱环境' : '已取消沙箱环境标记')
       refresh()
-    } catch (e: any) { message.error('操作失败: ' + e.message) }
+    } catch (e: any) { getMessage().error('操作失败: ' + e.message) }
   }
 
   const handleAutoInstall = async () => {
@@ -274,7 +276,7 @@ export default function ResourcesPage() {
   const handleSaveEdit = async () => {
     if (!detailHost) return
     const nameErr = validateHostName(editForm.name, '主机名称')
-    if (nameErr) { message.error(nameErr); return }
+    if (nameErr) { getMessage().error(nameErr); return }
     const ok = await update(detailHost.id, {
       name: editForm.name,
       address: editForm.address,
@@ -342,10 +344,10 @@ export default function ResourcesPage() {
     setMergingId(a.id)
     try {
       await apiFetch(`/agents/${a.id}/merge`, { method: 'POST', body: JSON.stringify({ target_id: a.duplicate_of }) })
-      message.success('已合并重复记录')
+      getMessage().success('已合并重复记录')
       refresh()
     } catch (e: any) {
-      message.error('合并失败: ' + (e?.message || e))
+      getMessage().error('合并失败: ' + (e?.message || e))
     } finally {
       setMergingId(null)
       setPendingMerge(null)
@@ -354,7 +356,7 @@ export default function ResourcesPage() {
 
   const handleRegisterProxy = async () => {
     const nameErr = validateHostName(proxyForm.name, 'Proxy 名称')
-    if (nameErr) { message.error(nameErr); return }
+    if (nameErr) { getMessage().error(nameErr); return }
     const ok = await registerProxy({ name: proxyForm.name, address: proxyForm.address, port: proxyForm.port })
     if (ok) {
       setProxyForm({ name: '', address: '', port: 8080 })
@@ -371,7 +373,7 @@ export default function ResourcesPage() {
   const handleSaveEditProxy = async () => {
     if (!editProxyTarget) return
     const nameErr = validateHostName(editProxyForm.name, 'Proxy 名称')
-    if (nameErr) { message.error(nameErr); return }
+    if (nameErr) { getMessage().error(nameErr); return }
     const ok = await updateProxy(editProxyTarget.id, {
       name: editProxyForm.name,
       address: editProxyForm.address,
@@ -400,13 +402,13 @@ export default function ResourcesPage() {
     try {
       return JSON.parse(cloudExtra)
     } catch {
-      message.error('Extra 不是合法 JSON')
+      getMessage().error('Extra 不是合法 JSON')
       return undefined
     }
   }
 
   const handleCloudSaveCredential = async () => {
-    if (!cloudProvider.trim()) { message.error('请选择云服务商'); return }
+    if (!cloudProvider.trim()) { getMessage().error('请选择云服务商'); return }
     const extra = parseCloudExtra()
     if (cloudExtra.trim() && !extra) return
     // 保存凭证即完成通道建立；后端据开关创建对应默认采集任务（CMDB 统一调度）
@@ -422,13 +424,13 @@ export default function ResourcesPage() {
     if (ok) {
       setCloudSecretKey(''); setCloudExtra('')
       const on = [cloudEnableCMDB && 'CMDB 采集', cloudEnableMonitor && '监控采集'].filter(Boolean)
-      if (on.length) message.success(`已开启：${on.join('、')}（可在 CMDB · 采集策略中调整）`)
+      if (on.length) getMessage().success(`已开启：${on.join('、')}（可在 CMDB · 采集策略中调整）`)
     }
   }
 
   const handleCloudDiscover = async () => {
     if (!cloudProvider.trim() || !cloudAccessKey.trim() || !cloudSecretKey.trim()) {
-      message.error('请填写云商、AccessKey 与 SecretKey')
+      getMessage().error('请填写云商、AccessKey 与 SecretKey')
       return
     }
     const extra = parseCloudExtra()
@@ -463,7 +465,7 @@ export default function ResourcesPage() {
       if (res) {
         const parts = [`新建 ${res.created}`, `更新 ${res.updated}`, `跳过 ${res.skipped}`]
         if (res.failed > 0) parts.push(`失败 ${res.failed}`)
-        message.success(`已同步到 CMDB：${parts.join('，')}`)
+        getMessage().success(`已同步到 CMDB：${parts.join('，')}`)
         if (res.failed > 0 && res.errors?.length) console.warn('cloud sync errors', res.errors)
         // 纳管完成后按开关登记周期性采集任务（幂等：同 target+kind 已存在则跳过）
         await onboardResource({
@@ -494,7 +496,7 @@ export default function ResourcesPage() {
   }, [])
 
   const handleK8sDiscover = async () => {
-    if (!k8sAgent) { message.error('请选择目标集群网关 Agent'); return }
+    if (!k8sAgent) { getMessage().error('请选择目标集群网关 Agent'); return }
     setK8sDiscovering(true)
     try {
       const rs = await listResources({
@@ -509,8 +511,8 @@ export default function ResourcesPage() {
   }
 
   const handleK8sSync = async () => {
-    if (k8sResources.length === 0) { message.error('请先发现 K8s 资源'); return }
-    if (!k8sAgent) { message.error('请选择目标集群网关 Agent'); return }
+    if (k8sResources.length === 0) { getMessage().error('请先发现 K8s 资源'); return }
+    if (!k8sAgent) { getMessage().error('请选择目标集群网关 Agent'); return }
     setK8sSyncing(true)
     try {
       const res = await syncToCMDB({
@@ -522,7 +524,7 @@ export default function ResourcesPage() {
       if (res) {
         const parts = [`新建 ${res.created}`, `更新 ${res.updated}`, `跳过 ${res.skipped}`]
         if (res.failed > 0) parts.push(`失败 ${res.failed}`)
-        message.success(`已同步到 CMDB：${parts.join('，')}`)
+        getMessage().success(`已同步到 CMDB：${parts.join('，')}`)
         if (res.failed > 0 && res.errors?.length) console.warn('k8s sync errors', res.errors)
       }
     } finally {
@@ -672,13 +674,13 @@ export default function ResourcesPage() {
         </TabsList>
 
         <TabsContent value="host" className="mt-4 space-y-4">
-          <div className="grid grid-cols-5 gap-3">
-            <Card><CardHeader className="py-3"><CardTitle className="text-xs text-muted-foreground">主机总数</CardTitle></CardHeader><CardContent className="pt-0"><span className="text-2xl font-bold">{agents.length}</span></CardContent></Card>
-            <Card><CardHeader className="py-3"><CardTitle className="text-xs text-muted-foreground"><Wifi className="h-3 w-3 inline mr-1" />在线</CardTitle></CardHeader><CardContent className="pt-0"><span className="text-2xl font-bold text-blue-500">{onlineCount}</span></CardContent></Card>
-            <Card><CardHeader className="py-3"><CardTitle className="text-xs text-muted-foreground"><WifiOff className="h-3 w-3 inline mr-1" />离线</CardTitle></CardHeader><CardContent className="pt-0"><span className="text-2xl font-bold text-destructive">{offlineCount}</span></CardContent></Card>
-            <Card><CardHeader className="py-3"><CardTitle className="text-xs text-muted-foreground"><Terminal className="h-3 w-3 inline mr-1" />Agent</CardTitle></CardHeader><CardContent className="pt-0"><span className="text-2xl font-bold">{agentCount}</span></CardContent></Card>
-            <Card><CardHeader className="py-3"><CardTitle className="text-xs text-muted-foreground"><Monitor className="h-3 w-3 inline mr-1" />Agentless</CardTitle></CardHeader><CardContent className="pt-0"><span className="text-2xl font-bold">{agentlessCount}</span></CardContent></Card>
-          </div>
+          <StatisticCardGroup loading={loading} columns={5}>
+            <StatisticCard title="主机总数" value={agents.length} icon={<Server className="h-3 w-3" />} />
+            <StatisticCard title="在线" value={onlineCount} icon={<Wifi className="h-3 w-3" />} className="text-blue-500" />
+            <StatisticCard title="离线" value={offlineCount} icon={<WifiOff className="h-3 w-3" />} className="text-destructive" />
+            <StatisticCard title="Agent" value={agentCount} icon={<Terminal className="h-3 w-3" />} />
+            <StatisticCard title="Agentless" value={agentlessCount} icon={<Monitor className="h-3 w-3" />} />
+          </StatisticCardGroup>
 
           <Tabs value={hostTab} onValueChange={setHostTab}>
             <TabsList>
@@ -689,6 +691,7 @@ export default function ResourcesPage() {
             <TabsContent value="list" className="mt-4">
               <DataList
                 data={agents}
+                loading={loading}
                 columns={agentColumns}
                 viewMode={agentViewMode}
                 filters={agentFilters}
@@ -894,7 +897,7 @@ export default function ResourcesPage() {
                     <div key={item.label} className="space-y-1">
                       <div className="flex items-center justify-between">
                         <span className="text-xs font-medium">{item.label}</span>
-                        <Button size="middle" className="h-6 text-xs" onClick={() => { navigator.clipboard.writeText(item.cmd); message.success('已复制') }}>
+                        <Button size="middle" className="h-6 text-xs" onClick={() => { navigator.clipboard.writeText(item.cmd); getMessage().success('已复制') }}>
                           <Copy className="h-3 w-3 mr-1" />复制
                         </Button>
                       </div>

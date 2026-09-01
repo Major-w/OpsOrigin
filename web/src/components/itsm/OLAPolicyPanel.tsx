@@ -7,7 +7,7 @@ import { Input } from '@/components/ui/input'
 import { Timer, Plus, Trash2, Link2 } from 'lucide-react'
 import { apiFetch, apiList } from '@/lib/utils'
 import { Dialog, DialogFooter } from '@/components/ui/dialog'
-import { message } from 'antd'
+import { getMessage } from '@/lib/message'
 
 export interface OLAPolicy {
   id: string; name: string; process_id?: string; step_id?: string
@@ -31,7 +31,7 @@ export function OLAPolicyPanel() {
   const [form, setForm] = useState<Partial<OLAPolicy>>(emptyForm())
 
   useEffect(() => {
-    apiList<OLAPolicy>('/itsm/ola/policies').then(setPolicies).catch(() => message.error('加载 OLA 失败'))
+    apiList<OLAPolicy>('/itsm/ola/policies').then(setPolicies).catch(() => getMessage().error('加载 OLA 失败'))
     apiList<ProcOpt>('/itsm/processes').then(setProcesses).catch(() => {})
   }, [])
 
@@ -52,27 +52,27 @@ export function OLAPolicyPanel() {
   const onProcessChange = (pid: string) => { setForm(f => ({ ...f, process_id: pid, step_id: '' })); loadSteps(pid) }
 
   const save = async () => {
-    if (!form.name) { message.error('请填写 OLA 名称'); return }
+    if (!form.name) { getMessage().error('请填写 OLA 名称'); return }
     try {
       if (editingId) {
         const updated = await apiFetch<OLAPolicy>(`/itsm/ola/policies/${editingId}`, { method: 'PUT', body: JSON.stringify(form) })
         setPolicies(prev => prev.map(p => p.id === editingId ? updated : p))
-        message.success('OLA 已更新')
+        getMessage().success('OLA 已更新')
       } else {
         const created = await apiFetch<OLAPolicy>('/itsm/ola/policies', { method: 'POST', body: JSON.stringify(form) })
         setPolicies(prev => [...prev, created])
-        message.success('OLA 已创建')
+        getMessage().success('OLA 已创建')
       }
       setDialogOpen(false)
-    } catch (e: any) { message.error('保存失败: ' + e.message) }
+    } catch (e: any) { getMessage().error('保存失败: ' + e.message) }
   }
 
   const handleDelete = async (id: string) => {
     try {
       await apiFetch(`/itsm/ola/policies/${id}`, { method: 'DELETE' })
       setPolicies(prev => prev.filter(p => p.id !== id))
-      message.success('OLA 已删除')
-    } catch (e: any) { message.error('删除失败: ' + e.message) }
+      getMessage().success('OLA 已删除')
+    } catch (e: any) { getMessage().error('删除失败: ' + e.message) }
   }
 
   return <div className="space-y-4">

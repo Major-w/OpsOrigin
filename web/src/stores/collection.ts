@@ -1,5 +1,4 @@
 
-import { message } from 'antd'
 import { create } from 'zustand'
 import { apiFetch } from '@/lib/utils'
 import {
@@ -9,6 +8,7 @@ import {
   type OnboardResourceRequest,
   type PlatformPolicy,
 } from '@/lib/collection'
+import { getMessage } from '@/lib/message'
 
 interface CollectionState {
   policy: PlatformPolicy
@@ -47,7 +47,7 @@ export const useCollectionStore = create<CollectionState>((set, get) => ({
     } catch (e: any) {
       // 策略读取失败不阻塞纳管流程，回落内置默认值
       set({ policyLoaded: true })
-      message.error(`加载采集策略失败: ${e.message}`)
+      getMessage().error(`加载采集策略失败: ${e.message}`)
       return get().policy
     }
   },
@@ -60,11 +60,11 @@ export const useCollectionStore = create<CollectionState>((set, get) => ({
         body: JSON.stringify(p),
       })
       set({ policy: { ...DEFAULT_PLATFORM_POLICY, ...(saved || p) }, policyLoaded: true, saving: false })
-      message.success('采集策略已保存')
+      getMessage().success('采集策略已保存')
       return true
     } catch (e: any) {
       set({ saving: false })
-      message.error(`保存采集策略失败: ${e.message}`)
+      getMessage().error(`保存采集策略失败: ${e.message}`)
       return false
     }
   },
@@ -76,18 +76,18 @@ export const useCollectionStore = create<CollectionState>((set, get) => ({
       set({ tasks: res?.tasks || [], loading: false })
     } catch (e: any) {
       set({ tasks: [], loading: false })
-      message.error(`加载采集任务失败: ${e.message}`)
+      getMessage().error(`加载采集任务失败: ${e.message}`)
     }
   },
 
   createTask: async (req) => {
     try {
       await apiFetch('/cmdb/collection-tasks', { method: 'POST', body: JSON.stringify(req) })
-      message.success('采集任务已创建')
+      getMessage().success('采集任务已创建')
       await get().fetchTasks()
       return true
     } catch (e: any) {
-      message.error(`创建采集任务失败: ${e.message}`)
+      getMessage().error(`创建采集任务失败: ${e.message}`)
       return false
     }
   },
@@ -105,7 +105,7 @@ export const useCollectionStore = create<CollectionState>((set, get) => ({
       return true
     } catch (e: any) {
       set({ tasks: prev })
-      message.error(`更新采集任务失败: ${e.message}`)
+      getMessage().error(`更新采集任务失败: ${e.message}`)
       return false
     }
   },
@@ -114,10 +114,10 @@ export const useCollectionStore = create<CollectionState>((set, get) => ({
     try {
       await apiFetch(`/cmdb/collection-tasks/${id}`, { method: 'DELETE' })
       set(s => ({ tasks: s.tasks.filter(t => t.id !== id) }))
-      message.success('采集任务已删除')
+      getMessage().success('采集任务已删除')
       return true
     } catch (e: any) {
-      message.error(`删除采集任务失败: ${e.message}`)
+      getMessage().error(`删除采集任务失败: ${e.message}`)
       return false
     }
   },
@@ -129,11 +129,11 @@ export const useCollectionStore = create<CollectionState>((set, get) => ({
         `/cmdb/collection-tasks/${id}/run`,
         { method: 'POST' }
       )
-      message.success(`采集完成：CI ${res?.cis ?? 0} 条，指标 ${res?.metrics ?? 0} 条`)
+      getMessage().success(`采集完成：CI ${res?.cis ?? 0} 条，指标 ${res?.metrics ?? 0} 条`)
       await get().fetchTasks()
       return true
     } catch (e: any) {
-      message.error(`采集失败: ${e.message}`)
+      getMessage().error(`采集失败: ${e.message}`)
       await get().fetchTasks()
       return false
     }
@@ -144,7 +144,7 @@ export const useCollectionStore = create<CollectionState>((set, get) => ({
       await apiFetch('/cmdb/onboard', { method: 'POST', body: JSON.stringify(req) })
       return true
     } catch (e: any) {
-      message.error(`纳管失败: ${e.message}`)
+      getMessage().error(`纳管失败: ${e.message}`)
       return false
     }
   },

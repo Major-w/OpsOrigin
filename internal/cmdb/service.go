@@ -958,8 +958,8 @@ func buildBuiltinModelTypes() []model.CIModelType {
 		},
 		{
 			ID:          model.ModelTypeBusinessService,
-			Name:        "业务服务",
-			Description: "面向业务的顶层服务（服务建模：业务服务依赖应用/数据库/中间件）",
+			Name:        "业务",
+			Description: "面向业务的顶层服务（服务建模：业务依赖应用/数据库/中间件）",
 			Category:    model.ModelCategoryBusiness,
 			Icon:        "briefcase",
 			ShowInMenu:  true,
@@ -970,10 +970,12 @@ func buildBuiltinModelTypes() []model.CIModelType {
 				"owner":                  {Type: "string", Description: "业务负责人"},
 				"department":             {Type: "string", Description: "所属部门"},
 			},
-			// 预置关联路径：业务可依赖其它业务（自关联），也可依赖应用服务。
+			// 预置关联路径：业务可依赖其它业务（自关联），也可依赖应用/数据库/中间件。
 			Relations: []model.RelationDef{
 				{ID: "bs_dep_bs", Name: "依赖业务", RelationType: model.RelationDependsOn, TargetModel: model.ModelTypeBusinessService, Cardinality: model.CardinalityManyToMany, ReverseName: "被依赖于"},
 				{ID: "bs_dep_app", Name: "依赖应用", RelationType: model.RelationDependsOn, TargetModel: model.ModelTypeApp, Cardinality: model.CardinalityManyToMany, ReverseName: "支撑业务"},
+				{ID: "bs_dep_db", Name: "依赖数据库", RelationType: model.RelationDependsOn, TargetModel: model.ModelTypeDatabase, Cardinality: model.CardinalityManyToMany, ReverseName: "被业务依赖"},
+				{ID: "bs_dep_mw", Name: "依赖中间件", RelationType: model.RelationDependsOn, TargetModel: model.ModelTypeMiddleware, Cardinality: model.CardinalityManyToMany, ReverseName: "被业务依赖"},
 			},
 		},
 		{

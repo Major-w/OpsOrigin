@@ -8,6 +8,7 @@ import { Button, Tag, Input, Modal, Select, Popconfirm, message } from 'antd'
 import { formatTime, apiFetch, apiList, apiFetchRaw } from '@/lib/utils'
 import { useCan } from '@/stores/permissions'
 import { Plus, Pencil, Trash2, Network, Search, ChevronLeft, ChevronRight, Link2, Unlink, Archive, ArchiveRestore, Bookmark, GitMerge, Radio, Download, Upload } from 'lucide-react'
+import { getMessage } from '@/lib/message'
 
 interface SavedQuery { id: string; name: string; type_id?: string; query: { q?: string; status?: string; attrs?: Record<string, string> } }
 
@@ -97,10 +98,10 @@ export default function CMDBPage() {
     setBatchDeleteSubmitting(true)
     try {
       const res = await apiFetch<{ deleted: number; failed: { id: string; error: string }[] }>('/cmdb/ci/batch-delete', { method: 'POST', body: JSON.stringify({ ids }) })
-      message.success(`已删除 ${res.deleted} 个资产${res.failed?.length ? `，${res.failed.length} 个失败` : ''}`)
+      getMessage().success(`已删除 ${res.deleted} 个资产${res.failed?.length ? `，${res.failed.length} 个失败` : ''}`)
       setChecked(new Set()); loadData()
       setBatchDeleteOpen(false)
-    } catch (e: any) { message.error('批量删除失败: ' + e.message) } finally { setBatchDeleteSubmitting(false) }
+    } catch (e: any) { getMessage().error('批量删除失败: ' + e.message) } finally { setBatchDeleteSubmitting(false) }
   }
 
   // 实体调解合并(IRE)
@@ -112,7 +113,7 @@ export default function CMDBPage() {
       const keep: Record<string, string> = {}
       for (const g of groups) if (g.members.length) keep[g.key] = g.members[0].ci_id
       setReconcileKeep(keep)
-    } catch (e: any) { setReconcileGroups([]); message.error('加载疑似重复失败: ' + e.message) }
+    } catch (e: any) { setReconcileGroups([]); getMessage().error('加载疑似重复失败: ' + e.message) }
     finally { setReconcileLoading(false) }
   }
   const openReconcileMerge = (g: typeof reconcileGroups[number]) => setMergeTarget(g)
@@ -125,15 +126,15 @@ export default function CMDBPage() {
     setMergeSubmitting(true)
     try {
       const res = await apiFetch<{ kept_id: string; merged_count: number; updated_fields: string[] }>('/cmdb/reconcile/merge', { method: 'POST', body: JSON.stringify({ keep_id: keep, merge_ids: mergeIds }) })
-      message.success(`已合并 ${res.merged_count} 条，更新字段: ${res.updated_fields.join(', ') || '无'}`)
+      getMessage().success(`已合并 ${res.merged_count} 条，更新字段: ${res.updated_fields.join(', ') || '无'}`)
       setMergeTarget(null); openReconcile(); loadData()
-    } catch (e: any) { message.error('合并失败: ' + e.message) } finally { setMergeSubmitting(false) }
+    } catch (e: any) { getMessage().error('合并失败: ' + e.message) } finally { setMergeSubmitting(false) }
   }
 
   const handleExport = async () => {
     try {
       const res = await apiFetchRaw(`/cmdb/ci/export?type_id=${encodeURIComponent(typeFilter)}`)
-      if (!res.ok) { message.error('导出失败: ' + res.status); return }
+      if (!res.ok) { getMessage().error('导出失败: ' + res.status); return }
       const blob = await res.blob()
       const url = URL.createObjectURL(blob)
       const a = document.createElement('a')
@@ -142,7 +143,7 @@ export default function CMDBPage() {
       a.download = cd?.match(/filename=(.+)/)?.[1] || `cmdb_${typeFilter || 'all'}_export.csv`
       a.click()
       URL.revokeObjectURL(url)
-    } catch (e: any) { message.error('导出失败: ' + e.message) }
+    } catch (e: any) { getMessage().error('导出失败: ' + e.message) }
   }
 
   const handleImportFile = async (e: any) => {
@@ -165,17 +166,17 @@ export default function CMDBPage() {
   }
 
   const handleSaveQuery = async () => {
-    if (sqSubmitting || !sqName.trim()) { if (!sqName.trim()) message.error('请输入查询名称'); return }
+    if (sqSubmitting || !sqName.trim()) { if (!sqName.trim()) getMessage().error('请输入查询名称'); return }
     setSqSubmitting(true)
     try {
       await apiFetch('/cmdb/saved-queries', {
         method: 'POST',
         body: JSON.stringify({ name: sqName.trim(), type_id: typeFilter || undefined, query: { q: searchQ || undefined } }),
       })
-      message.success('已保存查询策略')
+      getMessage().success('已保存查询策略')
       setSqDialogOpen(false); setSqName('')
       loadSavedQueries()
-    } catch (e: any) { message.error('保存失败: ' + e.message) } finally { setSqSubmitting(false) }
+    } catch (e: any) { getMessage().error('保存失败: ' + e.message) } finally { setSqSubmitting(false) }
   }
 
   const handleApplySavedQuery = (sq: SavedQuery) => {
@@ -320,8 +321,8 @@ export default function CMDBPage() {
                         <div className="flex gap-1 shrink-0">
                         <Button type="text" size="middle" className="h-6 w-6 text-gray-500 hover:text-gray-900 dark:text-gray-400 dark:hover:text-white" onClick={e => { e.stopPropagation(); openCI(item) }}><Pencil className="h-3 w-3" /></Button>
                           {item.status === 'archived'
-                            ? <Button type="text" size="middle" className="h-6 w-6 text-gray-500 hover:text-gray-900 dark:text-gray-400 dark:hover:text-white" title="恢复" onClick={e => { e.stopPropagation(); (async () => { await apiFetch(`/cmdb/ci/${item.id}/restore`, { method: 'POST' }); message.success('已恢复'); loadData() })() }}><ArchiveRestore className="h-3 w-3" /></Button>
-                            : <Button type="text" size="middle" className="h-6 w-6 text-gray-500 hover:text-gray-900 dark:text-gray-400 dark:hover:text-white" title="归档" onClick={e => { e.stopPropagation(); (async () => { await apiFetch(`/cmdb/ci/${item.id}/archive`, { method: 'POST' }); message.success('已归档'); loadData() })() }}><Archive className="h-3 w-3" /></Button>}
+                            ? <Button type="text" size="middle" className="h-6 w-6 text-gray-500 hover:text-gray-900 dark:text-gray-400 dark:hover:text-white" title="恢复" onClick={e => { e.stopPropagation(); (async () => { await apiFetch(`/cmdb/ci/${item.id}/restore`, { method: 'POST' }); getMessage().success('已恢复'); loadData() })() }}><ArchiveRestore className="h-3 w-3" /></Button>
+                            : <Button type="text" size="middle" className="h-6 w-6 text-gray-500 hover:text-gray-900 dark:text-gray-400 dark:hover:text-white" title="归档" onClick={e => { e.stopPropagation(); (async () => { await apiFetch(`/cmdb/ci/${item.id}/archive`, { method: 'POST' }); getMessage().success('已归档'); loadData() })() }}><Archive className="h-3 w-3" /></Button>}
                           {canDelete && <Button type="text" size="middle" danger className="h-6 w-6 text-red-400 hover:text-red-600 dark:text-red-400 dark:hover:text-red-300" onClick={e => { e.stopPropagation(); remove(item.id); setChecked(prev => { const n = new Set(prev); n.delete(item.id); return n }) }}><Trash2 className="h-3 w-3" /></Button>}
                         </div>
                       </div>

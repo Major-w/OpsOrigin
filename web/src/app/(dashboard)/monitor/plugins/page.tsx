@@ -3,7 +3,6 @@
  * 监控插件目录 —— 「这类组件该采什么指标、怎么连」的统一答案。
  */
 
-import { message } from 'antd'
 import { useEffect, useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
@@ -13,6 +12,7 @@ import {
   Search, RefreshCw, Blocks, Database, Server, Network, Layers,
   Globe, Cpu, HardDrive, CheckCircle2, ArrowRight, Plug,
 } from 'lucide-react'
+import { getMessage } from '@/lib/message'
 
 interface ConfigField {
   key: string
@@ -68,7 +68,7 @@ export default function MonitorPluginsPage() {
   const load = async () => {
     setLoading(true)
     try { setPlugins(await apiList<MonitorPlugin>('/monitor/plugins')) }
-    catch { setPlugins([]); message.error('加载插件目录失败') }
+    catch { setPlugins([]); getMessage().error('加载插件目录失败') }
     finally { setLoading(false) }
   }
 
@@ -117,8 +117,8 @@ export default function MonitorPluginsPage() {
   const submit = async () => {
     if (!active) return
     const missing = (active.config || []).filter(f => f.required && !form[f.key]?.trim())
-    if (missing.length > 0) { message.error(`请填写：${missing.map(f => f.label).join('、')}`); return }
-    if (!name.trim()) { message.error('请填写目标名称'); return }
+    if (missing.length > 0) { getMessage().error(`请填写：${missing.map(f => f.label).join('、')}`); return }
+    if (!name.trim()) { getMessage().error('请填写目标名称'); return }
 
     setSubmitting(true)
     try {
@@ -135,11 +135,11 @@ export default function MonitorPluginsPage() {
           labels,
         }),
       })
-      message.success(`已接入 ${active.name}`)
+      getMessage().success(`已接入 ${active.name}`)
       setActive(null)
       load()
     } catch (e: any) {
-      message.error(e?.message || '接入失败')
+      getMessage().error(e?.message || '接入失败')
     } finally { setSubmitting(false) }
   }
 

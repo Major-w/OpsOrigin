@@ -1,10 +1,10 @@
 
 import { useEffect, useState } from 'react'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
-import { Button, Tag, Input, Modal, Popconfirm } from 'antd'
 import { Database, Plus, Trash2, Pencil, Search } from 'lucide-react'
 import { apiFetch, apiList } from '@/lib/utils'
-import { message } from 'antd'
+import { getMessage } from '@/lib/message'
+import { Button, Input, Modal, Popconfirm, Tag } from 'antd'
 interface FieldDict {
   id: string
   key: string
@@ -30,7 +30,7 @@ export default function FormDictsPage() {
       const data = await apiList<FieldDict>('/itsm/form-dicts')
       setDicts(data || [])
     } catch {
-      message.error('加载数据字典失败')
+      getMessage().error('加载数据字典失败')
     } finally {
       setLoading(false)
     }
@@ -61,7 +61,7 @@ export default function FormDictsPage() {
 
   const save = async () => {
     if (!form.key.trim() || !form.label.trim()) {
-      message.error('请填写字典键和标签')
+      getMessage().error('请填写字典键和标签')
       return
     }
     setSaving(true)
@@ -74,11 +74,11 @@ export default function FormDictsPage() {
         method: 'POST',
         body: JSON.stringify({ key: form.key, label: form.label, options }),
       })
-      message.success(editingId ? '更新成功' : '创建成功')
+      getMessage().success(editingId ? '更新成功' : '创建成功')
       setDialogOpen(false)
       load()
     } catch (e: any) {
-      message.error(`保存失败: ${e.message}`)
+      getMessage().error(`保存失败: ${e.message}`)
     } finally {
       setSaving(false)
     }
@@ -92,10 +92,10 @@ export default function FormDictsPage() {
     if (!deleteTarget) return
     try {
       await apiFetch(`/itsm/form-dicts/${deleteTarget}`, { method: 'DELETE' })
-      message.success('删除成功')
+      getMessage().success('删除成功')
       load()
     } catch (e: any) {
-      message.error(`删除失败: ${e.message}`)
+      getMessage().error(`删除失败: ${e.message}`)
     }
     setDeleteTarget(null)
   }

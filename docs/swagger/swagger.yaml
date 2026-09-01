@@ -1,206 +1,1110 @@
-openapi: 3.0.3
+basePath: /
+definitions:
+  github_com_opsorigin_core_internal_ai_model.AgentInstance:
+    properties:
+      created_at:
+        type: string
+      id:
+        type: string
+      knowledge_categories:
+        description: |-
+          KnowledgeCategories 绑定的知识库分类列表(PRD 5.2.6)。
+          非空时, 该 Agent 的 RAG 检索(系统提示注入与 knowledge_search 工具)仅在这些分类内进行;
+          为空表示绑定全部知识库(默认行为, 兼容旧配置)。
+        items:
+          type: string
+        type: array
+      model_name:
+        type: string
+      name:
+        type: string
+      skills:
+        description: |-
+          Skills 该 Agent 具备的可复用能力定义(PRD 5.2.2)。
+          每个 Skill 以"能力指令"形式注入 system prompt, 使模型了解并遵循该技能的使用方式。
+        items:
+          $ref: '#/definitions/github_com_opsorigin_core_internal_ai_model.AgentSkill'
+        type: array
+      status:
+        type: string
+      system_prompt:
+        type: string
+      tenant_id:
+        type: string
+      tools:
+        description: |-
+          Tools 该 Agent 允许使用的 MCP 工具白名单(如 ["cmdb_query","knowledge_search"])。
+          空表示使用全部已注册工具(默认行为); 非空时, 未列入的工具对模型不可见(不可调用)。
+        items:
+          type: string
+        type: array
+      updated_at:
+        type: string
+    type: object
+  github_com_opsorigin_core_internal_ai_model.AgentSkill:
+    properties:
+      description:
+        type: string
+      instructions:
+        description: 触发条件与执行步骤说明
+        type: string
+      name:
+        type: string
+    type: object
+  github_com_opsorigin_core_internal_cmdb_model.AttrAggregate:
+    properties:
+      direction:
+        description: 'Direction 关系方向: out=从本 CI 指向目标(默认), in=其他 CI 指向本 CI。'
+        type: string
+      op:
+        description: count | sum | avg
+        type: string
+      relation:
+        description: Relation 沿哪条关系统计(空=任意关系)。
+        type: string
+      target:
+        description: Target sum/avg 时统计的关联 CI 属性名(count 忽略)。
+        type: string
+    type: object
+  github_com_opsorigin_core_internal_cmdb_model.AttrDef:
+    description: CI 模型属性定义，包含类型、校验规则、UI 元数据等
+    properties:
+      aggregate:
+        allOf:
+        - $ref: '#/definitions/github_com_opsorigin_core_internal_cmdb_model.AttrAggregate'
+        description: |-
+          Aggregate 聚合字段(we-cmdb count/sum/avg 借鉴):
+          读取 CI 时按关系链对关联 CI 实时统计, 结果写入响应 CIModel.Aggregates。
+          例: 机柜 rack 声明 {op:count, relation:hosts} → 自动统计该机柜下设备数。
+      autofill:
+        description: |-
+          AutoFill 自动填充规则(we-cmdb autofillRule 借鉴): ref 字段选中目标 CI 后,
+          自动把目标 CI 的这些属性值填入本 CI(如选机柜自动带出机房/数据中心)。
+        items:
+          type: string
+        type: array
+      default: {}
+      description:
+        type: string
+      id:
+        description: |-
+          ID 是属性的稳定机器标识(属性级寻址), 供采集上报按 模型ID-字段ID 定位写入、
+          以及属性级权限按字段引用。业务主键仍是字段 Name(前端寻址/展示);
+          重命名字段时 ID 不变, 不破坏采集映射。旧数据无 ID 时由 ResolveModelType 兼容补全为 Name。
+        type: string
+      max:
+        type: number
+      max_length:
+        description: MaxLength 文本类最大长度(string<=256 / longtext<=2000 等语义)。
+        type: integer
+      min:
+        description: Min/Max 数值类(number/float)取值范围[Min,Max]。
+        type: number
+      multi:
+        description: 'Multi 枚举多选: Type==enum 且 Multi=true 时, 实例值为数组(如 ["prod","dev"])。'
+        type: boolean
+      multiline:
+        description: 'Multiline 长文本标识: Type==longtext 时用多行输入(textarea)。'
+        type: boolean
+      options:
+        description: Options 枚举选项(select/enum 类型), 前端展示为下拉。
+        items:
+          type: string
+        type: array
+      pattern:
+        description: Pattern 文本类(string/longtext)正则校验(如邮箱/手机/IP), 前端录入时校验。
+        type: string
+      ref_display:
+        description: RefDisplay 引用型字段的展示属性(默认 name)。
+        type: string
+      ref_model:
+        description: |-
+          RefModel 引用型字段: Type=="ref" 时指向目标模型类型 ID,
+          前端渲染为从该模型 CI 实例取选项的下拉选择器, 写入时校验目标 CI 存在。
+        type: string
+      required:
+        type: boolean
+      time_include:
+        description: 'TimeInclude 日期类含时分秒: Type==datetime 时启用(等价 date + 时间)。'
+        type: boolean
+      type:
+        type: string
+      unique:
+        description: |-
+          Unique 声明该字段在「同一模型类型 + 租户」内取值唯一,
+          写入/更新时由 validateAttributes 拦截重复(而非仅质量中心事后报告)。
+        type: boolean
+    type: object
+  github_com_opsorigin_core_internal_cmdb_model.AttrMeta:
+    properties:
+      confidence:
+        description: 0~1
+        type: number
+      last_seen_at:
+        type: string
+      source:
+        $ref: '#/definitions/github_com_opsorigin_core_internal_cmdb_model.SourceKind'
+    type: object
+  github_com_opsorigin_core_internal_cmdb_model.CIModel:
+    description: CI 实例，包含属性、标签、状态等信息
+    properties:
+      aggregates:
+        additionalProperties: {}
+        description: Aggregates 聚合字段计算结果(模型 schema 声明 Aggregate 时, 读取 CI 填充)。
+        type: object
+      attribute_meta:
+        additionalProperties:
+          $ref: '#/definitions/github_com_opsorigin_core_internal_cmdb_model.AttrMeta'
+        type: object
+      attributes:
+        additionalProperties: {}
+        type: object
+      channel:
+        $ref: '#/definitions/github_com_opsorigin_core_internal_cmdb_model.ChannelWeight'
+      created_at:
+        type: string
+      description:
+        type: string
+      field_access:
+        additionalProperties:
+          type: string
+        description: |-
+          FieldAccess 字段级规则权限结果：field → hidden|readonly|visible（P2-4）。
+          hidden 字段已从 attributes/attribute_meta 中剔除，前端据此渲染只读/隐藏。
+        type: object
+      id:
+        type: string
+      labels:
+        additionalProperties:
+          type: string
+        type: object
+      name:
+        type: string
+      status:
+        $ref: '#/definitions/github_com_opsorigin_core_internal_cmdb_model.CIStatus'
+      tenant_id:
+        type: string
+      type_id:
+        type: string
+      updated_at:
+        type: string
+    type: object
+  github_com_opsorigin_core_internal_cmdb_model.CIModelType:
+    description: CI 模型类型定义，包含属性 schema 和关系声明
+    properties:
+      abstract:
+        description: 抽象父类（不可直接实例化，仅作继承基类）
+        type: boolean
+      author:
+        description: 模型作者，内置为 anonymous
+        type: string
+      builtin:
+        description: 内置模型（不可删/导入导出）
+        type: boolean
+      category:
+        description: app|platform|infra|org，默认 platform
+        type: string
+      confidence:
+        description: 类型级置信度
+        type: number
+      created_at:
+        type: string
+      description:
+        type: string
+      discovered_by:
+        description: 发现 / 提案主体
+        type: string
+      evidence:
+        description: 证据（banner / 端口 / 指纹）
+        items:
+          type: string
+        type: array
+      icon:
+        type: string
+      id:
+        type: string
+      name:
+        type: string
+      parent_id:
+        description: 模型继承：父类模型 ID
+        type: string
+      relations:
+        description: Relations 模型级关系声明（与 Schema 并列）。声明后建关系按 TargetModel + 基数校验。
+        items:
+          $ref: '#/definitions/github_com_opsorigin_core_internal_cmdb_model.RelationDef'
+        type: array
+      schema:
+        additionalProperties:
+          $ref: '#/definitions/github_com_opsorigin_core_internal_cmdb_model.AttrDef'
+        type: object
+      show_in_menu:
+        description: 在顶部导航菜单显示
+        type: boolean
+      source:
+        description: |-
+          类型级治理字段（为 AI 自动建模 / 类型注册表打底，与 ci.go 已有的
+          字段级治理 AttrMeta{Source,Confidence,LastSeenAt} 平行互补：
+          字段级管「值」的置信度，类型级管「归类」的置信度）。
+        type: string
+      sub_category:
+        type: string
+      suggested_collectors:
+        items:
+          type: string
+        type: array
+      tenant_id:
+        type: string
+      updated_at:
+        type: string
+      version:
+        type: integer
+    type: object
+  github_com_opsorigin_core_internal_cmdb_model.CIStatus:
+    enum:
+    - active
+    - inactive
+    - archived
+    - deleted
+    type: string
+    x-enum-comments:
+      CIStatusArchived: 归档：暂时保留却不展示在普通列表，可随时恢复
+    x-enum-descriptions:
+    - ""
+    - ""
+    - 归档：暂时保留却不展示在普通列表，可随时恢复
+    - ""
+    x-enum-varnames:
+    - CIStatusActive
+    - CIStatusInactive
+    - CIStatusArchived
+    - CIStatusDeleted
+  github_com_opsorigin_core_internal_cmdb_model.ChannelWeight:
+    enum:
+    - 100
+    - 80
+    - 50
+    - 30
+    type: integer
+    x-enum-varnames:
+    - WeightHuman
+    - WeightITSM
+    - WeightAutoScript
+    - WeightDiscovery
+  github_com_opsorigin_core_internal_cmdb_model.RelationDef:
+    properties:
+      cardinality:
+        description: one_to_one | one_to_many | many_to_many
+        type: string
+      description:
+        description: 说明（可选）
+        type: string
+      id:
+        description: |-
+          ID 是关系的稳定机器标识(关系级寻址), 供采集上报按 模型ID-关系ID 建立关系、
+          以及属性级权限按关系引用。旧数据无 ID 时由 ResolveModelType 兼容补全为 RelationType。
+        type: string
+      name:
+        description: 关系展示名，如 "部署于"
+        type: string
+      relation_type:
+        description: 关系类型键（自由字符串，建议复用内置常量）
+        type: string
+      reverse_name:
+        description: 对端显示名（可选），如 "被部署于"
+        type: string
+      target_model:
+        description: 目标模型类型 ID
+        type: string
+    type: object
+  github_com_opsorigin_core_internal_cmdb_model.SourceKind:
+    enum:
+    - manual
+    - itsm
+    - agent
+    - cloud_api
+    - auto_script
+    - discovery
+    - ai_proposed
+    type: string
+    x-enum-comments:
+      SourceAIProposed: AI 自动建模提交的提案类型
+      SourceAgent: 主机/容器 Agent 采集
+      SourceAutoScript: 自动化脚本
+      SourceCloudAPI: 云厂商 API 拉取
+      SourceDiscovery: 自动发现（含模拟）
+      SourceITSM: 从 ITSM 同步
+      SourceManual: 人工录入（最高置信）
+    x-enum-descriptions:
+    - 人工录入（最高置信）
+    - 从 ITSM 同步
+    - 主机/容器 Agent 采集
+    - 云厂商 API 拉取
+    - 自动化脚本
+    - 自动发现（含模拟）
+    - AI 自动建模提交的提案类型
+    x-enum-varnames:
+    - SourceManual
+    - SourceITSM
+    - SourceAgent
+    - SourceCloudAPI
+    - SourceAutoScript
+    - SourceDiscovery
+    - SourceAIProposed
+  github_com_opsorigin_core_internal_itsm_model.ApprovalChain:
+    properties:
+      approvers:
+        description: 审批人列表
+        items:
+          type: string
+        type: array
+      mode:
+        description: sequential(顺序) / parallel(并行)
+        type: string
+    type: object
+  github_com_opsorigin_core_internal_itsm_model.ApprovalStatus:
+    properties:
+      current_index:
+        description: 当前审批人索引(顺序模式)
+        type: integer
+      final_result:
+        description: pending / approved / rejected
+        type: string
+      votes:
+        description: 投票记录
+        items:
+          $ref: '#/definitions/github_com_opsorigin_core_internal_itsm_model.ApprovalVote'
+        type: array
+    type: object
+  github_com_opsorigin_core_internal_itsm_model.ApprovalVote:
+    properties:
+      approved:
+        type: boolean
+      approver:
+        type: string
+      comment:
+        type: string
+      voted_at:
+        type: string
+    type: object
+  github_com_opsorigin_core_internal_itsm_model.CreateTicketRequest:
+    properties:
+      approval_chain:
+        allOf:
+        - $ref: '#/definitions/github_com_opsorigin_core_internal_itsm_model.ApprovalChain'
+        description: 审批链配置
+      catalog_id:
+        description: 发起来源的服务目录项 ID
+        type: string
+      change_plan:
+        type: string
+      ci_ids:
+        items:
+          type: string
+        type: array
+      created_by:
+        type: string
+      created_by_type:
+        type: string
+      custom_fields:
+        additionalProperties: {}
+        description: CustomFields 可配置表单采集的业务自定义字段（JSONB）。
+        type: object
+      deadline_at:
+        type: string
+      description:
+        type: string
+      form_scope:
+        description: FormScope 指定本工单套用的表单作用域（默认 ticket:default）；用于目录/流程按场景套不同字段。
+        type: string
+      labels:
+        additionalProperties:
+          type: string
+        type: object
+      process_id:
+        description: 绑定的流程模板 ID（触发流程引擎驱动）
+        type: string
+      risk_level:
+        $ref: '#/definitions/github_com_opsorigin_core_internal_itsm_model.RiskLevel'
+      rollback_plan:
+        type: string
+      scheduled_at:
+        type: string
+      title:
+        type: string
+      trace_id:
+        type: string
+      webhook_url:
+        type: string
+    type: object
+  github_com_opsorigin_core_internal_itsm_model.RiskLevel:
+    enum:
+    - low
+    - medium
+    - high
+    - critical
+    type: string
+    x-enum-varnames:
+    - RiskLow
+    - RiskMedium
+    - RiskHigh
+    - RiskCritical
+  github_com_opsorigin_core_internal_itsm_model.Ticket:
+    properties:
+      approval_chain:
+        allOf:
+        - $ref: '#/definitions/github_com_opsorigin_core_internal_itsm_model.ApprovalChain'
+        description: '审批链: 支持顺序/并行审批模式'
+      approval_status:
+        $ref: '#/definitions/github_com_opsorigin_core_internal_itsm_model.ApprovalStatus'
+      approved_at:
+        type: string
+      approved_by:
+        type: string
+      assigned_at:
+        type: string
+      assignee:
+        type: string
+      catalog_id:
+        description: 发起来源的服务目录项 ID（用于使用量统计与满意度聚合）
+        type: string
+      change_plan:
+        type: string
+      ci_ids:
+        items:
+          type: string
+        type: array
+      completed_at:
+        type: string
+      completed_by:
+        type: string
+      created_at:
+        type: string
+      created_by:
+        type: string
+      created_by_type:
+        type: string
+      custom_fields:
+        additionalProperties: {}
+        description: |-
+          CustomFields 可配置表单采集的业务自定义字段（JSONB），与系统字段并存。
+          由 form.FormSchema 驱动（internal/itsm/form），无 schema 时为空。
+        type: object
+      deadline_at:
+        type: string
+      description:
+        type: string
+      executed_at:
+        type: string
+      hold_at:
+        description: 挂起开始时间
+        type: string
+      hold_reason:
+        type: string
+      hold_seconds:
+        description: 累计挂起秒数
+        type: integer
+      hold_until_at:
+        type: string
+      id:
+        type: string
+      labels:
+        additionalProperties:
+          type: string
+        type: object
+      on_hold:
+        description: '挂起/恢复: OnHold 置位时 SLA 计时暂停(标记而非状态, 状态机零侵入)。'
+        type: boolean
+      process_id:
+        description: 绑定的流程模板 ID
+        type: string
+      reject_reason:
+        type: string
+      related_ticket_ids:
+        description: '关联工单: 与其它工单的双向关联(互相持有对方 ID)。'
+        items:
+          type: string
+        type: array
+      risk_level:
+        $ref: '#/definitions/github_com_opsorigin_core_internal_itsm_model.RiskLevel'
+      rollback_plan:
+        type: string
+      rollback_reason:
+        type: string
+      rolled_back_at:
+        type: string
+      rolled_back_by:
+        type: string
+      satisfaction:
+        type: integer
+      scheduled_at:
+        type: string
+      sla_breached:
+        type: boolean
+      sla_breached_at:
+        type: string
+      sla_escalation_level:
+        type: integer
+      sla_warning_notified:
+        type: boolean
+      status:
+        $ref: '#/definitions/github_com_opsorigin_core_internal_itsm_model.TicketStatus'
+      tenant_id:
+        type: string
+      title:
+        type: string
+      trace_id:
+        type: string
+      updated_at:
+        type: string
+      webhook_url:
+        type: string
+    type: object
+  github_com_opsorigin_core_internal_itsm_model.TicketStatus:
+    enum:
+    - draft
+    - pending_review
+    - approved
+    - rejected
+    - executing
+    - succeeded
+    - failed
+    - rolled_back
+    - closed
+    - withdrawn
+    - reopened
+    type: string
+    x-enum-comments:
+      StatusReopened: 重开(closed 后重新激活)
+      StatusWithdrawn: 撤回(草稿废弃)
+    x-enum-descriptions:
+    - ""
+    - ""
+    - ""
+    - ""
+    - ""
+    - ""
+    - ""
+    - ""
+    - ""
+    - 撤回(草稿废弃)
+    - 重开(closed 后重新激活)
+    x-enum-varnames:
+    - StatusDraft
+    - StatusPendingReview
+    - StatusApproved
+    - StatusRejected
+    - StatusExecuting
+    - StatusSucceeded
+    - StatusFailed
+    - StatusRolledBack
+    - StatusClosed
+    - StatusWithdrawn
+    - StatusReopened
+host: localhost:8080
 info:
-  title: OpsOrigin Core API
-  description: 一体化运维平台 API 文档
-  version: 1.0.0
   contact:
-    name: OpsOrigin
+    email: support@opsorigin.com
+    name: OpsOrigin Team
     url: https://github.com/opsorigin/core
-servers:
-  - url: http://localhost:8080
-components:
-  securitySchemes:
-    BearerAuth:
-      type: http
-      scheme: bearer
-      bearerFormat: JWT
-security:
-  - BearerAuth: []
+  description: OpsOrigin 一体化运维平台 API 文档
+  license:
+    name: Apache 2.0
+    url: https://www.apache.org/licenses/LICENSE-2.0.html
+  termsOfService: http://swagger.io/terms/
+  title: OpsOrigin API
+  version: "1.0"
 paths:
-  /api/v1/cmdb/ci:
-    get:
-      tags: [CMDB]
-      summary: 获取 CI 列表
-      description: 获取配置项列表，支持分页、排序、过滤
-      parameters:
-        - name: type_id
-          in: query
-          description: CI 类型 ID
-          schema:
-            type: string
-        - name: sort_by
-          in: query
-          description: 排序字段
-          schema:
-            type: string
-        - name: sort_order
-          in: query
-          description: 排序方向
-          schema:
-            type: string
-        - name: limit
-          in: query
-          description: 每页数量
-          schema:
-            type: integer
-        - name: offset
-          in: query
-          description: 偏移量
-          schema:
-            type: integer
-        - name: archived
-          in: query
-          description: 归档过滤
-          schema:
-            type: string
-      responses:
-        '200':
-          description: 成功
-    post:
-      tags: [CMDB]
-      summary: 创建 CI
-      description: 创建一个新的配置项
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-      responses:
-        '201':
-          description: 创建成功
-        '400':
-          description: 请求错误
-        '500':
-          description: 服务器错误
-  /api/v1/cmdb/ci/{id}:
-    get:
-      tags: [CMDB]
-      summary: 获取 CI 详情
-      description: 根据 ID 获取配置项详情
-      parameters:
-        - name: id
-          in: path
-          required: true
-          description: CI ID
-          schema:
-            type: string
-      responses:
-        '200':
-          description: 成功
-        '404':
-          description: 未找到
-    put:
-      tags: [CMDB]
-      summary: 更新 CI
-      description: 更新配置项信息
-      parameters:
-        - name: id
-          in: path
-          required: true
-          description: CI ID
-          schema:
-            type: string
-      responses:
-        '200':
-          description: 更新成功
-    delete:
-      tags: [CMDB]
-      summary: 删除 CI
-      description: 删除配置项
-      parameters:
-        - name: id
-          in: path
-          required: true
-          description: CI ID
-          schema:
-            type: string
-      responses:
-        '204':
-          description: 删除成功
-  /api/v1/itsm/tickets:
-    get:
-      tags: [ITSM]
-      summary: 获取工单列表
-      description: 获取工单列表，支持按状态过滤
-      parameters:
-        - name: status
-          in: query
-          description: 工单状态过滤
-          schema:
-            type: string
-      responses:
-        '200':
-          description: 成功
-    post:
-      tags: [ITSM]
-      summary: 创建工单
-      description: 创建一个新的 ITSM 工单
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-      responses:
-        '201':
-          description: 创建成功
-  /api/v1/itsm/tickets/{id}:
-    get:
-      tags: [ITSM]
-      summary: 获取工单详情
-      description: 根据 ID 获取工单详情
-      parameters:
-        - name: id
-          in: path
-          required: true
-          description: 工单 ID
-          schema:
-            type: string
-      responses:
-        '200':
-          description: 成功
-        '404':
-          description: 未找到
   /api/v1/ai/agents:
-    get:
-      tags: [AI]
-      summary: 获取 Agent 列表
-      description: 获取所有 AI Agent 实例
-      responses:
-        '200':
-          description: 成功
     post:
-      tags: [AI]
-      summary: 创建 AI Agent
+      consumes:
+      - application/json
       description: 创建一个新的 AI Agent 实例
-      requestBody:
+      parameters:
+      - description: Agent 配置
+        in: body
+        name: agent
         required: true
-        content:
-          application/json:
-            schema:
-              type: object
+        schema:
+          type: object
+      produces:
+      - application/json
       responses:
-        '201':
-          description: 创建成功
+        "201":
+          description: Created
+          schema:
+            $ref: '#/definitions/github_com_opsorigin_core_internal_ai_model.AgentInstance'
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      security:
+      - BearerAuth: []
+      summary: 创建 AI Agent
+      tags:
+      - AI
   /api/v1/ai/chat:
     post:
-      tags: [AI]
-      summary: AI 聊天
+      consumes:
+      - application/json
       description: 发送消息给 AI 助手，支持流式输出
-      requestBody:
+      parameters:
+      - description: 聊天请求
+        in: body
+        name: chat
         required: true
-        content:
-          application/json:
-            schema:
-              type: object
+        schema:
+          type: object
+      produces:
+      - application/json
       responses:
-        '200':
-          description: 成功
-tags:
-  - name: CMDB
-    description: 配置管理
-  - name: ITSM
-    description: IT服务管理
-  - name: AI
-    description: AI 助手
+        "200":
+          description: OK
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      security:
+      - BearerAuth: []
+      summary: AI 聊天
+      tags:
+      - AI
+  /api/v1/cmdb/ci:
+    get:
+      consumes:
+      - application/json
+      description: |-
+        获取配置项列表，支持分页、排序、过滤
+        获取配置项列表，支持分页、排序、过滤
+      parameters:
+      - description: CI 类型 ID
+        in: query
+        name: type_id
+        type: string
+      - description: 排序字段
+        in: query
+        name: sort_by
+        type: string
+      - description: 排序方向 (asc/desc)
+        in: query
+        name: sort_order
+        type: string
+      - description: 每页数量
+        in: query
+        name: limit
+        type: integer
+      - description: 偏移量
+        in: query
+        name: offset
+        type: integer
+      - description: 归档过滤 (true/all/空)
+        in: query
+        name: archived
+        type: string
+      - description: CI 类型 ID
+        in: query
+        name: type_id
+        type: string
+      - description: 排序字段
+        in: query
+        name: sort_by
+        type: string
+      - description: 排序方向 (asc/desc)
+        in: query
+        name: sort_order
+        type: string
+      - description: 每页数量 (默认 20)
+        in: query
+        name: limit
+        type: integer
+      - description: 偏移量 (默认 0)
+        in: query
+        name: offset
+        type: integer
+      - description: 归档过滤 (true/false)
+        in: query
+        name: archived
+        type: string
+      produces:
+      - application/json
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            items:
+              $ref: '#/definitions/github_com_opsorigin_core_internal_cmdb_model.CIModel'
+            type: array
+        "500":
+          description: Internal Server Error
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      security:
+      - BearerAuth: []
+      - BearerAuth: []
+      summary: 获取 CI 列表
+      tags:
+      - CMDB
+      - CMDB
+    post:
+      consumes:
+      - application/json
+      description: 创建一个新的配置项
+      parameters:
+      - description: CI 信息
+        in: body
+        name: ci
+        required: true
+        schema:
+          type: object
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            $ref: '#/definitions/github_com_opsorigin_core_internal_cmdb_model.CIModel'
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      security:
+      - BearerAuth: []
+      summary: 创建 CI
+      tags:
+      - CMDB
+  /api/v1/cmdb/ci/{id}:
+    delete:
+      description: 删除配置项
+      parameters:
+      - description: CI ID
+        in: path
+        name: id
+        required: true
+        type: string
+      responses:
+        "204":
+          description: No Content
+        "404":
+          description: Not Found
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      security:
+      - BearerAuth: []
+      summary: 删除 CI
+      tags:
+      - CMDB
+    get:
+      description: 根据 ID 获取配置项详情
+      parameters:
+      - description: CI ID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/github_com_opsorigin_core_internal_cmdb_model.CIModel'
+        "404":
+          description: Not Found
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      security:
+      - BearerAuth: []
+      summary: 获取 CI 详情
+      tags:
+      - CMDB
+    put:
+      consumes:
+      - application/json
+      description: 更新配置项信息
+      parameters:
+      - description: CI ID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: 更新信息
+        in: body
+        name: ci
+        required: true
+        schema:
+          type: object
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/github_com_opsorigin_core_internal_cmdb_model.CIModel'
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      security:
+      - BearerAuth: []
+      summary: 更新 CI
+      tags:
+      - CMDB
+  /api/v1/cmdb/ci/{id}/topology:
+    get:
+      description: 获取 CI 的拓扑关系图（3 层深度）
+      parameters:
+      - description: CI ID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: 'nodes: 节点列表, edges: 边列表'
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: 获取拓扑图
+      tags:
+      - CMDB
+  /api/v1/cmdb/ci/batch:
+    post:
+      consumes:
+      - application/json
+      description: 批量创建配置项
+      parameters:
+      - description: CI 列表
+        in: body
+        name: cis
+        required: true
+        schema:
+          type: array
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            items:
+              $ref: '#/definitions/github_com_opsorigin_core_internal_cmdb_model.CIModel'
+            type: array
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      security:
+      - BearerAuth: []
+      summary: 批量创建 CI
+      tags:
+      - CMDB
+  /api/v1/cmdb/ci/search:
+    get:
+      description: 全文搜索配置项
+      parameters:
+      - description: 搜索关键词
+        in: query
+        name: q
+        required: true
+        type: string
+      - description: 每页数量 (默认 20)
+        in: query
+        name: limit
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            items:
+              $ref: '#/definitions/github_com_opsorigin_core_internal_cmdb_model.CIModel'
+            type: array
+      security:
+      - BearerAuth: []
+      summary: 搜索 CI
+      tags:
+      - CMDB
+  /api/v1/cmdb/models:
+    post:
+      consumes:
+      - application/json
+      description: 创建新的 CI 模型类型
+      parameters:
+      - description: 模型类型信息
+        in: body
+        name: model
+        required: true
+        schema:
+          $ref: '#/definitions/github_com_opsorigin_core_internal_cmdb_model.CIModelType'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            $ref: '#/definitions/github_com_opsorigin_core_internal_cmdb_model.CIModelType'
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      security:
+      - BearerAuth: []
+      summary: 创建模型类型
+      tags:
+      - CMDB
+  /api/v1/itsm/tickets:
+    get:
+      consumes:
+      - application/json
+      description: 获取工单列表，支持按状态过滤
+      parameters:
+      - description: 工单状态过滤
+        in: query
+        name: status
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            items:
+              $ref: '#/definitions/github_com_opsorigin_core_internal_itsm_model.Ticket'
+            type: array
+        "500":
+          description: Internal Server Error
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      security:
+      - BearerAuth: []
+      summary: 获取工单列表
+      tags:
+      - ITSM
+    post:
+      consumes:
+      - application/json
+      description: 创建一个新的 ITSM 工单
+      parameters:
+      - description: 工单信息
+        in: body
+        name: ticket
+        required: true
+        schema:
+          $ref: '#/definitions/github_com_opsorigin_core_internal_itsm_model.CreateTicketRequest'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            $ref: '#/definitions/github_com_opsorigin_core_internal_itsm_model.Ticket'
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      security:
+      - BearerAuth: []
+      summary: 创建工单
+      tags:
+      - ITSM
+  /api/v1/itsm/tickets/{id}:
+    get:
+      consumes:
+      - application/json
+      description: 根据 ID 获取工单详情
+      parameters:
+      - description: 工单 ID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/github_com_opsorigin_core_internal_itsm_model.Ticket'
+        "404":
+          description: Not Found
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      security:
+      - BearerAuth: []
+      summary: 获取工单详情
+      tags:
+      - ITSM
+securityDefinitions:
+  BearerAuth:
+    description: '输入格式: "Bearer {token}"'
+    in: header
+    name: Authorization
+    type: apiKey
+swagger: "2.0"
