@@ -310,7 +310,7 @@ export default function KnowledgeListPage() {
     {precipOpen && <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
       <div className="fixed inset-0 bg-black/50" onClick={() => setPrecipOpen(false)} />
       <div className="relative z-50 w-full max-w-3xl max-h-[92vh] overflow-y-auto bg-white dark:bg-gray-900 rounded-xl border p-6 shadow-lg">
-        <div className="flex items-center justify-between mb-4">
+        <div className="flex items-center justify-between">
           <div>
             <h2 className="text-lg font-semibold flex items-center gap-2"><Settings2 className="h-5 w-5 text-indigo-500" />自动沉淀策略</h2>
             <p className="text-xs text-muted-foreground mt-0.5">定义从运维事件(工单/告警/会话)自动沉淀为知识库文章的规则</p>

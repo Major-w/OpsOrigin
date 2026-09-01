@@ -16,6 +16,8 @@ interface StatisticCardProps {
   color?: string
   loading?: boolean
   className?: string
+  onClick?: () => void
+  active?: boolean
 }
 
 export function StatisticCard({
@@ -28,6 +30,8 @@ export function StatisticCard({
   color = '#3B82F6',
   loading = false,
   className,
+  onClick,
+  active = false,
 }: StatisticCardProps) {
   if (loading) {
     return (
@@ -42,7 +46,15 @@ export function StatisticCard({
   }
 
   return (
-    <Card className={cn("relative overflow-hidden", className)}>
+    <Card
+      className={cn(
+        "relative overflow-hidden transition-all duration-200",
+        onClick && "cursor-pointer hover:shadow-md hover:border-primary/30",
+        active && "ring-2 ring-primary border-primary shadow-md",
+        className
+      )}
+      onClick={onClick}
+    >
       {/* 背景渐变 */}
       <div
         className="absolute inset-0 opacity-5"

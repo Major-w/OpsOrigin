@@ -707,19 +707,6 @@ func main() {
 		slog.Warn("lowcode engine disabled (pg not available)")
 	}
 
-	llmClient := llm.NewClient(llm.Config{
-		APIKey:  cfg.LLM.APIKey,
-		Model:   cfg.LLM.Model,
-		BaseURL: cfg.LLM.BaseURL,
-		Timeout: time.Duration(cfg.LLM.Timeout) * time.Second,
-		// 语义检索:embedding 端点可独立配置,缺省复用聊天 Model/BaseURL 的同名端点。
-		EmbeddingModel:   cfg.LLM.EmbeddingModel,
-		EmbeddingBaseURL: cfg.LLM.EmbeddingBaseURL,
-	})
-	if knowledgeSvc != nil {
-		knowledgeSvc.SetEmbedder(llmClient) // 注入向量生成器,新建/更新知识库文章自动写入 embedding
-	}
-
 	// 多模型路由池(P3): 主配置为兜底 provider, 附加 provider 按权重参与路由(失败自动降级)。
 	var llmProviders []agentic.ProviderConfig
 	for _, p := range cfg.LLM.Providers {
@@ -731,12 +718,30 @@ func main() {
 			Weight:  p.Weight,
 		})
 	}
-	llmRouter := agentic.NewModelRouter(llm.Config{
+
+	// 主 provider 配置: 若 LLM 后端未配置 API key, 自动回退到池内权重最高且
+	// 已配置 key 的 provider, 使「仅用模型池」也能驱动聊天/报表/embedding 全链路。
+	primaryCfg := agentic.ResolvePrimary(llm.Config{
 		APIKey:  cfg.LLM.APIKey,
 		Model:   cfg.LLM.Model,
 		BaseURL: cfg.LLM.BaseURL,
 		Timeout: time.Duration(cfg.LLM.Timeout) * time.Second,
 	}, llmProviders)
+
+	llmClient := llm.NewClient(llm.Config{
+		APIKey:  primaryCfg.APIKey,
+		Model:   primaryCfg.Model,
+		BaseURL: primaryCfg.BaseURL,
+		Timeout: primaryCfg.Timeout,
+		// 语义检索:embedding 端点可独立配置,缺省复用聊天 Model/BaseURL 的同名端点。
+		EmbeddingModel:   cfg.LLM.EmbeddingModel,
+		EmbeddingBaseURL: cfg.LLM.EmbeddingBaseURL,
+	})
+	if knowledgeSvc != nil {
+		knowledgeSvc.SetEmbedder(llmClient) // 注入向量生成器,新建/更新知识库文章自动写入 embedding
+	}
+
+	llmRouter := agentic.NewModelRouter(primaryCfg, llmProviders)
 
 	// 存量知识库语义检索回填: 启动时幂等、非阻塞地补算 embedding(仅对 embedding IS NULL 的文章)。
 	// 失败(如 pgvector 未启用)仅告警, 不影响启动。

@@ -485,6 +485,9 @@ func (s *Service) UpdateLLMConfig(cfg llm.Config) {
 			})
 		}
 	}
+	// 主配置留空时回退到池内权重最高的可用 provider, 使「仅用模型池」也能驱动
+	// 报表/演进/知识库 embedding 等直连主客户端的场景(与路由池的 default 解析保持一致)。
+	cfg = agentic.ResolvePrimary(cfg, extra)
 	s.Engine.HotUpdateRouter(cfg, extra)
 	// 结构化生成走的是独立客户端，这里一并换掉，避免改完配置后看板生成还在用旧 key。
 	s.llmMu.Lock()

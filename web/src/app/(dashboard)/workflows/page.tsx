@@ -4,6 +4,7 @@ import { useNavigate } from 'react-router-dom'
 import { useWorkflowStore, type Workflow, type StepApproval } from '@/stores/workflow'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { ProTable, type ProColumns, type ActionType } from '@ant-design/pro-components'
+import type { ColumnsState } from '@ant-design/pro-components'
 import { StatisticCardGroup, StatisticCard } from '@/components/ui/statistic-card'
 import { Plus, Trash2, GitBranch, Code, CheckSquare, Split, Clock, Workflow as WorkflowIcon, Check, Ban, Flag, Pencil } from 'lucide-react'
 import { cn, formatTime } from '@/lib/utils'
@@ -12,7 +13,7 @@ import { Button, Tag, Modal, Popconfirm, message } from 'antd'
 export default function WorkflowsPage() {
   const navigate = useNavigate()
   const {
-    workflows, approvals, loading,
+    workflows, approvals, executions, loading,
     fetch, remove, fetchApprovals, approve, reject,
   } = useWorkflowStore()
   const actionRef = useRef<ActionType>()
@@ -34,6 +35,41 @@ export default function WorkflowsPage() {
 
   const pendingApprovals = approvals.filter(a => a.status === 'pending')
 
+  const [workflowFilter, setWorkflowFilter] = useState<string | null>(null)
+  const [workflowSearchValues, setWorkflowSearchValues] = useState<Record<string, any>>({})
+  const [workflowColumnsState, setWorkflowColumnsState] = useState<Record<string, ColumnsState>>({})
+
+  const filteredWorkflows = useMemo(() => {
+    let result = workflows
+    if (workflowFilter) {
+      if (workflowFilter === 'hasScript') result = result.filter(w => (w.steps || []).some(s => s.type === 'script'))
+      else if (workflowFilter === 'hasApproval') result = result.filter(w => (w.steps || []).some(s => s.type === 'approval'))
+      else if (workflowFilter === 'pendingApproval') {
+        const pendingExecIds = new Set(approvals.filter(a => a.status === 'pending').map(a => a.execution_id))
+        const pendingWfIds = new Set(executions.filter(e => pendingExecIds.has(e.id)).map(e => e.workflow_id))
+        result = result.filter(w => pendingWfIds.has(w.id))
+      }
+    }
+    if (workflowSearchValues._q) {
+      const q = workflowSearchValues._q.toLowerCase()
+      result = result.filter(w =>
+        w.name?.toLowerCase().includes(q) ||
+        w.description?.toLowerCase().includes(q) ||
+        String(w.steps?.length).includes(q) ||
+        w.created_at?.toLowerCase().includes(q) ||
+        w.updated_at?.toLowerCase().includes(q)
+      )
+    }
+    if (workflowSearchValues.name) {
+      result = result.filter(w => w.name.toLowerCase().includes(workflowSearchValues.name.toLowerCase()))
+    }
+    return result
+  }, [workflows, workflowFilter, approvals, executions, workflowSearchValues])
+
+  const handleWorkflowFilterClick = (filter: string | null) => {
+    setWorkflowFilter(prev => prev === filter ? null : filter)
+  }
+
   const handleApprove = async (id: string) => {
     const ok = await approve(id, approvalComments[id] || '')
     if (ok) setApprovalComments(prev => ({ ...prev, [id]: '' }))
@@ -51,6 +87,13 @@ export default function WorkflowsPage() {
   }
 
   const columns: ProColumns<Workflow>[] = [
+    {
+      title: '模糊搜索',
+      dataIndex: '_q',
+      hideInTable: true,
+      hideInSetting: true,
+      fieldProps: { placeholder: '搜索流程名称、描述、步骤数...' },
+    },
     {
       title: '流程名称',
       dataIndex: 'name',
@@ -73,7 +116,7 @@ export default function WorkflowsPage() {
       title: '步骤数',
       dataIndex: 'steps',
       width: 100,
-      search: false,
+      fieldProps: { placeholder: '搜索步骤数' },
       sorter: (a, b) => (a.steps?.length || 0) - (b.steps?.length || 0),
       render: (_, wf) => {
         const steps = wf.steps || []
@@ -103,7 +146,7 @@ export default function WorkflowsPage() {
       title: '描述',
       dataIndex: 'description',
       ellipsis: true,
-      search: false,
+      fieldProps: { placeholder: '搜索描述' },
       render: (_, wf) => (
         <span className="text-xs text-muted-foreground">{wf.description || '-'}</span>
       ),
@@ -112,7 +155,7 @@ export default function WorkflowsPage() {
       title: '创建时间',
       dataIndex: 'created_at',
       width: 160,
-      search: false,
+      fieldProps: { placeholder: '搜索创建时间' },
       sorter: (a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime(),
       render: (_, wf) => (
         <span className="text-xs text-muted-foreground/70 hidden md:block">{formatTime(wf.created_at)}</span>
@@ -122,7 +165,7 @@ export default function WorkflowsPage() {
       title: '更新时间',
       dataIndex: 'updated_at',
       width: 160,
-      search: false,
+      fieldProps: { placeholder: '搜索更新时间' },
       sorter: (a, b) => new Date(a.updated_at).getTime() - new Date(b.updated_at).getTime(),
       render: (_, wf) => (
         <span className="text-xs text-muted-foreground/70 hidden md:block">{formatTime(wf.updated_at)}</span>
@@ -154,6 +197,16 @@ export default function WorkflowsPage() {
     },
   ]
 
+  const searchWorkflowColumns = useMemo(() => {
+    return columns.map(col => {
+      const key = (col.dataIndex || col.key) as string
+      if (!key) return col
+      const state = workflowColumnsState[key]
+      if (state && state.show === false) return { ...col, hideInSearch: true }
+      return col
+    })
+  }, [columns, workflowColumnsState])
+
   return (
     <div className="p-6 space-y-4">
       <div className="flex items-center justify-between">
@@ -164,20 +217,23 @@ export default function WorkflowsPage() {
       </div>
 
       <StatisticCardGroup loading={loading} columns={5}>
-        <StatisticCard title="流程总数" value={stats.total} icon={<WorkflowIcon className="h-3 w-3" />} />
-        <StatisticCard title="脚本节点" value={stats.scriptCount} icon={<Code className="h-3 w-3" />} className="text-blue-500" />
-        <StatisticCard title="审批节点" value={stats.approvalCount} icon={<CheckSquare className="h-3 w-3" />} className="text-amber-500" />
+        <StatisticCard title="流程总数" value={stats.total} icon={<WorkflowIcon className="h-3 w-3" />} onClick={() => handleWorkflowFilterClick(null)} active={workflowFilter === null} />
+        <StatisticCard title="脚本节点" value={stats.scriptCount} icon={<Code className="h-3 w-3" />} className="text-blue-500" onClick={() => handleWorkflowFilterClick('hasScript')} active={workflowFilter === 'hasScript'} />
+        <StatisticCard title="审批节点" value={stats.approvalCount} icon={<CheckSquare className="h-3 w-3" />} className="text-amber-500" onClick={() => handleWorkflowFilterClick('hasApproval')} active={workflowFilter === 'hasApproval'} />
         <StatisticCard title="总步骤数" value={stats.stepsTotal} icon={<GitBranch className="h-3 w-3" />} />
-        <StatisticCard title="待审批" value={stats.pendingApprovals} icon={<Flag className="h-3 w-3" />} className={cn(stats.pendingApprovals > 0 ? "text-red-500" : "")} />
+        <StatisticCard title="待审批" value={stats.pendingApprovals} icon={<Flag className="h-3 w-3" />} className={cn(stats.pendingApprovals > 0 ? "text-red-500" : "")} onClick={() => handleWorkflowFilterClick('pendingApproval')} active={workflowFilter === 'pendingApproval'} />
       </StatisticCardGroup>
 
       <ProTable<Workflow>
         actionRef={actionRef}
-        columns={columns}
-        dataSource={workflows}
+        columns={searchWorkflowColumns}
+        dataSource={filteredWorkflows}
         loading={loading}
         rowKey="id"
-        search={{ labelWidth: 'auto', defaultCollapsed: false }}
+        columnsState={{ value: workflowColumnsState, onChange: setWorkflowColumnsState }}
+        search={{ labelWidth: 'auto', defaultCollapsed: true, span: 6 }}
+        onSubmit={(values) => setWorkflowSearchValues(values)}
+        onReset={() => setWorkflowSearchValues({})}
         pagination={{ defaultPageSize: 20, showSizeChanger: true, showTotal: (total) => `共 ${total} 条` }}
         rowSelection={{ selectedRowKeys, onChange: setSelectedRowKeys }}
         toolBarRender={() => [

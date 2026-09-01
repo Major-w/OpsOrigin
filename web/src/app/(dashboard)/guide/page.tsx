@@ -1,6 +1,6 @@
 
 import React, { useState } from 'react'
-import { Copy, Check, Terminal, Server, Cloud, Network, ShieldCheck, Rocket, Cpu, Database, Globe, AlertTriangle, BookOpen, Boxes, Container, ArrowRight } from 'lucide-react'
+import { Copy, Check, Terminal, Server, Cloud, Network, ShieldCheck, Rocket, Cpu, Database, Globe, AlertTriangle, BookOpen, Boxes, Container, ArrowRight, Settings2 } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
 import { Card, CardHeader, CardTitle, CardDescription, CardContent } from '@/components/ui/card'
 import { useThemeStore } from '@/stores/theme'
@@ -180,6 +180,26 @@ kubectl apply -f k8s-probe.yaml`,
 腾讯云 Tencent : SecretId / SecretKey
 华为云 Huawei  : AccessKey / SecretKey（项目级 project_id）
 AWS           : AccessKeyId / SecretAccessKey（含 region）`,
+      },
+    ],
+  },
+  {
+    id: 'collection-policy',
+    title: '全局默认采集策略',
+    desc: '资源接入时各项采集开关的默认值，在系统管理中统一配置。纳管单个资源时可覆盖此默认值。',
+    Icon: Settings2,
+    blocks: [
+      {
+        caption: '配置路径：系统管理 → 采集策略',
+        lang: 'text',
+        code: `打开「系统管理 / 采集策略」页面，可修改以下默认项：
+  · 基础信息采集（CPU / 内存 / 磁盘 / 网络）
+  · 进程列表采集
+  · 端口监听采集
+  · 日志采集开关
+  · 指标采集频率
+
+纳管资源时，「采集设置」开关默认预填此处的值，可逐资源单独覆盖。`,
       },
     ],
   },

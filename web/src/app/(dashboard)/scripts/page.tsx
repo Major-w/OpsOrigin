@@ -3,7 +3,8 @@ import { useEffect, useState, useRef, useMemo } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useScriptStore, type Script } from '@/stores/script'
 import { StatisticCardGroup, StatisticCard } from '@/components/ui/statistic-card'
-import { ProTable, type ProColumns, type ActionType } from '@ant-design/pro-components'
+import { ProTable, type ProColumns, type ActionType, type ProFormInstance } from '@ant-design/pro-components'
+import type { ColumnsState } from '@ant-design/pro-components'
 import { Code2, Terminal, Hash, Clock, GitBranch, Star, Download, Upload as UploadIcon, Plus, Trash2, Copy, Pencil, Loader2, FileCode, CheckCircle, FileText } from 'lucide-react'
 import { cn, formatTime, apiFetch } from '@/lib/utils'
 import { getMessage } from '@/lib/message'
@@ -45,11 +46,16 @@ export default function ScriptsPage() {
   const navigate = useNavigate()
   const { scripts, loading, fetch, remove, duplicate } = useScriptStore()
   const actionRef = useRef<ActionType>()
+  const formRef = useRef<ProFormInstance>()
   const [starredIds, setStarredIds] = useState<Set<string>>(new Set())
   const [importing, setImporting] = useState(false)
   const importInputRef = useRef<HTMLInputElement | null>(null)
   const [confirmDelete, setConfirmDelete] = useState<Script | null>(null)
   const [selectedRowKeys, setSelectedRowKeys] = useState<React.Key[]>([])
+  const [typeFilter, setTypeFilter] = useState<string | null>(null)
+  const [searchValues, setSearchValues] = useState<Record<string, any>>({})
+  const [columnsState, setColumnsState] = useState<Record<string, ColumnsState>>({})
+
 
   useEffect(() => { fetch() }, [])
   useEffect(() => { setStarredIds(loadStarred()) }, [])
@@ -63,6 +69,41 @@ export default function ScriptsPage() {
       return next
     })
   }
+
+  const handleCardClick = (filterType: string | null) => {
+    setTypeFilter(prev => prev === filterType ? null : filterType)
+  }
+
+  const filteredScripts = useMemo(() => {
+    let result = scripts
+    if (typeFilter) {
+      if (typeFilter === 'starred') result = result.filter(s => starredIds.has(s.id))
+      else result = result.filter(s => s.type === typeFilter)
+    }
+    if (searchValues._q) {
+      const q = searchValues._q.toLowerCase()
+      result = result.filter(s =>
+        s.name?.toLowerCase().includes(q) ||
+        s.type?.toLowerCase().includes(q) ||
+        s.approval_status?.toLowerCase().includes(q) ||
+        String(s.timeout).includes(q) ||
+        String(s.version).includes(q) ||
+        s.description?.toLowerCase().includes(q) ||
+        s.input_params?.some(p => p.name?.toLowerCase().includes(q)) ||
+        s.updated_at?.toLowerCase().includes(q)
+      )
+    }
+    if (searchValues.name) {
+      result = result.filter(s => s.name.toLowerCase().includes(searchValues.name.toLowerCase()))
+    }
+    if (searchValues.type) {
+      result = result.filter(s => s.type === searchValues.type)
+    }
+    if (searchValues.approval_status) {
+      result = result.filter(s => s.approval_status === searchValues.approval_status)
+    }
+    return result
+  }, [scripts, typeFilter, starredIds, searchValues])
 
   const typeLabel = (t: string) => SCRIPT_TYPES.find(st => st.value === t)?.label || t
 
@@ -166,6 +207,13 @@ export default function ScriptsPage() {
 
   const columns: ProColumns<Script>[] = [
     {
+      title: '模糊搜索',
+      dataIndex: '_q',
+      hideInTable: true,
+      hideInSetting: true,
+      fieldProps: { placeholder: '搜索脚本名称、类型、状态、超时、版本...' },
+    },
+    {
       title: '脚本名称',
       dataIndex: 'name',
       fixed: 'left',
@@ -201,6 +249,13 @@ export default function ScriptsPage() {
       title: '审批',
       dataIndex: 'approval_status',
       width: 80,
+      filters: [
+        { text: '待批准', value: 'draft' },
+        { text: '审批中', value: 'pending' },
+        { text: '已批准', value: 'approved' },
+        { text: '已拒绝', value: 'rejected' },
+      ],
+      onFilter: (value, record) => record.approval_status === value,
       render: (_, sc) => (
         sc.approval_status && sc.approval_status !== 'approved' ? (
           <Tag color="default" className={cn("text-[10px]", approvalMeta(sc.approval_status).cls)}>
@@ -213,7 +268,7 @@ export default function ScriptsPage() {
       title: '超时',
       dataIndex: 'timeout',
       width: 80,
-      search: false,
+      fieldProps: { placeholder: '搜索超时' },
       sorter: (a, b) => (a.timeout || 0) - (b.timeout || 0),
       render: (_, sc) => (
         <span className="text-xs text-muted-foreground flex items-center gap-0.5"><Clock className="h-2.5 w-2.5" />{sc.timeout}s</span>
@@ -223,7 +278,7 @@ export default function ScriptsPage() {
       title: '入参数',
       dataIndex: 'input_params',
       width: 80,
-      search: false,
+      fieldProps: { placeholder: '搜索入参数' },
       render: (_, sc) => (
         <span className="text-xs text-muted-foreground flex items-center gap-0.5"><Hash className="h-2.5 w-2.5" />{sc.input_params?.length || 0}</span>
       ),
@@ -232,7 +287,7 @@ export default function ScriptsPage() {
       title: '版本',
       dataIndex: 'version',
       width: 80,
-      search: false,
+      fieldProps: { placeholder: '搜索版本' },
       sorter: (a, b) => (a.version || 0) - (b.version || 0),
       render: (_, sc) => (
         <span className="text-xs text-muted-foreground flex items-center gap-0.5"><GitBranch className="h-2.5 w-2.5" />v{sc.version}</span>
@@ -242,7 +297,7 @@ export default function ScriptsPage() {
       title: '更新时间',
       dataIndex: 'updated_at',
       width: 160,
-      search: false,
+      fieldProps: { placeholder: '搜索更新时间' },
       sorter: (a, b) => new Date(a.updated_at).getTime() - new Date(b.updated_at).getTime(),
       render: (_, sc) => (
         <span className="text-xs text-muted-foreground/70 hidden md:block">{formatTime(sc.updated_at)}</span>
@@ -292,6 +347,16 @@ export default function ScriptsPage() {
     },
   ]
 
+  const searchColumns = useMemo(() => {
+    return columns.map(col => {
+      const key = (col.dataIndex || col.key) as string
+      if (!key) return col
+      const state = columnsState[key]
+      if (state && state.show === false) return { ...col, hideInSearch: true }
+      return col
+    })
+  }, [columns, columnsState])
+
   return (
     <div className="p-6 space-y-4">
       <input ref={importInputRef} type="file" accept=".json" className="hidden" onChange={handleImportFile} />
@@ -304,20 +369,24 @@ export default function ScriptsPage() {
       </div>
 
       <StatisticCardGroup loading={loading} columns={5}>
-        <StatisticCard title="脚本总数" value={stats.total} icon={<FileCode className="h-3 w-3" />} />
-        <StatisticCard title="Shell" value={stats.shell} icon={<Terminal className="h-3 w-3" />} className="text-blue-500" />
-        <StatisticCard title="Python" value={stats.python} icon={<Code2 className="h-3 w-3" />} className="text-blue-500" />
+        <StatisticCard title="脚本总数" value={stats.total} icon={<FileCode className="h-3 w-3" />} onClick={() => handleCardClick(null)} active={typeFilter === null} />
+        <StatisticCard title="Shell" value={stats.shell} icon={<Terminal className="h-3 w-3" />} className="text-blue-500" onClick={() => handleCardClick('shell')} active={typeFilter === 'shell'} />
+        <StatisticCard title="Python" value={stats.python} icon={<Code2 className="h-3 w-3" />} className="text-blue-500" onClick={() => handleCardClick('python')} active={typeFilter === 'python'} />
         <StatisticCard title="其他类型" value={stats.other} icon={<FileText className="h-3 w-3" />} className="text-amber-500" />
-        <StatisticCard title="已收藏" value={stats.starred} icon={<Star className="h-3 w-3" />} className="text-amber-500" />
+        <StatisticCard title="已收藏" value={stats.starred} icon={<Star className="h-3 w-3" />} className="text-amber-500" onClick={() => handleCardClick('starred')} active={typeFilter === 'starred'} />
       </StatisticCardGroup>
 
       <ProTable<Script>
         actionRef={actionRef}
-        columns={columns}
-        dataSource={scripts}
+        formRef={formRef}
+        columns={searchColumns}
+        dataSource={filteredScripts}
         loading={loading}
         rowKey="id"
-        search={{ labelWidth: 'auto', defaultCollapsed: false }}
+        columnsState={{ value: columnsState, onChange: setColumnsState }}
+        search={{ labelWidth: 'auto', defaultCollapsed: true, span: 6 }}
+        onSubmit={(values) => setSearchValues(values)}
+        onReset={() => setSearchValues({})}
         pagination={{ defaultPageSize: 20, showSizeChanger: true, showTotal: (total) => `共 ${total} 条` }}
         rowSelection={{ selectedRowKeys, onChange: setSelectedRowKeys }}
         toolBarRender={() => [

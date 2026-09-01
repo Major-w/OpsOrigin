@@ -3,6 +3,7 @@ import { useEffect, useState, useMemo, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useDeployStore, type DeployApp, type AppType, type DeployEnv } from '@/stores/deploy'
 import { ProTable, type ProColumns, type ActionType } from '@ant-design/pro-components'
+import type { ColumnsState } from '@ant-design/pro-components'
 import { StatisticCardGroup, StatisticCard } from '@/components/ui/statistic-card'
 import { Button, Modal, Input, Select, Tag, Popconfirm, message } from 'antd'
 import { AppWindow, Plus, Trash2, Pencil, GitBranch, Code2, Server, Box, Container, FileType, Power, FileText } from 'lucide-react'
@@ -43,6 +44,34 @@ export default function AppsPage() {
   const [createOpen, setCreateOpen] = useState(false)
   const [form, setForm] = useState({ name: '', code: '', type: 'java' as AppType, repo_url: '', branch: 'main', build_cmd: '', description: '', owner: '', envs: ['dev'] as DeployEnv[] })
   const [selectedRowKeys, setSelectedRowKeys] = useState<React.Key[]>([])
+  const [searchValues, setSearchValues] = useState<Record<string, any>>({})
+  const [columnsState, setColumnsState] = useState<Record<string, ColumnsState>>({})
+
+
+  const filteredApps = useMemo(() => {
+    let result = apps
+    if (searchValues._q) {
+      const q = searchValues._q.toLowerCase()
+      result = result.filter(a =>
+        a.name?.toLowerCase().includes(q) ||
+        a.type?.toLowerCase().includes(q) ||
+        a.owner?.toLowerCase().includes(q) ||
+        a.envs?.some(e => e.toLowerCase().includes(q)) ||
+        a.current_versions?.prod?.toLowerCase().includes(q) ||
+        a.updated_at?.toLowerCase().includes(q)
+      )
+    }
+    if (searchValues.name) {
+      result = result.filter(a => a.name.toLowerCase().includes(searchValues.name.toLowerCase()))
+    }
+    if (searchValues.type) {
+      result = result.filter(a => a.type === searchValues.type)
+    }
+    if (searchValues.owner) {
+      result = result.filter(a => a.owner?.toLowerCase().includes(searchValues.owner.toLowerCase()))
+    }
+    return result
+  }, [apps, searchValues])
 
   useEffect(() => { fetchApps() }, [])
 
@@ -73,6 +102,13 @@ export default function AppsPage() {
   }
 
   const columns: ProColumns<DeployApp>[] = [
+    {
+      title: '模糊搜索',
+      dataIndex: '_q',
+      hideInTable: true,
+      hideInSetting: true,
+      fieldProps: { placeholder: '搜索应用名称、类型、负责人、环境、生产版本...' },
+    },
     {
       title: '应用名称',
       dataIndex: 'name',
@@ -109,7 +145,7 @@ export default function AppsPage() {
       title: '环境',
       dataIndex: 'envs',
       width: 160,
-      search: false,
+      fieldProps: { placeholder: '搜索环境' },
       render: (_, app) => (
         <div className="flex gap-1">
           {app.envs.map(env => (
@@ -122,7 +158,7 @@ export default function AppsPage() {
       title: '生产版本',
       dataIndex: 'current_versions',
       width: 100,
-      search: false,
+      fieldProps: { placeholder: '搜索生产版本' },
       render: (_, app) => (
         <span className="text-xs font-mono text-muted-foreground">
           {app.current_versions.prod ? app.current_versions.prod : <span className="text-muted-foreground/40">-</span>}
@@ -133,13 +169,14 @@ export default function AppsPage() {
       title: '负责人',
       dataIndex: 'owner',
       width: 80,
+      fieldProps: { placeholder: '搜索负责人' },
       render: (_, app) => <span className="text-xs text-muted-foreground">{app.owner || '-'}</span>,
     },
     {
       title: '更新时间',
       dataIndex: 'updated_at',
       width: 160,
-      search: false,
+      fieldProps: { placeholder: '搜索更新时间' },
       sorter: (a, b) => new Date(a.updated_at).getTime() - new Date(b.updated_at).getTime(),
       render: (_, app) => <span className="text-xs text-muted-foreground/70 hidden md:block">{formatTime(app.updated_at)}</span>,
     },
@@ -170,6 +207,16 @@ export default function AppsPage() {
     },
   ]
 
+  const searchColumns = useMemo(() => {
+    return columns.map(col => {
+      const key = (col.dataIndex || col.key) as string
+      if (!key) return col
+      const state = columnsState[key]
+      if (state && state.show === false) return { ...col, hideInSearch: true }
+      return col
+    })
+  }, [columns, columnsState])
+
   return (
     <div className="p-6 space-y-4">
       <div className="flex items-center justify-between">
@@ -189,11 +236,14 @@ export default function AppsPage() {
 
       <ProTable<DeployApp>
         actionRef={actionRef}
-        columns={columns}
-        dataSource={apps}
+        columns={searchColumns}
+        dataSource={filteredApps}
         loading={loading}
         rowKey="id"
-        search={{ labelWidth: 'auto', defaultCollapsed: false }}
+        columnsState={{ value: columnsState, onChange: setColumnsState }}
+        search={{ labelWidth: 'auto', defaultCollapsed: true, span: 6 }}
+        onSubmit={(values) => setSearchValues(values)}
+        onReset={() => setSearchValues({})}
         pagination={{ defaultPageSize: 20, showSizeChanger: true, showTotal: (total) => `共 ${total} 条` }}
         rowSelection={{ selectedRowKeys, onChange: setSelectedRowKeys }}
         toolBarRender={() => [

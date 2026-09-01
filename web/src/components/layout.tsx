@@ -9,8 +9,8 @@ import { useAuthStore } from '@/stores/auth'
 import { MessageBell } from '@/components/message-bell'
 import { useThemeStore } from '@/stores/theme'
 import { ScrollToTop } from '@/components/ui/scroll-to-top'
-import { SettingsDrawer } from '@/components/ui/settings-drawer'
 import { Breadcrumb } from '@/components/ui/breadcrumb'
+import LocaleSwitcher from '@/components/ui/locale-switcher'
 import AIAssistant from '@/components/ai-assistant'
 import PureMode from '@/components/pure-mode'
 import { AI_ASSISTANT_NAV } from '@/components/ai-nav'
@@ -327,7 +327,7 @@ export function Layout({ children }: { children: React.ReactNode }) {
     <div className={cn("flex h-screen overflow-hidden", theme === 'dark' ? 'bg-[var(--background)]' : 'bg-gray-50')}>
       <div className="fixed inset-0 pointer-events-none opacity-[0.03] bg-[url('data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIzMDAiIGhlaWdodD0iMzAwIj48ZmlsdGVyIGlkPSJmIj48ZmVUdXJidWxlbmNlIHR5cGU9ImZyYWN0YWxOb2lzZSIgYmFzZUZyZXF1ZW5jeT0iLjc0IiBudW1PY3RhdmVzPSIzIi8+PC9maWx0ZXI+PHJlY3Qgd2lkdGg9IjEwMCUiIGhlaWdodD0iMTAwJSIgZmlsdGVyPSJ1cmwoI2YpIiBvcGFjaXR5PSIwLjA0Ii8+PC9zdmc+')]" />
 
-      <aside className={cn("relative z-10 w-60 flex flex-col border-r backdrop-blur-2xl overflow-y-auto", theme === 'dark' ? 'border-[rgba(255,255,255,0.04)] bg-[rgba(11,15,25,0.8)]' : 'border-gray-200 bg-white/80')}>
+      <aside className={cn("relative z-10 w-60 flex flex-col border-r backdrop-blur-2xl overflow-y-auto sticky top-0 h-screen", theme === 'dark' ? 'border-[rgba(255,255,255,0.04)] bg-[rgba(11,15,25,0.8)]' : 'border-gray-200 bg-white/80')}>
         <div className={cn("h-14 flex items-center gap-2.5 px-5 border-b sticky top-0 backdrop-blur-2xl", theme === 'dark' ? 'border-[rgba(255,255,255,0.04)] bg-[rgba(11,15,25,0.95)]' : 'border-gray-200 bg-gray-50/95')}>
           <div className="relative flex items-center justify-center w-7 h-7">
             <Hexagon className="w-7 h-7 text-blue-400" strokeWidth={1.5} />
@@ -337,6 +337,7 @@ export function Layout({ children }: { children: React.ReactNode }) {
             <span className={cn("text-sm font-semibold tracking-tight", theme === 'dark' ? 'text-white' : 'text-gray-900')}>OpsOrigin</span>
             <p className="text-[10px] text-muted-foreground tracking-wider uppercase">AI-Native Ops</p>
           </div>
+          <LocaleSwitcher />
           <button onClick={toggle} className={cn("p-1.5 rounded-md transition-colors", theme === 'dark' ? 'text-gray-400 hover:text-white hover:bg-white/10' : 'text-gray-500 hover:text-gray-900 hover:bg-gray-200')}>
             {theme === 'dark' ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
           </button>
@@ -402,7 +403,9 @@ export function Layout({ children }: { children: React.ReactNode }) {
           >
             <Sparkles className="h-3.5 w-3.5" strokeWidth={1.5} /> 纯净模式
           </button>
-          <p className="text-[10px] text-muted-foreground/50 font-mono tracking-tight">v1.0.0 · build 2026.07</p>
+          <p className="text-[10px] text-muted-foreground/50 font-mono tracking-tight">
+            v{__APP_VERSION__} · {__BUILD_TIME__}
+          </p>
         </div>
       </aside>
 
@@ -416,7 +419,6 @@ export function Layout({ children }: { children: React.ReactNode }) {
         <ScrollToTop />
       </main>
       <AIAssistant />
-      <SettingsDrawer />
     </div>
   )
 }

@@ -2,6 +2,7 @@
 import { useEffect, useState, useMemo, useRef } from 'react'
 import { useDeployStore, type ReleaseHistory, type ReleaseStatus } from '@/stores/deploy'
 import { ProTable, type ProColumns, type ActionType } from '@ant-design/pro-components'
+import type { ColumnsState } from '@ant-design/pro-components'
 import { StatisticCardGroup, StatisticCard } from '@/components/ui/statistic-card'
 import { Button, Modal, Tag, message } from 'antd'
 import { History, RotateCcw, Clock, CheckCircle, XCircle, Loader2 } from 'lucide-react'
@@ -32,8 +33,39 @@ export default function HistoryPage() {
   const actionRef = useRef<ActionType>()
   const [detail, setDetail] = useState<ReleaseHistory | null>(null)
   const [confirmRollback, setConfirmRollback] = useState<ReleaseHistory | null>(null)
+  const [searchValues, setSearchValues] = useState<Record<string, any>>({})
+  const [columnsState, setColumnsState] = useState<Record<string, ColumnsState>>({})
+
 
   useEffect(() => { fetchHistory() }, [])
+
+  const filteredHistory = useMemo(() => {
+    let result = history
+    if (searchValues._q) {
+      const q = searchValues._q.toLowerCase()
+      result = result.filter(h =>
+        h.app_name?.toLowerCase().includes(q) ||
+        h.version?.toLowerCase().includes(q) ||
+        h.env?.toLowerCase().includes(q) ||
+        h.status?.toLowerCase().includes(q) ||
+        h.operator?.toLowerCase().includes(q) ||
+        h.created_at?.toLowerCase().includes(q)
+      )
+    }
+    if (searchValues.app_name) {
+      result = result.filter(h => h.app_name.toLowerCase().includes(searchValues.app_name.toLowerCase()))
+    }
+    if (searchValues.env) {
+      result = result.filter(h => h.env === searchValues.env)
+    }
+    if (searchValues.status) {
+      result = result.filter(h => h.status === searchValues.status)
+    }
+    if (searchValues.operator) {
+      result = result.filter(h => h.operator?.toLowerCase().includes(searchValues.operator.toLowerCase()))
+    }
+    return result
+  }, [history, searchValues])
 
   const stats = useMemo(() => ({
     total: history.length,
@@ -50,6 +82,13 @@ export default function HistoryPage() {
   }
 
   const columns: ProColumns<ReleaseHistory>[] = [
+    {
+      title: '模糊搜索',
+      dataIndex: '_q',
+      hideInTable: true,
+      hideInSetting: true,
+      fieldProps: { placeholder: '搜索应用、版本、环境、状态、发布人...' },
+    },
     {
       title: '应用',
       dataIndex: 'app_name',
@@ -71,7 +110,7 @@ export default function HistoryPage() {
       title: '版本',
       dataIndex: 'version',
       width: 120,
-      search: false,
+      fieldProps: { placeholder: '搜索版本' },
       render: (_, h) => <span className="text-xs font-mono text-muted-foreground">{h.version}</span>,
     },
     {
@@ -97,14 +136,14 @@ export default function HistoryPage() {
       title: '发布人',
       dataIndex: 'operator',
       width: 100,
-      search: false,
+      fieldProps: { placeholder: '搜索发布人' },
       render: (_, h) => <span className="text-xs text-muted-foreground hidden lg:block">{h.operator}</span>,
     },
     {
       title: '发布时间',
       dataIndex: 'created_at',
       width: 160,
-      search: false,
+      fieldProps: { placeholder: '搜索发布时间' },
       sorter: (a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime(),
       render: (_, h) => <span className="text-xs text-muted-foreground/70 hidden md:block">{formatTime(h.created_at)}</span>,
     },
@@ -128,6 +167,16 @@ export default function HistoryPage() {
     },
   ]
 
+  const searchColumns = useMemo(() => {
+    return columns.map(col => {
+      const key = (col.dataIndex || col.key) as string
+      if (!key) return col
+      const state = columnsState[key]
+      if (state && state.show === false) return { ...col, hideInSearch: true }
+      return col
+    })
+  }, [columns, columnsState])
+
   return (
     <div className="p-6 space-y-4">
       <div className="flex items-center justify-between">
@@ -146,11 +195,14 @@ export default function HistoryPage() {
 
       <ProTable<ReleaseHistory>
         actionRef={actionRef}
-        columns={columns}
-        dataSource={history}
+        columns={searchColumns}
+        dataSource={filteredHistory}
         loading={loading}
         rowKey="id"
-        search={{ labelWidth: 'auto', defaultCollapsed: false }}
+        columnsState={{ value: columnsState, onChange: setColumnsState }}
+        search={{ labelWidth: 'auto', defaultCollapsed: true, span: 6 }}
+        onSubmit={(values) => setSearchValues(values)}
+        onReset={() => setSearchValues({})}
         pagination={{ defaultPageSize: 20, showSizeChanger: true, showTotal: (total) => `共 ${total} 条` }}
         options={{ density: true, fullScreen: true, reload: () => fetchHistory(), setting: true }}
         headerTitle={false}

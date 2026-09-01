@@ -2,6 +2,7 @@
 import { useEffect, useState, useMemo, useRef } from 'react'
 import { useDeployStore, type ReleaseTicket, type ReleaseStatus, type DeployEnv, type DeployEnvironment, type DeployMode } from '@/stores/deploy'
 import { ProTable, type ProColumns, type ActionType } from '@ant-design/pro-components'
+import type { ColumnsState } from '@ant-design/pro-components'
 import { StatisticCardGroup, StatisticCard } from '@/components/ui/statistic-card'
 import { Button, Modal, Input, Select, Tag, message } from 'antd'
 import { FileCheck2, Trash2, Check, Ban, Play, RotateCcw, GitBranch, Clock, AlertCircle, CheckCircle, XCircle, Loader2, Rocket, Box, Server, Container } from 'lucide-react'
@@ -46,8 +47,40 @@ export default function ReleasesPage() {
   const [rejectTarget, setRejectTarget] = useState<ReleaseTicket | null>(null)
   const [rejectReason, setRejectReason] = useState('')
   const [createOpen, setCreateOpen] = useState(false)
+  const [searchValues, setSearchValues] = useState<Record<string, any>>({})
+  const [columnsState, setColumnsState] = useState<Record<string, ColumnsState>>({})
+
 
   useEffect(() => { fetchReleases(); fetchEnvs() }, [])
+
+  const filteredReleases = useMemo(() => {
+    let result = releases
+    if (searchValues._q) {
+      const q = searchValues._q.toLowerCase()
+      result = result.filter(r =>
+        r.title?.toLowerCase().includes(q) ||
+        r.app_name?.toLowerCase().includes(q) ||
+        r.version?.toLowerCase().includes(q) ||
+        r.env?.toLowerCase().includes(q) ||
+        r.status?.toLowerCase().includes(q) ||
+        r.strategy?.toLowerCase().includes(q) ||
+        r.created_at?.toLowerCase().includes(q)
+      )
+    }
+    if (searchValues.title) {
+      result = result.filter(r => r.title.toLowerCase().includes(searchValues.title.toLowerCase()))
+    }
+    if (searchValues.app_name) {
+      result = result.filter(r => r.app_name.toLowerCase().includes(searchValues.app_name.toLowerCase()))
+    }
+    if (searchValues.env) {
+      result = result.filter(r => r.env === searchValues.env)
+    }
+    if (searchValues.status) {
+      result = result.filter(r => r.status === searchValues.status)
+    }
+    return result
+  }, [releases, searchValues])
 
   const envModeOf = useMemo(() => {
     const m: Record<string, DeployMode> = {}
@@ -70,6 +103,13 @@ export default function ReleasesPage() {
   }
 
   const columns: ProColumns<ReleaseTicket>[] = [
+    {
+      title: '模糊搜索',
+      dataIndex: '_q',
+      hideInTable: true,
+      hideInSetting: true,
+      fieldProps: { placeholder: '搜索发布标题、应用、版本、环境、状态、策略...' },
+    },
     {
       title: '发布标题',
       dataIndex: 'title',
@@ -94,14 +134,14 @@ export default function ReleasesPage() {
       title: '应用',
       dataIndex: 'app_name',
       width: 140,
-      search: false,
+      fieldProps: { placeholder: '搜索应用名' },
       render: (_, rel) => <span className="text-xs text-muted-foreground truncate hidden lg:block">{rel.app_name}</span>,
     },
     {
       title: '版本',
       dataIndex: 'version',
       width: 100,
-      search: false,
+      fieldProps: { placeholder: '搜索版本' },
       render: (_, rel) => <span className="text-xs font-mono text-muted-foreground">{rel.version}</span>,
     },
     {
@@ -116,7 +156,7 @@ export default function ReleasesPage() {
       title: '策略',
       dataIndex: 'strategy',
       width: 100,
-      search: false,
+      fieldProps: { placeholder: '搜索策略' },
       render: (_, rel) => <span className="text-xs text-muted-foreground hidden md:block">{STRATEGY_LABELS[rel.strategy]}</span>,
     },
     {
@@ -134,7 +174,7 @@ export default function ReleasesPage() {
       title: '创建时间',
       dataIndex: 'created_at',
       width: 160,
-      search: false,
+      fieldProps: { placeholder: '搜索创建时间' },
       sorter: (a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime(),
       render: (_, rel) => <span className="text-xs text-muted-foreground/70 hidden md:block">{formatTime(rel.created_at)}</span>,
     },
@@ -176,6 +216,16 @@ export default function ReleasesPage() {
     },
   ]
 
+  const searchColumns = useMemo(() => {
+    return columns.map(col => {
+      const key = (col.dataIndex || col.key) as string
+      if (!key) return col
+      const state = columnsState[key]
+      if (state && state.show === false) return { ...col, hideInSearch: true }
+      return col
+    })
+  }, [columns, columnsState])
+
   return (
     <div className="p-6 space-y-4">
       <div className="flex items-center justify-between">
@@ -195,11 +245,14 @@ export default function ReleasesPage() {
 
       <ProTable<ReleaseTicket>
         actionRef={actionRef}
-        columns={columns}
-        dataSource={releases}
+        columns={searchColumns}
+        dataSource={filteredReleases}
         loading={loading}
         rowKey="id"
-        search={{ labelWidth: 'auto', defaultCollapsed: false }}
+        columnsState={{ value: columnsState, onChange: setColumnsState }}
+        search={{ labelWidth: 'auto', defaultCollapsed: true, span: 6 }}
+        onSubmit={(values) => setSearchValues(values)}
+        onReset={() => setSearchValues({})}
         pagination={{ defaultPageSize: 20, showSizeChanger: true, showTotal: (total) => `共 ${total} 条` }}
         toolBarRender={() => [
           <Button key="new" type="primary" size="middle" onClick={() => setCreateOpen(true)}>

@@ -73,10 +73,41 @@ type ModelRouter struct {
 	providers []*ModelProvider // 按 Weight 降序
 }
 
+// ResolvePrimary 解析生效的主 provider 配置。
+// 若用户只配置了模型池(附加 provider)而未在 LLM 后端配置主 API key,
+// 则自动选用池内权重最高且已配置 API key 的 provider 作为默认(兜底)——
+// 使「仅用某个池内模型」也能开箱即用, 无需单独填主配置。无可用时返回原配置。
+func ResolvePrimary(primary llm.Config, extra []ProviderConfig) llm.Config {
+	if primary.APIKey != "" {
+		return primary
+	}
+	var best *ProviderConfig
+	for i := range extra {
+		p := &extra[i]
+		if p.APIKey == "" || p.BaseURL == "" || p.Model == "" {
+			continue
+		}
+		if best == nil || p.Weight > best.Weight {
+			best = p
+		}
+	}
+	if best == nil {
+		return primary
+	}
+	return llm.Config{
+		APIKey:     best.APIKey,
+		Model:      best.Model,
+		BaseURL:    best.BaseURL,
+		Timeout:    primary.Timeout,
+		MaxRetries: primary.MaxRetries,
+	}
+}
+
 // NewModelRouter 构造路由池。primary 作为兜底 provider(name="default") 放最前;
 // extra 为配置的附加 provider(权重参与排序)。
 func NewModelRouter(primary llm.Config, extra []ProviderConfig) *ModelRouter {
 	r := &ModelRouter{}
+	primary = ResolvePrimary(primary, extra)
 	primaryCfg := primary
 	primaryCfg.Model = orDefault(primaryCfg.Model, "deepseek-chat")
 	r.providers = append(r.providers, &ModelProvider{
@@ -274,6 +305,7 @@ func (r *ModelRouter) UpdateProviders(primary llm.Config, extra []ProviderConfig
 		}
 	}
 
+	primary = ResolvePrimary(primary, extra)
 	primaryCfg := primary
 	next := []*ModelProvider{build(primaryCfg, "default", 100, true, time.Time{})}
 

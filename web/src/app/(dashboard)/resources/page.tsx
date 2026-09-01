@@ -1,5 +1,5 @@
 
-import { useEffect, useState, useRef } from 'react'
+import { useEffect, useState, useRef, useMemo } from 'react'
 import { useAgentStore, type AgentHost, type ProxyInfo, type TaskInfo } from '@/stores/agent'
 import { useKeyStore } from '@/stores/keys'
 import { useCloudStore } from '@/stores/cloud'
@@ -11,10 +11,11 @@ import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs'
 import { SwitchField } from '@/components/ui/switch'
 import { ViewToggle, type ViewMode } from '@/components/ui/data-list'
 import { ProTable, type ProColumns, type ActionType } from '@ant-design/pro-components'
+import type { ColumnsState } from '@ant-design/pro-components'
 import { StatisticCardGroup, StatisticCard } from '@/components/ui/statistic-card'
 import { formatTime, apiBase, apiFetch } from '@/lib/utils'
 import { validateHostName, sanitizeHostName, HOST_NAME_RULE_TEXT } from '@/lib/validate'
-import { Plus, Trash2, Terminal, Monitor, RefreshCw, Download, CheckCircle, XCircle, Clock, Eye, Cpu, HardDrive, MemoryStick, Copy, Server, Wifi, WifiOff, Cloud, Container, Pencil, RotateCcw, Zap, ListChecks, AlertTriangle, Save, Play, ArrowUp, BookOpen, GitMerge, Database, ArrowRight } from 'lucide-react'
+import { Plus, Trash2, Terminal, Monitor, RefreshCw, Download, CheckCircle, XCircle, Clock, Eye, Cpu, HardDrive, MemoryStick, Copy, Server, Wifi, WifiOff, Cloud, Container, Pencil, RotateCcw, Zap, ListChecks, AlertTriangle, Save, Play, ArrowUp, BookOpen, GitMerge, ArrowRight } from 'lucide-react'
 import { getMessage } from '@/lib/message'
 function statusColor(s: string): string {
   if (s === 'online') return 'green'
@@ -538,8 +539,57 @@ export default function ResourcesPage() {
   const agentCount = agents.filter(a => a.type === 'agent').length
   const agentlessCount = agents.filter(a => a.type === 'agentless').length
 
+  const [hostFilter, setHostFilter] = useState<string | null>(null)
+  const [hostSearchValues, setHostSearchValues] = useState<Record<string, any>>({})
+  const [agentColumnsState, setAgentColumnsState] = useState<Record<string, ColumnsState>>({})
+
+
+  const filteredAgents = useMemo(() => {
+    let result = agents
+    if (hostFilter) {
+      if (hostFilter === 'online') result = result.filter(a => a.status === 'online')
+      else if (hostFilter === 'offline') result = result.filter(a => a.status === 'offline')
+      else if (hostFilter === 'agent') result = result.filter(a => a.type === 'agent')
+      else if (hostFilter === 'agentless') result = result.filter(a => a.type === 'agentless')
+    }
+    if (hostSearchValues._q) {
+      const q = hostSearchValues._q.toLowerCase()
+      result = result.filter(a =>
+        a.name?.toLowerCase().includes(q) ||
+        a.address?.toLowerCase().includes(q) ||
+        a.status?.toLowerCase().includes(q) ||
+        a.type?.toLowerCase().includes(q) ||
+        a.os_type?.toLowerCase().includes(q) ||
+        a.cpu?.toLowerCase().includes(q) ||
+        a.memory?.toLowerCase().includes(q) ||
+        a.last_heartbeat?.toLowerCase().includes(q)
+      )
+    }
+    if (hostSearchValues.name) {
+      result = result.filter(a => a.name.toLowerCase().includes(hostSearchValues.name.toLowerCase()) || a.address?.toLowerCase().includes(hostSearchValues.name.toLowerCase()))
+    }
+    if (hostSearchValues.status) {
+      result = result.filter(a => a.status === hostSearchValues.status)
+    }
+    if (hostSearchValues.type) {
+      result = result.filter(a => a.type === hostSearchValues.type)
+    }
+    return result
+  }, [agents, hostFilter, hostSearchValues])
+
+  const handleHostFilterClick = (filter: string | null) => {
+    setHostFilter(prev => prev === filter ? null : filter)
+  }
+
   // 主机列表列定义
   const agentColumns: ProColumns<AgentHost>[] = [
+    {
+      title: '模糊搜索',
+      dataIndex: '_q',
+      hideInTable: true,
+      hideInSetting: true,
+      fieldProps: { placeholder: '搜索主机名、IP、状态、类型、OS、CPU、内存...' },
+    },
     {
       title: '名称',
       dataIndex: 'name',
@@ -572,35 +622,35 @@ export default function ResourcesPage() {
     {
       title: '地址',
       dataIndex: 'address',
-      search: false,
+      fieldProps: { placeholder: '搜索地址' },
       render: (_, a) => <span className="text-xs text-muted-foreground truncate">{a.address}{a.port && a.port !== 22 ? `:${a.port}` : ''}</span>,
     },
     {
       title: '操作系统',
       dataIndex: 'os_type',
       width: 120,
-      search: false,
+      fieldProps: { placeholder: '搜索操作系统' },
       render: (_, a) => <span className="text-xs text-muted-foreground truncate">{a.os_type || '-'}</span>,
     },
     {
       title: 'CPU',
       dataIndex: 'cpu',
       width: 100,
-      search: false,
+      fieldProps: { placeholder: '搜索CPU' },
       render: (_, a) => <span className="text-xs text-muted-foreground truncate">{a.cpu || '-'}</span>,
     },
     {
       title: '内存',
       dataIndex: 'memory',
       width: 80,
-      search: false,
+      fieldProps: { placeholder: '搜索内存' },
       render: (_, a) => <span className="text-xs text-muted-foreground truncate">{a.memory || '-'}</span>,
     },
     {
       title: '最后心跳',
       dataIndex: 'last_heartbeat',
       width: 140,
-      search: false,
+      fieldProps: { placeholder: '搜索最后心跳' },
       sorter: (a, b) => new Date(a.last_heartbeat || 0).getTime() - new Date(b.last_heartbeat || 0).getTime(),
       render: (_, a) => (
         <span className="text-xs text-muted-foreground/50">
@@ -628,6 +678,16 @@ export default function ResourcesPage() {
       ],
     },
   ]
+
+  const searchAgentColumns = useMemo(() => {
+    return agentColumns.map(col => {
+      const key = (col.dataIndex || col.key) as string
+      if (!key) return col
+      const state = agentColumnsState[key]
+      if (state && state.show === false) return { ...col, hideInSearch: true }
+      return col
+    })
+  }, [agentColumns, agentColumnsState])
 
   const renderAgentListItem = (a: AgentHost) => (
     <>
@@ -708,22 +768,6 @@ export default function ResourcesPage() {
         </a>
       </div>
 
-      {/* 全局默认采集策略已迁移至「系统管理 / 采集策略」，此处保留入口指引 */}
-      <Card className="border-dashed">
-        <CardContent className="flex items-center justify-between py-4">
-          <div className="flex items-center gap-3">
-            <Database className="h-5 w-5 text-blue-500" />
-            <div>
-              <p className="text-sm font-medium">全局默认采集策略</p>
-              <p className="text-xs text-muted-foreground">资源接入时采集开关的默认值，已在系统管理中统一配置。</p>
-            </div>
-          </div>
-          <a href="/system/collection-policy" className="inline-flex items-center justify-center rounded-md text-sm font-medium border border-input bg-background hover:bg-accent hover:text-accent-foreground h-9 px-4 py-2">
-            前往配置<ArrowRight className="h-4 w-4 ml-1" />
-          </a>
-        </CardContent>
-      </Card>
-
       <Tabs value={mainTab} onValueChange={setMainTab}>
         <TabsList>
           <TabsTrigger value="host"><Server className="h-3 w-3 mr-1" />主机资源纳管</TabsTrigger>
@@ -732,28 +776,31 @@ export default function ResourcesPage() {
         </TabsList>
 
         <TabsContent value="host" className="mt-4 space-y-4">
-          <StatisticCardGroup loading={loading} columns={5}>
-            <StatisticCard title="主机总数" value={agents.length} icon={<Server className="h-3 w-3" />} />
-            <StatisticCard title="在线" value={onlineCount} icon={<Wifi className="h-3 w-3" />} className="text-blue-500" />
-            <StatisticCard title="离线" value={offlineCount} icon={<WifiOff className="h-3 w-3" />} className="text-destructive" />
-            <StatisticCard title="Agent" value={agentCount} icon={<Terminal className="h-3 w-3" />} />
-            <StatisticCard title="Agentless" value={agentlessCount} icon={<Monitor className="h-3 w-3" />} />
-          </StatisticCardGroup>
-
           <Tabs value={hostTab} onValueChange={setHostTab}>
             <TabsList>
-              <TabsTrigger value="list">主机列表</TabsTrigger>
+              <TabsTrigger value="list">主机管理</TabsTrigger>
               <TabsTrigger value="proxies">Proxy 管理 ({proxies.length})</TabsTrigger>
             </TabsList>
 
-            <TabsContent value="list" className="mt-4">
+            <TabsContent value="list" className="mt-4 space-y-4">
+              <StatisticCardGroup loading={loading} columns={5}>
+                <StatisticCard title="主机总数" value={agents.length} icon={<Server className="h-3 w-3" />} onClick={() => handleHostFilterClick(null)} active={hostFilter === null} />
+                <StatisticCard title="在线" value={onlineCount} icon={<Wifi className="h-3 w-3" />} className="text-blue-500" onClick={() => handleHostFilterClick('online')} active={hostFilter === 'online'} />
+                <StatisticCard title="离线" value={offlineCount} icon={<WifiOff className="h-3 w-3" />} className="text-destructive" onClick={() => handleHostFilterClick('offline')} active={hostFilter === 'offline'} />
+                <StatisticCard title="Agent" value={agentCount} icon={<Terminal className="h-3 w-3" />} onClick={() => handleHostFilterClick('agent')} active={hostFilter === 'agent'} />
+                <StatisticCard title="Agentless" value={agentlessCount} icon={<Monitor className="h-3 w-3" />} onClick={() => handleHostFilterClick('agentless')} active={hostFilter === 'agentless'} />
+              </StatisticCardGroup>
+
               <ProTable<AgentHost>
                 actionRef={agentActionRef}
-                columns={agentColumns}
-                dataSource={agents}
+                columns={searchAgentColumns}
+                dataSource={filteredAgents}
                 loading={loading}
                 rowKey="id"
-                search={{ labelWidth: 'auto', defaultCollapsed: false }}
+                columnsState={{ value: agentColumnsState, onChange: setAgentColumnsState }}
+                search={{ labelWidth: 'auto', defaultCollapsed: true, span: 6 }}
+                onSubmit={(values) => setHostSearchValues(values)}
+                onReset={() => setHostSearchValues({})}
                 pagination={{ defaultPageSize: 20, showSizeChanger: true, showTotal: (total) => `共 ${total} 条` }}
                 rowSelection={{}}
                 toolBarRender={() => [

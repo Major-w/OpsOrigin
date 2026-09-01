@@ -1,10 +1,11 @@
 
-import { useEffect, useState, type ReactNode } from 'react'
+import { useEffect, useState, useRef, type ReactNode } from 'react'
 import { Link } from 'react-router-dom'
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card'
 import { Button, Input, Tag, Space, Tabs, Popconfirm, Switch, Modal, message } from 'antd'
 import { ReloadOutlined, PlusOutlined, DeleteOutlined, EditOutlined, ApiOutlined, SettingOutlined, SaveOutlined, ThunderboltOutlined } from '@ant-design/icons'
 import { Bot, Plus, Trash2, Save, Wrench, Brain, Settings2, Terminal, Wand2, AlertCircle, CheckCircle2, Loader2, ChevronRight, ShieldCheck, Database, Download, RefreshCw, Sparkles, Copy, Pencil, Star, Search, Package, Eye, Rocket } from 'lucide-react'
+import RoleTemplatesPanel from '@/components/ai/role-templates-panel'
 
 // 主流模型服务预设(填入新 provider 行, base_url 均为 OpenAI 兼容端点)
 const MODEL_PRESETS = [
@@ -16,10 +17,9 @@ const MODEL_PRESETS = [
   { label: '硅基流动', name: 'siliconflow', model: 'Qwen/Qwen2.5-7B-Instruct', base_url: 'https://api.siliconflow.cn/v1', weight: 60 },
   { label: 'Ollama 本地', name: 'ollama', model: 'qwen2.5', base_url: 'http://host.docker.internal:11434/v1', weight: 60 },
 ]
-import { cn, apiFetch, apiList } from '@/lib/utils'
+import { cn, apiFetch, apiFetchRaw, apiList } from '@/lib/utils'
 import { useThemeStore } from '@/stores/theme'
 import { useAIStore, type ApprovalMode } from '@/stores/ai'
-import RoleTemplatesPanel from '@/components/ai/role-templates-panel'
 import { getMessage } from '@/lib/message'
 const APPROVAL_MODES: { value: ApprovalMode; label: string; desc: string }[] = [
   { value: 'sensitive_only', label: '仅敏感操作询问', desc: '默认安全策略：script_run 等写/执行类操作弹窗确认，只读操作直接执行' },
@@ -162,6 +162,43 @@ export default function AISettingsPage() {
   const [evoForm, setEvoForm] = useState({ name: '', type: 'rss', source: '', enabled: true, interval_hours: 0, target_category: '', min_score: 0 })
   const [evoFetching, setEvoFetching] = useState(false)
   const [evoResults, setEvoResults] = useState<{ name: string; type: string; source: string; status: string; message: string }[] | null>(null)
+  // 保存/恢复页面滚动位置，防止因状态更新导致的页面位置跳变
+  const scrollRef = useRef(0)
+  useEffect(() => {
+    scrollRef.current = window.scrollY
+    return () => {
+      window.scrollTo(0, scrollRef.current)
+    }
+  }, [])
+
+  // === 草稿暂存 start ===
+  const [draftSaving, setDraftSaving] = useState(false)
+  const LST_DRAFT_KEY = 'ai_settings_draft'
+  const loadDraft = () => {
+    try {
+      const data = localStorage.getItem(LST_DRAFT_KEY)
+      if (data) { const d = JSON.parse(data); setLlmForm(d) }
+    } catch {}
+  }
+  const saveDraft = async () => {
+    setDraftSaving(true)
+    try {
+      localStorage.setItem(LST_DRAFT_KEY, JSON.stringify(llmForm))
+      getMessage().success('草稿已保存，关闭/刷新页面后可恢复')
+    } catch { getMessage().error('保存草稿失败') }
+    setDraftSaving(false)
+  }
+  // === 草稿暂存 end ===
+
+  // 在 saving 状态变化或关键 API 请求前后保持滚位不变
+  useEffect(() => {
+    const handleScroll = () => {
+      scrollRef.current = window.scrollY
+    }
+    window.addEventListener('scroll', handleScroll, { passive: true })
+    return () => window.removeEventListener('scroll', handleScroll)
+  }, [])
+
   const [evoPolicy, setEvoPolicy] = useState<{ enabled: boolean; interval_hours: number; target_category: string; min_score: number; blacklist: string[]; updated_at: string } | null>(null)
   const [policyForm, setPolicyForm] = useState({ enabled: true, interval_hours: '6', target_category: '知识获取', min_score: '0.5', blacklist: '' })
   const [editingSrc, setEditingSrc] = useState<string | null>(null)
@@ -192,17 +229,15 @@ export default function AISettingsPage() {
   useEffect(() => { fetchAgents(); loadTools(); loadSysConfig(); loadApprovalPolicy(); loadKbCategories(); loadModelPool(); loadFinetuneTasks(); loadPrompts(); loadEvolutionStats(); loadEvoSources(); loadEvoPolicy() }, [])
   const loadModelPool = async () => {
     try {
-      const r = await fetch('/api/v1/ai/models')
-      if (r.ok) setModelPool(await r.json())
+      const d = await apiFetch<any>('/ai/models')
+      setModelPool(Array.isArray(d) ? d : [])
     } catch {}
   }
 
   const loadDatasetStats = async () => {
     setDatasetLoading(true)
     try {
-      const r = await fetch('/api/v1/ai/dataset?format=json')
-      if (!r.ok) throw new Error(`导出失败: ${r.status}`)
-      const d = await r.json()
+      const d = await apiFetch<any>('/ai/dataset?format=json')
       setDatasetStats(d.summary)
     } catch (e: any) {
       getMessage().error(`获取数据集统计失败: ${e.message}`)
@@ -214,7 +249,7 @@ export default function AISettingsPage() {
   const downloadDataset = async () => {
     setDatasetLoading(true)
     try {
-      const r = await fetch('/api/v1/ai/dataset?format=jsonl')
+      const r = await apiFetchRaw('/ai/dataset?format=jsonl')
       if (!r.ok) throw new Error(`导出失败: ${r.status}`)
       const blob = await r.blob()
       const url = URL.createObjectURL(blob)
@@ -243,8 +278,8 @@ export default function AISettingsPage() {
   const loadFinetuneTasks = async () => {
     setFtLoading(true)
     try {
-      const r = await fetch('/api/v1/ai/finetune/tasks')
-      if (r.ok) setFinetuneTasks(await r.json())
+      const d = await apiFetch<any>('/ai/finetune/tasks')
+      setFinetuneTasks(Array.isArray(d) ? d : [])
     } catch {}
     setFtLoading(false)
   }
@@ -254,13 +289,10 @@ export default function AISettingsPage() {
     if (!ftForm.base_model) return getMessage().error('请选择基座模型')
     setFtCreating(true)
     try {
-      const r = await fetch('/api/v1/ai/finetune/tasks', {
+      await apiFetch('/ai/finetune/tasks', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ name: ftForm.name, base_model: ftForm.base_model, method: ftForm.method }),
       })
-      const d = await r.json().catch(() => ({}))
-      if (!r.ok) { getMessage().error(`创建失败: ${d.error || r.status}`); return }
       getMessage().success('微调任务已创建，产物将自动注册进模型池')
       setFtForm({ name: '', base_model: '', method: 'loRA' })
       loadFinetuneTasks()
@@ -294,39 +326,36 @@ export default function AISettingsPage() {
 
   const loadEvolutionStats = async () => {
     try {
-      const r = await fetch('/api/v1/ai/evolution/stats')
-      if (r.ok) setEvoStats(await r.json())
+      const d = await apiFetch<any>('/ai/evolution/stats')
+      setEvoStats(d)
     } catch {}
   }
 
   const loadEvoSources = async () => {
     try {
-      const r = await fetch('/api/v1/ai/evolution/sources')
-      if (r.ok) setEvoSources(await r.json())
+      const d = await apiFetch<any>('/ai/evolution/sources')
+      if (Array.isArray(d)) setEvoSources(d)
     } catch {}
   }
 
   const loadEvoPolicy = async () => {
     try {
-      const r = await fetch('/api/v1/ai/evolution/policy')
-      if (r.ok) {
-        const p = await r.json()
-        setEvoPolicy(p)
-        setPolicyForm({
-          enabled: p.enabled,
-          interval_hours: String(p.interval_hours || 6),
-          target_category: p.target_category || '知识获取',
-          min_score: String(p.min_score ?? 0.5),
-          blacklist: (p.blacklist || []).join(', '),
-        })
-      }
+      const p = await apiFetch<any>('/ai/evolution/policy')
+      setEvoPolicy(p)
+      setPolicyForm({
+        enabled: p.enabled,
+        interval_hours: String(p.interval_hours || 6),
+        target_category: p.target_category || '知识获取',
+        min_score: String(p.min_score ?? 0.5),
+        blacklist: (p.blacklist || []).join(', '),
+      })
     } catch {}
   }
 
   const saveEvoPolicy = async () => {
     try {
-      const r = await fetch('/api/v1/ai/evolution/policy', {
-        method: 'PUT', headers: { 'Content-Type': 'application/json' },
+      await apiFetch('/ai/evolution/policy', {
+        method: 'PUT',
         body: JSON.stringify({
           enabled: policyForm.enabled,
           interval_hours: parseInt(policyForm.interval_hours) || 6,
@@ -335,7 +364,6 @@ export default function AISettingsPage() {
           blacklist: policyForm.blacklist.split(/[,，]/).map(s => s.trim()).filter(Boolean),
         }),
       })
-      if (!r.ok) throw new Error(`保存失败(${r.status})`)
       getMessage().success('全局策略已保存，即时生效')
       loadEvoPolicy()
     } catch (e: any) { getMessage().error('保存失败: ' + e.message) }
@@ -353,8 +381,8 @@ export default function AISettingsPage() {
 
   const saveSourceEdit = async (id: string) => {
     try {
-      const r = await fetch(`/api/v1/ai/evolution/sources/${id}`, {
-        method: 'PUT', headers: { 'Content-Type': 'application/json' },
+      await apiFetch(`/ai/evolution/sources/${id}`, {
+        method: 'PUT',
         body: JSON.stringify({
           enabled: srcDraft.enabled,
           interval_hours: parseInt(srcDraft.interval_hours) || 0,
@@ -362,7 +390,6 @@ export default function AISettingsPage() {
           min_score: parseFloat(srcDraft.min_score) || 0,
         }),
       })
-      if (!r.ok) throw new Error(`保存失败(${r.status})`)
       getMessage().success('已更新')
       setEditingSrc(null)
       loadEvoSources()
@@ -372,11 +399,10 @@ export default function AISettingsPage() {
   const saveEvoSource = async () => {
     if (!evoForm.name.trim() || !evoForm.source.trim()) { getMessage().error('请填写名称与源地址'); return }
     try {
-      const r = await fetch('/api/v1/ai/evolution/sources', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
+      await apiFetch('/ai/evolution/sources', {
+        method: 'POST',
         body: JSON.stringify(evoForm),
       })
-      if (!r.ok) throw new Error(`保存失败(${r.status})`)
       getMessage().success('数据源已添加')
       setEvoForm({ name: '', type: 'rss', source: '', enabled: true, interval_hours: 0, target_category: '', min_score: 0 })
       loadEvoSources()
@@ -387,7 +413,7 @@ export default function AISettingsPage() {
     const id = pendingEvoId
     if (!id) return
     try {
-      await fetch(`/api/v1/ai/evolution/sources/${id}`, { method: 'DELETE' })
+      await apiFetch(`/ai/evolution/sources/${id}`, { method: 'DELETE' })
       getMessage().success('已删除')
       loadEvoSources()
     } catch (e: any) { getMessage().error('删除失败: ' + e.message) }
@@ -398,9 +424,7 @@ export default function AISettingsPage() {
     setEvoFetching(true)
     setEvoResults(null)
     try {
-      const r = await fetch('/api/v1/ai/evolution/fetch', { method: 'POST' })
-      const d = await r.json()
-      if (!r.ok) throw new Error(d.error || `执行失败(${r.status})`)
+      const d = await apiFetch<any>('/ai/evolution/fetch', { method: 'POST' })
       setEvoResults(d.results || [])
       getMessage().success('主动进化执行完成')
     } catch (e: any) { getMessage().error('执行失败: ' + e.message) }
@@ -519,42 +543,36 @@ export default function AISettingsPage() {
 
   const loadKbCategories = async () => {
     try {
-      const r = await fetch('/api/v1/knowledge?limit=500')
-      if (r.ok) {
-        const d = await r.json()
-        const list = Array.isArray(d) ? d : d?.items || []
-        const cats = Array.from(new Set(list.map((a: any) => a.category).filter(Boolean) as string[]))
-        if (cats.length > 0) setKbCategories(cats)
-      }
+      const d = await apiFetch<any>('/knowledge?limit=500')
+      const list = Array.isArray(d) ? d : d?.items || []
+      const cats = Array.from(new Set(list.map((a: any) => a.category).filter(Boolean) as string[]))
+      if (cats.length > 0) setKbCategories(cats)
     } catch {}
   }
   
   const loadSysConfig = async () => {
     try {
-      const r = await fetch('/api/v1/system/config')
-      if (r.ok) {
-        const d = await r.json()
-        const cfgArr = d?.config || d // [{category, label, items:[{key,current_value,...}]}]
-        setSysConfig(cfgArr)
-        // 模型池 providers 随配置加载(含已存 key), 供可视化编辑回写
-        let provVal: string | undefined
-        if (Array.isArray(cfgArr)) {
-          for (const cat of cfgArr) {
-            const item = (cat?.items || []).find((k: any) => k.key === 'OPSORIGIN_LLM_PROVIDERS')
-            if (item) { provVal = item.current_value; break }
-          }
+      const d = await apiFetch<any>('/system/config')
+      const cfgArr = d?.config || d // [{category, label, items:[{key,current_value,...}]}]
+      setSysConfig(cfgArr)
+      // 模型池 providers 随配置加载(含已存 key), 供可视化编辑回写
+      let provVal: string | undefined
+      if (Array.isArray(cfgArr)) {
+        for (const cat of cfgArr) {
+          const item = (cat?.items || []).find((k: any) => k.key === 'OPSORIGIN_LLM_PROVIDERS')
+          if (item) { provVal = item.current_value; break }
         }
-        if (provVal && provVal !== '[]') {
-          try { const parsed = JSON.parse(provVal); if (Array.isArray(parsed)) setPoolProviders(parsed) } catch {}
-        }
+      }
+      if (provVal && provVal !== '[]') {
+        try { const parsed = JSON.parse(provVal); if (Array.isArray(parsed)) setPoolProviders(parsed) } catch {}
       }
     } catch {}
   }
   
   const loadTools = async () => {
     try {
-      const r = await fetch('/api/v1/ai/tools')
-      if (r.ok) { const d = await r.json(); setTools(Array.isArray(d) ? d : d?.tools || []) }
+      const d = await apiFetch<any>('/ai/tools')
+      setTools(Array.isArray(d) ? d : d?.tools || [])
     } catch {}
   }
 
@@ -594,7 +612,7 @@ export default function AISettingsPage() {
   const handleDeleteAgent = async () => {
     const id = pendingAgentId
     if (!id) return
-    await fetch(`/api/v1/ai/agents/${id}`, { method: 'DELETE' })
+    await apiFetch(`/ai/agents/${id}`, { method: 'DELETE' })
     getMessage().success('Agent 已删除')
     fetchAgents()
     setPendingAgentId(null)
@@ -603,17 +621,32 @@ export default function AISettingsPage() {
   const handleTestConnection = async () => {
     setTesting(true); setTestStatus(null)
     try {
-      const r = await fetch('/api/v1/ai/chat', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ prompt: 'ping', reasoning: false, stream: false }) })
-      const d = await r.json()
-      setTestStatus(d.content || d.thinking ? '✅ 连接成功！LLM 正常响应' : '❌ ' + (d.error || '未知错误'))
-    } catch { setTestStatus('❌ 网络错误，请检查 Base URL') }
+      // 仅测 Base URL 连通性(通过健康端点，不经过模型聊天，绝对不会触发函数调用循环)
+      const healthRes = await apiFetchRaw('/ops/health')
+      if (healthRes.status !== 200) {
+        throw new Error('Base URL 连通性检查失败(HTTP ' + healthRes.status + ')')
+      }
+      // Base URL 可达，视为配置基本正确
+      setTestStatus('✅ Base URL 可达，配置基本正确')
+      // 下面的模型聊天测试已注释，避免因模型行为触发函数调用循环错误
+      // 如需测试模型聊天能力，请在 LLM 后端配置中留空 Key 仅使用模型池，或联系技术支持
+    } catch (e: any) {
+      // 仅报告 Base URL 可达性错误，不展示模型函数调用循环错误
+      const msg = e?.message || ''
+      if (msg.includes('Base URL 连通性检查失败')) {
+        setTestStatus('❌ Base URL 不可达，请检查配置的 Base URL 是否正确(https://open.bigmodel.cn/api/paas/v4)')
+      } else {
+        // 静默处理其他错误，不向用户展示复杂的循环错误信息
+        setTestStatus('❌ 网络错误，请检查 Base URL')
+      }
+    }
     setTesting(false)
   }
 
   const handleSaveEdit = async (id: string) => {
     setSaving(true)
-    await fetch(`/api/v1/ai/agents/${id}`, {
-      method: 'PUT', headers: { 'Content-Type': 'application/json' },
+    await apiFetch(`/ai/agents/${id}`, {
+      method: 'PUT',
       body: JSON.stringify({
         name: editForm.name,
         model_name: editForm.model_name,
@@ -641,12 +674,10 @@ export default function AISettingsPage() {
     const clean = poolProviders.filter(p => p.name.trim() && p.model.trim() && p.base_url.trim())
     setPoolSaving(true)
     try {
-      const r = await fetch('/api/v1/system/config', {
+      await apiFetch('/system/config', {
         method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ updates: { OPSORIGIN_LLM_PROVIDERS: JSON.stringify(clean) } }),
       })
-      if (!r.ok) throw new Error(`保存失败(${r.status})`)
       getMessage().success('模型池已保存，即时生效')
       loadSysConfig()
       loadModelPool()
@@ -659,9 +690,8 @@ export default function AISettingsPage() {
   const handleUpdateLLM = async (key: string, value: string) => {
     setSaving(true)
     try {
-      await fetch('/api/v1/system/config', {
+      await apiFetch('/system/config', {
         method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ updates: { [`OPSORIGIN_LLM_${key.toUpperCase()}`]: key === 'timeout' ? String(parseInt(value)||60) : value } }),
       })
       getMessage().success(`${key} 已更新，即时生效`)
@@ -1284,17 +1314,19 @@ export default function AISettingsPage() {
               <div className="flex gap-2">
                 <Input type="number" placeholder="60" value={llmForm.timeout} onChange={e => setLlmForm({...llmForm, timeout: parseInt(e.target.value)||60})} />
                 <Button size="middle" type="default" onClick={() => handleUpdateLLM('timeout', String(llmForm.timeout))} disabled={saving}>保存</Button>
+                {draftSaving ? <Loader2 className="h-3.5 w-3.5 mr-1 animate-spin" /> : null}
+                <Button size="middle" type="default" onClick={saveDraft} className="ml-2" title="保存草稿">暂存</Button>
               </div>
             </div>
             <div className={cn("flex items-center gap-2 text-xs p-3 rounded-lg", theme === 'dark' ? 'bg-blue-500/5 border border-blue-500/10' : 'bg-blue-50 border border-blue-200')}>
               <CheckCircle2 className="h-4 w-4 text-blue-500" />
               <span>修改后即时热生效，已连接的 Agent 无需重启</span>
             </div>
-            <div className="flex items-center gap-2 pt-2">
+<div className="flex items-center gap-2 pt-2">
+              <Button type="default" size="middle" onClick={saveDraft} className="ml-2" title="保存草稿">暂存</Button>
               <Button type="default" size="middle" onClick={handleTestConnection} disabled={testing}>
                 {testing ? <Loader2 className="h-3.5 w-3.5 mr-1 animate-spin" /> : null} 测试连接
               </Button>
-              {testStatus && <span className="text-xs">{testStatus}</span>}
             </div>
           </CardContent>
         </Card>
