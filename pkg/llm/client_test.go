@@ -112,7 +112,7 @@ func TestIsRetryable(t *testing.T) {
 func TestBackoffDur(t *testing.T) {
 	var prev time.Duration
 	for attempt := 1; attempt <= 6; attempt++ {
-		d := backoffDur(attempt)
+		d := backoffDur(attempt, nil)
 		if d < 0 {
 			t.Fatalf("negative backoff for attempt %d: %v", attempt, d)
 		}
@@ -121,11 +121,11 @@ func TestBackoffDur(t *testing.T) {
 		}
 		prev = d
 	}
-	if backoffDur(1) < 200*time.Millisecond {
-		t.Fatalf("attempt1 backoff too small: %v", backoffDur(1))
+	if backoffDur(1, nil) < 200*time.Millisecond {
+		t.Fatalf("attempt1 backoff too small: %v", backoffDur(1, nil))
 	}
-	if backoffDur(10) > 8*time.Second {
-		t.Fatalf("backoff not capped: %v", backoffDur(10))
+	if backoffDur(10, nil) > 8*time.Second {
+		t.Fatalf("backoff not capped: %v", backoffDur(10, nil))
 	}
 }
 

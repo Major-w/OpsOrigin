@@ -13,6 +13,7 @@ import (
 	"net"
 	"net/http"
 	"regexp"
+	"strconv"
 	"sort"
 	"strings"
 	"time"
@@ -131,7 +132,7 @@ func (c *Client) Chat(ctx context.Context, req ChatRequest) (*ChatResponse, erro
 	for attempt := 0; attempt <= c.maxRetries; attempt++ {
 		if attempt > 0 {
 			// 重试前退避; ctx 取消则立即放弃。
-			if err := sleepCtx(ctx, backoffDur(attempt)); err != nil {
+			if err := sleepCtx(ctx, backoffDur(attempt, lastErr)); err != nil {
 				return nil, lastErr
 			}
 			slog.Warn("llm: chat request retryable failure, retrying", "attempt", attempt+1, "max", c.maxRetries, "err", lastErr)
@@ -187,7 +188,7 @@ func (c *Client) doChatOnce(ctx context.Context, req ChatRequest) (*ChatResponse
 		return nil, fmt.Errorf("llm: read response: %w", err)
 	}
 	if resp.StatusCode != http.StatusOK {
-		return nil, &apiError{Status: resp.StatusCode, Body: string(respBody)}
+		return nil, &apiError{Status: resp.StatusCode, Body: string(respBody), RetryAfter: parseRetryAfter(resp)}
 	}
 	var chatResp ChatResponse
 	if err := json.Unmarshal(respBody, &chatResp); err != nil {
@@ -217,7 +218,7 @@ func (c *Client) StreamChat(ctx context.Context, req ChatRequest) (<-chan Stream
 	var lastErr error
 	for attempt := 0; attempt <= c.maxRetries; attempt++ {
 		if attempt > 0 {
-			if err := sleepCtx(ctx, backoffDur(attempt)); err != nil {
+			if err := sleepCtx(ctx, backoffDur(attempt, lastErr)); err != nil {
 				return nil, lastErr
 			}
 			slog.Warn("llm: stream request retryable failure, retrying", "attempt", attempt+1, "max", c.maxRetries, "err", lastErr)
@@ -256,7 +257,7 @@ func (c *Client) doStreamOnce(ctx context.Context, req ChatRequest) (*http.Respo
 	if resp.StatusCode != http.StatusOK {
 		b, _ := io.ReadAll(resp.Body)
 		resp.Body.Close()
-		return nil, &apiError{Status: resp.StatusCode, Body: string(b)}
+		return nil, &apiError{Status: resp.StatusCode, Body: string(b), RetryAfter: parseRetryAfter(resp)}
 	}
 	return resp, nil
 }
@@ -401,11 +402,56 @@ func truncate(s string, n int) string {
 type apiError struct {
 	Status int
 	Body   string
+	// RetryAfter 服务端通过 Retry-After 头建议的等待时长; 0 表示未给出。
+	RetryAfter time.Duration
 }
 
 func (e *apiError) Error() string {
 	return fmt.Sprintf("llm: API error [%d]: %s", e.Status, truncate(e.Body, 300))
 }
+
+// IsRateLimited 判定错误是否为服务端限流(HTTP 429)。
+// 供上层把限流映射为 429 与友好提示, 而不是当作网关故障(502)抛原始错误文本。
+func IsRateLimited(err error) bool {
+	var ae *apiError
+	if errors.As(err, &ae) {
+		return ae.Status == http.StatusTooManyRequests
+	}
+	return false
+}
+
+// parseRetryAfter 解析 Retry-After 响应头(秒数或 HTTP 日期); 无法解析时返回 0。
+// 超出 maxRetryAfter 的取值会被截断, 避免单次调用被服务端指令挂起过久。
+func parseRetryAfter(resp *http.Response) time.Duration {
+	if resp == nil {
+		return 0
+	}
+	v := strings.TrimSpace(resp.Header.Get("Retry-After"))
+	if v == "" {
+		return 0
+	}
+	if secs, err := strconv.Atoi(v); err == nil && secs > 0 {
+		d := time.Duration(secs) * time.Second
+		if d > maxRetryAfter {
+			return maxRetryAfter
+		}
+		return d
+	}
+	if t, err := http.ParseTime(v); err == nil {
+		d := time.Until(t)
+		if d <= 0 {
+			return 0
+		}
+		if d > maxRetryAfter {
+			return maxRetryAfter
+		}
+		return d
+	}
+	return 0
+}
+
+// maxRetryAfter 单次重试等待上限(服务端给出的 Retry-After 超过此值仍按此值等待)。
+const maxRetryAfter = 15 * time.Second
 
 // isRetryable 判定错误是否可重试: 网络错误 / 429 / 5xx 可重试;
 // ctx 取消(用户中断)与 4xx(除 429)不重试。
@@ -434,16 +480,37 @@ func isRetryable(err error) bool {
 }
 
 // backoffDur 计算第 attempt(>=1) 次重试前的指数退避时长, 上限 5s, 并附加 0~50% 抖动避免惊群。
-func backoffDur(attempt int) time.Duration {
+// backoffDur 计算第 attempt 次重试前的退避时长。
+// 限流(429)需要明显更长的等待: 部分厂商(如智谱)的限流窗口以数十秒计,
+// 沿用 5xx 的短退避会在窗口内反复失败。服务端给出 Retry-After 时优先遵从。
+func backoffDur(attempt int, lastErr error) time.Duration {
 	if attempt < 1 {
 		attempt = 1
+	}
+	if IsRateLimited(lastErr) {
+		var ae *apiError
+		if errors.As(lastErr, &ae) && ae.RetryAfter > 0 {
+			return ae.RetryAfter + jitterOf(500*time.Millisecond)
+		}
+		d := time.Duration(1<<uint(attempt-1)) * time.Second
+		if d > 8*time.Second {
+			d = 8 * time.Second
+		}
+		return d + jitterOf(d/2)
 	}
 	d := time.Duration(1<<uint(attempt-1)) * 200 * time.Millisecond
 	if d > 5*time.Second {
 		d = 5 * time.Second
 	}
-	jitter := time.Duration(rand.Int63n(int64(d / 2)))
-	return d + jitter
+	return d + jitterOf(d / 2)
+}
+
+// jitterOf 返回 [0, max) 的随机抖动, 避免多个请求同时重试造成再次拥塞。
+func jitterOf(max time.Duration) time.Duration {
+	if max <= 0 {
+		return 0
+	}
+	return time.Duration(rand.Int63n(int64(max)))
 }
 
 // sleepCtx 在 ctx 取消时立即返回 ctx.Err(), 否则休眠 d 后返回 nil。

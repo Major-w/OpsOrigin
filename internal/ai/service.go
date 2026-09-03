@@ -370,9 +370,10 @@ func (s *Service) handleChat(w http.ResponseWriter, r *http.Request) {
 	if req.Reasoning && !req.Stream {
 		thinking, answer, convID, err := s.Engine.ChatReasoning(r.Context(), req.AgentID, req.Prompt, req.History, req.ConversationID, req.Model, req.Explore)
 		if err != nil {
-			httputil.WriteError(w, http.StatusBadGateway, chatFriendlyError(err.Error()))
+			httputil.WriteError(w, chatErrorStatus(err), chatFriendlyError(err.Error()))
 			return
 		}
+		answer = stripEmptyCitationSection(answer)
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"content":         answer,
@@ -1314,8 +1315,8 @@ func chatFriendlyError(raw string) string {
 	if strings.Contains(raw, "401") || strings.Contains(raw, "Auth") || strings.Contains(raw, "auth") {
 		return "LLM API Key 无效或未配置，请在「设置 → 模型」中填写正确的 API Key"
 	}
-	if strings.Contains(raw, "rate limit") {
-		return "请求频率过高，请稍后再试"
+	if strings.Contains(raw, "429") || strings.Contains(raw, "访问量过大") || strings.Contains(raw, "使用量已超出") || strings.Contains(raw, "rate limit") {
+		return "模型请求频率过高或当前繁忙，请稍候重试"
 	}
 	if strings.Contains(raw, "timeout") || strings.Contains(raw, "deadline") {
 		return "LLM 响应超时，请检查网络或增加超时时间"
@@ -1324,4 +1325,24 @@ func chatFriendlyError(raw string) string {
 		return "LLM 服务连接失败，请检查 Base URL 和网络"
 	}
 	return raw
+}
+
+// chatErrorStatus 将底层 LLM 错误映射为合适的 HTTP 状态码。
+// 限流(429)返回 429 而非 502, 让前端按限流策略退避; 其余底层故障按 502 网关错误处理。
+func chatErrorStatus(err error) int {
+	if llm.IsRateLimited(err) || strings.Contains(err.Error(), "429") || strings.Contains(err.Error(), "访问量过大") || strings.Contains(err.Error(), "使用量已超出") {
+		return http.StatusTooManyRequests
+	}
+	return http.StatusBadGateway
+}
+
+// emptyCitationSectionRE 匹配回答尾部孤立的 "## 引用来源" 段(无实际引用标注时由模型生成)。
+var emptyCitationSectionRE = regexp.MustCompile(`(?s)\n+[ \t]*## 引用来源.*$`)
+
+// stripEmptyCitationSection 当回答未实际引用任何资料时, 删除模型可能附带的空"## 引用来源"占位段, 保持输出整洁。
+func stripEmptyCitationSection(text string) string {
+	if len(agentic.ExtractCitations(text)) > 0 {
+		return text
+	}
+	return emptyCitationSectionRE.ReplaceAllString(text, "")
 }
