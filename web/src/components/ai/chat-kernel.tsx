@@ -18,7 +18,7 @@ import { AiMarkdown } from '@/components/ai-markdown'
 import { cn } from '@/lib/utils'
 import {
   Bot, User, Send, Square, Loader2, Terminal, Brain, CheckCircle, AlertTriangle,
-  ThumbsUp, ThumbsDown, Users, Sparkles, XCircle,
+  ThumbsUp, ThumbsDown, Users, Sparkles, XCircle, Settings,
 } from 'lucide-react'
 
 // ---------------------------------------------------------------------------
@@ -26,6 +26,12 @@ import {
 // ---------------------------------------------------------------------------
 
 export type ChatMode = 'normal' | 'explore' | 'team'
+
+// 浮窗(AIAssistant) 与 纯净模式(PureMode) 共享同一草稿会话 —— 实现两个轻量入口草稿互通。
+// 同一 persistKey 使消息跨入口续接; 同一 convIdKey 使后端会话 ID 也共享, 端到端互通。
+// 全页(/ai) 为多会话后端工作台, 语义不同, 不并入此共享草稿。
+export const SHARED_SESSION_KEY = 'ai.shared.session'
+export const SHARED_CONV_ID_KEY = 'ai.shared.convId'
 
 export interface ToolCallLocal {
   id: string
@@ -127,6 +133,8 @@ interface UseAIChatOptions {
   showThinkingKey?: string
   // 默认模式
   defaultMode?: ChatMode
+  // 是否暴露"知识范围"选择器(全页/纯净=true; 浮窗=false)
+  enableKnowledgeScope?: boolean
 }
 
 export function useAIChat(opts: UseAIChatOptions) {
@@ -142,6 +150,7 @@ export function useAIChat(opts: UseAIChatOptions) {
     enableAbort = true,
     showThinkingKey,
     defaultMode = 'normal',
+    enableKnowledgeScope = false,
   } = opts
 
   const { streamChat, respondApproval, models, agents, fetchAgents, fetchModels } = useAIStore()
@@ -156,6 +165,7 @@ export function useAIChat(opts: UseAIChatOptions) {
   })
   const [selectedModel, setSelectedModel] = useState('')
   const [selectedAgent, setSelectedAgent] = useState<any>(null)
+  const [knowledgeCategories, setKnowledgeCategories] = useState<string[]>([])
 
   const [messages, setMessages] = useState<ChatMessage[]>(() => {
     const welcomeMsg: ChatMessage = { id: welcomeId, role: 'assistant', content: welcome, timestamp: Date.now() }
@@ -317,6 +327,7 @@ export function useAIChat(opts: UseAIChatOptions) {
         }
       },
       onTool,
+      knowledgeCategories.length ? knowledgeCategories : undefined,
     )
   }
 
@@ -460,6 +471,7 @@ export function useAIChat(opts: UseAIChatOptions) {
     showThinking, toggleThinking,
     selectedModel, setSelectedModel,
     selectedAgent, setSelectedAgent,
+    knowledgeCategories, setKnowledgeCategories,
     models, agents,
     messages, setMessages,
     input, setInput,
@@ -704,6 +716,10 @@ interface ChatInputBarProps {
   enableModel?: boolean
   enableAgent?: boolean
   enableThink?: boolean
+  enableKnowledgeScope?: boolean
+  knowledgeCategories?: string[]
+  onKnowledgeCategoriesChange?: (cats: string[]) => void
+  knowledgeCategoryOptions?: string[]
   enableQuickActions?: boolean
   quickActions?: QuickAction[]
   onQuickSend?: (prompt: string) => void
@@ -721,6 +737,7 @@ export function ChatInputBar(props: ChatInputBarProps) {
     models = [], selectedModel, onModelChange,
     agents = [], selectedAgent, onAgentChange,
     enableModel = false, enableAgent = false, enableThink = true,
+    enableKnowledgeScope = false, knowledgeCategories = [], knowledgeCategoryOptions = [], onKnowledgeCategoriesChange,
     enableQuickActions = false, quickActions = [],
     onQuickSend,
     variant = 'page', inputFooter, exploreHint = false, className,
@@ -728,6 +745,12 @@ export function ChatInputBar(props: ChatInputBarProps) {
 
   const isDark = variant === 'panel'
   const send = () => { if (value.trim()) onSend() }
+  const toggleCategory = (c: string) => {
+    const next = knowledgeCategories.includes(c)
+      ? knowledgeCategories.filter(x => x !== c)
+      : [...knowledgeCategories, c]
+    onKnowledgeCategoriesChange?.(next)
+  }
 
   return (
     <div className={cn('border-t p-4 space-y-2 shrink-0', isDark && 'border-[rgba(255,255,255,0.04)]', variant === 'floating' && 'px-3 py-2.5', className)}>
@@ -799,6 +822,43 @@ export function ChatInputBar(props: ChatInputBarProps) {
               {agents.map((a: any) => <option key={a.id} value={a.id}>{a.name}</option>)}
             </select>
           )}
+        </div>
+      )}
+
+      {/* 知识范围选择: 默认全部; 选中若干分类则限定本次对话检索范围 */}
+      {enableKnowledgeScope && knowledgeCategoryOptions.length > 0 && (
+        <div className="flex flex-wrap items-center gap-1.5">
+          <span className="text-xs text-muted-foreground shrink-0">知识范围</span>
+          <button
+            onClick={() => onKnowledgeCategoriesChange?.([])}
+            className={cn(
+              'px-2 py-0.5 rounded-full text-[11px] border transition-colors',
+              knowledgeCategories.length === 0
+                ? 'bg-blue-50 border-blue-200 text-blue-700 dark:bg-blue-500/15 dark:border-blue-500/40 dark:text-blue-300'
+                : 'border-gray-200 text-muted-foreground hover:border-gray-300 dark:border-gray-700 dark:hover:border-gray-600',
+            )}
+            title="检索全部知识库"
+          >
+            全部
+          </button>
+          {knowledgeCategoryOptions.map(c => {
+            const active = knowledgeCategories.includes(c)
+            return (
+              <button
+                key={c}
+                onClick={() => toggleCategory(c)}
+                className={cn(
+                  'px-2 py-0.5 rounded-full text-[11px] border transition-colors',
+                  active
+                    ? 'bg-blue-50 border-blue-200 text-blue-700 dark:bg-blue-500/15 dark:border-blue-500/40 dark:text-blue-300'
+                    : 'border-gray-200 text-muted-foreground hover:border-gray-300 dark:border-gray-700 dark:hover:border-gray-600',
+                )}
+                title={`仅检索「${c}」分类`}
+              >
+                {c}
+              </button>
+            )
+          })}
         </div>
       )}
 
@@ -1118,6 +1178,72 @@ export function ApprovalBar({ pending, approving, onRespond, variant = 'panel', 
           {approving ? <Loader2 className="h-3 w-3 animate-spin" /> : <CheckCircle className="h-3 w-3" />} 批准执行
         </button>
       </div>
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// 生效状态卡：对话主入口顶部一条横条, 展示当前生效的「模式 / 模型 / 助手 / 知识范围」,
+// 并提供一键跳配置。解决「配了不会用、用了不知道配了啥」的配用割裂(P1 #3)。
+// ---------------------------------------------------------------------------
+
+export interface ChatContextBarProps {
+  /** 当前运行级模型展示名(空=自动路由) */
+  modelLabel?: string
+  /** 当前 Agent 名(空=默认助手) */
+  agentName?: string
+  /** 知识范围分类(空数组=全部) */
+  knowledgeScope: string[]
+  /** 当前对话模式 */
+  mode: ChatMode
+  variant?: 'page' | 'panel'
+  /** 一键跳配置回调(主入口传 navigate 到 /ai/settings 等) */
+  onConfigure?: () => void
+  className?: string
+}
+
+export function ChatContextBar({
+  modelLabel,
+  agentName,
+  knowledgeScope,
+  mode,
+  variant = 'page',
+  onConfigure,
+  className,
+}: ChatContextBarProps) {
+  const isDark = variant === 'panel'
+  const modeLabel = mode === 'normal' ? '常规' : mode === 'explore' ? '探索' : '团队'
+  const scopeLabel = knowledgeScope.length === 0 ? '全部' : knowledgeScope.join('、')
+  const chips = [
+    { label: '模式', value: modeLabel },
+    { label: '模型', value: modelLabel || '自动路由' },
+    { label: '助手', value: agentName || '默认助手' },
+    { label: '知识范围', value: scopeLabel },
+  ]
+  return (
+    <div className={cn(
+      'flex items-center flex-wrap gap-x-3 gap-y-1 px-4 py-1.5 text-[11px] border-b shrink-0',
+      isDark ? 'border-white/10 bg-white/[0.03]' : 'border-gray-100 bg-gray-50/70',
+      className,
+    )}>
+      {chips.map(c => (
+        <span key={c.label} className="flex items-center gap-1 text-muted-foreground">
+          <span className="opacity-70">{c.label}</span>
+          <span className={cn(
+            'px-1.5 py-0.5 rounded font-medium',
+            isDark ? 'bg-blue-500/15 text-blue-300' : 'bg-blue-50 text-blue-700',
+          )}>{c.value}</span>
+        </span>
+      ))}
+      {onConfigure && (
+        <button
+          onClick={onConfigure}
+          className="ml-auto flex items-center gap-1 text-muted-foreground hover:text-blue-600 dark:hover:text-blue-400 transition-colors"
+          title="查看 / 修改 AI 配置"
+        >
+          <Settings className="h-3 w-3" /> 配置
+        </button>
+      )}
     </div>
   )
 }

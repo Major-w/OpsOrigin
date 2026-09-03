@@ -33,6 +33,7 @@ interface _ChatState {
     model?: string,
     onError?: (msg: string) => void,
     onToolCall?: (tc: { name: string; args: any; status: 'running' | 'done'; result?: string }) => void,
+    knowledgeCategories?: string[],
   ) => Promise<void>
   loadConversations: (agentId?: string) => Promise<any[]>
   saveConversation: (conv: any) => Promise<any | null>

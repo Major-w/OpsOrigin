@@ -2,7 +2,7 @@
 import { useEffect, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useAIStore } from '@/stores/ai'
-import { useAIChat, ChatMessageList, ChatInputBar, ApprovalBar } from '@/components/ai/chat-kernel'
+import { useAIChat, ChatMessageList, ChatInputBar, ApprovalBar, SHARED_SESSION_KEY, SHARED_CONV_ID_KEY } from '@/components/ai/chat-kernel'
 import { Bot, X, Trash2, ExternalLink } from 'lucide-react'
 
 // ============================================================================
@@ -10,9 +10,6 @@ import { Bot, X, Trash2, ExternalLink } from 'lucide-react'
 // 挂载于 Layout, 所有 (dashboard) 页面可见。收起态为右下角悬浮钮,
 // 点击展开浮窗(桌面 400×600 / 移动端全屏), 复用 chat-kernel 全链路。
 // ============================================================================
-
-const SESSION_KEY = 'ai.assistant.session'
-const CONV_ID_KEY = 'ai.assistant.convId'
 
 const WELCOME = '你好！我是 OpsOrigin AI 助手 👋\n\n在任意页面都可以随时找我：\n- **普通模式** — 快速问答、查询主机状态\n- **自主模式** — 给出目标，AI 自主规划并调用工具执行\n\n直接提问开始吧。'
 
@@ -25,8 +22,8 @@ export default function AIAssistant() {
   const chat = useAIChat({
     welcome: WELCOME,
     welcomeId: 'welcome',
-    persistKey: SESSION_KEY,
-    convIdKey: CONV_ID_KEY,
+    persistKey: SHARED_SESSION_KEY,
+    convIdKey: SHARED_CONV_ID_KEY,
     enableTeam: false,
     captureToolCalls: false,
     enableAbort: true,

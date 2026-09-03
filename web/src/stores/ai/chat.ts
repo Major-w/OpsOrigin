@@ -26,6 +26,7 @@ interface ChatState {
     model?: string,
     onError?: (msg: string) => void,
     onToolCall?: (tc: { name: string; args: any; status: 'running' | 'done'; result?: string }) => void,
+    knowledgeCategories?: string[],
   ) => Promise<void>
   loadConversations: (agentId?: string) => Promise<any[]>
   saveConversation: (conv: any) => Promise<any | null>
@@ -58,7 +59,7 @@ export const useChatStore = create<ChatState>((set) => ({
       return null
     }
   },
-  streamChat: async (prompt, onToken, onDone, history = [], agentId, reasoning, onThinking, explore, onAsk, serverConvId, signal, model, onError, onToolCall) => {
+  streamChat: async (prompt, onToken, onDone, history = [], agentId, reasoning, onThinking, explore, onAsk, serverConvId, signal, model, onError, onToolCall, knowledgeCategories) => {
     try {
       const messageId = `msg_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`
       const body: any = { prompt, history, stream: true, message_id: messageId }
@@ -66,6 +67,7 @@ export const useChatStore = create<ChatState>((set) => ({
       if (reasoning) body.reasoning = true
       if (explore) body.explore = true
       if (model) body.model = model
+      if (knowledgeCategories?.length) body.knowledge_categories = knowledgeCategories
       if (serverConvId) body.conversation_id = serverConvId
       const resp = await apiFetchRaw('/ai/chat', {
         method: 'POST',

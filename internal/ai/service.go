@@ -33,7 +33,7 @@ type Service struct {
 	Registry      *mcp.Registry
 	MCPManager    *mcp.Manager // 外部 MCP server 接入与工具 proxy 管理
 	limiter       ratelimit.RateLimiter
-	ragFn         func(ctx context.Context, query, agentID string) string // RAG上下文注入(按 Agent 绑定分类过滤)
+	ragFn         func(ctx context.Context, query, agentID string, categories []string) string // RAG上下文注入(按 Agent 绑定分类过滤, categories 为前端显式选择的范围)
 	feedbackStore agentic.FeedbackStore                                   // 点赞/点踩反馈持久化(P2-Eval)
 	db            *sql.DB                                                 // 统计/管理查询直连(会话删除、进化闭环等)
 	objStore      *objectstore.Client                                     // 对话产物/文件归档(MinIO), 未配置为 nil
@@ -117,7 +117,7 @@ func (s *Service) LLMClient() *llm.Client {
 // LLMConfigHook 在 sysconfig 修改 LLM 设置后被调用(热生效)。nil 表示未设置。
 var LLMConfigHook func(cfg llm.Config)
 
-func (s *Service) SetRAGFunc(fn func(ctx context.Context, query, agentID string) string) {
+func (s *Service) SetRAGFunc(fn func(ctx context.Context, query, agentID string, categories []string) string) {
 	s.ragFn = fn
 }
 
@@ -324,6 +324,7 @@ func (s *Service) handleChat(w http.ResponseWriter, r *http.Request) {
 		Model          string        `json:"model"`   // 可选运行级模型覆盖(按会话/请求指定); 空=回退 agent/引擎默认
 		ConversationID string        `json:"conversation_id"`
 		MessageID      string        `json:"message_id"` // 前端为本次 assistant 回复生成的稳定 ID, 反馈时用于精确关联
+		KnowledgeCategories []string `json:"knowledge_categories"` // 前端显式选择的知识范围(空=沿用 Agent 绑定/全部)
 	}
 	if err := httputil.BindJSON(r, &req); err != nil {
 		httputil.WriteError(w, http.StatusBadRequest, "invalid request body")
@@ -352,7 +353,7 @@ func (s *Service) handleChat(w http.ResponseWriter, r *http.Request) {
 
 	// RAG: 从知识库检索相关内容注入到 system prompt(按 Agent 绑定分类过滤, 空=全部)
 	if s.ragFn != nil {
-		ragCtx := s.ragFn(r.Context(), req.Prompt, req.AgentID)
+		ragCtx := s.ragFn(r.Context(), req.Prompt, req.AgentID, req.KnowledgeCategories)
 		if ragCtx != "" {
 			req.History = append([]llm.Message{{Role: "system", Content: "你是运维AI助手。参考知识库文档回答问题：\n" + ragCtx}}, req.History...)
 		}
@@ -410,6 +411,7 @@ func (s *Service) handleChatStream(w http.ResponseWriter, r *http.Request, req *
 	Model          string        `json:"model"`
 	ConversationID string        `json:"conversation_id"`
 	MessageID      string        `json:"message_id"`
+	KnowledgeCategories []string `json:"knowledge_categories"` // 前端显式选择的知识范围(空=沿用 Agent 绑定/全部)
 }) {
 	flusher, ok := w.(http.Flusher)
 	if !ok {
@@ -435,6 +437,14 @@ func (s *Service) handleChatStream(w http.ResponseWriter, r *http.Request, req *
 		flusher.Flush()
 	})
 
+	// RAG: 流式对话同样注入知识库检索(普通对话此前无 RAG; 仅当 Agent 绑定或前端显式选择范围时检索)。
+	// 经 history 的 system 消息注入, Engine.ChatStream 内部会从历史提取 sysExtra 还原(agentic/engine.go:2712)。
+	if s.ragFn != nil {
+		if ragCtx := s.ragFn(r.Context(), req.Prompt, req.AgentID, req.KnowledgeCategories); ragCtx != "" {
+			req.History = append([]llm.Message{{Role: "system", Content: "你是运维AI助手。参考知识库文档回答问题：\n" + ragCtx}}, req.History...)
+		}
+	}
+
 	ch, convID, err := s.Engine.ChatStream(ctx, req.AgentID, req.Prompt, req.History, req.Reasoning, req.ConversationID, req.Explore, req.Model)
 	if err != nil {
 		fmt.Fprintf(w, "event: error\ndata: %s\n\n", err.Error())
@@ -452,10 +462,13 @@ func (s *Service) handleChatStream(w http.ResponseWriter, r *http.Request, req *
 		case "error":
 			fmt.Fprintf(w, "event: error\ndata: %s\n\n", c.Content)
 		case "tool":
-			// 工具标注走默认 data 流, 与 token 同轨(保持向前兼容)
+			// 兼容旧客户端: 工具标注走默认 data 流(已不再由引擎产生, 保留分支避免遗漏)
 			b, _ := json.Marshal(c.Content)
 			fmt.Fprintf(w, "data: %s\n\n", b)
 			full.WriteString(c.Content)
+		case "tool_event":
+			// 结构化工具事件: 前端据此渲染"任务列表"(并发任务可视化), 不污染回答正文。
+			fmt.Fprintf(w, "event: tool\ndata: %s\n\n", c.Content)
 		default:
 			// "token" 或未指定: 标准回答 token
 			full.WriteString(c.Content)
@@ -1291,7 +1304,7 @@ func (s *Service) handleTeamChat(w http.ResponseWriter, r *http.Request) {
 	// 团队场景无单一 Agent, 检索全部知识库(绑定过滤按成员 Agent 在工具链内生效)。
 	var ragCtx string
 	if s.ragFn != nil {
-		ragCtx = s.ragFn(r.Context(), req.Message, "")
+		ragCtx = s.ragFn(r.Context(), req.Message, "", nil)
 	}
 
 	final, _, err := s.Engine.RunTeamChat(r.Context(), team, req.Message, history, emit, ragCtx)

@@ -2,7 +2,8 @@
 import { useEffect, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useAIStore } from '@/stores/ai'
-import { useAIChat, ChatMessageList, ChatInputBar, TeamChatView, ApprovalBar } from '@/components/ai/chat-kernel'
+import { useKnowledgeStore } from '@/stores/knowledge'
+import { useAIChat, ChatMessageList, ChatInputBar, TeamChatView, ApprovalBar, ChatContextBar, SHARED_SESSION_KEY, SHARED_CONV_ID_KEY } from '@/components/ai/chat-kernel'
 import { useThemeStore } from '@/stores/theme'
 import usePathname from '@/lib/use-pathname'
 import { apiFetchRaw } from '@/lib/utils'
@@ -19,8 +20,6 @@ import {
 // 普通 / 自主 / 团队 三模式齐全, 拥有独立会话与独立渲染, 不依赖悬浮助手状态。
 // ============================================================================
 
-const SESSION_KEY = 'ai.pure.session'
-const CONV_ID_KEY = 'ai.pure.convId'
 const DEFAULT_KEY = 'opsorigin_pure_default'
 
 const QUICK_ACTIONS = [
@@ -42,13 +41,14 @@ export default function PureMode({ onExitPure }: { onExitPure: () => void }) {
   const chat = useAIChat({
     welcome: WELCOME,
     welcomeId: 'welcome',
-    persistKey: SESSION_KEY,
-    convIdKey: CONV_ID_KEY,
+    persistKey: SHARED_SESSION_KEY,
+    convIdKey: SHARED_CONV_ID_KEY,
     enableTeam: true,
     captureToolCalls: false,
     enableAbort: true,
     resetConvOn403: true,
     defaultMode: 'normal',
+    enableKnowledgeScope: true,
   })
 
   const {
@@ -57,7 +57,12 @@ export default function PureMode({ onExitPure }: { onExitPure: () => void }) {
     streaming, send, clearSession, pending, approving, respond, convId, setConvId,
     selectedTeamId, setSelectedTeamId, teamTurns, teamInput, setTeamInput, teamStreaming, handleTeamSend,
     teams, teamsLoading,
+    knowledgeCategories, setKnowledgeCategories,
   } = chat
+
+  // 知识范围选择器选项(挂载时加载分类列表)
+  const knowledgeCategoryOptions = useKnowledgeStore(s => s.categories)
+  useEffect(() => { useKnowledgeStore.getState().fetchCategories() }, [])
 
   const isDark = theme === 'dark'
   const [pureDefault, setPureDefault] = useState<boolean>(() => {
@@ -215,6 +220,14 @@ export default function PureMode({ onExitPure }: { onExitPure: () => void }) {
         {/* ============ 普通 / 自主 模式主体 ============ */}
         {mode !== 'team' && (
           <>
+            <ChatContextBar
+              modelLabel={selectedModel ? (models.find(m => m.model === selectedModel)?.name || selectedModel) : undefined}
+              agentName={selectedAgent?.name}
+              knowledgeScope={knowledgeCategories}
+              mode={mode}
+              variant="panel"
+              onConfigure={() => navigate('/ai/settings')}
+            />
             <ChatMessageList
               messages={messages}
               mode={mode}
@@ -292,6 +305,10 @@ export default function PureMode({ onExitPure }: { onExitPure: () => void }) {
               quickActions={QUICK_ACTIONS}
               onQuickSend={(p) => send(p)}
               exploreHint
+              enableKnowledgeScope
+              knowledgeCategories={knowledgeCategories}
+              onKnowledgeCategoriesChange={setKnowledgeCategories}
+              knowledgeCategoryOptions={knowledgeCategoryOptions}
               variant="panel"
               className="px-5 py-3"
             />

@@ -2,8 +2,9 @@
 import { useEffect, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useAIStore } from '@/stores/ai'
+import { useKnowledgeStore } from '@/stores/knowledge'
 import { useCan } from '@/stores/permissions'
-import { useAIChat, ChatMessageList, ChatInputBar, TeamChatView, type ChatMessage } from '@/components/ai/chat-kernel'
+import { useAIChat, ChatMessageList, ChatInputBar, TeamChatView, ChatContextBar, type ChatMessage } from '@/components/ai/chat-kernel'
 import { Button, Input, Tag, Space, Modal, Popconfirm } from 'antd'
 import {
   Sparkles, History, Settings, BarChart3, Share2, Trash2, Lock, PanelLeftClose, PanelLeftOpen,
@@ -77,6 +78,7 @@ export default function AIPage() {
     showThinkingKey: 'ai.showThinking',
     buildHistory,
     defaultMode: 'normal',
+    enableKnowledgeScope: true,
   })
 
   const {
@@ -85,7 +87,12 @@ export default function AIPage() {
     streaming, send, clearSession, pending, approving, respond, dismissApproval, convId, setConvId,
     selectedTeamId, setSelectedTeamId, teamTurns, teamInput, setTeamInput, teamStreaming, handleTeamSend,
     teams, teamsLoading,
+    knowledgeCategories, setKnowledgeCategories,
   } = chat
+
+  // 知识范围选择器选项(挂载时加载分类列表)
+  const knowledgeCategoryOptions = useKnowledgeStore(s => s.categories)
+  useEffect(() => { useKnowledgeStore.getState().fetchCategories() }, [])
 
   // —— 本页独有状态 ——
   const [showHistory, setShowHistory] = useState(false)
@@ -444,6 +451,14 @@ export default function AIPage() {
           )}
 
           <div className="flex-1 flex flex-col border rounded-lg overflow-hidden min-w-0">
+            <ChatContextBar
+              modelLabel={selectedModel ? (models.find(m => m.model === selectedModel)?.name || selectedModel) : undefined}
+              agentName={selectedAgent?.name}
+              knowledgeScope={knowledgeCategories}
+              mode={mode}
+              variant="page"
+              onConfigure={() => navigate('/ai/settings')}
+            />
             <ChatMessageList
               messages={messages}
               mode={mode}
@@ -487,6 +502,10 @@ export default function AIPage() {
               onAgentChange={setSelectedAgent}
               enableModel
               exploreHint
+              enableKnowledgeScope
+              knowledgeCategories={knowledgeCategories}
+              onKnowledgeCategoriesChange={setKnowledgeCategories}
+              knowledgeCategoryOptions={knowledgeCategoryOptions}
               variant="page"
               inputFooter={inputFooter}
             />

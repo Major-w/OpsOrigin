@@ -986,12 +986,38 @@ func (ts *MCPToolSet) Register(reg *mcp.Registry) {
 
 // RAGContext 为给定查询检索知识库上下文(用于注入 LLM system prompt)。
 // agentID 非空时按该 Agent 绑定的知识库分类过滤检索(PRD 5.2.6), 空则检索全部。
-func (ts *MCPToolSet) RAGContext(ctx context.Context, query, agentID string) string {
+// effectiveCategories 合并 Agent 绑定分类与前端显式选择的范围:
+//   - extra 空: 沿用 Agent 绑定(原行为, 空=全部)
+//   - base 空(普通对话无绑定): 直接采用前端选择的范围
+//   - 两者皆非空: 取交集, 既尊重 Agent 绑定又不超出用户所选范围
+func effectiveCategories(base, extra []string) []string {
+	if len(extra) == 0 {
+		return base
+	}
+	if len(base) == 0 {
+		return extra
+	}
+	set := make(map[string]struct{}, len(base))
+	for _, c := range base {
+		set[c] = struct{}{}
+	}
+	out := make([]string, 0, len(extra))
+	for _, c := range extra {
+		if _, ok := set[c]; ok {
+			out = append(out, c)
+		}
+	}
+	return out
+}
+
+// RAGContext 检索知识库相关内容, 注入到 system prompt。
+// categories 为前端在对话中显式选择的知识范围(空=不额外限定, 沿用 Agent 绑定分类)。
+func (ts *MCPToolSet) RAGContext(ctx context.Context, query, agentID string, categories []string) string {
 	if ts.db == nil || query == "" {
 		return ""
 	}
-	categories := ts.categoriesFor(agentID)
-	items, err := ts.searchKnowledge(ctx, query, 3, 300, categories)
+	effective := effectiveCategories(ts.categoriesFor(agentID), categories)
+	items, err := ts.searchKnowledge(ctx, query, 3, 300, effective)
 	if err != nil || len(items) == 0 {
 		return ""
 	}
