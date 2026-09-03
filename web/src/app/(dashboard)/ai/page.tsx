@@ -4,10 +4,10 @@ import { useNavigate } from 'react-router-dom'
 import { useAIStore } from '@/stores/ai'
 import { useKnowledgeStore } from '@/stores/knowledge'
 import { useCan } from '@/stores/permissions'
-import { useAIChat, ChatMessageList, ChatInputBar, TeamChatView, ChatContextBar, type ChatMessage } from '@/components/ai/chat-kernel'
-import { Button, Input, Tag, Space, Modal, Popconfirm } from 'antd'
+import { useAIChat, ChatMessageList, ChatInputBar, TeamChatView, ChatContextBar, ConversationList, type ChatMessage } from '@/components/ai/chat-kernel'
+import { Button, Input, Space, Modal, Popconfirm } from 'antd'
 import {
-  Sparkles, History, Settings, BarChart3, Share2, Trash2, Lock, PanelLeftClose, PanelLeftOpen,
+  Sparkles, History, Settings, BarChart3, Share2, Lock, PanelLeftClose, PanelLeftOpen,
   AlertTriangle, XCircle, CheckCircle, Loader2, Brain, Bookmark, Download, Save, Terminal, Paperclip,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
@@ -418,31 +418,14 @@ export default function AIPage() {
                 </button>
               </div>
               <div className="flex-1 overflow-y-auto p-2 space-y-1">
-                <button onClick={handleNewConversation} className="w-full flex items-center justify-center gap-1.5 px-2 py-1.5 rounded-md border border-dashed border-gray-300 dark:border-gray-700 text-xs text-muted-foreground hover:border-blue-400 hover:text-blue-600 dark:hover:border-blue-500/40 transition-colors">
-                  <Sparkles className="h-3.5 w-3.5" />新建对话
-                </button>
-                {conversations.length === 0 ? (
-                  <p className="text-xs text-muted-foreground text-center py-4">暂无历史对话</p>
-                ) : (
-                  conversations.map(c => (
-                    <div key={c.id} className="group flex items-center gap-1">
-                      <button onClick={() => handleLoadConversation(c.id)} className={cn('flex-1 text-left p-2.5 rounded-lg transition-colors', c.id === convId ? 'bg-blue-50 dark:bg-blue-500/10 ring-1 ring-blue-200 dark:ring-blue-500/30' : 'hover:bg-gray-100 dark:hover:bg-gray-800')}>
-                        <p className="text-sm font-medium truncate flex items-center gap-1">{c.title || '新对话'}{c.permission === 'edit' && <Tag className="text-[9px] h-4">共享·可编辑</Tag>}{c.permission === 'view' && <Tag className="text-[9px] h-4"><Lock className="h-2.5 w-2.5 mr-0.5" />共享·只读</Tag>}</p>
-                        <p className="text-xs text-muted-foreground mt-0.5">{new Date(c.updated_at || c.UpdatedAt).toLocaleString('zh-CN')}</p>
-                      </button>
-                      {(!c.permission || c.permission === 'owner') && (
-                        <button onClick={() => { setShareConv({ id: c.id, title: c.title || '新对话' }); setShareForm({ target_type: 'user', target_id: '', permission: 'view' }) }} className="opacity-0 group-hover:opacity-100 p-1.5 rounded-md text-muted-foreground hover:text-violet-500 hover:bg-violet-500/10 transition-opacity" title="分享会话">
-                          <Share2 className="h-3.5 w-3.5" />
-                        </button>
-                      )}
-                      {(!c.permission || c.permission === 'owner') && (
-                        <button onClick={() => setPendingConvId(c.id)} className="opacity-0 group-hover:opacity-100 p-1.5 rounded-md text-red-400 hover:bg-red-500/10 transition-opacity" title="删除会话">
-                          <Trash2 className="h-3.5 w-3.5" />
-                        </button>
-                      )}
-                    </div>
-                  ))
-                )}
+                <ConversationList
+                  conversations={conversations}
+                  activeId={convId}
+                  onSelect={handleLoadConversation}
+                  onNew={handleNewConversation}
+                  onDelete={(id) => setPendingConvId(id)}
+                  onShare={(c) => { setShareConv({ id: c.id, title: c.title || '新对话' }); setShareForm({ target_type: 'user', target_id: '', permission: 'view' }) }}
+                />
               </div>
             </div>
           ) : (
@@ -458,6 +441,13 @@ export default function AIPage() {
               agentName={selectedAgent?.name}
               knowledgeScope={knowledgeCategories}
               mode={mode}
+              models={models}
+              selectedModel={selectedModel}
+              onModelChange={setSelectedModel}
+              agents={agents}
+              selectedAgent={selectedAgent}
+              onAgentChange={setSelectedAgent}
+              onOpenKnowledge={() => navigate(knowledgeCategories.length === 1 ? `/knowledge?cat=${encodeURIComponent(knowledgeCategories[0])}` : '/knowledge')}
               variant="page"
               onConfigure={() => navigate('/ai/settings')}
             />

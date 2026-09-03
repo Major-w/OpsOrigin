@@ -3,7 +3,7 @@ import { useEffect, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useAIStore } from '@/stores/ai'
 import { useKnowledgeStore } from '@/stores/knowledge'
-import { useAIChat, ChatMessageList, ChatInputBar, TeamChatView, ApprovalBar, ChatContextBar, SHARED_SESSION_KEY, SHARED_CONV_ID_KEY } from '@/components/ai/chat-kernel'
+import { useAIChat, ChatMessageList, ChatInputBar, TeamChatView, ApprovalBar, ChatContextBar, ConversationList, SHARED_SESSION_KEY, SHARED_CONV_ID_KEY } from '@/components/ai/chat-kernel'
 import { useThemeStore } from '@/stores/theme'
 import usePathname from '@/lib/use-pathname'
 import { apiFetchRaw } from '@/lib/utils'
@@ -73,6 +73,7 @@ export default function PureMode({ onExitPure }: { onExitPure: () => void }) {
   })
   const [showHistory, setShowHistory] = useState(false)
   const [conversations, setConversations] = useState<any[]>([])
+  const [artifacts, setArtifacts] = useState<{ id: string; file_name: string; file_size: number }[]>([])
 
   const listEndRef = useRef<HTMLDivElement>(null)
   const teamMessagesEndRef = useRef<HTMLDivElement>(null)
@@ -92,6 +93,15 @@ export default function PureMode({ onExitPure }: { onExitPure: () => void }) {
     if (!showHistory) {
       const convs = await loadConversations(selectedAgent?.id)
       setConversations(convs)
+      // 本会话产物(探索模式报告/文件等归档对象存储), 仅在已有关联会话时拉取
+      if (convId) {
+        try {
+          const r = await apiFetchRaw(`/ai/conversations/${convId}/artifacts`)
+          setArtifacts(r.ok ? await r.json() : [])
+        } catch { /* ignore */ }
+      } else {
+        setArtifacts([])
+      }
     }
     setShowHistory(v => !v)
   }
@@ -112,6 +122,23 @@ export default function PureMode({ onExitPure }: { onExitPure: () => void }) {
       }
       setConvId(id)
       setShowHistory(false)
+    } catch { /* ignore */ }
+  }
+
+  // 产物下载: blob + content-disposition 文件名
+  const downloadArtifact = async (aid: string) => {
+    try {
+      const r = await apiFetchRaw(`/ai/conversations/${convId}/artifacts/${aid}`)
+      if (!r.ok) return
+      const blob = await r.blob()
+      const cd = r.headers.get('content-disposition') || ''
+      const name = cd.match(/filename="?([^";]+)/)?.[1] || `artifact-${aid}.md`
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = name
+      a.click()
+      URL.revokeObjectURL(url)
     } catch { /* ignore */ }
   }
 
@@ -228,6 +255,13 @@ export default function PureMode({ onExitPure }: { onExitPure: () => void }) {
               agentName={selectedAgent?.name}
               knowledgeScope={knowledgeCategories}
               mode={mode}
+              models={models}
+              selectedModel={selectedModel}
+              onModelChange={setSelectedModel}
+              agents={agents}
+              selectedAgent={selectedAgent}
+              onAgentChange={setSelectedAgent}
+              onOpenKnowledge={() => navigate(knowledgeCategories.length === 1 ? `/knowledge?cat=${encodeURIComponent(knowledgeCategories[0])}` : '/knowledge')}
               variant="panel"
               onConfigure={() => navigate('/ai/settings')}
             />
@@ -266,20 +300,27 @@ export default function PureMode({ onExitPure }: { onExitPure: () => void }) {
                       <X className="h-4 w-4" />
                     </button>
                   </div>
-                  {conversations.length === 0 ? (
-                    <p className="text-xs text-muted-foreground">暂无对话记录</p>
-                  ) : (
-                    conversations.map(c => (
-                      <button
-                        key={c.id}
-                        onClick={() => handleLoadConversation(c.id)}
-                        className="w-full text-left p-3 rounded-lg bg-gray-50 dark:bg-gray-800 hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors"
-                      >
-                        <p className="text-sm font-medium truncate">{c.title || '新对话'}</p>
-                        <p className="text-xs text-muted-foreground mt-0.5">{new Date(c.updated_at || c.UpdatedAt).toLocaleString('zh-CN')}</p>
-                      </button>
-                    ))
-                  )}
+                  <ConversationList
+                    conversations={conversations}
+                    activeId={convId}
+                    onSelect={(id) => handleLoadConversation(id)}
+                    onNew={() => clear()}
+                    emptyText="暂无对话记录"
+                  />
+                  {/* 本会话产物(探索模式归档的报告/文件) */}
+                  <div className="pt-3 mt-3" style={{ borderTop: '1px solid var(--border)' }}>
+                    <p className="text-xs font-medium mb-1.5">本会话产物（{artifacts.length}）</p>
+                    {artifacts.length === 0 ? (
+                      <p className="text-xs text-muted-foreground">{convId ? '暂无产物' : '探索模式产出的报告/文件会归档到这里'}</p>
+                    ) : (
+                      artifacts.map(a => (
+                        <div key={a.id} className="flex items-center justify-between gap-2 p-2 mb-1 rounded-lg bg-gray-50 dark:bg-gray-800">
+                          <span className="text-xs truncate" title={a.file_name}>{a.file_name}</span>
+                          <button onClick={() => downloadArtifact(a.id)} className="text-xs text-blue-500 hover:underline shrink-0">下载</button>
+                        </div>
+                      ))
+                    )}
+                  </div>
                 </div>
                 <button className="flex-1 h-full" onClick={() => setShowHistory(false)} aria-label="关闭历史" />
               </div>

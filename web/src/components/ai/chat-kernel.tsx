@@ -18,7 +18,7 @@ import { AiMarkdown } from '@/components/ai-markdown'
 import { cn } from '@/lib/utils'
 import {
   Bot, User, Send, Square, Loader2, Terminal, Brain, CheckCircle, AlertTriangle,
-  ThumbsUp, ThumbsDown, Users, Sparkles, XCircle, Settings,
+  ThumbsUp, ThumbsDown, Users, Sparkles, XCircle, Settings, Lock, Share2, Trash2,
 } from 'lucide-react'
 
 // ---------------------------------------------------------------------------
@@ -1188,7 +1188,7 @@ export function ApprovalBar({ pending, approving, onRespond, variant = 'panel', 
 // ---------------------------------------------------------------------------
 
 export interface ChatContextBarProps {
-  /** 当前运行级模型展示名(空=自动路由) */
+  /** 当前运行级模型展示名(空=自动路由; 未启用切换时展示用) */
   modelLabel?: string
   /** 当前 Agent 名(空=默认助手) */
   agentName?: string
@@ -1196,9 +1196,19 @@ export interface ChatContextBarProps {
   knowledgeScope: string[]
   /** 当前对话模式 */
   mode: ChatMode
+  /** 模型列表 + 当前值 + 切换回调: 三者齐备时「模型」chip 变为下拉可直接切换 */
+  models?: ModelInfo[]
+  selectedModel?: string
+  onModelChange?: (v: string) => void
+  /** 数字员工列表 + 当前值 + 切换回调: 三者齐备时「助手」chip 变为下拉可直接切换 */
+  agents?: any[]
+  selectedAgent?: any
+  onAgentChange?: (a: any) => void
   variant?: 'page' | 'panel'
   /** 一键跳配置回调(主入口传 navigate 到 /ai/settings 等) */
   onConfigure?: () => void
+  /** 点击「知识范围」chip 跳转知识库(传入后 chip 变可点击) */
+  onOpenKnowledge?: () => void
   className?: string
 }
 
@@ -1207,41 +1217,110 @@ export function ChatContextBar({
   agentName,
   knowledgeScope,
   mode,
+  models,
+  selectedModel,
+  onModelChange,
+  agents,
+  selectedAgent,
+  onAgentChange,
   variant = 'page',
   onConfigure,
+  onOpenKnowledge,
   className,
 }: ChatContextBarProps) {
   const isDark = variant === 'panel'
   const modeLabel = mode === 'normal' ? '常规' : mode === 'explore' ? '探索' : '团队'
   const scopeLabel = knowledgeScope.length === 0 ? '全部' : knowledgeScope.join('、')
-  const chips = [
-    {
-      label: '模式', value: modeLabel,
-      title: mode === 'normal'
-        ? '常规：纯对话与推理，不主动调用运维工具'
-        : mode === 'explore'
-          ? '探索：给定目标，AI 自主规划并调用工具执行'
-          : '团队：多个智能体分工协作完成任务',
-    },
-    { label: '模型', value: modelLabel || '自动路由', title: modelLabel ? `当前模型：${modelLabel}` : '自动路由：由后端按负载选择模型' },
-    { label: '助手', value: agentName || '默认助手', title: agentName ? `当前绑定数字员工：${agentName}` : '默认助手：纯对话，不绑定任何数字员工' },
-    { label: '知识范围', value: scopeLabel, title: knowledgeScope.length === 0 ? '检索全部知识库分类' : `仅检索分类：${scopeLabel}` },
-  ]
+  const canPickModel = !!onModelChange && (models?.length ?? 0) > 0
+  const canPickAgent = !!onAgentChange && (agents?.length ?? 0) > 0
+  const modelDisplay = canPickModel
+    ? (selectedModel ? (models?.find(m => m.model === selectedModel)?.name || selectedModel) : '自动路由')
+    : (modelLabel || '自动路由')
+  const modeTitle = mode === 'normal'
+    ? '常规：纯对话与推理，不主动调用运维工具'
+    : mode === 'explore'
+      ? '探索：给定目标，AI 自主规划并调用工具执行'
+      : '团队：多个智能体分工协作完成任务'
+  const chipCls = cn(
+    'px-1.5 py-0.5 rounded font-medium',
+    isDark ? 'bg-blue-500/15 text-blue-300' : 'bg-blue-50 text-blue-700',
+  )
+  const wrapCls = 'flex items-center gap-1 text-muted-foreground'
+  const selectCls = cn(
+    'px-1 py-0.5 rounded font-medium bg-transparent focus:outline-none focus:ring-1 focus:ring-blue-500/50 cursor-pointer max-w-[160px]',
+    isDark ? 'bg-blue-500/15 text-blue-300' : 'bg-blue-50 text-blue-700',
+  )
   return (
     <div className={cn(
       'flex items-center flex-wrap gap-x-3 gap-y-1 px-4 py-1.5 text-[11px] border-b shrink-0',
       isDark ? 'border-white/10 bg-white/[0.03]' : 'border-gray-100 bg-gray-50/70',
       className,
     )}>
-      {chips.map(c => (
-        <span key={c.label} title={c.title} className="flex items-center gap-1 text-muted-foreground">
-          <span className="opacity-70">{c.label}</span>
-          <span className={cn(
-            'px-1.5 py-0.5 rounded font-medium',
-            isDark ? 'bg-blue-500/15 text-blue-300' : 'bg-blue-50 text-blue-700',
-          )}>{c.value}</span>
+      {/* 模式(只读; 切换走输入框上方的模式按钮) */}
+      <span title={modeTitle} className={wrapCls}>
+        <span className="opacity-70">模式</span>
+        <span className={chipCls}>{modeLabel}</span>
+      </span>
+      {/* 模型: 传入 models+onModelChange 时可直接下拉切换 */}
+      {canPickModel ? (
+        <span className={wrapCls}>
+          <span className="opacity-70">模型</span>
+          <select
+            value={selectedModel || ''}
+            onChange={e => onModelChange?.(e.target.value)}
+            className={selectCls}
+            title="切换运行级模型(空=按权重/健康度路由)"
+          >
+            <option value="">自动路由</option>
+            {models!.map(m => (
+              <option key={`${m.name}-${m.model}`} value={m.model}>
+                {m.healthy === false ? '⚠️ ' : ''}{m.name !== 'default' ? `${m.name} · ${m.model}` : m.model}{m.healthy === false ? '（降级）' : ''}
+              </option>
+            ))}
+          </select>
         </span>
-      ))}
+      ) : (
+        <span title={modelDisplay && modelDisplay !== '自动路由' ? `当前模型：${modelDisplay}` : '自动路由：由后端按负载选择模型'} className={wrapCls}>
+          <span className="opacity-70">模型</span>
+          <span className={chipCls}>{modelDisplay}</span>
+        </span>
+      )}
+      {/* 助手: 传入 agents+onAgentChange 时可直接下拉切换 */}
+      {canPickAgent ? (
+        <span className={wrapCls}>
+          <span className="opacity-70">助手</span>
+          <select
+            value={selectedAgent?.id || ''}
+            onChange={e => onAgentChange?.(agents!.find((a: any) => a.id === e.target.value) || null)}
+            className={selectCls}
+            title="切换绑定的数字员工(空=默认助手)"
+          >
+            <option value="">默认助手</option>
+            {agents!.map((a: any) => <option key={a.id} value={a.id}>{a.name}</option>)}
+          </select>
+        </span>
+      ) : (
+        <span title={agentName ? `当前绑定数字员工：${agentName}` : '默认助手：纯对话，不绑定任何数字员工'} className={wrapCls}>
+          <span className="opacity-70">助手</span>
+          <span className={chipCls}>{agentName || '默认助手'}</span>
+        </span>
+      )}
+      {/* 知识范围(选择走输入框下方的范围选择器; 传入 onOpenKnowledge 时点击跳知识库) */}
+      {onOpenKnowledge ? (
+        <button
+          onClick={onOpenKnowledge}
+          title={knowledgeScope.length === 0 ? '检索全部知识库分类，点击打开知识库' : `仅检索分类：${scopeLabel}，点击在知识库中查看`}
+          className={cn(wrapCls, 'cursor-pointer hover:opacity-80 transition-opacity')}
+        >
+          <span className="opacity-70">知识范围</span>
+          <span className={chipCls}>{scopeLabel}</span>
+        </button>
+      ) : (
+        <span title={knowledgeScope.length === 0 ? '检索全部知识库分类' : `仅检索分类：${scopeLabel}`} className={wrapCls}>
+          <span className="opacity-70">知识范围</span>
+          <span className={chipCls}>{scopeLabel}</span>
+        </span>
+      )}
       {onConfigure && (
         <button
           onClick={onConfigure}
@@ -1250,6 +1329,89 @@ export function ChatContextBar({
         >
           <Settings className="h-3 w-3" /> 配置
         </button>
+      )}
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// 会话历史列表(共享): 全页侧栏与纯净模式历史抽屉共用, 统一当前会话高亮 /
+// 共享权限标识 / 新建入口的观感; 分享与删除通过可选回调按需启用(不依赖 antd)。
+// ---------------------------------------------------------------------------
+
+export interface ConversationItem {
+  id: string
+  title?: string
+  updated_at?: string
+  UpdatedAt?: string
+  permission?: string
+}
+
+export interface ConversationListProps {
+  conversations: ConversationItem[]
+  /** 当前会话 id, 命中则高亮 */
+  activeId?: string
+  onSelect: (id: string) => void
+  /** 传入则渲染「新建对话」虚线按钮 */
+  onNew?: () => void
+  /** 传入则对属主会话显示删除按钮(确认逻辑由调用方负责, 遵循契约禁原生 confirm) */
+  onDelete?: (id: string) => void
+  /** 传入则对属主会话显示分享按钮 */
+  onShare?: (c: ConversationItem) => void
+  emptyText?: string
+  className?: string
+}
+
+export function ConversationList({
+  conversations,
+  activeId,
+  onSelect,
+  onNew,
+  onDelete,
+  onShare,
+  emptyText = '暂无历史对话',
+  className,
+}: ConversationListProps) {
+  return (
+    <div className={cn('space-y-1', className)}>
+      {onNew && (
+        <button onClick={onNew} className="w-full flex items-center justify-center gap-1.5 px-2 py-1.5 rounded-md border border-dashed border-gray-300 dark:border-gray-700 text-xs text-muted-foreground hover:border-blue-400 hover:text-blue-600 dark:hover:border-blue-500/40 transition-colors">
+          <Sparkles className="h-3.5 w-3.5" />新建对话
+        </button>
+      )}
+      {conversations.length === 0 ? (
+        <p className="text-xs text-muted-foreground text-center py-4">{emptyText}</p>
+      ) : (
+        conversations.map(c => (
+          <div key={c.id} className="group flex items-center gap-1">
+            <button
+              onClick={() => onSelect(c.id)}
+              className={cn(
+                'flex-1 min-w-0 text-left p-2.5 rounded-lg transition-colors',
+                c.id === activeId
+                  ? 'bg-blue-50 dark:bg-blue-500/10 ring-1 ring-blue-200 dark:ring-blue-500/30'
+                  : 'hover:bg-gray-100 dark:hover:bg-gray-800',
+              )}
+            >
+              <p className="text-sm font-medium truncate flex items-center gap-1">
+                {c.title || '新对话'}
+                {c.permission === 'edit' && <span className="text-[9px] px-1 py-0.5 rounded bg-violet-500/15 text-violet-500 shrink-0">共享·可编辑</span>}
+                {c.permission === 'view' && <span className="text-[9px] px-1 py-0.5 rounded bg-violet-500/15 text-violet-500 shrink-0 flex items-center gap-0.5"><Lock className="h-2.5 w-2.5" />共享·只读</span>}
+              </p>
+              <p className="text-xs text-muted-foreground mt-0.5">{new Date(c.updated_at || c.UpdatedAt || Date.now()).toLocaleString('zh-CN')}</p>
+            </button>
+            {onShare && (!c.permission || c.permission === 'owner') && (
+              <button onClick={() => onShare(c)} className="opacity-0 group-hover:opacity-100 p-1.5 rounded-md text-muted-foreground hover:text-violet-500 hover:bg-violet-500/10 transition-opacity" title="分享会话">
+                <Share2 className="h-3.5 w-3.5" />
+              </button>
+            )}
+            {onDelete && (!c.permission || c.permission === 'owner') && (
+              <button onClick={() => onDelete(c.id)} className="opacity-0 group-hover:opacity-100 p-1.5 rounded-md text-red-400 hover:bg-red-500/10 transition-opacity" title="删除会话">
+                <Trash2 className="h-3.5 w-3.5" />
+              </button>
+            )}
+          </div>
+        ))
       )}
     </div>
   )

@@ -1,6 +1,6 @@
 
 import { useEffect, useRef, useState } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useNavigate, useSearchParams } from 'react-router-dom'
 import { useKnowledgeStore, type Category, type PrecipitationRule } from '@/stores/knowledge'
 import { Card, CardContent } from '@/components/ui/card'
 import { Button, Tag, Input, Popconfirm } from 'antd'
@@ -48,6 +48,7 @@ const PRECIP_SOURCES = [
 
 export default function KnowledgeListPage() {
   const navigate = useNavigate()
+  const [searchParams, setSearchParams] = useSearchParams()
   const store = useKnowledgeStore()
   const {
     articles, fetch, remove, categories, categoryList, fetchCategories,
@@ -58,8 +59,15 @@ export default function KnowledgeListPage() {
   } = store
   const [catDialog, setCatDialog] = useState(false)
   const [catForm, setCatForm] = useState({ id: '', name: '', description: '', sort_order: 0, color: '' })
-  const [filterCat, setFilterCat] = useState('')
-  const [searchQ, setSearchQ] = useState('')
+  // 筛选条件 URL 参数化(?q=/?cat=): 支持刷新/分享/外链直达(如 AI 对话页知识范围 chip 跳转)
+  const [filterCat, setFilterCat] = useState(() => searchParams.get('cat') || '')
+  const [searchQ, setSearchQ] = useState(() => searchParams.get('q') || '')
+  useEffect(() => {
+    const p = new URLSearchParams()
+    if (searchQ.trim()) p.set('q', searchQ.trim())
+    if (filterCat) p.set('cat', filterCat)
+    setSearchParams(p, { replace: true })
+  }, [searchQ, filterCat, setSearchParams])
   const [importing, setImporting] = useState(false)
   const importRef = useRef<HTMLInputElement | null>(null)
   const [pendingConfirm, setPendingConfirm] = useState<{ title: string; description: string; onConfirm: () => void | Promise<void> } | null>(null)
