@@ -548,6 +548,110 @@ func (e *Engine) ChatWithTools(ctx context.Context, agentID, prompt string, hist
 //
 // 返回 (最终答案, 原生推理内容, 工具调用记录, 会话ID, error)。
 // toolCallSig 计算一轮工具调用的稳定签名(工具名+参数),用于检测模型反复发起相同工具调用导致的死循环。
+// thinkTagOpen/thinkTagClose 推理模型的思维链标记。部分兼容端点(如 GLM)会把思维链
+// 混进正文 content, 或只留下孤立的结束标签, 需在对用户输出前剥离, 避免泄漏到回答中。
+const (
+	thinkTagOpen  = "<think>"
+	thinkTagClose = "</think>"
+)
+
+// stripThinkTags 剥离文本中的思维链标记与其包裹的内容(用于非流式整段清洗)。
+func stripThinkTags(s string) string {
+	if !strings.Contains(s, thinkTagOpen) && !strings.Contains(s, thinkTagClose) {
+		return s
+	}
+	var b strings.Builder
+	b.Grow(len(s))
+	rest := s
+	for {
+		iOpen, iClose := strings.Index(rest, thinkTagOpen), strings.Index(rest, thinkTagClose)
+		switch {
+		case iOpen < 0 && iClose < 0:
+			b.WriteString(rest)
+			return b.String()
+		case iClose >= 0 && (iOpen < 0 || iClose < iOpen):
+			// 孤立结束标签(思维链起始在 reasoning_content 中): 仅丢弃标签本身
+			b.WriteString(rest[:iClose])
+			rest = rest[iClose+len(thinkTagClose):]
+		default:
+			b.WriteString(rest[:iOpen])
+			rest = rest[iOpen+len(thinkTagOpen):]
+			// 丢弃到最近的结束标签; 没有结束标签则丢弃剩余全部(思维链未闭合)
+			if i := strings.Index(rest, thinkTagClose); i >= 0 {
+				rest = rest[i+len(thinkTagClose):]
+			} else {
+				rest = ""
+			}
+		}
+	}
+}
+
+// thinkFilter 流式场景下的增量思维链过滤器: token 是逐块到达的, 标签可能被切在两个 chunk 之间,
+// 因此需缓存尾部"可能是不完整标签"的若干字节, 待下个 chunk 再判定。
+type thinkFilter struct {
+	pending string
+	inThink bool
+}
+
+func newThinkFilter() *thinkFilter { return &thinkFilter{} }
+
+const thinkTagMaxLen = 8 // len("</think>")
+
+// feed 输入一个流式分片, 返回可安全输出给用户的文本(思维链内容被丢弃)。
+func (f *thinkFilter) feed(s string) string {
+	f.pending += s
+	var out strings.Builder
+	for {
+		iOpen, iClose := strings.Index(f.pending, thinkTagOpen), strings.Index(f.pending, thinkTagClose)
+		if f.inThink {
+			if iClose < 0 {
+				// 仍在思维链内: 丢弃已确认部分, 仅保留可能是不完整结束标签的尾部
+				if len(f.pending) > thinkTagMaxLen-1 {
+					f.pending = f.pending[len(f.pending)-(thinkTagMaxLen-1):]
+				}
+				break
+			}
+			f.inThink = false
+			f.pending = f.pending[iClose+len(thinkTagClose):]
+			continue
+		}
+		if iOpen < 0 && iClose < 0 {
+			// 无标签: 输出安全部分, 保留可能是不完整标签的尾部
+			keep := thinkTagMaxLen - 1
+			if len(f.pending) <= keep {
+				break
+			}
+			out.WriteString(f.pending[:len(f.pending)-keep])
+			f.pending = f.pending[len(f.pending)-keep:]
+			break
+		}
+		if iClose >= 0 && (iOpen < 0 || iClose < iOpen) {
+			out.WriteString(f.pending[:iClose])
+			f.pending = f.pending[iClose+len(thinkTagClose):]
+			continue
+		}
+		out.WriteString(f.pending[:iOpen])
+		f.pending = f.pending[iOpen+len(thinkTagOpen):]
+		f.inThink = true
+	}
+	return out.String()
+}
+
+// flush 流结束时输出残留缓冲; 思维链未闭合(缺少结束标签)时丢弃, 避免把推理过程泄漏给用户。
+func (f *thinkFilter) flush() string {
+	rest := f.pending
+	wasInThink := f.inThink
+	f.pending = ""
+	f.inThink = false
+	if i := strings.Index(rest, thinkTagClose); i >= 0 {
+		return rest[i+len(thinkTagClose):]
+	}
+	if wasInThink {
+		return ""
+	}
+	return rest
+}
+
 func toolCallSig(tcs []llm.ToolCall) string {
 	parts := make([]string, 0, len(tcs))
 	for _, tc := range tcs {
@@ -702,43 +806,11 @@ func (e *Engine) chatWithToolsConv(ctx context.Context, agentID, prompt string, 
 			break
 		}
 
-		// 死循环检测: 模型重复发起完全相同(工具名+参数)的工具调用时, 立即终止,
-		// 避免无限轮询把请求拖死(典型场景: 工具持续报错后模型反复重试同一调用)。
-		sig := toolCallSig(choiceMsg.ToolCalls)
-		if seenCalls[sig] {
-			content = "（检测到 AI 在重复调用相同工具，已主动停止以避免死循环；请换个问法，或检查相关工具/后端是否就绪）"
-			reasoningAcc = choiceMsg.ReasoningContent
-			completed = true
-			break
-		}
-		seenCalls[sig] = true
-
-		// 连续单工具轮次检测: 本轮仅调用一个工具且与上一轮同一工具相同, 累加连击;
-		// 连击达上限即判定"反复调用同一工具"死循环, 提前优雅终止(参数变化不命中 toolCallSig)。
-		if len(choiceMsg.ToolCalls) == 1 {
-			tname := choiceMsg.ToolCalls[0].Function.Name
-			if tname == lastSoloTool {
-				soloStreak++
-			} else {
-				soloStreak = 0
-				lastSoloTool = tname
-			}
-			if soloStreak >= maxConsecutiveSoloToolRounds {
-				content = fmt.Sprintf("（工具 %q 被反复调用仍未收敛，已主动停止以避免死循环；请换个问法，或检查该工具/后端是否就绪）", tname)
-				reasoningAcc = choiceMsg.ReasoningContent
-				completed = true
-				break toolLoop
-			}
-		} else {
-			soloStreak = 0
-			lastSoloTool = ""
-		}
-
-		// 空结果重试处理(模型无关): 本轮调用的工具在上轮全部返回空(count:0 等),
+		// 空结果重试处理(模型无关, 须先于死循环检测): 本轮调用的工具在上轮全部返回空(count:0 等),
 		// 再次调用不会得到新数据。不直接 break——而是抑制本次工具执行、注入"请直接作答"指令,
-		// 让模型基于自身知识产出真实答案(典型场景: 模型为自介/闲聊类问题误调 knowledge_search 拿到 count:0,
-		// 此时应直接作答, 而不是甩一句"请换个问法"给用户)。仅当模型连续多次(>maxEmptyRetryNudges)
-		// 仍坚持调用同一空工具(不听 nudge), 才兜底终止循环。
+		// 让模型基于自身知识产出真实答案。典型场景: 为自介/闲聊类问题误调 knowledge_search 拿到 count:0,
+		// 模型又用完全相同的参数重试时若先命中下面的死循环检测, 会直接甩提示语给用户(拿不到答案),
+		// 因此必须在此优先 nudge。仅当连续多次(>maxEmptyRetryNudges)不听劝才兜底终止。
 		if len(choiceMsg.ToolCalls) > 0 && len(prevEmptyTools) > 0 {
 			allEmptyRetry := true
 			for _, tc := range choiceMsg.ToolCalls {
@@ -773,6 +845,39 @@ func (e *Engine) chatWithToolsConv(ctx context.Context, agentID, prompt string, 
 				}
 				continue toolLoop
 			}
+		}
+
+		// 死循环检测: 模型重复发起完全相同(工具名+参数)的工具调用时, 立即终止,
+		// 避免无限轮询把请求拖死(典型场景: 工具持续报错后模型反复重试同一调用)。
+		// 注: 空结果重试已由上方 nudge 处理, 此处只兜底"工具返回非空仍重复调用"的真死循环。
+		sig := toolCallSig(choiceMsg.ToolCalls)
+		if seenCalls[sig] {
+			content = "（检测到 AI 在重复调用相同工具，已主动停止以避免死循环；请换个问法，或检查相关工具/后端是否就绪）"
+			reasoningAcc = choiceMsg.ReasoningContent
+			completed = true
+			break
+		}
+		seenCalls[sig] = true
+
+		// 连续单工具轮次检测: 本轮仅调用一个工具且与上一轮同一工具相同, 累加连击;
+		// 连击达上限即判定"反复调用同一工具"死循环, 提前优雅终止(参数变化不命中 toolCallSig)。
+		if len(choiceMsg.ToolCalls) == 1 {
+			tname := choiceMsg.ToolCalls[0].Function.Name
+			if tname == lastSoloTool {
+				soloStreak++
+			} else {
+				soloStreak = 0
+				lastSoloTool = tname
+			}
+			if soloStreak >= maxConsecutiveSoloToolRounds {
+				content = fmt.Sprintf("（工具 %q 被反复调用仍未收敛，已主动停止以避免死循环；请换个问法，或检查该工具/后端是否就绪）", tname)
+				reasoningAcc = choiceMsg.ReasoningContent
+				completed = true
+				break toolLoop
+			}
+		} else {
+			soloStreak = 0
+			lastSoloTool = ""
 		}
 
 		// 执行每个工具调用(经钩子链/RBAC/限流/截断)
@@ -862,6 +967,8 @@ func (e *Engine) chatWithToolsConv(ctx context.Context, agentID, prompt string, 
 		}
 		conversationID = conv.ID
 	}
+	// 剥离思维链标记(部分兼容端点会把 <think> 混入正文), 避免泄漏到用户可见回答。
+	content = stripThinkTags(content)
 	return content, reasoningAcc, invocations, conversationID, err
 }
 
@@ -2633,6 +2740,9 @@ func (e *Engine) chatWithToolsStream(ctx context.Context, agentID, prompt string
 	prevEmptyTools := make(map[string]bool)
 	// emptyRetryNudges: 已对"空工具重试"做过抑制执行的次数, 超过 maxEmptyRetryNudges 才兜底终止。
 	emptyRetryNudges := 0
+	// thinkFlt 跨轮复用的思维链过滤器: 流式 token 可能把 <think> 标签切在两个 chunk 之间,
+	// 需等整段流结束后再 flush 残留, 故声明在循环外。
+	thinkFlt := newThinkFilter()
 	streamToolLoop:
 	for round := 0; round < maxRounds; round++ {
 		slot, ok := e.acquireLLMSlot(ctx)
@@ -2654,13 +2764,16 @@ func (e *Engine) chatWithToolsStream(ctx context.Context, agentID, prompt string
 		var reasoningAcc string
 		var toolCalls []llm.ToolCall
 		for sc := range ch {
+			// 正文中可能混入 <think> 思维链标记(可能跨 chunk 切分), 过滤后再推给前端。
 			if sc.Content != "" {
-				emit("token", sc.Content)
+				if clean := thinkFlt.feed(sc.Content); clean != "" {
+					emit("token", clean)
+					content += clean
+				}
 			}
 			if sc.Reasoning != "" {
 				emit("thinking", sc.Reasoning)
 			}
-			content += sc.Content
 			reasoningAcc += sc.Reasoning
 			if len(sc.ToolCalls) > 0 {
 				toolCalls = sc.ToolCalls
@@ -2684,38 +2797,11 @@ func (e *Engine) chatWithToolsStream(ctx context.Context, agentID, prompt string
 			break
 		}
 
-		// 死循环检测: 模型重复发起相同工具调用时, 立即终止(不进入下一轮)。
-		sig := toolCallSig(toolCalls)
-		if seenCalls[sig] {
-			emit("token", "\n\n（检测到 AI 在重复调用相同工具，已主动停止以避免死循环；请换个问法，或检查相关工具/后端是否就绪）")
-			completed = true
-			break
-		}
-		seenCalls[sig] = true
-
-		// 连续单工具轮次检测(与非流式 chatWithToolsConv 对齐): 本轮仅一个工具且与上一轮同一工具相同, 累加连击;
-		// 连击达上限即判定死循环, 提前优雅终止(参数变化不命中 toolCallSig)。
-		if len(toolCalls) == 1 {
-			tname := toolCalls[0].Function.Name
-			if tname == lastSoloTool {
-				soloStreak++
-			} else {
-				soloStreak = 0
-				lastSoloTool = tname
-			}
-			if soloStreak >= maxConsecutiveSoloToolRounds {
-				emit("token", fmt.Sprintf("\n\n（工具 %q 被反复调用仍未收敛，已主动停止以避免死循环；请换个问法，或检查该工具/后端是否就绪）", tname))
-				completed = true
-				break streamToolLoop
-			}
-		} else {
-			soloStreak = 0
-			lastSoloTool = ""
-		}
-
-		// 空结果重试处理(模型无关): 本轮调用的工具在上轮全部返回空(count:0 等),
+		// 空结果重试处理(模型无关, 须先于死循环检测): 本轮调用的工具在上轮全部返回空(count:0 等),
 		// 再次调用不会得到新数据。不直接 break——抑制工具执行、注入"请直接作答"指令,
-		// 让模型基于自身知识产出真实答案; 仅当模型连续多次(>maxEmptyRetryNudges)仍坚持调用同一空工具才兜底终止。
+		// 让模型基于自身知识产出真实答案。典型场景: 为自介/闲聊类问题误调 knowledge_search 拿到 count:0,
+		// 模型又用完全相同的参数重试时若先命中下面的死循环检测, 会直接甩提示语给用户(拿不到答案),
+		// 因此必须在此优先 nudge。仅当连续多次(>maxEmptyRetryNudges)不听劝才兜底终止。
 		if len(toolCalls) > 0 && len(prevEmptyTools) > 0 {
 			allEmptyRetry := true
 			for _, tc := range toolCalls {
@@ -2747,6 +2833,36 @@ func (e *Engine) chatWithToolsStream(ctx context.Context, agentID, prompt string
 				turn.Steps = append(turn.Steps, step)
 				continue streamToolLoop
 			}
+		}
+
+		// 死循环检测: 模型重复发起相同工具调用时, 立即终止(不进入下一轮)。
+		// 注: 空结果重试已由上方 nudge 处理, 此处只兜底"工具返回非空仍重复调用"的真死循环。
+		sig := toolCallSig(toolCalls)
+		if seenCalls[sig] {
+			emit("token", "\n\n（检测到 AI 在重复调用相同工具，已主动停止以避免死循环；请换个问法，或检查相关工具/后端是否就绪）")
+			completed = true
+			break
+		}
+		seenCalls[sig] = true
+
+		// 连续单工具轮次检测(与非流式 chatWithToolsConv 对齐): 本轮仅一个工具且与上一轮同一工具相同, 累加连击;
+		// 连击达上限即判定死循环, 提前优雅终止(参数变化不命中 toolCallSig)。
+		if len(toolCalls) == 1 {
+			tname := toolCalls[0].Function.Name
+			if tname == lastSoloTool {
+				soloStreak++
+			} else {
+				soloStreak = 0
+				lastSoloTool = tname
+			}
+			if soloStreak >= maxConsecutiveSoloToolRounds {
+				emit("token", fmt.Sprintf("\n\n（工具 %q 被反复调用仍未收敛，已主动停止以避免死循环；请换个问法，或检查该工具/后端是否就绪）", tname))
+				completed = true
+				break streamToolLoop
+			}
+		} else {
+			soloStreak = 0
+			lastSoloTool = ""
 		}
 
 		// 执行本轮工具调用, 实时发射进度标记
@@ -2789,6 +2905,11 @@ func (e *Engine) chatWithToolsStream(ctx context.Context, agentID, prompt string
 		if e.hookChain != nil {
 			e.hookChain.RunPostStep(ctx, agentID, round, false)
 		}
+	}
+	// 冲刷思维链过滤器的残留缓冲(尾部安全文本); 思维链未闭合的残留会被丢弃。
+	if tail := thinkFlt.flush(); tail != "" {
+		emit("token", tail)
+		content += tail
 	}
 	if !completed {
 		// 不再下发硬 error 事件: 已流式推送的部分内容保留, 补一句友好提示并正常结束 SSE。

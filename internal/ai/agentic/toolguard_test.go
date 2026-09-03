@@ -8,6 +8,61 @@ import (
 	"github.com/opsorigin/core/internal/ai/mcp"
 )
 
+// TestStripThinkTags 验证思维链标记清洗: 部分兼容端点(如 GLM)会把 <think> 混入正文,
+// 或只留下孤立的 </think>, 需剥离后再呈现给用户。
+func TestStripThinkTags(t *testing.T) {
+	cases := []struct{ name, in, want string }{
+		{"无标记", "你好，我是助手", "你好，我是助手"},
+		{"孤立结束标签", "答案在这里\n</think>", "答案在这里\n"},
+		{"完整思维块", "前面<think>推理过程</think>后面", "前面后面"},
+		{"未闭合思维块", "答案<think>未结束的推理", "答案"},
+		{"多段", "A<think>x</think>B<think>y</think>C", "ABC"},
+	}
+	for _, c := range cases {
+		if got := stripThinkTags(c.in); got != c.want {
+			t.Errorf("%s: stripThinkTags(%q) = %q, want %q", c.name, c.in, got, c.want)
+		}
+	}
+}
+
+// TestThinkFilterStreaming 验证流式增量过滤: 标签可能被切在两个 chunk 之间,
+// 且未闭合的思维链残留必须在 flush 时丢弃, 不能泄漏给用户。
+func TestThinkFilterStreaming(t *testing.T) {
+	// 1) 标签被切分到多个 chunk
+	f := newThinkFilter()
+	var out string
+	for _, chunk := range []string{"答案一", "<thi", "nk>推理中", "</thi", "nk>答案二"} {
+		out += f.feed(chunk)
+	}
+	out += f.flush()
+	if out != "答案一答案二" {
+		t.Fatalf("split tags: got %q, want %q", out, "答案一答案二")
+	}
+
+	// 2) 孤立结束标签(起始在 reasoning_content 中)
+	f = newThinkFilter()
+	out = f.feed("正文内容") + f.feed("</think>") + f.feed("后续")
+	out += f.flush()
+	if out != "正文内容后续" {
+		t.Fatalf("orphan close tag: got %q, want %q", out, "正文内容后续")
+	}
+
+	// 3) 思维链未闭合: 残留必须在 flush 时丢弃
+	f = newThinkFilter()
+	out = f.feed("可见内容") + f.feed("<think>未闭合推理...")
+	out += f.flush()
+	if out != "可见内容" {
+		t.Fatalf("unclosed think: got %q, want %q", out, "可见内容")
+	}
+
+	// 4) 普通文本不应被吞尾(尾部不足一个标签长度时保留缓冲, flush 后完整输出)
+	f = newThinkFilter()
+	out = f.feed("abcdefghij") + f.flush()
+	if out != "abcdefghij" {
+		t.Fatalf("plain text: got %q, want %q", out, "abcdefghij")
+	}
+}
+
 // TestBuildToolDefsDefaultAssistantDeniesWriteTools 验证默认助手(agentID=="")不暴露
 // 写/执行类工具(ticket_create/script_run/script_generate), 避免纯对话场景下推理模型反复调用
 // 产生工单泛滥/脚本误执行副作用或"调用→失败→重试"死循环。只读/安全工具仍应暴露。
