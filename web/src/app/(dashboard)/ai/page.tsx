@@ -39,7 +39,7 @@ const EXPLORE_EXAMPLES = [
 const WELCOME_MESSAGE = '你好！我是 OpsOrigin AI 助手，可以帮你完成运维任务。\n\n👉 **快速开始：** 点击右上角「设置」→「模型」配置 LLM API Key 即可使用。\n\n配置完成后可直接在下方提问，或点击下方快捷操作开始。'
 
 export default function AIPage() {
-  const { loadConversations, submitFeedback: submitFB } = useAIStore()
+  const { loadConversations, submitFeedback: submitFB, fetchAgents } = useAIStore()
   const { theme } = useThemeStore()
   const navigate = useNavigate()
   const canUseAI = useCan('ai:tool:exec')
@@ -93,6 +93,8 @@ export default function AIPage() {
   // 知识范围选择器选项(挂载时加载分类列表)
   const knowledgeCategoryOptions = useKnowledgeStore(s => s.categories)
   useEffect(() => { useKnowledgeStore.getState().fetchCategories() }, [])
+  // 数字员工(Agent)列表: 供对话页临时选择绑定(普通/探索模式)
+  useEffect(() => { fetchAgents() }, [])
 
   // —— 本页独有状态 ——
   const [showHistory, setShowHistory] = useState(false)
@@ -501,6 +503,7 @@ export default function AIPage() {
               selectedAgent={selectedAgent}
               onAgentChange={setSelectedAgent}
               enableModel
+              enableAgent
               exploreHint
               enableKnowledgeScope
               knowledgeCategories={knowledgeCategories}

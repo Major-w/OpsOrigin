@@ -37,6 +37,7 @@ export default function PureMode({ onExitPure }: { onExitPure: () => void }) {
   const { theme } = useThemeStore()
   const loadConversations = useAIStore(s => s.loadConversations)
   const submitFeedback = useAIStore(s => s.submitFeedback)
+  const fetchAgents = useAIStore(s => s.fetchAgents)
 
   const chat = useAIChat({
     welcome: WELCOME,
@@ -63,6 +64,8 @@ export default function PureMode({ onExitPure }: { onExitPure: () => void }) {
   // 知识范围选择器选项(挂载时加载分类列表)
   const knowledgeCategoryOptions = useKnowledgeStore(s => s.categories)
   useEffect(() => { useKnowledgeStore.getState().fetchCategories() }, [])
+  // 数字员工(Agent)列表: 供对话页临时选择绑定(普通/探索模式)
+  useEffect(() => { fetchAgents() }, [])
 
   const isDark = theme === 'dark'
   const [pureDefault, setPureDefault] = useState<boolean>(() => {

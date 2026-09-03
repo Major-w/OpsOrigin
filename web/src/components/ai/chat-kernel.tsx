@@ -1215,10 +1215,17 @@ export function ChatContextBar({
   const modeLabel = mode === 'normal' ? '常规' : mode === 'explore' ? '探索' : '团队'
   const scopeLabel = knowledgeScope.length === 0 ? '全部' : knowledgeScope.join('、')
   const chips = [
-    { label: '模式', value: modeLabel },
-    { label: '模型', value: modelLabel || '自动路由' },
-    { label: '助手', value: agentName || '默认助手' },
-    { label: '知识范围', value: scopeLabel },
+    {
+      label: '模式', value: modeLabel,
+      title: mode === 'normal'
+        ? '常规：纯对话与推理，不主动调用运维工具'
+        : mode === 'explore'
+          ? '探索：给定目标，AI 自主规划并调用工具执行'
+          : '团队：多个智能体分工协作完成任务',
+    },
+    { label: '模型', value: modelLabel || '自动路由', title: modelLabel ? `当前模型：${modelLabel}` : '自动路由：由后端按负载选择模型' },
+    { label: '助手', value: agentName || '默认助手', title: agentName ? `当前绑定数字员工：${agentName}` : '默认助手：纯对话，不绑定任何数字员工' },
+    { label: '知识范围', value: scopeLabel, title: knowledgeScope.length === 0 ? '检索全部知识库分类' : `仅检索分类：${scopeLabel}` },
   ]
   return (
     <div className={cn(
@@ -1227,7 +1234,7 @@ export function ChatContextBar({
       className,
     )}>
       {chips.map(c => (
-        <span key={c.label} className="flex items-center gap-1 text-muted-foreground">
+        <span key={c.label} title={c.title} className="flex items-center gap-1 text-muted-foreground">
           <span className="opacity-70">{c.label}</span>
           <span className={cn(
             'px-1.5 py-0.5 rounded font-medium',
