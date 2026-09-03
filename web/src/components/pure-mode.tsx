@@ -9,7 +9,7 @@ import {
   Bot, X, Send, Loader2, Trash2, AlertTriangle, CheckCircle2, XCircle, Sparkles, Square,
   PanelLeftClose, ThumbsUp, ThumbsDown, History, BarChart3, Settings, Users, ChevronDown,
 } from 'lucide-react'
-import { cn } from '@/lib/utils'
+import { cn, apiFetchRaw } from '@/lib/utils'
 import { useThemeStore } from '@/stores/theme'
 import usePathname from '@/lib/use-pathname'
 import { AI_ASSISTANT_NAV } from '@/components/ai-nav'
@@ -243,6 +243,14 @@ export default function PureMode({ onExitPure }: { onExitPure: () => void }) {
       cid,
       abortRef.current.signal,
       selectedModel,
+      // 续接被拒(如复用了已删除/无权限的 conversation_id → 后端 403)时,清空本地会话 ID,
+      // 下一句自动开新会话,避免每次对话都卡在 403。
+      (msg?: string) => {
+        if (msg && msg.includes('403')) {
+          setConvId('')
+          try { localStorage.removeItem(CONV_ID_KEY) } catch { /* ignore */ }
+        }
+      },
     )
   }
 
@@ -300,7 +308,7 @@ export default function PureMode({ onExitPure }: { onExitPure: () => void }) {
 
   const handleLoadConversation = async (id: string) => {
     try {
-      const resp = await fetch(`${window.location.origin}/api/v1/ai/conversations/${id}`)
+      const resp = await apiFetchRaw(`/ai/conversations/${id}`)
       if (!resp.ok) return
       const conv = await resp.json()
       if (conv?.messages) {

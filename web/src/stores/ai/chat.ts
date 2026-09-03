@@ -1,6 +1,6 @@
 
 import { create } from 'zustand'
-import { apiFetch, apiList } from '@/lib/utils'
+import { apiFetch, apiList, apiFetchRaw } from '@/lib/utils'
 import type { ModelInfo, PendingApproval } from './types'
 import { getMessage } from '@/lib/message'
 
@@ -66,9 +66,8 @@ export const useChatStore = create<ChatState>((set) => ({
       if (explore) body.explore = true
       if (model) body.model = model
       if (serverConvId) body.conversation_id = serverConvId
-      const resp = await fetch(`${window.location.origin}/api/v1/ai/chat`, {
+      const resp = await apiFetchRaw('/ai/chat', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body),
         signal,
       })

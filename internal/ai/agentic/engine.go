@@ -44,6 +44,7 @@ type Engine struct {
 	plans     map[string]*model.ExecutionPlan
 	convStore ConversationStore
 	convs     map[string]*Conversation
+	convMu    sync.Map // 按会话 ID 串行化"读历史→追加→写回", 避免并发续接同一会话导致后写覆盖前写(PG 整条替换)及内存存储的切片 data race
 	reg       *mcp.Registry
 	lim       ratelimit.RateLimiter
 	llmClient atomic.Pointer[llm.Client] // 热更新场景下的并发安全读写(避免 data race)
@@ -499,15 +500,15 @@ func (e *Engine) restoreClosedLoopFromStore(ctx context.Context) {
 // Chat 执行一次单轮(可带历史)的 LLM 推理,供 AI 助手聊天端点使用。
 // model 为可选的运行级模型覆盖(按会话/请求指定);为空时回退 agent 配置模型,再回退引擎默认。
 // 支持 Function Calling:模型可自主调用已注册的运维工具(CMDB查询/工单/脚本执行/知识库检索)。
-func (e *Engine) Chat(ctx context.Context, agentID, prompt string, history []llm.Message, conversationID, model string) (content string, convID string, err error) {
-	content, _, _, convID, err = e.chatWithToolsConv(ctx, agentID, prompt, history, false, conversationID, model)
+func (e *Engine) Chat(ctx context.Context, agentID, prompt string, history []llm.Message, conversationID, model string, explore bool) (content string, convID string, err error) {
+	content, _, _, convID, err = e.chatWithToolsConv(ctx, agentID, prompt, history, false, conversationID, model, explore)
 	return
 }
 
 // ChatReasoning 思维链模式:返回思考过程和最终答案。
 // 优先返回模型原生 reasoning_content(DeepSeek-R1/Qwen 等),缺失时降级到 prompt 伪思维链。
-func (e *Engine) ChatReasoning(ctx context.Context, agentID, prompt string, history []llm.Message, conversationID, model string) (thinking string, answer string, convID string, err error) {
-	answer, reasoning, _, convID, err := e.chatWithToolsConv(ctx, agentID, prompt, history, true, conversationID, model)
+func (e *Engine) ChatReasoning(ctx context.Context, agentID, prompt string, history []llm.Message, conversationID, model string, explore bool) (thinking string, answer string, convID string, err error) {
+	answer, reasoning, _, convID, err := e.chatWithToolsConv(ctx, agentID, prompt, history, true, conversationID, model, explore)
 	if err != nil {
 		return "", "", "", err
 	}
@@ -527,8 +528,8 @@ type ToolInvocation struct {
 
 // ChatWithTools 执行带 Function Calling 的对话,返回最终答案与本次触发的所有工具调用。
 // 供需要审计/展示工具使用情况的调用方使用(如团队编排后的汇总)。
-func (e *Engine) ChatWithTools(ctx context.Context, agentID, prompt string, history []llm.Message, reasoning bool, conversationID, model string) (out string, inv []ToolInvocation, convID string, err error) {
-	out, _, inv, convID, err = e.chatWithToolsConv(ctx, agentID, prompt, history, reasoning, conversationID, model)
+func (e *Engine) ChatWithTools(ctx context.Context, agentID, prompt string, history []llm.Message, reasoning bool, conversationID, model string, explore bool) (out string, inv []ToolInvocation, convID string, err error) {
+	out, _, inv, convID, err = e.chatWithToolsConv(ctx, agentID, prompt, history, reasoning, conversationID, model, explore)
 	return out, inv, convID, err
 }
 
@@ -546,7 +547,16 @@ func (e *Engine) ChatWithTools(ctx context.Context, agentID, prompt string, hist
 //   - 对话成功后把本轮回合(用户问题 + assistant + tool 结果)增量追加回该会话并落库。
 //
 // 返回 (最终答案, 原生推理内容, 工具调用记录, 会话ID, error)。
-func (e *Engine) chatWithToolsConv(ctx context.Context, agentID, prompt string, history []llm.Message, reasoning bool, conversationID, model string) (string, string, []ToolInvocation, string, error) {
+// toolCallSig 计算一轮工具调用的稳定签名(工具名+参数),用于检测模型反复发起相同工具调用导致的死循环。
+func toolCallSig(tcs []llm.ToolCall) string {
+	parts := make([]string, 0, len(tcs))
+	for _, tc := range tcs {
+		parts = append(parts, tc.Function.Name+"\x1f"+tc.Function.Arguments)
+	}
+	return strings.Join(parts, "\x1f\x1f")
+}
+
+func (e *Engine) chatWithToolsConv(ctx context.Context, agentID, prompt string, history []llm.Message, reasoning bool, conversationID, model string, explore bool) (string, string, []ToolInvocation, string, error) {
 	if prompt == "" {
 		return "", "", nil, "", fmt.Errorf("prompt is required")
 	}
@@ -578,6 +588,15 @@ func (e *Engine) chatWithToolsConv(ctx context.Context, agentID, prompt string, 
 		}
 	}
 
+	// 会话并发串行化: 续接已有会话(conversationID 非空)时, 同一会话的并发请求被串行化,
+	// 避免"读历史→追加→写回"被并发交错导致后写覆盖前写(PG 整条替换)或内存存储的切片 data race。
+	// 新建会话(空 ID)不互斥, 互不影响。
+	if conversationID != "" {
+		lk := e.convLock(conversationID)
+		lk.Lock()
+		defer lk.Unlock()
+	}
+
 	userPrompt := prompt
 	if reasoning {
 		userPrompt = "请按以下格式回答：\n\n<think>\n先进行分步推理分析\n</think>\n<answer>\n再给出最终答案\n</answer>\n\n用户问题：" + prompt
@@ -600,6 +619,13 @@ func (e *Engine) chatWithToolsConv(ctx context.Context, agentID, prompt string, 
 		}
 		sysExtra += memoriesPrompt(mems)
 	}
+	// 自主模式: 把执行方法论注入 system 补充, 引导模型"规划→执行→检查→总结"。
+	if explore {
+		if sysExtra != "" {
+			sysExtra += "\n\n"
+		}
+		sysExtra += explorePrompt
+	}
 	msgs, roundStart := e.buildMessages(ctx, agentID, userPrompt, baseHistory, sysExtra)
 	tools := e.buildToolDefs(agentID)
 	var invocations []ToolInvocation
@@ -607,6 +633,15 @@ func (e *Engine) chatWithToolsConv(ctx context.Context, agentID, prompt string, 
 	var content, reasoningAcc string
 	var completed bool
 	var err error
+	// 死循环防护: 记录已出现过的工具调用签名, 模型重复发起相同调用即判定为死循环并优雅终止。
+	seenCalls := make(map[string]bool)
+	// 死循环防护(补充): 连续多轮仅调用同一工具且始终不收敛, 也判定为死循环(覆盖参数每次略变的重复调用)。
+	lastSoloTool := ""
+	soloStreak := 0
+	// prevEmptyTools: 上一轮执行中返回"空/无数据"的工具名集合, 用于"空结果重试"硬拦截(见循环内检测)。
+	prevEmptyTools := make(map[string]bool)
+	// emptyRetryNudges: 已对"空工具重试"做过抑制执行的次数, 超过 maxEmptyRetryNudges 才兜底终止。
+	emptyRetryNudges := 0
 
 	// 运行 PreStep 钩子(如拒绝/改写); 短路则不调用 LLM, 仍记录本次轨迹。
 	if e.hookChain != nil {
@@ -621,6 +656,7 @@ func (e *Engine) chatWithToolsConv(ctx context.Context, agentID, prompt string, 
 		}
 	}
 
+	toolLoop:
 	for round := 0; round < maxToolRounds; round++ {
 		slot, ok := e.acquireLLMSlot(ctx)
 		if !ok {
@@ -640,7 +676,12 @@ func (e *Engine) chatWithToolsConv(ctx context.Context, agentID, prompt string, 
 			break
 		}
 		if len(resp.Choices) == 0 {
-			err = fmt.Errorf("llm: empty response")
+			// 深度思考模型偶发仅吐 reasoning_content 或正文被安全策略拦截为空: 不硬失败(避免 502),
+			// 返回友好提示让用户重试。
+			content = "（模型本次未返回有效内容，可能是内容被安全策略拦截或生成超时；请换个问法重试）"
+			reasoningAcc = ""
+			completed = true
+			err = nil
 			break
 		}
 		e.recordTokens(agentID, resp)
@@ -661,7 +702,81 @@ func (e *Engine) chatWithToolsConv(ctx context.Context, agentID, prompt string, 
 			break
 		}
 
+		// 死循环检测: 模型重复发起完全相同(工具名+参数)的工具调用时, 立即终止,
+		// 避免无限轮询把请求拖死(典型场景: 工具持续报错后模型反复重试同一调用)。
+		sig := toolCallSig(choiceMsg.ToolCalls)
+		if seenCalls[sig] {
+			content = "（检测到 AI 在重复调用相同工具，已主动停止以避免死循环；请换个问法，或检查相关工具/后端是否就绪）"
+			reasoningAcc = choiceMsg.ReasoningContent
+			completed = true
+			break
+		}
+		seenCalls[sig] = true
+
+		// 连续单工具轮次检测: 本轮仅调用一个工具且与上一轮同一工具相同, 累加连击;
+		// 连击达上限即判定"反复调用同一工具"死循环, 提前优雅终止(参数变化不命中 toolCallSig)。
+		if len(choiceMsg.ToolCalls) == 1 {
+			tname := choiceMsg.ToolCalls[0].Function.Name
+			if tname == lastSoloTool {
+				soloStreak++
+			} else {
+				soloStreak = 0
+				lastSoloTool = tname
+			}
+			if soloStreak >= maxConsecutiveSoloToolRounds {
+				content = fmt.Sprintf("（工具 %q 被反复调用仍未收敛，已主动停止以避免死循环；请换个问法，或检查该工具/后端是否就绪）", tname)
+				reasoningAcc = choiceMsg.ReasoningContent
+				completed = true
+				break toolLoop
+			}
+		} else {
+			soloStreak = 0
+			lastSoloTool = ""
+		}
+
+		// 空结果重试处理(模型无关): 本轮调用的工具在上轮全部返回空(count:0 等),
+		// 再次调用不会得到新数据。不直接 break——而是抑制本次工具执行、注入"请直接作答"指令,
+		// 让模型基于自身知识产出真实答案(典型场景: 模型为自介/闲聊类问题误调 knowledge_search 拿到 count:0,
+		// 此时应直接作答, 而不是甩一句"请换个问法"给用户)。仅当模型连续多次(>maxEmptyRetryNudges)
+		// 仍坚持调用同一空工具(不听 nudge), 才兜底终止循环。
+		if len(choiceMsg.ToolCalls) > 0 && len(prevEmptyTools) > 0 {
+			allEmptyRetry := true
+			for _, tc := range choiceMsg.ToolCalls {
+				if !prevEmptyTools[tc.Function.Name] {
+					allEmptyRetry = false
+					break
+				}
+			}
+			if allEmptyRetry {
+				emptyRetryNudges++
+				if emptyRetryNudges > maxEmptyRetryNudges {
+					content = "（工具返回为空且多次重试无果，已主动停止以避免无效重试；请直接基于你的知识回答用户，或换个角度提问）"
+					reasoningAcc = choiceMsg.ReasoningContent
+					completed = true
+					break toolLoop
+				}
+				// 抑制工具执行, 注入"请直接作答"指令, 进入下一轮让模型产出真实答案。
+				for _, tc := range choiceMsg.ToolCalls {
+					msgs = append(msgs, llm.Message{
+						Role:       "tool",
+						Content:    fmt.Sprintf("工具 %q 已连续返回空数据，再次调用不会得到新结果；请勿再调用该工具，请直接基于你的系统设定与自身知识回答用户的问题。", tc.Function.Name),
+						ToolCallID: tc.ID,
+						Name:       tc.Function.Name,
+					})
+				}
+				// 本次未真正执行工具: 清零单工具连击计数, 避免把"nudge 轮"误判为死循环。
+				soloStreak = 0
+				lastSoloTool = ""
+				turn.Steps = append(turn.Steps, step)
+				if e.hookChain != nil {
+					e.hookChain.RunPostStep(ctx, agentID, round, false)
+				}
+				continue toolLoop
+			}
+		}
+
 		// 执行每个工具调用(经钩子链/RBAC/限流/截断)
+		roundEmpty := make(map[string]bool)
 		for _, tc := range choiceMsg.ToolCalls {
 			var args map[string]any
 			if tc.Function.Arguments != "" {
@@ -678,27 +793,34 @@ func (e *Engine) chatWithToolsConv(ctx context.Context, agentID, prompt string, 
 			if !execErr {
 				e.collectToolArtifact(ctx, conversationID, tc.Function.Name, args, result)
 			}
+			if m, ok := result.(map[string]any); ok && isEmptyResult(m) {
+				roundEmpty[tc.Function.Name] = true
+			}
 			step.ToolCalls = append(step.ToolCalls, ToolCallRecord{
 				Name:   tc.Function.Name,
 				Args:   args,
 				Result: result,
 				Error:  execErr,
 			})
-			resBytes, _ := json.Marshal(result)
+			toolMsgContent := toolFeedbackContent(result, execErr)
 			msgs = append(msgs, llm.Message{
 				Role:       "tool",
-				Content:    string(resBytes),
+				Content:    toolMsgContent,
 				ToolCallID: tc.ID,
 				Name:       tc.Function.Name,
 			})
 		}
+		prevEmptyTools = roundEmpty
 		turn.Steps = append(turn.Steps, step)
 		if e.hookChain != nil {
 			e.hookChain.RunPostStep(ctx, agentID, round, false)
 		}
 	}
-	if !completed {
-		err = fmt.Errorf("function calling loop exceeded max rounds (%d)", maxToolRounds)
+	if !completed && err == nil {
+		// 不再以 502 硬失败: 超过工具轮次上限(且无其他错误)时返回友好提示, 保证用户至少得到响应,
+		// 也避免把正常的复杂多步任务误判为故障。真正的错误(并发上限/钩子拒绝)仍原样返回。
+		content = "（AI 连续调用了多次工具仍未收敛到最终答复，可能是问题过于复杂或相关工具未就绪；请尝试更具体、分步的提问）"
+		completed = true
 	}
 
 	// 记录本次运行轨迹(供回放/复盘); nil 记录器时跳过。
@@ -932,6 +1054,16 @@ var builtinToolDenyList = map[string]bool{
 	"http_get": true,
 }
 
+// defaultAssistantDenyList 默认助手(纯对话, agentID=="")不可见的写/执行类工具。
+// 推理模型在纯对话场景下易反复调用工具, 若开放写/执行类会造成工单泛滥、脚本误执行等副作用,
+// 也可能形成"调用→失败→重试"的死循环。这类工具仅在绑定了具体 Agent 且该 Agent 配置了
+// 工具白名单时才对模型可见(见 buildToolDefs 的 allowlist 逻辑)。
+var defaultAssistantDenyList = map[string]bool{
+	"ticket_create":   true,
+	"script_run":      true,
+	"script_generate": true,
+}
+
 // noCacheTools 不参与工具结果缓存的工具: 有副作用/写操作(script_run/ticket_create)与内建辅助工具。
 // 缓存仅对幂等/只读的运维工具(cmdb_query/knowledge_search 等)生效, 避免缓存写操作或污染内部调用。
 var noCacheTools = map[string]bool{
@@ -961,6 +1093,10 @@ func (e *Engine) buildToolDefs(agentID string) []llm.ToolDef {
 	out := make([]llm.ToolDef, 0, len(defs))
 	for _, d := range defs {
 		if builtinToolDenyList[d.Name] {
+			continue
+		}
+		// 默认助手(agentID=="")屏蔽写/执行类工具, 仅暴露只读/安全工具, 避免副作用与工具循环。
+		if agentID == "" && defaultAssistantDenyList[d.Name] {
 			continue
 		}
 		if allowlist != nil && !allowlist[d.Name] {
@@ -1002,11 +1138,23 @@ func (e *Engine) buildToolDefs(agentID string) []llm.ToolDef {
 }
 
 // maxToolRounds 单次对话中 Function Calling 的最大轮次,防止模型无限循环请求工具。
-const maxToolRounds = 5
+// 设为 8: 给正常的多步工具链(检索→分析→处置)留足余量;真正死循环由 toolCallSig 重复检测提前拦截。
+const maxToolRounds = 8
 
 // maxToolRoundsExplore 自主模式(explore=true)的轮次上限。
 // 自主模式需要"规划→逐步执行→检查→总结"多轮迭代, 上限放宽; 仍由限流器约束总调用频次。
 const maxToolRoundsExplore = 12
+
+// maxConsecutiveSoloToolRounds 同一工具在"单工具轮次"中连续被调用的轮次上限。
+// 用于拦截"模型对单一工具反复发起调用(参数可能每次略变)却始终不收敛"的死循环:
+// 这类循环不会命中 toolCallSig 的字节级完全相同判定, 但连续多轮只调同一工具几乎必然是无效重复。
+// 正常的多步任务通常把调用分散到不同工具, 故该阈值对合法任务影响极小(第 4 次连击即提前终止)。
+const maxConsecutiveSoloToolRounds = 3
+
+// maxEmptyRetryNudges 同一空工具被"重试"后, 引擎最多抑制执行并注入"请直接作答"指令的轮数。
+// 超过该轮数模型仍坚持调用同一空工具(不听 nudge), 才兜底终止。目的是让模型在拦下无效重试后,
+// 有机会基于自身知识产出真实答案, 而不是一上来就甩"请换个问法"的提示语给用户。
+const maxEmptyRetryNudges = 2
 
 // truncateJSON 安全地把任意参数序列化为单行摘要(用于日志)。
 func truncateJSON(v any) string {
@@ -1381,7 +1529,14 @@ func (e *Engine) execToolChecked(ctx context.Context, tc llm.ToolCall) (any, boo
 	result, execErr := e.reg.Execute(ctx, name, args)
 	if execErr != nil {
 		slog.Warn("ai tool execution failed", "tool", name, "error", execErr)
-		return map[string]any{"error": execErr.Error()}, true
+		// 去诱饵化: 工具报错时不再把原始错误裸回灌给模型——推理模型会把错误当成"参数不对",
+		// 不断"修正参数再试"从而陷入 error→retry 死循环。改为明确告知"不要重试、直接告知用户能力未就绪",
+		// 从反馈环源头打断循环。
+		return map[string]any{
+			"error": execErr.Error(),
+			"retry": false,
+			"hint":  "工具执行失败, 请勿重复重试同一工具; 请直接告知用户该能力暂不可用或检查相关后端是否就绪。",
+		}, true
 	}
 	truncated := e.truncateToolResult(result)
 	if e.toolCache != nil && !noCacheTools[name] {
@@ -1392,6 +1547,81 @@ func (e *Engine) execToolChecked(ctx context.Context, tc llm.ToolCall) (any, boo
 		e.hookChain.RunPostTool(ctx, agentIDFrom(ctx), name, truncated, execErr != nil)
 	}
 	return truncated, false
+}
+
+// toolFeedbackContent 生成回填给模型的 tool 消息文本。
+// 当工具报错时(execErr 为 true, 或 handler 把错误包进结果的 error 字段但 Go error 为 nil),
+// 统一注入"请勿重试"提示, 确保 error→retry 循环在反馈环层面被打断, 与 execToolChecked 的兜底一致。
+func toolFeedbackContent(result any, execErr bool) string {
+	if m, ok := result.(map[string]any); ok {
+		if execErr || hasErrorField(m) {
+			// execErr==true 时 execToolChecked 已写入 retry/hint; 此处对"error 在结果内但 Go error 为 nil"的情况补注。
+			if !execErr {
+				m["retry"] = false
+				m["hint"] = "工具执行失败, 请勿重复重试同一工具; 请直接告知用户该能力暂不可用或检查相关后端是否就绪。"
+			}
+			if b, e := json.Marshal(m); e == nil {
+				return string(b)
+			}
+		}
+		// 空结果反重试: count:0 / total:0 / items:[] / data:[] 等表示"未检索到相关数据", 并非失败。
+		// 直接在工具回灌内容中声明"请勿重试", 从反馈环打断 空结果→换词重搜→仍为空 的死循环。
+		if isEmptyResult(m) {
+			m["retry"] = false
+			m["hint"] = "工具返回为空(count:0 / 无匹配数据), 表示知识库或系统中暂无相关内容, 这不是错误; 请勿重试, 也不要换关键词重新搜索; 若你自身知识足以回答用户, 请直接作答。"
+			if b, e := json.Marshal(m); e == nil {
+				return string(b)
+			}
+		}
+	}
+	b, _ := json.Marshal(result)
+	return string(b)
+}
+
+// isEmptyResult 判断工具结果是否为"空/无数据"(非错误): count:0 / total:0 / items:[] / data:[]。
+// 这类结果极易被推理模型误读为"没查到=没成功"而触发换词重搜死循环, 需显式标注"请勿重试"。
+func isEmptyResult(m map[string]any) bool {
+	switch v := m["count"].(type) {
+	case float64:
+		if v == 0 {
+			return true
+		}
+	case int:
+		if v == 0 {
+			return true
+		}
+	case int64:
+		if v == 0 {
+			return true
+		}
+	}
+	switch v := m["total"].(type) {
+	case float64:
+		if v == 0 {
+			return true
+		}
+	case int:
+		if v == 0 {
+			return true
+		}
+	case int64:
+		if v == 0 {
+			return true
+		}
+	}
+	if items, ok := m["items"].([]any); ok && len(items) == 0 {
+		return true
+	}
+	if d, ok := m["data"].([]any); ok && len(d) == 0 {
+		return true
+	}
+	return false
+}
+
+// hasErrorField 判断工具结果(或任意 map)是否含 error 字段——用于识别 handler 把错误包进结果的情形。
+func hasErrorField(m map[string]any) bool {
+	_, ok := m["error"]
+	return ok
 }
 
 // rbacGate 内置 PreToolCall 钩子: 复刻原 execToolChecked 的特权工具 RBAC 校验(即"审批闸门")。
@@ -1945,7 +2175,17 @@ func (e *Engine) agentCount() int {
 // 运维可通过 LLMConfig.DefaultSystemPrompt(环境变量 OPSORIGIN_LLM_DEFAULT_SYSTEM_PROMPT)覆盖,
 // 实现"提示词外置/版本化": 不必改代码即可调整助手人设与行为边界。
 const DefaultSystemPrompt = "你是 OpsOrigin 智能运维助手,帮助用户完成主机巡检、故障排查、报告生成等运维任务。回答应简洁、专业、可操作。" +
-	"\n\n【图表输出】当需要表达架构、拓扑、依赖、流程、时序关系时, 使用 mermaid 语法输出(```mermaid 代码块), 例如 flowchart/sequenceDiagram/graph 等; 其余回答正常使用 Markdown。"
+	"\n\n【图表输出】当需要表达架构、拓扑、依赖、流程、时序关系时, 使用 mermaid 语法输出(```mermaid 代码块), 例如 flowchart/sequenceDiagram/graph 等; 其余回答正常使用 Markdown。" +
+	"\n\n【工具调用纪律 — 必须严格遵守】" +
+	"\n- 调用工具的唯一正当理由: 用户明确要查询\"只有系统里才有的具体运维数据\", 例如某台主机的配置/状态、某个 CMDB 资产、某篇知识库文档、某个脚本的内容或执行记录。" +
+	"\n- 以下情况【绝对禁止】调用任何工具, 必须直接基于你自己的知识回答:" +
+	"\n  1) 用户询问你的身份/角色/功能/能力/如何使用(如\"介绍你自己\"\"你能做什么\");" +
+	"\n  2) 问候、寒暄、闲聊、一般性对话;" +
+	"\n  3) 概念解释、方法论、运维常识等知识性问答(除非用户明确要求检索知识库文档);" +
+	"\n  4) 你自身知识足以回答的问题。" +
+	"\n- 调用工具前先自问: \"用户是不是在要一个具体的、只有系统数据库里才有的数据?\" 若不是, 就不要调用工具。" +
+	"\n- 若工具返回 error(执行失败)或 count:0/空结果(表示无相关数据, 并非失败), 不要反复重试同一工具, 也不要换关键词重新搜索; 至多换一种问法再试一次, 仍无结果就如实告知用户\"该能力暂未就绪或相关后端未连接\", 并尽量用你已有的知识补充回答。" +
+	"\n- 不要把工具返回的错误原文当作事实转述给用户, 用自然语言说明能力限制即可。"
 
 // citationGuidance 注入到 system prompt 的引用标注指引(实现 RAG grounding)。
 // 要求模型在引用知识库/工具结果时用 [^<id>] 标注,并在文末列出引用来源。
@@ -2139,12 +2379,12 @@ func (e *Engine) genMaxTokensVal() int {
 	return 1024
 }
 
-// genTemperatureVal 返回生效的 temperature（0 时用引擎默认 0.7）。
+// genTemperatureVal 返回生效的 temperature（0 时用引擎默认 0.3, 偏确定性以减少推理模型对工具的过度调用）。
 func (e *Engine) genTemperatureVal() float64 {
 	if e.genTemperature > 0 {
 		return e.genTemperature
 	}
-	return 0.7
+	return 0.3
 }
 
 // ——— 多智能体团队 CRUD（Feature 1）———
@@ -2323,6 +2563,15 @@ func (e *Engine) chatWithToolsStream(ctx context.Context, agentID, prompt string
 		}
 	}
 
+	// 会话并发串行化: 续接已有会话(conversationID 非空)时, 同一会话的并发请求被串行化,
+	// 避免"读历史→追加→写回"被并发交错导致后写覆盖前写(PG 整条替换)或内存存储的切片 data race。
+	// 新建会话(空 ID)不互斥, 互不影响。
+	if conversationID != "" {
+		lk := e.convLock(conversationID)
+		lk.Lock()
+		defer lk.Unlock()
+	}
+
 	userPrompt := prompt
 	if reasoning {
 		userPrompt = "请按以下格式回答：\n\n<think>\n先进行分步推理分析\n</think>\n<answer>\n再给出最终答案\n</answer>\n\n用户问题：" + prompt
@@ -2375,6 +2624,16 @@ func (e *Engine) chatWithToolsStream(ctx context.Context, agentID, prompt string
 	if explore {
 		maxRounds = maxToolRoundsExplore
 	}
+	// 死循环防护: 记录已出现过的工具调用签名, 模型重复发起相同调用即判定为死循环并优雅终止。
+	seenCalls := make(map[string]bool)
+	// 死循环防护(补充): 连续多轮仅调用同一工具且始终不收敛, 也判定为死循环(覆盖参数每次略变的重复调用)。
+	lastSoloTool := ""
+	soloStreak := 0
+	// prevEmptyTools: 上一轮执行中返回"空/无数据"的工具名集合, 用于"空结果重试"硬拦截(见循环内检测)。
+	prevEmptyTools := make(map[string]bool)
+	// emptyRetryNudges: 已对"空工具重试"做过抑制执行的次数, 超过 maxEmptyRetryNudges 才兜底终止。
+	emptyRetryNudges := 0
+	streamToolLoop:
 	for round := 0; round < maxRounds; round++ {
 		slot, ok := e.acquireLLMSlot(ctx)
 		if !ok {
@@ -2425,7 +2684,73 @@ func (e *Engine) chatWithToolsStream(ctx context.Context, agentID, prompt string
 			break
 		}
 
+		// 死循环检测: 模型重复发起相同工具调用时, 立即终止(不进入下一轮)。
+		sig := toolCallSig(toolCalls)
+		if seenCalls[sig] {
+			emit("token", "\n\n（检测到 AI 在重复调用相同工具，已主动停止以避免死循环；请换个问法，或检查相关工具/后端是否就绪）")
+			completed = true
+			break
+		}
+		seenCalls[sig] = true
+
+		// 连续单工具轮次检测(与非流式 chatWithToolsConv 对齐): 本轮仅一个工具且与上一轮同一工具相同, 累加连击;
+		// 连击达上限即判定死循环, 提前优雅终止(参数变化不命中 toolCallSig)。
+		if len(toolCalls) == 1 {
+			tname := toolCalls[0].Function.Name
+			if tname == lastSoloTool {
+				soloStreak++
+			} else {
+				soloStreak = 0
+				lastSoloTool = tname
+			}
+			if soloStreak >= maxConsecutiveSoloToolRounds {
+				emit("token", fmt.Sprintf("\n\n（工具 %q 被反复调用仍未收敛，已主动停止以避免死循环；请换个问法，或检查该工具/后端是否就绪）", tname))
+				completed = true
+				break streamToolLoop
+			}
+		} else {
+			soloStreak = 0
+			lastSoloTool = ""
+		}
+
+		// 空结果重试处理(模型无关): 本轮调用的工具在上轮全部返回空(count:0 等),
+		// 再次调用不会得到新数据。不直接 break——抑制工具执行、注入"请直接作答"指令,
+		// 让模型基于自身知识产出真实答案; 仅当模型连续多次(>maxEmptyRetryNudges)仍坚持调用同一空工具才兜底终止。
+		if len(toolCalls) > 0 && len(prevEmptyTools) > 0 {
+			allEmptyRetry := true
+			for _, tc := range toolCalls {
+				if !prevEmptyTools[tc.Function.Name] {
+					allEmptyRetry = false
+					break
+				}
+			}
+			if allEmptyRetry {
+				emptyRetryNudges++
+				if emptyRetryNudges > maxEmptyRetryNudges {
+					emit("token", "\n\n（工具返回为空且多次重试无果，已主动停止以避免无效重试；请直接基于你的知识回答用户，或换个角度提问）")
+					completed = true
+					break streamToolLoop
+				}
+				// 抑制工具执行, 注入"请直接作答"指令, 进入下一轮让模型产出真实答案。
+				for _, tc := range toolCalls {
+					msgs = append(msgs, llm.Message{
+						Role:       "tool",
+						Content:    fmt.Sprintf("工具 %q 已连续返回空数据，再次调用不会得到新结果；请勿再调用该工具，请直接基于你的系统设定与自身知识回答用户的问题。", tc.Function.Name),
+						ToolCallID: tc.ID,
+						Name:       tc.Function.Name,
+					})
+				}
+				emit("token", "\n\n（工具返回为空，已跳过重复调用，正在直接作答…）\n")
+				// 本次未真正执行工具: 清零单工具连击计数, 避免把"nudge 轮"误判为死循环。
+				soloStreak = 0
+				lastSoloTool = ""
+				turn.Steps = append(turn.Steps, step)
+				continue streamToolLoop
+			}
+		}
+
 		// 执行本轮工具调用, 实时发射进度标记
+		roundEmpty := make(map[string]bool)
 		for _, tc := range toolCalls {
 			var args map[string]any
 			if tc.Function.Arguments != "" {
@@ -2442,13 +2767,16 @@ func (e *Engine) chatWithToolsStream(ctx context.Context, agentID, prompt string
 			result, execErr := e.execToolChecked(ctx, tc)
 			emit("tool", fmt.Sprintf("\n↳ **结果**: %s\n\n", summarizeToolResult(result)))
 
-			resBytes, _ := json.Marshal(result)
+			toolMsgContent := toolFeedbackContent(result, execErr)
 			msgs = append(msgs, llm.Message{
 				Role:       "tool",
-				Content:    string(resBytes),
+				Content:    toolMsgContent,
 				ToolCallID: tc.ID,
 				Name:       tc.Function.Name,
 			})
+			if m, ok := result.(map[string]any); ok && isEmptyResult(m) {
+				roundEmpty[tc.Function.Name] = true
+			}
 			step.ToolCalls = append(step.ToolCalls, ToolCallRecord{
 				Name:   tc.Function.Name,
 				Args:   args,
@@ -2456,15 +2784,17 @@ func (e *Engine) chatWithToolsStream(ctx context.Context, agentID, prompt string
 				Error:  execErr,
 			})
 		}
+		prevEmptyTools = roundEmpty
 		turn.Steps = append(turn.Steps, step)
 		if e.hookChain != nil {
 			e.hookChain.RunPostStep(ctx, agentID, round, false)
 		}
 	}
 	if !completed {
-		if err == nil {
-			err = fmt.Errorf("function calling loop exceeded max rounds (%d)", maxRounds)
-		}
+		// 不再下发硬 error 事件: 已流式推送的部分内容保留, 补一句友好提示并正常结束 SSE。
+		emit("token", "\n\n（AI 连续调用了多次工具仍未收敛，可能是问题过于复杂或相关工具未就绪；请尝试更具体、分步的提问）")
+		completed = true
+		err = nil
 	}
 
 	// 记录本次运行轨迹(供回放/复盘); nil 记录器时跳过。与非流式 chatWithToolsConv 对齐,
@@ -2526,6 +2856,15 @@ type Conversation struct {
 }
 
 // SaveConversation 保存/更新对话。ID 为空时自动生成; title 取首条 user 消息前 40 字。
+// convLock 返回指定会话 ID 的排它锁。同一会话的并发续接请求被串行化, 避免"读历史→追加→写回"被并发交错:
+//   - PG 路径 Save 用 ON CONFLICT DO UPDATE 整条替换 messages, 并发后写会覆盖前写;
+//   - 内存路径 GetConversation 返回 e.convs[id] 同一指针, 两请求对同一切片 append 形成 data race。
+// 锁仅作用于"续接已有会话"(conversationID 非空), 新建会话(空 ID)互不干扰; 不同会话 ID 也不互斥。
+func (e *Engine) convLock(id string) *sync.Mutex {
+	v, _ := e.convMu.LoadOrStore(id, &sync.Mutex{})
+	return v.(*sync.Mutex)
+}
+
 func (e *Engine) SaveConversation(ctx context.Context, conv *Conversation) error {
 	if conv.TenantID == "" {
 		conv.TenantID = "default"

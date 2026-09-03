@@ -178,6 +178,15 @@ export default function AIAssistant() {
       onAsk,
       cid,
       abortRef.current.signal,
+      undefined,
+      // 续接被拒(如复用了已删除/无权限的 conversation_id → 后端 403)时,清空本地会话 ID,
+      // 下一句自动开新会话,避免每次对话都卡在 403。
+      (msg?: string) => {
+        if (msg && msg.includes('403')) {
+          setConvId('')
+          try { localStorage.removeItem(CONV_ID_KEY) } catch { /* ignore */ }
+        }
+      },
     )
   }
 

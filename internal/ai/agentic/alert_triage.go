@@ -51,7 +51,7 @@ func (e *Engine) RunAlertTriage(ctx context.Context, req AlertTriageRequest) (*A
 - 关联CI: %s
 `, alertTriageSystemPrompt, req.AlertID, req.Title, req.Summary, req.Severity, req.Source, req.TargetCI)
 
-	out, _, _, err := e.ChatWithTools(ctx, "alert-triage", prompt, nil, false, "", "")
+	out, _, _, err := e.ChatWithTools(ctx, "alert-triage", prompt, nil, false, "", "", false)
 	res := &AlertTriageResult{
 		AlertID:   req.AlertID,
 		Title:     req.Title,

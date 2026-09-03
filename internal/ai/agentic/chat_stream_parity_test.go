@@ -105,7 +105,7 @@ func TestModelOverrideRoutesToLLM(t *testing.T) {
 
 	// 1) 无覆盖: 应使用 agent 配置模型
 	gotModel = ""
-	if _, _, err := e.Chat(context.Background(), "agentX", "hi", nil, "", ""); err != nil {
+	if _, _, err := e.Chat(context.Background(), "agentX", "hi", nil, "", "", false); err != nil {
 		t.Fatalf("chat(agent, no override): %v", err)
 	}
 	if gotModel != "agent-model" {
@@ -114,7 +114,7 @@ func TestModelOverrideRoutesToLLM(t *testing.T) {
 
 	// 2) 请求覆盖: 应优先生效, 压过 agent 配置模型
 	gotModel = ""
-	if _, _, err := e.Chat(context.Background(), "agentX", "hi", nil, "", "req-model"); err != nil {
+	if _, _, err := e.Chat(context.Background(), "agentX", "hi", nil, "", "req-model", false); err != nil {
 		t.Fatalf("chat(agent, override): %v", err)
 	}
 	if gotModel != "req-model" {
@@ -123,7 +123,7 @@ func TestModelOverrideRoutesToLLM(t *testing.T) {
 
 	// 3) 空 agent + 空覆盖: 回退引擎默认模型(单 client 以自身默认模型兜底, 本测试 harness 为 "test")。
 	gotModel = "unset"
-	if _, _, err := e.Chat(context.Background(), "", "hi", nil, "", ""); err != nil {
+	if _, _, err := e.Chat(context.Background(), "", "hi", nil, "", "", false); err != nil {
 		t.Fatalf("chat(empty, no override): %v", err)
 	}
 	if gotModel != "test" {

@@ -48,6 +48,9 @@ type Service struct {
 func NewService(cfg *config.Config, llmClient *llm.Client, redisClient *redisclient.Client, db *sql.DB) *Service {
 	reg := mcp.NewRegistry()
 
+	// 载入配置中的用户自定义 LLM 厂商预设(同名覆盖内置项), 供 /ai/llm-presets 查询。
+	SetCustomPresets(cfg.LLM.Presets)
+
 	var lim ratelimit.RateLimiter
 	if redisClient != nil {
 		lim = ratelimit.NewRedisLimiter(redisClient.Conn())
@@ -138,6 +141,7 @@ func (s *Service) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/v1/ai/token-stats", s.handleTokenStats)
 	mux.HandleFunc("POST /api/v1/ai/chat", s.handleChat)
 	mux.HandleFunc("POST /api/v1/ai/settings", s.handleUpdateSettings)
+	mux.HandleFunc("GET /api/v1/ai/llm-presets", s.handleListLLMPresets)
 	mux.HandleFunc("GET /api/v1/ai/conversations", s.handleListConversations)
 	mux.HandleFunc("GET /api/v1/ai/conversations/{id}", s.handleGetConversation)
 	mux.HandleFunc("POST /api/v1/ai/conversations", s.handleSaveConversation)
@@ -331,11 +335,15 @@ func (s *Service) handleChat(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 会话权限: 续接已有会话时, 非属主且无 edit 共享 → 拒绝(用户隔离); view 共享只读不能继续对话。
+	// 若引用的会话不存在(如前端复用了已删除/重建前的旧 conversation_id),视为新会话,
+	// 交由引擎以该 ID 新建(归属由 OwnerID 保障),不再拦截 —— 否则陈旧 ID 会让每次对话都吃 403。
 	if req.ConversationID != "" {
-		tenantID := auth.TenantFromContext(r.Context())
-		userID := currentUserID(r.Context())
-		if !s.requireConvWrite(r.Context(), tenantID, req.ConversationID, userID, s.userGroups(r.Context(), userID), w) {
-			return
+		if _, gerr := s.Engine.GetConversation(req.ConversationID); gerr == nil {
+			tenantID := auth.TenantFromContext(r.Context())
+			userID := currentUserID(r.Context())
+			if !s.requireConvWrite(r.Context(), tenantID, req.ConversationID, userID, s.userGroups(r.Context(), userID), w) {
+				return
+			}
 		}
 	}
 
@@ -360,7 +368,7 @@ func (s *Service) handleChat(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if req.Reasoning && !req.Stream {
-		thinking, answer, convID, err := s.Engine.ChatReasoning(r.Context(), req.AgentID, req.Prompt, req.History, req.ConversationID, req.Model)
+		thinking, answer, convID, err := s.Engine.ChatReasoning(r.Context(), req.AgentID, req.Prompt, req.History, req.ConversationID, req.Model, req.Explore)
 		if err != nil {
 			httputil.WriteError(w, http.StatusBadGateway, chatFriendlyError(err.Error()))
 			return
@@ -376,7 +384,7 @@ func (s *Service) handleChat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	out, convID, err := s.Engine.Chat(r.Context(), req.AgentID, req.Prompt, req.History, req.ConversationID, req.Model)
+	out, convID, err := s.Engine.Chat(r.Context(), req.AgentID, req.Prompt, req.History, req.ConversationID, req.Model, req.Explore)
 	if err != nil {
 		httputil.WriteError(w, http.StatusBadGateway, chatFriendlyError(err.Error()))
 		return

@@ -1,6 +1,6 @@
 
 import { create } from 'zustand'
-import { apiFetch, apiList } from '@/lib/utils'
+import { apiFetch, apiList, apiFetchRaw } from '@/lib/utils'
 import { useAuthStore } from '@/stores/auth'
 import { getMessage } from '@/lib/message'
 
@@ -211,8 +211,8 @@ export const useKnowledgeStore = create<KnowledgeState>((set, get) => ({
       const fd = new FormData()
       fd.append('file', file)
       if (category) fd.append('category', category)
-      // multipart 不走 apiFetch 的 JSON 头, 直接 fetch 同源接口
-      const resp = await fetch(`${window.location.origin}/api/v1/knowledge/import-file`, {
+      // multipart 不走 apiFetch 的 JSON 头, 用 apiFetchRaw 自动带鉴权头
+      const resp = await apiFetchRaw('/knowledge/import-file', {
         method: 'POST', body: fd,
       })
       if (!resp.ok) {

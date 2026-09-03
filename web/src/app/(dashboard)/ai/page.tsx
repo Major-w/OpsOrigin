@@ -177,7 +177,7 @@ export default function AIPage() {
 
   const handleLoadConversation = async (id: string) => {
     try {
-      const resp = await fetch(`${window.location.origin}/api/v1/ai/conversations/${id}`)
+      const resp = await apiFetchRaw(`/ai/conversations/${id}`)
       if (!resp.ok) return
       const conv = await resp.json()
       // 记录当前会话权限: view=只读(禁发), owner/edit=可继续对话
