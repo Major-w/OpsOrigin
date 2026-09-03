@@ -1,7 +1,7 @@
 
 import { useEffect, useState } from 'react'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
-import { useInspections } from '@/stores/aiWorkforce'
+import { useInspections } from '@/stores/ai'
 import { apiFetch, cn } from '@/lib/utils'
 import { FlaskConical, RefreshCw, Play, RotateCcw, AlertTriangle, CheckCircle2, Loader2 } from 'lucide-react'
 import { getMessage } from '@/lib/message'

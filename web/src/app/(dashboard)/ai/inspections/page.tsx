@@ -6,13 +6,13 @@ import { Button, Input, Tag, Select, Space, Modal, Switch, Tooltip, message } fr
 import { ReloadOutlined, PlusOutlined, DeleteOutlined, EditOutlined, PlayCircleOutlined, PauseCircleOutlined, ThunderboltOutlined } from '@ant-design/icons'
 import { cn, apiFetch } from '@/lib/utils'
 import {
+  useAIStore,
   useInspections,
   type Inspection,
   type InspectionRun,
   type InspectionSchedule,
   type InspectionTemplate,
-} from '@/stores/aiWorkforce'
-import { useAIStore } from '@/stores/ai'
+} from '@/stores/ai'
 import {
   RadarIcon, Plus, RefreshCw, Play, Trash2, Edit, History,
   AlertTriangle, CheckCircle2, XCircle, Clock, FileText, ArrowUpRight, FlaskConical, Wrench,

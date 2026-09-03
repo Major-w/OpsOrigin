@@ -5,8 +5,7 @@ import { Button, Input, Tag, Space, Modal, Tooltip, Checkbox, message } from 'an
 import type { CheckboxChangeEvent } from 'antd/es/checkbox'
 import { ReloadOutlined, PlusOutlined, ThunderboltOutlined, PlayCircleOutlined, DeleteOutlined, EditOutlined } from '@ant-design/icons'
 import { cn } from '@/lib/utils'
-import { useSceneTemplates, type SceneTemplate } from '@/stores/aiWorkforce'
-import { useAIStore } from '@/stores/ai'
+import { useAIStore, useSceneTemplates, type SceneTemplate } from '@/stores/ai'
 import {
   Shield, TrendingDown, Siren, Package, RefreshCw, Sparkles, Wand2,
   Wrench, BookOpen, ListChecks,

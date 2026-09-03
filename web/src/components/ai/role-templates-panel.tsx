@@ -8,8 +8,7 @@ import { Switch } from '@/components/ui/switch'
 import { Select } from '@/components/ui/select'
 import { Dialog, DialogFooter } from '@/components/ui/dialog'
 import { cn, apiFetch } from '@/lib/utils'
-import { useAgentTemplates, useWorkforceStore, type AgentTemplate } from '@/stores/aiWorkforce'
-import { useAIStore } from '@/stores/ai'
+import { useAIStore, useAgentTemplates, useWorkforceStore, type AgentTemplate } from '@/stores/ai'
 import {
   Database, Network, Shield, GitBranch, Siren, TrendingDown, Clock,
   Bot, RefreshCw, UserPlus, Sparkles, Wrench, BookOpen, CheckCircle2, Brain, Trash2, Store,

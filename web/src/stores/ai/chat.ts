@@ -25,6 +25,7 @@ interface ChatState {
     signal?: AbortSignal,
     model?: string,
     onError?: (msg: string) => void,
+    onToolCall?: (tc: { name: string; args: any; status: 'running' | 'done'; result?: string }) => void,
   ) => Promise<void>
   loadConversations: (agentId?: string) => Promise<any[]>
   saveConversation: (conv: any) => Promise<any | null>
@@ -57,7 +58,7 @@ export const useChatStore = create<ChatState>((set) => ({
       return null
     }
   },
-  streamChat: async (prompt, onToken, onDone, history = [], agentId, reasoning, onThinking, explore, onAsk, serverConvId, signal, model, onError) => {
+  streamChat: async (prompt, onToken, onDone, history = [], agentId, reasoning, onThinking, explore, onAsk, serverConvId, signal, model, onError, onToolCall) => {
     try {
       const messageId = `msg_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`
       const body: any = { prompt, history, stream: true, message_id: messageId }
@@ -121,6 +122,14 @@ export const useChatStore = create<ChatState>((set) => ({
             try {
               const approval = JSON.parse(data) as PendingApproval
               onAsk?.(approval)
+            } catch {}
+            currentEvent = ''
+            continue
+          }
+          if (currentEvent === 'tool') {
+            try {
+              const tc = JSON.parse(data) as { name: string; args: any; status: 'running' | 'done'; result?: string }
+              onToolCall?.(tc)
             } catch {}
             currentEvent = ''
             continue

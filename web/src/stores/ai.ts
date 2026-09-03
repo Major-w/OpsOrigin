@@ -1,6 +1,8 @@
 
 export { useChatStore, useTeamStore, useTeams, useAgentAIStore, useApprovalStore } from './ai/index'
+export { useWorkforceStore, useAgentTemplates, useSceneTemplates, useInspections } from './ai/workforce'
 export type { AgentTeam, TeamMember, TeamMode, TeamRole, ChatMessage, ModelInfo, CreateTeamPayload, UpdateTeamPayload, ApprovalPolicy, ApprovalMode, PendingApproval, TeamStreamEvent } from './ai/types'
+export type { AgentSkill, AgentTemplate, InspectionSchedule, SceneCatalogItem, SceneTemplate, InspectionTemplate, Inspection, Escalation, ExperimentMeta, InspectionRun, InspectionPayload } from './ai/workforce'
 export { isTeamStreamEvent } from './ai/types'
 
 import { useChatStore } from './ai/chat'
@@ -30,6 +32,7 @@ interface _ChatState {
     signal?: AbortSignal,
     model?: string,
     onError?: (msg: string) => void,
+    onToolCall?: (tc: { name: string; args: any; status: 'running' | 'done'; result?: string }) => void,
   ) => Promise<void>
   loadConversations: (agentId?: string) => Promise<any[]>
   saveConversation: (conv: any) => Promise<any | null>
