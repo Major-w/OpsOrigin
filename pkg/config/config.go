@@ -8,6 +8,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/opsorigin/core/pkg/llm"
 )
 
 type Config struct {
@@ -151,6 +153,9 @@ type LLMConfig struct {
 	// Providers 多模型路由池(P3): 在默认 provider 之外追加的 LLM provider。
 	// 留空=单 provider(默认配置), 行为与以往完全一致。
 	Providers []LLMProviderConfig `json:"providers"`
+	// Presets 用户自定义/覆盖的 LLM 厂商预设。同名项覆盖内置预设(见 pkg/llm/presets.go),
+	// 不同名项作为新增厂商追加。由 OPSORIGIN_LLM_PRESETS 环境变量或系统设置写入。
+	Presets []llm.Preset `json:"presets"`
 }
 
 // LLMProviderConfig 模型池中的一个附加 provider(多模型路由 P3)。
@@ -296,6 +301,18 @@ func Load() (*Config, error) {
 			slog.Warn("invalid OPSORIGIN_LLM_PROVIDERS json, ignored", "err", err)
 		} else {
 			cfg.LLM.Providers = ps
+		}
+	}
+
+	// 用户自定义厂商预设: OPSORIGIN_LLM_PRESETS 为 JSON 数组, 如
+	// [{"name":"my-gateway","label":"内网网关","base_url":"https://llm.internal/v1","default_model":"qwen2.5","embedding_model":"bge-m3"}]
+	// 同名项覆盖内置预设的字段, 用于修正私有化部署/内网网关的接入参数。
+	if raw := os.Getenv("OPSORIGIN_LLM_PRESETS"); raw != "" {
+		var ps []llm.Preset
+		if err := json.Unmarshal([]byte(raw), &ps); err != nil {
+			slog.Warn("invalid OPSORIGIN_LLM_PRESETS json, ignored", "err", err)
+		} else {
+			cfg.LLM.Presets = ps
 		}
 	}
 

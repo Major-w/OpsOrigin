@@ -12,6 +12,7 @@ import (
 	"math/rand"
 	"net"
 	"net/http"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -147,11 +148,28 @@ func (c *Client) Chat(ctx context.Context, req ChatRequest) (*ChatResponse, erro
 	return nil, lastErr
 }
 
+// versionSegmentRe 匹配 BaseURL 末尾的版本段(如 /v1、/v4)。
+var versionSegmentRe = regexp.MustCompile(`/v\d+$`)
+
+// joinEndpoint 拼接 BaseURL 与 OpenAI 兼容端点路径, 兼容两类厂商:
+//   - 标准 OpenAI 兼容: BaseURL 不含版本段(如 https://api.deepseek.com), 追加 /v1/xxx;
+//   - 自带版本号的厂商: BaseURL 已含版本段(如智谱 https://open.bigmodel.cn/api/paas/v4),
+//     只拼 /xxx, 避免出现 /v4/v1/chat/completions 这类必然 404 的路径。
+//
+// 对已显式带上 /v1 的 BaseURL(存量配置)行为保持不变, 因此该改动向后兼容。
+func joinEndpoint(base, path string) string {
+	b := strings.TrimRight(base, "/")
+	if versionSegmentRe.MatchString(b) {
+		return b + strings.TrimPrefix(path, "/v1")
+	}
+	return b + path
+}
+
 // doChatOnce 执行单次(非流式)聊天请求, 不做重试。
 func (c *Client) doChatOnce(ctx context.Context, req ChatRequest) (*ChatResponse, error) {
 	req.Stream = false
 	body, _ := json.Marshal(req)
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, c.config.BaseURL+"/v1/chat/completions", bytes.NewReader(body))
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, joinEndpoint(c.config.BaseURL, "/v1/chat/completions"), bytes.NewReader(body))
 	if err != nil {
 		return nil, fmt.Errorf("llm: create request: %w", err)
 	}
@@ -223,7 +241,7 @@ func (c *Client) StreamChat(ctx context.Context, req ChatRequest) (<-chan Stream
 func (c *Client) doStreamOnce(ctx context.Context, req ChatRequest) (*http.Response, error) {
 	req.Stream = true
 	body, _ := json.Marshal(req)
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, c.config.BaseURL+"/v1/chat/completions", bytes.NewReader(body))
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, joinEndpoint(c.config.BaseURL, "/v1/chat/completions"), bytes.NewReader(body))
 	if err != nil {
 		return nil, fmt.Errorf("llm: create request: %w", err)
 	}
@@ -456,7 +474,7 @@ func (c *Client) Embed(ctx context.Context, text string) ([]float32, error) {
 	}
 
 	body, _ := json.Marshal(map[string]any{"model": model, "input": text})
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimRight(base, "/")+"/v1/embeddings", bytes.NewReader(body))
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, joinEndpoint(base, "/v1/embeddings"), bytes.NewReader(body))
 	if err != nil {
 		return nil, fmt.Errorf("llm: embed request: %w", err)
 	}

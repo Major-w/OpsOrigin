@@ -125,8 +125,11 @@ func (s *Service) buildConfigItems() []ConfigGroup {
 				{Key: "OPSORIGIN_LLM_MODEL", Category: "llm", Label: "LLM 模型", Description: "大模型名称", Type: "string", CurrentValue: cfg.LLM.Model, DefaultValue: "deepseek-chat", RequiresRestart: false},
 				{Key: "OPSORIGIN_LLM_BASE_URL", Category: "llm", Label: "LLM Base URL", Description: "大模型 API 基础地址", Type: "string", CurrentValue: cfg.LLM.BaseURL, DefaultValue: "https://api.deepseek.com", RequiresRestart: false},
 				{Key: "OPSORIGIN_LLM_TIMEOUT", Category: "llm", Label: "LLM 超时(秒)", Description: "大模型请求超时时间", Type: "int", CurrentValue: fmt.Sprintf("%d", cfg.LLM.Timeout), DefaultValue: "60", RequiresRestart: false},
-				{Key: "OPSORIGIN_LLM_PROVIDERS", Category: "llm", Label: "模型池 Providers (JSON)", Description: "多模型路由池 JSON 数组, 如 [{\"name\":\"aliyun\",\"api_key\":\"sk-xxx\",\"model\":\"qwen-max\",\"base_url\":\"https://dashscope.aliyuncs.com/compatible-mode/v1\",\"weight\":80}]。推荐在「智能体工作台→模型」页可视化维护。", Type: "json", CurrentValue: marshalProviders(cfg.LLM.Providers), DefaultValue: "[]", RequiresRestart: false},
-			},
+			{Key: "OPSORIGIN_LLM_PROVIDERS", Category: "llm", Label: "模型池 Providers (JSON)", Description: "多模型路由池 JSON 数组, 如 [{\"name\":\"aliyun\",\"api_key\":\"sk-xxx\",\"model\":\"qwen-max\",\"base_url\":\"https://dashscope.aliyuncs.com/compatible-mode/v1\",\"weight\":80}]。推荐在「智能体工作台→模型」页可视化维护。", Type: "json", CurrentValue: marshalProviders(cfg.LLM.Providers), DefaultValue: "[]", RequiresRestart: false},
+				{Key: "OPSORIGIN_LLM_EMBEDDING_MODEL", Category: "llm", Label: "Embedding 模型", Description: "向量化模型,用于知识库语义检索。注意不同厂商维度不同(如智谱 embedding-3=2048, OpenAI text-embedding-3-small=1536),切换后需重建向量索引。", Type: "string", CurrentValue: cfg.LLM.EmbeddingModel, DefaultValue: "text-embedding-3-small", RequiresRestart: false},
+				{Key: "OPSORIGIN_LLM_EMBEDDING_BASE_URL", Category: "llm", Label: "Embedding Base URL", Description: "向量接口基址,留空则复用 LLM Base URL。智谱等内网/私有化场景可单独指定。", Type: "string", CurrentValue: cfg.LLM.EmbeddingBaseURL, DefaultValue: "", RequiresRestart: false},
+				{Key: "OPSORIGIN_LLM_PRESETS", Category: "llm", Label: "厂商预设覆盖 (JSON)", Description: "自定义/覆盖内置厂商预设的 JSON 数组,如 [{\"name\":\"zhipu\",\"base_url\":\"http://内网网关/v4\",\"default_model\":\"glm-4-plus\"}]。同名覆盖内置预设,不同名追加为新厂商;AI 设置页「服务商」下拉会合并展示。", Type: "json", CurrentValue: marshalPresets(cfg.LLM.Presets), DefaultValue: "[]", RequiresRestart: false},
+		},
 		},
 		{
 			Category: "outbox",
@@ -308,6 +311,20 @@ func (s *Service) applyUpdate(key, value string) {
 			cfg.LLM.Providers = ps
 			pushLLMUpdate(cfg)
 		}
+	case "OPSORIGIN_LLM_EMBEDDING_MODEL":
+		cfg.LLM.EmbeddingModel = value
+		pushLLMUpdate(cfg)
+	case "OPSORIGIN_LLM_EMBEDDING_BASE_URL":
+		cfg.LLM.EmbeddingBaseURL = value
+		pushLLMUpdate(cfg)
+	case "OPSORIGIN_LLM_PRESETS":
+		var ps []llm.Preset
+		if err := json.Unmarshal([]byte(value), &ps); err != nil {
+			slog.Warn("invalid OPSORIGIN_LLM_PRESETS json, ignored", "err", err)
+		} else {
+			cfg.LLM.Presets = ps
+			ai.SetCustomPresets(ps)
+		}
 	case "OPSORIGIN_MULTI_TENANT":
 		cfg.MultiTenant = value == "true" || value == "1"
 		auth.SetMultiTenant(cfg.MultiTenant)
@@ -358,6 +375,18 @@ func pushLLMUpdate(cfg *config.Config) {
 
 // marshalProviders 将模型池 provider 序列化为 JSON 字符串(供 sysconfig 展示/回写)。
 func marshalProviders(ps []config.LLMProviderConfig) string {
+	if len(ps) == 0 {
+		return "[]"
+	}
+	b, err := json.Marshal(ps)
+	if err != nil {
+		return "[]"
+	}
+	return string(b)
+}
+
+// marshalPresets 将厂商预设序列化为 JSON 字符串(供 sysconfig 展示/回写)。
+func marshalPresets(ps []llm.Preset) string {
 	if len(ps) == 0 {
 		return "[]"
 	}

@@ -61,6 +61,26 @@ func TestChatNoRetryOn4xx(t *testing.T) {
 	}
 }
 
+// TestJoinEndpoint 锁定「版本感知」端点拼接行为: 标准厂商追加 /v1,
+// 自带版本段的厂商(如智谱 /api/paas/v4)不再重复追加, 避免 /v4/v1/... 404。
+func TestJoinEndpoint(t *testing.T) {
+	cases := []struct{ base, path, want string }{
+		// 标准 OpenAI 兼容: 无版本段 → 追加 /v1
+		{"https://api.deepseek.com", "/v1/chat/completions", "https://api.deepseek.com/v1/chat/completions"},
+		{"https://api.deepseek.com/", "/v1/chat/completions", "https://api.deepseek.com/v1/chat/completions"},
+		{"https://dashscope.aliyuncs.com/compatible-mode/v1", "/v1/chat/completions", "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions"},
+		// 自带版本段: 智谱 v4 → 只拼 /chat/completions
+		{"https://open.bigmodel.cn/api/paas/v4", "/v1/chat/completions", "https://open.bigmodel.cn/api/paas/v4/chat/completions"},
+		{"https://open.bigmodel.cn/api/paas/v4/", "/v1/chat/completions", "https://open.bigmodel.cn/api/paas/v4/chat/completions"},
+		{"https://open.bigmodel.cn/api/paas/v4", "/v1/embeddings", "https://open.bigmodel.cn/api/paas/v4/embeddings"},
+	}
+	for _, tc := range cases {
+		if got := joinEndpoint(tc.base, tc.path); got != tc.want {
+			t.Errorf("joinEndpoint(%q, %q) = %q, want %q", tc.base, tc.path, got, tc.want)
+		}
+	}
+}
+
 // TestIsRetryable 验证重试判定矩阵。
 func TestIsRetryable(t *testing.T) {
 	cases := []struct {

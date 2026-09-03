@@ -2,21 +2,11 @@
 import { useEffect, useState, useRef, type ReactNode } from 'react'
 import { Link } from 'react-router-dom'
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card'
-import { Button, Input, Tag, Space, Tabs, Popconfirm, Switch, Modal, message } from 'antd'
+import { Button, Input, Select, Tag, Space, Tabs, Popconfirm, Switch, Modal, message } from 'antd'
 import { ReloadOutlined, PlusOutlined, DeleteOutlined, EditOutlined, ApiOutlined, SettingOutlined, SaveOutlined, ThunderboltOutlined } from '@ant-design/icons'
 import { Bot, Plus, Trash2, Save, Wrench, Brain, Settings2, Terminal, Wand2, AlertCircle, CheckCircle2, Loader2, ChevronRight, ShieldCheck, Database, Download, RefreshCw, Sparkles, Copy, Pencil, Star, Search, Package, Eye, Rocket } from 'lucide-react'
 import RoleTemplatesPanel from '@/components/ai/role-templates-panel'
 
-// 主流模型服务预设(填入新 provider 行, base_url 均为 OpenAI 兼容端点)
-const MODEL_PRESETS = [
-  { label: 'OpenAI', name: 'openai', model: 'gpt-4o-mini', base_url: 'https://api.openai.com/v1', weight: 60 },
-  { label: 'DeepSeek', name: 'deepseek', model: 'deepseek-chat', base_url: 'https://api.deepseek.com', weight: 60 },
-  { label: '通义千问', name: 'qwen', model: 'qwen-plus', base_url: 'https://dashscope.aliyuncs.com/compatible-mode/v1', weight: 60 },
-  { label: '智谱 GLM', name: 'zhipu', model: 'glm-4-flash', base_url: 'https://open.bigmodel.cn/api/paas/v4', weight: 60 },
-  { label: 'Kimi', name: 'kimi', model: 'moonshot-v1-8k', base_url: 'https://api.moonshot.cn/v1', weight: 60 },
-  { label: '硅基流动', name: 'siliconflow', model: 'Qwen/Qwen2.5-7B-Instruct', base_url: 'https://api.siliconflow.cn/v1', weight: 60 },
-  { label: 'Ollama 本地', name: 'ollama', model: 'qwen2.5', base_url: 'http://host.docker.internal:11434/v1', weight: 60 },
-]
 import { cn, apiFetch, apiFetchRaw, apiList } from '@/lib/utils'
 import { useThemeStore } from '@/stores/theme'
 import { useAIStore, type ApprovalMode } from '@/stores/ai'
@@ -150,7 +140,9 @@ export default function AISettingsPage() {
   const [activeTab, setActiveTab] = useState('agents')
   const [form, setForm] = useState<{ name: string; model_name: string; system_prompt: string; knowledge_categories: string[]; tools: string[]; skills: SkillFormItem[] }>({ name: '', model_name: '', system_prompt: '', knowledge_categories: [], tools: [], skills: [] })
   const [sysConfig, setSysConfig] = useState<any>(null)
-  const [llmForm, setLlmForm] = useState({ api_key: '', model: '', base_url: '', timeout: 60 })
+  const [llmForm, setLlmForm] = useState({ api_key: '', model: '', base_url: '', timeout: 60, embedding_model: '', embedding_base_url: '' })
+  // 服务商预设(从后端 /api/v1/ai/llm-presets 拉取, 含内置+用户自定义), 选中自动填充 BaseURL/模型/Embedding
+  const [providerPresets, setProviderPresets] = useState<{ name: string; label: string; base_url: string; default_model: string; embedding_model: string; embedding_base_url?: string; doc?: string; builtin?: boolean; weight?: number }[]>([])
   const [modelPool, setModelPool] = useState<{ name: string; model: string; base_url: string; weight: number; healthy: boolean }[]>([])
   // 模型池 provider 编辑草稿(含 key, 从 sysconfig OPSORIGIN_LLM_PROVIDERS 加载)
   const [poolProviders, setPoolProviders] = useState<{ name: string; model: string; base_url: string; api_key: string; weight: number }[]>([])
@@ -177,7 +169,7 @@ export default function AISettingsPage() {
   const loadDraft = () => {
     try {
       const data = localStorage.getItem(LST_DRAFT_KEY)
-      if (data) { const d = JSON.parse(data); setLlmForm(d) }
+      if (data) { const d = JSON.parse(data); setLlmForm(prev => ({ ...prev, ...d })) }
     } catch {}
   }
   const saveDraft = async () => {
@@ -226,7 +218,7 @@ export default function AISettingsPage() {
   const [approvalScope, setApprovalScope] = useState<'global' | 'agent'>('global')
   const [approvalAgentId, setApprovalAgentId] = useState('')
 
-  useEffect(() => { fetchAgents(); loadTools(); loadSysConfig(); loadApprovalPolicy(); loadKbCategories(); loadModelPool(); loadFinetuneTasks(); loadPrompts(); loadEvolutionStats(); loadEvoSources(); loadEvoPolicy() }, [])
+  useEffect(() => { fetchAgents(); loadTools(); loadSysConfig(); loadPresets(); loadApprovalPolicy(); loadKbCategories(); loadModelPool(); loadFinetuneTasks(); loadPrompts(); loadEvolutionStats(); loadEvoSources(); loadEvoPolicy() }, [])
   const loadModelPool = async () => {
     try {
       const d = await apiFetch<any>('/ai/models')
@@ -557,15 +549,30 @@ export default function AISettingsPage() {
       setSysConfig(cfgArr)
       // 模型池 providers 随配置加载(含已存 key), 供可视化编辑回写
       let provVal: string | undefined
+      let embVal: string | undefined
+      let embUrlVal: string | undefined
       if (Array.isArray(cfgArr)) {
         for (const cat of cfgArr) {
-          const item = (cat?.items || []).find((k: any) => k.key === 'OPSORIGIN_LLM_PROVIDERS')
-          if (item) { provVal = item.current_value; break }
+          for (const it of (cat?.items || [])) {
+            if (it.key === 'OPSORIGIN_LLM_PROVIDERS') provVal = it.current_value
+            else if (it.key === 'OPSORIGIN_LLM_EMBEDDING_MODEL') embVal = it.current_value
+            else if (it.key === 'OPSORIGIN_LLM_EMBEDDING_BASE_URL') embUrlVal = it.current_value
+          }
         }
       }
       if (provVal && provVal !== '[]') {
         try { const parsed = JSON.parse(provVal); if (Array.isArray(parsed)) setPoolProviders(parsed) } catch {}
       }
+      // 回填 Embedding 配置(服务端为准, 草稿仅兜底)
+      setLlmForm(prev => ({ ...prev, embedding_model: embVal || prev.embedding_model, embedding_base_url: embUrlVal || prev.embedding_base_url }))
+    } catch {}
+  }
+
+  // 拉取后端厂商预设(内置+用户自定义), 供「服务商」下拉自动填充接入参数
+  const loadPresets = async () => {
+    try {
+      const d = await apiFetch<any>('/ai/llm-presets')
+      if (Array.isArray(d?.presets)) setProviderPresets(d.presets)
     } catch {}
   }
   
@@ -661,9 +668,9 @@ export default function AISettingsPage() {
   }
 
   // —— 模型池 provider 编辑 ——
-  const addPoolProvider = (preset?: typeof MODEL_PRESETS[number]) => {
+  const addPoolProvider = (preset?: { name: string; model?: string; base_url?: string; weight?: number }) => {
     setPoolProviders(ps => [...ps, preset
-      ? { name: preset.name, model: preset.model, base_url: preset.base_url, api_key: '', weight: preset.weight }
+      ? { name: preset.name, model: preset.model || '', base_url: preset.base_url || '', api_key: '', weight: preset.weight ?? 50 }
       : { name: '', model: '', base_url: '', api_key: '', weight: 50 }])
   }
   const updatePoolProvider = (i: number, patch: Partial<{ name: string; model: string; base_url: string; api_key: string; weight: number }>) => {
@@ -698,6 +705,22 @@ export default function AISettingsPage() {
       loadSysConfig()
     } catch { getMessage().error('保存失败') }
     setSaving(false)
+  }
+
+  // 选中「服务商」预设后, 将推荐的接入参数回填到表单(不立即写库, 由用户点对应「保存」)
+  const onPickPreset = (name: string) => {
+    const p = providerPresets.find(x => x.name === name)
+    if (!p) return
+    setLlmForm(prev => ({
+      ...prev,
+      base_url: p.base_url || prev.base_url,
+      model: p.default_model || prev.model,
+      embedding_model: p.embedding_model || prev.embedding_model,
+      embedding_base_url: (p.embedding_base_url || p.base_url || prev.embedding_base_url),
+    }))
+    if (p.doc) {
+      getMessage().info(`已填入 ${p.label} 的默认接入参数，请补全 API Key 后保存`)
+    }
   }
 
   // —— Tab 内容组件(访问父级状态/函数) ——
@@ -1163,10 +1186,10 @@ export default function AISettingsPage() {
                   <select
                     className="flex h-9 rounded-md border border-input bg-background px-2 text-xs"
                     defaultValue=""
-                    onChange={e => { const p = MODEL_PRESETS.find(x => x.label === e.target.value); if (p) addPoolProvider(p); e.target.value = '' }}
+                    onChange={e => { const p = providerPresets.find(x => x.label === e.target.value); if (p) addPoolProvider({ name: p.name, model: p.default_model, base_url: p.base_url, weight: p.weight }); e.target.value = '' }}
                   >
                     <option value="" disabled>+ 预设模板…</option>
-                    {MODEL_PRESETS.map(p => <option key={p.label} value={p.label}>{p.label}</option>)}
+                    {providerPresets.map(p => <option key={p.label} value={p.label}>{p.label}</option>)}
                   </select>
                   <Button size="middle" type="default" onClick={() => addPoolProvider()}>
                     <Plus className="h-3.5 w-3.5 mr-1" />添加 Provider
@@ -1289,6 +1312,18 @@ export default function AISettingsPage() {
           <CardHeader><CardTitle className="text-base">LLM 后端配置</CardTitle><CardDescription>修改后即时热生效，无需重启 Core</CardDescription></CardHeader>
           <CardContent className="space-y-4">
             <div>
+              <label className="text-xs font-medium mb-1 block">服务商 <span className="text-muted-foreground font-normal">(选中后自动填充下方接入参数)</span></label>
+              <Select
+                allowClear
+                placeholder="选择模型服务商…"
+                value={providerPresets.find(p => p.base_url === llmForm.base_url && p.default_model === llmForm.model)?.name || undefined}
+                onChange={onPickPreset}
+                options={providerPresets.map(p => ({ value: p.name, label: `${p.label}${p.builtin === false ? '（自定义）' : ''}` }))}
+                className="w-full"
+                notFoundContent="加载中…"
+              />
+            </div>
+            <div>
               <label className="text-xs font-medium mb-1 block">API Key</label>
               <div className="flex gap-2">
                 <Input type="password" placeholder="sk-..." value={llmForm.api_key} onChange={e => setLlmForm({...llmForm, api_key: e.target.value})} className="font-mono text-xs" />
@@ -1307,6 +1342,20 @@ export default function AISettingsPage() {
               <div className="flex gap-2">
                 <Input placeholder="https://api.deepseek.com" value={llmForm.base_url} onChange={e => setLlmForm({...llmForm, base_url: e.target.value})} />
                 <Button size="middle" type="default" onClick={() => handleUpdateLLM('base_url', llmForm.base_url)} disabled={saving}>保存</Button>
+              </div>
+            </div>
+            <div className="pt-1 border-t border-dashed">
+              <label className="text-xs font-medium mb-1 block">Embedding 模型 <span className="text-muted-foreground font-normal">(知识库语义检索用，不同厂商维度不同)</span></label>
+              <div className="flex gap-2">
+                <Input placeholder="text-embedding-3-small / embedding-3" value={llmForm.embedding_model} onChange={e => setLlmForm({...llmForm, embedding_model: e.target.value})} className="font-mono text-xs" />
+                <Button size="middle" type="default" onClick={() => handleUpdateLLM('embedding_model', llmForm.embedding_model)} disabled={saving}>保存</Button>
+              </div>
+            </div>
+            <div>
+              <label className="text-xs font-medium mb-1 block">Embedding Base URL <span className="text-muted-foreground font-normal">(留空复用上方 LLM Base URL)</span></label>
+              <div className="flex gap-2">
+                <Input placeholder="留空则复用 LLM Base URL" value={llmForm.embedding_base_url} onChange={e => setLlmForm({...llmForm, embedding_base_url: e.target.value})} className="font-mono text-xs" />
+                <Button size="middle" type="default" onClick={() => handleUpdateLLM('embedding_base_url', llmForm.embedding_base_url)} disabled={saving}>保存</Button>
               </div>
             </div>
             <div>

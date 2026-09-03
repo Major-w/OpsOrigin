@@ -35,11 +35,12 @@ OpsOrigin is an AI-native operations platform with a Go backend and React fronte
 ### Styling
 - Theme: 经典蓝 `colorPrimary: '#3B82F6'`
 - Dark mode via `darkMode: 'class'`
-- CSS variables defined in `web/src/index.css`
+- CSS variables defined in `web/src/app/globals.css` (imported by `web/src/main.tsx`; **no `web/src/index.css` exists**)
 - Avoid hardcoded hex colors — use CSS variables
 
 ### Routing
-- Routes defined in `web/src/App.tsx` (React Router 6)
+- Routes defined in `web/src/App.tsx` (React Router 6, 111 routes)
+- ⚠️ `web/src/routes.tsx` + `web/src/lib/route-renderer.tsx` are **dead code** (no importers; real routes live in App.tsx) — do not edit them expecting effects
 - Dashboard layout wraps all `/dashboard/*` routes
 - Route names mapped in `ROUTE_NAMES` in `web/src/components/ui/breadcrumb.tsx`
 
