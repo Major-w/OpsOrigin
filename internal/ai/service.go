@@ -387,7 +387,7 @@ func (s *Service) handleChat(w http.ResponseWriter, r *http.Request) {
 
 	out, convID, err := s.Engine.Chat(r.Context(), req.AgentID, req.Prompt, req.History, req.ConversationID, req.Model, req.Explore)
 	if err != nil {
-		httputil.WriteError(w, http.StatusBadGateway, chatFriendlyError(err.Error()))
+		httputil.WriteError(w, chatErrorStatus(err), chatFriendlyError(err.Error()))
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")

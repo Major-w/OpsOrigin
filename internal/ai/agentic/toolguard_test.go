@@ -31,7 +31,9 @@ func TestThinkFilterStreaming(t *testing.T) {
 	// 1) 标签被切分到多个 chunk
 	f := newThinkFilter()
 	var out string
-	for _, chunk := range []string{"答案一", "<thi", "nk>推理中", "</thi", "nk>答案二"} {
+	open := thinkTagOpen
+	close := thinkTagClose
+	for _, chunk := range []string{"答案一", open[:6], open[6:] + "推理中", close[:6], close[6:] + "答案二"} {
 		out += f.feed(chunk)
 	}
 	out += f.flush()
@@ -60,6 +62,19 @@ func TestThinkFilterStreaming(t *testing.T) {
 	out = f.feed("abcdefghij") + f.flush()
 	if out != "abcdefghij" {
 		t.Fatalf("plain text: got %q, want %q", out, "abcdefghij")
+	}
+
+	// 5) 中文 chunk 边界不能切出非法 UTF-8(P0: thinkTagMaxLen 需与字符边界对齐)
+	f = newThinkFilter()
+	out = ""
+	msg := "你好世界"
+	// 在“世”字中间切断(chunk 边界落在多字节字符内部), 验证不会输出半截字符导致乱码
+	for _, chunk := range []string{msg[:7], msg[7:]} {
+		out += f.feed(chunk)
+	}
+	out += f.flush()
+	if out != "你好世界" {
+		t.Fatalf("utf8 boundary: got %q, want %q", out, "你好世界")
 	}
 }
 

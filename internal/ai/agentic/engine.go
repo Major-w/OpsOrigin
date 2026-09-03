@@ -595,7 +595,25 @@ type thinkFilter struct {
 
 func newThinkFilter() *thinkFilter { return &thinkFilter{} }
 
-const thinkTagMaxLen = 8 // len("</think>")
+const thinkTagMaxLen = max(len(thinkTagOpen), len(thinkTagClose)) // 当前标签为中文, 按 UTF-8 字节数计算
+// utf8SafeKeepSuffix 将 s 截成「长度不超过 maxKeep 的后缀」, 并保证 suffix 从有效的 UTF-8
+// 字符边界开始(避免把多字节字符切成两半)。返回被切走的前缀与保留的后缀。
+func utf8SafeKeepSuffix(s string, maxKeep int) (prefix, suffix string) {
+	if len(s) <= maxKeep {
+		return "", s
+	}
+	cut := len(s) - maxKeep
+	// 若 cut 落在一个多字节字符的 continuation byte 上, 则把 cut 向后推到该字符起始字节,
+	// 让这个不完整字符也被保留在 suffix 中, prefix 绝不以半截字符结尾。
+	for cut < len(s) && s[cut]&0xC0 == 0x80 {
+		cut++
+	}
+	if cut > len(s) {
+		return "", s
+	}
+	return s[:cut], s[cut:]
+}
+
 
 // feed 输入一个流式分片, 返回可安全输出给用户的文本(思维链内容被丢弃)。
 func (f *thinkFilter) feed(s string) string {
@@ -607,7 +625,7 @@ func (f *thinkFilter) feed(s string) string {
 			if iClose < 0 {
 				// 仍在思维链内: 丢弃已确认部分, 仅保留可能是不完整结束标签的尾部
 				if len(f.pending) > thinkTagMaxLen-1 {
-					f.pending = f.pending[len(f.pending)-(thinkTagMaxLen-1):]
+					_, f.pending = utf8SafeKeepSuffix(f.pending, thinkTagMaxLen-1)
 				}
 				break
 			}
@@ -621,8 +639,9 @@ func (f *thinkFilter) feed(s string) string {
 			if len(f.pending) <= keep {
 				break
 			}
-			out.WriteString(f.pending[:len(f.pending)-keep])
-			f.pending = f.pending[len(f.pending)-keep:]
+			var safe string
+			safe, f.pending = utf8SafeKeepSuffix(f.pending, keep)
+			out.WriteString(safe)
 			break
 		}
 		if iClose >= 0 && (iOpen < 0 || iClose < iOpen) {
