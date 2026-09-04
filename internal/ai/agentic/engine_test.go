@@ -376,9 +376,10 @@ func TestCompactHistoryNoOpShort(t *testing.T) {
 	e := NewEngine(mcp.NewRegistry(), ratelimit.New(), nil, nil)
 	// historyKeepRecent=16, 构造 16 条(等于阈值, 不触发)。
 	h := makeHistory(historyKeepRecent)
-	got := e.compactHistory(context.Background(), h)
-	if len(got) != historyKeepRecent {
-		t.Fatalf("expected %d unchanged, got %d", historyKeepRecent, len(got))
+	got := e.compactHistory(context.Background(), h, "", 0)
+	compacted := got.history
+	if len(compacted) != historyKeepRecent {
+		t.Fatalf("expected %d unchanged, got %d", historyKeepRecent, len(compacted))
 	}
 }
 
@@ -387,18 +388,19 @@ func TestCompactHistoryDeterministicFallback(t *testing.T) {
 	e := NewEngine(mcp.NewRegistry(), ratelimit.New(), nil, nil) // historySummarizer=nil
 	const total = 25
 	h := makeHistory(total)
-	got := e.compactHistory(context.Background(), h)
+	got := e.compactHistory(context.Background(), h, "", 0)
+	compacted := got.history
 	// 1(首条 user) + 最近 16 = 17
-	if len(got) != historyKeepRecent+1 {
-		t.Fatalf("expected %d, got %d", historyKeepRecent+1, len(got))
+	if len(compacted) != historyKeepRecent+1 {
+		t.Fatalf("expected %d, got %d", historyKeepRecent+1, len(compacted))
 	}
 	// 首条必须是原始意图锚点(history[0] = msg-0, user)。
-	if got[0].Role != "user" || got[0].Content != "msg-0" {
-		t.Fatalf("anchor not preserved: %#v", got[0])
+	if compacted[0].Role != "user" || compacted[0].Content != "msg-0" {
+		t.Fatalf("anchor not preserved: %#v", compacted[0])
 	}
 	// 末尾必须是原始历史的最后一条。
-	if got[len(got)-1].Content != fmt.Sprintf("msg-%d", total-1) {
-		t.Fatalf("recent tail not preserved: %#v", got[len(got)-1])
+	if compacted[len(compacted)-1].Content != fmt.Sprintf("msg-%d", total-1) {
+		t.Fatalf("recent tail not preserved: %#v", compacted[len(compacted)-1])
 	}
 }
 
@@ -408,12 +410,13 @@ func TestCompactHistorySummarizer(t *testing.T) {
 	e.SetHistorySummarizer(func(ctx context.Context, msgs []llm.Message) (string, error) {
 		return "SUMMARY_OF_PAST", nil
 	})
-	got := e.compactHistory(context.Background(), makeHistory(25))
-	if len(got) != historyKeepRecent+1 {
-		t.Fatalf("expected %d, got %d", historyKeepRecent+1, len(got))
+	got := e.compactHistory(context.Background(), makeHistory(25), "", 0)
+	compacted := got.history
+	if len(compacted) != historyKeepRecent+1 {
+		t.Fatalf("expected %d, got %d", historyKeepRecent+1, len(compacted))
 	}
-	if got[0].Role != "system" || !strings.Contains(got[0].Content, "SUMMARY_OF_PAST") {
-		t.Fatalf("summary not injected: %#v", got[0])
+	if compacted[0].Role != "system" || !strings.Contains(compacted[0].Content, "SUMMARY_OF_PAST") {
+		t.Fatalf("summary not injected: %#v", compacted[0])
 	}
 }
 
@@ -423,12 +426,71 @@ func TestCompactHistorySummarizerFallbackOnError(t *testing.T) {
 	e.SetHistorySummarizer(func(ctx context.Context, msgs []llm.Message) (string, error) {
 		return "", fmt.Errorf("boom")
 	})
-	got := e.compactHistory(context.Background(), makeHistory(25))
-	if len(got) != historyKeepRecent+1 {
-		t.Fatalf("expected %d, got %d", historyKeepRecent+1, len(got))
+	got := e.compactHistory(context.Background(), makeHistory(25), "", 0)
+	compacted := got.history
+	if len(compacted) != historyKeepRecent+1 {
+		t.Fatalf("expected %d, got %d", historyKeepRecent+1, len(compacted))
 	}
-	if got[0].Role != "user" || got[0].Content != "msg-0" {
-		t.Fatalf("should fall back to anchor, got %#v", got[0])
+	if compacted[0].Role != "user" || compacted[0].Content != "msg-0" {
+		t.Fatalf("should fall back to anchor, got %#v", compacted[0])
+	}
+}
+
+// TestCompactHistoryTokenBudgetTrigger 验证条数未超窗口但估算 token 超预算时也触发压缩,
+// 且压缩后(摘要 + 最近窗口)落回预算内(含硬裁剪)。
+func TestCompactHistoryTokenBudgetTrigger(t *testing.T) {
+	e := NewEngine(mcp.NewRegistry(), ratelimit.New(), nil, nil)
+	e.SetHistorySummarizer(func(ctx context.Context, msgs []llm.Message) (string, error) {
+		return "TOK_SUMMARY", nil
+	})
+	// 10 条中文长消息: 条数 ≤16 不触发条数压缩, 但 10×3000 汉字 ≈ 30000 token > 12000 预算。
+	h := make([]llm.Message, 0, 10)
+	for i := 0; i < 10; i++ {
+		role := "user"
+		if i%2 == 1 {
+			role = "assistant"
+		}
+		h = append(h, llm.Message{Role: role, Content: strings.Repeat("运", 3000)})
+	}
+	got := e.compactHistory(context.Background(), h, "", 0)
+	if est := estimateTokens(got.history); est > historyTokenBudget {
+		t.Fatalf("compacted history still over budget: %d > %d", est, historyTokenBudget)
+	}
+	if !got.changed || got.summary != "TOK_SUMMARY" || got.covered == 0 {
+		t.Fatalf("unexpected compaction result: changed=%v summary=%q covered=%d", got.changed, got.summary, got.covered)
+	}
+}
+
+// TestCompactHistoryRollingReuse 验证溢出部分已被旧摘要覆盖时直接复用摘要, 不重调摘要器(跨轮复用)。
+func TestCompactHistoryRollingReuse(t *testing.T) {
+	e := NewEngine(mcp.NewRegistry(), ratelimit.New(), nil, nil)
+	calls := 0
+	e.SetHistorySummarizer(func(ctx context.Context, msgs []llm.Message) (string, error) {
+		calls++
+		return "ROLL_SUM", nil
+	})
+	h := makeHistory(25)
+	first := e.compactHistory(context.Background(), h, "", 0)
+	if calls != 1 || first.summary != "ROLL_SUM" || !first.changed {
+		t.Fatalf("first compaction unexpected: calls=%d %+v", calls, first)
+	}
+	// 同一历史 + 已持久化的摘要状态 → 复用, 不再调用摘要器。
+	second := e.compactHistory(context.Background(), h, first.summary, first.covered)
+	if calls != 1 {
+		t.Fatalf("summary should be reused without new LLM call, calls=%d", calls)
+	}
+	if second.summary != first.summary || second.changed {
+		t.Fatalf("reuse should keep summary unchanged: %+v", second)
+	}
+}
+
+// TestEstimateStrTokens 验证中英混排的粗估口径: CJK≈1 token/字, ASCII≈4 字符/token。
+func TestEstimateStrTokens(t *testing.T) {
+	if got := estimateStrTokens("运维监控"); got != 4 {
+		t.Fatalf("CJK estimate: want 4, got %d", got)
+	}
+	if got := estimateStrTokens("abcdefgh"); got != 2 {
+		t.Fatalf("ASCII estimate: want 2, got %d", got)
 	}
 }
 

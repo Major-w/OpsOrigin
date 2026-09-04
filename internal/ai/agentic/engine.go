@@ -12,6 +12,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"unicode"
 
 	"github.com/google/uuid"
 	"github.com/opsorigin/core/internal/ai/mcp"
@@ -749,7 +750,14 @@ func (e *Engine) chatWithToolsConv(ctx context.Context, agentID, prompt string, 
 		}
 		sysExtra += explorePrompt
 	}
-	msgs, roundStart := e.buildMessages(ctx, agentID, userPrompt, baseHistory, sysExtra)
+	// Token 预算压缩: 超长历史压缩为"滚动摘要 + 最近窗口"(条数或估算 token 任一超限即触发;
+	// 摘要跨轮复用并回写会话, 见 Conversation.Summary/SummarizedCount)。
+	convSummary, convCovered := "", 0
+	if conv != nil {
+		convSummary, convCovered = conv.Summary, conv.SummarizedCount
+	}
+	hc := e.compactHistory(ctx, baseHistory, convSummary, convCovered)
+	msgs, roundStart := e.buildMessages(ctx, agentID, userPrompt, hc.history, sysExtra)
 	tools := e.buildToolDefs(agentID)
 	var invocations []ToolInvocation
 
@@ -977,6 +985,11 @@ func (e *Engine) chatWithToolsConv(ctx context.Context, agentID, prompt string, 
 	if conv != nil && err == nil {
 		roundMsgs := msgs[roundStart:]
 		conv.Messages = append(conv.Messages, roundMsgs...)
+		if hc.changed {
+			// 滚动摘要回写: 下轮直接复用, 不重调摘要 LLM(消息本体保留, 前端仍可见全文)。
+			conv.Summary = hc.summary
+			conv.SummarizedCount = hc.covered
+		}
 		conv.AgentID = agentID
 		if conv.TenantID == "" {
 			conv.TenantID = tenantOf(ctx)
@@ -1006,8 +1019,8 @@ func (e *Engine) buildMessages(ctx context.Context, agentID, userPrompt string, 
 		sys += "\n\n" + sysExtra
 	}
 	msgs := []llm.Message{{Role: "system", Content: sys}}
-	// Token 预算压缩: 超长历史压缩为"摘要(可选) + 最近窗口 + 原始意图锚点", 避免撑爆上下文。
-	history = e.compactHistory(ctx, history)
+	// 注意: 历史压缩(compactHistory)已上移到 chatWithToolsConv/chatWithToolsStream —— 那里才持有
+	// 会话的滚动摘要状态(Conversation.Summary), 压缩后需回写; 本函数只负责拼装。
 	msgs = append(msgs, history...)
 	// roundStart 指向"本轮用户消息"在 msgs 中的下标: 持久化时 msgs[roundStart:] 即本轮回合(user + assistant/tool),
 	// 跳过 system 与历史, 避免重复累积。
@@ -1050,7 +1063,11 @@ func (e *Engine) renderSkills(agentID string) string {
 }
 
 // buildInitialMessages 兼容旧调用: 仅返回拼装后的消息切片(不暴露 roundStart/sysExtra)。
+// 无会话上下文(无滚动摘要), 压缩按首次全量语义执行。
 func (e *Engine) buildInitialMessages(ctx context.Context, agentID, userPrompt string, history []llm.Message) []llm.Message {
+	if hc := e.compactHistory(ctx, history, "", 0); len(hc.history) > 0 {
+		history = hc.history
+	}
 	msgs, _ := e.buildMessages(ctx, agentID, userPrompt, history, "")
 	return msgs
 }
@@ -1061,39 +1078,163 @@ func (e *Engine) SetHistorySummarizer(fn func(ctx context.Context, msgs []llm.Me
 	e.historySummarizer = fn
 }
 
+// historyCompaction 历史压缩结果: 含注入 LLM 的压缩形态与需回写会话的滚动摘要状态。
+type historyCompaction struct {
+	history []llm.Message // 压缩后的历史(注入 LLM 的形态)
+	summary string        // 生效的滚动摘要全文(""=无有效摘要)
+	covered int           // 摘要覆盖的原始历史前缀条数
+	changed bool          // 摘要状态相比上一轮发生变化(需回写会话)
+}
+
 // compactHistory 对超长历史做 Token 预算压缩:
-//   - 不超过 historyKeepRecent 条时原样返回;
-//   - 超过时保留最近 historyKeepRecent 条;
-//   - 较早部分优先用 historySummarizer 生成摘要(若已配置且成功), 否则回退为"保留首条非空 user 消息(原始意图锚点)"的确定性方案。
+//   - 触发条件: 条数超过 historyKeepRecent 或估算 token 超过 historyTokenBudget(任一命中);
+//   - 较早部分生成"滚动摘要"(结合 prevSummary 增量更新, 溢出部分已被旧摘要覆盖时直接复用、
+//     不重调摘要 LLM); historySummarizer 未配置或失败时回退为"保留首条非空 user 消息
+//     (原始意图锚点)"的确定性方案(此时不产出摘要、不回写, 下轮重试);
+//   - 压缩后仍超预算(单条消息过大)时, 从最近窗口头部按完整回合继续硬裁剪。
 //
-// 该压缩对服务端持久化历史(baseHistory, 可能很长)尤其重要; 压缩后的摘要消息会被持久化回会话, 实现跨轮累积压缩。
-func (e *Engine) compactHistory(ctx context.Context, history []llm.Message) []llm.Message {
-	if len(history) <= historyKeepRecent {
-		return history
+// 历史消息本体(Conversation.Messages)始终保留, 仅 LLM 注入形态被压缩 —— 前端仍可见全文。
+// prevSummary/prevCovered 来自会话持久化的滚动摘要(Conversation.Summary/SummarizedCount)。
+func (e *Engine) compactHistory(ctx context.Context, history []llm.Message, prevSummary string, prevCovered int) historyCompaction {
+	if len(history) <= historyKeepRecent && estimateTokens(history) <= historyTokenBudget {
+		return historyCompaction{history: history, summary: prevSummary, covered: prevCovered}
 	}
-	overflow := history[:len(history)-historyKeepRecent]
-	recent := history[len(history)-historyKeepRecent:]
 
-	if e.historySummarizer != nil {
-		sum, serr := e.historySummarizer(ctx, overflow)
-		if serr == nil && strings.TrimSpace(sum) != "" {
+	// 溢出条数: 条数窗口 + token 预算双重约束(预算超得越多, 头部裁得越多)。
+	overflowN := 0
+	if len(history) > historyKeepRecent {
+		overflowN = len(history) - historyKeepRecent
+	}
+	for overflowN < len(history)-1 && estimateTokens(history[overflowN:]) > historyTokenBudget {
+		overflowN++
+	}
+	overflow := history[:overflowN]
+	recent := history[overflowN:]
+
+	// 滚动摘要: 复用/增量/首次 三态。
+	summary, covered, changed := prevSummary, prevCovered, false
+	switch {
+	case prevSummary != "" && overflowN <= prevCovered:
+		// 溢出部分已被旧摘要覆盖 → 直接复用, 不重调 LLM。
+	case overflowN <= 0:
+		// 仅极端边界(无溢出可摘), 保守返回原样。
+		return historyCompaction{history: history, summary: prevSummary, covered: prevCovered}
+	default:
+		newPart := overflow
+		if prevSummary != "" && prevCovered < overflowN {
+			newPart = history[prevCovered:overflowN]
+		}
+		if sum, serr := e.summarizeWithPrev(ctx, prevSummary, newPart); serr == nil && strings.TrimSpace(sum) != "" {
+			summary = sum
+		} else if prevSummary != "" {
+			// LLM 失败(有旧摘要): 保守滚动 = 旧摘要 + 新溢出段的原始意图锚点。
+			if anchor := firstUserAnchor(newPart); anchor != "" {
+				summary = prevSummary + "\n" + anchor
+			}
+		} else {
+			// 首次压缩且无 LLM: 旧行为(锚点 + 窗口), 不产出摘要、不回写, 下轮重试。
 			AIHistoryCompactions.Inc()
-			return append([]llm.Message{{Role: "system", Content: "[历史对话摘要]\n" + sum}}, recent...)
+			return historyCompaction{history: withIntentAnchor(overflow, recent)}
 		}
-		if serr != nil {
-			slog.Warn("history summarizer failed, falling back to deterministic compaction", "err", serr)
+		covered = overflowN
+		changed = summary != prevSummary || covered != prevCovered
+	}
+	AIHistoryCompactions.Inc()
+
+	// 组装: [历史摘要 system] + 最近窗口。
+	build := func(recent []llm.Message) []llm.Message {
+		var m []llm.Message
+		if summary != "" {
+			m = append(m, llm.Message{Role: "system", Content: "[历史对话摘要]\n" + summary})
 		}
+		return append(m, recent...)
+	}
+	msgs := build(recent)
+
+	// 硬裁剪: 压缩后仍超预算(最近窗口含超大单条) → 从窗口头部按完整回合(以 user 消息为界)丢弃。
+	for estimateTokens(msgs) > historyTokenBudget {
+		idx := -1
+		for i := 1; i < len(recent); i++ {
+			if recent[i].Role == "user" {
+				idx = i
+				break
+			}
+		}
+		if idx <= 0 {
+			break // 无更早回合边界可裁, 保留现状
+		}
+		recent = recent[idx:]
+		msgs = build(recent)
 	}
 
-	// 确定性回退: 保留 overflow 中首条非空 user 消息作为原始意图锚点, 丢弃中间轮次。
+	return historyCompaction{history: msgs, summary: summary, covered: covered, changed: changed}
+}
+
+// summarizeWithPrev 滚动摘要: 在 prevSummary 基础上合并 newPart 生成新摘要。
+// prevSummary 为空时等价于首次全量摘要。优先用注入的 historySummarizer(SetHistorySummarizer),
+// 未配置时回退内置 defaultSummarize(依赖 llmClient/router, 未就绪时报错触发确定性回退)。
+func (e *Engine) summarizeWithPrev(ctx context.Context, prevSummary string, newPart []llm.Message) (string, error) {
+	var in []llm.Message
+	if prevSummary != "" {
+		in = append(in, llm.Message{Role: "system", Content: "[此前对话摘要]\n" + prevSummary})
+	}
+	in = append(in, newPart...)
+	if e.historySummarizer != nil {
+		return e.historySummarizer(ctx, in)
+	}
+	return e.defaultSummarize(ctx, in)
+}
+
+// firstUserAnchor 提取 msgs 中首条非空 user 消息的截断文本, 作为"原始意图锚点"。
+func firstUserAnchor(msgs []llm.Message) string {
+	for _, m := range msgs {
+		if m.Role == "user" && strings.TrimSpace(m.Content) != "" {
+			c := m.Content
+			if len(c) > 200 {
+				c = c[:200] + "…(截断)"
+			}
+			return "用户诉求: " + c
+		}
+	}
+	return ""
+}
+
+// withIntentAnchor 确定性压缩回退形态: 保留溢出段首条非空 user 消息(原始意图) + 最近窗口。
+func withIntentAnchor(overflow, recent []llm.Message) []llm.Message {
 	for _, m := range overflow {
 		if m.Role == "user" && strings.TrimSpace(m.Content) != "" {
-			AIHistoryCompactions.Inc()
 			return append([]llm.Message{m}, recent...)
 		}
 	}
-	AIHistoryCompactions.Inc()
 	return recent
+}
+
+// estimateTokens 估算消息序列的 token 数: CJK(汉字/全角/假名)≈1 token/字符, 其他(ASCII/拉丁)≈4 字符/token,
+// 每个工具调用结构额外按 40 token 计。无 tokenizer 依赖的粗估(误差 ±20% 量级), 用于历史压缩触发判定。
+func estimateTokens(msgs []llm.Message) int {
+	total := 0
+	for _, m := range msgs {
+		total += estimateStrTokens(m.Content)
+		total += len(m.ToolCalls) * 40
+	}
+	return total
+}
+
+func estimateStrTokens(s string) int {
+	if s == "" {
+		return 0
+	}
+	cjk, other := 0, 0
+	for _, r := range s {
+		if unicode.Is(unicode.Han, r) ||
+			(r >= 0x3000 && r <= 0x30FF) || // CJK 符号 + 假名
+			(r >= 0xFF00 && r <= 0xFFEF) { // 全角形式
+			cjk++
+		} else {
+			other++
+		}
+	}
+	return cjk + (other+3)/4
 }
 
 // defaultSummarize 内置的 LLM 历史摘要器: 将较早历史压缩为一段简短要点摘要,
@@ -1103,7 +1244,7 @@ func (e *Engine) defaultSummarize(ctx context.Context, msgs []llm.Message) (stri
 		return "", fmt.Errorf("llm client not ready")
 	}
 	var b strings.Builder
-	b.WriteString("请用不超过 200 字,以要点形式总结以下运维对话的关键结论、已执行操作与待办事项,保留可用于后续排查的具体指标/命令/错误。不要编造内容:\n\n")
+	b.WriteString("请用不超过 300 字,以要点形式总结以上运维对话的关键结论、已执行操作与待办事项,保留可用于后续排查的具体指标/命令/错误。若内容包含[此前对话摘要], 请在其基础上合并更新为一个统一摘要, 而非简单拼接。不要编造内容:\n\n")
 	for _, m := range msgs {
 		role := m.Role
 		if role == "" {
@@ -1134,6 +1275,9 @@ const (
 	maxHistoryMessages = 20   // SanitizeHistory 的总条数上限(防御注入 + 兜底)
 	maxHistoryMsgLen   = 8000 // 单条历史消息最大长度, 防止超长内容撑爆上下文
 	historyKeepRecent  = 16   // 超过该窗口时较早历史被压缩(保留该窗口 + 原始意图锚点/摘要)
+	// historyTokenBudget 历史段估算 token 预算: 超过即触发压缩(与条数阈值任一命中)。
+	// 为回答/工具结果留出空间(genMaxTokens 默认 1024), 预算不含 system prompt。
+	historyTokenBudget = 12000
 )
 
 // SanitizeHistory 清洗客户端提交的对话历史, 防止提示注入:
@@ -1184,11 +1328,6 @@ var builtinToolDenyList = map[string]bool{
 // 推理模型在纯对话场景下易反复调用工具, 若开放写/执行类会造成工单泛滥、脚本误执行等副作用,
 // 也可能形成"调用→失败→重试"的死循环。这类工具仅在绑定了具体 Agent 且该 Agent 配置了
 // 工具白名单时才对模型可见(见 buildToolDefs 的 allowlist 逻辑)。
-var defaultAssistantDenyList = map[string]bool{
-	"ticket_create":   true,
-	"script_run":      true,
-	"script_generate": true,
-}
 
 // noCacheTools 不参与工具结果缓存的工具: 有副作用/写操作(script_run/ticket_create)与内建辅助工具。
 // 缓存仅对幂等/只读的运维工具(cmdb_query/knowledge_search 等)生效, 避免缓存写操作或污染内部调用。
@@ -1201,28 +1340,36 @@ var noCacheTools = map[string]bool{
 
 // buildToolDefs 将 Registry 中的运维工具转换为 LLM Function Calling 所需的 ToolDef。
 // 跳过内建工具与未注册 Handler 的工具。
-// agentID 非空且该 Agent 配置了 Tools 白名单时, 仅返回白名单内的工具; 否则返回全部。
+//
+// 工具可见性规则(参考 PRD 5.2.2「数字员工按需关联工具」):
+//   - agentID == ""（默认助手, 未选择数字员工）：不关联任何工具, 仅纯对话/推理,
+//     避免默认态盲目发起工具调用;
+//   - 指定 Agent 且显式配置了 Tools 白名单：仅返回白名单内的工具;
+//   - 指定 Agent 但 Tools 为空：视为「未关联任何工具」, 不向模型暴露任何工具,
+//     避免数字员工在没关联工具/知识库时仍盲目发起工具调用(用户反馈的误调用问题)。
 func (e *Engine) buildToolDefs(agentID string) []llm.ToolDef {
 	defs := e.reg.List()
-	// Agent 工具白名单(空 = 全部可用)
+	// Agent 工具白名单。nil = 全部可用; 空 map = 严格不暴露任何工具。
+	// 默认助手(agentID=="", 未选择数字员工)不关联工具, 仅纯对话/推理。
 	var allowlist map[string]bool
-	if agentID != "" {
-		if a, ok := e.GetAgent(agentID); ok && len(a.Tools) > 0 {
+	if agentID == "" {
+		allowlist = map[string]bool{}
+	} else if a, ok := e.GetAgent(agentID); ok {
+		if len(a.Tools) > 0 {
 			allowlist = make(map[string]bool, len(a.Tools))
 			for _, t := range a.Tools {
 				if t = strings.TrimSpace(t); t != "" {
 					allowlist[t] = true
 				}
 			}
+		} else {
+			// 显式空白名单: 该 Agent 未关联工具, 不应暴露任何工具给模型。
+			allowlist = map[string]bool{}
 		}
 	}
 	out := make([]llm.ToolDef, 0, len(defs))
 	for _, d := range defs {
 		if builtinToolDenyList[d.Name] {
-			continue
-		}
-		// 默认助手(agentID=="")屏蔽写/执行类工具, 仅暴露只读/安全工具, 避免副作用与工具循环。
-		if agentID == "" && defaultAssistantDenyList[d.Name] {
 			continue
 		}
 		if allowlist != nil && !allowlist[d.Name] {
@@ -2724,7 +2871,13 @@ func (e *Engine) chatWithToolsStream(ctx context.Context, agentID, prompt string
 		}
 		sysExtra += explorePrompt
 	}
-	msgs, roundStart := e.buildMessages(ctx, agentID, userPrompt, baseHistory, sysExtra)
+	// Token 预算压缩: 与非流式路径同款(滚动摘要 + 最近窗口, 摘要回写会话跨轮复用)。
+	convSummary, convCovered := "", 0
+	if conv != nil {
+		convSummary, convCovered = conv.Summary, conv.SummarizedCount
+	}
+	hc := e.compactHistory(ctx, baseHistory, convSummary, convCovered)
+	msgs, roundStart := e.buildMessages(ctx, agentID, userPrompt, hc.history, sysExtra)
 	tools := e.buildToolDefs(agentID)
 
 	var err error
@@ -2884,7 +3037,8 @@ func (e *Engine) chatWithToolsStream(ctx context.Context, agentID, prompt string
 			lastSoloTool = ""
 		}
 
-		// 执行本轮工具调用, 实时发射进度标记
+		// 执行本轮工具调用, 实时发射结构化进度事件(供前端"任务列表"并发可视化)。
+		// 注意: 不再把 🔧 markdown 塞进回答正文(frontend 用独立 task list 面板渲染), 保持答案干净。
 		roundEmpty := make(map[string]bool)
 		for _, tc := range toolCalls {
 			var args map[string]any
@@ -2893,14 +3047,23 @@ func (e *Engine) chatWithToolsStream(ctx context.Context, agentID, prompt string
 			}
 			AIToolCalls.Inc()
 			slog.Info("ai function call", "tool", tc.Function.Name, "args", truncateJSON(args))
-			emit("tool", fmt.Sprintf("\n\n🔧 **调用工具 `%s`**\n", tc.Function.Name))
-			if len(args) > 0 {
-				if b, e := json.MarshalIndent(args, "", "  "); e == nil {
-					emit("tool", "```json\n"+string(b)+"\n```\n")
-				}
+			if tb, e := json.Marshal(map[string]any{"name": tc.Function.Name, "args": args, "status": "running"}); e == nil {
+				emit("tool_event", string(tb))
 			}
 			result, execErr := e.execToolChecked(ctx, tc)
-			emit("tool", fmt.Sprintf("\n↳ **结果**: %s\n\n", summarizeToolResult(result)))
+			toolErrMsg := ""
+			if execErr {
+				toolErrMsg = "工具执行失败(权限不足或后端错误)"
+			}
+			if tb, e := json.Marshal(map[string]any{
+				"name":   tc.Function.Name,
+				"args":   args,
+				"status": "done",
+				"result": summarizeToolResult(result),
+				"error":  toolErrMsg,
+			}); e == nil {
+				emit("tool_event", string(tb))
+			}
 
 			toolMsgContent := toolFeedbackContent(result, execErr)
 			msgs = append(msgs, llm.Message{
@@ -2968,6 +3131,11 @@ func (e *Engine) chatWithToolsStream(ctx context.Context, agentID, prompt string
 	if conv != nil && err == nil {
 		roundMsgs := msgs[roundStart:]
 		conv.Messages = append(conv.Messages, roundMsgs...)
+		if hc.changed {
+			// 滚动摘要回写: 下轮直接复用, 不重调摘要 LLM。
+			conv.Summary = hc.summary
+			conv.SummarizedCount = hc.covered
+		}
 		conv.AgentID = agentID
 		if conv.TenantID == "" {
 			conv.TenantID = tenantOf(ctx)
@@ -2991,6 +3159,11 @@ type Conversation struct {
 	Messages  []llm.Message `json:"messages"`
 	CreatedAt time.Time     `json:"created_at"`
 	UpdatedAt time.Time     `json:"updated_at"`
+	// Summary 滚动历史摘要(Token 预算压缩产物): 覆盖 Messages 前 SummarizedCount 条,
+	// 后续轮次直接复用, 避免每轮重调摘要 LLM。消息本体保留不动(前端仍可看全文)。
+	Summary string `json:"summary,omitempty"`
+	// SummarizedCount Summary 已覆盖的 Messages 前缀条数; 0=尚无有效摘要。
+	SummarizedCount int `json:"summarized_count,omitempty"`
 	// Permission 当前请求主体对该会话的权限(Service 层填充, 不入库): owner|edit|view
 	Permission string `json:"permission,omitempty"`
 }

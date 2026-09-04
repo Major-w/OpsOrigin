@@ -1187,6 +1187,37 @@ export function ApprovalBar({ pending, approving, onRespond, variant = 'panel', 
 // 并提供一键跳配置。解决「配了不会用、用了不知道配了啥」的配用割裂(P1 #3)。
 // ---------------------------------------------------------------------------
 
+/** 后端历史压缩的估算 token 预算(与 internal/ai/agentic/engine.go historyTokenBudget 对齐) */
+export const CONTEXT_TOKEN_BUDGET = 12000
+
+/**
+ * estimateContextTokens 前端侧上下文用量粗估(与后端 estimateTokens 同口径):
+ * CJK(汉字/全角/假名)≈1 token/字符, 其他(ASCII/拉丁)≈4 字符/token。误差 ±20% 量级,
+ * 仅用于展示「上下文用量」徽标; 超过 CONTEXT_TOKEN_BUDGET 时后端会自动压缩较早历史。
+ */
+export function estimateContextTokens(messages: Array<{ role?: string; content?: string }>): number {
+  let cjk = 0
+  let other = 0
+  for (const m of messages) {
+    const s = m.content || ''
+    for (const ch of s) {
+      const code = ch.codePointAt(0) ?? 0
+      if ((code >= 0x4e00 && code <= 0x9fff) || (code >= 0x3000 && code <= 0x30ff) || (code >= 0xff00 && code <= 0xffef)) {
+        cjk++
+      } else {
+        other++
+      }
+    }
+  }
+  return cjk + Math.ceil(other / 4)
+}
+
+/** 把 token 数格式化为紧凑展示(如 850 / 1.2k / 12.5k) */
+export function formatTokenCount(n: number): string {
+  if (n < 1000) return String(n)
+  return `${(n / 1000).toFixed(1)}k`
+}
+
 export interface ChatContextBarProps {
   /** 当前运行级模型展示名(空=自动路由; 未启用切换时展示用) */
   modelLabel?: string
@@ -1209,6 +1240,8 @@ export interface ChatContextBarProps {
   onConfigure?: () => void
   /** 点击「知识范围」chip 跳转知识库(传入后 chip 变可点击) */
   onOpenKnowledge?: () => void
+  /** 当前会话上下文用量(估算 token, 经 estimateContextTokens 计算; 0/未传=不展示) */
+  contextTokens?: number
   className?: string
 }
 
@@ -1226,6 +1259,7 @@ export function ChatContextBar({
   variant = 'page',
   onConfigure,
   onOpenKnowledge,
+  contextTokens,
   className,
 }: ChatContextBarProps) {
   const isDark = variant === 'panel'
@@ -1319,6 +1353,27 @@ export function ChatContextBar({
         <span title={knowledgeScope.length === 0 ? '检索全部知识库分类' : `仅检索分类：${scopeLabel}`} className={wrapCls}>
           <span className="opacity-70">知识范围</span>
           <span className={chipCls}>{scopeLabel}</span>
+        </span>
+      )}
+      {/* 上下文用量(只读): 估算 token; 超过预算提示将自动压缩 */}
+      {!!contextTokens && contextTokens > 0 && (
+        <span
+          title={
+            contextTokens >= CONTEXT_TOKEN_BUDGET
+              ? `上下文约 ${formatTokenCount(contextTokens)} tokens，已达预算（${formatTokenCount(CONTEXT_TOKEN_BUDGET)}），较早对话将自动压缩为摘要`
+              : `当前会话上下文约 ${formatTokenCount(contextTokens)} tokens（预算 ${formatTokenCount(CONTEXT_TOKEN_BUDGET)}，超出后较早对话自动压缩）`
+          }
+          className={wrapCls}
+        >
+          <span className="opacity-70">上下文</span>
+          <span className={cn(
+            'px-1.5 py-0.5 rounded font-medium',
+            contextTokens >= CONTEXT_TOKEN_BUDGET
+              ? (isDark ? 'bg-amber-500/20 text-amber-300' : 'bg-amber-50 text-amber-700')
+              : chipCls,
+          )}>
+            ~{formatTokenCount(contextTokens)}{contextTokens >= CONTEXT_TOKEN_BUDGET ? ' · 将压缩' : ''}
+          </span>
         </span>
       )}
       {onConfigure && (

@@ -4,7 +4,7 @@ import { useNavigate } from 'react-router-dom'
 import { useAIStore } from '@/stores/ai'
 import { useKnowledgeStore } from '@/stores/knowledge'
 import { useCan } from '@/stores/permissions'
-import { useAIChat, ChatMessageList, ChatInputBar, TeamChatView, ChatContextBar, ConversationList, type ChatMessage } from '@/components/ai/chat-kernel'
+import { useAIChat, ChatMessageList, ChatInputBar, TeamChatView, ChatContextBar, ConversationList, estimateContextTokens, type ChatMessage } from '@/components/ai/chat-kernel'
 import { Button, Input, Space, Modal, Popconfirm } from 'antd'
 import {
   Sparkles, History, Settings, BarChart3, Share2, Lock, PanelLeftClose, PanelLeftOpen,
@@ -448,6 +448,7 @@ export default function AIPage() {
               selectedAgent={selectedAgent}
               onAgentChange={setSelectedAgent}
               onOpenKnowledge={() => navigate(knowledgeCategories.length === 1 ? `/knowledge?cat=${encodeURIComponent(knowledgeCategories[0])}` : '/knowledge')}
+              contextTokens={estimateContextTokens(messages)}
               variant="page"
               onConfigure={() => navigate('/ai/settings')}
             />

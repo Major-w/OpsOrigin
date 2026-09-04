@@ -47,6 +47,9 @@ func (s *pgConvStore) init(ctx context.Context) {
 	}
 	// 存量库幂等补列(用户隔离: 归属人)
 	s.db.ExecContext(ctx, `ALTER TABLE ai_conversations ADD COLUMN IF NOT EXISTS owner_id TEXT NOT NULL DEFAULT ''`)
+	// 存量库幂等补列(上下文管理: 滚动历史摘要 + 已覆盖条数, 见 Conversation.Summary)
+	s.db.ExecContext(ctx, `ALTER TABLE ai_conversations ADD COLUMN IF NOT EXISTS summary TEXT NOT NULL DEFAULT ''`)
+	s.db.ExecContext(ctx, `ALTER TABLE ai_conversations ADD COLUMN IF NOT EXISTS summarized_count INTEGER NOT NULL DEFAULT 0`)
 	// 会话共享表: 目标用户或用户组, 权限 view(仅查看)/edit(可继续对话)
 	s.db.ExecContext(ctx, `
 		CREATE TABLE IF NOT EXISTS ai_conversation_shares (
@@ -65,15 +68,15 @@ func (s *pgConvStore) init(ctx context.Context) {
 func (s *pgConvStore) Save(ctx context.Context, c *Conversation) error {
 	b, _ := json.Marshal(c.Messages)
 	_, err := s.db.ExecContext(ctx, `
-		INSERT INTO ai_conversations (id, tenant_id, agent_id, owner_id, title, messages, created_at, updated_at)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
-		ON CONFLICT (id) DO UPDATE SET title=$5, messages=$6, updated_at=$8`,
-		c.ID, c.TenantID, c.AgentID, c.OwnerID, c.Title, b, c.CreatedAt, c.UpdatedAt)
+		INSERT INTO ai_conversations (id, tenant_id, agent_id, owner_id, title, messages, summary, summarized_count, created_at, updated_at)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+		ON CONFLICT (id) DO UPDATE SET title=$5, messages=$6, summary=$7, summarized_count=$8, updated_at=$10`,
+		c.ID, c.TenantID, c.AgentID, c.OwnerID, c.Title, b, c.Summary, c.SummarizedCount, c.CreatedAt, c.UpdatedAt)
 	return err
 }
 
 func (s *pgConvStore) List(ctx context.Context, tenantID, agentID string, limit int) ([]*Conversation, error) {
-	query := `SELECT id, tenant_id, agent_id, owner_id, title, messages, created_at, updated_at FROM ai_conversations WHERE tenant_id=$1`
+	query := `SELECT id, tenant_id, agent_id, owner_id, title, messages, created_at, updated_at, summary, summarized_count FROM ai_conversations WHERE tenant_id=$1`
 	args := []any{tenantID}
 	if agentID != "" {
 		query += ` AND agent_id=$2`
@@ -94,7 +97,8 @@ func (s *pgConvStore) List(ctx context.Context, tenantID, agentID string, limit 
 		c := &Conversation{}
 		var msgs []byte
 		var agentID, ownerID sql.NullString
-		if err := rows.Scan(&c.ID, &c.TenantID, &agentID, &ownerID, &c.Title, &msgs, &c.CreatedAt, &c.UpdatedAt); err != nil {
+		if err := rows.Scan(&c.ID, &c.TenantID, &agentID, &ownerID, &c.Title, &msgs, &c.CreatedAt, &c.UpdatedAt,
+			&c.Summary, &c.SummarizedCount); err != nil {
 			return nil, err
 		}
 		if agentID.Valid {
@@ -114,9 +118,10 @@ func (s *pgConvStore) Get(ctx context.Context, id string) (*Conversation, error)
 	var msgs []byte
 	var agentID, ownerID sql.NullString
 	err := s.db.QueryRowContext(ctx, `
-		SELECT id, tenant_id, agent_id, owner_id, title, messages, created_at, updated_at
+		SELECT id, tenant_id, agent_id, owner_id, title, messages, created_at, updated_at, summary, summarized_count
 		FROM ai_conversations WHERE id=$1`, id).
-		Scan(&c.ID, &c.TenantID, &agentID, &ownerID, &c.Title, &msgs, &c.CreatedAt, &c.UpdatedAt)
+		Scan(&c.ID, &c.TenantID, &agentID, &ownerID, &c.Title, &msgs, &c.CreatedAt, &c.UpdatedAt,
+			&c.Summary, &c.SummarizedCount)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}

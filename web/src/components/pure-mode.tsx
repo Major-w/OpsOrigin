@@ -3,7 +3,7 @@ import { useEffect, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useAIStore } from '@/stores/ai'
 import { useKnowledgeStore } from '@/stores/knowledge'
-import { useAIChat, ChatMessageList, ChatInputBar, TeamChatView, ApprovalBar, ChatContextBar, ConversationList, SHARED_SESSION_KEY, SHARED_CONV_ID_KEY } from '@/components/ai/chat-kernel'
+import { useAIChat, ChatMessageList, ChatInputBar, TeamChatView, ApprovalBar, ChatContextBar, ConversationList, estimateContextTokens, SHARED_SESSION_KEY, SHARED_CONV_ID_KEY } from '@/components/ai/chat-kernel'
 import { useThemeStore } from '@/stores/theme'
 import usePathname from '@/lib/use-pathname'
 import { apiFetchRaw } from '@/lib/utils'
@@ -262,6 +262,7 @@ export default function PureMode({ onExitPure }: { onExitPure: () => void }) {
               selectedAgent={selectedAgent}
               onAgentChange={setSelectedAgent}
               onOpenKnowledge={() => navigate(knowledgeCategories.length === 1 ? `/knowledge?cat=${encodeURIComponent(knowledgeCategories[0])}` : '/knowledge')}
+              contextTokens={estimateContextTokens(messages)}
               variant="panel"
               onConfigure={() => navigate('/ai/settings')}
             />
