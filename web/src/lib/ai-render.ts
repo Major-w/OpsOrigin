@@ -35,8 +35,7 @@ export function renderInlineMd(s: string): string {
 
 // 行级 Markdown→HTML: 先按行扫描识别块级元素(代码/标题/列表/引用/分隔线),
 // 再对每段执行内联替换(粗体/斜体/链接/行内代码/引用上标)。
-// 设计目标: 覆盖 AI 答复里高频出现的格式(# / ## / ### / 有序列表 / 无序列表 / > 引用 / ---),
-// 表格/任务列表等 GFM 扩展暂不内置(如有需要可替换为 marked/markdown-it)。
+// 设计目标: 覆盖 AI 答复里高频出现的格式(标题 / 有序列表 / 无序列表 / 任务列表 / GFM 表格 / > 引用 / --- / 代码块)。
 export function renderMarkdown(text: string): string {
   if (!text) return ''
   // 0) 清洗模型噪声标签(<answer> 包装 / 残留 <think:6124c78e> 残片), 避免原样显示
@@ -52,12 +51,12 @@ export function renderMarkdown(text: string): string {
   // 2) 按行处理块级
   const lines = html.split('\n')
   const out: string[] = []
-  let listType: 'ul' | 'ol' | null = null
+  let listType: 'ul' | 'ol' | 'task' | null = null
   let blockquoteBuffer: string[] = []
 
   const closeList = () => {
     if (listType) {
-      out.push(`</${listType}>`)
+      out.push(listType === 'task' ? '</ul>' : `</${listType}>`)
       listType = null
     }
   }
@@ -104,6 +103,22 @@ export function renderMarkdown(text: string): string {
     if (/^-{3,}$|^\*{3,}$|^_{3,}$/.test(trimmed)) {
       closeList()
       out.push('<hr class="my-2 border-gray-200 dark:border-gray-700" />')
+      continue
+    }
+
+    // 任务列表: - [ ] / - [x] (GFM)。AI 输出计划/清单时高频出现, 渲染为静态复选框标记(不可点击, 仅为展示)。
+    const taskMatch = trimmed.match(/^[-*+]\s+\[([ xX])\]\s+(.+)$/)
+    if (taskMatch) {
+      if (listType !== 'task') {
+        closeList()
+        out.push('<ul class="list-none space-y-1 my-1.5 pl-0.5">')
+        listType = 'task'
+      }
+      const done = taskMatch[1].toLowerCase() === 'x'
+      const box = done
+        ? '<span class="shrink-0 mt-[3px] h-3 w-3 rounded-[3px] bg-blue-500 text-white text-[9px] leading-3 text-center select-none">✓</span>'
+        : '<span class="shrink-0 mt-[3px] h-3 w-3 rounded-[3px] border border-gray-400 dark:border-gray-500"></span>'
+      out.push(`<li class="flex items-start gap-1.5 leading-relaxed">${box}<span>${renderInline(taskMatch[2])}</span></li>`)
       continue
     }
 
@@ -170,6 +185,25 @@ export function renderMarkdown(text: string): string {
 
   return html
 }
+
+/** 记忆化包装: Markdown 渲染是纯函数, 缓存可让「每帧重渲染整个消息列表」只重算正在流式的那一条。
+ *  流式消息内容每 token 都变(必然 miss 且会挤掉缓存), 故只对稳定内容使用 —— 见 ai-markdown.tsx。
+ *  上限保护: 超过 limit 整体清空, 避免长会话无界增长(Map 本身保留插入序, 简单清空足够)。 */
+function memoizeRender(fn: (s: string) => string, limit = 200) {
+  const cache = new Map<string, string>()
+  return (text: string): string => {
+    if (!text) return ''
+    const hit = cache.get(text)
+    if (hit !== undefined) return hit
+    const html = fn(text)
+    if (cache.size >= limit) cache.clear()
+    cache.set(text, html)
+    return html
+  }
+}
+
+export const renderMarkdownCached = memoizeRender(renderMarkdown)
+export const renderExploreContentCached = memoizeRender(renderExploreContent)
 
 // 内联 Markdown→HTML(必须在块级切分后调用): 行内代码/粗体/斜体/链接/图片/引用上标/换行占位
 function renderInline(s: string): string {

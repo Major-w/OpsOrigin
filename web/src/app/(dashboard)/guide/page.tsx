@@ -16,7 +16,7 @@ function CodeBlock({ code, lang = 'bash' }: { code: string; lang?: string }) {
     setTimeout(() => setCopied(false), 1500)
   }
   return (
-    <div className="relative rounded-xl overflow-hidden border border-white/5 bg-[#0B0F19]">
+    <div className="relative rounded-xl overflow-hidden border border-white/5 bg-[var(--surface-solid)]">
       <div className="flex items-center justify-between px-4 py-2 border-b border-white/5">
         <span className="text-[11px] font-mono text-[var(--muted-foreground)]">{lang}</span>
         <Button type="text" size="middle" className="h-7 text-[var(--secondary-foreground)] hover:text-white" onClick={copy}>

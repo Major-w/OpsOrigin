@@ -13,15 +13,15 @@
 import { useEffect, useRef, useState, type ReactNode, type RefObject } from 'react'
 import { useAIStore, useTeams, type TeamStreamEvent, type AgentTeam } from '@/stores/ai'
 import type { ModelInfo, PendingApproval } from '@/stores/ai/types'
-import { renderMarkdown, renderExploreContent } from '@/lib/ai-render'
-import { AiMarkdown } from '@/components/ai-markdown'
+import { renderMarkdown, renderMarkdownCached } from '@/lib/ai-render'
+import { AiMarkdown, ExploreMarkdown, scrollToCite } from '@/components/ai-markdown'
 import { exportDocFile } from '@/lib/doc-export'
 import { cn, apiFetchRaw } from '@/lib/utils'
 import {
   Bot, User, Send, Square, Loader2, Terminal, Brain, CheckCircle, AlertTriangle,
   ThumbsUp, ThumbsDown, Users, Sparkles, XCircle, Settings, Lock, Share2, Trash2,
   Paperclip, FileText, Image as ImageIcon, X, Search, Copy, RefreshCw, Check, ArrowDown,
-  ChevronRight, Download, FileDown, Presentation,
+  ChevronRight, Download, FileDown, Presentation, Pencil,
 } from 'lucide-react'
 
 // ---------------------------------------------------------------------------
@@ -407,6 +407,10 @@ export function useAIChat(opts: UseAIChatOptions) {
   const [teamStreaming, setTeamStreaming] = useState(false)
 
   const abortRef = useRef<AbortController | null>(null)
+  // 流式渲染节流: token 先累积到 ref, 每帧(rAF)合并提交一次, 避免一个 token 一次全量 setState
+  const rafRef = useRef<number | null>(null)
+
+  useEffect(() => () => { if (rafRef.current != null) cancelAnimationFrame(rafRef.current) }, [])
 
   useEffect(() => { fetchAgents(); fetchModels() }, [fetchAgents, fetchModels])
   useEffect(() => { if (enableTeam && mode === 'team') teamApi.loadTeams() }, [enableTeam, mode, teamApi])
@@ -453,21 +457,38 @@ export function useAIChat(opts: UseAIChatOptions) {
     const history = buildHistory ? buildHistory(historyBase) : defaultHistory(historyBase)
 
     let acc = ''
+    // 待提交补丁: token 只累积到 pending, 由 rAF 合并成一帧一次 setState(原来是一个 token 一次全量重渲染)
+    let pending: Partial<ChatMessage> = {}
+    const flushPending = () => {
+      rafRef.current = null
+      if (!Object.keys(pending).length) return
+      const patch = pending
+      pending = {}
+      setMessages(prev => prev.map(m => (m.id === aiId ? { ...m, ...patch } : m)))
+    }
+    const scheduleFlush = () => {
+      if (rafRef.current == null) rafRef.current = requestAnimationFrame(flushPending)
+    }
+    /** 立即落盘: 流结束/出错/中断前调用, 避免最后一帧内容丢失 */
+    const flushNow = () => {
+      if (rafRef.current != null) { cancelAnimationFrame(rafRef.current); rafRef.current = null }
+      flushPending()
+    }
+
     const onToken = (t: string) => {
       if (!firstTokenSeen) {
         firstTokenSeen = true
-        const thinkMs = Date.now() - startAt
-        setMessages(prev => prev.map(m => (m.id === aiId ? { ...m, content: acc + t, thinkMs } : m)))
-        acc += t
-        return
+        pending.thinkMs = Date.now() - startAt
       }
       acc += t
-      setMessages(prev => prev.map(m => (m.id === aiId ? { ...m, content: acc } : m)))
+      pending.content = acc
+      scheduleFlush()
     }
     let thinkingAcc = ''
     const onThinking = (t: string) => {
       thinkingAcc += t
-      setMessages(prev => prev.map(m => (m.id === aiId ? { ...m, thinking: thinkingAcc } : m)))
+      pending.thinking = thinkingAcc
+      scheduleFlush()
     }
     const onAsk = (approval: PendingApproval) => setPending(approval)
 
@@ -505,6 +526,7 @@ export function useAIChat(opts: UseAIChatOptions) {
       content,
       onToken,
       (meta) => {
+        flushNow() // 落下最后一帧正文, 再改状态
         setMessages(prev => prev.map(m => {
           if (m.id !== aiId) return m
           // 已标 error(流内 error 事件 / HTTP 失败)的消息不被 [DONE] 覆盖回 done
@@ -531,6 +553,7 @@ export function useAIChat(opts: UseAIChatOptions) {
       enableAbort ? abortRef.current?.signal : undefined,
       selectedModel,
       (err?: string) => {
+        flushNow() // 中断/失败也要保住已吐出的正文
         setMessages(prev => prev.map(m => (m.id === aiId ? { ...m, status: 'error', errorText: err || 'AI 响应失败' } : m)))
         setStreaming(false)
         if (resetConvOn403 && err && err.includes('403')) {
@@ -575,6 +598,19 @@ export function useAIChat(opts: UseAIChatOptions) {
     const base = [...messages.slice(0, aiIdx), ...messages.slice(aiIdx + 1)]
     setMessages(base)
     runStream(userMsg.content, base, userMsg.attachments)
+  }
+
+  // 编辑并重发: 编辑任意历史用户消息 → 截断其后的所有消息 → 从该消息起重新生成(附件随消息复用)。
+  const editAndResend = (msg: ChatMessage, newContent: string) => {
+    const content = newContent.trim()
+    if (!content || streaming) return
+    const idx = messages.findIndex(m => m.id === msg.id)
+    if (idx < 0 || messages[idx].role !== 'user') return
+    const userMsg = messages[idx]
+    const newUserMsg: ChatMessage = { ...userMsg, id: `u_${Date.now()}`, content, timestamp: Date.now() }
+    const base = messages.slice(0, idx) // 不含被编辑的消息本身
+    setMessages([...base, newUserMsg])
+    runStream(content, [...base, newUserMsg], userMsg.attachments)
   }
 
   const clearSession = () => {
@@ -741,6 +777,7 @@ export function useAIChat(opts: UseAIChatOptions) {
     streaming,
     send,
     regenerate,
+    editAndResend,
     clearSession,
     stopGeneration,
     // 审批
@@ -762,10 +799,20 @@ export function useAIChat(opts: UseAIChatOptions) {
 // ChatMessageList —— 消息渲染
 // ---------------------------------------------------------------------------
 
+// 工具调用参数美化: 后端下发的 args 已是 JSON 字符串, 尝试重新缩进便于阅读; 失败则原样返回。
+function fmtToolArgs(a: string): string {
+  try {
+    const obj = JSON.parse(a)
+    return JSON.stringify(obj, null, 2)
+  } catch {
+    return a
+  }
+}
+
 // 引用来源标题解析: id→title 模块级缓存(跨消息/跨渲染共享), 拉取失败回退显示 ID。
 const citationTitleCache = new Map<string, string>()
 
-function CitationList({ ids }: { ids: string[] }) {
+function CitationList({ ids, msgId }: { ids: string[]; msgId?: string }) {
   const [titles, setTitles] = useState<Record<string, string>>(() => {
     const init: Record<string, string> = {}
     for (const id of ids) {
@@ -802,13 +849,16 @@ function CitationList({ ids }: { ids: string[] }) {
     <div className="mt-1 space-y-0.5">
       {ids.map((id, i) => {
         const title = titles[id]
+        const itemId = msgId ? `cite-${msgId}-${i + 1}` : undefined
         if (dead[id] && !title) {
           return (
             <div
               key={`${id}-${i}`}
-              className="block text-[10px] text-muted-foreground/70 pl-2 border-l-2 border-gray-200 dark:border-white/10 truncate cursor-not-allowed"
+              id={itemId}
+              className="flex items-center gap-1.5 text-[10px] text-muted-foreground/70 pl-2 border-l-2 border-gray-200 dark:border-white/10 truncate cursor-not-allowed"
               title="该文章不存在或已删除"
             >
+              <span className="shrink-0 h-3.5 w-3.5 rounded-full bg-gray-200 dark:bg-gray-700 text-gray-500 flex items-center justify-center text-[9px] font-semibold">{i + 1}</span>
               [{id}] 文章不存在或已删除
             </div>
           )
@@ -816,12 +866,14 @@ function CitationList({ ids }: { ids: string[] }) {
         return (
           <a
             key={`${id}-${i}`}
+            id={itemId}
             href={`/knowledge/${encodeURIComponent(id)}`}
             target="_blank"
             rel="noopener"
-            className="block text-[10px] text-blue-500 hover:underline pl-2 border-l-2 border-blue-200 dark:border-blue-500/30 truncate"
+            className="flex items-center gap-1.5 text-[10px] text-blue-500 hover:underline pl-2 border-l-2 border-blue-200 dark:border-blue-500/30 truncate transition-colors"
             title={title || id}
           >
+            <span className="shrink-0 h-3.5 w-3.5 rounded-full bg-blue-500/15 text-blue-600 dark:text-blue-300 flex items-center justify-center text-[9px] font-semibold">{i + 1}</span>
             {title ? <><span className="truncate">{title}</span> <span className="text-muted-foreground">[{id}]</span></> : `[${id}]`}
           </a>
         )
@@ -843,6 +895,8 @@ interface ChatMessageListProps {
   onRetry?: (msg: ChatMessage) => void
   /** 传入则在最后一条正常完成的助手回复下显示「重新生成」(重发其前的用户消息) */
   onRegenerate?: () => void
+  /** 传入则允许用户消息 hover「编辑」, 内联改内容后从该消息起重新生成(截断其后所有消息)。 */
+  onEditResend?: (msg: ChatMessage, newContent: string) => void
   extraActions?: (msg: ChatMessage) => ReactNode
   loading?: boolean
   loadingText?: string
@@ -967,7 +1021,7 @@ function DocumentViewer({ doc, onClose }: { doc: DocArtifact; onClose: () => voi
   return (
     <div className="fixed inset-0 z-[1000] flex items-center justify-center bg-black/40 p-4 md:p-8" onClick={onClose}>
       <div
-        className="flex flex-col w-full max-w-4xl h-full max-h-[92vh] bg-white dark:bg-[#1c1c1e] rounded-xl border border-gray-200 dark:border-white/10 shadow-2xl overflow-hidden"
+        className="flex flex-col w-full max-w-4xl h-full max-h-[92vh] bg-white dark:bg-[var(--surface-modal)] rounded-xl border border-gray-200 dark:border-white/10 shadow-2xl overflow-hidden"
         onClick={e => e.stopPropagation()}
       >
         <div className="flex items-center gap-2.5 px-4 py-3 border-b border-gray-200 dark:border-white/10 shrink-0">
@@ -1115,12 +1169,15 @@ function MsgStats({ msg }: { msg: ChatMessage }) {
 export function ChatMessageList({
   messages, mode = 'normal', welcomeId = 'welcome', variant = 'page',
   enableCitations = false, enableFeedback = false, enableTaskList = false,
-  onFeedback, onRetry, onRegenerate, extraActions, loading, loadingText, emptyQuickActions, endRef, className,
+  onFeedback, onRetry, onRegenerate, onEditResend, extraActions, loading, loadingText, emptyQuickActions, endRef, className,
 }: ChatMessageListProps) {
   const isPanel = variant === 'panel'
   const isFloating = variant === 'floating'
   // 单条复制反馈: 短暂把按钮文案变「已复制」
   const [copiedId, setCopiedId] = useState<string | null>(null)
+  // 编辑并重发: 正在内联编辑的用户消息 id 与其草稿
+  const [editingId, setEditingId] = useState<string | null>(null)
+  const [editDraft, setEditDraft] = useState('')
   // 智能滚动接管: 流式跟随 + 回到底部按钮(此前由调用方 messages 一变就强滚, 翻历史体验差)
   const { scrollRef, atBottom, onScroll, scrollToBottom } = useStickToBottom([messages, loading])
   const copyMessage = async (msg: ChatMessage) => {
@@ -1197,18 +1254,37 @@ export function ChatMessageList({
                     </summary>
                     <div className="mt-1 space-y-1">
                       {msg.toolCalls.map(tc => (
-                        <div key={tc.id} className={cn(
-                          'flex items-center gap-2 text-xs rounded border px-2 py-1',
+                        <details key={tc.id} className={cn(
+                          'rounded border text-xs overflow-hidden',
                           tc.status === 'running'
                             ? 'border-amber-300 bg-amber-50 dark:border-amber-500/30 dark:bg-amber-500/10'
-                            : 'border-gray-200 dark:border-[rgba(255,255,255,0.06)]',
+                            : tc.status === 'done'
+                              ? 'border-gray-200 dark:border-[rgba(255,255,255,0.06)]'
+                              : 'border-red-300 bg-red-50 dark:border-red-500/30 dark:bg-red-500/10',
                         )}>
-                          {tc.status === 'running'
-                            ? <Loader2 className="h-3 w-3 animate-spin text-amber-500 shrink-0" />
-                            : <CheckCircle className="h-3 w-3 text-blue-500 shrink-0" />}
-                          <code className="font-mono font-semibold">{tc.name}</code>
-                          <span className="text-[10px] text-muted-foreground truncate flex-1">{tc.status === 'done' ? (tc.result || '已完成') : '执行中…'}</span>
-                        </div>
+                          <summary className="flex items-center gap-2 px-2 py-1 cursor-pointer select-none list-none [&::-webkit-details-marker]:hidden">
+                            {tc.status === 'running'
+                              ? <Loader2 className="h-3 w-3 animate-spin text-amber-500 shrink-0" />
+                              : tc.status === 'done'
+                                ? <CheckCircle className="h-3 w-3 text-green-500 shrink-0" />
+                                : <XCircle className="h-3 w-3 text-red-500 shrink-0" />}
+                            <code className="font-mono font-semibold">{tc.name}</code>
+                            {tc.status === 'running' && <span className="text-[10px] text-amber-600 dark:text-amber-400">执行中…</span>}
+                            {tc.status === 'done' && <span className="text-[10px] text-muted-foreground ml-auto">完成</span>}
+                          </summary>
+                          {tc.args && (
+                            <div className="px-2 pb-1.5">
+                              <div className="text-[10px] text-muted-foreground mb-0.5">参数</div>
+                              <pre className="rounded bg-black/5 dark:bg-black/20 p-1.5 text-[10px] overflow-x-auto whitespace-pre-wrap font-mono leading-relaxed">{fmtToolArgs(typeof tc.args === 'string' ? tc.args : JSON.stringify(tc.args))}</pre>
+                            </div>
+                          )}
+                          {tc.result && (
+                            <div className="px-2 pb-1.5">
+                              <div className="text-[10px] text-muted-foreground mb-0.5">结果</div>
+                              <pre className="rounded bg-black/5 dark:bg-black/20 p-1.5 text-[10px] overflow-x-auto whitespace-pre-wrap font-mono leading-relaxed max-h-40 overflow-y-auto">{tc.result}</pre>
+                            </div>
+                          )}
+                        </details>
                       ))}
                     </div>
                   </details>
@@ -1219,30 +1295,51 @@ export function ChatMessageList({
                   <ThinkingBlock thinking={msg.thinking} live={msg.status === 'streaming' && !msg.content} thinkMs={msg.thinkMs} />
                 )}
 
-                {/* 内容自适应渲染: 含结构化标记(plan/step/report/工具调用)走卡片式渲染, 否则标准 Markdown */}
-                {/<plan>|<\/step>|<report>|🔧 \*\*调用工具/.test(msg.content)
-                  ? <div className={msg.status === 'streaming' ? 'ai-streaming' : undefined} dangerouslySetInnerHTML={{ __html: renderExploreContent(msg.content) }} />
-                  : (() => {
-                      // 文档型回复: 流式期间仍平铺渲染(可跟读), 完成后收敛为文档卡片(标题/字数/预览/打开/复制/下载)
-                      const doc = msg.status !== 'streaming' ? detectDocArtifact(msg.content) : null
-                      if (doc) {
-                        return (
-                          <div className="space-y-2.5">
-                            {doc.preamble && <AiMarkdown content={doc.preamble} />}
-                            <DocumentCard doc={doc} />
-                          </div>
-                        )
-                      }
-                      return <div className={msg.status === 'streaming' ? 'ai-streaming' : undefined}><AiMarkdown content={msg.content} /></div>
-                    })()}
+                {/* 引用内联标记所需的索引: 仅当启用引用且本消息含引用来源 */}
+                {(() => {
+                  const citeIds = enableCitations && msg.citations && msg.citations.length ? msg.citations.map(c => c.replace(/^\[|\]$/g, '')) : []
+                  const citeAnchor = msg.id
+                  const streamingNow = msg.status === 'streaming'
+                  // 内容自适应渲染: 含结构化标记(plan/step/report/工具调用)走卡片式渲染, 否则标准 Markdown
+                  if (/<plan>|<\/step>|<report>|🔧 \*\*调用工具/.test(msg.content)) {
+                    return <ExploreMarkdown content={msg.content} streaming={streamingNow} citationIds={citeIds} citationAnchor={citeAnchor} />
+                  }
+                  // 文档型回复: 流式期间仍平铺渲染(可跟读), 完成后收敛为文档卡片(标题/字数/预览/打开/复制/下载)
+                  const doc = !streamingNow ? detectDocArtifact(msg.content) : null
+                  if (doc) {
+                    return (
+                      <div className="space-y-2.5">
+                        {doc.preamble && <AiMarkdown content={doc.preamble} />}
+                        <DocumentCard doc={doc} />
+                      </div>
+                    )
+                  }
+                  return <AiMarkdown content={msg.content} streaming={streamingNow} citationIds={citeIds} citationAnchor={citeAnchor} />
+                })()}
 
-                {/* RAG 引用来源: 拉取文章标题展示, 仍可点击跳转 */}
-                {enableCitations && msg.citations && msg.citations.length > 0 && (
-                  <details className="mt-2">
-                    <summary className="text-[10px] text-muted-foreground cursor-pointer hover:text-foreground">📚 引用来源 ({msg.citations.length})</summary>
-                    <CitationList ids={msg.citations.map(c => c.replace(/^\[|\]$/g, ''))} />
-                  </details>
-                )}
+                {/* RAG 引用来源: 顶部可点击角标 + 底部列表(拉标题, 点击跳转文章) */}
+                {enableCitations && msg.citations && msg.citations.length > 0 && (() => {
+                  const ids = msg.citations.map(c => c.replace(/^\[|\]$/g, ''))
+                  return (
+                    <div className="mt-2">
+                      <div className="flex flex-wrap items-center gap-1 mb-1">
+                        <span className="text-[10px] text-muted-foreground">引用</span>
+                        {ids.map((id, i) => (
+                          <button
+                            key={id}
+                            onClick={() => scrollToCite(msg.id, i + 1)}
+                            className="text-[10px] px-1.5 py-0.5 rounded bg-blue-50 dark:bg-blue-500/10 text-blue-600 dark:text-blue-400 hover:bg-blue-100 dark:hover:bg-blue-500/20 transition-colors"
+                            title={id}
+                          >[{i + 1}]</button>
+                        ))}
+                      </div>
+                      <details id={`cites-${msg.id}`} className="rounded border border-gray-200 dark:border-[rgba(255,255,255,0.06)] px-2 py-1" open>
+                        <summary className="text-[10px] text-muted-foreground cursor-pointer hover:text-foreground">📚 引用来源 ({ids.length})</summary>
+                        <CitationList ids={ids} msgId={msg.id} />
+                      </details>
+                    </div>
+                  )
+                })()}
 
                 {/* 失败态: 错误提示 + 重试 */}
                 {msg.status === 'error' && (
@@ -1343,15 +1440,66 @@ export function ChatMessageList({
                     ))}
                   </div>
                 )}
-                {/* 用户消息也走 Markdown 渲染(与主流对话产品一致); 蓝底气泡下强制白字+白链接, 转义防 XSS */}
-                <div
-                  className="text-white leading-relaxed [a]:text-white [a]:underline"
-                  dangerouslySetInnerHTML={{ __html: renderMarkdown(msg.content) }}
-                />
+                {/* 用户消息: 编辑态走内联文本框, 常态走 Markdown 渲染(与主流对话产品一致) */}
+                {editingId === msg.id ? (
+                  <div className="w-full space-y-1.5" onClick={e => e.stopPropagation()}>
+                    <textarea
+                      autoFocus
+                      value={editDraft}
+                      onChange={e => setEditDraft(e.target.value)}
+                      onKeyDown={e => {
+                        if (e.key === 'Escape') { e.preventDefault(); setEditingId(null); setEditDraft(''); return }
+                        // 中文输入法组合态下回车用于选词, 不得触发发送
+                        if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
+                          e.preventDefault()
+                          if (editDraft.trim()) {
+                            onEditResend?.(msg, editDraft)
+                            setEditingId(null)
+                            setEditDraft('')
+                          }
+                        }
+                      }}
+                      rows={Math.min(12, Math.max(2, editDraft.split('\n').length))}
+                      className="w-full resize-y rounded-lg border border-white/40 bg-white/15 px-2.5 py-2 text-sm text-white placeholder-white/60 outline-none focus:border-white/70 leading-relaxed"
+                      placeholder="修改后回车重新生成…"
+                    />
+                    <div className="flex items-center gap-2">
+                      <button
+                        onClick={() => {
+                          if (!editDraft.trim()) return
+                          onEditResend?.(msg, editDraft)
+                          setEditingId(null)
+                          setEditDraft('')
+                        }}
+                        disabled={!editDraft.trim()}
+                        className="px-2.5 py-1 rounded-md text-[11px] bg-white text-blue-600 font-medium hover:bg-white/90 disabled:opacity-50 transition-colors"
+                      >发送</button>
+                      <button
+                        onClick={() => { setEditingId(null); setEditDraft('') }}
+                        className="px-2.5 py-1 rounded-md text-[11px] text-white/90 hover:bg-white/15 transition-colors"
+                      >取消</button>
+                      <span className="text-[10px] text-white/70">Enter 发送 · Shift+Enter 换行 · Esc 取消</span>
+                    </div>
+                  </div>
+                ) : (
+                  <div
+                    className="text-white leading-relaxed [a]:text-white [a]:underline"
+                    dangerouslySetInnerHTML={{ __html: renderMarkdownCached(msg.content) }}
+                  />
+                )}
               </>
             )}
           </div>
-          {/* 用户消息悬停复制(气泡左侧浮现) */}
+          {/* 用户消息悬停编辑 / 复制(气泡左侧浮现) */}
+          {msg.role === 'user' && onEditResend && !loading && !editingId && msg.content.trim() && (
+            <button
+              onClick={() => { setEditDraft(msg.content); setEditingId(msg.id) }}
+              className="opacity-0 group-hover/msg:opacity-100 self-start mt-1.5 p-1 rounded text-muted-foreground hover:text-blue-500 transition-opacity"
+              title="编辑并重发"
+            >
+              <Pencil className="h-3.5 w-3.5" />
+            </button>
+          )}
           {msg.role === 'user' && msg.content.trim() && (
             <button
               onClick={() => copyMessage(msg)}

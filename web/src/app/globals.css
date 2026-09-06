@@ -22,6 +22,9 @@
   --accent-foreground: #2563EB;
   --destructive: #EF4444;
   --destructive-foreground: #FFFFFF;
+  /* 固定深色底(不随主题切换): 深色预览面板 / 模态容器, 原为组件内硬编码 hex, 已下沉为变量 */
+  --surface-solid: #0B0F19;
+  --surface-modal: #1C1C1E;
   --warning: #F59E0B;
   --warning-foreground: #FFFFFF;
   --border: #E2E8F0;
@@ -388,4 +391,35 @@
 }
 @keyframes ai-cursor-blink {
   50% { opacity: 0; }
+}
+
+/* AI 代码块语法高亮配色(代码块恒为深色底 bg-gray-900, 故配色按深色调定) */
+.ai-code-wrap .tok-c { color: #8b949e; font-style: italic; }
+.ai-code-wrap .tok-s { color: #a5d6ff; }
+.ai-code-wrap .tok-n { color: #7ee787; }
+.ai-code-wrap .tok-k { color: #79c0ff; }
+.ai-code-wrap .tok-b { color: #ff7b72; }
+.ai-code-wrap .tok-f { color: #d2a8ff; }
+.ai-code-wrap .tok-p { color: #f0c674; }
+.ai-code-wrap .tok-o { color: #c9d1d9; }
+
+/* 引用内联标记: 正文 [n] 可点击上标 */
+.ai-cite-ref { font-size: 0.7em; line-height: 0; vertical-align: super; }
+.ai-cite-ref a {
+  color: #3b82f6;
+  text-decoration: none;
+  padding: 0 1px;
+  border-radius: 3px;
+  transition: background-color 0.2s;
+}
+.ai-cite-ref a:hover { background: rgba(59, 130, 246, 0.15); }
+/* 引用条目点击高亮闪烁 */
+.ai-cite-flash {
+  animation: ai-cite-flash 1.2s ease-out;
+  background: rgba(59, 130, 246, 0.18) !important;
+  border-radius: 4px;
+}
+@keyframes ai-cite-flash {
+  0% { background: rgba(59, 130, 246, 0.35); }
+  100% { background: transparent; }
 }

@@ -83,7 +83,7 @@ export default function AIPage() {
   const {
     mode, setMode, executor, setExecutor, selectedModel, setSelectedModel,
     selectedAgent, setSelectedAgent, models, agents, messages, setMessages, input, setInput,
-    streaming, send, stopGeneration, regenerate, clearSession, pending, approving, respond, dismissApproval, convId, setConvId,
+    streaming, send, stopGeneration, regenerate, editAndResend, clearSession, pending, approving, respond, dismissApproval, convId, setConvId,
     selectedTeamId, setSelectedTeamId, teamTurns, teamInput, setTeamInput, teamStreaming, handleTeamSend,
     teams, teamsLoading,
     knowledgeCategories, setKnowledgeCategories,
@@ -533,9 +533,25 @@ export default function AIPage() {
               onFeedback={submitFeedback}
               onRetry={retryMessage}
               onRegenerate={regenerate}
+              onEditResend={editAndResend}
               extraActions={renderMsgActions}
               loading={streaming}
               loadingText="思考中..."
+              emptyQuickActions={
+                <>
+                  {QUICK_ACTIONS.map(a => (
+                    <button
+                      key={a.label}
+                      onClick={() => { if (!streaming && canUseAI) { send(a.prompt, pendingFiles); setPendingFiles([]) } }}
+                      disabled={streaming || !canUseAI}
+                      className="flex items-center gap-2 text-left rounded-lg border border-border bg-background hover:bg-accent hover:border-blue-300 dark:hover:border-blue-500/40 px-3 py-2.5 transition-colors disabled:opacity-50 group"
+                    >
+                      <a.icon className="h-4 w-4 text-blue-500 shrink-0" />
+                      <span className="text-xs text-foreground/90 group-hover:text-blue-600 dark:group-hover:text-blue-300 transition-colors">{a.label}</span>
+                    </button>
+                  ))}
+                </>
+              }
               endRef={messagesEndRef}
               className="p-4"
             />
@@ -565,7 +581,8 @@ export default function AIPage() {
               onFiles={handleFiles}
               streaming={streaming}
               disabled={!canUseAI || convPerm === 'view'}
-              enableQuickActions={!streaming}
+              // 欢迎态(messages.length===1)已在消息区渲染场景卡片(点击即发送), 此处不再重复展示胶囊
+              enableQuickActions={!streaming && messages.length > 1}
               quickActions={QUICK_ACTIONS}
               variant="page"
               inputFooter={inputFooter}
