@@ -7,6 +7,24 @@ export function escapeHtml(s: string): string {
   return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
 }
 
+/** 去除 <answer>...</answer> 包装(保留内部正文): 部分推理模型会把最终答案包在里面,
+ *  否则 Markdown 渲染器会把它当原始文本显示成 "<answer>…"。 */
+export function stripAnswerWrap(text: string): string {
+  if (!text) return text
+  return text
+    .replace(/<answer[^>]*>([\s\S]*?)<\/answer>/gi, '$1')
+    .replace(/<\/?answer>/gi, '')
+}
+
+/** 渲染前全量清洗模型噪声标签: 去 <answer> 包装 + 去未闭合/残留的 <think:6124c78e> 残片。
+ *  用于标准 Markdown 路径(renderMarkdown); 自主模式路径用 stripAnswerWrap 以保留 <think> 折叠块。 */
+export function stripModelWrappers(text: string): string {
+  if (!text) return text
+  return stripAnswerWrap(text)
+    .replace(/<think[^>]*>([\s\S]*?)<\/think>/gi, '')
+    .replace(/<\/?think>/gi, '')
+}
+
 export function renderInlineMd(s: string): string {
   let h = escapeHtml(s)
   h = h.replace(/`([^`]+)`/g, '<code class="rounded bg-gray-200 dark:bg-gray-700 px-1 text-xs">$1</code>')
@@ -15,21 +33,158 @@ export function renderInlineMd(s: string): string {
   return h
 }
 
-// 轻量内联 Markdown→HTML。生产中可替换为 react-markdown+remark-gfm 获得完整 GFM 支持。
+// 行级 Markdown→HTML: 先按行扫描识别块级元素(代码/标题/列表/引用/分隔线),
+// 再对每段执行内联替换(粗体/斜体/链接/行内代码/引用上标)。
+// 设计目标: 覆盖 AI 答复里高频出现的格式(# / ## / ### / 有序列表 / 无序列表 / > 引用 / ---),
+// 表格/任务列表等 GFM 扩展暂不内置(如有需要可替换为 marked/markdown-it)。
 export function renderMarkdown(text: string): string {
-  let html = text
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-  html = html.replace(/```(\w*)\n([\s\S]*?)```/g, '<pre class="rounded bg-gray-900 text-gray-100 p-3 my-2 overflow-x-auto text-xs"><code>$2</code></pre>')
-  html = html.replace(/`([^`]+)`/g, '<code class="rounded bg-gray-200 dark:bg-gray-700 px-1 text-xs">$1</code>')
-  html = html.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
-  html = html.replace(/\*([^*\n]+?)\*/g, '<em>$1</em>')
-  html = html.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a class="text-blue-500 underline" href="$2" target="_blank">$1</a>')
-  // RAG 引用标注 [^id] → 上标锚点
-  html = html.replace(/\[\^([a-zA-Z0-9_-]+)\]/g, '<sup class="text-blue-500 font-semibold text-[10px] select-none" id="cite-ref-$1">[$1]</sup>')
-  html = html.replace(/\n/g, '<br/>')
+  if (!text) return ''
+  // 0) 清洗模型噪声标签(<answer> 包装 / 残留 <think:6124c78e> 残片), 避免原样显示
+  text = stripModelWrappers(text)
+  // 1) 保护代码块 ```lang\n...\n``` (跨行)
+  const codeBlocks: string[] = []
+  let html = text.replace(/```(\w*)\n([\s\S]*?)```/g, (_m, lang, code) => {
+    codeBlocks.push(code)
+    const langCls = lang ? ` data-lang="${lang}"` : ''
+    return `\u0000CODE${codeBlocks.length - 1}\u0000${langCls}`
+  })
+
+  // 2) 按行处理块级
+  const lines = html.split('\n')
+  const out: string[] = []
+  let listType: 'ul' | 'ol' | null = null
+  let blockquoteBuffer: string[] = []
+
+  const closeList = () => {
+    if (listType) {
+      out.push(`</${listType}>`)
+      listType = null
+    }
+  }
+  const flushBlockquote = () => {
+    if (blockquoteBuffer.length) {
+      const joined = blockquoteBuffer.join(' ').trim()
+      if (joined) out.push(`<blockquote class="border-l-4 border-gray-300 dark:border-gray-600 pl-3 my-2 text-gray-700 dark:text-gray-300">${renderInline(joined)}</blockquote>`)
+      blockquoteBuffer = []
+    }
+  }
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i]
+    const trimmed = line.trim()
+
+    // 空行: 关闭所有块级
+    if (!trimmed) {
+      closeList()
+      flushBlockquote()
+      continue
+    }
+
+    // 标题: 跳过序数前缀(最多 3 个 #)
+    const heading = trimmed.match(/^(#{1,3})\s+(.+)$/)
+    if (heading) {
+      closeList()
+      flushBlockquote()
+      const level = heading[1].length
+      const sizeCls = level === 1 ? 'text-lg font-semibold mt-3 mb-1.5' : level === 2 ? 'text-base font-semibold mt-2.5 mb-1.5' : 'text-sm font-semibold mt-2 mb-1'
+      out.push(`<div class="${sizeCls}">${renderInline(heading[2])}</div>`)
+      continue
+    }
+
+    // 引用
+    if (trimmed.startsWith('>')) {
+      closeList()
+      blockquoteBuffer.push(trimmed.replace(/^>\s?/, ''))
+      continue
+    } else {
+      flushBlockquote()
+    }
+
+    // 分隔线
+    if (/^-{3,}$|^\*{3,}$|^_{3,}$/.test(trimmed)) {
+      closeList()
+      out.push('<hr class="my-2 border-gray-200 dark:border-gray-700" />')
+      continue
+    }
+
+    // 有序列表
+    const olMatch = trimmed.match(/^(\d+)[.\u3001)]\s+(.+)$/)
+    if (olMatch) {
+      if (listType !== 'ol') {
+        closeList()
+        out.push('<ol class="list-decimal list-inside space-y-1 my-1.5 pl-1">')
+        listType = 'ol'
+      }
+      out.push(`<li class="leading-relaxed">${renderInline(olMatch[2])}</li>`)
+      continue
+    }
+
+    // 无序列表
+    const ulMatch = trimmed.match(/^[-*+]\s+(.+)$/)
+    if (ulMatch) {
+      if (listType !== 'ul') {
+        closeList()
+        out.push('<ul class="list-disc list-inside space-y-1 my-1.5 pl-1">')
+        listType = 'ul'
+      }
+      out.push(`<li class="leading-relaxed">${renderInline(ulMatch[1])}</li>`)
+      continue
+    }
+
+    // 表格: 连续以 | 开头的行(GFM)。首行表头, 第二行分隔(|---|---|), 其余数据行。
+    if (
+      trimmed.startsWith('|') && i + 1 < lines.length &&
+      lines[i + 1].trim().startsWith('|') && /^[\s|:-]+$/.test(lines[i + 1].trim())
+    ) {
+      closeList()
+      flushBlockquote()
+      const tblLines: string[] = []
+      while (i < lines.length && lines[i].trim().startsWith('|')) {
+        tblLines.push(lines[i].trim())
+        i++
+      }
+      i-- // 抵消 for 循环的 i++
+      const parseRow = (row: string) => row.replace(/^\|/, '').replace(/\|$/, '').split('|').map(c => c.trim())
+      const head = parseRow(tblLines[0] || '')
+      const bodyRows = tblLines.slice(2).map(parseRow) // 第 2 行是分隔线, 跳过
+      const th = head.map(c => `<th class="border border-gray-200 dark:border-gray-700 bg-gray-100 dark:bg-gray-800 px-2 py-1.5 text-left font-semibold whitespace-nowrap">${renderInline(c)}</th>`).join('')
+      const trs = bodyRows.map(r => `<tr>${r.map(c => `<td class="border border-gray-200 dark:border-gray-700 px-2 py-1 align-top">${renderInline(c)}</td>`).join('')}</tr>`).join('')
+      out.push(`<div class="my-2 overflow-x-auto"><table class="w-full text-xs border-collapse"><thead><tr>${th}</tr></thead><tbody>${trs}</tbody></table></div>`)
+      continue
+    }
+
+    // 普通段落
+    closeList()
+    out.push(`<p class="leading-relaxed my-1.5">${renderInline(line)}</p>`)
+  }
+  closeList()
+  flushBlockquote()
+
+  html = out.join('')
+
+  // 3) 还原代码块
+  html = html.replace(/\u0000CODE(\d+)\u0000(?:\s*data-lang="(\w+)")?/g, (_m, i, lang) => {
+    const label = lang ? `<span class="text-[9px] uppercase tracking-wide text-gray-500 mb-1 block">${lang}</span>` : ''
+    return `<pre class="rounded bg-gray-900 text-gray-100 p-3 my-2 overflow-x-auto text-xs">${label}<code>${escapeHtml(codeBlocks[+i])}</code></pre>`
+  })
+
   return html
+}
+
+// 内联 Markdown→HTML(必须在块级切分后调用): 行内代码/粗体/斜体/链接/图片/引用上标/换行占位
+function renderInline(s: string): string {
+  let h = escapeHtml(s)
+  // 图片语法 ![alt](url) 必须在普通链接之前: 否则 alt/URL 会被当普通链接吃掉。
+  // URL 必须以 http/https/data:image/blob 开头或绝对路径(防止注入 javascript: / file: 等危险协议)。
+  h = h.replace(/!\[([^\]]*)\]\(((?:https?:\/\/|data:image\/|\/)[^)\s]+)\)/g,
+    (_m, alt, url) => `<img class="my-1.5 max-w-full rounded border border-gray-200 dark:border-gray-700" src="${url}" alt="${alt}" loading="lazy" referrerpolicy="no-referrer" />`)
+  // 行内代码需先于粗体,避免内部 ** 误匹配
+  h = h.replace(/`([^`]+)`/g, '<code class="rounded bg-gray-200 dark:bg-gray-700 px-1 text-xs">$1</code>')
+  h = h.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
+  h = h.replace(/\*([^*\n]+?)\*/g, '<em>$1</em>')
+  h = h.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a class="text-blue-500 underline" href="$2" target="_blank" rel="noopener">$1</a>')
+  h = h.replace(/\[\^([a-zA-Z0-9_-]+)\]/g, '<sup class="text-blue-500 font-semibold text-[10px] select-none" id="cite-ref-$1">[$1]</sup>')
+  return h
 }
 
 // 渲染 <plan> 块: 步骤列表卡片
@@ -61,7 +216,7 @@ export function renderReportBlock(content: string): string {
 // 自主模式结构化渲染:
 // 将 AI 流式输出中的 <plan>/<step>/<report>/<think> 标签与工具调用标记解析为卡片式展示。
 export function renderExploreContent(text: string): string {
-  let html = text
+  let html = stripAnswerWrap(text)
   // 1. 保护代码块
   const codeBlocks: string[] = []
   html = html.replace(/```(\w*)\n([\s\S]*?)```/g, (_m, _lang, code) => {

@@ -4,12 +4,14 @@ import { useNavigate } from 'react-router-dom'
 import { useAIStore } from '@/stores/ai'
 import { useKnowledgeStore } from '@/stores/knowledge'
 import { useCan } from '@/stores/permissions'
-import { useAIChat, ChatMessageList, ChatInputBar, TeamChatView, ChatContextBar, ConversationList, estimateContextTokens, type ChatMessage } from '@/components/ai/chat-kernel'
+import { useAIChat, ChatMessageList, ChatInputBar, TeamChatView, ChatContextBar, ConversationList, estimateContextTokens, AttachmentChip, extractAttachmentsFromParts, type ChatMessage, type ChatAttachmentMeta } from '@/components/ai/chat-kernel'
 import { Button, Input, Space, Modal, Popconfirm } from 'antd'
 import {
   Sparkles, History, Settings, BarChart3, Share2, Lock, PanelLeftClose, PanelLeftOpen,
   AlertTriangle, XCircle, CheckCircle, Loader2, Brain, Bookmark, Download, Save, Terminal, Paperclip,
+  FileDown, Presentation,
 } from 'lucide-react'
+import { exportDocFile } from '@/lib/doc-export'
 import { cn } from '@/lib/utils'
 import { apiFetchRaw } from '@/lib/utils'
 import { useThemeStore } from '@/stores/theme'
@@ -28,12 +30,6 @@ const QUICK_ACTIONS = [
   { label: '生成运维报告', icon: Sparkles, prompt: '生成本周的运维报告' },
   { label: '排查故障', icon: Sparkles, prompt: '帮我排查当前系统的异常情况' },
 ]
-
-const EXPLORE_EXAMPLES = [
-  '检查所有主机的运行状态，找出异常主机并给出处理建议',
-  '梳理当前 CMDB 中数据库资产的拓扑关系',
-  '分析近期告警，归类并给出根因分析',
-].map((p) => ({ label: p, prompt: p }))
 
 // 欢迎词(改这里即可调整 AI 助手首屏文案)
 const WELCOME_MESSAGE = '你好！我是 OpsOrigin AI 助手，可以帮你完成运维任务。\n\n👉 **快速开始：** 点击右上角「设置」→「模型」配置 LLM API Key 即可使用。\n\n配置完成后可直接在下方提问，或点击下方快捷操作开始。'
@@ -71,20 +67,23 @@ export default function AIPage() {
   const chat = useAIChat({
     welcome: WELCOME_MESSAGE,
     welcomeId: '0',
+    // 跨路由切换续接: 消息与后端会话 ID 落 localStorage, 导航离开再回来不丢对话
+    persistKey: 'ai.page.messages',
+    convIdKey: 'ai.page.convId',
     enableTeam: true,
     captureToolCalls: true,
-    enableAbort: false,
+    // 启用 abort: 流式输出可随时「停止生成」(ChatInputBar 的方块按钮调 stopGeneration)
+    enableAbort: true,
     resetConvOn403: false,
-    showThinkingKey: 'ai.showThinking',
     buildHistory,
     defaultMode: 'normal',
     enableKnowledgeScope: true,
   })
 
   const {
-    mode, setMode, showThinking, toggleThinking, selectedModel, setSelectedModel,
+    mode, setMode, executor, setExecutor, selectedModel, setSelectedModel,
     selectedAgent, setSelectedAgent, models, agents, messages, setMessages, input, setInput,
-    streaming, send, clearSession, pending, approving, respond, dismissApproval, convId, setConvId,
+    streaming, send, stopGeneration, regenerate, clearSession, pending, approving, respond, dismissApproval, convId, setConvId,
     selectedTeamId, setSelectedTeamId, teamTurns, teamInput, setTeamInput, teamStreaming, handleTeamSend,
     teams, teamsLoading,
     knowledgeCategories, setKnowledgeCategories,
@@ -112,6 +111,32 @@ export default function AIPage() {
   const [pendingArtifactId, setPendingArtifactId] = useState<string | null>(null)
   const [pendingWsFileId, setPendingWsFileId] = useState<string | null>(null)
 
+  // —— 对话附件: 待发送列表 + 上传中计数(上传完成即入列, 发送时随消息附带) ——
+  const [pendingFiles, setPendingFiles] = useState<ChatAttachmentMeta[]>([])
+  const [uploadingCount, setUploadingCount] = useState(0)
+
+  const handleFiles = async (files: File[]) => {
+    for (const f of files.slice(0, 5)) { // 单次最多 5 个
+      if (f.size > 20 * 1024 * 1024) {
+        getMessage().error(`「${f.name}」超过 20MB 上限`)
+        continue
+      }
+      setUploadingCount(n => n + 1)
+      try {
+        const fd = new FormData()
+        fd.append('file', f)
+        const resp = await fetch('/api/v1/ai/attachments', { method: 'POST', headers: authHeaders(), body: fd })
+        if (!resp.ok) throw new Error(`上传失败(${resp.status})`)
+        const meta = await resp.json()
+        setPendingFiles(prev => [...prev, { id: meta.id, name: meta.file_name, type: meta.file_type, size: meta.file_size }])
+      } catch (e: any) {
+        getMessage().error(`「${f.name}」${e.message}`)
+      } finally {
+        setUploadingCount(n => n - 1)
+      }
+    }
+  }
+
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const teamMessagesEndRef = useRef<HTMLDivElement>(null)
 
@@ -119,8 +144,20 @@ export default function AIPage() {
     if (mode === 'normal') loadConversations(selectedAgent?.id).then(setConversations)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [mode, selectedAgent])
-  useEffect(() => { messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' }) }, [messages])
-  useEffect(() => { teamMessagesEndRef.current?.scrollIntoView({ behavior: 'smooth' }) }, [teamTurns])
+
+  // 一轮流式结束后延迟刷新会话列表: 新会话首轮完成后端正用 LLM 生成自动标题(约 1~3 秒)
+  const prevStreamingRef = useRef(false)
+  useEffect(() => {
+    const was = prevStreamingRef.current
+    prevStreamingRef.current = streaming
+    if (was && !streaming && mode === 'normal' && convId) {
+      const t = setTimeout(() => { loadConversations(selectedAgent?.id).then(setConversations) }, 3000)
+      return () => clearTimeout(t)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [streaming])
+  // 滚动已由 ChatMessageList/TeamChatView 内部 useStickToBottom 接管(跟随流式 + 回到底部),
+  // 这里不再 messages 一变就强滚(翻历史会被硬拽回底的糟糕体验)
   useEffect(() => { loadArtifacts(convId); loadWorkspace(convId) }, [convId])
 
   // ----- 会话产物 / 工作区 -----
@@ -158,12 +195,20 @@ export default function AIPage() {
       const conv = await resp.json()
       setConvPerm(conv?.permission === 'view' ? 'view' : conv?.permission === 'edit' ? 'edit' : conv?.permission === 'owner' ? 'owner' : '')
       if (conv?.messages) {
-        const msgs: ChatMessage[] = conv.messages.map((m: any, i: number) => ({
-          id: `${id}-${i}`,
-          role: m.role,
-          content: m.content,
-          timestamp: Date.now(),
-        }))
+        // 只还原真实对话(user/assistant): 过滤 system/tool 等内部轮次(后端会话里持久化了
+        // 工具调用 JSON 等执行轨迹, 直接渲染会变成"后台逻辑泄漏")。附件从持久化的 content_parts
+        // (attachment://<id>#<name> 引用)还原, 不再依赖正文里的 [附件] 标记行。
+        const msgs: ChatMessage[] = conv.messages
+          .filter((m: any) => m.role === 'user' || m.role === 'assistant')
+          .filter((m: any) => m.role !== 'assistant' || (m.content || '').trim())
+          .map((m: any, i: number) => {
+            const atts = extractAttachmentsFromParts(m.content_parts)
+            const msg: ChatMessage = { id: `${id}-${i}`, role: m.role, content: m.content || '', timestamp: Date.now() }
+            // 截断标志随消息持久化(后端 llm.Message.Truncated): 历史回放同样展示「输出不完整」提示
+            if (m.role === 'assistant' && m.truncated) msg.truncated = '该回复生成时被中断（页面关闭/连接断开/长度上限），内容可能不完整'
+            if (atts.length) msg.attachments = atts
+            return msg
+          })
         setMessages(msgs)
       }
       setConvId(id)
@@ -312,6 +357,25 @@ export default function AIPage() {
     }
   }
 
+  // 会话重命名(ConversationList 双击标题): PATCH 后刷新列表
+  const handleRenameConversation = async (id: string, title: string) => {
+    try {
+      const token = localStorage.getItem('opsorigin_token')
+      const resp = await fetch(`/api/v1/ai/conversations/${id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+        body: JSON.stringify({ title }),
+      })
+      if (!resp.ok) throw new Error(`重命名失败(${resp.status})`)
+      const convs = await loadConversations(selectedAgent?.id)
+      setConversations(convs)
+      return true
+    } catch (e: any) {
+      getMessage().error(e.message || '重命名失败')
+      return false
+    }
+  }
+
   const saveShare = async () => {
     if (!shareConv || !shareForm.target_id.trim()) { getMessage().error('请填写目标用户/组 ID'); return }
     try {
@@ -330,6 +394,19 @@ export default function AIPage() {
   const estTokens = messages.reduce((n, m) => n + Math.ceil((m.content?.length || 0) / 2), 0)
   const ctxPct = Math.min(100, Math.round((estTokens / 32000) * 100))
 
+  // 消息导出 docx/pptx(纯前端转换, loading 态 + 防重)
+  const [exportingMsg, setExportingMsg] = useState<string | null>(null)
+  const exportMsgAs = async (msg: ChatMessage, fmt: 'docx' | 'pptx') => {
+    if (exportingMsg) return
+    const k = `${msg.id}:${fmt}`
+    setExportingMsg(k)
+    try {
+      await exportDocFile(msg.content, `ai-${msg.id}`, fmt, `msg:${msg.id}`)
+    } finally {
+      setExportingMsg(null)
+    }
+  }
+
   // 消息额外操作(记忆 / 知识库 / 下载 / 归档)
   const renderMsgActions = (msg: ChatMessage) => (
     <>
@@ -338,6 +415,12 @@ export default function AIPage() {
       </button>
       <button onClick={() => saveMsgToKnowledge(msg)} className="p-1 rounded text-[10px] text-muted-foreground hover:text-amber-500 transition-colors" title="保存到知识库">
         <Bookmark className="h-3 w-3" />
+      </button>
+      <button onClick={() => exportMsgAs(msg, 'docx')} disabled={!!exportingMsg} className="p-1 rounded text-[10px] text-muted-foreground hover:text-blue-500 transition-colors disabled:opacity-50" title="导出 Word (.docx)">
+        {exportingMsg === `${msg.id}:docx` ? <Loader2 className="h-3 w-3 animate-spin" /> : <FileDown className="h-3 w-3" />}
+      </button>
+      <button onClick={() => exportMsgAs(msg, 'pptx')} disabled={!!exportingMsg} className="p-1 rounded text-[10px] text-muted-foreground hover:text-blue-500 transition-colors disabled:opacity-50" title="导出 PowerPoint (.pptx)">
+        {exportingMsg === `${msg.id}:pptx` ? <Loader2 className="h-3 w-3 animate-spin" /> : <Presentation className="h-3 w-3" />}
       </button>
       <button onClick={() => downloadMsgAsMd(msg)} className="p-1 rounded text-[10px] text-muted-foreground hover:text-blue-500 transition-colors" title="下载为 Markdown">
         <Download className="h-3 w-3" />
@@ -394,14 +477,16 @@ export default function AIPage() {
   )
 
   return (
-    <div className="p-6 h-[calc(100vh-120px)] flex flex-col">
-      <div className="flex items-center justify-between mb-4">
+    // 高度对齐 layout.tsx 顶部面包屑栏(px-6 py-3 + 一行文字 + border ≈ 45px):
+    // 页面正好填满面包屑以下视口, 输入区不被挤出屏幕, 对话区拿到最大垂直空间。
+    <div className="p-6 h-[calc(100vh-45px)] flex flex-col">
+      <div className="flex items-center justify-between mb-3">
         <div>
-          <h1 className="text-2xl font-bold flex items-center gap-2"><Sparkles className="h-6 w-6 text-blue-500" />AI 助手</h1>
-          <p className="text-sm text-muted-foreground">智能运维助手，帮你高效完成运维任务</p>
+          <h1 className="text-xl font-bold flex items-center gap-2"><Sparkles className="h-5 w-5 text-blue-500" />AI 助手</h1>
         </div>
         <div className="flex items-center gap-2">
           {mode === 'normal' && (<Button size="middle" onClick={() => navigate('/ai/analytics')}><BarChart3 className="h-4 w-4" />分析</Button>)}
+          <Button size="middle" onClick={() => navigate('/ai/models')}><Brain className="h-4 w-4" />模型</Button>
           <Button size="middle" onClick={() => navigate('/ai/settings')}><Settings className="h-4 w-4" />设置</Button>
         </div>
       </div>
@@ -424,6 +509,7 @@ export default function AIPage() {
                   onSelect={handleLoadConversation}
                   onNew={handleNewConversation}
                   onDelete={(id) => setPendingConvId(id)}
+                  onRename={handleRenameConversation}
                   onShare={(c) => { setShareConv({ id: c.id, title: c.title || '新对话' }); setShareForm({ target_type: 'user', target_id: '', permission: 'view' }) }}
                 />
               </div>
@@ -436,22 +522,6 @@ export default function AIPage() {
           )}
 
           <div className="flex-1 flex flex-col border rounded-lg overflow-hidden min-w-0">
-            <ChatContextBar
-              modelLabel={selectedModel ? (models.find(m => m.model === selectedModel)?.name || selectedModel) : undefined}
-              agentName={selectedAgent?.name}
-              knowledgeScope={knowledgeCategories}
-              mode={mode}
-              models={models}
-              selectedModel={selectedModel}
-              onModelChange={setSelectedModel}
-              agents={agents}
-              selectedAgent={selectedAgent}
-              onAgentChange={setSelectedAgent}
-              onOpenKnowledge={() => navigate(knowledgeCategories.length === 1 ? `/knowledge?cat=${encodeURIComponent(knowledgeCategories[0])}` : '/knowledge')}
-              contextTokens={estimateContextTokens(messages)}
-              variant="page"
-              onConfigure={() => navigate('/ai/settings')}
-            />
             <ChatMessageList
               messages={messages}
               mode={mode}
@@ -462,47 +532,56 @@ export default function AIPage() {
               enableTaskList
               onFeedback={submitFeedback}
               onRetry={retryMessage}
+              onRegenerate={regenerate}
               extraActions={renderMsgActions}
               loading={streaming}
               loadingText="思考中..."
-              emptyQuickActions={
-                (mode === 'normal' ? QUICK_ACTIONS : EXPLORE_EXAMPLES).map(q => (
-                  <button key={q.label} onClick={() => send(q.prompt)} className="flex flex-col items-start gap-1.5 px-3 py-2.5 rounded-lg border border-gray-200 dark:border-[rgba(255,255,255,0.08)] hover:border-blue-300 hover:bg-blue-50/50 dark:hover:border-blue-500/40 dark:hover:bg-blue-500/10 transition-colors text-left">
-                    <Sparkles className="h-4 w-4 text-blue-500" />
-                    <span className="text-xs">{q.label}</span>
-                  </button>
-                ))
-              }
               endRef={messagesEndRef}
               className="p-4"
             />
 
-            <ChatInputBar
-              value={input}
-              onChange={setInput}
-              onSend={() => send(input)}
-              streaming={streaming}
-              disabled={!canUseAI || convPerm === 'view'}
-              mode={mode}
-              onModeChange={setMode}
-              showThinking={showThinking}
-              onToggleThinking={toggleThinking}
+            <ChatContextBar
+              modelLabel={selectedModel ? (models.find(m => m.model === selectedModel)?.name || selectedModel) : undefined}
+              knowledgeScope={knowledgeCategories}
+              executor={executor}
+              agents={agents}
+              teams={teams}
+              onExecutorChange={setExecutor}
               models={models}
               selectedModel={selectedModel}
               onModelChange={setSelectedModel}
-              agents={agents}
-              selectedAgent={selectedAgent}
-              onAgentChange={setSelectedAgent}
-              enableModel
-              enableAgent
-              exploreHint
-              enableKnowledgeScope
               knowledgeCategories={knowledgeCategories}
-              onKnowledgeCategoriesChange={setKnowledgeCategories}
               knowledgeCategoryOptions={knowledgeCategoryOptions}
+              onKnowledgeCategoriesChange={setKnowledgeCategories}
+              contextTokens={estimateContextTokens(messages)}
+              variant="page"
+              onConfigure={() => navigate('/ai/settings')}
+            />
+            <ChatInputBar
+              value={input}
+              onChange={setInput}
+              onSend={() => { send(input, pendingFiles); setPendingFiles([]) }}
+              onStop={stopGeneration}
+              onFiles={handleFiles}
+              streaming={streaming}
+              disabled={!canUseAI || convPerm === 'view'}
+              enableQuickActions={!streaming}
+              quickActions={QUICK_ACTIONS}
               variant="page"
               inputFooter={inputFooter}
             />
+            {pendingFiles.length > 0 && (
+              <div className="flex flex-wrap gap-1.5 px-4 pb-2 -mt-1">
+                {pendingFiles.map((a, i) => (
+                  <AttachmentChip key={`${a.name}-${i}`} att={a} onRemove={() => setPendingFiles(prev => prev.filter((_, j) => j !== i))} />
+                ))}
+                {uploadingCount > 0 && (
+                  <span className="inline-flex items-center gap-1.5 px-2 py-1 rounded-lg text-[11px] border border-dashed border-gray-300 dark:border-gray-600 text-muted-foreground">
+                    <Loader2 className="h-3 w-3 animate-spin" />上传中…
+                  </span>
+                )}
+              </div>
+            )}
 
             {!canUseAI && (
               <p className="text-[10px] text-amber-600 dark:text-amber-400 flex items-center gap-1 px-4 pb-2">

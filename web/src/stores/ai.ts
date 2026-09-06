@@ -34,6 +34,10 @@ interface _ChatState {
     onError?: (msg: string) => void,
     onToolCall?: (tc: { name: string; args: any; status: 'running' | 'done'; result?: string }) => void,
     knowledgeCategories?: string[],
+    /** SSE event:truncated 时回调(上游 finish_reason=length, 输出被 max_tokens 截断)。 */
+    onTruncated?: (note: string) => void,
+    /** 本轮随消息上传的附件(图片/文档)元数据, 后端转为多模态片段。 */
+    attachments?: { id?: string; name: string; type: string }[],
   ) => Promise<void>
   loadConversations: (agentId?: string) => Promise<any[]>
   saveConversation: (conv: any) => Promise<any | null>

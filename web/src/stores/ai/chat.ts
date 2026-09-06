@@ -27,6 +27,10 @@ interface ChatState {
     onError?: (msg: string) => void,
     onToolCall?: (tc: { name: string; args: any; status: 'running' | 'done'; result?: string }) => void,
     knowledgeCategories?: string[],
+    /** SSE event:truncated 时回调(上游 finish_reason=length, 输出被 max_tokens 截断)。 */
+    onTruncated?: (note: string) => void,
+    /** 本轮随消息上传的附件(图片/文档)元数据, 后端转为多模态片段(attachment:// 引用)。 */
+    attachments?: { id?: string; name: string; type: string }[],
   ) => Promise<void>
   loadConversations: (agentId?: string) => Promise<any[]>
   saveConversation: (conv: any) => Promise<any | null>
@@ -59,7 +63,7 @@ export const useChatStore = create<ChatState>((set) => ({
       return null
     }
   },
-  streamChat: async (prompt, onToken, onDone, history = [], agentId, reasoning, onThinking, explore, onAsk, serverConvId, signal, model, onError, onToolCall, knowledgeCategories) => {
+  streamChat: async (prompt, onToken, onDone, history = [], agentId, reasoning, onThinking, explore, onAsk, serverConvId, signal, model, onError, onToolCall, knowledgeCategories, onTruncated?: (note: string) => void, attachments?: { id?: string; name: string; type: string }[]) => {
     try {
       const messageId = `msg_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`
       const body: any = { prompt, history, stream: true, message_id: messageId }
@@ -68,6 +72,7 @@ export const useChatStore = create<ChatState>((set) => ({
       if (explore) body.explore = true
       if (model) body.model = model
       if (knowledgeCategories?.length) body.knowledge_categories = knowledgeCategories
+      if (attachments?.length) body.attachments = attachments.map(a => ({ id: a.id, name: a.name, type: a.type }))
       if (serverConvId) body.conversation_id = serverConvId
       const resp = await apiFetchRaw('/ai/chat', {
         method: 'POST',
@@ -75,7 +80,16 @@ export const useChatStore = create<ChatState>((set) => ({
         signal,
       })
       if (!resp.ok) {
-        const errMsg = `AI 响应失败: ${resp.status}`
+        // 尽量读响应体的具体错误原因(如后端 WriteError 的 {error}), 不要只给状态码
+        let detail = ''
+        try {
+          const raw = await resp.text()
+          try {
+            const j = JSON.parse(raw)
+            detail = (j && (j.error || j.message)) || ''
+          } catch { detail = raw.slice(0, 200) }
+        } catch { /* body 不可读 */ }
+        const errMsg = `AI 响应失败(${resp.status})${detail ? `：${String(detail).trim()}` : ''}`
         getMessage().error(errMsg)
         onError?.(errMsg)
         onDone()
@@ -134,6 +148,32 @@ export const useChatStore = create<ChatState>((set) => ({
               onToolCall?.(tc)
             } catch {}
             currentEvent = ''
+            continue
+          }
+          // 流内错误事件(模型调用失败/限流/超时等): 必须转成 onError 展示, 不能吞掉或当普通 token 上屏
+          if (currentEvent === 'error') {
+            let m = data
+            try {
+              const j = JSON.parse(data)
+              if (typeof j === 'string') m = j
+              else if (j && (j.message || j.error)) m = j.message || j.error
+            } catch { /* data 为纯文本 */ }
+            currentEvent = ''
+            const msg = `AI 调用失败：${String(m).replace(/^AI 调用失败[：:]\s*/, '')}`
+            getMessage().error(msg)
+            onError?.(msg)
+            continue
+          }
+          // 输出被 max_tokens 截断(上游 finish_reason=length): 内容是真的, 不算错误——
+          // 走 onTruncated 回调, 前端追加一个黄色「输出可能不完整」标签, 不覆盖流内已生成的正文。
+          if (currentEvent === 'truncated') {
+            let m = data
+            try {
+              const j = JSON.parse(data)
+              if (typeof j === 'string') m = j
+            } catch { /* data 为纯文本 */ }
+            currentEvent = ''
+            onTruncated?.(String(m))
             continue
           }
           currentEvent = ''

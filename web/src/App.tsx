@@ -34,6 +34,7 @@ const MonitorAlertsPage = React.lazy(() => import('./app/(dashboard)/monitor/ale
 const MonitorCollectionPage = React.lazy(() => import('./app/(dashboard)/monitor/collection/page'))
 const MonitorPluginsPage = React.lazy(() => import('./app/(dashboard)/monitor/plugins/page'))
 const AIPage = React.lazy(() => import('./app/(dashboard)/ai/page'))
+const AITasksPage = React.lazy(() => import('./app/(dashboard)/ai/tasks/page'))
 const AIAnalyticsPage = React.lazy(() => import('./app/(dashboard)/ai/analytics/page'))
 const AITeamsPage = React.lazy(() => import('./app/(dashboard)/ai/teams/page'))
 const AIImpactPage = React.lazy(() => import('./app/(dashboard)/ai/impact/page'))
@@ -43,6 +44,10 @@ const AIMarketplacePage = React.lazy(() => import('./app/(dashboard)/ai/marketpl
 const AIScenesPage = React.lazy(() => import('./app/(dashboard)/ai/scenes/page'))
 const AIDrillsPage = React.lazy(() => import('./app/(dashboard)/ai/drills/page'))
 const AISettingsPage = React.lazy(() => import('./app/(dashboard)/ai/settings/page'))
+const AIModelsLayoutPage = React.lazy(() => import('./app/(dashboard)/ai/models/layout'))
+const AIModelListPage = React.lazy(() => import('./app/(dashboard)/ai/models/list/page'))
+const AIModelNewPage = React.lazy(() => import('./app/(dashboard)/ai/models/new/page'))
+const AIModelDetailPage = React.lazy(() => import('./app/(dashboard)/ai/models/[id]/page'))
 const CMDBPage = React.lazy(() => import('./app/(dashboard)/cmdb/page'))
 const CMDBStatsPage = React.lazy(() => import('./app/(dashboard)/cmdb/stats/page'))
 const CMDBAutoCollectPage = React.lazy(() => import('./app/(dashboard)/cmdb/auto-collect/page'))
@@ -167,6 +172,7 @@ function App() {
                 <Route path="/monitor/collection" element={<MonitorCollectionPage />} />
                 <Route path="/monitor/plugins" element={<MonitorPluginsPage />} />
                 <Route path="/ai" element={<AIPage />} />
+                <Route path="/ai/tasks" element={<AITasksPage />} />
                 <Route path="/ai/analytics" element={<AIAnalyticsPage />} />
                 <Route path="/ai/teams" element={<AITeamsPage />} />
                 <Route path="/ai/impact" element={<AIImpactPage />} />
@@ -176,6 +182,13 @@ function App() {
                 <Route path="/ai/scenes" element={<AIScenesPage />} />
                 <Route path="/ai/drills" element={<AIDrillsPage />} />
                 <Route path="/ai/settings" element={<AISettingsPage />} />
+                {/* 模型管理：列表（唯一定义入口，含权重/类型/可见性/主LLM）+ 新增 / 详情子路由 */}
+                <Route path="/ai/models" element={<AIModelsLayoutPage />}>
+                  <Route index element={<Navigate to="list" replace />} />
+                  <Route path="list" element={<AIModelListPage />} />
+                  <Route path="new" element={<AIModelNewPage />} />
+                  <Route path=":id" element={<AIModelDetailPage />} />
+                </Route>
                 <Route path="/cmdb" element={<CMDBPage />} />
                 <Route path="/cmdb/stats" element={<CMDBStatsPage />} />
                 <Route path="/cmdb/auto-collect" element={<CMDBAutoCollectPage />} />

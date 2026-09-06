@@ -10,7 +10,7 @@ import { apiFetchRaw } from '@/lib/utils'
 import { AI_ASSISTANT_NAV } from '@/components/ai-nav'
 import { cn } from '@/lib/utils'
 import {
-  Bot, X, Trash2, History, BarChart3, Settings, PanelLeftClose, Sparkles,
+  Bot, X, Trash2, History, BarChart3, Settings, PanelLeftClose, Brain,
 } from 'lucide-react'
 
 // ============================================================================
@@ -53,7 +53,7 @@ export default function PureMode({ onExitPure }: { onExitPure: () => void }) {
   })
 
   const {
-    mode, setMode, showThinking, toggleThinking, selectedModel, setSelectedModel,
+    mode, executor, setExecutor, selectedModel, setSelectedModel,
     selectedAgent, setSelectedAgent, models, agents, messages, setMessages, input, setInput,
     streaming, send, clearSession, pending, approving, respond, convId, setConvId,
     selectedTeamId, setSelectedTeamId, teamTurns, teamInput, setTeamInput, teamStreaming, handleTeamSend,
@@ -235,6 +235,9 @@ export default function PureMode({ onExitPure }: { onExitPure: () => void }) {
             <button onClick={() => goto('/ai/analytics')} className="p-1.5 rounded-md transition-colors text-muted-foreground hover:text-foreground hover:bg-black/5 dark:hover:bg-white/10" title="AI 分析">
               <BarChart3 className="h-3.5 w-3.5" />
             </button>
+            <button onClick={() => goto('/ai/models')} className="p-1.5 rounded-md transition-colors text-muted-foreground hover:text-foreground hover:bg-black/5 dark:hover:bg-white/10" title="模型管理">
+              <Brain className="h-3.5 w-3.5" />
+            </button>
             <button onClick={() => goto('/ai/settings')} className="p-1.5 rounded-md transition-colors text-muted-foreground hover:text-foreground hover:bg-black/5 dark:hover:bg-white/10" title="智能体工作台">
               <Settings className="h-3.5 w-3.5" />
             </button>
@@ -250,22 +253,6 @@ export default function PureMode({ onExitPure }: { onExitPure: () => void }) {
         {/* ============ 普通 / 自主 模式主体 ============ */}
         {mode !== 'team' && (
           <>
-            <ChatContextBar
-              modelLabel={selectedModel ? (models.find(m => m.model === selectedModel)?.name || selectedModel) : undefined}
-              agentName={selectedAgent?.name}
-              knowledgeScope={knowledgeCategories}
-              mode={mode}
-              models={models}
-              selectedModel={selectedModel}
-              onModelChange={setSelectedModel}
-              agents={agents}
-              selectedAgent={selectedAgent}
-              onAgentChange={setSelectedAgent}
-              onOpenKnowledge={() => navigate(knowledgeCategories.length === 1 ? `/knowledge?cat=${encodeURIComponent(knowledgeCategories[0])}` : '/knowledge')}
-              contextTokens={estimateContextTokens(messages)}
-              variant="panel"
-              onConfigure={() => navigate('/ai/settings')}
-            />
             <ChatMessageList
               messages={messages}
               mode={mode}
@@ -276,16 +263,6 @@ export default function PureMode({ onExitPure }: { onExitPure: () => void }) {
               onFeedback={submitFb}
               loading={streaming}
               loadingText={mode === 'explore' ? 'AI 正在规划并执行…' : 'AI 正在思考…'}
-              emptyQuickActions={
-                mode === 'normal'
-                  ? QUICK_ACTIONS.map(q => (
-                    <button key={q.label} onClick={() => { setInput(q.prompt); send(q.prompt) }} className="flex flex-col items-start gap-1.5 px-3 py-2.5 rounded-lg border border-gray-200 dark:border-[rgba(255,255,255,0.08)] hover:border-blue-300 hover:bg-blue-50/50 dark:hover:border-blue-500/40 dark:hover:bg-blue-500/10 transition-colors text-left">
-                      <Sparkles className="h-4 w-4 text-blue-500" />
-                      <span className="text-xs">{q.label}</span>
-                    </button>
-                  ))
-                  : null
-              }
               endRef={listEndRef}
               className="px-5 py-5"
             />
@@ -328,32 +305,31 @@ export default function PureMode({ onExitPure }: { onExitPure: () => void }) {
             )}
 
             {/* 输入区 */}
+            <ChatContextBar
+              modelLabel={selectedModel ? (models.find(m => m.model === selectedModel)?.name || selectedModel) : undefined}
+              knowledgeScope={knowledgeCategories}
+              executor={executor}
+              agents={agents}
+              teams={teams}
+              onExecutorChange={setExecutor}
+              models={models}
+              selectedModel={selectedModel}
+              onModelChange={setSelectedModel}
+              knowledgeCategories={knowledgeCategories}
+              knowledgeCategoryOptions={knowledgeCategoryOptions}
+              onKnowledgeCategoriesChange={setKnowledgeCategories}
+              contextTokens={estimateContextTokens(messages)}
+              variant="panel"
+              onConfigure={() => navigate('/ai/settings')}
+            />
             <ChatInputBar
               value={input}
               onChange={setInput}
               onSend={() => send(input)}
               onStop={chat.stopGeneration}
               streaming={streaming}
-              mode={mode}
-              onModeChange={setMode}
-              showThinking={showThinking}
-              onToggleThinking={toggleThinking}
-              models={models}
-              selectedModel={selectedModel}
-              onModelChange={setSelectedModel}
-              agents={agents}
-              selectedAgent={selectedAgent}
-              onAgentChange={setSelectedAgent}
-              enableModel
-              enableAgent
-              enableQuickActions={mode === 'normal'}
+              enableQuickActions={!streaming}
               quickActions={QUICK_ACTIONS}
-              onQuickSend={(p) => send(p)}
-              exploreHint
-              enableKnowledgeScope
-              knowledgeCategories={knowledgeCategories}
-              onKnowledgeCategoriesChange={setKnowledgeCategories}
-              knowledgeCategoryOptions={knowledgeCategoryOptions}
               variant="panel"
               className="px-5 py-3"
             />

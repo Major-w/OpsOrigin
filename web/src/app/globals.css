@@ -377,3 +377,15 @@
 .stagger-6 { animation-delay: 0.3s; }
 
 }
+
+/* AI 流式输出光标: 追加在消息内容最后一个块级元素末尾, 流式结束后随 ai-streaming class 移除 */
+.ai-streaming > :last-child::after {
+  content: '▍';
+  display: inline-block;
+  color: #3b82f6;
+  margin-left: 2px;
+  animation: ai-cursor-blink 1s steps(2, start) infinite;
+}
+@keyframes ai-cursor-blink {
+  50% { opacity: 0; }
+}

@@ -31,7 +31,7 @@ export default function AIAssistant() {
     defaultMode: 'normal',
   })
 
-  const { mode, setMode, showThinking, toggleThinking, messages, input, setInput, streaming, send, stopGeneration, pending, approving, respond, clearSession } = chat
+  const { messages, input, setInput, streaming, send, stopGeneration, pending, approving, respond, clearSession } = chat
 
   const listEndRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLTextAreaElement>(null)
@@ -91,13 +91,12 @@ export default function AIAssistant() {
       {/* 消息区 */}
       <ChatMessageList
         messages={messages}
-        mode={mode}
         welcomeId="welcome"
         variant="floating"
         enableCitations={false}
         enableFeedback={false}
         loading={streaming}
-        loadingText={mode === 'explore' ? 'AI 正在规划并执行…' : 'AI 正在思考…'}
+        loadingText="AI 正在思考…"
         endRef={listEndRef}
         className="px-3.5 py-3"
       />
@@ -105,22 +104,13 @@ export default function AIAssistant() {
       {/* 审批确认条 */}
       <ApprovalBar pending={pending} approving={approving} onRespond={respond} variant="floating" />
 
-      {/* 输入区 */}
+      {/* 输入区(浮窗恒为默认助手, 执行者/模型等选择在完整 AI 页) */}
       <ChatInputBar
         value={input}
         onChange={setInput}
         onSend={() => send(input)}
         onStop={stopGeneration}
         streaming={streaming}
-        mode={mode}
-        onModeChange={setMode}
-        showThinking={showThinking}
-        onToggleThinking={toggleThinking}
-        modes={['normal', 'explore']}
-        enableModel={false}
-        enableAgent={false}
-        enableThink
-        exploreHint
         variant="floating"
       />
     </div>

@@ -4,7 +4,7 @@ import { Link } from 'react-router-dom'
 import { useNavigate } from 'react-router-dom'
 import usePathname from '@/lib/use-pathname'
 import { cn } from '@/lib/utils'
-import { Server, TicketCheck, Activity, Bot, Shield, LayoutDashboard, Hexagon, LogOut, User, Terminal, Workflow, Clock, Search, BookOpen, Calendar, GitBranch, Package, Bell, Key, Blocks, Users, Settings, Sun, Moon, Scan, Bug, Download, PackagePlus, Network, AlertTriangle, History, FileText, Rocket, AppWindow, FileCheck2, Cloud, Play, Sparkles, Database, Radio, BarChart3, Building2, TrendingUp, Store, Cpu, Webhook, Mail, MessageSquare, FolderOpen, ShieldAlert, ShieldCheck, type LucideIcon } from 'lucide-react'
+import { Server, TicketCheck, Activity, Bot, Shield, LayoutDashboard, Hexagon, LogOut, User, Terminal, Workflow, Clock, Search, BookOpen, Calendar, GitBranch, Package, Bell, Key, Blocks, Users, Settings, Sun, Moon, Scan, Bug, Download, PackagePlus, Network, AlertTriangle, History, FileText, Rocket, AppWindow, FileCheck2, Cloud, Play, Sparkles, Database, Radio, BarChart3, Building2, TrendingUp, Store, Cpu, Webhook, Mail, MessageSquare, FolderOpen, ShieldAlert, ShieldCheck, PanelLeftClose, PanelLeftOpen, type LucideIcon } from 'lucide-react'
 import { useAuthStore } from '@/stores/auth'
 import { MessageBell } from '@/components/message-bell'
 import { useThemeStore } from '@/stores/theme'
@@ -300,6 +300,15 @@ export function Layout({ children }: { children: React.ReactNode }) {
     return init
   })
   const { theme, toggle } = useThemeStore()
+  // 侧栏整体收起(图标窄条模式): localStorage 持久化, 收起时仅显示图标、点击图标或展开按钮恢复。
+  const [sidebarCollapsed, setSidebarCollapsed] = useState<boolean>(() => {
+    if (typeof window === 'undefined') return false
+    try { return localStorage.getItem('opsorigin_sidebar_collapsed') === '1' } catch { return false }
+  })
+  const applySidebarCollapsed = (v: boolean) => {
+    setSidebarCollapsed(v)
+    try { localStorage.setItem('opsorigin_sidebar_collapsed', v ? '1' : '0') } catch { /* ignore */ }
+  }
   // 纯净模式：优先读「登录后默认进入」偏好，否则读「本次会话是否纯静态」偏好
   const [pureMode, setPureMode] = useState<boolean>(() => {
     if (typeof window === 'undefined') return false
@@ -327,24 +336,62 @@ export function Layout({ children }: { children: React.ReactNode }) {
     <div className={cn("flex h-screen overflow-hidden", theme === 'dark' ? 'bg-[var(--background)]' : 'bg-gray-50')}>
       <div className="fixed inset-0 pointer-events-none opacity-[0.03] bg-[url('data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIzMDAiIGhlaWdodD0iMzAwIj48ZmlsdGVyIGlkPSJmIj48ZmVUdXJidWxlbmNlIHR5cGU9ImZyYWN0YWxOb2lzZSIgYmFzZUZyZXF1ZW5jeT0iLjc0IiBudW1PY3RhdmVzPSIzIi8+PC9maWx0ZXI+PHJlY3Qgd2lkdGg9IjEwMCUiIGhlaWdodD0iMTAwJSIgZmlsdGVyPSJ1cmwoI2YpIiBvcGFjaXR5PSIwLjA0Ii8+PC9zdmc+')]" />
 
-      <aside className={cn("relative z-10 w-60 flex flex-col border-r backdrop-blur-2xl overflow-y-auto sticky top-0 h-screen", theme === 'dark' ? 'border-[rgba(255,255,255,0.04)] bg-[rgba(11,15,25,0.8)]' : 'border-gray-200 bg-white/80')}>
-        <div className={cn("h-14 flex items-center gap-2.5 px-5 border-b sticky top-0 backdrop-blur-2xl", theme === 'dark' ? 'border-[rgba(255,255,255,0.04)] bg-[rgba(11,15,25,0.95)]' : 'border-gray-200 bg-gray-50/95')}>
-          <div className="relative flex items-center justify-center w-7 h-7">
-            <Hexagon className="w-7 h-7 text-blue-400" strokeWidth={1.5} />
-            <span className={cn("absolute text-[8px] font-bold font-mono", theme === 'dark' ? 'text-white' : 'text-[var(--primary-foreground)]')}>ON</span>
-          </div>
-          <div className="flex-1">
-            <span className={cn("text-sm font-semibold tracking-tight", theme === 'dark' ? 'text-white' : 'text-gray-900')}>OpsOrigin</span>
-            <p className="text-[10px] text-muted-foreground tracking-wider uppercase">AI-Native Ops</p>
-          </div>
-          <LocaleSwitcher />
-          <button onClick={toggle} className={cn("p-1.5 rounded-md transition-colors", theme === 'dark' ? 'text-gray-400 hover:text-white hover:bg-white/10' : 'text-gray-500 hover:text-gray-900 hover:bg-gray-200')}>
-            {theme === 'dark' ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
-          </button>
+      <aside className={cn("relative z-10 flex flex-col border-r backdrop-blur-2xl overflow-y-auto sticky top-0 h-screen shrink-0 transition-[width] duration-200", sidebarCollapsed ? 'w-14' : 'w-60', theme === 'dark' ? 'border-[rgba(255,255,255,0.04)] bg-[rgba(11,15,25,0.8)]' : 'border-gray-200 bg-white/80')}>
+        <div className={cn("h-14 flex items-center gap-2.5 border-b sticky top-0 backdrop-blur-2xl", sidebarCollapsed ? 'px-2 justify-center' : 'px-5', theme === 'dark' ? 'border-[rgba(255,255,255,0.04)] bg-[rgba(11,15,25,0.95)]' : 'border-gray-200 bg-gray-50/95')}>
+          {sidebarCollapsed ? (
+            <>
+              <button onClick={() => applySidebarCollapsed(false)} className={cn("p-1.5 rounded-md transition-colors", theme === 'dark' ? 'text-gray-400 hover:text-white hover:bg-white/10' : 'text-gray-500 hover:text-gray-900 hover:bg-gray-200')} title="展开菜单">
+                <PanelLeftOpen className="h-4 w-4" />
+              </button>
+              <button onClick={toggle} className={cn("p-1.5 rounded-md transition-colors", theme === 'dark' ? 'text-gray-400 hover:text-white hover:bg-white/10' : 'text-gray-500 hover:text-gray-900 hover:bg-gray-200')} title={theme === 'dark' ? '切换亮色' : '切换暗色'}>
+                {theme === 'dark' ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
+              </button>
+            </>
+          ) : (
+            <>
+              <div className="relative flex items-center justify-center w-7 h-7 shrink-0">
+                <Hexagon className="w-7 h-7 text-blue-400" strokeWidth={1.5} />
+                <span className={cn("absolute text-[8px] font-bold font-mono", theme === 'dark' ? 'text-white' : 'text-[var(--primary-foreground)]')}>ON</span>
+              </div>
+              <div className="flex-1 min-w-0">
+                <span className={cn("text-sm font-semibold tracking-tight", theme === 'dark' ? 'text-white' : 'text-gray-900')}>OpsOrigin</span>
+                <p className="text-[10px] text-muted-foreground tracking-wider uppercase">AI-Native Ops</p>
+              </div>
+              <LocaleSwitcher />
+              <button onClick={toggle} className={cn("p-1.5 rounded-md transition-colors shrink-0", theme === 'dark' ? 'text-gray-400 hover:text-white hover:bg-white/10' : 'text-gray-500 hover:text-gray-900 hover:bg-gray-200')}>
+                {theme === 'dark' ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
+              </button>
+              <button onClick={() => applySidebarCollapsed(true)} className={cn("p-1.5 rounded-md transition-colors shrink-0", theme === 'dark' ? 'text-gray-400 hover:text-white hover:bg-white/10' : 'text-gray-500 hover:text-gray-900 hover:bg-gray-200')} title="收起菜单">
+                <PanelLeftClose className="h-4 w-4" />
+              </button>
+            </>
+          )}
         </div>
 
-        <nav className="flex-1 p-2 space-y-0.5 pt-4">
+        <nav className={cn("flex-1 space-y-0.5 pt-4", sidebarCollapsed ? 'px-1.5' : 'p-2')}>
           {navGroups.map((item) => {
+            if (sidebarCollapsed) {
+              // 图标窄条模式: 顶层项直接跳转; 分组点击先展开侧栏再选
+              const Icon = isNavGroup(item) ? item.icon : (item as NavItem).icon
+              const isActive = isNavGroup(item)
+                ? leafRoutes(item).some(r => pathMatches(pathname, r))
+                : (() => { const to = (item as NavItem).to; return to === '/dashboard' ? pathname === '/dashboard' : pathMatches(pathname, to) })()
+              return (
+                <button
+                  key={isNavGroup(item) ? item.label : (item as NavItem).to}
+                  onClick={() => applySidebarCollapsed(false)}
+                  title={isNavGroup(item) ? item.label : (item as NavItem).label}
+                  className={cn(
+                    'flex items-center justify-center w-full py-2 rounded-lg transition-all duration-200',
+                    isActive
+                      ? 'bg-blue-50 text-blue-600 dark:bg-blue-500/10 dark:text-blue-400'
+                      : theme === 'dark' ? 'text-[var(--secondary-foreground)] hover:text-white hover:bg-white/[0.06]' : 'text-gray-600 hover:text-gray-900 hover:bg-gray-100'
+                  )}
+                >
+                  <Icon className="h-4 w-4" strokeWidth={1.5} />
+                </button>
+              )
+            }
             if (isNavGroup(item)) {
               return (
                 <NavGroupComponent
@@ -376,36 +423,50 @@ export function Layout({ children }: { children: React.ReactNode }) {
           })}
         </nav>
 
-        <div className={cn("px-4 py-3 border-t space-y-2 sticky bottom-0 backdrop-blur-2xl", theme === 'dark' ? 'border-[rgba(255,255,255,0.04)] bg-[rgba(11,15,25,0.95)]' : 'border-gray-200 bg-white/95')}>
+        <div className={cn("border-t space-y-2 sticky bottom-0 backdrop-blur-2xl", sidebarCollapsed ? 'px-1.5 py-3' : 'px-4 py-3', theme === 'dark' ? 'border-[rgba(255,255,255,0.04)] bg-[rgba(11,15,25,0.95)]' : 'border-gray-200 bg-white/95')}>
           {user && (
-            <div className="flex items-center justify-between">
-              <div className="flex items-center gap-2 min-w-0">
+            <div className={cn("flex items-center", sidebarCollapsed ? 'flex-col gap-1.5' : 'justify-between')}>
+              <div className={cn("flex items-center gap-2", sidebarCollapsed && 'flex-col')} title={sidebarCollapsed ? `${user.username} (${user.role})` : undefined}>
                 <div className="w-6 h-6 rounded-full bg-blue-100 dark:bg-blue-500/20 flex items-center justify-center shrink-0">
                   <User className="w-3 h-3 text-blue-600 dark:text-blue-400" />
                 </div>
-                <div className="min-w-0">
-                  <p className={cn("text-xs font-medium truncate", theme === 'dark' ? 'text-white' : 'text-gray-900')}>{user.username}</p>
-                  <p className="text-[10px] text-muted-foreground/60 font-mono uppercase">{user.role}</p>
-                </div>
+                {!sidebarCollapsed && (
+                  <div className="min-w-0">
+                    <p className={cn("text-xs font-medium truncate", theme === 'dark' ? 'text-white' : 'text-gray-900')}>{user.username}</p>
+                    <p className="text-[10px] text-muted-foreground/60 font-mono uppercase">{user.role}</p>
+                  </div>
+                )}
               </div>
-              <div className="flex items-center gap-1">
+              <div className={cn("flex items-center", sidebarCollapsed ? 'flex-col gap-1.5' : 'gap-1')}>
                 <MessageBell />
-                <button onClick={() => { logout(); navigate('/login') }} className="text-muted-foreground/40 hover:text-red-500 transition-colors p-1">
+                <button onClick={() => { logout(); navigate('/login') }} className="text-muted-foreground/40 hover:text-red-500 transition-colors p-1" title="退出登录">
                   <LogOut className="w-3.5 h-3.5" />
                 </button>
               </div>
             </div>
           )}
-          <button
-            onClick={() => applyPure(true)}
-            className="w-full flex items-center justify-center gap-1.5 py-1.5 rounded-lg text-[11px] font-semibold text-white bg-blue-500 hover:bg-blue-600 transition-all duration-200 shadow-sm"
-            title="切换到纯净模式（AI 工作界面）"
-          >
-            <Sparkles className="h-3.5 w-3.5" strokeWidth={1.5} /> 纯净模式
-          </button>
-          <p className="text-[10px] text-muted-foreground/50 font-mono tracking-tight">
-            v{__APP_VERSION__} · {__BUILD_TIME__}
-          </p>
+          {sidebarCollapsed ? (
+            <button
+              onClick={() => applyPure(true)}
+              className="w-full flex items-center justify-center py-1.5 rounded-lg text-white bg-blue-500 hover:bg-blue-600 transition-all duration-200 shadow-sm"
+              title="切换到纯净模式（AI 工作界面）"
+            >
+              <Sparkles className="h-3.5 w-3.5" strokeWidth={1.5} />
+            </button>
+          ) : (
+            <button
+              onClick={() => applyPure(true)}
+              className="w-full flex items-center justify-center gap-1.5 py-1.5 rounded-lg text-[11px] font-semibold text-white bg-blue-500 hover:bg-blue-600 transition-all duration-200 shadow-sm"
+              title="切换到纯净模式（AI 工作界面）"
+            >
+              <Sparkles className="h-3.5 w-3.5" strokeWidth={1.5} /> 纯净模式
+            </button>
+          )}
+          {!sidebarCollapsed && (
+            <p className="text-[10px] text-muted-foreground/50 font-mono tracking-tight">
+              v{__APP_VERSION__} · {__BUILD_TIME__}
+            </p>
+          )}
         </div>
       </aside>
 

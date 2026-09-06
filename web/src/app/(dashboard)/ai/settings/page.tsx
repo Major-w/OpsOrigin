@@ -29,17 +29,6 @@ const BUILTIN_TOOLS = new Set(['llm_chat', 'http_get'])
 interface SkillFormItem { name: string; description: string; instructions: string }
 
 // L3-1 微调任务项(数据集 -> 微调 -> 产物注册模型池)
-interface FinetuneTaskItem {
-  id: string
-  name: string
-  base_model: string
-  method: string
-  status: 'pending' | 'training' | 'succeeded' | 'failed'
-  result_model?: string
-  result_provider_name?: string
-  error?: string
-  created_at: string
-}
 
 const EMPTY_SKILL: SkillFormItem = { name: '', description: '', instructions: '' }
 
@@ -140,13 +129,7 @@ export default function AISettingsPage() {
   const [activeTab, setActiveTab] = useState('agents')
   const [form, setForm] = useState<{ name: string; model_name: string; system_prompt: string; knowledge_categories: string[]; tools: string[]; skills: SkillFormItem[] }>({ name: '', model_name: '', system_prompt: '', knowledge_categories: [], tools: [], skills: [] })
   const [sysConfig, setSysConfig] = useState<any>(null)
-  const [llmForm, setLlmForm] = useState({ api_key: '', model: '', base_url: '', timeout: 60, embedding_model: '', embedding_base_url: '' })
-  // 服务商预设(从后端 /api/v1/ai/llm-presets 拉取, 含内置+用户自定义), 选中自动填充 BaseURL/模型/Embedding
-  const [providerPresets, setProviderPresets] = useState<{ name: string; label: string; base_url: string; default_model: string; embedding_model: string; embedding_base_url?: string; doc?: string; builtin?: boolean; weight?: number }[]>([])
   const [modelPool, setModelPool] = useState<{ name: string; model: string; base_url: string; weight: number; healthy: boolean }[]>([])
-  // 模型池 provider 编辑草稿(含 key, 从 sysconfig OPSORIGIN_LLM_PROVIDERS 加载)
-  const [poolProviders, setPoolProviders] = useState<{ name: string; model: string; base_url: string; api_key: string; weight: number }[]>([])
-  const [poolSaving, setPoolSaving] = useState(false)
   // 进化闭环概览
   const [evoStats, setEvoStats] = useState<{ feedback_up: number; feedback_down: number; memories: number; disposal_cases: number } | null>(null)
   // 主动进化: 全局策略 + 数据源 + 手动执行
@@ -163,25 +146,6 @@ export default function AISettingsPage() {
     }
   }, [])
 
-  // === 草稿暂存 start ===
-  const [draftSaving, setDraftSaving] = useState(false)
-  const LST_DRAFT_KEY = 'ai_settings_draft'
-  const loadDraft = () => {
-    try {
-      const data = localStorage.getItem(LST_DRAFT_KEY)
-      if (data) { const d = JSON.parse(data); setLlmForm(prev => ({ ...prev, ...d })) }
-    } catch {}
-  }
-  const saveDraft = async () => {
-    setDraftSaving(true)
-    try {
-      localStorage.setItem(LST_DRAFT_KEY, JSON.stringify(llmForm))
-      getMessage().success('草稿已保存，关闭/刷新页面后可恢复')
-    } catch { getMessage().error('保存草稿失败') }
-    setDraftSaving(false)
-  }
-  // === 草稿暂存 end ===
-
   // 在 saving 状态变化或关键 API 请求前后保持滚位不变
   useEffect(() => {
     const handleScroll = () => {
@@ -195,14 +159,10 @@ export default function AISettingsPage() {
   const [policyForm, setPolicyForm] = useState({ enabled: true, interval_hours: '6', target_category: '知识获取', min_score: '0.5', blacklist: '' })
   const [editingSrc, setEditingSrc] = useState<string | null>(null)
   const [srcDraft, setSrcDraft] = useState({ interval_hours: '', target_category: '', min_score: '', enabled: true })
-  const [datasetStats, setDatasetStats] = useState<{ total: number; preference_up: number; preference_down: number; disposal_cases: number } | null>(null)
-  const [datasetLoading, setDatasetLoading] = useState(false)
   const [editing, setEditing] = useState<string | null>(null)
   const [saving, setSaving] = useState(false)
   const [editForm, setEditForm] = useState<{ name: string; model_name: string; system_prompt: string; knowledge_categories: string[]; tools: string[]; skills: SkillFormItem[] }>({ name: '', model_name: '', system_prompt: '', knowledge_categories: [], tools: [], skills: [] })
   const [tools, setTools] = useState<any[]>([])
-  const [testing, setTesting] = useState(false)
-  const [testStatus, setTestStatus] = useState<string | null>(null)
   // 知识库分类(从文章去重拉取, 兜底硬编码)
   const [kbCategories, setKbCategories] = useState<string[]>(FALLBACK_CATEGORIES)
   // 可选工具(排除内建): 供 Agent 工具白名单勾选
@@ -218,7 +178,7 @@ export default function AISettingsPage() {
   const [approvalScope, setApprovalScope] = useState<'global' | 'agent'>('global')
   const [approvalAgentId, setApprovalAgentId] = useState('')
 
-  useEffect(() => { fetchAgents(); loadTools(); loadSysConfig(); loadPresets(); loadApprovalPolicy(); loadKbCategories(); loadModelPool(); loadFinetuneTasks(); loadPrompts(); loadEvolutionStats(); loadEvoSources(); loadEvoPolicy() }, [])
+  useEffect(() => { fetchAgents(); loadTools(); loadApprovalPolicy(); loadKbCategories(); loadModelPool(); loadPrompts(); loadEvolutionStats(); loadEvoSources(); loadEvoPolicy() }, [])
   const loadModelPool = async () => {
     try {
       const d = await apiFetch<any>('/ai/models')
@@ -226,70 +186,10 @@ export default function AISettingsPage() {
     } catch {}
   }
 
-  const loadDatasetStats = async () => {
-    setDatasetLoading(true)
-    try {
-      const d = await apiFetch<any>('/ai/dataset?format=json')
-      setDatasetStats(d.summary)
-    } catch (e: any) {
-      getMessage().error(`获取数据集统计失败: ${e.message}`)
-    } finally {
-      setDatasetLoading(false)
-    }
-  }
-
-  const downloadDataset = async () => {
-    setDatasetLoading(true)
-    try {
-      const r = await apiFetchRaw('/ai/dataset?format=jsonl')
-      if (!r.ok) throw new Error(`导出失败: ${r.status}`)
-      const blob = await r.blob()
-      const url = URL.createObjectURL(blob)
-      const a = document.createElement('a')
-      a.href = url
-      a.download = 'ai-dataset.ndjson'
-      a.click()
-      URL.revokeObjectURL(url)
-      getMessage().success('数据集已导出')    } catch (e: any) {
-      getMessage().error(`导出失败: ${e.message}`)
-    } finally {
-      setDatasetLoading(false)
-    }
-  }
-
-  // —— L3-1 微调任务: 数据集 -> 微调 -> 产物注册模型池 ——
-  const [finetuneTasks, setFinetuneTasks] = useState<FinetuneTaskItem[]>([])
   const [pendingEvoId, setPendingEvoId] = useState<string | null>(null)
   const [pendingPrompt, setPendingPrompt] = useState<PromptTemplate | null>(null)
   const [pendingDefaultPrompt, setPendingDefaultPrompt] = useState<PromptTemplate | null>(null)
   const [pendingAgentId, setPendingAgentId] = useState<string | null>(null)
-  const [ftForm, setFtForm] = useState({ name: '', base_model: '', method: 'loRA' })
-  const [ftCreating, setFtCreating] = useState(false)
-  const [ftLoading, setFtLoading] = useState(false)
-
-  const loadFinetuneTasks = async () => {
-    setFtLoading(true)
-    try {
-      const d = await apiFetch<any>('/ai/finetune/tasks')
-      setFinetuneTasks(Array.isArray(d) ? d : [])
-    } catch {}
-    setFtLoading(false)
-  }
-
-  const createFinetuneTask = async () => {
-    if (!ftForm.name.trim()) return getMessage().error('请填写任务名')
-    if (!ftForm.base_model) return getMessage().error('请选择基座模型')
-    setFtCreating(true)
-    try {
-      await apiFetch('/ai/finetune/tasks', {
-        method: 'POST',
-        body: JSON.stringify({ name: ftForm.name, base_model: ftForm.base_model, method: ftForm.method }),
-      })
-      getMessage().success('微调任务已创建，产物将自动注册进模型池')
-      setFtForm({ name: '', base_model: '', method: 'loRA' })
-      loadFinetuneTasks()
-    } catch (e: any) { getMessage().error(`创建失败: ${e.message}`) } finally { setFtCreating(false) }
-  }
 
   // —— 提示词库: 列表 / 编辑 / 默认提示词热更新 / 插入 Agent ——
   const [prompts, setPrompts] = useState<PromptTemplate[]>([])
@@ -542,40 +442,6 @@ export default function AISettingsPage() {
     } catch {}
   }
   
-  const loadSysConfig = async () => {
-    try {
-      const d = await apiFetch<any>('/system/config')
-      const cfgArr = d?.config || d // [{category, label, items:[{key,current_value,...}]}]
-      setSysConfig(cfgArr)
-      // 模型池 providers 随配置加载(含已存 key), 供可视化编辑回写
-      let provVal: string | undefined
-      let embVal: string | undefined
-      let embUrlVal: string | undefined
-      if (Array.isArray(cfgArr)) {
-        for (const cat of cfgArr) {
-          for (const it of (cat?.items || [])) {
-            if (it.key === 'OPSORIGIN_LLM_PROVIDERS') provVal = it.current_value
-            else if (it.key === 'OPSORIGIN_LLM_EMBEDDING_MODEL') embVal = it.current_value
-            else if (it.key === 'OPSORIGIN_LLM_EMBEDDING_BASE_URL') embUrlVal = it.current_value
-          }
-        }
-      }
-      if (provVal && provVal !== '[]') {
-        try { const parsed = JSON.parse(provVal); if (Array.isArray(parsed)) setPoolProviders(parsed) } catch {}
-      }
-      // 回填 Embedding 配置(服务端为准, 草稿仅兜底)
-      setLlmForm(prev => ({ ...prev, embedding_model: embVal || prev.embedding_model, embedding_base_url: embUrlVal || prev.embedding_base_url }))
-    } catch {}
-  }
-
-  // 拉取后端厂商预设(内置+用户自定义), 供「服务商」下拉自动填充接入参数
-  const loadPresets = async () => {
-    try {
-      const d = await apiFetch<any>('/ai/llm-presets')
-      if (Array.isArray(d?.presets)) setProviderPresets(d.presets)
-    } catch {}
-  }
-  
   const loadTools = async () => {
     try {
       const d = await apiFetch<any>('/ai/tools')
@@ -625,31 +491,6 @@ export default function AISettingsPage() {
     setPendingAgentId(null)
   }
 
-  const handleTestConnection = async () => {
-    setTesting(true); setTestStatus(null)
-    try {
-      // 仅测 Base URL 连通性(通过健康端点，不经过模型聊天，绝对不会触发函数调用循环)
-      const healthRes = await apiFetchRaw('/ops/health')
-      if (healthRes.status !== 200) {
-        throw new Error('Base URL 连通性检查失败(HTTP ' + healthRes.status + ')')
-      }
-      // Base URL 可达，视为配置基本正确
-      setTestStatus('✅ Base URL 可达，配置基本正确')
-      // 下面的模型聊天测试已注释，避免因模型行为触发函数调用循环错误
-      // 如需测试模型聊天能力，请在 LLM 后端配置中留空 Key 仅使用模型池，或联系技术支持
-    } catch (e: any) {
-      // 仅报告 Base URL 可达性错误，不展示模型函数调用循环错误
-      const msg = e?.message || ''
-      if (msg.includes('Base URL 连通性检查失败')) {
-        setTestStatus('❌ Base URL 不可达，请检查配置的 Base URL 是否正确(https://open.bigmodel.cn/api/paas/v4)')
-      } else {
-        // 静默处理其他错误，不向用户展示复杂的循环错误信息
-        setTestStatus('❌ 网络错误，请检查 Base URL')
-      }
-    }
-    setTesting(false)
-  }
-
   const handleSaveEdit = async (id: string) => {
     setSaving(true)
     await apiFetch(`/ai/agents/${id}`, {
@@ -665,62 +506,6 @@ export default function AISettingsPage() {
     })
     getMessage().success('Agent 已更新')
     setSaving(false); setEditing(null); fetchAgents()
-  }
-
-  // —— 模型池 provider 编辑 ——
-  const addPoolProvider = (preset?: { name: string; model?: string; base_url?: string; weight?: number }) => {
-    setPoolProviders(ps => [...ps, preset
-      ? { name: preset.name, model: preset.model || '', base_url: preset.base_url || '', api_key: '', weight: preset.weight ?? 50 }
-      : { name: '', model: '', base_url: '', api_key: '', weight: 50 }])
-  }
-  const updatePoolProvider = (i: number, patch: Partial<{ name: string; model: string; base_url: string; api_key: string; weight: number }>) => {
-    setPoolProviders(ps => ps.map((p, idx) => (idx === i ? { ...p, ...patch } : p)))
-  }
-  const removePoolProvider = (i: number) => setPoolProviders(ps => ps.filter((_, idx) => idx !== i))
-  const saveModelPool = async () => {
-    const clean = poolProviders.filter(p => p.name.trim() && p.model.trim() && p.base_url.trim())
-    setPoolSaving(true)
-    try {
-      await apiFetch('/system/config', {
-        method: 'PUT',
-        body: JSON.stringify({ updates: { OPSORIGIN_LLM_PROVIDERS: JSON.stringify(clean) } }),
-      })
-      getMessage().success('模型池已保存，即时生效')
-      loadSysConfig()
-      loadModelPool()
-    } catch (e: any) {
-      getMessage().error('保存模型池失败: ' + e.message)
-    }
-    setPoolSaving(false)
-  }
-
-  const handleUpdateLLM = async (key: string, value: string) => {
-    setSaving(true)
-    try {
-      await apiFetch('/system/config', {
-        method: 'PUT',
-        body: JSON.stringify({ updates: { [`OPSORIGIN_LLM_${key.toUpperCase()}`]: key === 'timeout' ? String(parseInt(value)||60) : value } }),
-      })
-      getMessage().success(`${key} 已更新，即时生效`)
-      loadSysConfig()
-    } catch { getMessage().error('保存失败') }
-    setSaving(false)
-  }
-
-  // 选中「服务商」预设后, 将推荐的接入参数回填到表单(不立即写库, 由用户点对应「保存」)
-  const onPickPreset = (name: string) => {
-    const p = providerPresets.find(x => x.name === name)
-    if (!p) return
-    setLlmForm(prev => ({
-      ...prev,
-      base_url: p.base_url || prev.base_url,
-      model: p.default_model || prev.model,
-      embedding_model: p.embedding_model || prev.embedding_model,
-      embedding_base_url: (p.embedding_base_url || p.base_url || prev.embedding_base_url),
-    }))
-    if (p.doc) {
-      getMessage().info(`已填入 ${p.label} 的默认接入参数，请补全 API Key 后保存`)
-    }
   }
 
   // —— Tab 内容组件(访问父级状态/函数) ——
@@ -1149,240 +934,6 @@ export default function AISettingsPage() {
     )
   }
 
-  function ModelContent() {
-    return (
-      <div className="space-y-4">
-        <Card>
-          <CardHeader className="pb-2">
-            <CardTitle className="text-base flex items-center gap-2"><Brain className="h-4 w-4" />模型池（多模型路由）</CardTitle>
-            <CardDescription>按权重路由 + 健康检查 + 失败自动降级到下一个可用 provider。Agent 的模型名可填 provider 名或具体模型。</CardDescription>
-          </CardHeader>
-          <CardContent>
-            {modelPool.length === 0 ? (
-              <p className="text-xs text-muted-foreground py-2">未配置附加 provider，当前使用主 LLM 后端。</p>
-            ) : (
-              <div className="space-y-2">
-                {modelPool.map(m => (
-                  <div key={m.name} className="flex items-center justify-between gap-3 rounded-lg border border-border p-2.5">
-                    <div className="flex items-center gap-2 min-w-0">
-                      <span className={cn('h-2 w-2 rounded-full shrink-0', m.healthy ? 'bg-blue-500' : 'bg-red-500')} />
-                      <span className="text-sm font-medium">{m.name}</span>
-                      <span className="text-xs text-muted-foreground truncate">{m.model}</span>
-                    </div>
-                    <div className="flex items-center gap-2 shrink-0 text-[11px] text-muted-foreground">
-                      <Tag color={m.healthy ? 'green' : 'red'} className="text-[10px]">{m.healthy ? '健康' : '降级'}</Tag>
-                      <span>权重 {m.weight}</span>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            )}
-            <p className="text-[11px] text-muted-foreground pt-2">修改下方 LLM 配置后热生效：模型池随之热更新，故障中的 provider 保留降级状态，不会因配置刷新而误恢复。</p>
-
-            <div className="mt-3 border-t pt-3 space-y-2">
-              <div className="flex items-center justify-between flex-wrap gap-2">
-                <h4 className="text-sm font-medium">Provider 列表（多模型路由）</h4>
-                <div className="flex items-center gap-2">
-                  <select
-                    className="flex h-9 rounded-md border border-input bg-background px-2 text-xs"
-                    defaultValue=""
-                    onChange={e => { const p = providerPresets.find(x => x.label === e.target.value); if (p) addPoolProvider({ name: p.name, model: p.default_model, base_url: p.base_url, weight: p.weight }); e.target.value = '' }}
-                  >
-                    <option value="" disabled>+ 预设模板…</option>
-                    {providerPresets.map(p => <option key={p.label} value={p.label}>{p.label}</option>)}
-                  </select>
-                  <Button size="middle" type="default" onClick={() => addPoolProvider()}>
-                    <Plus className="h-3.5 w-3.5 mr-1" />添加 Provider
-                  </Button>
-                </div>
-              </div>
-              {poolProviders.length === 0 ? (
-                <p className="text-xs text-muted-foreground py-2">暂无附加 provider。可从预设模板添加，或点「添加 Provider」自定义接入（OpenAI 兼容端点均可）。</p>
-              ) : (
-                <div className="space-y-2">
-                  {poolProviders.map((p, i) => (
-                    <div key={i} className="grid grid-cols-12 gap-2 items-center rounded-lg border border-border p-2">
-                      <Input className="col-span-2 h-8 text-xs" placeholder="名称(唯一)" value={p.name} onChange={e => updatePoolProvider(i, { name: e.target.value })} />
-                      <Input className="col-span-2 h-8 text-xs" placeholder="模型" value={p.model} onChange={e => updatePoolProvider(i, { model: e.target.value })} />
-                      <Input className="col-span-3 h-8 text-xs font-mono" placeholder="Base URL" value={p.base_url} onChange={e => updatePoolProvider(i, { base_url: e.target.value })} />
-                      <Input className="col-span-1 h-8 text-xs" type="number" placeholder="权重" value={String(p.weight)} onChange={e => updatePoolProvider(i, { weight: parseInt(e.target.value) || 0 })} />
-                      <Input className="col-span-3 h-8 text-xs font-mono" type="password" placeholder={p.api_key ? '已配置(留空不变)' : 'API Key'} value={p.api_key} onChange={e => updatePoolProvider(i, { api_key: e.target.value })} />
-                      <Button type="text" className="col-span-1 h-8 w-8 text-red-400" onClick={() => removePoolProvider(i)} title="删除"><Trash2 className="h-3.5 w-3.5" /></Button>
-                    </div>
-                  ))}
-                </div>
-              )}
-              <Button size="middle" onClick={saveModelPool} disabled={poolSaving} className="mt-1">
-                {poolSaving ? <Loader2 className="h-3.5 w-3.5 mr-1 animate-spin" /> : <Save className="h-3.5 w-3.5 mr-1" />}
-                {poolSaving ? '保存中…' : '保存模型池'}
-              </Button>
-            </div>
-          </CardContent>
-        </Card>
-
-        <Card>
-          <CardHeader className="pb-2">
-            <CardTitle className="text-base flex items-center gap-2"><Database className="h-4 w-4" />训练数据集（反馈驱动微调）</CardTitle>
-            <CardDescription>将用户反馈（点赞/点踩 + 对话上下文）与处置案例（知识库）导出为标准 JSONL 微调数据集，用于持续改进模型。</CardDescription>
-          </CardHeader>
-          <CardContent>
-            <div className="flex items-center justify-between gap-3">
-              <div className="text-xs text-muted-foreground">
-                样本构成：点赞偏好（preference_up）· 点踩偏好（preference_down）· 处置案例（disposal_case）
-              </div>
-              <div className="flex gap-2 shrink-0">
-                <Button size="middle" type="default" className="gap-1" onClick={loadDatasetStats} disabled={datasetLoading}>
-                  <RefreshCw className={cn('h-3.5 w-3.5', datasetLoading && 'animate-spin')} />查看统计
-                </Button>
-                <Button size="middle" className="gap-1" onClick={downloadDataset} disabled={datasetLoading || !datasetStats?.total}>
-                  <Download className="h-3.5 w-3.5" />导出 JSONL
-                </Button>
-              </div>
-            </div>
-            {datasetStats && datasetStats.total > 0 && (
-              <div className="mt-3 grid grid-cols-4 gap-2">
-                <div className="rounded-lg bg-muted/50 px-3 py-2"><div className="text-[11px] text-muted-foreground">总样本</div><div className="text-lg font-semibold">{datasetStats.total}</div></div>
-                <div className="rounded-lg bg-muted/50 px-3 py-2"><div className="text-[11px] text-muted-foreground">点赞偏好</div><div className="text-lg font-semibold text-blue-500">{datasetStats.preference_up}</div></div>
-                <div className="rounded-lg bg-muted/50 px-3 py-2"><div className="text-[11px] text-muted-foreground">点踩偏好</div><div className="text-lg font-semibold text-red-500">{datasetStats.preference_down}</div></div>
-                <div className="rounded-lg bg-muted/50 px-3 py-2"><div className="text-[11px] text-muted-foreground">处置案例</div><div className="text-lg font-semibold text-blue-500">{datasetStats.disposal_cases}</div></div>
-              </div>
-            )}
-          </CardContent>
-        </Card>
-
-        <Card>
-          <CardHeader className="pb-2">
-            <CardTitle className="text-base flex items-center gap-2"><Sparkles className="h-4 w-4" />微调任务（领域模型）</CardTitle>
-            <CardDescription>基于训练数据集对基座模型执行领域微调，产物自动注册进模型池供 Agent 选用（LoRA 推荐）。</CardDescription>
-          </CardHeader>
-          <CardContent>
-            <div className="flex gap-2 items-end mb-3">
-              <div className="flex-1">
-                <label className="text-xs text-muted-foreground">任务名</label>
-                <Input className="mt-1" value={ftForm.name} onChange={e => setFtForm(f => ({ ...f, name: e.target.value }))} placeholder="如: 容量预测微调" />
-              </div>
-              <div className="flex-1">
-                <label className="text-xs text-muted-foreground">基座模型</label>
-                <select className="mt-1 h-10 w-full rounded-md border border-input bg-background px-2 text-sm" value={ftForm.base_model} onChange={e => setFtForm(f => ({ ...f, base_model: e.target.value }))}>
-                  <option value="">选择基座</option>
-                  {modelPool.map(m => <option key={m.name} value={m.model}>{m.name}（{m.model}）</option>)}
-                </select>
-              </div>
-              <div className="w-28">
-                <label className="text-xs text-muted-foreground">方式</label>
-                <select className="mt-1 h-10 w-full rounded-md border border-input bg-background px-2 text-sm" value={ftForm.method} onChange={e => setFtForm(f => ({ ...f, method: e.target.value }))}>
-                  <option value="loRA">loRA</option>
-                  <option value="full">full</option>
-                  <option value="api">api</option>
-                </select>
-              </div>
-              <Button size="middle" className="gap-1" onClick={createFinetuneTask} disabled={ftCreating}>
-                <Sparkles className="h-3.5 w-3.5" />创建任务
-              </Button>
-            </div>
-            <div className="flex items-center gap-2">
-              <Button size="middle" type="default" className="gap-1" onClick={loadFinetuneTasks} disabled={ftLoading}>
-                <RefreshCw className={cn('h-3 w-3', ftLoading && 'animate-spin')} />刷新任务
-              </Button>
-              <span className="text-[11px] text-muted-foreground">训练集来自上方「训练数据集」导出（JSONL）</span>
-            </div>
-            {finetuneTasks.length === 0 ? (
-              <p className="text-xs text-muted-foreground py-3">暂无微调任务。创建后产物自动注册进模型池，Agent 可在表单中选择。</p>
-            ) : (
-              <div className="mt-2 space-y-2">
-                {finetuneTasks.slice(0, 5).map(t => (
-                  <div key={t.id} className="flex items-center justify-between rounded-lg bg-muted/50 px-3 py-2">
-                    <div className="min-w-0">
-                      <div className="text-sm font-medium truncate">{t.name} <span className="text-xs text-muted-foreground ml-1">{t.base_model} · {t.method}</span></div>
-                      <div className="text-[11px] text-muted-foreground truncate">
-                        {t.result_provider_name ? `已注册: ${t.result_provider_name}（${t.result_model}）` : t.error || new Date(t.created_at).toLocaleString()}
-                      </div>
-                    </div>
-                    <Tag color={t.status === 'succeeded' ? 'green' : t.status === 'failed' ? 'red' : t.status === 'training' ? 'orange' : 'default'} className="shrink-0">
-                      {t.status === 'succeeded' ? '成功' : t.status === 'failed' ? '失败' : t.status === 'training' ? '训练中' : '排队'}
-                    </Tag>
-                  </div>
-                ))}
-              </div>
-            )}
-          </CardContent>
-        </Card>
-
-        <Card>
-          <CardHeader><CardTitle className="text-base">LLM 后端配置</CardTitle><CardDescription>修改后即时热生效，无需重启 Core</CardDescription></CardHeader>
-          <CardContent className="space-y-4">
-            <div>
-              <label className="text-xs font-medium mb-1 block">服务商 <span className="text-muted-foreground font-normal">(选中后自动填充下方接入参数)</span></label>
-              <Select
-                allowClear
-                placeholder="选择模型服务商…"
-                value={providerPresets.find(p => p.base_url === llmForm.base_url && p.default_model === llmForm.model)?.name || undefined}
-                onChange={onPickPreset}
-                options={providerPresets.map(p => ({ value: p.name, label: `${p.label}${p.builtin === false ? '（自定义）' : ''}` }))}
-                className="w-full"
-                notFoundContent="加载中…"
-              />
-            </div>
-            <div>
-              <label className="text-xs font-medium mb-1 block">API Key</label>
-              <div className="flex gap-2">
-                <Input type="password" placeholder="sk-..." value={llmForm.api_key} onChange={e => setLlmForm({...llmForm, api_key: e.target.value})} className="font-mono text-xs" />
-                <Button size="middle" type="default" onClick={() => handleUpdateLLM('api_key', llmForm.api_key)} disabled={saving}>保存</Button>
-              </div>
-            </div>
-            <div>
-              <label className="text-xs font-medium mb-1 block">模型名称</label>
-              <div className="flex gap-2">
-                <Input placeholder="deepseek-chat" value={llmForm.model} onChange={e => setLlmForm({...llmForm, model: e.target.value})} />
-                <Button size="middle" type="default" onClick={() => handleUpdateLLM('model', llmForm.model)} disabled={saving}>保存</Button>
-              </div>
-            </div>
-            <div>
-              <label className="text-xs font-medium mb-1 block">API Base URL</label>
-              <div className="flex gap-2">
-                <Input placeholder="https://api.deepseek.com" value={llmForm.base_url} onChange={e => setLlmForm({...llmForm, base_url: e.target.value})} />
-                <Button size="middle" type="default" onClick={() => handleUpdateLLM('base_url', llmForm.base_url)} disabled={saving}>保存</Button>
-              </div>
-            </div>
-            <div className="pt-1 border-t border-dashed">
-              <label className="text-xs font-medium mb-1 block">Embedding 模型 <span className="text-muted-foreground font-normal">(知识库语义检索用，不同厂商维度不同)</span></label>
-              <div className="flex gap-2">
-                <Input placeholder="text-embedding-3-small / embedding-3" value={llmForm.embedding_model} onChange={e => setLlmForm({...llmForm, embedding_model: e.target.value})} className="font-mono text-xs" />
-                <Button size="middle" type="default" onClick={() => handleUpdateLLM('embedding_model', llmForm.embedding_model)} disabled={saving}>保存</Button>
-              </div>
-            </div>
-            <div>
-              <label className="text-xs font-medium mb-1 block">Embedding Base URL <span className="text-muted-foreground font-normal">(留空复用上方 LLM Base URL)</span></label>
-              <div className="flex gap-2">
-                <Input placeholder="留空则复用 LLM Base URL" value={llmForm.embedding_base_url} onChange={e => setLlmForm({...llmForm, embedding_base_url: e.target.value})} className="font-mono text-xs" />
-                <Button size="middle" type="default" onClick={() => handleUpdateLLM('embedding_base_url', llmForm.embedding_base_url)} disabled={saving}>保存</Button>
-              </div>
-            </div>
-            <div>
-              <label className="text-xs font-medium mb-1 block">超时 (秒)</label>
-              <div className="flex gap-2">
-                <Input type="number" placeholder="60" value={llmForm.timeout} onChange={e => setLlmForm({...llmForm, timeout: parseInt(e.target.value)||60})} />
-                <Button size="middle" type="default" onClick={() => handleUpdateLLM('timeout', String(llmForm.timeout))} disabled={saving}>保存</Button>
-                {draftSaving ? <Loader2 className="h-3.5 w-3.5 mr-1 animate-spin" /> : null}
-                <Button size="middle" type="default" onClick={saveDraft} className="ml-2" title="保存草稿">暂存</Button>
-              </div>
-            </div>
-            <div className={cn("flex items-center gap-2 text-xs p-3 rounded-lg", theme === 'dark' ? 'bg-blue-500/5 border border-blue-500/10' : 'bg-blue-50 border border-blue-200')}>
-              <CheckCircle2 className="h-4 w-4 text-blue-500" />
-              <span>修改后即时热生效，已连接的 Agent 无需重启</span>
-            </div>
-<div className="flex items-center gap-2 pt-2">
-              <Button type="default" size="middle" onClick={saveDraft} className="ml-2" title="保存草稿">暂存</Button>
-              <Button type="default" size="middle" onClick={handleTestConnection} disabled={testing}>
-                {testing ? <Loader2 className="h-3.5 w-3.5 mr-1 animate-spin" /> : null} 测试连接
-              </Button>
-            </div>
-          </CardContent>
-        </Card>
-      </div>
-    )
-  }
-
   function ApprovalContent() {
     return (
       <div className="space-y-4">
@@ -1718,11 +1269,6 @@ export default function AISettingsPage() {
           key: 'prompts',
           label: <span><Wand2 className="h-4 w-4 mr-1.5 inline" />提示词</span>,
           children: <PromptsContent />,
-        },
-        {
-          key: 'model',
-          label: <span><Brain className="h-4 w-4 mr-1.5 inline" />模型</span>,
-          children: <ModelContent />,
         },
         {
           key: 'approval',
