@@ -159,12 +159,25 @@ type LLMConfig struct {
 }
 
 // LLMProviderConfig 模型池中的一个附加 provider(多模型路由 P3)。
+// 模型列表即在此定义各家模型的权重/类型/可见性; 不再单独区分"模型池"概念。
 type LLMProviderConfig struct {
 	Name    string `json:"name"` // 池内唯一标识(Agent.model_name 可填此名)
 	APIKey  string `json:"api_key"`
 	Model   string `json:"model"` // 该 provider 的默认模型
 	BaseURL string `json:"base_url"`
 	Weight  int    `json:"weight"` // 路由权重(越大越优先, 默认 50)
+	// Types 模型能力类型列表(可多选, 一个模型可同时支持多种): text(文本) / image(多模态视觉) /
+	// video(视频)。auto 模式按请求上下文(是否含图片)推导 PreferType 后据此过滤候选。
+	Types []string `json:"types,omitempty"`
+	// Type 旧版单类型字段(兼容存量配置); 与 Types 同时存在时以 Types 为准。
+	Type string `json:"type,omitempty"`
+	// Visibility 可见性: public(所有人可用, 默认) / private(仅 CreatedBy 可见可用)。
+	Visibility string `json:"visibility"`
+	// CreatedBy 创建者用户 ID; Visibility=private 时仅该用户可在 auto/下拉中选用此模型。
+	CreatedBy string `json:"created_by"`
+	// Primary 主 LLM 标记: 取代旧"默认模型"概念。被标记的模型作为兜底 provider(default),
+	// 用于 embedding / RAG / 演进 / 技能市场等非对话内部调用; 无标记时回退到后端主配置。
+	Primary bool `json:"primary"`
 }
 
 type PostgresConfig struct {

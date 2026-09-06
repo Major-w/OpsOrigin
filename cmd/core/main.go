@@ -563,7 +563,16 @@ func main() {
 	}
 
 	// 系统配置管理服务
-	sysconfigSvc := sysconfig.NewService(cfg)
+	// 界面配置持久化到 PostgreSQL(sys_config 表), 启动即从 DB 回灌覆盖 env 默认值,
+	// 使后文构造的 ai/llm/ldap 等模块直接读到 DB 中的持久配置。
+	sysconfigSvc := sysconfig.NewService(cfg, db)
+	if db != nil {
+		loadCtx, loadCancel := context.WithTimeout(ctx, 10*time.Second)
+		if err := sysconfigSvc.LoadFromDB(loadCtx); err != nil {
+			slog.Warn("sysconfig load from db failed, keep env defaults", "error", err)
+		}
+		loadCancel()
+	}
 	server.RegisterService(sysconfigSvc)
 
 	// 系统自监控: 组件状态探活 + 日志查看(docker socket 读取其他容器日志)。
@@ -708,14 +717,20 @@ func main() {
 	}
 
 	// 多模型路由池(P3): 主配置为兜底 provider, 附加 provider 按权重参与路由(失败自动降级)。
+	// 模型列表的 Type/Visibility/CreatedBy/Primary 元数据一并透传, 供 auto 模式按类型+可见性选型。
 	var llmProviders []agentic.ProviderConfig
 	for _, p := range cfg.LLM.Providers {
 		llmProviders = append(llmProviders, agentic.ProviderConfig{
-			Name:    p.Name,
-			APIKey:  p.APIKey,
-			Model:   p.Model,
-			BaseURL: p.BaseURL,
-			Weight:  p.Weight,
+			Name:       p.Name,
+			APIKey:     p.APIKey,
+			Model:      p.Model,
+			BaseURL:    p.BaseURL,
+			Weight:     p.Weight,
+			Types:      p.Types,
+			Type:       p.Type,
+			Visibility: p.Visibility,
+			CreatedBy:  p.CreatedBy,
+			Primary:    p.Primary,
 		})
 	}
 
@@ -1087,6 +1102,8 @@ func main() {
 	}
 	aiSvc.SetObjectStore(osClient)                         // 对话产物归档(MinIO), nil 时产物仅存元数据
 	aiSvc.Engine.SetWorkspaceSink(aiSvc.SaveWorkspaceFile) // 会话工作区: 工具产物自动沉淀
+	// 多模态输入: 会话里只持久化 attachment:// 引用, 发送前由 ai 层解析为 data URL/正文。
+	aiSvc.Engine.SetPartResolver(aiSvc.ResolvePartURL)
 	// 长期记忆持久化: AddMemory 落库 + 启动时从 DB 灌回内存(重启不丢)
 	aiSvc.Engine.SetMemoryPersist(aiSvc.PersistMemory)
 	// 注入真实修复执行器: 将修复动作派发为 ITSM 工单(真实落库、可审计), 替代内置演示执行器。
@@ -1180,6 +1197,8 @@ func main() {
 	toolSet := agentic.NewMCPToolSet(db)
 	toolSet.SetScriptExecutor(scriptSvc) // AI 的 script_run 工具经 script 服务→Agent 通道真实执行
 	toolSet.SetEmbedder(llmClient)       // 知识库检索启用语义向量匹配
+
+	toolSet.SetConfig(cfg) // image_generate 等需要从 sysconfig 读 LLM provider key/base_url 的工具用
 	// 审批策略: 引擎层按策略(每次询问/始终允许/仅敏感)做交互式确认, 白名单外且未获确认的脚本走 ITSM 工单兜底。
 	toolSet.SetExternalApproval(aiSvc.Engine.ScriptApprovalChecker)
 	// 知识库-AI 绑定: 按 Agent 解析其绑定的知识库分类, RAG 检索与 knowledge_search 工具据此过滤。
@@ -1200,7 +1219,27 @@ func main() {
 	// 无配置(未设 OPSORIGIN_MCP_SERVERS / OPSORIGIN_MCP_CONFIG)时安全空转。
 	aiSvc.StartExternalMCP(context.Background())
 	aiSvc.SetRAGFunc(toolSet.RAGContext)
+	aiSvc.SetCitationVerifier(toolSet.ValidKnowledgeIDs)
 	ai.LLMConfigHook = func(cfg2 llm.Config) { aiSvc.UpdateLLMConfig(cfg2) }
+
+	// 任务产物沉淀知识库(T2): doc_to_knowledge 工具经此回调创建文章草稿(默认 draft, 人工审核发布)。
+	if knowledgeSvc != nil {
+		aiSvc.SetKnowledgeCreator(func(ctx context.Context, title, content, category, author string) (string, error) {
+			tenant := "default"
+			if t, ok := ctx.Value("tenant_id").(string); ok && t != "" {
+				tenant = t
+			}
+			a := &knowledge.Article{
+				Title: title, Content: content, Category: category, Author: author,
+				Status: "draft", TenantID: tenant,
+			}
+			if err := knowledgeSvc.CreateArticle(ctx, a); err != nil {
+				return "", err
+			}
+			return a.ID, nil
+		})
+		slog.Info("ai task knowledge creator wired")
+	}
 
 	// AI 巡检闭环: 巡检发现转 ITSM 工单 + 完成/失败走平台通知中心(五渠道)。
 	// 回调由 cmd/core 装配, 避免 internal/ai 直接依赖 itsm/notification 造成模块耦合。

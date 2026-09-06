@@ -13,8 +13,8 @@ import (
 	"net"
 	"net/http"
 	"regexp"
-	"strconv"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -37,6 +37,29 @@ type Client struct {
 	maxRetries int
 }
 
+// ImageURLPart 图片片段: URL 支持三种形态:
+//   - 公网 http(s) 直链(模型自行拉取);
+//   - data:image/xxx;base64,...(内联二进制, 后端按附件实时编码);
+//   - attachment://<id>(本平台内部引用, 发送/回放前由 ai 层解析为 base64 data URL)。
+type ImageURLPart struct {
+	URL    string `json:"url"`
+	Detail string `json:"detail,omitempty"` // auto|low|high(可选, 部分模型支持)
+}
+
+// FileURLPart 文件片段(智谱/豆包等支持文件理解的兼容扩展): 文档类(PDF/DOCX/XLSX)走此字段。
+type FileURLPart struct {
+	URL  string `json:"url"`
+	Name string `json:"name,omitempty"`
+}
+
+// ContentPart 多模态内容片段(OpenAI 兼容)。同一条消息可混排文本与图片/文件。
+type ContentPart struct {
+	Type     string        `json:"type"`                // text | image_url | file_url
+	Text     string        `json:"text,omitempty"`      // type=text
+	ImageURL *ImageURLPart `json:"image_url,omitempty"` // type=image_url
+	FileURL  *FileURLPart  `json:"file_url,omitempty"`  // type=file_url
+}
+
 type Message struct {
 	Role       string     `json:"role"`
 	Content    string     `json:"content,omitempty"`
@@ -46,6 +69,86 @@ type Message struct {
 	// ReasoningContent 模型原生推理字段(DeepSeek-R1 / Qwen 思维链等),
 	// 部分兼容后端将其放在与 content 并列的 reasoning_content 字段。
 	ReasoningContent string `json:"reasoning_content,omitempty"`
+	// ContentParts 多模态内容(图文混排)。非空时 content 序列化为数组而非字符串:
+	//   [{"type":"text","text":"..."},{"type":"image_url","image_url":{"url":"data:image/png;base64,..."}}]
+	// Content 字段建议仍填"纯文本摘要"(便于 token 估算/会话标题/检索等只读场景),
+	// 两者并存时以 ContentParts 为准下发模型。
+	ContentParts []ContentPart `json:"-"`
+	// Truncated 输出不完整: 上游 finish_reason=length(max_tokens 到限)或流式中途
+	// 断连/取消导致生成未正常收尾。随会话消息持久化, 历史回放时前端据此展示
+	// 「输出不完整」提示, 避免半截回答被当成完整答案。
+	Truncated bool `json:"truncated,omitempty"`
+}
+
+// marshalContent 决定 content 字段的最终形态: 有多模态片段时输出数组, 否则输出字符串。
+func (m Message) marshalContent() any {
+	if len(m.ContentParts) > 0 {
+		return m.ContentParts
+	}
+	return m.Content
+}
+
+type messageAlias Message
+
+// MarshalJSON 自定义序列化: content 在纯文本与多模态数组间自适应。
+func (m Message) MarshalJSON() ([]byte, error) {
+	type wire struct {
+		messageAlias
+		Content any `json:"content,omitempty"`
+	}
+	w := wire{messageAlias: messageAlias(m), Content: m.marshalContent()}
+	return json.Marshal(w)
+}
+
+// UnmarshalJSON 兼容两种 content 形态: 字符串(旧数据/纯文本) 与 数组(多模态)。
+func (m *Message) UnmarshalJSON(b []byte) error {
+	type wire struct {
+		messageAlias
+		Content json.RawMessage `json:"content,omitempty"`
+	}
+	var w wire
+	if err := json.Unmarshal(b, &w); err != nil {
+		return err
+	}
+	*m = Message(w.messageAlias)
+	if len(w.Content) == 0 || string(w.Content) == "null" {
+		return nil
+	}
+	// 数组形态 → 解析为 ContentParts, 并把文本片段汇总回 Content 便于只读逻辑复用。
+	if strings.HasPrefix(strings.TrimSpace(string(w.Content)), "[") {
+		var parts []ContentPart
+		if err := json.Unmarshal(w.Content, &parts); err != nil {
+			return err
+		}
+		m.ContentParts = parts
+		if m.Content == "" {
+			var b strings.Builder
+			for _, p := range parts {
+				if p.Type == "text" {
+					b.WriteString(p.Text)
+				}
+			}
+			m.Content = b.String()
+		}
+		return nil
+	}
+	var s string
+	if err := json.Unmarshal(w.Content, &s); err != nil {
+		m.Content = string(w.Content)
+		return nil
+	}
+	m.Content = s
+	return nil
+}
+
+// HasVision 该消息是否携带图片/文件片段(供路由挑选多模态模型)。
+func (m Message) HasVision() bool {
+	for _, p := range m.ContentParts {
+		if p.Type == "image_url" || p.Type == "file_url" {
+			return true
+		}
+	}
+	return false
 }
 
 type ToolCall struct {
@@ -79,6 +182,12 @@ type ChatRequest struct {
 	MaxTokens   int     `json:"max_tokens,omitempty"`
 	Temperature float64 `json:"temperature,omitempty"`
 	Stream      bool    `json:"stream"`
+	// User 发起请求的用户 ID(供多模型路由做可见性过滤: private 模型仅创建者可用)。
+	// 空字符串表示系统/内部调用, 放行全部模型。
+	User string `json:"-"`
+	// PreferType 期望的模型能力类型(text/image/video)。auto 模式下路由据此过滤候选;
+	// 空表示不限定(由路由按权重+健康选)。引擎按消息是否含图片推导。
+	PreferType string `json:"-"`
 }
 
 // ForceTool 构造强制调用指定函数的 tool_choice 值。
@@ -502,7 +611,7 @@ func backoffDur(attempt int, lastErr error) time.Duration {
 	if d > 5*time.Second {
 		d = 5 * time.Second
 	}
-	return d + jitterOf(d / 2)
+	return d + jitterOf(d/2)
 }
 
 // jitterOf 返回 [0, max) 的随机抖动, 避免多个请求同时重试造成再次拥塞。

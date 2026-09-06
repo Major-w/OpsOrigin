@@ -18,7 +18,8 @@ type AgentInstance struct {
 	KnowledgeCategories []string `json:"knowledge_categories,omitempty"`
 
 	// Tools 该 Agent 允许使用的 MCP 工具白名单(如 ["cmdb_query","knowledge_search"])。
-	// 空表示使用全部已注册工具(默认行为); 非空时, 未列入的工具对模型不可见(不可调用)。
+	// 非空时, 未列入的工具对模型不可见(不可调用);
+	// 为空表示「未关联任何工具」, 引擎不向模型暴露任何工具(避免无关联却误调用)。
 	Tools []string `json:"tools,omitempty"`
 
 	// Skills 该 Agent 具备的可复用能力定义(PRD 5.2.2)。

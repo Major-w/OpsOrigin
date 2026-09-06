@@ -21,6 +21,9 @@ type ToolDefinition struct {
 	Description string                 `json:"description"`
 	Parameters  map[string]ParamSchema `json:"parameters"`
 	Handler     ToolHandler            `json:"-"`
+	// Risk 工具风险分级: read(只读) | write(写入) | critical(不可逆/高危), 空=read。
+	// 任务级 Agent 按权限模式(permission_mode) × risk 判定放行/审批/拒绝, 见 ai/taskpolicy.go。
+	Risk string `json:"risk,omitempty"`
 }
 
 type ToolHandler func(ctx context.Context, input map[string]any) (any, error)

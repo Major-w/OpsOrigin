@@ -27,8 +27,8 @@ func buildToolCallResponse(callID, argsJSON string) []byte {
 			{
 				"index": 0,
 				"message": map[string]any{
-					"role":      "assistant",
-					"content":   "",
+					"role":    "assistant",
+					"content": "",
 					"tool_calls": []map[string]any{
 						{
 							"id":   callID,
@@ -60,8 +60,8 @@ func buildToolCallResponseNamed(callID, name, argsJSON string) []byte {
 			{
 				"index": 0,
 				"message": map[string]any{
-					"role":      "assistant",
-					"content":   "",
+					"role":    "assistant",
+					"content": "",
 					"tool_calls": []map[string]any{
 						{
 							"id":   callID,
@@ -103,6 +103,7 @@ func buildTextResponse(text string) []byte {
 	b, _ := json.Marshal(resp)
 	return b
 }
+
 // 用于复现"推理模型反复发起相同工具调用"的死循环场景。
 func fakeRepeatingToolServer() *httptest.Server {
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {

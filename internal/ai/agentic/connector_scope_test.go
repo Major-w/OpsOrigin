@@ -54,13 +54,10 @@ func TestBuildToolDefsScopeVisibility(t *testing.T) {
 		t.Fatalf("agentB 应看到 open-tool, got %v", toolNames(defsB))
 	}
 
-	// 未绑定 agent(空串)看不到任何声明了 scope 的工具(纵深防御)
+	// 未绑定 agent(空串 = 默认助手)不暴露任何工具(产品意图: 默认助手不关联工具, 仅纯对话/推理)
 	defsNone := e.buildToolDefs("")
-	if hasTool(defsNone, "scoped-tool") {
-		t.Fatalf("未绑定 agent 不应看到 scoped-tool, got %v", toolNames(defsNone))
-	}
-	if !hasTool(defsNone, "open-tool") {
-		t.Fatalf("未绑定 agent 应看到 open-tool, got %v", toolNames(defsNone))
+	if len(defsNone) != 0 {
+		t.Fatalf("未绑定 agent(默认助手) 不应暴露任何工具, got %v", toolNames(defsNone))
 	}
 }
 

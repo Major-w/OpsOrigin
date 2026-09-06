@@ -152,7 +152,7 @@ func (e *Engine) completeFinetune(id, resultModel string) {
 	if e.router != nil {
 		baseCfg := e.findProviderConfigByModel(t.BaseModel)
 		baseCfg.Model = resultModel
-		e.router.AddProvider(providerName, baseCfg, 90)
+		e.router.AddProvider(providerName, baseCfg, 90, []string{"text"}, "public", "", false)
 	} else {
 		slog.Warn("finetune completed but router not set; model not registered", "task", id)
 	}

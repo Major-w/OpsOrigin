@@ -34,10 +34,31 @@ type Service struct {
 	MCPManager    *mcp.Manager // 外部 MCP server 接入与工具 proxy 管理
 	limiter       ratelimit.RateLimiter
 	ragFn         func(ctx context.Context, query, agentID string, categories []string) string // RAG上下文注入(按 Agent 绑定分类过滤, categories 为前端显式选择的范围)
-	feedbackStore agentic.FeedbackStore                                   // 点赞/点踩反馈持久化(P2-Eval)
-	db            *sql.DB                                                 // 统计/管理查询直连(会话删除、进化闭环等)
-	objStore      *objectstore.Client                                     // 对话产物/文件归档(MinIO), 未配置为 nil
-	userGroupsFn  UserGroupsFn                                            // 用户组查询(会话共享按组匹配), nil=不支持组共享
+	citeVerifyFn  func(ctx context.Context, tenant string, ids []string) map[string]bool       // 引用校验: 过滤模型幻觉/已删除文章的 [^id], 未注入时跳过校验
+	feedbackStore agentic.FeedbackStore                                                        // 点赞/点踩反馈持久化(P2-Eval)
+	db            *sql.DB                                                                      // 统计/管理查询直连(会话删除、进化闭环等)
+	objStore      *objectstore.Client                                                          // 对话产物/文件归档(MinIO), 未配置为 nil
+	userGroupsFn  UserGroupsFn                                                                 // 用户组查询(会话共享按组匹配), nil=不支持组共享
+
+	// 任务级 Agent(T1): 后台 Runner 的取消句柄与事件总线。taskCancels 生命周期由 tasks.go 管理。
+	taskMu      sync.Mutex
+	taskCancels map[string]context.CancelFunc
+	taskBus     *taskEventBus
+	// 任务级 Agent(T3): taskLive=Runner 持有的活体任务指针(工具 handler 与 Runner 同 goroutine
+	// 执行, 直接改写活体避免存储副本分叉); taskApprovals=等待/最近批复的审批单; taskPlanning=规划轮去重。
+	taskLive      map[string]*AITask
+	taskApprovals map[string]*taskApproval
+	taskPlanning  map[string]bool
+	// 任务级 Agent(T4): taskSteers=运行中插话(steer)队列, Runner 在步骤边界安全注入会话;
+	// taskPaused=暂停标记(取消 in-flight 时区分「暂停」与「取消」, 决定终态 paused/cancelled)。
+	taskSteers map[string][]steerEntry
+	taskPaused map[string]bool
+	// 任务级 Agent(T6): 多任务并行调度——taskRunning=并发槽占位(startTask 即置位, 规避
+	// go runTask 注册 cancel 的竞态窗口); taskQueue=等待队列(仅存 ID, 排序取元数据)。
+	taskRunning map[string]bool
+	taskQueue   []string
+	// knowledgeCreate 任务产物沉淀知识库的回调(T2, main.go 注入; nil=未接入)
+	knowledgeCreate func(ctx context.Context, title, content, category, author string) (articleID string, err error)
 
 	// llmClient 供"非对话式"结构化生成场景直连模型(如 AI 生成报表看板),
 	// 不走 Engine 的对话/工具循环。sysconfig 改配置时随 UpdateLLMConfig 一起热替换。
@@ -96,11 +117,24 @@ func NewService(cfg *config.Config, llmClient *llm.Client, redisClient *rediscli
 		feedbackStore: feedbackStore,
 		llmClient:     llmClient,
 		db:            db,
+		taskCancels:   map[string]context.CancelFunc{},
+		taskBus:       newTaskEventBus(),
+		taskLive:      map[string]*AITask{},
+		taskApprovals: map[string]*taskApproval{},
+		taskPlanning:  map[string]bool{},
+		taskSteers:    map[string][]steerEntry{},
+		taskPaused:    map[string]bool{},
+		taskRunning:   map[string]bool{},
+		taskQueue:     []string{},
 	}
 	svc.initEvolutionDDL(context.Background())
 	svc.initArtifactDDL(context.Background())
+	svc.initAttachmentDDL(context.Background())
 	svc.initWorkspaceDDL(context.Background())
 	svc.initMemoryDDL(context.Background())
+	svc.initTaskDDL(context.Background())
+	svc.registerTaskTools()
+	svc.recoverTaskQueue() // T6: 重启后从 DB 重建等待队列(内存队列丢失兜底)
 	return svc
 }
 
@@ -119,6 +153,30 @@ var LLMConfigHook func(cfg llm.Config)
 
 func (s *Service) SetRAGFunc(fn func(ctx context.Context, query, agentID string, categories []string) string) {
 	s.ragFn = fn
+}
+
+// SetCitationVerifier 注入引用校验回调(main.go 装配 MCPToolSet, 避免 ai→knowledge 直接依赖)。
+// 校验失败的引用 ID 不下发给前端, 防止「引用来源」链接到不存在/已删除的知识库文章。
+func (s *Service) SetCitationVerifier(fn func(ctx context.Context, tenant string, ids []string) map[string]bool) {
+	s.citeVerifyFn = fn
+}
+
+// validCitations 过滤无效引用: verifier 未注入或查询失败时放行原列表(宁可多展示也不误杀)。
+func (s *Service) validCitations(ctx context.Context, tenantID string, ids []string) []string {
+	if len(ids) == 0 || s.citeVerifyFn == nil {
+		return ids
+	}
+	ok := s.citeVerifyFn(ctx, tenantID, ids)
+	if len(ok) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(ids))
+	for _, id := range ids {
+		if ok[id] {
+			out = append(out, id)
+		}
+	}
+	return out
 }
 
 func (s *Service) RegisterRoutes(mux *http.ServeMux) {
@@ -146,6 +204,7 @@ func (s *Service) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/v1/ai/conversations/{id}", s.handleGetConversation)
 	mux.HandleFunc("POST /api/v1/ai/conversations", s.handleSaveConversation)
 	mux.HandleFunc("DELETE /api/v1/ai/conversations/{id}", s.handleDeleteConversation)
+	mux.HandleFunc("PATCH /api/v1/ai/conversations/{id}", s.handleRenameConversation)
 	// —— 会话共享(用户隔离: 默认私有, 共享后可见) ——
 	mux.HandleFunc("POST /api/v1/ai/conversations/{id}/shares", s.handleAddShare)
 	mux.HandleFunc("GET /api/v1/ai/conversations/{id}/shares", s.handleListShares)
@@ -164,6 +223,11 @@ func (s *Service) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/v1/ai/conversations/{id}/artifacts", s.handleListArtifacts)
 	mux.HandleFunc("GET /api/v1/ai/conversations/{id}/artifacts/{aid}", s.handleDownloadArtifact)
 	mux.HandleFunc("DELETE /api/v1/ai/conversations/{id}/artifacts/{aid}", s.handleDeleteArtifact)
+	// —— 服务端文档导出(前端保险丝 fallback, pandoc 确定性转换) ——
+	mux.HandleFunc("POST /api/v1/ai/export", s.handleExportDoc)
+	// —— 对话附件(用户上传, MinIO) ——
+	mux.HandleFunc("POST /api/v1/ai/attachments", s.handleUploadAttachment)
+	mux.HandleFunc("GET /api/v1/ai/attachments/{id}", s.handleDownloadAttachment)
 	// —— 会话工作区(工具产物自动沉淀) ——
 	mux.HandleFunc("GET /api/v1/ai/conversations/{id}/workspace", s.handleListWorkspace)
 	mux.HandleFunc("GET /api/v1/ai/conversations/{id}/workspace/{fid}", s.handleDownloadWorkspace)
@@ -184,6 +248,9 @@ func (s *Service) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("PUT /api/v1/ai/teams/{id}", s.handleUpdateTeam)
 	mux.HandleFunc("DELETE /api/v1/ai/teams/{id}", s.handleDeleteTeam)
 	mux.HandleFunc("POST /api/v1/ai/teams/{id}/chat", s.handleTeamChat)
+
+	// 任务级 Agent(T1): 目标驱动、后台执行、SSE 进度流
+	s.registerTaskRoutes(mux)
 
 	// —— P0: 岗位数字员工模板(开箱即用的 Agent 矩阵) ——
 	mux.HandleFunc("GET /api/v1/ai/agent-templates", s.handleListAgentTemplates)
@@ -313,19 +380,28 @@ func (s *Service) Start(ctx context.Context) error {
 // @Security BearerAuth
 // handleChat 处理 AI 助手聊天请求。
 // req.stream=true 时返回 SSE(text/event-stream)流式输出; 否则返回 JSON。
+// chatRequest AI 聊天请求。流式/非流式共用同一结构(流式由 handleChatStream 接管)。
+type chatRequest struct {
+	Prompt              string        `json:"prompt"`
+	AgentID             string        `json:"agent_id"`
+	History             []llm.Message `json:"history"`
+	Stream              bool          `json:"stream"`
+	Reasoning           bool          `json:"reasoning"`
+	Explore             bool          `json:"explore"` // 自主模式: AI 自主规划-执行-总结
+	Model               string        `json:"model"`   // 可选运行级模型覆盖(按会话/请求指定); 空=回退 agent/引擎默认
+	ConversationID      string        `json:"conversation_id"`
+	MessageID           string        `json:"message_id"`           // 前端为本次 assistant 回复生成的稳定 ID, 反馈时用于精确关联
+	KnowledgeCategories []string      `json:"knowledge_categories"` // 前端显式选择的知识范围(空=沿用 Agent 绑定/全部)
+	Attachments         []struct {
+		ID   string `json:"id"`
+		Name string `json:"name,omitempty"`
+		Type string `json:"type,omitempty"`
+	} `json:"attachments"` // 本轮随消息上传的附件(图片/文档), 后端解析为多模态片段
+	Parts []llm.ContentPart `json:"-"` // 已解析的多模态片段(服务端内部传递, 不接受客户端输入)
+}
+
 func (s *Service) handleChat(w http.ResponseWriter, r *http.Request) {
-	var req struct {
-		Prompt         string        `json:"prompt"`
-		AgentID        string        `json:"agent_id"`
-		History        []llm.Message `json:"history"`
-		Stream         bool          `json:"stream"`
-		Reasoning      bool          `json:"reasoning"`
-		Explore        bool          `json:"explore"` // 自主模式: AI 自主规划-执行-总结
-		Model          string        `json:"model"`   // 可选运行级模型覆盖(按会话/请求指定); 空=回退 agent/引擎默认
-		ConversationID string        `json:"conversation_id"`
-		MessageID      string        `json:"message_id"` // 前端为本次 assistant 回复生成的稳定 ID, 反馈时用于精确关联
-		KnowledgeCategories []string `json:"knowledge_categories"` // 前端显式选择的知识范围(空=沿用 Agent 绑定/全部)
-	}
+	var req chatRequest
 	if err := httputil.BindJSON(r, &req); err != nil {
 		httputil.WriteError(w, http.StatusBadRequest, "invalid request body")
 		return
@@ -351,6 +427,18 @@ func (s *Service) handleChat(w http.ResponseWriter, r *http.Request) {
 	// P0-1: 清洗客户端提交的对话历史, 丢弃 system/tool 角色与注入的 tool_calls, 防止提示注入绕过 RBAC。
 	req.History = agentic.SanitizeHistory(req.History)
 
+	// 多模态输入: 把本轮上传的附件转为"引用态"片段(attachment://<id>), 会话表里只存引用不存 base64。
+	// 历史消息中的同名引用由 Engine.resolvePartsForSend 在每次发送前统一解析(回放时附件依然可见)。
+	tenantID := auth.TenantFromContext(r.Context())
+	var parts []llm.ContentPart
+	if len(req.Attachments) > 0 {
+		refs := make([]AttachmentRef, 0, len(req.Attachments))
+		for _, a := range req.Attachments {
+			refs = append(refs, AttachmentRef{ID: a.ID, Name: a.Name, Type: a.Type})
+		}
+		parts = s.BuildContentParts(r.Context(), tenantID, req.Prompt, refs)
+	}
+
 	// RAG: 从知识库检索相关内容注入到 system prompt(按 Agent 绑定分类过滤, 空=全部)
 	if s.ragFn != nil {
 		ragCtx := s.ragFn(r.Context(), req.Prompt, req.AgentID, req.KnowledgeCategories)
@@ -369,8 +457,9 @@ func (s *Service) handleChat(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if req.Reasoning && !req.Stream {
-		thinking, answer, convID, err := s.Engine.ChatReasoning(r.Context(), req.AgentID, req.Prompt, req.History, req.ConversationID, req.Model, req.Explore)
+		thinking, answer, convID, err := s.Engine.ChatReasoning(r.Context(), req.AgentID, req.Prompt, req.History, req.ConversationID, req.Model, req.Explore, parts...)
 		if err != nil {
+			slog.Warn("ai chat reasoning failed", "model", req.Model, "conversation_id", req.ConversationID, "err", err.Error())
 			httputil.WriteError(w, chatErrorStatus(err), chatFriendlyError(err.Error()))
 			return
 		}
@@ -381,13 +470,17 @@ func (s *Service) handleChat(w http.ResponseWriter, r *http.Request) {
 			"thinking":        thinking,
 			"conversation_id": convID,
 			"message_id":      req.MessageID,
-			"citations":       agentic.ExtractCitations(answer),
+			"citations":       s.validCitations(r.Context(), tenantID, agentic.ExtractCitations(answer)),
 		})
+		if convID != "" {
+			go s.Engine.AutoTitleConversation(r.Context(), tenantID, convID)
+		}
 		return
 	}
 
-	out, convID, err := s.Engine.Chat(r.Context(), req.AgentID, req.Prompt, req.History, req.ConversationID, req.Model, req.Explore)
+	out, convID, err := s.Engine.Chat(r.Context(), req.AgentID, req.Prompt, req.History, req.ConversationID, req.Model, req.Explore, parts...)
 	if err != nil {
+		slog.Warn("ai chat failed", "model", req.Model, "conversation_id", req.ConversationID, "err", err.Error())
 		httputil.WriteError(w, chatErrorStatus(err), chatFriendlyError(err.Error()))
 		return
 	}
@@ -396,23 +489,15 @@ func (s *Service) handleChat(w http.ResponseWriter, r *http.Request) {
 		"content":         out,
 		"conversation_id": convID,
 		"message_id":      req.MessageID,
-		"citations":       agentic.ExtractCitations(out),
+		"citations":       s.validCitations(r.Context(), tenantID, agentic.ExtractCitations(out)),
 	})
+	if convID != "" {
+		go s.Engine.AutoTitleConversation(r.Context(), tenantID, convID)
+	}
 }
 
 // handleChatStream SSE 流式输出。
-func (s *Service) handleChatStream(w http.ResponseWriter, r *http.Request, req *struct {
-	Prompt         string        `json:"prompt"`
-	AgentID        string        `json:"agent_id"`
-	History        []llm.Message `json:"history"`
-	Stream         bool          `json:"stream"`
-	Reasoning      bool          `json:"reasoning"`
-	Explore        bool          `json:"explore"`
-	Model          string        `json:"model"`
-	ConversationID string        `json:"conversation_id"`
-	MessageID      string        `json:"message_id"`
-	KnowledgeCategories []string `json:"knowledge_categories"` // 前端显式选择的知识范围(空=沿用 Agent 绑定/全部)
-}) {
+func (s *Service) handleChatStream(w http.ResponseWriter, r *http.Request, req *chatRequest) {
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		httputil.WriteError(w, http.StatusInternalServerError, "streaming not supported")
@@ -437,6 +522,16 @@ func (s *Service) handleChatStream(w http.ResponseWriter, r *http.Request, req *
 		flusher.Flush()
 	})
 
+	// 多模态: 把本轮上传的附件转为"引用态"片段(attachment://<id>), 与历史消息中的引用一并由
+	// Engine.resolvePartsForSend 在发送前解析(会话持久化只存引用, 不存 base64)。
+	if len(req.Attachments) > 0 {
+		refs := make([]AttachmentRef, 0, len(req.Attachments))
+		for _, a := range req.Attachments {
+			refs = append(refs, AttachmentRef{ID: a.ID, Name: a.Name, Type: a.Type})
+		}
+		req.Parts = s.BuildContentParts(r.Context(), auth.TenantFromContext(r.Context()), req.Prompt, refs)
+	}
+
 	// RAG: 流式对话同样注入知识库检索(普通对话此前无 RAG; 仅当 Agent 绑定或前端显式选择范围时检索)。
 	// 经 history 的 system 消息注入, Engine.ChatStream 内部会从历史提取 sysExtra 还原(agentic/engine.go:2712)。
 	if s.ragFn != nil {
@@ -445,14 +540,26 @@ func (s *Service) handleChatStream(w http.ResponseWriter, r *http.Request, req *
 		}
 	}
 
-	ch, convID, err := s.Engine.ChatStream(ctx, req.AgentID, req.Prompt, req.History, req.Reasoning, req.ConversationID, req.Explore, req.Model)
+	slog.Info("ai chat stream start",
+		"model", req.Model,
+		"conversation_id", req.ConversationID,
+		"agent_id", req.AgentID,
+		"reasoning", req.Reasoning,
+		"prompt_len", len(req.Prompt),
+		"attachments", len(req.Attachments))
+
+	ch, convID, err := s.Engine.ChatStream(ctx, req.AgentID, req.Prompt, req.History, req.Reasoning, req.ConversationID, req.Explore, req.Model, req.Parts...)
 	if err != nil {
-		fmt.Fprintf(w, "event: error\ndata: %s\n\n", err.Error())
+		// 记录原始错误(模型/路由/解析等)便于排查; UI 走 chatFriendlyError 文案。
+		slog.Warn("ai chat stream init failed",
+			"model", req.Model, "conversation_id", req.ConversationID, "err", err.Error())
+		fmt.Fprintf(w, "event: error\ndata: %s\n\n", chatFriendlyError(err.Error()))
 		flusher.Flush()
 		return
 	}
 
 	var full strings.Builder
+	var sentError bool
 	for c := range ch {
 		switch c.Type {
 		case "thinking":
@@ -460,7 +567,18 @@ func (s *Service) handleChatStream(w http.ResponseWriter, r *http.Request, req *
 			b, _ := json.Marshal(c.Content)
 			fmt.Fprintf(w, "event: thinking\ndata: %s\n\n", b)
 		case "error":
-			fmt.Fprintf(w, "event: error\ndata: %s\n\n", c.Content)
+			sentError = true
+			// apiError 携带 Status/Body/RetryAfter; 此处透传状态码便于后端日志直接命中 4xx/5xx/限流。
+			slog.Warn("ai chat stream upstream error",
+				"model", req.Model, "conversation_id", req.ConversationID, "err", c.Content)
+			fmt.Fprintf(w, "event: error\ndata: %s\n\n", chatFriendlyError(c.Content))
+		case "truncated":
+			// 上游 finish_reason=length → max_tokens 到限, 正文被截断。
+			// 单独事件而非 error: 内容是真实存在且可能有用的, 不应像失败那样用红色错误块。
+			slog.Info("ai chat stream truncated by max_tokens",
+				"model", req.Model, "conversation_id", req.ConversationID)
+			fmt.Fprintf(w, "event: truncated\ndata: %s\n\n",
+				"输出已触达 max_tokens 上限, 后续内容未生成。可在「设置 → 模型」调大该模型的最大生成长度后重试。")
 		case "tool":
 			// 兼容旧客户端: 工具标注走默认 data 流(已不再由引擎产生, 保留分支避免遗漏)
 			b, _ := json.Marshal(c.Content)
@@ -477,12 +595,24 @@ func (s *Service) handleChatStream(w http.ResponseWriter, r *http.Request, req *
 		}
 		flusher.Flush()
 	}
+
+	// Silent-fail 守卫: 流正常关闭但 0 token 且未发过 error —— 多见于推理模型 thinking 后静默、
+	// max_tokens 给的不够返回空、或上游异常结束连接。补一个明确错误, 不让用户看到空气泡。
+	if !sentError && full.Len() == 0 {
+		slog.Warn("ai chat stream empty content",
+			"model", req.Model, "conversation_id", req.ConversationID,
+			"reasoning", req.Reasoning, "history_len", len(req.History))
+		fmt.Fprintf(w, "event: error\ndata: %s\n\n",
+			"模型未返回任何内容：可能是 max_tokens 过小、推理模型思考后静默，或上游异常中断连接。\n请重试或切换其他模型。")
+		flusher.Flush()
+	}
 	if convID != "" {
 		fmt.Fprintf(w, "event: conversation\ndata: %s\n\n", convID)
 		flusher.Flush()
 	}
-	// 引用来源: 从完整回答中解析 [^<id>] 标注并下发, 前端可据此展示知识库出处。
-	if cites := agentic.ExtractCitations(full.String()); len(cites) > 0 {
+	// 引用来源: 从完整回答中解析 [^<id>] 标注, 经知识库存在性校验后下发(幻觉/已删除 ID 不下发),
+	// 前端可据此展示知识库出处。
+	if cites := s.validCitations(r.Context(), auth.TenantFromContext(r.Context()), agentic.ExtractCitations(full.String())); len(cites) > 0 {
 		if cb, err := json.Marshal(cites); err == nil {
 			fmt.Fprintf(w, "event: citations\ndata: %s\n\n", cb)
 			flusher.Flush()
@@ -490,20 +620,32 @@ func (s *Service) handleChatStream(w http.ResponseWriter, r *http.Request, req *
 	}
 	fmt.Fprint(w, "data: [DONE]\n\n")
 	flusher.Flush()
+
+	// 首轮新会话: 异步用 LLM 生成会话标题(对标 DeepSeek/ChatGPT 自动命名, 失败静默保留截断标题)
+	if convID != "" {
+		go s.Engine.AutoTitleConversation(r.Context(), auth.TenantFromContext(r.Context()), convID)
+	}
 }
 
 // UpdateLLMConfig 热更新 LLM 配置(sysconfig 修改 LLM 设置后调用)。
 // 同时热更新多模型路由池(附加 provider 取自 cfg.LLM.Providers), 不停机生效。
+// 模型列表(Providers)中的 Type/Visibility/CreatedBy/Primary 元数据一并透传给路由,
+// 由路由按权重+健康+类型+可见性做 auto 选型; 带 Primary 标记的 provider 作为兜底 default。
 func (s *Service) UpdateLLMConfig(cfg llm.Config) {
 	var extra []agentic.ProviderConfig
 	if s.cfg != nil {
 		for _, p := range s.cfg.LLM.Providers {
 			extra = append(extra, agentic.ProviderConfig{
-				Name:    p.Name,
-				APIKey:  p.APIKey,
-				Model:   p.Model,
-				BaseURL: p.BaseURL,
-				Weight:  p.Weight,
+				Name:       p.Name,
+				APIKey:     p.APIKey,
+				Model:      p.Model,
+				BaseURL:    p.BaseURL,
+				Weight:     p.Weight,
+				Types:      p.Types,
+				Type:       p.Type,
+				Visibility: p.Visibility,
+				CreatedBy:  p.CreatedBy,
+				Primary:    p.Primary,
 			})
 		}
 	}
@@ -1325,11 +1467,23 @@ func (s *Service) handleTeamChat(w http.ResponseWriter, r *http.Request) {
 
 // chatFriendlyError 将底层 LLM 错误转为用户友好的提示。
 func chatFriendlyError(raw string) string {
+	if strings.Contains(raw, "no healthy llm provider") || strings.Contains(raw, "no available llm") {
+		return "当前没有可用的模型服务：模型池内所有模型均不可达或不可用。请到「智能体工作台 → 模型」核对各模型的 API Key / Base URL / 健康状态，或检查主 LLM 配置"
+	}
 	if strings.Contains(raw, "401") || strings.Contains(raw, "Auth") || strings.Contains(raw, "auth") {
 		return "LLM API Key 无效或未配置，请在「设置 → 模型」中填写正确的 API Key"
 	}
 	if strings.Contains(raw, "429") || strings.Contains(raw, "访问量过大") || strings.Contains(raw, "使用量已超出") || strings.Contains(raw, "rate limit") {
 		return "模型请求频率过高或当前繁忙，请稍候重试"
+	}
+	if strings.Contains(raw, "404") || strings.Contains(raw, "model not found") || strings.Contains(raw, "模型不存在") || strings.Contains(raw, "not exist") || strings.Contains(raw, "invalid model") {
+		return "模型不存在或不可用：请在「智能体工作台 → 模型」核对模型 ID / Base URL，或改选 auto 自动路由"
+	}
+	if strings.Contains(raw, "余额") || strings.Contains(raw, "balance") || strings.Contains(raw, "insufficient") || strings.Contains(raw, "quota") {
+		return "模型服务商账户异常或额度不足，请到对应平台检查余额 / 配额状态"
+	}
+	if strings.Contains(raw, "500") || strings.Contains(raw, "502") || strings.Contains(raw, "503") || strings.Contains(raw, "upstream") || strings.Contains(raw, "internal server") {
+		return "模型服务商侧服务异常(HTTP 5xx)，请稍后重试或切换其他模型"
 	}
 	if strings.Contains(raw, "timeout") || strings.Contains(raw, "deadline") {
 		return "LLM 响应超时，请检查网络或增加超时时间"

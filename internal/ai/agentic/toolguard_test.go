@@ -78,10 +78,9 @@ func TestThinkFilterStreaming(t *testing.T) {
 	}
 }
 
-// TestBuildToolDefsDefaultAssistantDeniesWriteTools 验证默认助手(agentID=="")不暴露
-// 写/执行类工具(ticket_create/script_run/script_generate), 避免纯对话场景下推理模型反复调用
-// 产生工单泛滥/脚本误执行副作用或"调用→失败→重试"死循环。只读/安全工具仍应暴露。
-func TestBuildToolDefsDefaultAssistantDeniesWriteTools(t *testing.T) {
+// TestBuildToolDefsDefaultAssistantNoTools 验证默认助手(agentID=="")不暴露任何工具,
+// 仅纯对话/推理(产品意图: 默认助手不关联工具, 避免未选数字员工时盲目发起工具调用)。
+func TestBuildToolDefsDefaultAssistantNoTools(t *testing.T) {
 	reg := mcp.NewRegistry()
 	for _, name := range []string{
 		"cmdb_query", "knowledge_search", "script_list", "script_detail", "script_executions",
@@ -97,19 +96,8 @@ func TestBuildToolDefsDefaultAssistantDeniesWriteTools(t *testing.T) {
 	e := NewEngine(reg, nil, nil, nil)
 
 	defs := e.buildToolDefs("") // 默认助手
-	byName := map[string]bool{}
-	for _, d := range defs {
-		byName[d.Function.Name] = true
-	}
-	for _, deny := range []string{"ticket_create", "script_run", "script_generate"} {
-		if byName[deny] {
-			t.Fatalf("default assistant must NOT expose write/exec tool %q, but it did", deny)
-		}
-	}
-	for _, allow := range []string{"cmdb_query", "knowledge_search", "script_list", "script_detail", "script_executions"} {
-		if !byName[allow] {
-			t.Fatalf("default assistant should expose read-only tool %q, but it was filtered out", allow)
-		}
+	if len(defs) != 0 {
+		t.Fatalf("默认助手不应暴露任何工具, got %v", toolNames(defs))
 	}
 }
 

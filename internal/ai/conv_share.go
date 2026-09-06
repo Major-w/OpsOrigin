@@ -7,6 +7,7 @@ import (
 	"github.com/opsorigin/core/pkg/auth"
 	"github.com/opsorigin/core/pkg/httputil"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -154,6 +155,36 @@ func (s *Service) handleGetConversation(w http.ResponseWriter, r *http.Request) 
 	}
 	conv.Permission = perm
 	httputil.WriteJSON(w, http.StatusOK, conv)
+}
+
+// handleRenameConversation 重命名会话标题(属主或可编辑权限)。
+func (s *Service) handleRenameConversation(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	tenantID := auth.TenantFromContext(r.Context())
+	userID := currentUserID(r.Context())
+	if !s.requireConvWrite(r.Context(), tenantID, id, userID, s.userGroups(r.Context(), userID), w) {
+		return
+	}
+	var req struct {
+		Title string `json:"title"`
+	}
+	if err := httputil.BindJSON(r, &req); err != nil {
+		httputil.WriteError(w, http.StatusBadRequest, "invalid body")
+		return
+	}
+	req.Title = strings.TrimSpace(req.Title)
+	if req.Title == "" {
+		httputil.WriteError(w, http.StatusBadRequest, "title required")
+		return
+	}
+	if len(req.Title) > 200 {
+		req.Title = req.Title[:200]
+	}
+	if err := s.Engine.RenameConversation(r.Context(), id, tenantID, req.Title); err != nil {
+		httputil.WriteError(w, http.StatusNotFound, err.Error())
+		return
+	}
+	httputil.WriteJSON(w, http.StatusOK, map[string]string{"id": id, "title": req.Title})
 }
 
 // ——— 共享管理 API ———

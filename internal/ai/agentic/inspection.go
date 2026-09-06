@@ -424,7 +424,7 @@ func (e *Engine) runInspection(ctx context.Context, id, triggeredBy string, expe
 		}
 		summary, _, err = e.RunTeamChat(ctx, team, userPrompt, history, nil, "")
 	} else {
-		summary, _, _, _, err = e.chatWithToolsConv(ctx, ins.AgentID, userPrompt, history, false, "", "", false)
+		summary, _, _, _, err = e.chatWithToolsConv(ctx, ins.AgentID, userPrompt, history, false, "", "", false, nil)
 	}
 
 	now := time.Now()

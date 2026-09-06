@@ -1,12 +1,12 @@
 package sysconfig
 
 import (
+	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"log/slog"
 	"net/http"
-	"os"
-	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -45,18 +45,98 @@ type UpdateRequest struct {
 }
 
 // Service 是系统配置管理服务。
+//
+// 存储模型(2026-09 起): 界面配置为权威层, 持久化到 PostgreSQL 的 sys_config 表;
+// 环境变量 / .env 仅作为首次启动的默认值来源(DB 为空时兜底)。服务启动时由
+// LoadFromDB 把 DB 值回灌覆盖内存 Config, 之后各模块读到的即 DB 中的持久配置。
 type Service struct {
-	mu      sync.RWMutex
-	cfg     *config.Config
-	envPath string // .env 文件路径
+	mu  sync.RWMutex
+	cfg *config.Config
+	db  *sql.DB // 可空(stub 模式: 仅内存生效, 不持久化)
 }
 
 // NewService 创建系统配置服务。
-func NewService(cfg *config.Config) *Service {
-	return &Service{
-		cfg:     cfg,
-		envPath: ".env",
+func NewService(cfg *config.Config, db *sql.DB) *Service {
+	return &Service{cfg: cfg, db: db}
+}
+
+// sysConfigDDL sys_config 表结构(key 即环境变量名, 如 OPSORIGIN_LLM_API_KEY)。
+const sysConfigDDL = `CREATE TABLE IF NOT EXISTS sys_config (
+	key        TEXT PRIMARY KEY,
+	value      TEXT NOT NULL DEFAULT '',
+	updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+)`
+
+// ensureTable 幂等建表。
+func (s *Service) ensureTable(ctx context.Context) error {
+	if s.db == nil {
+		return nil
 	}
+	_, err := s.db.ExecContext(ctx, sysConfigDDL)
+	return err
+}
+
+// LoadFromDB 启动回灌: 读取 sys_config 全表并逐个应用到内存 Config。
+// DB 中不存在的 key 保持启动默认值(env/.env)。db 为空(stub)时直接返回。
+func (s *Service) LoadFromDB(ctx context.Context) error {
+	if s.db == nil {
+		return nil
+	}
+	if err := s.ensureTable(ctx); err != nil {
+		return fmt.Errorf("ensure sys_config table: %w", err)
+	}
+	rows, err := s.db.QueryContext(ctx, `SELECT key, value FROM sys_config`)
+	if err != nil {
+		return fmt.Errorf("query sys_config: %w", err)
+	}
+	defer rows.Close()
+
+	type kv struct{ k, v string }
+	var all []kv
+	for rows.Next() {
+		var k, v string
+		if err := rows.Scan(&k, &v); err != nil {
+			return fmt.Errorf("scan sys_config: %w", err)
+		}
+		all = append(all, kv{k, v})
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("iterate sys_config: %w", err)
+	}
+
+	if len(all) == 0 {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, e := range all {
+		s.applyUpdate(e.k, e.v)
+	}
+	slog.Info("sysconfig loaded from db", "count", len(all))
+	return nil
+}
+
+// upsertDB 把一组配置 upsert 进 sys_config(DB 为空时跳过, 仅内存生效)。
+func (s *Service) upsertDB(ctx context.Context, updates map[string]string) error {
+	if s.db == nil || len(updates) == 0 {
+		return nil
+	}
+	if err := s.ensureTable(ctx); err != nil {
+		return err
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	for k, v := range updates {
+		if _, err := tx.ExecContext(ctx, `
+			INSERT INTO sys_config (key, value, updated_at) VALUES ($1, $2, now())
+			ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = now()`, k, v); err != nil {
+			return fmt.Errorf("upsert sys_config %s: %w", k, err)
+		}
+	}
+	return tx.Commit()
 }
 
 // Module 接口实现
@@ -125,11 +205,11 @@ func (s *Service) buildConfigItems() []ConfigGroup {
 				{Key: "OPSORIGIN_LLM_MODEL", Category: "llm", Label: "LLM 模型", Description: "大模型名称", Type: "string", CurrentValue: cfg.LLM.Model, DefaultValue: "deepseek-chat", RequiresRestart: false},
 				{Key: "OPSORIGIN_LLM_BASE_URL", Category: "llm", Label: "LLM Base URL", Description: "大模型 API 基础地址", Type: "string", CurrentValue: cfg.LLM.BaseURL, DefaultValue: "https://api.deepseek.com", RequiresRestart: false},
 				{Key: "OPSORIGIN_LLM_TIMEOUT", Category: "llm", Label: "LLM 超时(秒)", Description: "大模型请求超时时间", Type: "int", CurrentValue: fmt.Sprintf("%d", cfg.LLM.Timeout), DefaultValue: "60", RequiresRestart: false},
-			{Key: "OPSORIGIN_LLM_PROVIDERS", Category: "llm", Label: "模型池 Providers (JSON)", Description: "多模型路由池 JSON 数组, 如 [{\"name\":\"aliyun\",\"api_key\":\"sk-xxx\",\"model\":\"qwen-max\",\"base_url\":\"https://dashscope.aliyuncs.com/compatible-mode/v1\",\"weight\":80}]。推荐在「智能体工作台→模型」页可视化维护。", Type: "json", CurrentValue: marshalProviders(cfg.LLM.Providers), DefaultValue: "[]", RequiresRestart: false},
+				{Key: "OPSORIGIN_LLM_PROVIDERS", Category: "llm", Label: "模型池 Providers (JSON)", Description: "多模型路由池 JSON 数组, 如 [{\"name\":\"aliyun\",\"api_key\":\"sk-xxx\",\"model\":\"qwen-max\",\"base_url\":\"https://dashscope.aliyuncs.com/compatible-mode/v1\",\"weight\":80}]。推荐在「智能体工作台→模型」页可视化维护。", Type: "json", CurrentValue: marshalProviders(cfg.LLM.Providers), DefaultValue: "[]", RequiresRestart: false},
 				{Key: "OPSORIGIN_LLM_EMBEDDING_MODEL", Category: "llm", Label: "Embedding 模型", Description: "向量化模型,用于知识库语义检索。注意不同厂商维度不同(如智谱 embedding-3=2048, OpenAI text-embedding-3-small=1536),切换后需重建向量索引。", Type: "string", CurrentValue: cfg.LLM.EmbeddingModel, DefaultValue: "text-embedding-3-small", RequiresRestart: false},
 				{Key: "OPSORIGIN_LLM_EMBEDDING_BASE_URL", Category: "llm", Label: "Embedding Base URL", Description: "向量接口基址,留空则复用 LLM Base URL。智谱等内网/私有化场景可单独指定。", Type: "string", CurrentValue: cfg.LLM.EmbeddingBaseURL, DefaultValue: "", RequiresRestart: false},
 				{Key: "OPSORIGIN_LLM_PRESETS", Category: "llm", Label: "厂商预设覆盖 (JSON)", Description: "自定义/覆盖内置厂商预设的 JSON 数组,如 [{\"name\":\"zhipu\",\"base_url\":\"http://内网网关/v4\",\"default_model\":\"glm-4-plus\"}]。同名覆盖内置预设,不同名追加为新厂商;AI 设置页「服务商」下拉会合并展示。", Type: "json", CurrentValue: marshalPresets(cfg.LLM.Presets), DefaultValue: "[]", RequiresRestart: false},
-		},
+			},
 		},
 		{
 			Category: "outbox",
@@ -232,10 +312,10 @@ func (s *Service) handleUpdateConfig(w http.ResponseWriter, r *http.Request) {
 	}
 	s.mu.Unlock()
 
-	// 持久化到 .env 文件
-	if err := s.persistToEnvFile(req.Updates); err != nil {
-		slog.Warn("persist config to .env failed", "error", err)
-		// 不返回错误,内存已更新,只是持久化失败
+	// 持久化到数据库(界面配置 = 权威层, 重启后由 LoadFromDB 回灌)。
+	if err := s.upsertDB(r.Context(), req.Updates); err != nil {
+		slog.Warn("persist config to db failed", "error", err)
+		// 不返回错误,内存已更新; DB 不可用时退化为仅本次进程生效。
 	}
 
 	// 统计需要重启的项
@@ -395,52 +475,6 @@ func marshalPresets(ps []llm.Preset) string {
 		return "[]"
 	}
 	return string(b)
-}
-
-// persistToEnvFile 将更新的配置项写入 .env 文件(保留已有项,更新或追加)。
-func (s *Service) persistToEnvFile(updates map[string]string) error {
-	// 读取现有 .env 内容
-	lines := []string{}
-	if content, err := os.ReadFile(s.envPath); err == nil {
-		lines = strings.Split(string(content), "\n")
-	}
-
-	// 构建 key → line index 映射
-	keyLines := make(map[string]int)
-	for i, line := range lines {
-		line = strings.TrimSpace(line)
-		if line == "" || strings.HasPrefix(line, "#") {
-			continue
-		}
-		parts := strings.SplitN(line, "=", 2)
-		if len(parts) == 2 {
-			keyLines[strings.TrimSpace(parts[0])] = i
-		}
-	}
-
-	// 更新已有行或追加新行
-	keys := make([]string, 0, len(updates))
-	for k := range updates {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-
-	for _, key := range keys {
-		value := updates[key]
-		line := fmt.Sprintf("%s=%s", key, value)
-		if idx, ok := keyLines[key]; ok {
-			lines[idx] = line
-		} else {
-			if len(lines) > 0 && lines[len(lines)-1] != "" {
-				lines = append(lines, "")
-			}
-			lines = append(lines, "# 全局参数修改自动写入", line)
-		}
-	}
-
-	// 写回 .env
-	content := strings.Join(lines, "\n")
-	return os.WriteFile(s.envPath, []byte(content), 0644)
 }
 
 // atoiSafe 安全的字符串转 int,失败返回默认值。

@@ -1,6 +1,9 @@
 package ai
 
-import "testing"
+import (
+	"context"
+	"testing"
+)
 
 type errString string
 
@@ -51,5 +54,33 @@ func TestStripEmptyCitationSection(t *testing.T) {
 	plain := "普通回答没有引用。"
 	if got := stripEmptyCitationSection(plain); got != plain {
 		t.Errorf("plain changed: %q", got)
+	}
+}
+
+// TestValidCitations 验证引用过滤: 幻觉/已删除的 [^id] 被拦截, 有效 ID 保留, 未注入 verifier 时放行。
+func TestValidCitations(t *testing.T) {
+	s := &Service{}
+	ids := []string{"a1", "fake", "a2"}
+	// 未注入 verifier: 原样放行(宁可多展示不误杀)
+	if got := s.validCitations(context.Background(), "t1", ids); len(got) != 3 {
+		t.Fatalf("no verifier: want passthrough 3, got %d", len(got))
+	}
+	s.citeVerifyFn = func(_ context.Context, tenant string, in []string) map[string]bool {
+		if tenant != "t1" {
+			t.Errorf("tenant = %q, want t1", tenant)
+		}
+		return map[string]bool{"a1": true, "a2": true} // fake 不存在
+	}
+	got := s.validCitations(context.Background(), "t1", ids)
+	if len(got) != 2 || got[0] != "a1" || got[1] != "a2" {
+		t.Fatalf("filtered = %v, want [a1 a2]", got)
+	}
+	// 全部无效: 返回空
+	if got := s.validCitations(context.Background(), "t1", []string{"x", "y"}); len(got) != 0 {
+		t.Fatalf("all invalid: want empty, got %v", got)
+	}
+	// 空输入: 原样返回
+	if got := s.validCitations(context.Background(), "t1", nil); len(got) != 0 {
+		t.Fatalf("nil input: want empty, got %v", got)
 	}
 }

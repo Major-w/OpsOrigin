@@ -17,6 +17,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/opsorigin/core/internal/ai/mcp"
 	"github.com/opsorigin/core/internal/command"
+	"github.com/opsorigin/core/pkg/config"
 )
 
 // ScriptExecutor 复用 automation/script 服务的执行入口，
@@ -64,6 +65,10 @@ type MCPToolSet struct {
 	// searchCache 缓存 (tenant,query,mode,limit,snippet)->结果(语义检索结果复用)。
 	embedCache  *ttlCache
 	searchCache *ttlCache
+
+	// cfg 全局配置指针(image_generate 等需要从 sysconfig 读 LLM provider key/base_url 的工具用)。
+	// 由 main.go 在 NewMCPToolSet 后注入; sysconfig 更新通过同一指针共享, 无需再同步。
+	cfg *config.Config
 }
 
 func NewMCPToolSet(db *sql.DB) *MCPToolSet {
@@ -103,6 +108,10 @@ func (ts *MCPToolSet) SetExternalApproval(fn func(ctx context.Context, scriptID,
 func (ts *MCPToolSet) SetKnowledgeCategoriesResolver(fn func(agentID string) []string) {
 	ts.categoriesResolver = fn
 }
+
+// SetConfig 注入全局配置指针(image_generate 等需要从 sysconfig 读取 LLM provider key/base_url 的工具使用)。
+// 同一指针在 sysconfig 更新时被原地修改字段, 故无需重复同步。
+func (ts *MCPToolSet) SetConfig(cfg *config.Config) { ts.cfg = cfg }
 
 // categoriesFor 解析 Agent 绑定的知识库分类(可能为 nil=全部)。
 func (ts *MCPToolSet) categoriesFor(agentID string) []string {
@@ -753,6 +762,30 @@ func (ts *MCPToolSet) knowledgeSearch(ctx context.Context, args map[string]any) 
 //
 // categories 非空时仅在这些分类内检索(Agent 知识库绑定, PRD 5.2.6)。
 // 结果经 ttlCache 缓存: embedding 去重(query->向量) + 检索结果复用。
+// ValidKnowledgeIDs 批量校验知识库文章 ID 在本租户内是否真实存在。
+// 用于过滤模型在回答里标注的幻觉引用(编造/已删除文章的 [^id]), 避免前端引用来源链接到不存在的文章。
+func (ts *MCPToolSet) ValidKnowledgeIDs(ctx context.Context, tenant string, ids []string) map[string]bool {
+	out := make(map[string]bool, len(ids))
+	if ts.db == nil || tenant == "" || len(ids) == 0 {
+		return out
+	}
+	rows, err := ts.db.QueryContext(ctx,
+		`SELECT id FROM knowledge_articles WHERE tenant_id=$1 AND id = ANY($2)`,
+		tenant, ids)
+	if err != nil {
+		slog.Warn("knowledge: validate citation ids failed", "err", err)
+		return out
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err == nil {
+			out[id] = true
+		}
+	}
+	return out
+}
+
 func (ts *MCPToolSet) searchKnowledge(ctx context.Context, query string, limit, snippetLen int, categories []string) ([]map[string]any, error) {
 	tenant := tenantOf(ctx)
 	// 分类过滤子句(参数位固定在 $5); 空分类不追加参数。
@@ -982,6 +1015,51 @@ func (ts *MCPToolSet) Register(reg *mcp.Registry) {
 	reg.Register(mcp.ToolDefinition{Name: "script_executions", Description: "Query recent execution history of automation scripts (latest 20). Args: script_id(string) optional filter by script; status(string) optional filter like success/failed; limit(number) optional 1-50. Returns id/script_name/status/exit_code/duration_ms/output(truncated)/error/started_at. Use to compare previous runs or diagnose failures.", Handler: ts.scriptExecutions})
 	reg.Register(mcp.ToolDefinition{Name: "script_generate", Description: "Generate an automation script and save it as DRAFT (requires human approval before it can run). Args: name(string) REQUIRED; type(string) REQUIRED one of shell|python|bat; content(string) REQUIRED the script body; description(string) optional; input_params(array) optional [{name,type,required,description,default}]; output_params(array) optional; timeout(number) optional seconds; run_as(string) optional; labels(object) optional; dry_run(bool) optional if true only validate, do not save. Safety: blocked scripts (rm -rf /, dd/mkfs, shutdown, curl|bash etc.) are rejected without saving; syntax is checked before saving.", Handler: ts.scriptGenerate})
 	reg.Register(mcp.ToolDefinition{Name: "knowledge_search", Description: "Search knowledge base articles for relevant documentation (RAG, semantic vector search). Args: query(string). Each returned item has an 'id' field — when you base your answer on an article, cite it inline as [^<id>] and list it under '## 引用来源'.", Handler: ts.knowledgeSearch})
+
+	// 图像生成: 模型主动调用生成真实图片(智谱 cogview-3 / 3-flash); 返回的图片 URL 应在最终回答里
+	// 以 markdown 图片语法 `![描述](url)` 输出, 前端会自动渲染(URL 必须以 http/https 开头)。
+	// 选型: prompt 必填; size 默认 1024x1024; model 默认 cogview-3-flash (快/免费), 追求质量可填 cogview-3。
+	reg.Register(mcp.ToolDefinition{
+		Name: "image_generate",
+		Description: "Generate an image from a text prompt using the configured image model (default 智谱 cogview-3-flash). " +
+			"Args: prompt(string) REQUIRED detailed image description; size(string) optional one of 1024x1024|768x1344|1344x768|512x512 (default 1024x1024); " +
+			"model(string) optional 'cogview-3-flash' (default, fast/free) or 'cogview-3' (higher quality). " +
+			"Returns {url, model, size, prompt}. In your final reply, embed the image using markdown image syntax ![<description>](<url>) so the UI can render it. " +
+			"Prefer this tool when the user explicitly asks for an image/diagram/picture; otherwise answer in text.",
+		Parameters: map[string]mcp.ParamSchema{
+			"prompt": {Type: "string", Description: "图片描述, 尽量具体(主体/场景/构图/色调)", Required: true},
+			"size":   {Type: "string", Description: "输出尺寸, 默认 1024x1024", Required: false, Default: "1024x1024", Enum: []string{"1024x1024", "768x1344", "1344x768", "512x512"}},
+			"model":  {Type: "string", Description: "模型 ID, 默认 cogview-3-flash(快速/免费); 追求质量选 cogview-3", Required: false, Default: "cogview-3-flash", Enum: []string{"cogview-3-flash", "cogview-3"}},
+		},
+		Handler: ts.imageGenerate,
+	})
+
+	annotateBuiltinToolRisks(reg)
+}
+
+// builtinToolRisks 内置运维工具风险分级(T3): 任务级 Agent 按权限模式 × risk 判定执行策略。
+// critical=不可逆/高危运维动作; write=产生外部写入; read=只读查询。未列入的自定义/外部 MCP
+// 工具缺省按 write 处理(standard 模式下触发人工确认, 保守优先)。
+var builtinToolRisks = map[string]string{
+	"cmdb_query":        "read",
+	"script_list":       "read",
+	"script_detail":     "read",
+	"script_executions": "read",
+	"knowledge_search":  "read",
+	"image_generate":    "write",
+	"script_generate":   "write",
+	"ticket_create":     "write",
+	"script_run":        "critical",
+}
+
+// annotateBuiltinToolRisks 给已注册的内置工具补 Risk 标注(不改变 Handler/描述)。
+func annotateBuiltinToolRisks(reg *mcp.Registry) {
+	for name, risk := range builtinToolRisks {
+		if d, ok := reg.Get(name); ok {
+			d.Risk = risk
+			reg.Register(d)
+		}
+	}
 }
 
 // RAGContext 为给定查询检索知识库上下文(用于注入 LLM system prompt)。

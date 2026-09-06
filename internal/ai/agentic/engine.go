@@ -101,6 +101,10 @@ type Engine struct {
 	// 未设置时 compactHistory 回退到确定性压缩(保留首条 user 原始意图 + 最近窗口)。
 	historySummarizer func(ctx context.Context, msgs []llm.Message) (string, error)
 
+	// partResolver 可选: 多模态片段解析器(attachment:// 引用 → data URL/正文)。
+	// 由 ai 层注入(它持有对象存储与附件表), 引擎不反向依赖 ai 包。见 resolvePartsForSend。
+	partResolver PartResolver
+
 	// ——— 多智能体团队（Feature 1）———
 	teams          map[string]*model.AgentTeam
 	genMaxTokens   int
@@ -320,7 +324,11 @@ func (e *Engine) SetModelRouter(r *ModelRouter) {
 }
 
 // chatLLM 聊天调用统一入口: router 优先(多模型路由+降级), 否则单 client。
+// 注入当前用户与期望模型类型, 供路由做可见性/类型过滤(auto 模式生效)。
 func (e *Engine) chatLLM(ctx context.Context, req llm.ChatRequest) (*llm.ChatResponse, error) {
+	req.User = userIDFromContext(ctx)
+	req.Messages = e.resolvePartsForSend(ctx, req.Messages)
+	req.PreferType = preferTypeOf(req.Messages)
 	if e.router != nil {
 		return e.router.Chat(ctx, req)
 	}
@@ -328,11 +336,106 @@ func (e *Engine) chatLLM(ctx context.Context, req llm.ChatRequest) (*llm.ChatRes
 }
 
 // streamLLM 流式调用统一入口: router 优先, 否则单 client。
+// 注入当前用户与期望模型类型, 供路由做可见性/类型过滤(auto 模式生效)。
 func (e *Engine) streamLLM(ctx context.Context, req llm.ChatRequest) (<-chan llm.StreamChunk, error) {
+	req.User = userIDFromContext(ctx)
+	req.Messages = e.resolvePartsForSend(ctx, req.Messages)
+	req.PreferType = preferTypeOf(req.Messages)
 	if e.router != nil {
 		return e.router.StreamChat(ctx, req)
 	}
 	return e.llmClient.Load().StreamChat(ctx, req)
+}
+
+// PartResolver 多模态片段解析器: 输入持久化态引用(attachment://<id>#<name>),
+// 输出模型可消费的片段(图片→data URL 的 image_url; 文本类→正文 text)。
+// 返回 false 表示该引用无法解析(调用方退化为占位文本)。
+type PartResolver func(ctx context.Context, url string) (llm.ContentPart, bool)
+
+// SetPartResolver 注入附件解析器(由 ai 层持有对象存储与附件表, 引擎不反向依赖)。
+// 未注入时多模态片段原样下发(公网直链场景仍可用, 仅 attachment:// 引用无法解析)。
+func (e *Engine) SetPartResolver(fn PartResolver) {
+	e.partResolver = fn
+}
+
+// resolvePartsForSend 发送前把消息中的 attachment:// 引用替换为真实内容。
+// 返回副本而不修改入参: 入参同时用于会话持久化, 必须保持"引用态"(不然 base64 会写进会话表)。
+func (e *Engine) resolvePartsForSend(ctx context.Context, msgs []llm.Message) []llm.Message {
+	if e.partResolver == nil || len(msgs) == 0 {
+		return msgs
+	}
+	out := msgs
+	cloned := false
+	for i := range msgs {
+		parts := msgs[i].ContentParts
+		if len(parts) == 0 {
+			continue
+		}
+		hit := false
+		next := make([]llm.ContentPart, 0, len(parts))
+		for _, p := range parts {
+			u := partRefURL(p)
+			if u == "" || !strings.HasPrefix(u, "attachment://") {
+				next = append(next, p)
+				continue
+			}
+			rp, ok := e.partResolver(ctx, u)
+			if !ok {
+				next = append(next, p)
+				continue
+			}
+			next = append(next, rp)
+			hit = true
+		}
+		if hit {
+			if !cloned { // 惰性拷贝: 无引用命中时零分配
+				out = make([]llm.Message, len(msgs))
+				copy(out, msgs)
+				cloned = true
+			}
+			out[i].ContentParts = next
+		}
+	}
+	return out
+}
+
+// partRefURL 取片段中的引用 URL(图片/文件), 非引用片段返回空串。
+func partRefURL(p llm.ContentPart) string {
+	switch {
+	case p.Type == "image_url" && p.ImageURL != nil:
+		return p.ImageURL.URL
+	case p.Type == "file_url" && p.FileURL != nil:
+		return p.FileURL.URL
+	}
+	return ""
+}
+
+// userIDFromContext 从上下文解析当前用户 ID(供路由可见性过滤)。空=系统/内部调用。
+func userIDFromContext(ctx context.Context) string {
+	if pr, ok := principal.FromContext(ctx); ok {
+		return pr.ID
+	}
+	return ""
+}
+
+// preferTypeOf 按消息内容推导期望的模型能力类型。当前消息以纯文本为主,
+// 若检测到图片数据(多模态)返回 "image", 否则 "text"。
+// 视觉模型(glm-4v 等)具备文本能力, 故 text 请求仍可命中 image 类型模型;
+// 仅纯视频模型会被 text 请求排除。
+func preferTypeOf(msgs []llm.Message) string {
+	for _, m := range msgs {
+		if strings.Contains(m.Content, "data:image") {
+			return "image"
+		}
+		// 多模态片段: 含图片时请求类型升为 image, 让路由优先挑选支持视觉的模型
+		// (纯文本模型收到图片会静默忽略, 用户会看到"模型没看图")。
+		for _, p := range m.ContentParts {
+			if p.Type == "image_url" && p.ImageURL != nil {
+				return "image"
+			}
+		}
+	}
+	return "text"
 }
 
 // GetModels 返回模型池状态(供 /api/v1/ai/models 展示)。
@@ -501,15 +604,16 @@ func (e *Engine) restoreClosedLoopFromStore(ctx context.Context) {
 // Chat 执行一次单轮(可带历史)的 LLM 推理,供 AI 助手聊天端点使用。
 // model 为可选的运行级模型覆盖(按会话/请求指定);为空时回退 agent 配置模型,再回退引擎默认。
 // 支持 Function Calling:模型可自主调用已注册的运维工具(CMDB查询/工单/脚本执行/知识库检索)。
-func (e *Engine) Chat(ctx context.Context, agentID, prompt string, history []llm.Message, conversationID, model string, explore bool) (content string, convID string, err error) {
-	content, _, _, convID, err = e.chatWithToolsConv(ctx, agentID, prompt, history, false, conversationID, model, explore)
+// parts 为本轮用户消息的多模态片段(图片/文件); 由 ai 层把附件解析为 base64 data URL 后传入, 无附件时传 nil。
+func (e *Engine) Chat(ctx context.Context, agentID, prompt string, history []llm.Message, conversationID, model string, explore bool, parts ...llm.ContentPart) (content string, convID string, err error) {
+	content, _, _, convID, err = e.chatWithToolsConv(ctx, agentID, prompt, history, false, conversationID, model, explore, parts)
 	return
 }
 
 // ChatReasoning 思维链模式:返回思考过程和最终答案。
 // 优先返回模型原生 reasoning_content(DeepSeek-R1/Qwen 等),缺失时降级到 prompt 伪思维链。
-func (e *Engine) ChatReasoning(ctx context.Context, agentID, prompt string, history []llm.Message, conversationID, model string, explore bool) (thinking string, answer string, convID string, err error) {
-	answer, reasoning, _, convID, err := e.chatWithToolsConv(ctx, agentID, prompt, history, true, conversationID, model, explore)
+func (e *Engine) ChatReasoning(ctx context.Context, agentID, prompt string, history []llm.Message, conversationID, model string, explore bool, parts ...llm.ContentPart) (thinking string, answer string, convID string, err error) {
+	answer, reasoning, _, convID, err := e.chatWithToolsConv(ctx, agentID, prompt, history, true, conversationID, model, explore, parts)
 	if err != nil {
 		return "", "", "", err
 	}
@@ -530,7 +634,7 @@ type ToolInvocation struct {
 // ChatWithTools 执行带 Function Calling 的对话,返回最终答案与本次触发的所有工具调用。
 // 供需要审计/展示工具使用情况的调用方使用(如团队编排后的汇总)。
 func (e *Engine) ChatWithTools(ctx context.Context, agentID, prompt string, history []llm.Message, reasoning bool, conversationID, model string, explore bool) (out string, inv []ToolInvocation, convID string, err error) {
-	out, _, inv, convID, err = e.chatWithToolsConv(ctx, agentID, prompt, history, reasoning, conversationID, model, explore)
+	out, _, inv, convID, err = e.chatWithToolsConv(ctx, agentID, prompt, history, reasoning, conversationID, model, explore, nil)
 	return out, inv, convID, err
 }
 
@@ -615,7 +719,6 @@ func utf8SafeKeepSuffix(s string, maxKeep int) (prefix, suffix string) {
 	return s[:cut], s[cut:]
 }
 
-
 // feed 输入一个流式分片, 返回可安全输出给用户的文本(思维链内容被丢弃)。
 func (f *thinkFilter) feed(s string) string {
 	f.pending += s
@@ -680,7 +783,7 @@ func toolCallSig(tcs []llm.ToolCall) string {
 	return strings.Join(parts, "\x1f\x1f")
 }
 
-func (e *Engine) chatWithToolsConv(ctx context.Context, agentID, prompt string, history []llm.Message, reasoning bool, conversationID, model string, explore bool) (string, string, []ToolInvocation, string, error) {
+func (e *Engine) chatWithToolsConv(ctx context.Context, agentID, prompt string, history []llm.Message, reasoning bool, conversationID, model string, explore bool, parts []llm.ContentPart) (string, string, []ToolInvocation, string, error) {
 	if prompt == "" {
 		return "", "", nil, "", fmt.Errorf("prompt is required")
 	}
@@ -743,8 +846,10 @@ func (e *Engine) chatWithToolsConv(ctx context.Context, agentID, prompt string, 
 		}
 		sysExtra += memoriesPrompt(mems)
 	}
-	// 自主模式: 把执行方法论注入 system 补充, 引导模型"规划→执行→检查→总结"。
-	if explore {
+	// 执行方法论: 绑定了工具的执行者(数字员工/智能体)统一按「分析→规划→执行→总结」方式工作;
+	// 纯对话(无工具可用)不注入, 节省 token。模式概念已移除: 原 explore 参数仅作 API 兼容保留, 不再产生行为差异。
+	tools := e.buildToolDefs(agentID)
+	if len(tools) > 0 {
 		if sysExtra != "" {
 			sysExtra += "\n\n"
 		}
@@ -757,8 +862,7 @@ func (e *Engine) chatWithToolsConv(ctx context.Context, agentID, prompt string, 
 		convSummary, convCovered = conv.Summary, conv.SummarizedCount
 	}
 	hc := e.compactHistory(ctx, baseHistory, convSummary, convCovered)
-	msgs, roundStart := e.buildMessages(ctx, agentID, userPrompt, hc.history, sysExtra)
-	tools := e.buildToolDefs(agentID)
+	msgs, roundStart := e.buildMessages(ctx, agentID, userPrompt, hc.history, sysExtra, parts)
 	var invocations []ToolInvocation
 
 	var content, reasoningAcc string
@@ -787,7 +891,7 @@ func (e *Engine) chatWithToolsConv(ctx context.Context, agentID, prompt string, 
 		}
 	}
 
-	toolLoop:
+toolLoop:
 	for round := 0; round < maxToolRounds; round++ {
 		slot, ok := e.acquireLLMSlot(ctx)
 		if !ok {
@@ -1007,7 +1111,8 @@ func (e *Engine) chatWithToolsConv(ctx context.Context, agentID, prompt string, 
 // buildMessages 拼装 system(+可选 sysExtra 补充, 如 RAG 注入) + 历史(经 Token 预算压缩) + 用户问题,
 // 并返回"用户消息之后的起始下标"(roundStart), 调用方可用 msgs[roundStart:] 精确裁剪出"本轮回合",
 // 便于增量持久化会话。
-func (e *Engine) buildMessages(ctx context.Context, agentID, userPrompt string, history []llm.Message, sysExtra string) ([]llm.Message, int) {
+// parts 为本轮用户消息的多模态片段(图片/文件, URL 已解析为 data URL); 为空时退化为纯文本消息。
+func (e *Engine) buildMessages(ctx context.Context, agentID, userPrompt string, history []llm.Message, sysExtra string, parts []llm.ContentPart) ([]llm.Message, int) {
 	sys := e.resolveSystemPrompt(agentID)
 	// 注入该 Agent 定义的 Skills(可复用能力指令, PRD 5.2.2)
 	if s := e.renderSkills(agentID); s != "" {
@@ -1025,7 +1130,13 @@ func (e *Engine) buildMessages(ctx context.Context, agentID, userPrompt string, 
 	// roundStart 指向"本轮用户消息"在 msgs 中的下标: 持久化时 msgs[roundStart:] 即本轮回合(user + assistant/tool),
 	// 跳过 system 与历史, 避免重复累积。
 	roundStart := len(msgs)
-	msgs = append(msgs, llm.Message{Role: "user", Content: userPrompt})
+	// 多模态: 有图片/文件片段时 content 下发为数组 [文本, 图片...], 否则为纯字符串。
+	// Content 字段始终保留正文文本, 便于 token 估算/会话标题/历史检索等只读逻辑复用。
+	userMsg := llm.Message{Role: "user", Content: userPrompt}
+	if len(parts) > 0 {
+		userMsg.ContentParts = parts
+	}
+	msgs = append(msgs, userMsg)
 	return msgs, roundStart
 }
 
@@ -1068,7 +1179,7 @@ func (e *Engine) buildInitialMessages(ctx context.Context, agentID, userPrompt s
 	if hc := e.compactHistory(ctx, history, "", 0); len(hc.history) > 0 {
 		history = hc.history
 	}
-	msgs, _ := e.buildMessages(ctx, agentID, userPrompt, history, "")
+	msgs, _ := e.buildMessages(ctx, agentID, userPrompt, history, "", nil)
 	return msgs
 }
 
@@ -1296,6 +1407,30 @@ func SanitizeHistory(h []llm.Message) []llm.Message {
 		switch m.Role {
 		case "user", "assistant":
 			cm := llm.Message{Role: m.Role, Content: clampStr(m.Content, maxHistoryMsgLen)}
+			// 多模态片段必须保留: 历史消息里的图片/附件引用回放时要继续对模型可见。
+			// 只做长度收敛, 引用本身(attachment://<id>)很短, 不会把历史撑大。
+			if len(m.ContentParts) > 0 {
+				cp := make([]llm.ContentPart, 0, len(m.ContentParts))
+				for _, p := range m.ContentParts {
+					switch p.Type {
+					case "text":
+						if t := clampStr(p.Text, maxHistoryMsgLen); t != "" {
+							cp = append(cp, llm.ContentPart{Type: "text", Text: t})
+						}
+					case "image_url":
+						if p.ImageURL != nil {
+							cp = append(cp, p)
+						}
+					case "file_url":
+						if p.FileURL != nil {
+							cp = append(cp, p)
+						}
+					}
+				}
+				if len(cp) > 0 {
+					cm.ContentParts = cp
+				}
+			}
 			if m.Role == "assistant" {
 				cm.ReasoningContent = clampStr(m.ReasoningContent, maxHistoryMsgLen)
 			}
@@ -1411,12 +1546,9 @@ func (e *Engine) buildToolDefs(agentID string) []llm.ToolDef {
 }
 
 // maxToolRounds 单次对话中 Function Calling 的最大轮次,防止模型无限循环请求工具。
-// 设为 8: 给正常的多步工具链(检索→分析→处置)留足余量;真正死循环由 toolCallSig 重复检测提前拦截。
-const maxToolRounds = 8
-
-// maxToolRoundsExplore 自主模式(explore=true)的轮次上限。
-// 自主模式需要"规划→逐步执行→检查→总结"多轮迭代, 上限放宽; 仍由限流器约束总调用频次。
-const maxToolRoundsExplore = 12
+// 统一上限 12: 原「普通 8 / 自主 12」双轨已合并(模式概念移除, 是否多轮迭代由模型按任务自行决定);
+// 真正死循环由 toolCallSig 重复检测提前拦截。
+const maxToolRounds = 12
 
 // maxConsecutiveSoloToolRounds 同一工具在"单工具轮次"中连续被调用的轮次上限。
 // 用于拦截"模型对单一工具反复发起调用(参数可能每次略变)却始终不收敛"的死循环:
@@ -1770,6 +1902,16 @@ func (e *Engine) execToolChecked(ctx context.Context, tc llm.ToolCall) (any, boo
 	// 置于 RBAC/策略闸门之前, 属于"可见性"而非"审批"语义。
 	if !e.toolVisibleToAgent(name, agentIDFrom(ctx)) {
 		return map[string]any{"error": fmt.Sprintf("tool %q is not visible to agent %q (scope isolation)", name, agentIDFrom(ctx))}, false
+	}
+
+	// 任务级审批闸门(T3): 任务 Runner 执行时 ctx 携带 permission_mode × risk 判定器,
+	// 写操作在 readonly 模式被拒、高危操作在 standard/auto 模式挂起等人工批复。
+	// 普通对话 ctx 无闸门(nil), 行为完全不变。
+	if gate := mcp.TaskToolGateFrom(ctx); gate != nil {
+		if allowed, reason := gate(ctx, name, args); !allowed {
+			AIToolExecDenied.Inc()
+			return map[string]any{"error": reason, "gate_denied": true}, false
+		}
 	}
 
 	// 运行 PreToolCall 钩子链(含内置 RBAC 审批闸门); 任一拒绝即短路返回(不再执行)。
@@ -2449,6 +2591,10 @@ func (e *Engine) agentCount() int {
 // 实现"提示词外置/版本化": 不必改代码即可调整助手人设与行为边界。
 const DefaultSystemPrompt = "你是 OpsOrigin 智能运维助手,帮助用户完成主机巡检、故障排查、报告生成等运维任务。回答应简洁、专业、可操作。" +
 	"\n\n【图表输出】当需要表达架构、拓扑、依赖、流程、时序关系时, 使用 mermaid 语法输出(```mermaid 代码块), 例如 flowchart/sequenceDiagram/graph 等; 其余回答正常使用 Markdown。" +
+	"\n\n【文档输出规范】当用户要求撰写文档/报告/方案/总结/说明等成篇内容时, 必须输出结构化的 Markdown 文档, 而不是一大段散文:" +
+	"\n- 以 `# 文档标题` 开头, 正文用 `## 小节标题` 分节组织, 善用列表、表格、引用块; 不要把全部内容挤成一个自然段。" +
+	"\n- 标题前最多留 1~2 句简短引导语(说明文档要点即可), 不要在正文前复述用户需求或写开场白长段落。" +
+	"\n- 文档应内容完整、篇幅充分(用户要\"一份文档\"意味着交付物, 而不是聊天回复), 但仍避免空话套话凑字数。" +
 	"\n\n【工具调用纪律 — 必须严格遵守】" +
 	"\n- 调用工具的唯一正当理由: 用户明确要查询\"只有系统里才有的具体运维数据\", 例如某台主机的配置/状态、某个 CMDB 资产、某篇知识库文档、某个脚本的内容或执行记录。" +
 	"\n- 以下情况【绝对禁止】调用任何工具, 必须直接基于你自己的知识回答:" +
@@ -2553,6 +2699,10 @@ func ExtractCitations(text string) []string {
 // 由底层 llm.Client 回退到全局默认模型。用于在多 Agent 场景下让不同 Agent 走不同 LLM。
 // modelForAgent 解析本次运行使用的模型: 运行级覆盖(reqModel) > agent 配置模型 > 引擎默认(空串, 由 router 选最高权重 provider)。
 func (e *Engine) modelForAgent(agentID, reqModel string) string {
+	// "auto" 与空串等价: 交给多模型路由按权重+健康+类型+可见性自动选型。
+	if reqModel == "auto" {
+		reqModel = ""
+	}
 	if reqModel != "" {
 		return reqModel
 	}
@@ -2644,12 +2794,14 @@ func (e *Engine) SetGenParams(maxTokens int, temperature float64) {
 	slog.Info("engine gen params updated", "max_tokens", maxTokens, "temperature", temperature)
 }
 
-// genMaxTokensVal 返回生效的 max_tokens（0 时用引擎默认 1024）。
+// genMaxTokensVal 返回生效的 max_tokens（0 时用引擎默认 4096）。
+// 推理模型(如 glm-4.6v-flash/DeepSeek-R1)会先输出 reasoning_content, 若上限过小
+// 会导致回答正文被截断或直接返回空——曾多次出现"半个回答"现象。
 func (e *Engine) genMaxTokensVal() int {
 	if e.genMaxTokens > 0 {
 		return e.genMaxTokens
 	}
-	return 1024
+	return 4096
 }
 
 // genTemperatureVal 返回生效的 temperature（0 时用引擎默认 0.3, 偏确定性以减少推理模型对工具的过度调用）。
@@ -2779,7 +2931,7 @@ func (e *Engine) ListTeams(tenantID string) []*model.AgentTeam {
 // model 为可选运行级模型覆盖(按会话/请求指定);为空时回退 agent 配置模型,再回退引擎默认。
 // 基于 llmClient.StreamChat 实现真实流式: 文本/推理逐 token 推送, 工具调用在发生时实时发射 🔧/↳ 标记,
 // 循环内边收边发(与团队模式一致), 而非先跑完整个循环再按词切分(伪流式)。
-func (e *Engine) ChatStream(ctx context.Context, agentID, prompt string, history []llm.Message, reasoning bool, conversationID string, explore bool, model string) (<-chan StreamChunk, string, error) {
+func (e *Engine) ChatStream(ctx context.Context, agentID, prompt string, history []llm.Message, reasoning bool, conversationID string, explore bool, model string, parts ...llm.ContentPart) (<-chan StreamChunk, string, error) {
 	if prompt == "" {
 		return nil, "", fmt.Errorf("prompt is required")
 	}
@@ -2790,7 +2942,7 @@ func (e *Engine) ChatStream(ctx context.Context, agentID, prompt string, history
 	out := make(chan StreamChunk, 64)
 	go func() {
 		defer close(out)
-		err := e.chatWithToolsStream(ctx, agentID, prompt, history, reasoning, conversationID, explore, model, func(typ string, text string) {
+		err := e.chatWithToolsStream(ctx, agentID, prompt, history, reasoning, conversationID, explore, model, parts, func(typ string, text string) {
 			out <- StreamChunk{Type: typ, Content: text}
 		})
 		if err != nil {
@@ -2807,7 +2959,7 @@ func (e *Engine) ChatStream(ctx context.Context, agentID, prompt string, history
 //  3. 回到步骤 1, 直至模型不再请求工具(终轮,答案已流式推送)或达到最大轮次。
 //
 // 与 chatWithTools 共享 execToolChecked, 因此同样受 RBAC / 限流 / 结果截断约束。
-func (e *Engine) chatWithToolsStream(ctx context.Context, agentID, prompt string, history []llm.Message, reasoning bool, conversationID string, explore bool, model string, emit func(typ string, text string)) error {
+func (e *Engine) chatWithToolsStream(ctx context.Context, agentID, prompt string, history []llm.Message, reasoning bool, conversationID string, explore bool, model string, parts []llm.ContentPart, emit func(typ string, text string)) error {
 	if e.lim != nil && agentID != "" && !e.lim.Allow(agentID) {
 		return fmt.Errorf("rate limit exceeded for agent %s", agentID)
 	}
@@ -2849,10 +3001,6 @@ func (e *Engine) chatWithToolsStream(ctx context.Context, agentID, prompt string
 	if reasoning {
 		userPrompt = "请按以下格式回答：\n\n<think>\n先进行分步推理分析\n</think>\n<answer>\n再给出最终答案\n</answer>\n\n用户问题：" + prompt
 	}
-	if explore {
-		// 自主模式: 追加执行方法论, 并把用户输入声明为"目标"
-		userPrompt = "【运维目标】\n" + prompt
-	}
 	// 从客户端历史提取 service 层注入的 system 补充(仅 RAG 上下文; 客户端 system 已被 SanitizeHistory 剥离),
 	// 避免续接会话时丢失知识库检索结果。服务端会话历史(baseHistory)不含 system。
 	var sysExtra string
@@ -2864,8 +3012,9 @@ func (e *Engine) chatWithToolsStream(ctx context.Context, agentID, prompt string
 			sysExtra += m.Content
 		}
 	}
-	if explore {
-		// 自主模式: 注入执行方法论到 system prompt
+	// 执行方法论: 与非流式路径一致——绑定工具的执行者统一注入, 纯对话不注入; explore 参数仅兼容保留。
+	tools := e.buildToolDefs(agentID)
+	if len(tools) > 0 {
 		if sysExtra != "" {
 			sysExtra += "\n\n"
 		}
@@ -2877,8 +3026,7 @@ func (e *Engine) chatWithToolsStream(ctx context.Context, agentID, prompt string
 		convSummary, convCovered = conv.Summary, conv.SummarizedCount
 	}
 	hc := e.compactHistory(ctx, baseHistory, convSummary, convCovered)
-	msgs, roundStart := e.buildMessages(ctx, agentID, userPrompt, hc.history, sysExtra)
-	tools := e.buildToolDefs(agentID)
+	msgs, roundStart := e.buildMessages(ctx, agentID, userPrompt, hc.history, sysExtra, parts)
 
 	var err error
 	completed := false
@@ -2898,11 +3046,8 @@ func (e *Engine) chatWithToolsStream(ctx context.Context, agentID, prompt string
 		}
 	}
 
-	// 自主模式需要更长的工具循环上限(多步规划执行), 普通对话保持原上限。
+	// 工具循环轮次统一上限(原普通/自主双轨已合并: 是否多轮由模型按任务需要自行决定)。
 	maxRounds := maxToolRounds
-	if explore {
-		maxRounds = maxToolRoundsExplore
-	}
 	// 死循环防护: 记录已出现过的工具调用签名, 模型重复发起相同调用即判定为死循环并优雅终止。
 	seenCalls := make(map[string]bool)
 	// 死循环防护(补充): 连续多轮仅调用同一工具且始终不收敛, 也判定为死循环(覆盖参数每次略变的重复调用)。
@@ -2915,7 +3060,7 @@ func (e *Engine) chatWithToolsStream(ctx context.Context, agentID, prompt string
 	// thinkFlt 跨轮复用的思维链过滤器: 流式 token 可能把 <think> 标签切在两个 chunk 之间,
 	// 需等整段流结束后再 flush 残留, 故声明在循环外。
 	thinkFlt := newThinkFilter()
-	streamToolLoop:
+streamToolLoop:
 	for round := 0; round < maxRounds; round++ {
 		slot, ok := e.acquireLLMSlot(ctx)
 		if !ok {
@@ -2935,6 +3080,8 @@ func (e *Engine) chatWithToolsStream(ctx context.Context, agentID, prompt string
 
 		var reasoningAcc string
 		var toolCalls []llm.ToolCall
+		var truncated bool
+		var lastFinish string
 		for sc := range ch {
 			// 正文中可能混入 <think> 思维链标记(可能跨 chunk 切分), 过滤后再推给前端。
 			if sc.Content != "" {
@@ -2947,6 +3094,15 @@ func (e *Engine) chatWithToolsStream(ctx context.Context, agentID, prompt string
 				emit("thinking", sc.Reasoning)
 			}
 			reasoningAcc += sc.Reasoning
+			// 上游以 finish_reason="length" 收尾 → 命中 max_tokens 上限, 输出被截断。
+			// 透传一个 truncated 事件让前端追加「输出可能不完整」提示, 而不是只看到半个回答。
+			if sc.FinishReason == "length" && !truncated {
+				truncated = true
+				emit("truncated", "max_tokens reached")
+			}
+			if sc.FinishReason != "" {
+				lastFinish = sc.FinishReason
+			}
 			if len(sc.ToolCalls) > 0 {
 				toolCalls = sc.ToolCalls
 			}
@@ -2954,7 +3110,12 @@ func (e *Engine) chatWithToolsStream(ctx context.Context, agentID, prompt string
 		// 槽位须覆盖整个流式消费期(而非 StreamChat 返回即释放), 否则流式并发将失控(P0-3)。
 		e.releaseLLMSlot(slot)
 
-		msgs = append(msgs, llm.Message{Role: "assistant", Content: content, ReasoningContent: reasoningAcc, ToolCalls: toolCalls})
+		// 截断持久化: length 到限已由 truncated 标记; 流式中途断连/取消(无任何 finish_reason)
+		// 同样意味着生成未收尾, 落库时打上标志, 历史回放可见「输出不完整」而不是莫名的半截话。
+		if lastFinish == "" {
+			truncated = true
+		}
+		msgs = append(msgs, llm.Message{Role: "assistant", Content: content, ReasoningContent: reasoningAcc, ToolCalls: toolCalls, Truncated: truncated})
 
 		step := TrajectoryStep{Index: round, Model: e.modelForAgent(agentID, model), RequestMsgs: len(msgs)}
 		step.Assistant = content
@@ -3172,6 +3333,7 @@ type Conversation struct {
 // convLock 返回指定会话 ID 的排它锁。同一会话的并发续接请求被串行化, 避免"读历史→追加→写回"被并发交错:
 //   - PG 路径 Save 用 ON CONFLICT DO UPDATE 整条替换 messages, 并发后写会覆盖前写;
 //   - 内存路径 GetConversation 返回 e.convs[id] 同一指针, 两请求对同一切片 append 形成 data race。
+//
 // 锁仅作用于"续接已有会话"(conversationID 非空), 新建会话(空 ID)互不干扰; 不同会话 ID 也不互斥。
 func (e *Engine) convLock(id string) *sync.Mutex {
 	v, _ := e.convMu.LoadOrStore(id, &sync.Mutex{})
@@ -3194,7 +3356,7 @@ func (e *Engine) SaveConversation(ctx context.Context, conv *Conversation) error
 		conv.CreatedAt = now
 	}
 	if conv.Title == "" && len(conv.Messages) > 0 {
-		conv.Title = trunc(conv.Messages[0].Content, 40)
+		conv.Title = convTitleFromContent(conv.Messages[0].Content)
 	}
 	conv.UpdatedAt = now
 
@@ -3205,6 +3367,30 @@ func (e *Engine) SaveConversation(ctx context.Context, conv *Conversation) error
 	e.convs[conv.ID] = conv
 	e.mu.Unlock()
 	return nil
+}
+
+// AppendMessage 向指定会话追加一条消息(加 convLock 防止与续接请求的"读历史→追加→写回"并发交错)。
+// 任务级 Agent(T4)用来把用户运行中插话(steer)安全注入会话, 模型在下一步可见。
+func (e *Engine) AppendMessage(ctx context.Context, conversationID string, msg llm.Message) error {
+	if conversationID == "" {
+		return fmt.Errorf("conversationID required")
+	}
+	lk := e.convLock(conversationID)
+	lk.Lock()
+	defer lk.Unlock()
+	conv, err := e.GetConversation(conversationID)
+	if err != nil {
+		// 会话尚未落库(懒创建: 首轮流式完成前被暂停/插话注入早于首次保存)。
+		// 以注入消息为初始内容建壳, 保证插话不丢失; 后续 ChatStream 沿用同一会话。
+		now := time.Now()
+		conv = &Conversation{ID: conversationID, Messages: []llm.Message{msg}, CreatedAt: now, UpdatedAt: now}
+		if pr, ok := principal.FromContext(ctx); ok {
+			conv.OwnerID = pr.ID
+		}
+	} else {
+		conv.Messages = append(conv.Messages, msg)
+	}
+	return e.SaveConversation(ctx, conv)
 }
 
 // LoadConversations 按 tenant + agent 加载最近 n 条对话摘要(不含 Messages, 需按单条 GetConversation 取详情)。
@@ -3267,6 +3453,79 @@ func (e *Engine) DeleteConversation(id, tenantID string) error {
 	return nil
 }
 
+// RenameConversation 重命名会话标题。PG: get→改→save(保留消息/摘要等全部字段); 内存: 直接改。
+func (e *Engine) RenameConversation(ctx context.Context, id, tenantID, title string) error {
+	if e.convStore != nil {
+		c, err := e.convStore.Get(ctx, id)
+		if err != nil {
+			return err
+		}
+		if c == nil || c.TenantID != tenantID {
+			return fmt.Errorf("conversation not found")
+		}
+		c.Title = title
+		c.UpdatedAt = time.Now()
+		return e.convStore.Save(ctx, c)
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	c, ok := e.convs[id]
+	if !ok || c.TenantID != tenantID {
+		return fmt.Errorf("conversation not found")
+	}
+	c.Title = title
+	c.UpdatedAt = time.Now()
+	return nil
+}
+
+// AutoTitleConversation 首轮问答结束后, 用 LLM 从首轮对话提炼会话标题(对标 DeepSeek/ChatGPT 自动命名)。
+// 仅当标题仍为「首条用户消息截断」时才覆盖(用户手动重命名过的不动); LLM 失败静默保留原标题。
+// 调用方传请求 ctx(此时请求已结束): 内部 WithoutCancel 剥离取消信号但保留租户等取值。
+func (e *Engine) AutoTitleConversation(ctx context.Context, tenantID, convID string) {
+	conv, err := e.GetConversation(convID)
+	// 仅首轮(恰好 1 问 1 答)自动命名; 后续轮次/并发续聊不触发
+	if err != nil || conv == nil || conv.TenantID != tenantID || len(conv.Messages) != 2 {
+		return
+	}
+	if conv.Messages[0].Role != "user" {
+		return
+	}
+	if conv.Title != convTitleFromContent(conv.Messages[0].Content) {
+		return // 已被重命名或已是自定义标题
+	}
+	prompt := "为下面的对话生成一个不超过 12 个字的中文标题, 概括用户的核心意图。" +
+		"要求: 直接输出标题本身, 不要引号/句号/前缀/任何解释。\n\n用户: " + trunc(conv.Messages[0].Content, 300) +
+		"\n\n助手: " + trunc(conv.Messages[1].Content, 500)
+	ctx = context.WithoutCancel(ctx)
+	slot, ok := e.acquireLLMSlot(ctx)
+	if !ok {
+		return
+	}
+	defer e.releaseLLMSlot(slot)
+	resp, err := e.chatLLM(ctx, llm.ChatRequest{Messages: []llm.Message{{Role: "user", Content: prompt}}})
+	if err != nil || len(resp.Choices) == 0 {
+		slog.Debug("auto title: llm call failed", "conv", convID, "err", err)
+		return
+	}
+	title := cleanLLMTitle(resp.Choices[0].Message.Content)
+	if title == "" {
+		return
+	}
+	_ = e.RenameConversation(ctx, convID, tenantID, title)
+}
+
+// cleanLLMTitle 清洗 LLM 生成的标题: 去标签/装饰符/包裹引号, 压缩空白, 截断 24 字符。
+func cleanLLMTitle(s string) string {
+	s = convTitleTagRe.ReplaceAllString(s, " ")
+	s = strings.Trim(s, " \t\n\r\"'“”「」『』【】《》#*-·。.!?！？:：,，")
+	s = strings.Join(strings.Fields(s), " ")
+	r := []rune(s)
+	if len(r) > 24 {
+		r = r[:24]
+	}
+	return strings.TrimSpace(string(r))
+}
+
 // CountMemories 统计记忆条数(进化闭环概览用)。tenantID 为空时统计全部。
 func (e *Engine) CountMemories(tenantID string) int {
 	e.mu.RLock()
@@ -3314,4 +3573,35 @@ func trunc(s string, n int) string {
 		return s
 	}
 	return string(runes[:n])
+}
+
+// convTitleTagRe 匹配内联标记片段(如 <think>/</answer>/自定义 XML 标签), 防止残缺标签进入标题。
+var convTitleTagRe = regexp.MustCompile(`</?[A-Za-z][A-Za-z0-9_-]{0,30}>`)
+
+// convTitleJunkRe 匹配 Markdown/提示词装饰符号, 统一替换为空格。
+var convTitleJunkRe = regexp.MustCompile(`[#*_~` + "`" + `>|]+`)
+
+// convTitleSpaceRe 匹配连续空白。
+var convTitleSpaceRe = regexp.MustCompile(`\s+`)
+
+// convTitleFromContent 从首条用户消息提炼会话标题:
+// 去附件标记行/思维链标记 → 去内联标签 → 去装饰符号 → 压缩空白 → 截断 40 字; 清洗后为空则用「新对话」。
+func convTitleFromContent(content string) string {
+	lines := strings.Split(content, "\n")
+	kept := lines[:0]
+	for _, ln := range lines {
+		if strings.HasPrefix(strings.TrimSpace(ln), "[附件] ") {
+			continue // 附件标记行不参与标题
+		}
+		kept = append(kept, ln)
+	}
+	s := strings.TrimSpace(stripThinkTags(strings.Join(kept, "\n")))
+	s = convTitleTagRe.ReplaceAllString(s, " ")
+	s = convTitleJunkRe.ReplaceAllString(s, " ")
+	s = convTitleSpaceRe.ReplaceAllString(s, " ")
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return "新对话"
+	}
+	return trunc(s, 40)
 }
