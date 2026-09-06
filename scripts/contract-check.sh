@@ -24,7 +24,8 @@ fi
 
 echo "== [2/6] 前端 TypeScript 类型检查（tsc --noEmit）=="
 if [ -x web/node_modules/.bin/tsc ]; then
-  if (cd web && ./node_modules/.bin/tsc --noEmit -p tsconfig.json >/tmp/contract-tsc.txt 2>&1); then
+  # 大仓 tsc 需要放大 Node 堆内存, 否则默认 4GB 不足会被 SIGKILL(exit 137)
+  if (cd web && NODE_OPTIONS=--max-old-space-size=6144 ./node_modules/.bin/tsc --noEmit -p tsconfig.json >/tmp/contract-tsc.txt 2>&1); then
     pass "tsc 0 error"
   else
     n=$(grep -c "error TS" /tmp/contract-tsc.txt || true)
