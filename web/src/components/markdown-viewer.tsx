@@ -1,6 +1,7 @@
 
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
+import rehypeHighlight from 'rehype-highlight'
 import { cn } from '@/lib/utils'
 import dynamic from '@/lib/dynamic'
 
@@ -22,6 +23,7 @@ export function MarkdownViewer({ content, className }: MarkdownViewerProps) {
     <div className={cn('markdown-body', className)}>
       <ReactMarkdown
         remarkPlugins={[remarkGfm]}
+        rehypePlugins={[rehypeHighlight]}
         components={{
           code({ className, children, ...props }: any) {
             const match = /language-(\w+)/.exec(className || '')

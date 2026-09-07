@@ -3,9 +3,9 @@ import { useEffect, useRef, useState } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import { useKnowledgeStore, type Category, type PrecipitationRule } from '@/stores/knowledge'
 import { Card, CardContent } from '@/components/ui/card'
-import { Button, Tag, Input, Popconfirm } from 'antd'
+import { Button, Select, Tag, Input, Popconfirm } from 'antd'
 import { formatTime } from '@/lib/utils'
-import { Plus, Trash2, BookOpen, Pencil, FolderPlus, Upload, Loader2, CheckCircle2, Bookmark, Bell, Settings2, ThumbsUp, MessageSquare, CalendarOff } from 'lucide-react'
+import { Plus, Trash2, BookOpen, Pencil, FolderPlus, Upload, Loader2, CheckCircle2, Bookmark, Bell, Settings2, ThumbsUp, MessageSquare, CalendarOff, Eye } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { useAuthStore } from '@/stores/auth'
 import { getMessage } from '@/lib/message'
@@ -74,6 +74,8 @@ export default function KnowledgeListPage() {
 
   // 视图过滤: 全部 / 我的收藏 / 我关注的
   const [view, setView] = useState<'all' | 'bookmarks' | 'follows'>('all')
+  // 排序: 最近更新(默认) / 最近创建 / 浏览量 / 标题
+  const [sortBy, setSortBy] = useState<'updated' | 'created' | 'views' | 'title'>('updated')
   const [bookmarkIds, setBookmarkIds] = useState<string[]>([])
   const [followIds, setFollowIds] = useState<string[]>([])
   const [followUpdateIds, setFollowUpdateIds] = useState<string[]>([])
@@ -169,12 +171,17 @@ export default function KnowledgeListPage() {
     setPrecipRunId('')
   }
 
-  // 列表过滤: 搜索 + 视图(收藏/关注)
+  // 列表过滤(搜索/视图) + 排序
   const visible = articles.filter(a => {
     if (searchQ && !(a.title.includes(searchQ) || (a.content || '').includes(searchQ))) return false
     if (view === 'bookmarks' && !bookmarkIds.includes(a.id)) return false
     if (view === 'follows' && !followIds.includes(a.id)) return false
     return true
+  }).sort((a, b) => {
+    if (sortBy === 'views') return (b.views || 0) - (a.views || 0)
+    if (sortBy === 'title') return a.title.localeCompare(b.title, 'zh')
+    if (sortBy === 'created') return (b.created_at || '').localeCompare(a.created_at || '')
+    return (b.updated_at || b.created_at || '').localeCompare(a.updated_at || a.created_at || '')
   })
 
   return <div className="p-6 space-y-4">
@@ -204,7 +211,20 @@ export default function KnowledgeListPage() {
         </Button>
       </div>
       {categories.map(c => <Button key={c} type={filterCat === c ? 'primary' : 'default'} size="middle" onClick={() => setFilterCat(c)}>{c}</Button>)}
-      <Input className="w-48 h-8 ml-auto" placeholder="搜索..." value={searchQ} onChange={e => setSearchQ(e.target.value)} />
+      <div className="flex items-center gap-2 ml-auto">
+        <Select
+          className="w-32"
+          value={sortBy}
+          onChange={v => setSortBy(v as 'updated' | 'created' | 'views' | 'title')}
+          options={[
+            { value: 'updated', label: '最近更新' },
+            { value: 'created', label: '最近创建' },
+            { value: 'views', label: '浏览最多' },
+            { value: 'title', label: '标题排序' },
+          ]}
+        />
+        <Input className="w-44 h-8" placeholder="搜索标题/正文..." allowClear value={searchQ} onChange={e => setSearchQ(e.target.value)} />
+      </div>
     </div>
 
     <div className="grid gap-3 md:grid-cols-2">
@@ -229,10 +249,13 @@ export default function KnowledgeListPage() {
                 </div>
               </div>
               <p className="text-xs text-muted-foreground mt-1 line-clamp-2">{a.content ? stripMarkdown(a.content).slice(0, 120) : ''}</p>
-              <div className="flex gap-2 mt-2 items-center">
+              <div className="flex gap-2 mt-2 items-center flex-wrap">
                 <Tag>{a.category}</Tag>
+                {(a.tags || []).slice(0, 3).map(t => (
+                  <Tag key={t} className="text-[10px] text-blue-600 dark:text-blue-400 bg-blue-500/10 border-blue-500/20">{t}</Tag>
+                ))}
                 <span className="text-[10px] text-muted-foreground">v{a.version}</span>
-                <span className="text-[10px] text-muted-foreground">{formatTime(a.created_at)}</span>
+                <span className="text-[10px] text-muted-foreground">更新 {formatTime(a.updated_at || a.created_at)}</span>
                 {isExpired(a.expires_at) && (
                   <Tag color="error" className="gap-0.5 text-[10px]">
                     <CalendarOff className="h-2.5 w-2.5" />已过期
@@ -241,7 +264,13 @@ export default function KnowledgeListPage() {
                 {a.view_permission && a.view_permission !== 'all' && (
                   <span className="text-[10px] text-muted-foreground">{VIEW_PERM_BADGES[a.view_permission] || a.view_permission}</span>
                 )}
-                <div className="flex items-center gap-2 ml-auto">
+                <div className="flex items-center gap-2 ml-auto shrink-0">
+                  {a.author && <span className="text-[10px] text-muted-foreground max-w-[80px] truncate" title={a.author}>{a.author}</span>}
+                  {(a.views || 0) > 0 && (
+                    <span className="flex items-center gap-0.5 text-[10px] text-muted-foreground" title="浏览量">
+                      <Eye className="h-3 w-3" />{a.views}
+                    </span>
+                  )}
                   {articleStats[a.id]?.likes > 0 && (
                     <span className="flex items-center gap-0.5 text-[10px] text-muted-foreground">
                       <ThumbsUp className="h-2.5 w-2.5" />{articleStats[a.id].likes}
