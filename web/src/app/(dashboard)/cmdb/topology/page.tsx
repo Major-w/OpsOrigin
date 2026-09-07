@@ -1,5 +1,6 @@
 
 import { useEffect, useState, useRef, useMemo, useCallback } from 'react'
+import { forceSimulation, forceLink, forceManyBody, forceCenter, forceCollide } from 'd3-force'
 import { useCMDBStore, type TopologyNode } from '@/stores/cmdb'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button, Tag, Input, Tabs } from 'antd'
@@ -39,24 +40,37 @@ const RELATION_LABELS: Record<string, string> = {
   part_of: '组成部分',
 }
 
-// 节点位置布局:环形布局
-function layoutNodes(nodes: TopologyNode[], rootId: string): Record<string, { x: number; y: number }> {
+// 节点位置布局: d3-force 预布局(静态收敛, 根居中, 力导向防重叠; 收敛后停表, 用户仍可拖拽微调)
+function layoutNodes(nodes: TopologyNode[], rootId: string, edges: { source_id: string; target_id: string }[] = [], width = 1100, height = 600): Record<string, { x: number; y: number }> {
   const positions: Record<string, { x: number; y: number }> = {}
   if (nodes.length === 0) return positions
+  if (nodes.length === 1) {
+    positions[nodes[0].id] = { x: width / 2, y: height / 2 }
+    return positions
+  }
 
-  // 根节点居中
-  positions[rootId] = { x: 500, y: 350 }
+  // 用 d3-force 静态跑若干 tick 收敛(不绑定动画帧, 只取最终坐标)
+  const idSet = new Set(nodes.map(n => n.id))
+  const safeEdges = edges.filter(e => idSet.has(e.source_id) && idSet.has(e.target_id))
+  const sim = forceSimulation(nodes.map(n => ({ ...n })) as any)
+    .force('link', forceLink(safeEdges.map(e => ({ source: e.source_id, target: e.target_id })) as any).id((d: any) => d.id).distance(140))
+    .force('charge', forceManyBody().strength(-420))
+    .force('collide', forceCollide().radius(46))
+    .force('center', forceCenter(width / 2, height / 2))
+    .stop()
+  for (let i = 0; i < 200; i++) sim.tick()
 
-  // 其余节点环形排列
-  const others = nodes.filter(n => n.id !== rootId)
-  const radius = 220
-  others.forEach((node, i) => {
-    const angle = (i / others.length) * 2 * Math.PI - Math.PI / 2
-    positions[node.id] = {
-      x: 500 + radius * Math.cos(angle),
-      y: 350 + radius * Math.sin(angle),
-    }
+  // 以根节点为锚做整体平移, 让根尽可能居中
+  let anchor = sim.nodes().find((n: any) => n.id === rootId) as any
+  const ox = width / 2 - (anchor?.x ?? width / 2)
+  const oy = height / 2 - (anchor?.y ?? height / 2)
+  sim.nodes().forEach((n: any) => {
+    // 兜底: 若某节点仍堆在角落则做轻微径向展开, 防完全重叠
+    let nx = n.x + ox
+    let ny = n.y + oy
+    positions[n.id] = { x: Math.round(Math.max(70, Math.min(width - 70, nx))), y: Math.round(Math.max(40, Math.min(height - 40, ny))) }
   })
+  sim.stop()
   return positions
 }
 
@@ -71,6 +85,10 @@ export default function TopologyPage() {
   const [impactLoading, setImpactLoading] = useState(false)
   // 视图模式：关系图谱（以任意 CI 为根）/ 应用架构（按业务分层）——同一份关系数据的两种呈现
   const [view, setView] = useState<'graph' | 'app'>('graph')
+  // 影响范围高亮(画布上高亮 source + affected)
+  const [highlightAffected, setHighlightAffected] = useState(false)
+  // 关系类型显隐过滤(空=全显)
+  const [hiddenRelTypes, setHiddenRelTypes] = useState<Set<string>>(new Set())
 
   // 节点位置(可拖拽)
   const [positions, setPositions] = useState<Record<string, { x: number; y: number }>>({})
@@ -104,8 +122,12 @@ export default function TopologyPage() {
     if (!ciId) return
     const result = await fetchTopology(ciId)
     if (result && (result.nodes ?? []).length > 0) {
-      setPositions(layoutNodes(result.nodes ?? [], ciId))
+      const el = canvasRef.current
+      const w = el?.clientWidth || 1100
+      const h = el?.clientHeight || 600
+      setPositions(layoutNodes(result.nodes ?? [], ciId, result.edges ?? [], w, h))
       setSelectedNode(null)
+      setHighlightAffected(false)
     }
   }, [fetchTopology])
 
@@ -118,8 +140,12 @@ export default function TopologyPage() {
     if (!selectedCI) return
     setImpactLoading(true)
     await fetchImpact(selectedCI)
+    setHighlightAffected(true)
     setImpactLoading(false)
   }
+
+  // 切换影响范围画布高亮(清除时保留左侧分析结果卡片)
+  const toggleHighlight = () => setHighlightAffected(v => !v)
 
   // 节点拖拽
   const onNodeMouseDown = (e: React.MouseEvent, nodeId: string) => {
@@ -174,7 +200,10 @@ export default function TopologyPage() {
     setZoom(1)
     setPan({ x: 0, y: 0 })
     if (topology && selectedCI) {
-      setPositions(layoutNodes(topology.nodes ?? [], selectedCI))
+      const el = canvasRef.current
+      const w = el?.clientWidth || 1100
+      const h = el?.clientHeight || 600
+      setPositions(layoutNodes(topology.nodes ?? [], selectedCI, topology.edges ?? [], w, h))
     }
   }
 
@@ -189,6 +218,18 @@ export default function TopologyPage() {
   const selectedCIDetail = useMemo(() =>
     selectedNode ? items.find(ci => ci.id === selectedNode.id) : null
   , [selectedNode, items])
+
+  // 影响范围高亮集合(源 CI + 受影响 CI), 关闭高亮时为空
+  const impactIdSet = useMemo(() => {
+    if (!highlightAffected || !impactResult) return null
+    return new Set([impactResult.source_ci, ...(impactResult.affected_ci || [])])
+  }, [highlightAffected, impactResult])
+
+  // 经显隐过滤后的可见边
+  const visibleEdges = useMemo(
+    () => (topology?.edges ?? []).filter(e => !hiddenRelTypes.has(e.relation_type)),
+    [topology, hiddenRelTypes],
+  )
 
   // 统计
   const typeStats = useMemo(() => {
@@ -235,6 +276,11 @@ export default function TopologyPage() {
             <Button type="default" size="middle" onClick={runImpact} disabled={!selectedCI || impactLoading}>
               <AlertTriangle className="h-3.5 w-3.5 mr-1" />{impactLoading ? '分析中...' : '影响分析'}
             </Button>
+            {impactResult && (
+              <Button type={highlightAffected ? 'primary' : 'default'} size="middle" onClick={toggleHighlight}>
+                {highlightAffected ? '取消高亮' : '画布高亮'}
+              </Button>
+            )}
           </div>
         )}
       </div>
@@ -369,7 +415,8 @@ export default function TopologyPage() {
             <CardHeader className="py-3">
               <div className="flex items-center justify-between">
                 <CardTitle className="text-sm">
-                  拓扑画布 {topology && `(${topology.nodes.length} 节点, ${(topology.edges ?? []).length} 关系)`}
+                  拓扑画布 {topology && `(${topology.nodes.length} 节点, ${visibleEdges.length}/${(topology.edges ?? []).length} 关系)`}
+                  {hiddenRelTypes.size > 0 && <span className="text-amber-500 text-[10px] ml-1">已过滤 {hiddenRelTypes.size} 类</span>}
                 </CardTitle>
                 <div className="flex items-center gap-1">
                   <Button type="text" size="middle" className="h-7 w-7" onClick={() => setZoom(z => Math.min(z + 0.2, 3))} title="放大">
@@ -418,11 +465,15 @@ export default function TopologyPage() {
                           <path d="M0,0 L0,6 L9,3 z" fill="currentColor" />
                         </marker>
                       </defs>
-                      {(topology.edges ?? []).map((edge, i) => {
+                      {visibleEdges.map((edge, i) => {
                         const src = positions[edge.source_id]
                         const tgt = positions[edge.target_id]
                         if (!src || !tgt) return null
                         const color = RELATION_COLORS[edge.relation_type] || GRAPH_DEFAULT_COLOR
+                        // 影响高亮: 边两端都在影响集合内则强调, 否则淡化
+                        const bothHit = impactIdSet ? impactIdSet.has(edge.source_id) && impactIdSet.has(edge.target_id) : false
+                        const inHit = impactIdSet ? impactIdSet.has(edge.source_id) || impactIdSet.has(edge.target_id) : false
+                        const edgeOpacity = !impactIdSet ? 0.7 : bothHit ? 1 : inHit ? 0.35 : 0.08
                         // 贝塞尔曲线控制点
                         const mx = (src.x + tgt.x) / 2
                         const my = (src.y + tgt.y) / 2
@@ -432,14 +483,14 @@ export default function TopologyPage() {
                         const cx = mx - dy / Math.sqrt(dx * dx + dy * dy) * offset
                         const cy = my + dx / Math.sqrt(dx * dx + dy * dy) * offset
                         return (
-                          <g key={i}>
+                          <g key={i} className={bothHit ? '' : 'transition-opacity'}>
                             <path
                               d={`M ${src.x} ${src.y} Q ${cx} ${cy} ${tgt.x} ${tgt.y}`}
                               fill="none"
                               stroke={color}
-                              strokeWidth={1.5}
+                              strokeWidth={bothHit ? 2.5 : 1.5}
                               markerEnd="url(#arrow)"
-                              opacity={0.7}
+                              opacity={edgeOpacity}
                             />
                             {/* 关系标签 */}
                             <text
@@ -450,6 +501,7 @@ export default function TopologyPage() {
                               textAnchor="middle"
                               dy="0.3em"
                               className="select-none"
+                              opacity={impactIdSet && !bothHit ? 0 : 1}
                             >
                               {RELATION_LABELS[edge.relation_type] || edge.relation_type}
                             </text>
@@ -466,13 +518,16 @@ export default function TopologyPage() {
                       const Icon = meta.icon
                       const isRoot = node.id === selectedCI
                       const isSelected = selectedNode?.id === node.id
+                      const isSource = impactIdSet ? node.id === impactResult?.source_ci : false
+                      const isAffected = impactIdSet ? impactIdSet.has(node.id) && !isSource : false
+                      const dimmed = impactIdSet ? !impactIdSet.has(node.id) : false
                       return (
                         <div
                           key={node.id}
                           className={cn(
-                            "absolute flex flex-col items-center gap-1 cursor-move select-none",
-                            "transition-shadow",
+                            "absolute flex flex-col items-center gap-1 cursor-move select-none transition-opacity",
                             isRoot && "ring-2 ring-blue-500 ring-offset-2 rounded-lg",
+                            dimmed && "opacity-30",
                           )}
                           style={{
                             left: `${pos.x * zoom + pan.x}px`,
@@ -481,15 +536,19 @@ export default function TopologyPage() {
                           }}
                           onMouseDown={(e) => onNodeMouseDown(e, node.id)}
                           onClick={(e) => { e.stopPropagation(); setSelectedNode(node) }}
+                          onDoubleClick={(e) => { e.stopPropagation(); setSelectedCI(node.id) }}
+                          title={isRoot ? `${node.name}（当前根节点，双击任意节点换根）` : '双击以该节点为根重绘'}
                         >
                           <div className={cn(
                             "w-12 h-12 rounded-lg flex items-center justify-center border-2",
                             meta.bg, meta.border,
                             isSelected && "ring-2 ring-blue-400 ring-offset-1",
+                            isSource && "ring-2 ring-red-500 ring-offset-2 border-red-400",
+                            isAffected && "ring-2 ring-amber-400 ring-offset-2 border-amber-300",
                           )}>
                             <Icon className={cn("h-5 w-5", meta.color)} />
                           </div>
-                          <div className="text-xs font-medium text-center max-w-[80px] truncate">
+                          <div className={cn("text-xs font-medium text-center max-w-[80px] truncate", dimmed && 'text-muted-foreground')}>
                             {node.name}
                           </div>
                            <Tag className="text-[9px]">{node.type}</Tag>
@@ -500,14 +559,38 @@ export default function TopologyPage() {
                 )}
               </div>
 
-              {/* 图例 */}
+              {/* 图例(点击切换该关系类型显隐) */}
               <div className="mt-3 flex flex-wrap gap-3 text-xs">
-                {Object.entries(RELATION_COLORS).map(([type, color]) => (
-                  <div key={type} className="flex items-center gap-1">
-                    <span style={{ color }} className="text-base leading-none">●</span>
-                    <span className="text-muted-foreground">{RELATION_LABELS[type] || type}</span>
-                  </div>
-                ))}
+                <span className="text-muted-foreground self-center">关系图例(点击显隐):</span>
+                {Object.entries(RELATION_COLORS).map(([type, color]) => {
+                  const hidden = hiddenRelTypes.has(type)
+                  return (
+                    <button
+                      key={type}
+                      type="button"
+                      className={cn(
+                        'flex items-center gap-1 rounded px-1.5 py-0.5 transition-colors',
+                        hidden ? 'opacity-40 line-through hover:opacity-80' : 'hover:bg-muted',
+                      )}
+                      onClick={() => setHiddenRelTypes(prev => {
+                        const next = new Set(prev)
+                        if (next.has(type)) next.delete(type)
+                        else next.add(type)
+                        return next
+                      })}
+                    >
+                      <span style={{ color: hidden ? 'currentColor' : color }} className="text-base leading-none">●</span>
+                      <span className="text-muted-foreground">{RELATION_LABELS[type] || type}</span>
+                    </button>
+                  )
+                })}
+                {hiddenRelTypes.size > 0 && (
+                  <button
+                    type="button"
+                    className="text-blue-500 hover:underline"
+                    onClick={() => setHiddenRelTypes(new Set())}
+                  >全部显示</button>
+                )}
               </div>
             </CardContent>
           </Card>
@@ -520,7 +603,12 @@ export default function TopologyPage() {
           <CardHeader className="py-3">
             <div className="flex items-center justify-between">
               <CardTitle className="text-sm">节点详情 - {selectedNode.name}</CardTitle>
-              <Button type="text" size="middle" className="h-6 w-6" onClick={() => setSelectedNode(null)}>×</Button>
+              <div className="flex items-center gap-1">
+                <Button type="default" size="middle" className="h-6 text-xs" onClick={() => setSelectedCI(selectedNode.id)}>
+                  以该节点为根重绘
+                </Button>
+                <Button type="text" size="middle" className="h-6 w-6" onClick={() => setSelectedNode(null)}>×</Button>
+              </div>
             </div>
           </CardHeader>
           <CardContent>

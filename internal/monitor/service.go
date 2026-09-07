@@ -386,12 +386,13 @@ func (s *Service) handleRunProbe(w http.ResponseWriter, r *http.Request) {
 
 func (s *Service) handleListAlerts(w http.ResponseWriter, r *http.Request) {
 	tenantID := auth.TenantFromContext(r.Context())
+	ciID := r.URL.Query().Get("ci_id") // 按配置项过滤(CMDB 详情联动)
 	// status=history 返回已确认/已解决的处理历史; 其余返回活跃告警
 	if r.URL.Query().Get("status") == "history" {
 		history := s.aggregator.GetAlertHistory()
 		filtered := make([]*model.AlertEvent, 0)
 		for _, a := range history {
-			if a.TenantID == tenantID {
+			if a.TenantID == tenantID && (ciID == "" || a.SourceCIID == ciID) {
 				filtered = append(filtered, a)
 			}
 		}
@@ -404,7 +405,7 @@ func (s *Service) handleListAlerts(w http.ResponseWriter, r *http.Request) {
 	allAlerts := s.aggregator.GetActiveAlerts()
 	filtered := make([]*model.AlertEvent, 0)
 	for _, a := range allAlerts {
-		if a.TenantID == tenantID {
+		if a.TenantID == tenantID && (ciID == "" || a.SourceCIID == ciID) {
 			filtered = append(filtered, a)
 		}
 	}

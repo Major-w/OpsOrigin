@@ -4,7 +4,7 @@ import { useParams, useNavigate } from 'react-router-dom'
 import { Link } from 'react-router-dom'
 import { useCMDBStore, type CIModel, type AttributeChange, type CIRelation } from '@/stores/cmdb'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
-import { Button, Tag, Input, Modal, Select, Tabs, Popconfirm, message } from 'antd'
+import { Button, Table, Tag, Input, Modal, Select, Tabs, Popconfirm, message } from 'antd'
 import { formatTime, apiFetch, apiList } from '@/lib/utils'
 import { useCan } from '@/stores/permissions'
 import TopologyGraph from '@/components/TopologyGraph'
@@ -60,8 +60,44 @@ export default function CIInstanceDetailPage() {
   const [models, setModels] = useState<ModelInfo[]>([])
   const [relCreateForm, setRelCreateForm] = useState<Record<number, string>>({})
   const modelDef = models.find(m => m.id === selectedCI?.type_id)
+  // 关联 CI 名称缓存（避免关系/影响列表只显示裸 ID）
+  const ciNameCache = useRef<Record<string, string>>({})
+  const [ciNames, setCiNames] = useState<Record<string, string>>({})
+  const nameOf = (id: string) => ciNameCache.current[id] || ciNames[id] || id.slice(0, 8)
+  const resolveCINames = async (ids: string[]) => {
+    const todo = Array.from(new Set(ids.filter(id => id && id !== ciID && !ciNameCache.current[id])))
+    if (todo.length === 0) return
+    const got: Record<string, string> = {}
+    await Promise.all(todo.map(async id => {
+      try {
+        const c = await apiFetch<{ id: string; name: string }>(`/cmdb/ci/${id}`)
+        if (c?.name) got[id] = c.name
+      } catch { /* 忽略单个解析失败 */ }
+    }))
+    if (Object.keys(got).length) {
+      ciNameCache.current = { ...ciNameCache.current, ...got }
+      setCiNames(prev => ({ ...prev, ...got }))
+    }
+  }
+  // 运维联动: 本 CI 的告警(活跃/历史)
+  const [ciAlerts, setCiAlerts] = useState<any[]>([])
+  const [ciAlertHistory, setCiAlertHistory] = useState<any[]>([])
+  const [opsLoading, setOpsLoading] = useState(false)
+  const loadOps = async () => {
+    if (!ciID) return
+    setOpsLoading(true)
+    try {
+      const [active, hist] = await Promise.all([
+        apiList<any>(`/monitor/alerts?ci_id=${encodeURIComponent(ciID)}`),
+        apiList<any>(`/monitor/alerts?status=history&ci_id=${encodeURIComponent(ciID)}`),
+      ])
+      setCiAlerts(active || [])
+      setCiAlertHistory(hist || [])
+    } catch { setCiAlerts([]); setCiAlertHistory([]) } finally { setOpsLoading(false) }
+  }
 
   const handleDrift = async (id: string) => {
+    if (!id) { setDriftList([]); return }
     try { setDriftList(await apiList<{ id: string; field: string; expected: string; actual: string; created_at: string }>(`/cmdb/drift?ci_id=${id}`)) }
     catch { setDriftList([]) }
   }
@@ -100,7 +136,9 @@ export default function CIInstanceDetailPage() {
         apiList<CIRelation>('/cmdb/relation?ci_id=' + encodeURIComponent(ciID)),
       ])
       setAuditLog(audit || [])
-      setCiRelations((rels || []).filter((r: CIRelation) => r.source_id === ciID || r.target_id === ciID))
+      const relsFiltered = (rels || []).filter((r: CIRelation) => r.source_id === ciID || r.target_id === ciID)
+      setCiRelations(relsFiltered)
+      resolveCINames(relsFiltered.flatMap(r => [r.source_id, r.target_id]))
     } catch (e: any) {
       getMessage().error('加载配置项失败: ' + e.message)
     } finally { setLoading(false) }
@@ -111,6 +149,10 @@ export default function CIInstanceDetailPage() {
     if (ciID) loadCI()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ciID])
+
+  // 页面加载即预热告警/漂移计数（供头部概要条 + tab 徽标使用）；进入对应页签时再刷新
+  useEffect(() => { if (ciID) { loadOps(); handleDrift(ciID) } /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [ciID])
+  useEffect(() => { if (detailTab === 'ops') loadOps(); else if (detailTab === 'drift' && ciID) handleDrift(ciID) }, [detailTab, ciID])
 
   // 模型关系定义驱动: 加载引用目标实例选项
   useEffect(() => {
@@ -124,8 +166,10 @@ export default function CIInstanceDetailPage() {
     setTopoLoading(true); setDetailTab('topo')
     try {
       const data = await apiFetch<any>(`/cmdb/topology/${id}`)
-      if (data?.nodes) setTopology(data)
-      else {
+      if (data?.nodes) {
+        setTopology(data)
+        resolveCINames(data.nodes.map((n: any) => n.id))
+      } else {
         const relNodes = new Set<string>()
         const relEdges: TopologyEdge[] = []
         ciRelations.forEach(r => { relNodes.add(r.source_id); relNodes.add(r.target_id); relEdges.push({ source: r.source_id, target: r.target_id, type: r.relation_type }) })
@@ -133,6 +177,7 @@ export default function CIInstanceDetailPage() {
           nodes: Array.from(relNodes).map(nid => ({ id: nid, name: nid.slice(0, 8), type: 'host' })),
           edges: relEdges,
         })
+        resolveCINames(Array.from(relNodes))
       }
     } catch { setTopology({ nodes: [], edges: [] }) } finally { setTopoLoading(false) }
   }
@@ -199,6 +244,12 @@ export default function CIInstanceDetailPage() {
     return 'error'
   }
 
+  const sevVariant = (s: string): string => {
+    if (s === 'critical') return 'error'
+    if (s === 'warning') return 'warning'
+    return 'default'
+  }
+
   if (loading) {
     return <div className="p-6"><p className="text-sm text-muted-foreground">加载中...</p></div>
   }
@@ -234,6 +285,30 @@ export default function CIInstanceDetailPage() {
             : <Button type="default" size="middle" onClick={() => handleArchive(selectedCI.id)}><Archive className="h-3 w-3" />归档</Button>}
           {canDelete && <Button type="default" size="middle" danger onClick={() => setDelOpen(true)} title="删除该配置项"><Trash2 className="h-3 w-3" /></Button>}
         </div>
+      </div>
+
+      {/* 概要统计条: 一键直达对应页签 */}
+      <div className="grid grid-cols-2 sm:grid-cols-5 gap-2">
+        <button type="button" onClick={() => setDetailTab('ops')} className="rounded-lg border border-border bg-card p-3 text-left transition-colors hover:border-blue-500 hover:shadow-sm">
+          <p className="text-lg font-semibold leading-none text-destructive">{ciAlerts.length}</p>
+          <p className="text-[11px] text-muted-foreground mt-1">活跃告警</p>
+        </button>
+        <button type="button" onClick={() => setDetailTab('ops')} className="rounded-lg border border-border bg-card p-3 text-left transition-colors hover:border-blue-500 hover:shadow-sm">
+          <p className="text-lg font-semibold leading-none">{ciAlertHistory.length}</p>
+          <p className="text-[11px] text-muted-foreground mt-1">历史告警</p>
+        </button>
+        <button type="button" onClick={() => setDetailTab('rels')} className="rounded-lg border border-border bg-card p-3 text-left transition-colors hover:border-blue-500 hover:shadow-sm">
+          <p className="text-lg font-semibold leading-none">{ciRelations.length}</p>
+          <p className="text-[11px] text-muted-foreground mt-1">关联关系</p>
+        </button>
+        <button type="button" onClick={() => setDetailTab('drift')} className="rounded-lg border border-border bg-card p-3 text-left transition-colors hover:border-blue-500 hover:shadow-sm">
+          <p className={`text-lg font-semibold leading-none ${driftList.length > 0 ? 'text-amber-500' : ''}`}>{driftList.length}</p>
+          <p className="text-[11px] text-muted-foreground mt-1">配置漂移</p>
+        </button>
+        <button type="button" onClick={() => setDetailTab('audit')} className="rounded-lg border border-border bg-card p-3 text-left transition-colors hover:border-blue-500 hover:shadow-sm">
+          <p className="text-lg font-semibold leading-none">{auditLog.length}</p>
+          <p className="text-[11px] text-muted-foreground mt-1">变更审计</p>
+        </button>
       </div>
 
       <Card>
@@ -326,53 +401,36 @@ export default function CIInstanceDetailPage() {
 
                 {ciRelations.length === 0 ? <p className="text-sm text-muted-foreground">无关联关系。</p> : (
                   <div className="space-y-4">
-                    {(() => {
-                      const outgoing = ciRelations.filter(r => r.source_id === selectedCI?.id)
-                      const incoming = ciRelations.filter(r => r.target_id === selectedCI?.id)
-                      const displayName = (rel: typeof ciRelations[number], dir: 'out' | 'in') => {
+                    <Table
+                      size="small"
+                      rowKey="id"
+                      dataSource={ciRelations.map(rel => {
+                        const outgoing = rel.source_id === selectedCI?.id
                         const def = modelDef?.relations?.find(d => d.relation_type === rel.relation_type)
-                        if (!def) return { name: rel.relation_type, unmodeled: true }
-                        return { name: dir === 'out' ? def.name : (def.reverse_name || def.name), unmodeled: false }
-                      }
-                      return (
-                        <>
-                          {outgoing.length > 0 && (
-                            <div>
-                              <p className="text-xs font-medium text-muted-foreground mb-1">我 → 其它（{outgoing.length}）</p>
-                              <table className="w-full text-sm">
-                                <tbody>
-                                  {outgoing.map(rel => (
-                                    <tr key={rel.id} className="border-b last:border-0">
-                                      <td className="py-1 text-xs w-28 font-medium">{displayName(rel, 'out').name}{displayName(rel, 'out').unmodeled && <Tag className="text-[9px] ml-1">未建模</Tag>}</td>
-                                      <td className="py-1 text-xs text-muted-foreground">{rel.target_id.slice(0, 8)}</td>
-                                      <td className="py-1 text-xs"><Tag className="text-[10px]">{rel.relation_type}</Tag></td>
-                                      <td className="py-1 text-right">{canDelete && <Button type="text" icon={<Unlink className="h-3 w-3" />} className="h-5 w-5 p-0" onClick={() => handleDeleteRel(rel.id)} />}</td>
-                                    </tr>
-                                  ))}
-                                </tbody>
-                              </table>
-                            </div>
-                          )}
-                          {incoming.length > 0 && (
-                            <div>
-                              <p className="text-xs font-medium text-muted-foreground mb-1">其它 → 我（{incoming.length}）</p>
-                              <table className="w-full text-sm">
-                                <tbody>
-                                  {incoming.map(rel => (
-                                    <tr key={rel.id} className="border-b last:border-0">
-                                      <td className="py-1 text-xs w-28 font-medium">{displayName(rel, 'in').name}{displayName(rel, 'in').unmodeled && <Tag className="text-[9px] ml-1">未建模</Tag>}</td>
-                                      <td className="py-1 text-xs text-muted-foreground">{rel.source_id.slice(0, 8)}</td>
-                                      <td className="py-1 text-xs"><Tag className="text-[10px]">{rel.relation_type}</Tag></td>
-                                      <td className="py-1 text-right">{canDelete && <Button type="text" icon={<Unlink className="h-3 w-3" />} className="h-5 w-5 p-0" onClick={() => handleDeleteRel(rel.id)} />}</td>
-                                    </tr>
-                                  ))}
-                                </tbody>
-                              </table>
-                            </div>
-                          )}
-                        </>
-                      )
-                    })()}
+                        return {
+                          id: rel.id,
+                          dir: outgoing ? 'out' : 'in',
+                          peerId: outgoing ? rel.target_id : rel.source_id,
+                          relName: def ? (outgoing ? def.name : (def.reverse_name || def.name)) : rel.relation_type,
+                          unmodeled: !def,
+                          type: rel.relation_type,
+                        }
+                      })}
+                      columns={[
+                        { title: '方向', dataIndex: 'dir', width: 96, render: (v: string) => (v === 'out'
+                          ? <Tag color="blue" className="text-[10px]">我 → 目标</Tag>
+                          : <Tag className="text-[10px]">来源 → 我</Tag>) },
+                        { title: '关系', dataIndex: 'relName', render: (v: string, r: any) => (
+                          <span className="text-xs font-medium">{v}{r.unmodeled && <Tag className="text-[9px] ml-1">未建模</Tag>}</span>) },
+                        { title: '关联资产', dataIndex: 'peerId', render: (peerId: string) => (
+                          <Link to={`/cmdb/instances/${peerId}`} className="text-xs hover:text-blue-600 hover:underline">{nameOf(peerId)}</Link>) },
+                        { title: '类型', dataIndex: 'type', width: 130, render: (v: string) => <Tag className="text-[10px]">{v}</Tag> },
+                        { title: '', key: 'op', width: 44, render: (_: unknown, r: any) => (canDelete
+                          ? <Button type="text" icon={<Unlink className="h-3 w-3" />} className="h-5 w-5 p-0" onClick={() => handleDeleteRel(r.id)} />
+                          : null) },
+                      ]}
+                      pagination={false}
+                    />
                     <Button type="default" size="middle" className="mt-2" onClick={() => { if (selectedCI) setRelForm(f => ({ ...f, source_id: selectedCI.id })); setRelDialogOpen(true) }}><Plus className="h-3 w-3 mr-1" />自定义关系（未建模）</Button>
                   </div>
                 )}
@@ -381,20 +439,23 @@ export default function CIInstanceDetailPage() {
             { key: 'audit', label: `审计 (${auditLog.length})`, children: (
               <div className="mt-4">
                 {auditLog.length === 0 ? <p className="text-sm text-muted-foreground">无变更记录。</p> : (
-                  <table className="w-full text-sm">
-                    <thead><tr className="border-b text-muted-foreground"><th className="pb-2 text-left text-xs">属性</th><th className="pb-2 text-left text-xs">旧值</th><th className="pb-2 text-left text-xs">新值</th><th className="pb-2 text-left text-xs">信道</th><th className="pb-2 text-left text-xs">时间</th></tr></thead>
-                    <tbody>
-                      {auditLog.map((ch, i) => (
-                        <tr key={i} className="border-b last:border-0">
-                          <td className="py-1 text-xs font-medium">{ch.attr_name}</td>
-                          <td className="py-1 text-xs text-muted-foreground">{String(ch.old_value || '').slice(0, 40)}</td>
-                          <td className="py-1 text-xs">{String(ch.new_value || '').slice(0, 40)}</td>
-                          <td className="py-1 text-xs"><Tag className="text-[10px]">{ch.channel}</Tag></td>
-                          <td className="py-1 text-xs text-muted-foreground">{formatTime(ch.changed_at)}</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
+                  <Table
+                    size="small"
+                    rowKey="_i"
+                    dataSource={auditLog.map((ch, i) => ({ ...ch, _i: i }))}
+                    columns={[
+                      { title: '属性', dataIndex: 'attr_name', width: 150, render: (v: string) => <span className="text-xs font-medium">{v}</span> },
+                      { title: '旧值', dataIndex: 'old_value', ellipsis: true, render: (v: unknown) => <span className="text-xs text-muted-foreground">{v === null || v === undefined || v === '' ? '—' : String(v).slice(0, 120)}</span> },
+                      { title: '新值', dataIndex: 'new_value', ellipsis: true, render: (v: unknown) => <span className="text-xs">{v === null || v === undefined || v === '' ? '—' : String(v).slice(0, 120)}</span> },
+                      { title: '信道', dataIndex: 'channel', width: 90, render: (v: string) => <Tag className="text-[10px]">{v}</Tag> },
+                      {
+                        title: '时间', dataIndex: 'changed_at', width: 170,
+                        sorter: (a: any, b: any) => String(a.changed_at || '').localeCompare(String(b.changed_at || '')),
+                        render: (v: string) => <span className="text-xs text-muted-foreground">{formatTime(v)}</span>,
+                      },
+                    ]}
+                    pagination={{ pageSize: 10, showSizeChanger: true, showTotal: (t: number) => `共 ${t} 条` }}
+                  />
                 )}
               </div>
             ) },
@@ -419,10 +480,54 @@ export default function CIInstanceDetailPage() {
                     <p className="text-sm">深度影响 <strong>{impactResult.affected_ci?.length || 0}</strong> 个资产:</p>
                     <div className="flex flex-wrap gap-1">
                       {(impactResult.affected_ci || []).map(ciId => (
-                        <Link key={ciId} to={`/cmdb/instances/${ciId}`}><Tag className="text-xs cursor-pointer hover:border-blue-500">{ciId.slice(0, 8)}</Tag></Link>
+                        <Link key={ciId} to={`/cmdb/instances/${ciId}`}><Tag className="text-xs cursor-pointer hover:border-blue-500">{nameOf(ciId)}</Tag></Link>
                       ))}
                     </div>
                   </div>
+                )}
+              </div>
+            ) },
+            { key: 'ops', label: `运维联动 (${ciAlerts.length})`, children: (
+              <div className="mt-4 space-y-4">
+                {opsLoading ? <p className="text-sm text-muted-foreground">加载中...</p> : (
+                  <>
+                    <div className="flex items-center gap-3 text-xs text-muted-foreground">
+                      <span>活跃告警 <strong className="text-destructive">{ciAlerts.length}</strong></span>
+                      <span>历史告警 <strong>{ciAlertHistory.length}</strong></span>
+                    </div>
+                    <div>
+                      <p className="text-xs font-medium text-muted-foreground mb-1">活跃告警</p>
+                      {ciAlerts.length === 0 ? <p className="text-sm text-muted-foreground">当前无活跃告警 ✓</p> : (
+                        <div className="space-y-2">
+                          {ciAlerts.map(a => (
+                            <div key={a.id} className="border rounded-md p-3">
+                              <div className="flex items-center gap-2">
+                                <Tag color={sevVariant(a.severity)} className="text-[10px]">{a.severity}</Tag>
+                                <span className="text-sm font-medium truncate">{a.title}</span>
+                                {a.is_suppressed && <Tag className="text-[9px]">已抑制</Tag>}
+                              </div>
+                              <p className="text-xs text-muted-foreground mt-1 truncate">{a.rule_name}{a.description ? ' · ' + a.description : ''}</p>
+                              <p className="text-[10px] text-muted-foreground mt-0.5">触发: {a.triggered_at?.slice(0, 19)?.replace('T', ' ')}</p>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                    <div>
+                      <p className="text-xs font-medium text-muted-foreground mb-1">历史告警</p>
+                      {ciAlertHistory.length === 0 ? <p className="text-sm text-muted-foreground">无历史告警</p> : (
+                        <div className="space-y-1">
+                          {ciAlertHistory.slice(0, 20).map(a => (
+                            <div key={a.id} className="flex items-center gap-2 text-xs border-b last:border-0 py-1">
+                              <Tag color={sevVariant(a.severity)} className="text-[9px] shrink-0">{a.severity}</Tag>
+                              <span className="flex-1 truncate">{a.title}</span>
+                              <span className="text-[10px] text-muted-foreground shrink-0">{a.resolved_at?.slice(0, 10)}</span>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  </>
                 )}
               </div>
             ) },
