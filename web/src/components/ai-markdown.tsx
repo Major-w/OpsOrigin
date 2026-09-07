@@ -1,7 +1,8 @@
 
-import { Fragment, useEffect, useRef } from 'react'
+import { Fragment, useEffect, useRef, useState } from 'react'
 import { renderMarkdown, renderExploreContent, renderMarkdownCached, renderExploreContentCached } from '@/lib/ai-render'
 import { highlightCode, highlightAllCode } from '@/lib/code-highlight'
+import { bindImageLightbox } from '@/components/ai/image-lightbox'
 import dynamic from '@/lib/dynamic'
 
 const MermaidBlock = dynamic(() => import('@/components/mermaid-block').then(m => ({ default: m.MermaidBlock })), { ssr: false, loading: () => <div className="h-8" /> })
@@ -13,6 +14,25 @@ interface AiMarkdownProps {
   /** 引用内联标记: 正文 [n] 在范围内时转为可点击上标, 跳转 cite-{citationAnchor}-{n} */
   citationIds?: string[]
   citationAnchor?: string
+}
+
+/** 流式期间 mermaid 文本每帧都在增长, 直接渲染会让 MermaidBlock 每帧重画整张图(重且闪)。
+ *  流式时 400ms 防抖 + 占位骨架; 流结束立即渲染最终图。 */
+function DebouncedMermaid({ chart, streaming }: { chart: string; streaming?: boolean }) {
+  const [render, setRender] = useState(streaming ? '' : chart)
+  useEffect(() => {
+    if (!streaming) { setRender(chart); return }
+    const t = setTimeout(() => setRender(chart), 400)
+    return () => clearTimeout(t)
+  }, [chart, streaming])
+  if (!render.trim()) {
+    return (
+      <div className="my-2 h-16 rounded-lg border border-dashed border-gray-300 dark:border-gray-600 flex items-center justify-center text-[11px] text-muted-foreground">
+        图表生成中…
+      </div>
+    )
+  }
+  return <MermaidBlock chart={render} />
 }
 
 /**
@@ -34,6 +54,8 @@ export function AiMarkdown({ content, streaming, citationIds, citationAnchor }: 
   useEffect(() => {
     const root = rootRef.current
     if (!root) return
+    // Markdown 内嵌图片点击 → 页内预览(effect 无依赖, 每次渲染重绑, 开销可忽略)
+    const unbindImg = bindImageLightbox(root)
     for (const pre of Array.from(root.querySelectorAll('pre'))) {
       const wrapEl = pre.parentElement
       if (wrapEl?.classList.contains('ai-code-wrap')) {
@@ -92,6 +114,7 @@ export function AiMarkdown({ content, streaming, citationIds, citationAnchor }: 
     if (citationIds && citationIds.length && citationAnchor && shouldLinkify(root, citationAnchor, citationIds.length, streaming)) {
       linkifyInlineCitations(root, citationAnchor, citationIds)
     }
+    return unbindImg
   })
 
   if (!content) return null
@@ -106,7 +129,7 @@ export function AiMarkdown({ content, streaming, citationIds, citationAnchor }: 
     <div ref={rootRef} className={streaming ? 'ai-streaming' : undefined}>
       {parts.map((part, i) =>
         i % 2 === 1 ? (
-          <MermaidBlock key={i} chart={part.replace(/\n$/, '')} />
+          <DebouncedMermaid key={i} chart={part.replace(/\n$/, '')} streaming={streaming} />
         ) : part ? (
           <Fragment key={i}>
             <div dangerouslySetInnerHTML={{ __html: render(part) }} />
@@ -129,6 +152,7 @@ export function ExploreMarkdown({ content, streaming, citationIds, citationAncho
       if (citationIds && citationIds.length && citationAnchor && shouldLinkify(ref.current, citationAnchor, citationIds.length, streaming)) {
         linkifyInlineCitations(ref.current, citationAnchor, citationIds)
       }
+      return bindImageLightbox(ref.current)
     }
   })
   if (!content) return null

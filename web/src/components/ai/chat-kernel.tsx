@@ -10,12 +10,13 @@
 // 通过 props/variant 适配三处差异, 消除三套重复 UI。
 // ============================================================================
 
-import { useEffect, useRef, useState, type ReactNode, type RefObject } from 'react'
+import { memo, useCallback, useEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from 'react'
 import { useAIStore, useTeams, type TeamStreamEvent, type AgentTeam } from '@/stores/ai'
 import type { ModelInfo, PendingApproval } from '@/stores/ai/types'
 import { renderMarkdown, renderMarkdownCached } from '@/lib/ai-render'
 import { AiMarkdown, ExploreMarkdown, scrollToCite } from '@/components/ai-markdown'
 import { exportDocFile } from '@/lib/doc-export'
+import { LightboxHost, openLightbox } from '@/components/ai/image-lightbox'
 import { cn, apiFetchRaw } from '@/lib/utils'
 import {
   Bot, User, Send, Square, Loader2, Terminal, Brain, CheckCircle, AlertTriangle,
@@ -259,7 +260,11 @@ export function AttachmentThumb({ att }: { att: ChatAttachmentMeta }) {
     return <AttachmentChip att={att} />
   }
   return (
-    <a href={`/api/v1/ai/attachments/${att.id}`} target="_blank" rel="noreferrer" title={att.name}>
+    <a
+      href={`/api/v1/ai/attachments/${att.id}`}
+      title={`${att.name}（点击预览）`}
+      onClick={e => { e.preventDefault(); openLightbox(url, att.name) }}
+    >
       <img src={url} alt={att.name} className="max-h-40 rounded-lg border border-gray-200 dark:border-gray-700 object-cover" />
     </a>
   )
@@ -441,7 +446,7 @@ export function useAIChat(opts: UseAIChatOptions) {
   // ----------------------- 普通 / 自主模式 -----------------------
 
   // 流式补全共用路径: send(新用户消息)与 regenerate(重发上一问)都走这里, 只追加助手占位气泡。
-  const runStream = async (content: string, historyBase: ChatMessage[], attachments?: ChatAttachmentMeta[]) => {
+  const runStream = async (content: string, historyBase: ChatMessage[], attachments?: ChatAttachmentMeta[], modelOverride?: string) => {
     if (enableAbort) {
       abortRef.current?.abort()
       abortRef.current = new AbortController()
@@ -551,7 +556,7 @@ export function useAIChat(opts: UseAIChatOptions) {
       onAsk,
       cid,
       enableAbort ? abortRef.current?.signal : undefined,
-      selectedModel,
+      modelOverride || selectedModel,
       (err?: string) => {
         flushNow() // 中断/失败也要保住已吐出的正文
         setMessages(prev => prev.map(m => (m.id === aiId ? { ...m, status: 'error', errorText: err || 'AI 响应失败' } : m)))
@@ -571,14 +576,14 @@ export function useAIChat(opts: UseAIChatOptions) {
     )
   }
 
-  const send = async (raw: string, attachments?: ChatAttachmentMeta[]) => {
+  const send = async (raw: string, attachments?: ChatAttachmentMeta[], modelOverride?: string) => {
     const content = raw.trim()
     if (!content || streaming) return
     const userMsg: ChatMessage = { id: `u_${Date.now()}`, role: 'user', content, timestamp: Date.now() }
     if (attachments?.length) userMsg.attachments = attachments
     setMessages(prev => [...prev, userMsg])
     setInput('')
-    await runStream(content, [...messages, userMsg], attachments)
+    await runStream(content, [...messages, userMsg], attachments, modelOverride)
   }
 
   // 正常态重新生成: 移除最后一条助手回复, 重发其前的用户消息(附件随消息复用)。
@@ -897,6 +902,10 @@ interface ChatMessageListProps {
   onRegenerate?: () => void
   /** 传入则允许用户消息 hover「编辑」, 内联改内容后从该消息起重新生成(截断其后所有消息)。 */
   onEditResend?: (msg: ChatMessage, newContent: string) => void
+  /** 失败态内联换模型重试: 可选模型列表(建议调用方只传健康模型) */
+  modelOptions?: { value: string; label: string; disabled?: boolean }[]
+  /** 在失败卡片选择模型后, 以该模型重发其前的用户消息 */
+  onRetryWithModel?: (msg: ChatMessage, model: string) => void
   extraActions?: (msg: ChatMessage) => ReactNode
   loading?: boolean
   loadingText?: string
@@ -1166,62 +1175,46 @@ function MsgStats({ msg }: { msg: ChatMessage }) {
   )
 }
 
-export function ChatMessageList({
-  messages, mode = 'normal', welcomeId = 'welcome', variant = 'page',
-  enableCitations = false, enableFeedback = false, enableTaskList = false,
-  onFeedback, onRetry, onRegenerate, onEditResend, extraActions, loading, loadingText, emptyQuickActions, endRef, className,
-}: ChatMessageListProps) {
+// ---------------------------------------------------------------------------
+// 单条消息(React.memo): 长会话性能关键 —— 流式 rAF 刷新时只重渲染内容变化的那条,
+// 其余消息因 msg 引用与标量 props 未变而整体跳过 reconciliation。
+// 回调 props 由 ChatMessageList 保证稳定(useCallback + latest-ref 包装);
+// 欢迎语消息在调用方已拦截, 不会进入本组件。
+// ---------------------------------------------------------------------------
+interface MessageItemProps {
+  msg: ChatMessage
+  variant: 'page' | 'panel' | 'floating'
+  /** 是否为最后一条真实助手回复(「重新生成」按钮只挂这条) */
+  isLastAi: boolean
+  loading: boolean
+  copied: boolean
+  editing: boolean
+  editDraft: string
+  enableCitations: boolean
+  enableFeedback: boolean
+  enableTaskList: boolean
+  modelOptions?: { value: string; label: string; disabled?: boolean }[]
+  onCopy: (msg: ChatMessage) => void
+  setEditingId: (id: string | null) => void
+  setEditDraft: (draft: string) => void
+  onFeedback?: (msg: ChatMessage, rating: 'up' | 'down') => void
+  onRetry?: (msg: ChatMessage) => void
+  onRegenerate?: () => void
+  onEditResend?: (msg: ChatMessage, newContent: string) => void
+  onRetryWithModel?: (msg: ChatMessage, model: string) => void
+  extraActions?: (msg: ChatMessage) => ReactNode
+}
+
+const MessageItem = memo(function MessageItem({
+  msg, variant, isLastAi, loading, copied, editing, editDraft,
+  enableCitations, enableFeedback, enableTaskList, modelOptions,
+  onCopy, setEditingId, setEditDraft,
+  onFeedback, onRetry, onRegenerate, onEditResend, onRetryWithModel, extraActions,
+}: MessageItemProps) {
   const isPanel = variant === 'panel'
   const isFloating = variant === 'floating'
-  // 单条复制反馈: 短暂把按钮文案变「已复制」
-  const [copiedId, setCopiedId] = useState<string | null>(null)
-  // 编辑并重发: 正在内联编辑的用户消息 id 与其草稿
-  const [editingId, setEditingId] = useState<string | null>(null)
-  const [editDraft, setEditDraft] = useState('')
-  // 智能滚动接管: 流式跟随 + 回到底部按钮(此前由调用方 messages 一变就强滚, 翻历史体验差)
-  const { scrollRef, atBottom, onScroll, scrollToBottom } = useStickToBottom([messages, loading])
-  const copyMessage = async (msg: ChatMessage) => {
-    try {
-      await navigator.clipboard.writeText(msg.content)
-      setCopiedId(msg.id)
-      setTimeout(() => setCopiedId(prev => (prev === msg.id ? null : prev)), 1500)
-    } catch { /* 剪贴板不可用(非安全上下文等)时静默 */ }
-  }
-  // 最后一条真实助手回复的索引: 「重新生成」只挂在这条下面
-  let lastAiIdx = -1
-  for (let i = messages.length - 1; i >= 0; i--) {
-    if (messages[i].role === 'assistant' && messages[i].id !== welcomeId) { lastAiIdx = i; break }
-  }
-
   return (
-    <div className={cn('relative flex-1 min-h-0 flex flex-col')}>
-      <div ref={scrollRef} onScroll={onScroll} className={cn('flex-1 overflow-y-auto space-y-3 min-h-0', className)}>
-      {messages.map((msg, mi) => {
-        // 欢迎语: 居中无气泡大样式(空态观感对齐 Claude/ChatGPT 首屏)
-        if (msg.id === welcomeId) {
-          return (
-            <div key={msg.id} className="flex flex-col items-center justify-center py-8 text-center">
-              <div className={cn('rounded-2xl bg-blue-100 dark:bg-blue-500/20 flex items-center justify-center mb-3', isFloating ? 'h-10 w-10' : 'h-12 w-12')}>
-                <Sparkles className={cn('text-blue-500', isFloating ? 'h-5 w-5' : 'h-6 w-6')} />
-              </div>
-              <div
-                className={cn('prose-sm max-w-none text-muted-foreground [&_p]:my-0.5', isFloating ? 'text-xs' : 'text-sm')}
-                dangerouslySetInnerHTML={{ __html: renderMarkdown(msg.content) }}
-              />
-            </div>
-          )
-        }
-        // 流式等待中隐藏空占位助手消息: send() 会先追加 content 为空的占位气泡,
-        // 与下方「思考中」指示重复(两行); 等首字/思考/工具调用出现后再渲染。
-        if (
-          loading && msg.role === 'assistant' && msg.id !== welcomeId &&
-          !msg.content && !msg.thinking && !(msg.toolCalls && msg.toolCalls.length > 0) &&
-          msg.status !== 'error'
-        ) {
-          return null
-        }
-        return (
-        <div key={msg.id} className={cn('group/msg flex gap-3', msg.role === 'user' ? 'justify-end' : 'justify-start')}>
+        <div className={cn('group/msg flex gap-3', msg.role === 'user' ? 'justify-end' : 'justify-start')}>
           {msg.role === 'assistant' && (
             <div className={cn(
               'h-8 w-8 rounded-full bg-blue-100 dark:bg-blue-500/20 flex items-center justify-center shrink-0',
@@ -1349,9 +1342,24 @@ export function ChatMessageList({
                       {msg.errorText || 'AI 响应失败'}
                     </p>
                     {onRetry && (
-                      <button onClick={() => onRetry(msg)} className="mt-1.5 text-[11px] text-red-600 dark:text-red-400 hover:underline font-medium">
-                        ↻ 重试
-                      </button>
+                      <div className="mt-1.5 flex items-center gap-2.5">
+                        <button onClick={() => onRetry(msg)} className="text-[11px] text-red-600 dark:text-red-400 hover:underline font-medium">
+                          ↻ 重试
+                        </button>
+                        {onRetryWithModel && modelOptions && modelOptions.length > 0 && (
+                          <select
+                            value=""
+                            onChange={e => { const v = e.target.value; if (v) onRetryWithModel(msg, v) }}
+                            className="text-[11px] rounded border border-red-200 dark:border-red-500/30 bg-transparent text-red-600 dark:text-red-400 outline-none cursor-pointer max-w-44"
+                            title="换一个模型重试"
+                          >
+                            <option value="">⇄ 换模型重试…</option>
+                            {modelOptions.map(m => (
+                              <option key={m.value} value={m.value} disabled={m.disabled}>{m.label}</option>
+                            ))}
+                          </select>
+                        )}
+                      </div>
                     )}
                   </div>
                 )}
@@ -1373,22 +1381,22 @@ export function ChatMessageList({
 
                 {/* 单条消息操作: 复制 / 重新生成 / 反馈 / 额外 */}
                 {(() => {
-                  const canCopy = msg.role === 'assistant' && msg.id !== welcomeId && !!msg.content.trim()
-                  const canRegen = !!onRegenerate && mi === lastAiIdx && !loading && msg.status !== 'error' && !!msg.content.trim()
-                  if (!(canCopy || canRegen || (enableFeedback && onFeedback && msg.id !== welcomeId) || (extraActions && msg.id !== welcomeId))) return null
+                  const canCopy = msg.role === 'assistant' && !!msg.content.trim()
+                  const canRegen = !!onRegenerate && isLastAi && !loading && msg.status !== 'error' && !!msg.content.trim()
+                  if (!(canCopy || canRegen || (enableFeedback && onFeedback) || extraActions)) return null
                   return (
                     <div className={cn(
                       'flex items-center gap-1 mt-2 pt-1.5 border-t border-gray-200 dark:border-[rgba(255,255,255,0.04)] transition-opacity',
                       // 主流交互: hover 消息才浮现操作栏, 降低视觉噪音; 复制成功反馈时保持可见
-                      copiedId === msg.id ? 'opacity-100' : 'opacity-0 group-hover/msg:opacity-100 focus-within:opacity-100',
+                      copied ? 'opacity-100' : 'opacity-0 group-hover/msg:opacity-100 focus-within:opacity-100',
                     )}>
                       {canCopy && (
                         <button
-                          onClick={() => copyMessage(msg)}
-                          className={cn('p-1 rounded text-[10px] transition-colors', copiedId === msg.id ? 'text-blue-500 bg-blue-50 dark:bg-blue-500/10' : 'text-muted-foreground hover:text-blue-500')}
-                          title={copiedId === msg.id ? '已复制' : '复制内容'}
+                          onClick={() => onCopy(msg)}
+                          className={cn('p-1 rounded text-[10px] transition-colors', copied ? 'text-blue-500 bg-blue-50 dark:bg-blue-500/10' : 'text-muted-foreground hover:text-blue-500')}
+                          title={copied ? '已复制' : '复制内容'}
                         >
-                          {copiedId === msg.id ? <Check className="h-3 w-3" /> : <Copy className="h-3 w-3" />}
+                          {copied ? <Check className="h-3 w-3" /> : <Copy className="h-3 w-3" />}
                         </button>
                       )}
                       {canRegen && (
@@ -1400,7 +1408,7 @@ export function ChatMessageList({
                           <RefreshCw className="h-3 w-3" />
                         </button>
                       )}
-                      {enableFeedback && onFeedback && msg.id !== welcomeId && (
+                      {enableFeedback && onFeedback && (
                       <>
                         <button
                           onClick={() => { if (msg.feedback_rating !== 'up') onFeedback(msg, 'up') }}
@@ -1421,7 +1429,7 @@ export function ChatMessageList({
                         <span className="w-px h-3 bg-gray-200 dark:bg-gray-700 mx-0.5" />
                       </>
                       )}
-                      {extraActions && msg.id !== welcomeId && extraActions(msg)}
+                      {extraActions && extraActions(msg)}
                     </div>
                   )
                 })()}
@@ -1441,7 +1449,7 @@ export function ChatMessageList({
                   </div>
                 )}
                 {/* 用户消息: 编辑态走内联文本框, 常态走 Markdown 渲染(与主流对话产品一致) */}
-                {editingId === msg.id ? (
+                {editing ? (
                   <div className="w-full space-y-1.5" onClick={e => e.stopPropagation()}>
                     <textarea
                       autoFocus
@@ -1491,7 +1499,7 @@ export function ChatMessageList({
             )}
           </div>
           {/* 用户消息悬停编辑 / 复制(气泡左侧浮现) */}
-          {msg.role === 'user' && onEditResend && !loading && !editingId && msg.content.trim() && (
+          {msg.role === 'user' && onEditResend && !loading && !editing && msg.content.trim() && (
             <button
               onClick={() => { setEditDraft(msg.content); setEditingId(msg.id) }}
               className="opacity-0 group-hover/msg:opacity-100 self-start mt-1.5 p-1 rounded text-muted-foreground hover:text-blue-500 transition-opacity"
@@ -1502,11 +1510,11 @@ export function ChatMessageList({
           )}
           {msg.role === 'user' && msg.content.trim() && (
             <button
-              onClick={() => copyMessage(msg)}
+              onClick={() => onCopy(msg)}
               className="opacity-0 group-hover/msg:opacity-100 self-start mt-1.5 p-1 rounded text-muted-foreground hover:text-blue-500 transition-opacity"
-              title={copiedId === msg.id ? '已复制' : '复制内容'}
+              title={copied ? '已复制' : '复制内容'}
             >
-              {copiedId === msg.id ? <Check className="h-3.5 w-3.5 text-blue-500" /> : <Copy className="h-3.5 w-3.5" />}
+              {copied ? <Check className="h-3.5 w-3.5 text-blue-500" /> : <Copy className="h-3.5 w-3.5" />}
             </button>
           )}
           {msg.role === 'user' && (
@@ -1515,10 +1523,119 @@ export function ChatMessageList({
             </div>
           )}
         </div>
+  )
+})
+
+export function ChatMessageList({
+  messages, mode = 'normal', welcomeId = 'welcome', variant = 'page',
+  enableCitations = false, enableFeedback = false, enableTaskList = false,
+  onFeedback, onRetry, onRegenerate, onEditResend, modelOptions, onRetryWithModel, extraActions, loading, loadingText, emptyQuickActions, endRef, className,
+}: ChatMessageListProps) {
+  const isPanel = variant === 'panel'
+  const isFloating = variant === 'floating'
+  // 单条复制反馈: 短暂把按钮文案变「已复制」
+  const [copiedId, setCopiedId] = useState<string | null>(null)
+  // 编辑并重发: 正在内联编辑的用户消息 id 与其草稿
+  const [editingId, setEditingId] = useState<string | null>(null)
+  const [editDraft, setEditDraft] = useState('')
+  // 智能滚动接管: 流式跟随 + 回到底部按钮(此前由调用方 messages 一变就强滚, 翻历史体验差)
+  const { scrollRef, atBottom, onScroll, scrollToBottom } = useStickToBottom([messages, loading])
+  // 单条复制反馈(稳定引用: MessageItem memo 依赖)
+  const copyMessage = useCallback(async (msg: ChatMessage) => {
+    try {
+      await navigator.clipboard.writeText(msg.content)
+      setCopiedId(msg.id)
+      setTimeout(() => setCopiedId(prev => (prev === msg.id ? null : prev)), 1500)
+    } catch { /* 剪贴板不可用(非安全上下文等)时静默 */ }
+  }, [])
+  // 调用方回调多为每次渲染新建(未 useCallback): 经 latest-ref 转发保持稳定引用,
+  // 使 MessageItem 的 memo 比较不因回调身份失效; 转发永远调用最新闭包, 无过期风险。
+  const latestCbsRef = useRef({ onFeedback, onRetry, onRegenerate, onEditResend, onRetryWithModel, extraActions })
+  latestCbsRef.current = { onFeedback, onRetry, onRegenerate, onEditResend, onRetryWithModel, extraActions }
+  const stableCbs = useMemo(() => ({
+    onFeedback: (msg: ChatMessage, rating: 'up' | 'down') => latestCbsRef.current.onFeedback?.(msg, rating),
+    onRetry: (msg: ChatMessage) => latestCbsRef.current.onRetry?.(msg),
+    onRegenerate: () => latestCbsRef.current.onRegenerate?.(),
+    onEditResend: (msg: ChatMessage, newContent: string) => latestCbsRef.current.onEditResend?.(msg, newContent),
+    onRetryWithModel: (msg: ChatMessage, model: string) => latestCbsRef.current.onRetryWithModel?.(msg, model),
+    extraActions: (msg: ChatMessage) => latestCbsRef.current.extraActions?.(msg),
+  }), [])
+  // 首字骨架判定: loading 且占位助手气泡仍为空(与上方隐藏条件一致)
+  const awaitingFirstToken = loading && messages.some(m =>
+    m.role === 'assistant' && m.id !== welcomeId &&
+    !m.content && !m.thinking && !(m.toolCalls && m.toolCalls.length > 0) &&
+    m.status !== 'error')
+  // 最后一条真实助手回复的索引: 「重新生成」只挂在这条下面
+  let lastAiIdx = -1
+  for (let i = messages.length - 1; i >= 0; i--) {
+    if (messages[i].role === 'assistant' && messages[i].id !== welcomeId) { lastAiIdx = i; break }
+  }
+
+  return (
+    <div className={cn('relative flex-1 min-h-0 flex flex-col')}>
+      <div ref={scrollRef} onScroll={onScroll} className={cn('flex-1 overflow-y-auto space-y-3 min-h-0', className)}>
+      {messages.map((msg, mi) => {
+        // 欢迎语: 居中无气泡大样式(空态观感对齐 Claude/ChatGPT 首屏); 内容静态走缓存渲染
+        if (msg.id === welcomeId) {
+          return (
+            <div key={msg.id} className="flex flex-col items-center justify-center py-8 text-center">
+              <div className={cn('rounded-2xl bg-blue-100 dark:bg-blue-500/20 flex items-center justify-center mb-3', isFloating ? 'h-10 w-10' : 'h-12 w-12')}>
+                <Sparkles className={cn('text-blue-500', isFloating ? 'h-5 w-5' : 'h-6 w-6')} />
+              </div>
+              <div
+                className={cn('prose-sm max-w-none text-muted-foreground [&_p]:my-0.5', isFloating ? 'text-xs' : 'text-sm')}
+                dangerouslySetInnerHTML={{ __html: renderMarkdownCached(msg.content) }}
+              />
+            </div>
+          )
+        }
+        // 流式等待中隐藏空占位助手消息: send() 会先追加 content 为空的占位气泡,
+        // 与下方「思考中」指示重复(两行); 等首字/思考/工具调用出现后再渲染。
+        if (
+          loading && msg.role === 'assistant' && msg.id !== welcomeId &&
+          !msg.content && !msg.thinking && !(msg.toolCalls && msg.toolCalls.length > 0) &&
+          msg.status !== 'error'
+        ) {
+          return null
+        }
+        return (
+          <MessageItem
+            key={msg.id}
+            msg={msg}
+            variant={variant}
+            isLastAi={mi === lastAiIdx}
+            loading={!!loading}
+            copied={copiedId === msg.id}
+            editing={editingId === msg.id}
+            editDraft={editDraft}
+            enableCitations={enableCitations}
+            enableFeedback={enableFeedback}
+            enableTaskList={enableTaskList}
+            modelOptions={modelOptions}
+            onCopy={copyMessage}
+            setEditingId={setEditingId}
+            setEditDraft={setEditDraft}
+            {...stableCbs}
+          />
         )
       })}
 
-      {loading && (
+      {loading && (awaitingFirstToken ? (
+        // 首字骨架屏: 首个 token 到达前的等待观感(对标 Claude/ChatGPT), 内容一到即被真实气泡取代
+        <div className="flex gap-3 justify-start">
+          {!isFloating && (
+            <div className="h-8 w-8 rounded-full bg-blue-100 dark:bg-blue-500/20 flex items-center justify-center shrink-0">
+              <Bot className="h-4 w-4 text-blue-600 dark:text-blue-400" />
+            </div>
+          )}
+          <div className={cn('rounded-lg px-4 py-3 space-y-2', isPanel || isFloating ? 'bg-gray-100 dark:bg-gray-800/80' : 'bg-gray-100 dark:bg-gray-800')}>
+            <div className="ai-skel-line h-2.5 w-40" />
+            <div className="ai-skel-line h-2.5 w-64" />
+            <div className="ai-skel-line h-2.5 w-28" />
+          </div>
+        </div>
+      ) : (
+        // 流式进行中的尾随指示: 提示仍在生成
         <div className="flex gap-3 justify-start">
           {!isFloating && (
             <div className="h-8 w-8 rounded-full bg-blue-100 dark:bg-blue-500/20 flex items-center justify-center shrink-0">
@@ -1527,14 +1644,17 @@ export function ChatMessageList({
           )}
           <div className={cn('rounded-lg px-4 py-2 text-sm flex items-center gap-2', isPanel || isFloating ? 'bg-gray-100 dark:bg-gray-800/80' : 'bg-gray-100 dark:bg-gray-800')}>
             <Loader2 className="h-4 w-4 animate-spin" />
-            <span>{loadingText || '思考中...'}</span>
+            <span>{loadingText || '生成中...'}</span>
           </div>
         </div>
-      )}
+      ))}
+
+      {/* 图片页内预览宿主(全站单实例, openLightbox 触发) */}
+      <LightboxHost />
 
       {/* 空态快捷操作 */}
       {emptyQuickActions && messages.length === 1 && (
-        <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 mt-2 px-6 pb-4">{emptyQuickActions}</div>
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 mt-2 px-3 sm:px-6 pb-4">{emptyQuickActions}</div>
       )}
 
       <div ref={endRef} />
@@ -1587,6 +1707,9 @@ interface ChatInputBarProps {
   quickActions?: QuickAction[]
   /** 附件: 传入则显示上传按钮并支持粘贴图片/文件(上传逻辑由调用方负责) */
   onFiles?: (files: File[]) => void
+  /** 暴露内部 textarea: 供页面级快捷键(Cmd+K 聚焦 / ↑ 回填)使用。
+   *  用结构化类型而非 RefObject —— 后者的 current 只读, 回调内无法赋值, 且跨 React 类型版本行为不一。 */
+  textareaRef?: { current: HTMLTextAreaElement | null }
   variant?: 'page' | 'panel' | 'floating'
   inputFooter?: ReactNode
   className?: string
@@ -1601,13 +1724,13 @@ export function ChatInputBar(props: ChatInputBarProps) {
     enableModel = false, enableAgent = false,
     enableKnowledgeScope = false, knowledgeCategories = [], knowledgeCategoryOptions = [], onKnowledgeCategoriesChange,
     enableQuickActions = false, quickActions = [],
-    onFiles,
+    onFiles, textareaRef,
     variant = 'page', inputFooter, className,
   } = props
 
   const isDark = variant === 'panel'
   const fileInputRef = useRef<HTMLInputElement>(null)
-  const taRef = useRef<HTMLTextAreaElement>(null)
+  const taRef = useRef<HTMLTextAreaElement | null>(null)
   // 自动增高(主流标配): 随内容长高, 超上限后内部滚动
   const maxH = variant === 'page' ? 200 : 128
   useEffect(() => {
@@ -1638,7 +1761,7 @@ export function ChatInputBar(props: ChatInputBarProps) {
               value={selectedModel || ''}
               onChange={e => onModelChange?.(e.target.value)}
               className={cn(
-                'h-7 rounded-md border px-1.5 text-xs bg-transparent focus:outline-none focus:ring-1 focus:ring-blue-500/50',
+                'h-7 max-w-full rounded-md border px-1.5 text-xs bg-transparent focus:outline-none focus:ring-1 focus:ring-blue-500/50',
                 isDark ? 'border-white/10 text-gray-200' : 'border-gray-200 text-gray-700',
               )}
               title="运行级模型(空=按权重/健康度路由)"
@@ -1741,7 +1864,7 @@ export function ChatInputBar(props: ChatInputBarProps) {
           </>
         )}
         <textarea
-          ref={taRef}
+          ref={el => { taRef.current = el; if (textareaRef) textareaRef.current = el }}
           value={value}
           onChange={e => onChange(e.target.value)}
           onKeyDown={e => {

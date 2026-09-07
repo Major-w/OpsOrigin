@@ -1,5 +1,5 @@
 
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useAIStore } from '@/stores/ai'
 import { useKnowledgeStore } from '@/stores/knowledge'
@@ -100,7 +100,10 @@ export default function AIPage() {
   const [conversations, setConversations] = useState<any[]>([])
   const [sidebarOpen, setSidebarOpen] = useState<boolean>(() => {
     if (typeof window === 'undefined') return true
-    return localStorage.getItem('ai.sidebarOpen') !== 'false'
+    const stored = localStorage.getItem('ai.sidebarOpen')
+    if (stored !== null) return stored !== 'false'
+    // 无历史偏好时: 窄屏默认收起(抽屉), 桌面默认展开
+    return !window.matchMedia('(max-width: 767px)').matches
   })
   const [convPerm, setConvPerm] = useState<'owner' | 'edit' | 'view' | ''>('')
   const [shareConv, setShareConv] = useState<{ id: string; title: string } | null>(null)
@@ -114,6 +117,16 @@ export default function AIPage() {
   // —— 对话附件: 待发送列表 + 上传中计数(上传完成即入列, 发送时随消息附带) ——
   const [pendingFiles, setPendingFiles] = useState<ChatAttachmentMeta[]>([])
   const [uploadingCount, setUploadingCount] = useState(0)
+
+  // 健康模型下拉(失败换模型重试): useMemo 稳定引用, 避免每帧新数组击穿 MessageItem 的 memo
+  const healthyModelOptions = useMemo(
+    () => models.filter(m => m.healthy !== false).map(m => ({ value: m.model, label: m.name || m.model })),
+    [models],
+  )
+  // 窄屏抽屉式侧栏: 选中/新建会话后自动收起, 不遮挡对话区
+  const closeSidebarOnNarrow = () => {
+    if (typeof window !== 'undefined' && window.matchMedia('(max-width: 767px)').matches) setSidebarOpen(false)
+  }
 
   const handleFiles = async (files: File[]) => {
     for (const f of files.slice(0, 5)) { // 单次最多 5 个
@@ -139,6 +152,50 @@ export default function AIPage() {
 
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const teamMessagesEndRef = useRef<HTMLDivElement>(null)
+  // 页面级快捷键与拖拽上传需要触达输入框
+  const inputTaRef = useRef<HTMLTextAreaElement | null>(null)
+  const [dragActive, setDragActive] = useState(false)
+
+  // 键盘快捷键: Cmd/Ctrl+K 聚焦输入框 / Esc 停止生成(编辑框内 Esc 由编辑器自处理, 此处跳过) /
+  // 输入框为空时 ↑ 回填上一条用户消息(终端习惯, 便于快速修改重发)
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') {
+        e.preventDefault()
+        inputTaRef.current?.focus()
+        return
+      }
+      const inEditor = (e.target as HTMLElement | null)?.closest?.('textarea, input, [contenteditable="true"]')
+      if (e.key === 'Escape' && streaming && !inEditor) { stopGeneration(); return }
+      if (e.key === 'ArrowUp' && !streaming && e.target === inputTaRef.current && !input) {
+        const lastUser = [...messages].reverse().find(m => m.role === 'user')
+        if (lastUser) { e.preventDefault(); setInput(lastUser.content) }
+      }
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [streaming, stopGeneration, input, messages, setInput])
+
+  // 会话级导出: 当前全部消息落为 Markdown 文件(失败消息标注原因, 附件仅记名)
+  const exportSessionMd = () => {
+    const body = messages.filter(m => m.id !== '0')
+    if (!body.length) { getMessage().info('当前会话没有可导出的消息'); return }
+    const lines: string[] = ['# AI 会话导出', '', `- 导出时间：${new Date().toLocaleString()}`, `- 消息数：${body.length}`, '']
+    for (const m of body) {
+      const who = m.role === 'user' ? '🙋 用户' : '🤖 AI'
+      const content = m.content || (m.errorText ? `（失败：${m.errorText}）` : '（无内容）')
+      lines.push(`## ${who}`, '', content, '')
+      if (m.attachments?.length) lines.push(`> 附件：${m.attachments.map(a => a.name).join('、')}`, '')
+    }
+    const blob = new Blob([lines.join('\n')], { type: 'text/markdown;charset=utf-8' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `ai-session-${new Date().toISOString().slice(0, 10)}.md`
+    a.click()
+    URL.revokeObjectURL(url)
+    getMessage().success('已导出当前会话')
+  }
 
   useEffect(() => {
     if (mode === 'normal') loadConversations(selectedAgent?.id).then(setConversations)
@@ -349,12 +406,19 @@ export default function AIPage() {
     setPendingWsFileId(null)
   }
 
-  const retryMessage = (errMsg: ChatMessage) => {
+  const retryMessage = (errMsg: ChatMessage, modelOverride?: string) => {
     const idx = messages.findIndex(m => m.id === errMsg.id)
     if (idx < 0) return
     for (let i = idx - 1; i >= 0; i--) {
-      if (messages[i].role === 'user') { send(messages[i].content); return }
+      if (messages[i].role === 'user') { send(messages[i].content, undefined, modelOverride); return }
     }
+  }
+
+  // 失败卡片内联换模型重试: 同步顶部选中模型, 并以该模型重发(不经 selectedModel 闭包, 避免拿到旧值)
+  const retryWithModel = (errMsg: ChatMessage, model: string) => {
+    if (!model) return
+    setSelectedModel(model)
+    retryMessage(errMsg, model)
   }
 
   // 会话重命名(ConversationList 双击标题): PATCH 后刷新列表
@@ -479,23 +543,26 @@ export default function AIPage() {
   return (
     // 高度对齐 layout.tsx 顶部面包屑栏(px-6 py-3 + 一行文字 + border ≈ 45px):
     // 页面正好填满面包屑以下视口, 输入区不被挤出屏幕, 对话区拿到最大垂直空间。
-    <div className="p-6 h-[calc(100vh-45px)] flex flex-col">
-      <div className="flex items-center justify-between mb-3">
-        <div>
-          <h1 className="text-xl font-bold flex items-center gap-2"><Sparkles className="h-5 w-5 text-blue-500" />AI 助手</h1>
+    <div className="p-3 md:p-6 h-[calc(100vh-45px)] flex flex-col">
+      <div className="flex items-center justify-between mb-3 gap-2">
+        <div className="min-w-0">
+          <h1 className="text-xl font-bold flex items-center gap-2"><Sparkles className="h-5 w-5 text-blue-500 shrink-0" />AI 助手</h1>
         </div>
-        <div className="flex items-center gap-2">
-          {mode === 'normal' && (<Button size="middle" onClick={() => navigate('/ai/analytics')}><BarChart3 className="h-4 w-4" />分析</Button>)}
-          <Button size="middle" onClick={() => navigate('/ai/models')}><Brain className="h-4 w-4" />模型</Button>
-          <Button size="middle" onClick={() => navigate('/ai/settings')}><Settings className="h-4 w-4" />设置</Button>
+        {/* 窄屏按钮只留图标(title 提示), 文字标签 sm 以上显示 */}
+        <div className="flex items-center gap-2 shrink-0">
+          {mode === 'normal' && (<Button size="middle" onClick={() => navigate('/ai/analytics')} title="分析"><BarChart3 className="h-4 w-4" /><span className="max-sm:hidden">分析</span></Button>)}
+          {mode === 'normal' && (<Button size="middle" onClick={exportSessionMd} title="将当前会话导出为 Markdown"><Download className="h-4 w-4" /><span className="max-sm:hidden">导出会话</span></Button>)}
+          <Button size="middle" onClick={() => navigate('/ai/models')} title="模型"><Brain className="h-4 w-4" /><span className="max-sm:hidden">模型</span></Button>
+          <Button size="middle" onClick={() => navigate('/ai/settings')} title="设置"><Settings className="h-4 w-4" /><span className="max-sm:hidden">设置</span></Button>
         </div>
       </div>
 
-      {/* 普通 / 自主 模式：左会话列表(可收起) + 全宽对话区 */}
+      {/* 普通 / 自主 模式：左会话列表(可收起) + 全宽对话区。
+          窄屏(<md)侧栏变绝对定位抽屉覆盖在对话区上, 不挤压聊天主区; md 以上恢复常规左栏 */}
       {mode !== 'team' && (
-        <div className="flex-1 flex gap-4 min-h-0">
+        <div className="flex-1 flex gap-4 min-h-0 relative">
           {sidebarOpen ? (
-            <div className="w-64 shrink-0 border rounded-lg overflow-hidden flex flex-col">
+            <div className="w-64 shrink-0 border rounded-lg overflow-hidden flex flex-col max-md:absolute max-md:inset-y-0 max-md:left-0 max-md:z-30 max-md:shadow-xl max-md:bg-background">
               <div className="p-3 border-b flex items-center justify-between">
                 <span className="text-sm font-medium flex items-center gap-1.5"><History className="h-4 w-4 text-blue-500" />对话列表</span>
                 <button onClick={() => { setSidebarOpen(false); localStorage.setItem('ai.sidebarOpen', 'false') }} className="p-1 rounded text-muted-foreground hover:text-foreground hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors" title="收起会话列表">
@@ -506,8 +573,8 @@ export default function AIPage() {
                 <ConversationList
                   conversations={conversations}
                   activeId={convId}
-                  onSelect={handleLoadConversation}
-                  onNew={handleNewConversation}
+                  onSelect={(id) => { handleLoadConversation(id); closeSidebarOnNarrow() }}
+                  onNew={() => { handleNewConversation(); closeSidebarOnNarrow() }}
                   onDelete={(id) => setPendingConvId(id)}
                   onRename={handleRenameConversation}
                   onShare={(c) => { setShareConv({ id: c.id, title: c.title || '新对话' }); setShareForm({ target_type: 'user', target_id: '', permission: 'view' }) }}
@@ -521,7 +588,26 @@ export default function AIPage() {
             </button>
           )}
 
-          <div className="flex-1 flex flex-col border rounded-lg overflow-hidden min-w-0">
+          <div
+            className="flex-1 flex flex-col border rounded-lg overflow-hidden min-w-0 relative"
+            onDragOver={e => { e.preventDefault(); if (canUseAI && convPerm !== 'view') setDragActive(true) }}
+            onDragLeave={e => {
+              // 仅在真正离开容器时收起(子元素间移动会触发 dragLeave, 用 relatedTarget 判定)
+              if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setDragActive(false)
+            }}
+            onDrop={e => {
+              e.preventDefault()
+              setDragActive(false)
+              if (!canUseAI || convPerm === 'view') return
+              const files = Array.from(e.dataTransfer.files || [])
+              if (files.length) handleFiles(files)
+            }}
+          >
+            {dragActive && (
+              <div className="absolute inset-0 z-20 flex items-center justify-center bg-blue-500/10 border-2 border-dashed border-blue-400 rounded-lg pointer-events-none">
+                <p className="text-sm font-medium text-blue-600 dark:text-blue-300">松开以上传附件</p>
+              </div>
+            )}
             <ChatMessageList
               messages={messages}
               mode={mode}
@@ -534,6 +620,8 @@ export default function AIPage() {
               onRetry={retryMessage}
               onRegenerate={regenerate}
               onEditResend={editAndResend}
+              modelOptions={healthyModelOptions}
+              onRetryWithModel={retryWithModel}
               extraActions={renderMsgActions}
               loading={streaming}
               loadingText="思考中..."
@@ -584,6 +672,7 @@ export default function AIPage() {
               // 欢迎态(messages.length===1)已在消息区渲染场景卡片(点击即发送), 此处不再重复展示胶囊
               enableQuickActions={!streaming && messages.length > 1}
               quickActions={QUICK_ACTIONS}
+              textareaRef={inputTaRef}
               variant="page"
               inputFooter={inputFooter}
             />

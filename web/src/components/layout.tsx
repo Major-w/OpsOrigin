@@ -339,14 +339,9 @@ export function Layout({ children }: { children: React.ReactNode }) {
       <aside className={cn("relative z-10 flex flex-col border-r backdrop-blur-2xl overflow-y-auto sticky top-0 h-screen shrink-0 transition-[width] duration-200", sidebarCollapsed ? 'w-14' : 'w-60', theme === 'dark' ? 'border-[rgba(255,255,255,0.04)] bg-[rgba(11,15,25,0.8)]' : 'border-gray-200 bg-white/80')}>
         <div className={cn("h-14 flex items-center gap-2.5 border-b sticky top-0 backdrop-blur-2xl", sidebarCollapsed ? 'px-2 justify-center' : 'px-5', theme === 'dark' ? 'border-[rgba(255,255,255,0.04)] bg-[rgba(11,15,25,0.95)]' : 'border-gray-200 bg-gray-50/95')}>
           {sidebarCollapsed ? (
-            <>
-              <button onClick={() => applySidebarCollapsed(false)} className={cn("p-1.5 rounded-md transition-colors", theme === 'dark' ? 'text-gray-400 hover:text-white hover:bg-white/10' : 'text-gray-500 hover:text-gray-900 hover:bg-gray-200')} title="展开菜单">
-                <PanelLeftOpen className="h-4 w-4" />
-              </button>
-              <button onClick={toggle} className={cn("p-1.5 rounded-md transition-colors", theme === 'dark' ? 'text-gray-400 hover:text-white hover:bg-white/10' : 'text-gray-500 hover:text-gray-900 hover:bg-gray-200')} title={theme === 'dark' ? '切换亮色' : '切换暗色'}>
-                {theme === 'dark' ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
-              </button>
-            </>
+            <button onClick={() => applySidebarCollapsed(false)} className={cn("p-1.5 rounded-md transition-colors", theme === 'dark' ? 'text-gray-400 hover:text-white hover:bg-white/10' : 'text-gray-500 hover:text-gray-900 hover:bg-gray-200')} title="展开菜单">
+              <PanelLeftOpen className="h-4 w-4" />
+            </button>
           ) : (
             <>
               <div className="relative flex items-center justify-center w-7 h-7 shrink-0">
@@ -354,13 +349,9 @@ export function Layout({ children }: { children: React.ReactNode }) {
                 <span className={cn("absolute text-[8px] font-bold font-mono", theme === 'dark' ? 'text-white' : 'text-[var(--primary-foreground)]')}>ON</span>
               </div>
               <div className="flex-1 min-w-0">
-                <span className={cn("text-sm font-semibold tracking-tight", theme === 'dark' ? 'text-white' : 'text-gray-900')}>OpsOrigin</span>
-                <p className="text-[10px] text-muted-foreground tracking-wider uppercase">AI-Native Ops</p>
+                <span className={cn("block text-sm font-semibold tracking-tight truncate", theme === 'dark' ? 'text-white' : 'text-gray-900')}>OpsOrigin</span>
+                <p className="text-[10px] text-muted-foreground tracking-wider uppercase truncate">AI-Native Ops</p>
               </div>
-              <LocaleSwitcher />
-              <button onClick={toggle} className={cn("p-1.5 rounded-md transition-colors shrink-0", theme === 'dark' ? 'text-gray-400 hover:text-white hover:bg-white/10' : 'text-gray-500 hover:text-gray-900 hover:bg-gray-200')}>
-                {theme === 'dark' ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
-              </button>
               <button onClick={() => applySidebarCollapsed(true)} className={cn("p-1.5 rounded-md transition-colors shrink-0", theme === 'dark' ? 'text-gray-400 hover:text-white hover:bg-white/10' : 'text-gray-500 hover:text-gray-900 hover:bg-gray-200')} title="收起菜单">
                 <PanelLeftClose className="h-4 w-4" />
               </button>
@@ -439,6 +430,10 @@ export function Layout({ children }: { children: React.ReactNode }) {
               </div>
               <div className={cn("flex items-center", sidebarCollapsed ? 'flex-col gap-1.5' : 'gap-1')}>
                 <MessageBell />
+                <button onClick={toggle} className={cn("p-1 rounded-md transition-colors", theme === 'dark' ? 'text-gray-400 hover:text-white hover:bg-white/10' : 'text-gray-500 hover:text-gray-900 hover:bg-gray-200')} title={theme === 'dark' ? '切换亮色' : '切换暗色'}>
+                  {theme === 'dark' ? <Sun className="h-3.5 w-3.5" /> : <Moon className="h-3.5 w-3.5" />}
+                </button>
+                <LocaleSwitcher />
                 <button onClick={() => { logout(); navigate('/login') }} className="text-muted-foreground/40 hover:text-red-500 transition-colors p-1" title="退出登录">
                   <LogOut className="w-3.5 h-3.5" />
                 </button>
