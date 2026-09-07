@@ -1,6 +1,6 @@
 import {
   MessagesSquare, Package, Radar, Users, Gauge, FlaskConical,
-  Store, Wrench, BarChart3, Settings, Cpu, type LucideIcon,
+  Store, Wrench, BarChart3, Settings, Cpu, Webhook, type LucideIcon,
 } from 'lucide-react'
 
 export interface AINavItem {
@@ -23,4 +23,5 @@ export const AI_ASSISTANT_NAV: AINavItem[] = [
   { to: '/ai/analytics', label: '使用分析', icon: BarChart3 },
   { to: '/ai/models', label: '模型管理', icon: Cpu },
   { to: '/ai/settings', label: '智能体工作台', icon: Settings },
+  { to: '/ai/chatops', label: 'ChatOps 渠道', icon: Webhook },
 ]

@@ -44,6 +44,7 @@ const AIMarketplacePage = React.lazy(() => import('./app/(dashboard)/ai/marketpl
 const AIScenesPage = React.lazy(() => import('./app/(dashboard)/ai/scenes/page'))
 const AIDrillsPage = React.lazy(() => import('./app/(dashboard)/ai/drills/page'))
 const AISettingsPage = React.lazy(() => import('./app/(dashboard)/ai/settings/page'))
+const AIChatOpsPage = React.lazy(() => import('./app/(dashboard)/ai/chatops/page'))
 const AIModelsLayoutPage = React.lazy(() => import('./app/(dashboard)/ai/models/layout'))
 const AIModelListPage = React.lazy(() => import('./app/(dashboard)/ai/models/list/page'))
 const AIModelNewPage = React.lazy(() => import('./app/(dashboard)/ai/models/new/page'))
@@ -182,6 +183,7 @@ function App() {
                 <Route path="/ai/scenes" element={<AIScenesPage />} />
                 <Route path="/ai/drills" element={<AIDrillsPage />} />
                 <Route path="/ai/settings" element={<AISettingsPage />} />
+                <Route path="/ai/chatops" element={<AIChatOpsPage />} />
                 {/* 模型管理：列表（唯一定义入口，含权重/类型/可见性/主LLM）+ 新增 / 详情子路由 */}
                 <Route path="/ai/models" element={<AIModelsLayoutPage />}>
                   <Route index element={<Navigate to="list" replace />} />
