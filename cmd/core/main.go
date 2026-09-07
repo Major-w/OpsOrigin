@@ -28,6 +28,7 @@ import (
 	"github.com/opsorigin/core/internal/automation/scheduler"
 	"github.com/opsorigin/core/internal/automation/script"
 	"github.com/opsorigin/core/internal/automation/workflow"
+	"github.com/opsorigin/core/internal/chatops"
 	cloud "github.com/opsorigin/core/internal/cloud"
 	k8s "github.com/opsorigin/core/internal/cloud/k8s"
 	_ "github.com/opsorigin/core/internal/cloud/providers/all"
@@ -223,7 +224,7 @@ func main() {
 	server.WithMiddleware(auditSvc.Middleware)
 
 	// T03: 注册 bypass 前缀 — /metrics /healthz /readyz /api/v1/health /swagger 跳过认证/审计/RBAC 中间件
-	server.WithBypassPrefixes("/metrics", "/healthz", "/readyz", "/api/v1/health", "/api/v1/ws", "/swagger/")
+	server.WithBypassPrefixes("/metrics", "/healthz", "/readyz", "/api/v1/health", "/api/v1/ws", "/swagger/", "/api/v1/chatops/callback/")
 
 	// Swagger UI 路由
 	server.RegisterService(&swaggerRegistrar{})
@@ -1346,6 +1347,21 @@ func main() {
 	}
 	server.RegisterService(aiSvc)
 	aiSvc.Start(ctx)
+
+	// —— ChatOps 多渠道接入(P3-2a): IM(飞书) ↔ AI 引擎双向桥接 ——
+	// 渠道凭据存 chatops_channels; 回调 /api/v1/chatops/callback/{id} 走 bypass 前缀,
+	// 由平台验签(verification_token/encrypt_key)保证来源可信。
+	if db != nil {
+		chatopsSvc := chatops.NewService(db, aiSvc.Engine, "")
+		if err := chatopsSvc.Init(ctx); err != nil {
+			slog.Warn("chatops init failed, chatops disabled", "error", err)
+		} else {
+			// 审批推送钩子: PendingApproval 产生时推 IM 审批卡片(P3-2a 范围内的审批互动)
+			aiSvc.Engine.Approvals().SetOnRequest(chatopsSvc.OnApprovalRequest)
+			server.RegisterService(chatopsSvc)
+			slog.Info("chatops service registered")
+		}
+	}
 
 	// —— 智能值班(P1): 告警路由到当班 Agent + AI 自动接管 ——
 	// oncall(itsm 子包) 不依赖 monitor/ai: 告警经 monitor.AddAlertNotifier 注入路由,

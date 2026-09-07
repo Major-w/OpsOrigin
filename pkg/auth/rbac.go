@@ -241,6 +241,12 @@ var PathPermissionMapping = map[string]string{
 	"POST /api/v1/notification":   PermissionUserWrite,
 	"PUT /api/v1/notification":    PermissionUserWrite,
 	"DELETE /api/v1/notification": PermissionUserWrite,
+	// ChatOps 渠道管理:IM 渠道凭据属系统级敏感配置(system:admin);
+	// 平台回调 /api/v1/chatops/callback/ 走 bypass 前缀, 不经过本中间件。
+	"GET /api/v1/chatops":    PermissionSystemAdmin,
+	"POST /api/v1/chatops":   PermissionSystemAdmin,
+	"PUT /api/v1/chatops":    PermissionSystemAdmin,
+	"DELETE /api/v1/chatops": PermissionSystemAdmin,
 }
 
 // AutoPermissionMiddleware 自动权限检查中间件
