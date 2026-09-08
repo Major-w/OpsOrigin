@@ -194,69 +194,32 @@ async function exportDocx(md: string, fallbackName: string): Promise<void> {
 
 type Bullet = { text: string; options: { bullet?: boolean | number; indentLevel?: number; bold?: boolean; fontSize?: number; breakLine?: boolean; fontFace?: string } }
 
+type PresentationOutline = { title: string; slides: { title: string; bullets: string[] }[] }
+
+// 请求后端 LLM 将文档重编为演示大纲(标题 + 每页要点), 取代旧的按标题机械分页。
+// 走 apiFetchRaw 自动附带 Authorization 头 —— 此前裸 fetch 缺 token, 后端直接返回
+// 401 "missing authorization header"。
+async function fetchPresentationOutline(md: string, fallbackName: string): Promise<PresentationOutline> {
+  const res = await apiFetchRaw('/ai/presentation', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ title: titleFromMd(md, fallbackName), content: md }),
+  })
+  if (!res.ok) {
+    const b = await res.json().catch(() => ({} as { error?: string }))
+    throw new Error(b?.error || `HTTP ${res.status}`)
+  }
+  return await res.json()
+}
+
 async function exportPptx(md: string, fallbackName: string): Promise<void> {
   await checkFuse(md)
-  const { marked } = await import('marked')
+  // AI 重编演示大纲(LLM 提炼章节 → 每页要点), 空结果抛 EMPTY(由调用方静默)
+  const outline = await fetchPresentationOutline(md, fallbackName)
+  if (!outline?.slides?.length) throw new Error('EMPTY')
+  const docTitle = outline.title?.trim() || titleFromMd(md, fallbackName)
+
   const PptxGenJS = (await import('pptxgenjs')).default
-  const tokens = marked.lexer(md)
-
-  const plain = (s: string) => decodeEntities((s || '').replace(/[*_`~]/g, '').trim())
-
-  // 分页: h1/h2 开新页; 无任何标题时整篇一页
-  type SlideSpec = { title: string; bullets: Bullet[] }
-  const slides: SlideSpec[] = []
-  let cur: SlideSpec | null = null
-  let docTitle = ''
-  const push = () => { if (cur && (cur.title || cur.bullets.length)) slides.push(cur) }
-  const ensure = (title: string) => { push(); cur = { title, bullets: [] } }
-
-  for (const tk of tokens as any[]) {
-    if (tk.type === 'heading') {
-      if (tk.depth <= 2) {
-        const t = plain(tk.text)
-        if (!docTitle && tk.depth === 1) docTitle = t
-        ensure(t)
-      } else {
-        if (!cur) ensure('')
-        cur!.bullets.push({ text: plain(tk.text), options: { bullet: true, bold: true, breakLine: true } })
-      }
-    } else if (tk.type === 'list') {
-      if (!cur) ensure('')
-      for (const item of tk.items as any[]) {
-        cur!.bullets.push({ text: plain(item.text), options: { bullet: true, breakLine: true } })
-        for (const sub of (item.tokens || []) as any[]) {
-          if (sub.type === 'list') {
-            for (const subItem of sub.items as any[]) {
-              cur!.bullets.push({ text: plain(subItem.text), options: { bullet: true, indentLevel: 1, breakLine: true } })
-            }
-          }
-        }
-      }
-    } else if (tk.type === 'paragraph' || tk.type === 'text') {
-      if (!cur) ensure('')
-      const t = plain(tk.text)
-      if (t) cur!.bullets.push({ text: t, options: { breakLine: true } })
-    } else if (tk.type === 'table') {
-      if (!cur) ensure('')
-      // marked 表格 token: header/rows 均为 cell token 数组(取 .text), 兼容纯字符串形态
-      const cellText = (c: any) => plain(typeof c === 'string' ? c : (c?.text ?? ''))
-      const rows = [tk.header, ...(tk.rows || [])] as any[][]
-      for (const row of rows) {
-        if (!row) continue
-        cur!.bullets.push({ text: row.map(cellText).join('  |  '), options: { bullet: false, breakLine: true } })
-      }
-    } else if (tk.type === 'code') {
-      if (!cur) ensure('')
-      plain(tk.text).split('\n').forEach((line) => {
-        cur!.bullets.push({ text: line || ' ', options: { bullet: false, fontFace: 'Consolas', breakLine: true } })
-      })
-    }
-    // space/hr 忽略
-  }
-  push()
-
-  if (!slides.length) { getMessage().warning('没有可转换为幻灯片的内容'); throw new Error('EMPTY') }
-
   const pptx = new PptxGenJS()
   pptx.layout = 'LAYOUT_WIDE'
   const INK = '1A1A1A', MUTED = '555555', ACCENT = '3B82F6'
@@ -266,22 +229,23 @@ async function exportPptx(md: string, fallbackName: string): Promise<void> {
 
   // 封面
   const cover = pptx.addSlide()
-  cover.addText(docTitle || fallbackName, { x: 0.6, y: 2.2, w: 11.8, h: 1.2, fontSize: 30, bold: true, color: INK })
+  cover.addText(docTitle, { x: 0.6, y: 2.2, w: 11.8, h: 1.2, fontSize: 30, bold: true, color: INK })
   cover.addText(new Date().toLocaleDateString('zh-CN'), { x: 0.62, y: 3.4, w: 5, h: 0.4, fontSize: 13, color: MUTED })
   rect(cover, 0.62, 2.05, 0.5, 0.06)
 
-  for (const s of slides) {
+  for (const s of outline.slides) {
     const slide = pptx.addSlide()
     if (s.title) {
       slide.addText(s.title, { x: 0.6, y: 0.4, w: 11.8, h: 0.9, fontSize: 22, bold: true, color: INK })
       rect(slide, 0.62, 1.28, 0.4, 0.05)
     }
-    if (s.bullets.length) {
-      slide.addText(s.bullets as any, { x: 0.7, y: 1.5, w: 11.6, h: 4.6, fontSize: 14, color: MUTED, valign: 'top', lineSpacingMultiple: 1.2 })
+    const bullets = (s.bullets || []).map((text: string) => ({ text, options: { bullet: true, breakLine: true } } as Bullet))
+    if (bullets.length) {
+      slide.addText(bullets as any, { x: 0.7, y: 1.5, w: 11.6, h: 4.6, fontSize: 14, color: MUTED, valign: 'top', lineSpacingMultiple: 1.2 })
     }
   }
 
-  await pptx.writeFile({ fileName: `${titleFromMd(md, fallbackName)}.pptx` })
+  await pptx.writeFile({ fileName: `${sanitizeName(docTitle, fallbackName)}.pptx` })
 }
 
 // ---------------------------------------------------------------------------
@@ -309,27 +273,33 @@ async function exportViaServer(md: string, fallbackName: string, fmt: 'docx' | '
   triggerDownload(await res.blob(), `${titleFromMd(md, fallbackName)}.${fmt}`)
 }
 
-/** 导出 markdown 为 docx/pptx。返回是否真正发起(防重未过则 false)。前端保险丝触发或转换失败时自动 fallback 服务端通道。 */
+/** 导出 markdown 为 docx/pptx。返回是否真正发起(防重未过则 false)。
+ *  - docx: 浏览器内确定性转换, >2MB 或失败时 fallback 服务端 pandoc 通道
+ *  - pptx: AI 重编演示文稿(LLM 提炼大纲), 失败不降级机械转储, 直接提示 */
 export async function exportDocFile(md: string, fallbackName: string, fmt: 'docx' | 'pptx', key = fallbackName): Promise<boolean> {
   if (!md.trim()) { getMessage().warning('内容为空，无可导出'); return false }
   const k = `${key}:${fmt}`
   if (exporting.has(k)) return false
   exporting.add(k)
   try {
-    if (fmt === 'docx') await exportDocx(md, fallbackName)
-    else await exportPptx(md, fallbackName)
+    if (fmt === 'docx') {
+      try {
+        await exportDocx(md, fallbackName)
+      } catch (e: any) {
+        // 保险丝(>2MB)或前端转换异常 → 服务端 pandoc 通道兜底
+        const note = e?.message === 'TOO_LARGE' ? '文档超过 2MB，改走服务端导出…' : '前端转换失败，尝试服务端导出…'
+        await exportViaServer(md, fallbackName, 'docx', note)
+      }
+    } else {
+      getMessage().info('AI 正在将内容重编为演示文稿，请稍候…')
+      await exportPptx(md, fallbackName)
+    }
     return true
   } catch (e: any) {
-    // 保险丝(>2MB)或前端转换异常 → 服务端 pandoc 通道兜底
-    const note = e?.message === 'TOO_LARGE' ? '文档超过 2MB，改走服务端导出…' : '前端转换失败，尝试服务端导出…'
-    try {
-      await exportViaServer(md, fallbackName, fmt, note)
-      return true
-    } catch (se: any) {
-      if (e?.message !== 'TOO_LARGE' && e?.message !== 'EMPTY') console.error('[doc-export]', e)
-      if (se?.message !== 'SERVER_UNAVAILABLE') getMessage().error(`导出失败: ${se?.message || '未知错误'}`)
-      return false
-    }
+    if (e?.message === 'EMPTY') return false // 空大纲已在上层静默/提示过
+    if (e?.message === 'TOO_LARGE') getMessage().warning('文档过大，AI 演示生成仅支持 2MB 以内的文档')
+    else getMessage().error(`生成失败: ${e?.message || '未知错误'}`)
+    return false
   } finally {
     exporting.delete(k)
   }

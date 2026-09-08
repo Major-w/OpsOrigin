@@ -225,6 +225,8 @@ func (s *Service) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("DELETE /api/v1/ai/conversations/{id}/artifacts/{aid}", s.handleDeleteArtifact)
 	// —— 服务端文档导出(前端保险丝 fallback, pandoc 确定性转换) ——
 	mux.HandleFunc("POST /api/v1/ai/export", s.handleExportDoc)
+	// —— AI 重编演示文稿(LLM 提炼 markdown → 分页大纲 JSON, 前端 pptxgenjs 渲染) ——
+	mux.HandleFunc("POST /api/v1/ai/presentation", s.handleGeneratePresentation)
 	// —— 对话附件(用户上传, MinIO) ——
 	mux.HandleFunc("POST /api/v1/ai/attachments", s.handleUploadAttachment)
 	mux.HandleFunc("GET /api/v1/ai/attachments/{id}", s.handleDownloadAttachment)

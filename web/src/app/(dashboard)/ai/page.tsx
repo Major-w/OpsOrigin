@@ -5,7 +5,7 @@ import { useAIStore } from '@/stores/ai'
 import { useKnowledgeStore } from '@/stores/knowledge'
 import { useCan } from '@/stores/permissions'
 import { useAIChat, ChatMessageList, ChatInputBar, TeamChatView, ChatContextBar, ConversationList, estimateContextTokens, AttachmentChip, extractAttachmentsFromParts, type ChatMessage, type ChatAttachmentMeta } from '@/components/ai/chat-kernel'
-import { Button, Input, Space, Modal, Popconfirm } from 'antd'
+import { Button, Input, Select, Space, Modal, Popconfirm } from 'antd'
 import {
   Sparkles, History, Settings, BarChart3, Share2, Lock, PanelLeftClose, PanelLeftOpen,
   AlertTriangle, XCircle, CheckCircle, Loader2, Brain, Bookmark, Download, Save, Terminal, Paperclip,
@@ -324,7 +324,8 @@ export default function AIPage() {
     if (!msg.content.trim()) return
     const title = msg.content.replace(/[#*`>\-\n\r]+/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 40) || 'AI 对话沉淀'
     try {
-      const r = await fetch('/api/v1/knowledge', {
+      // 走 apiFetchRaw: 自动附带 Authorization / X-Principal 等鉴权头(此前裸 fetch 缺 token → 401)
+      const r = await apiFetchRaw('/knowledge', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ title, content: msg.content, category: 'AI 对话沉淀', tags: ['ai', 'conversation'], status: 'published' }),
       })
@@ -483,7 +484,7 @@ export default function AIPage() {
       <button onClick={() => exportMsgAs(msg, 'docx')} disabled={!!exportingMsg} className="p-1 rounded text-[10px] text-muted-foreground hover:text-blue-500 transition-colors disabled:opacity-50" title="导出 Word (.docx)">
         {exportingMsg === `${msg.id}:docx` ? <Loader2 className="h-3 w-3 animate-spin" /> : <FileDown className="h-3 w-3" />}
       </button>
-      <button onClick={() => exportMsgAs(msg, 'pptx')} disabled={!!exportingMsg} className="p-1 rounded text-[10px] text-muted-foreground hover:text-blue-500 transition-colors disabled:opacity-50" title="导出 PowerPoint (.pptx)">
+      <button onClick={() => exportMsgAs(msg, 'pptx')} disabled={!!exportingMsg} className="p-1 rounded text-[10px] text-muted-foreground hover:text-blue-500 transition-colors disabled:opacity-50" title="AI 重编生成演示文稿 (.pptx)">
         {exportingMsg === `${msg.id}:pptx` ? <Loader2 className="h-3 w-3 animate-spin" /> : <Presentation className="h-3 w-3" />}
       </button>
       <button onClick={() => downloadMsgAsMd(msg)} className="p-1 rounded text-[10px] text-muted-foreground hover:text-blue-500 transition-colors" title="下载为 Markdown">
@@ -760,17 +761,11 @@ export default function AIPage() {
           <div className="grid grid-cols-2 gap-2">
             <div className="space-y-1">
               <p className="text-xs text-muted-foreground">目标类型</p>
-              <select value={shareForm.target_type} onChange={e => setShareForm({ ...shareForm, target_type: e.target.value })} className="w-full h-9 rounded-md border border-input bg-background px-2 text-sm">
-                <option value="user">用户</option>
-                <option value="group">用户组</option>
-              </select>
+              <Select value={shareForm.target_type} onChange={v => setShareForm({ ...shareForm, target_type: v })} className="w-full" options={[{ value: 'user', label: '用户' }, { value: 'group', label: '用户组' }]} />
             </div>
             <div className="space-y-1">
               <p className="text-xs text-muted-foreground">权限</p>
-              <select value={shareForm.permission} onChange={e => setShareForm({ ...shareForm, permission: e.target.value })} className="w-full h-9 rounded-md border border-input bg-background px-2 text-sm">
-                <option value="view">仅查看</option>
-                <option value="edit">可继续对话</option>
-              </select>
+              <Select value={shareForm.permission} onChange={v => setShareForm({ ...shareForm, permission: v })} className="w-full" options={[{ value: 'view', label: '仅查看' }, { value: 'edit', label: '可继续对话' }]} />
             </div>
           </div>
           <div className="space-y-1">
