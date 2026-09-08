@@ -1,7 +1,7 @@
 
 import { useEffect, useState, useCallback } from 'react'
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card'
-import { Button, Input, Tag, Space, Modal, Popconfirm, Select, message } from 'antd'
+import { Button, Input, Tag, Space, Modal, Popconfirm, Select } from 'antd'
 import { useTeams, type AgentTeam, type TeamMode, type TeamRole, type CreateTeamPayload, type TeamMember } from '@/stores/ai'
 import { Users, Plus, RefreshCw, Trash2, Edit, Bot, Settings2 } from 'lucide-react'
 

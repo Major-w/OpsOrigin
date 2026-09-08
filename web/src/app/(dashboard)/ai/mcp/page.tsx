@@ -1,7 +1,7 @@
 
 import { useEffect, useMemo, useState } from 'react'
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card'
-import { Button, Input, Tag, Space, Popconfirm, message } from 'antd'
+import { Button, Input, Select, Tag, Space, Popconfirm } from 'antd'
 import { Plus, Trash2, Terminal, Wrench, AlertCircle, Loader2, Search, RefreshCw, Boxes, Puzzle, Globe } from 'lucide-react'
 import { cn, apiFetch, apiList } from '@/lib/utils'
 import { useThemeStore } from '@/stores/theme'
@@ -277,9 +277,7 @@ export default function MCPToolsPage() {
               {form.type === 'http' ? (
                 <div className="space-y-2">
                   <div className="flex gap-2">
-                    <select value={form.http_method} onChange={e => setForm({ ...form, http_method: e.target.value })} className="h-10 rounded-md border border-input bg-background px-2 text-sm">
-                      {['GET', 'POST', 'PUT', 'DELETE', 'PATCH'].map(m => <option key={m} value={m}>{m}</option>)}
-                    </select>
+                    <Select value={form.http_method} onChange={v => setForm({ ...form, http_method: v })} style={{ width: 110 }} options={['GET', 'POST', 'PUT', 'DELETE', 'PATCH'].map(m => ({ value: m, label: m }))} />
                     <Input placeholder="URL 模板, 支持 {param} 占位符 (如 https://api.example.com/hosts/{name})" value={form.http_url} onChange={e => setForm({ ...form, http_url: e.target.value })} className="flex-1" />
                     <Input type="number" min={1} max={120} value={form.timeout_sec} onChange={e => setForm({ ...form, timeout_sec: parseInt(e.target.value) || 30 })} className="w-20" title="超时(秒)" />
                   </div>
@@ -310,11 +308,7 @@ export default function MCPToolsPage() {
                 {form.parameters.map((p, i) => (
                   <div key={i} className="flex gap-2 items-center">
                     <Input placeholder="参数名" value={p.name} onChange={e => { const arr = [...form.parameters]; arr[i] = { ...arr[i], name: e.target.value }; setForm({ ...form, parameters: arr }) }} className="w-36" />
-                    <select value={p.type} onChange={e => { const arr = [...form.parameters]; arr[i] = { ...arr[i], type: e.target.value }; setForm({ ...form, parameters: arr }) }} className="h-10 rounded-md border border-input bg-background px-2 text-sm w-28">
-                      <option value="string">string</option>
-                      <option value="number">number</option>
-                      <option value="boolean">boolean</option>
-                    </select>
+                    <Select value={p.type} onChange={v => { const arr = [...form.parameters]; arr[i] = { ...arr[i], type: v }; setForm({ ...form, parameters: arr }) }} style={{ width: 100 }} options={['string', 'number', 'boolean'].map(t => ({ value: t, label: t }))} />
                     <Input placeholder="描述" value={p.description} onChange={e => { const arr = [...form.parameters]; arr[i] = { ...arr[i], description: e.target.value }; setForm({ ...form, parameters: arr }) }} className="flex-1" />
                     <label className="flex items-center gap-1 text-[11px] text-muted-foreground whitespace-nowrap cursor-pointer">
                       <input type="checkbox" checked={p.required} onChange={e => { const arr = [...form.parameters]; arr[i] = { ...arr[i], required: e.target.checked }; setForm({ ...form, parameters: arr }) }} className="accent-blue-500" />必填

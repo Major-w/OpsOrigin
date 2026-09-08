@@ -17,6 +17,7 @@ import { renderMarkdown, renderMarkdownCached } from '@/lib/ai-render'
 import { AiMarkdown, ExploreMarkdown, scrollToCite } from '@/components/ai-markdown'
 import { exportDocFile } from '@/lib/doc-export'
 import { LightboxHost, openLightbox } from '@/components/ai/image-lightbox'
+import { Modal } from 'antd'
 import { cn, apiFetchRaw } from '@/lib/utils'
 import {
   Bot, User, Send, Square, Loader2, Terminal, Brain, CheckCircle, AlertTriangle,
@@ -1022,71 +1023,64 @@ function useDocActions(doc: DocArtifact) {
 /** 全屏文档预览(点击卡片打开): 标题栏 + 完整 Markdown 渲染, Esc/点击遮罩关闭。 */
 function DocumentViewer({ doc, onClose }: { doc: DocArtifact; onClose: () => void }) {
   const { copied, copyDoc, downloadDoc, exporting, exportAs } = useDocActions(doc)
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose() }
-    window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
-  }, [onClose])
   return (
-    <div className="fixed inset-0 z-[1000] flex items-center justify-center bg-black/40 p-4 md:p-8" onClick={onClose}>
-      <div
-        className="flex flex-col w-full max-w-4xl h-full max-h-[92vh] bg-white dark:bg-[var(--surface-modal)] rounded-xl border border-gray-200 dark:border-white/10 shadow-2xl overflow-hidden"
-        onClick={e => e.stopPropagation()}
-      >
-        <div className="flex items-center gap-2.5 px-4 py-3 border-b border-gray-200 dark:border-white/10 shrink-0">
+    <Modal
+      open
+      onCancel={onClose}
+      width={1000}
+      style={{ top: 32 }}
+      styles={{ body: { padding: '16px 20px 20px', overflow: 'auto', maxHeight: 'calc(92vh - 150px)' } }}
+      maskClosable
+      footer={null}
+      title={
+        <div className="flex items-center gap-2.5 py-0.5">
           <FileText className="h-[18px] w-[18px] text-blue-500 shrink-0" />
           <div className="min-w-0 flex-1">
             <p className="text-sm font-medium truncate">{doc.title}</p>
-            <p className="text-[11px] text-muted-foreground">Markdown · 约 {doc.words} 字</p>
+            <p className="text-[11px] text-muted-foreground font-normal">Markdown · 约 {doc.words} 字</p>
           </div>
-          <button
-            onClick={copyDoc}
-            className={cn('p-1.5 rounded-md text-xs transition-colors flex items-center gap-1',
-              copied ? 'text-blue-500 bg-blue-50 dark:bg-blue-500/10' : 'text-muted-foreground hover:bg-gray-100 dark:hover:bg-white/10')}
-            title={copied ? '已复制' : '复制全文'}
-          >
-            {copied ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}
-            <span className="hidden sm:inline">{copied ? '已复制' : '复制'}</span>
-          </button>
-          <button
-            onClick={() => exportAs('docx')}
-            disabled={!!exporting}
-            className="p-1.5 rounded-md text-xs text-muted-foreground hover:bg-gray-100 dark:hover:bg-white/10 transition-colors flex items-center gap-1 disabled:opacity-50"
-            title="导出 Word (.docx)"
-          >
-            {exporting === 'docx' ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <FileDown className="h-3.5 w-3.5" />}
-            <span className="hidden sm:inline">docx</span>
-          </button>
-          <button
-            onClick={() => exportAs('pptx')}
-            disabled={!!exporting}
-            className="p-1.5 rounded-md text-xs text-muted-foreground hover:bg-gray-100 dark:hover:bg-white/10 transition-colors flex items-center gap-1 disabled:opacity-50"
-            title="导出 PowerPoint (.pptx)"
-          >
-            {exporting === 'pptx' ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Presentation className="h-3.5 w-3.5" />}
-            <span className="hidden sm:inline">pptx</span>
-          </button>
-          <button
-            onClick={downloadDoc}
-            className="p-1.5 rounded-md text-xs text-muted-foreground hover:bg-gray-100 dark:hover:bg-white/10 transition-colors flex items-center gap-1"
-            title="下载 .md"
-          >
-            <Download className="h-3.5 w-3.5" />
-            <span className="hidden sm:inline">下载</span>
-          </button>
-          <button
-            onClick={onClose}
-            className="p-1.5 rounded-md text-muted-foreground hover:bg-gray-100 dark:hover:bg-white/10 transition-colors"
-            title="关闭 (Esc)"
-          >
-            <X className="h-4 w-4" />
-          </button>
         </div>
-        <div className="flex-1 overflow-y-auto px-5 py-4 md:px-8 md:py-6">
-          <AiMarkdown content={doc.body} />
-        </div>
+      }
+    >
+      <AiMarkdown content={doc.body} />
+      <div className="flex items-center justify-end gap-2 border-t border-gray-100 dark:border-white/10 pt-3 mt-4">
+        <button
+          onClick={copyDoc}
+          className={cn('px-2.5 py-1.5 rounded-md text-xs transition-colors flex items-center gap-1',
+            copied ? 'text-blue-500 bg-blue-50 dark:bg-blue-500/10' : 'text-muted-foreground hover:bg-gray-100 dark:hover:bg-white/10')}
+          title={copied ? '已复制' : '复制全文'}
+        >
+          {copied ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}
+          {copied ? '已复制' : '复制全文'}
+        </button>
+        <button
+          onClick={() => exportAs('docx')}
+          disabled={!!exporting}
+          className="px-2.5 py-1.5 rounded-md text-xs text-muted-foreground hover:bg-gray-100 dark:hover:bg-white/10 transition-colors flex items-center gap-1 disabled:opacity-50"
+          title="导出 Word (.docx)"
+        >
+          {exporting === 'docx' ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <FileDown className="h-3.5 w-3.5" />}
+          docx
+        </button>
+        <button
+          onClick={() => exportAs('pptx')}
+          disabled={!!exporting}
+          className="px-2.5 py-1.5 rounded-md text-xs text-muted-foreground hover:bg-gray-100 dark:hover:bg-white/10 transition-colors flex items-center gap-1 disabled:opacity-50"
+          title="AI 重编生成演示文稿 (.pptx)"
+        >
+          {exporting === 'pptx' ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Presentation className="h-3.5 w-3.5" />}
+          pptx
+        </button>
+        <button
+          onClick={downloadDoc}
+          className="px-2.5 py-1.5 rounded-md text-xs text-muted-foreground hover:bg-gray-100 dark:hover:bg-white/10 transition-colors flex items-center gap-1"
+          title="下载 .md"
+        >
+          <Download className="h-3.5 w-3.5" />
+          下载 .md
+        </button>
       </div>
-    </div>
+    </Modal>
   )
 }
 
@@ -1145,7 +1139,7 @@ function DocumentCard({ doc }: { doc: DocArtifact }) {
             onClick={() => exportAs('pptx')}
             disabled={!!exporting}
             className="px-2 py-1 rounded text-[11px] text-muted-foreground hover:text-blue-500 transition-colors flex items-center gap-1 disabled:opacity-50"
-            title="导出 PowerPoint (.pptx)"
+            title="AI 重编生成演示文稿 (.pptx)"
           >
             {exporting === 'pptx' ? <Loader2 className="h-3 w-3 animate-spin" /> : <Presentation className="h-3 w-3" />} pptx
           </button>

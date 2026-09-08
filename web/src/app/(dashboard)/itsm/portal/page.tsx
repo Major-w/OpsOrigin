@@ -9,7 +9,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { apiList, apiFetch } from '@/lib/utils'
 import {
   Package, ChevronRight, ChevronDown, Loader2, FolderTree, Search,
-  Layers, X, Send, CheckCircle2, FileText,
+  Layers, Send, CheckCircle2, FileText,
 } from 'lucide-react'
 import { buildTree, parseFormSchema, type TreeNode } from '@/lib/itsm-constants'
 import { useProcessStore } from '@/stores/itsm/processes'
@@ -18,7 +18,7 @@ import { useAuthStore } from '@/stores/auth'
 import { DynamicForm, withBuiltinFields, splitBuiltinValues, type FormSchema } from '@/components/itsm/DynamicForm'
 import ProcessFlowView from '@/components/itsm/ProcessFlowView'
 import { getMessage } from '@/lib/message'
-import { Button, Form, Input, Tabs, Tag } from 'antd'
+import { Button, Drawer, Form, Input, Tabs, Tag } from 'antd'
 
 interface ServiceItem {
   id: string
@@ -364,30 +364,37 @@ export default function ITSMPortalPage() {
       </div>
 
       {/* 申请抽屉：门户内提交，不离开当前页面 */}
-      {applyItem && (
-        <div className="fixed inset-0 z-50 flex justify-end">
-          <div className="absolute inset-0 bg-black/40 backdrop-blur-[1px]" onClick={closeApply} />
-          <div className="relative w-full sm:w-[680px] max-w-[95vw] h-full bg-background border-l shadow-2xl flex flex-col animate-in slide-in-from-right duration-200">
-            <div className="flex items-start justify-between px-5 py-4 border-b shrink-0">
-              <div className="min-w-0">
-                <h3 className="font-semibold truncate">{applyItem.name}</h3>
-                <p className="text-xs text-muted-foreground mt-0.5 line-clamp-2">
-                  {applyItem.description || (proc ? `提交后将进入「${proc.name}」流程审批` : '提交后直接生成工单')}
-                </p>
-              </div>
-              <button onClick={closeApply} className="p-1.5 rounded-md hover:bg-muted transition-colors shrink-0" aria-label="关闭">
-                <X className="h-4 w-4" />
-              </button>
+      <Drawer
+        open={!!applyItem}
+        onClose={closeApply}
+        width={680}
+        title={applyItem ? (
+          <div className="min-w-0 pr-1">
+            <div className="font-semibold truncate">{applyItem.name}</div>
+            <div className="text-xs font-normal text-muted-foreground mt-0.5 line-clamp-2">
+              {applyItem.description || (proc ? `提交后将进入「${proc.name}」流程审批` : '提交后直接生成工单')}
             </div>
-
-            <div className="flex-1 overflow-y-auto px-5 py-4 space-y-4">
+          </div>
+        ) : null}
+        footer={createdId === null ? (
+          <div className="flex justify-end gap-2">
+            <Button type="default" onClick={closeApply} disabled={submitting}>取消</Button>
+            <Button type="primary" onClick={submitApply} disabled={submitting}>
+              {submitting ? <Loader2 className="h-4 w-4 mr-1.5 animate-spin" /> : <Send className="h-4 w-4 mr-1.5" />}
+              提交申请
+            </Button>
+          </div>
+        ) : null}
+        styles={{ body: { padding: 16 } }}
+      >
+        <div className="space-y-4">
               {createdId !== null ? (
                 <div className="flex flex-col items-center justify-center py-14 text-center space-y-3">
                   <CheckCircle2 className="h-12 w-12 text-blue-500" />
                   <div>
                     <p className="font-medium">申请已提交</p>
                     <p className="text-xs text-muted-foreground mt-1">
-                      {applyItem.process_id ? '已按目录绑定的流程创建工单并进入流转' : '已创建工单，等待处理'}
+                      {applyItem?.process_id ? '已按目录绑定的流程创建工单并进入流转' : '已创建工单，等待处理'}
                     </p>
                   </div>
                   <div className="flex gap-2 pt-2">
@@ -433,18 +440,7 @@ export default function ITSMPortalPage() {
               )}
             </div>
 
-            {createdId === null && (
-              <div className="px-5 py-3 border-t flex justify-end gap-2 shrink-0">
-                <Button type="default" onClick={closeApply} disabled={submitting}>取消</Button>
-                <Button type="primary" onClick={submitApply} disabled={submitting}>
-                  {submitting ? <Loader2 className="h-4 w-4 mr-1.5 animate-spin" /> : <Send className="h-4 w-4 mr-1.5" />}
-                  提交申请
-                </Button>
-              </div>
-            )}
-          </div>
-        </div>
-      )}
+      </Drawer>
     </div>
   )
 }

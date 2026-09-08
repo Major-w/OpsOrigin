@@ -4,7 +4,6 @@ import { useNavigate } from 'react-router-dom'
 import { useAIStore } from '@/stores/ai'
 import { useKnowledgeStore } from '@/stores/knowledge'
 import { useAIChat, ChatMessageList, ChatInputBar, TeamChatView, ApprovalBar, ChatContextBar, ConversationList, estimateContextTokens, SHARED_SESSION_KEY, SHARED_CONV_ID_KEY } from '@/components/ai/chat-kernel'
-import { useThemeStore } from '@/stores/theme'
 import usePathname from '@/lib/use-pathname'
 import { apiFetchRaw } from '@/lib/utils'
 import { AI_ASSISTANT_NAV } from '@/components/ai-nav'
@@ -34,7 +33,6 @@ const WELCOME = '欢迎进入 **纯净模式** 🤖\n\n这是一个以 AI 对话
 export default function PureMode({ onExitPure }: { onExitPure: () => void }) {
   const navigate = useNavigate()
   const pathname = usePathname()
-  const { theme } = useThemeStore()
   const loadConversations = useAIStore(s => s.loadConversations)
   const submitFeedback = useAIStore(s => s.submitFeedback)
   const fetchAgents = useAIStore(s => s.fetchAgents)
@@ -45,7 +43,7 @@ export default function PureMode({ onExitPure }: { onExitPure: () => void }) {
     persistKey: SHARED_SESSION_KEY,
     convIdKey: SHARED_CONV_ID_KEY,
     enableTeam: true,
-    captureToolCalls: false,
+    captureToolCalls: true,
     enableAbort: true,
     resetConvOn403: true,
     defaultMode: 'normal',
@@ -67,7 +65,6 @@ export default function PureMode({ onExitPure }: { onExitPure: () => void }) {
   // 数字员工(Agent)列表: 供对话页临时选择绑定(普通/探索模式)
   useEffect(() => { fetchAgents() }, [])
 
-  const isDark = theme === 'dark'
   const [pureDefault, setPureDefault] = useState<boolean>(() => {
     try { return localStorage.getItem(DEFAULT_KEY) === '1' } catch { return false }
   })
@@ -151,13 +148,12 @@ export default function PureMode({ onExitPure }: { onExitPure: () => void }) {
   const clear = () => { clearSession(); setShowHistory(false) }
 
   return (
-    <div className={cn('flex h-screen overflow-hidden', isDark ? 'bg-[var(--background)] text-white' : 'bg-gray-50 text-gray-900')}>
+    <div className={cn('flex h-screen overflow-hidden bg-background text-foreground')}>
       {/* ============ 左侧功能区 ============ */}
       <aside className={cn(
-        'relative z-10 w-60 flex flex-col border-r backdrop-blur-2xl shrink-0',
-        isDark ? 'border-[rgba(255,255,255,0.04)] bg-[rgba(11,15,25,0.8)]' : 'border-gray-200 bg-white/80',
+        'relative z-10 w-60 flex flex-col border-r backdrop-blur-2xl shrink-0 border-border bg-background/80',
       )}>
-        <div className={cn('h-14 flex items-center gap-2.5 px-4 border-b shrink-0', isDark ? 'border-[rgba(255,255,255,0.04)]' : 'border-gray-200')}>
+        <div className={cn('h-14 flex items-center gap-2.5 px-4 border-b border-border shrink-0')}>
           <div className="relative flex items-center justify-center w-7 h-7">
             <Bot className="w-6 h-6 text-blue-400" strokeWidth={1.5} />
           </div>
@@ -182,8 +178,8 @@ export default function PureMode({ onExitPure }: { onExitPure: () => void }) {
                 className={cn(
                   'group flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-all duration-200 w-full text-left',
                   active
-                    ? isDark ? 'bg-blue-500/10 text-blue-400 border border-blue-500/20' : 'bg-blue-50 text-blue-600 border border-blue-200'
-                    : isDark ? 'text-[var(--secondary-foreground)] hover:text-white hover:bg-white/[0.03]' : 'text-gray-600 hover:text-gray-900 hover:bg-gray-100',
+                    ? 'bg-blue-50 text-blue-600 border border-blue-200 dark:bg-blue-500/10 dark:text-blue-400 dark:border-blue-500/20'
+                    : 'text-secondary-foreground hover:text-foreground hover:bg-gray-100 dark:hover:bg-white/[0.03]',
                 )}
               >
                 <Icon className="h-4 w-4" strokeWidth={1.5} />
@@ -193,7 +189,7 @@ export default function PureMode({ onExitPure }: { onExitPure: () => void }) {
           })}
         </nav>
 
-        <div className={cn('px-4 py-3 border-t space-y-3 shrink-0', isDark ? 'border-[rgba(255,255,255,0.04)]' : 'border-gray-200')}>
+        <div className={cn('px-4 py-3 border-t border-border space-y-3 shrink-0')}>
           <label className="flex items-center justify-between gap-2 cursor-pointer select-none">
             <span className="text-[11px] text-muted-foreground leading-tight">登录后默认<br />进入纯净模式</span>
             <button
@@ -201,7 +197,7 @@ export default function PureMode({ onExitPure }: { onExitPure: () => void }) {
               role="switch"
               aria-checked={pureDefault}
               onClick={togglePureDefault}
-              className={cn('relative h-5 w-9 rounded-full transition-colors shrink-0', pureDefault ? 'bg-blue-500' : isDark ? 'bg-white/15' : 'bg-gray-300')}
+              className={cn('relative h-5 w-9 rounded-full transition-colors shrink-0', pureDefault ? 'bg-blue-500' : 'bg-gray-300 dark:bg-white/15')}
             >
               <span className={cn('absolute top-0.5 h-4 w-4 rounded-full bg-white transition-transform', pureDefault ? 'translate-x-4' : 'translate-x-0.5')} />
             </button>
@@ -216,12 +212,11 @@ export default function PureMode({ onExitPure }: { onExitPure: () => void }) {
       <main className="relative z-10 flex-1 flex flex-col min-w-0">
         {/* 头部 */}
         <div className={cn(
-          'h-14 flex items-center justify-between px-5 border-b shrink-0 gap-2',
-          isDark ? 'border-[rgba(255,255,255,0.04)] bg-[rgba(11,15,25,0.6)]' : 'border-gray-200 bg-white/70',
+          'h-14 flex items-center justify-between px-5 border-b border-border bg-background/70 shrink-0 gap-2',
         )}>
           <div className="flex items-center gap-2 min-w-0">
             <span className="text-sm font-semibold shrink-0">AI 工作区</span>
-            <span className={cn('text-[10px] px-1.5 py-0.5 rounded shrink-0', isDark ? 'bg-white/10 text-gray-300' : 'bg-gray-100 text-gray-500')}>OpsOrigin</span>
+            <span className={cn('text-[10px] px-1.5 py-0.5 rounded shrink-0', 'bg-gray-100 text-gray-500 dark:bg-white/10 dark:text-gray-300')}>OpsOrigin</span>
           </div>
           <div className="flex items-center gap-1.5 shrink-0">
             {mode === 'normal' && (
@@ -260,6 +255,7 @@ export default function PureMode({ onExitPure }: { onExitPure: () => void }) {
               variant="panel"
               enableCitations
               enableFeedback
+              enableTaskList
               onFeedback={submitFb}
               loading={streaming}
               loadingText={mode === 'explore' ? 'AI 正在规划并执行…' : 'AI 正在思考…'}
@@ -270,8 +266,7 @@ export default function PureMode({ onExitPure }: { onExitPure: () => void }) {
             {/* 会话历史抽屉 */}
             {showHistory && (
               <div className="absolute inset-0 z-20 flex">
-                <div className="w-72 h-full overflow-y-auto p-3 space-y-2 shrink-0 backdrop-blur-2xl"
-                  style={{ background: isDark ? 'rgba(11,15,25,0.96)' : 'rgba(255,255,255,0.97)', borderColor: isDark ? 'var(--border)' : 'var(--border)', borderRightWidth: 1, borderRightStyle: 'solid' }}>
+                <div className="w-72 h-full overflow-y-auto p-3 space-y-2 shrink-0 backdrop-blur-2xl bg-popover/95 border-r border-border">
                   <div className="flex items-center justify-between mb-2">
                     <span className="text-sm font-medium">会话历史</span>
                     <button onClick={() => setShowHistory(false)} className="p-1 rounded hover:bg-black/5 dark:hover:bg-white/10 text-muted-foreground" title="收起">

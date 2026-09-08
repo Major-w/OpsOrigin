@@ -5,7 +5,7 @@ import { useInspections } from '@/stores/ai'
 import { apiFetch, cn } from '@/lib/utils'
 import { FlaskConical, RefreshCw, Play, RotateCcw, AlertTriangle, CheckCircle2, Loader2 } from 'lucide-react'
 import { getMessage } from '@/lib/message'
-import { Button, Input, Tag } from 'antd'
+import { Button, Input, Modal, Select, Tag } from 'antd'
 
 // L3-2 仿真验证飞轮: 故障注入 -> Agent 处置评估 -> 报告/回滚
 interface FaultScenario {
@@ -149,10 +149,9 @@ export default function FaultSimPage() {
         <CardContent className="flex gap-2 flex-wrap items-end">
           <div className="flex-1 min-w-[140px]">
             <label className="text-xs text-muted-foreground">故障场景</label>
-            <select className="mt-1 h-10 w-full rounded-md border border-input bg-background px-2 text-sm" value={form.scenario_id} onChange={e => setForm(f => ({ ...f, scenario_id: e.target.value }))}>
-              <option value="">选择场景</option>
-              {scenarios.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
-            </select>
+            <Select className="mt-1 w-full" placeholder="选择场景" allowClear value={form.scenario_id || undefined} onChange={v => setForm(f => ({ ...f, scenario_id: v ?? '' }))}>
+              {scenarios.map(s => <Select.Option key={s.id} value={s.id}>{s.name}</Select.Option>)}
+            </Select>
           </div>
           <div className="flex-1 min-w-[120px]">
             <label className="text-xs text-muted-foreground">注入目标（CI/主机）</label>
@@ -164,10 +163,9 @@ export default function FaultSimPage() {
           </div>
           <div className="flex-1 min-w-[140px]">
             <label className="text-xs text-muted-foreground">评估巡检（可选）</label>
-            <select className="mt-1 h-10 w-full rounded-md border border-input bg-background px-2 text-sm" value={form.inspection_id} onChange={e => setForm(f => ({ ...f, inspection_id: e.target.value }))}>
-              <option value="">不触发评估</option>
-              {inspections.filter(i => i.enabled).map(i => <option key={i.id} value={i.id}>{i.name}</option>)}
-            </select>
+            <Select className="mt-1 w-full" placeholder="不触发评估" allowClear value={form.inspection_id || undefined} onChange={v => setForm(f => ({ ...f, inspection_id: v ?? '' }))}>
+              {inspections.filter(i => i.enabled).map(i => <Select.Option key={i.id} value={i.id}>{i.name}</Select.Option>)}
+            </Select>
           </div>
           <Button className="gap-1" onClick={startInjection} disabled={starting || !form.scenario_id}>
             {starting ? <Loader2 className="h-4 w-4 animate-spin" /> : <Play className="h-4 w-4" />}
@@ -211,35 +209,38 @@ export default function FaultSimPage() {
         </CardContent>
       </Card>
 
-      {detail && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4" onClick={() => setDetail(null)}>
-          <div className="w-full max-w-lg rounded-xl bg-background border shadow-lg max-h-[80vh] overflow-auto" onClick={e => e.stopPropagation()}>
-            <div className="p-4 space-y-3">
-              <div className="flex items-center justify-between">
-                <h3 className="text-sm font-semibold">演练报告：{detail.scenario_name}</h3>
-                <Tag color={detail.matched_scenario ? 'success' : 'error'} className="gap-1">
-                  {detail.matched_scenario ? <CheckCircle2 className="h-3 w-3" /> : <AlertTriangle className="h-3 w-3" />}
-                  {detail.matched_scenario ? 'Agent 已识别故障' : 'Agent 未识别故障'}
-                </Tag>
+      <Modal
+        open={!!detail}
+        title={detail ? `演练报告：${detail.scenario_name}` : '演练报告'}
+        width={600}
+        onCancel={() => setDetail(null)}
+        footer={[<Button key="close" type="primary" onClick={() => setDetail(null)}>关闭</Button>]}
+      >
+        {detail && (
+          <div className="space-y-3">
+            <div className="flex items-center gap-2">
+              <Tag color={detail.matched_scenario ? 'success' : 'error'} className="gap-1">
+                {detail.matched_scenario ? <CheckCircle2 className="h-3 w-3" /> : <AlertTriangle className="h-3 w-3" />}
+                {detail.matched_scenario ? 'Agent 已识别故障' : 'Agent 未识别故障'}
+              </Tag>
+              <span className="text-xs text-muted-foreground">目标：{detail.target_name || detail.target_id || '-'}</span>
+            </div>
+            <div className="rounded-lg bg-muted/50 px-3 py-2 whitespace-pre-wrap text-xs leading-relaxed max-h-[45vh] overflow-y-auto">
+              {detail.report || detail.error || '演练进行中…'}
+            </div>
+            {detail.agent_summary && (
+              <div className="text-xs text-muted-foreground">
+                <div className="font-medium mb-1">Agent 摘要</div>
+                <p className="whitespace-pre-wrap">{detail.agent_summary}</p>
               </div>
-              <div className="rounded-lg bg-muted/50 px-3 py-2 whitespace-pre-wrap text-xs leading-relaxed">
-                {detail.report || detail.error || '演练进行中…'}
-              </div>
-              {detail.agent_summary && (
-                <div className="text-xs text-muted-foreground">
-                  <div className="font-medium mb-1">Agent 摘要</div>
-                  <p className="whitespace-pre-wrap">{detail.agent_summary}</p>
-                </div>
-              )}
-              <div className="flex items-center justify-between text-xs text-muted-foreground">
-                <span>目标：{detail.target_name || detail.target_id || '-'}</span>
-                <span className="text-base font-semibold text-primary">{detail.score} 分</span>
-              </div>
-              <Button size="middle" className="w-full" onClick={() => setDetail(null)}>关闭</Button>
+            )}
+            <div className="flex items-center justify-between text-xs text-muted-foreground">
+              <span className="text-base font-semibold text-primary">{detail.score} 分</span>
+              <span>开始 {new Date(detail.started_at).toLocaleString()}</span>
             </div>
           </div>
-        </div>
-      )}
+        )}
+      </Modal>
     </div>
   )
 }

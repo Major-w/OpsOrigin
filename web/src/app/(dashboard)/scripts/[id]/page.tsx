@@ -3,7 +3,7 @@ import { useEffect, useState, useMemo } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import { useScriptStore, type Script, type ExecutionResult, type ScriptVersion, type DiffEntry, type CheckResult } from '@/stores/script'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
-import { Button, Input, Tag, Space, Tooltip, message } from 'antd'
+import { Button, Input, Modal, Tag, Space, Tooltip } from 'antd'
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs'
 import { ArrowLeftOutlined, SaveOutlined, PlayCircleOutlined, ThunderboltOutlined, HistoryOutlined, CodeOutlined, FileTextOutlined, SettingOutlined } from '@ant-design/icons'
 import dynamic from '@/lib/dynamic'
@@ -1137,13 +1137,20 @@ export default function ScriptDetailPage() {
 
       {/* 执行对话框 */}
       {executeDialogOpen && viewScript && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center">
-          <div className="fixed inset-0 bg-black/50" onClick={() => !executing && setExecuteDialogOpen(false)} />
-          <div className="relative z-50 w-full max-w-lg bg-white dark:bg-gray-900 rounded-xl border p-6 shadow-lg max-h-[85vh] overflow-y-auto">
-            <h3 className="text-lg font-semibold mb-4 flex items-center gap-2">
-              <Play className="h-5 w-5 text-blue-500" />执行脚本
-            </h3>
-            <div className="space-y-4">
+        <Modal
+          open
+          title={<span className="flex items-center gap-2"><Play className="h-5 w-5 text-blue-500" />执行脚本</span>}
+          width={560}
+          onCancel={() => !executing && setExecuteDialogOpen(false)}
+          footer={[
+            <Button key="cancel" onClick={() => setExecuteDialogOpen(false)} disabled={executing}>取消</Button>,
+            <Button key="run" type="primary" onClick={handleExecute} disabled={executing || (!executeLocal && !executeSandbox && !executeHost?.id)}>
+              {executing ? <><Loader2 className="h-3.5 w-3.5 mr-1 animate-spin" />执行中</> : <><Play className="h-3.5 w-3.5 mr-1" />执行</>}
+            </Button>,
+          ]}
+          styles={{ body: { maxHeight: '72vh', overflowY: 'auto' } }}
+        >
+          <div className="space-y-4">
               <div className="p-3 rounded-md bg-muted/30">
                 <div className="flex items-center gap-2">
                   <Code2 className={cn("h-4 w-4", SCRIPT_TYPES.find(t => t.value === viewScript.type)?.color || 'text-muted-foreground')} />
@@ -1303,33 +1310,35 @@ export default function ScriptDetailPage() {
                       </span>
                     </span>
                   </div>
-                  <Input
-                    value={executeRunAs}
-                    onChange={e => setExecuteRunAs(e.target.value)}
-                    placeholder="留空使用当前用户"
-                  />
-                </div>
-              </div>
-            </div>
-            <div className="flex justify-end gap-2 mt-6">
-              <Button onClick={() => setExecuteDialogOpen(false)} disabled={executing}>取消</Button>
-              <Button type="primary" onClick={handleExecute} disabled={executing || (!executeLocal && !executeSandbox && !executeHost?.id)}>
-                {executing ? <><Loader2 className="h-3.5 w-3.5 mr-1 animate-spin" />执行中</> : <><Play className="h-3.5 w-3.5 mr-1" />执行</>}
-              </Button>
+              <Input
+                value={executeRunAs}
+                onChange={e => setExecuteRunAs(e.target.value)}
+                placeholder="留空使用当前用户"
+              />
             </div>
           </div>
-        </div>
+          </div>
+        </Modal>
       )}
 
       {/* 执行结果对话框 */}
       {executeResult && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center">
-          <div className="fixed inset-0 bg-black/50" onClick={() => setExecuteResult(null)} />
-          <div className="relative z-50 w-full max-w-2xl bg-white dark:bg-gray-900 rounded-xl border p-6 shadow-lg max-h-[85vh] overflow-y-auto">
-            <h3 className="text-lg font-semibold mb-4 flex items-center gap-2">
-              <CheckCircle className="h-5 w-5 text-blue-500" />执行结果
-            </h3>
-            <div className="space-y-3">
+        <Modal
+          open
+          title={<span className="flex items-center gap-2"><CheckCircle className="h-5 w-5 text-blue-500" />执行结果</span>}
+          width={720}
+          onCancel={() => setExecuteResult(null)}
+          footer={[
+            <Button key="close" onClick={() => setExecuteResult(null)}>关闭</Button>,
+            viewScript && activeTab !== 'history' ? (
+              <Button key="history" type="primary" onClick={() => { setActiveTab('history'); setExecuteResult(null) }}>
+                <History className="h-3 w-3 mr-1" />查看执行历史
+              </Button>
+            ) : null,
+          ]}
+          styles={{ body: { maxHeight: '72vh', overflowY: 'auto' } }}
+        >
+          <div className="space-y-3">
               <div className="flex items-center gap-2 flex-wrap">
                 <StatusBadge status={executeResult.status} />
                 <span className="text-xs text-muted-foreground">退出码 <code className="font-mono">{executeResult.exit_code}</code></span>
@@ -1407,31 +1416,21 @@ export default function ScriptDetailPage() {
               {executeResult.finished_at && (
                 <div className="text-[10px] text-muted-foreground">完成于 {formatTime(executeResult.finished_at)}</div>
               )}
-            </div>
-            <div className="flex justify-end gap-2 mt-6">
-              <Button onClick={() => setExecuteResult(null)}>关闭</Button>
-              {viewScript && activeTab !== 'history' && (
-                <Button type="primary" onClick={() => { setActiveTab('history'); setExecuteResult(null) }}>
-                  <History className="h-3 w-3 mr-1" />查看执行历史
-                </Button>
-              )}
-            </div>
           </div>
-        </div>
+        </Modal>
       )}
 
       {/* 版本查看对话框 */}
       {viewVersion && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center">
-          <div className="fixed inset-0 bg-black/50" onClick={() => setViewVersion(null)} />
-          <div className="relative z-50 w-full max-w-3xl bg-white dark:bg-gray-900 rounded-xl border p-6 shadow-lg max-h-[85vh] overflow-y-auto">
-            <div className="flex items-center justify-between mb-4">
-              <h3 className="text-lg font-semibold flex items-center gap-2">
-                <GitBranch className="h-5 w-5 text-blue-500" />版本 v{viewVersion.version}
-              </h3>
-              <Button type="text" size="middle" className="text-gray-500 hover:text-gray-900 dark:text-gray-400 dark:hover:text-white" onClick={() => setViewVersion(null)}><X className="h-4 w-4" /></Button>
-            </div>
-            <div className="space-y-3">
+        <Modal
+          open
+          title={<span className="flex items-center gap-2"><GitBranch className="h-5 w-5 text-blue-500" />版本 v{viewVersion.version}</span>}
+          width={760}
+          onCancel={() => setViewVersion(null)}
+          footer={null}
+          styles={{ body: { maxHeight: '72vh', overflowY: 'auto' } }}
+        >
+          <div className="space-y-3">
               {viewVersion.change_note && (
                 <div className="p-3 bg-muted/30 rounded-md">
                   <p className="text-xs text-muted-foreground">变更说明</p>
@@ -1452,9 +1451,8 @@ export default function ScriptDetailPage() {
                   height="320px"
                 />
               </div>
-            </div>
           </div>
-        </div>
+        </Modal>
       )}
     </div>
   )

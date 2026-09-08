@@ -25,7 +25,7 @@ export default function AIAssistant() {
     persistKey: SHARED_SESSION_KEY,
     convIdKey: SHARED_CONV_ID_KEY,
     enableTeam: false,
-    captureToolCalls: false,
+    captureToolCalls: true,
     enableAbort: true,
     resetConvOn403: true,
     defaultMode: 'normal',
@@ -63,13 +63,13 @@ export default function AIAssistant() {
 
   return (
     <div
-      className="fixed bottom-0 right-0 z-50 flex flex-col border border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-950 shadow-2xl
+      className="fixed bottom-0 right-0 z-50 flex flex-col border border-border bg-background shadow-2xl
                    w-full h-[100dvh] sm:w-[400px] sm:h-[620px] sm:bottom-5 sm:right-5 sm:rounded-2xl overflow-hidden"
       role="dialog"
       aria-label="AI 助手"
     >
       {/* 头部 */}
-      <div className="flex items-center justify-between px-4 py-2.5 border-b border-gray-200 dark:border-gray-800 bg-gradient-to-r from-blue-600 to-teal-600 text-white shrink-0">
+      <div className="flex items-center justify-between px-4 py-2.5 border-b border-border bg-gradient-to-r from-blue-600 to-teal-600 text-white shrink-0">
         <div className="flex items-center gap-2">
           <Bot className="h-4 w-4" />
           <span className="text-sm font-medium">AI 助手</span>
@@ -95,6 +95,7 @@ export default function AIAssistant() {
         variant="floating"
         enableCitations={false}
         enableFeedback={false}
+        enableTaskList
         loading={streaming}
         loadingText="AI 正在思考…"
         endRef={listEndRef}

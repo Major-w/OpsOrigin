@@ -2,7 +2,7 @@
 import { useEffect, useState, useRef, type ReactNode } from 'react'
 import { Link } from 'react-router-dom'
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card'
-import { Button, Input, Select, Tag, Space, Tabs, Popconfirm, Switch, Modal, message } from 'antd'
+import { Button, Input, Select, Tag, Space, Tabs, Popconfirm, Switch, Modal } from 'antd'
 import { ReloadOutlined, PlusOutlined, DeleteOutlined, EditOutlined, ApiOutlined, SettingOutlined, SaveOutlined, ThunderboltOutlined } from '@ant-design/icons'
 import { Bot, Plus, Trash2, Save, Wrench, Brain, Settings2, Terminal, Wand2, AlertCircle, CheckCircle2, Loader2, ChevronRight, ShieldCheck, Database, Download, RefreshCw, Sparkles, Copy, Pencil, Star, Search, Package, Eye, Rocket } from 'lucide-react'
 import RoleTemplatesPanel from '@/components/ai/role-templates-panel'
@@ -972,14 +972,13 @@ export default function AISettingsPage() {
                 </button>
               </div>
               {approvalScope === 'agent' && (
-                <select
-                  className="flex h-9 w-full mt-2 rounded-md border border-input bg-background px-3 py-1.5 text-sm"
-                  value={approvalAgentId}
-                  onChange={e => { setApprovalAgentId(e.target.value); if (e.target.value) loadApprovalPolicy(e.target.value) }}
-                >
-                  <option value="">选择 Agent…</option>
-                  {agents.map(a => <option key={a.id} value={a.id}>{a.name}</option>)}
-                </select>
+                <Select
+                  className="flex w-full mt-2"
+                  placeholder="选择 Agent…"
+                  value={approvalAgentId || undefined}
+                  onChange={v => { setApprovalAgentId(v); if (v) loadApprovalPolicy(v) }}
+                  options={agents.map(a => ({ value: a.id, label: a.name }))}
+                />
               )}
             </div>
 
@@ -1133,11 +1132,11 @@ export default function AISettingsPage() {
               </div>
               <div className="space-y-1">
                 <p className="text-xs text-muted-foreground">类型</p>
-                <select className="flex h-9 rounded-md border border-input bg-background px-2 text-xs" value={evoForm.type} onChange={e => setEvoForm({ ...evoForm, type: e.target.value })}>
-                  <option value="rss">RSS</option>
-                  <option value="url">URL</option>
-                  <option value="keyword">关键词(暂不支持)</option>
-                </select>
+                <Select className="w-40" value={evoForm.type} onChange={v => setEvoForm({ ...evoForm, type: v })} options={[
+                  { value: 'rss', label: 'RSS' },
+                  { value: 'url', label: 'URL' },
+                  { value: 'keyword', label: '关键词(暂不支持)', disabled: true },
+                ]} />
               </div>
               <div className="space-y-1 flex-1 min-w-[240px]">
                 <p className="text-xs text-muted-foreground">源地址</p>

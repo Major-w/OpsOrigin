@@ -2,7 +2,7 @@
 // 左栏任务列表 / 中栏执行时间线(可编辑 checklist + 审批卡 + 插话气泡 + 流式输出 + 插话输入) / 右栏产物面板(doc_write 落盘, 预览/下载/沉淀知识库)。
 // SSE 客户端走 fetch 流式解析(EventSource 无法带 Authorization 头), 与对话流同模式。
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { Button, Input, Modal, Select, Tag, message } from 'antd'
+import { Button, Input, Modal, Select, Tag } from 'antd'
 import { Loader2, Play, Plus, Square, Pause, ListTodo, FileText, CircleCheck, CircleX, Ban, Download, BookPlus, ShieldAlert, Sparkles, X, MessageSquare, Users, Gauge, Clock, FileDown, Presentation } from 'lucide-react'
 import { apiFetch, apiFetchRaw, cn } from '@/lib/utils'
 import { getMessage } from '@/lib/message'
@@ -633,7 +633,7 @@ export default function AITasksPage() {
                   <button onClick={() => exportArtifactAs(a, 'docx')} disabled={!!exportingArt} className="p-1 rounded text-muted-foreground hover:text-blue-500 opacity-0 group-hover:opacity-100 transition-opacity disabled:opacity-50" title="导出 Word (.docx)">
                     {exportingArt === `${a.id}:docx` ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <FileDown className="h-3.5 w-3.5" />}
                   </button>
-                  <button onClick={() => exportArtifactAs(a, 'pptx')} disabled={!!exportingArt} className="p-1 rounded text-muted-foreground hover:text-blue-500 opacity-0 group-hover:opacity-100 transition-opacity disabled:opacity-50" title="导出 PowerPoint (.pptx)">
+                  <button onClick={() => exportArtifactAs(a, 'pptx')} disabled={!!exportingArt} className="p-1 rounded text-muted-foreground hover:text-blue-500 opacity-0 group-hover:opacity-100 transition-opacity disabled:opacity-50" title="AI 重编生成演示文稿 (.pptx)">
                     {exportingArt === `${a.id}:pptx` ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Presentation className="h-3.5 w-3.5" />}
                   </button>
                 </>
@@ -663,7 +663,7 @@ export default function AITasksPage() {
                 <FileDown className="h-3 w-3 mr-1" />导出 docx
               </Button>,
               <Button key="dl-pptx" size="small" loading={exportingArt === `${a.id}:pptx`} disabled={!!exportingArt} onClick={() => exportArtifactAs(a, 'pptx', preview.content)}>
-                <Presentation className="h-3 w-3 mr-1" />导出 pptx
+                <Presentation className="h-3 w-3 mr-1" />AI 生成演示
               </Button>,
             ] : null
           })(),

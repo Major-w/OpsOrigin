@@ -23,7 +23,7 @@ import { useScriptStore } from '@/stores/script'
 import { useNotificationStore } from '@/stores/notification'
 import { useFileStore } from '@/stores/file'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
-import { Button, Input, Tag, Space, Tooltip, Modal, Popconfirm, message } from 'antd'
+import { Button, Input, Tag, Space, Tooltip, Modal } from 'antd'
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs'
 import { ArrowLeftOutlined, SaveOutlined, PlayCircleOutlined, DeleteOutlined, EditOutlined, ThunderboltOutlined, HistoryOutlined, SettingOutlined, CheckCircleOutlined, CloseCircleOutlined } from '@ant-design/icons'
 import { formatTime } from '@/lib/utils'
@@ -587,7 +587,19 @@ export default function WorkflowDetailPage() {
           <TabsContent value="approvals" className="mt-3"><ApprovalsPanel approvals={pendingApprovals} onApprove={(id,c)=>approve(id,c)} onReject={(id,c)=>reject(id,c)}/></TabsContent>
         </Tabs>
       </CardContent></Card>
-      {execDialog && <div className="fixed inset-0 z-50 flex items-center justify-center"><div className="fixed inset-0 bg-black/50" onClick={()=>setExecDialog(false)}/><div className="relative z-50 w-full max-w-lg bg-white dark:bg-gray-900 rounded-xl border p-6 shadow-lg max-h-[85vh] overflow-y-auto"><h3 className="text-lg font-semibold mb-4 flex items-center gap-2"><Play className="h-5 w-5 text-blue-500"/>执行流程</h3><ExecDialog workflow={viewWF} agents={agents} execAgents={execAgents} setExecAgents={setExecAgents} execInputs={execInputs} setExecInputs={setExecInputs} onConfirm={handleExecute} onCancel={()=>setExecDialog(false)}/></div></div>}
+      <Modal
+        open={execDialog}
+        title={<span className="flex items-center gap-2"><Play className="h-5 w-5 text-blue-500"/>执行流程</span>}
+        width={560}
+        onCancel={()=>setExecDialog(false)}
+        footer={[
+          <Button key="cancel" onClick={()=>setExecDialog(false)}>取消</Button>,
+          <Button key="run" type="primary" onClick={handleExecute} disabled={execAgents.length===0}>立即执行</Button>,
+        ]}
+        styles={{ body: { maxHeight: '72vh', overflowY: 'auto' } }}
+      >
+        <ExecDialog workflow={viewWF} agents={agents} execAgents={execAgents} setExecAgents={setExecAgents} execInputs={execInputs} setExecInputs={setExecInputs}/>
+      </Modal>
     </div>
   )
 }
@@ -595,7 +607,7 @@ export default function WorkflowDetailPage() {
 // ====== 执行/审批面板 ======
 function ExecDialog({ workflow, agents, execAgents, setExecAgents, execInputs, setExecInputs, onConfirm, onCancel }: any) {
   const onlineAgents = agents.filter((a:any)=>a.type!=='proxy'&&a.status==='online')
-  return <div className="space-y-4"><div><label className="text-sm font-medium">选择执行代理 ({execAgents.length} 已选)</label><div className="mt-2 space-y-1 max-h-40 overflow-y-auto">{onlineAgents.length===0?<p className="text-xs text-muted-foreground">无可用在线代理</p>:onlineAgents.map((a:any)=><label key={a.id} className="flex items-center gap-2 text-sm"><input type="checkbox" checked={execAgents.includes(a.id)} onChange={e=>setExecAgents(e.target.checked?[...execAgents,a.id]:execAgents.filter((id:string)=>id!==a.id))}/><span className="truncate">{a.name||a.id} ({a.address})</span></label>)}</div></div>{workflow.input_params?.length>0&&<div><label className="text-sm font-medium">输入参数</label><div className="space-y-2 mt-1">{workflow.input_params.map((p:any)=><div key={p.name}><label className="text-xs text-muted-foreground">{p.name}</label><Input className="h-8 mt-0.5" value={execInputs[p.name]||''} onChange={e=>setExecInputs({...execInputs,[p.name]:e.target.value})}/></div>)}</div></div>}<div className="flex justify-end gap-2 pt-2 border-t"><Button onClick={onCancel}>取消</Button><Button type="primary" onClick={onConfirm} disabled={execAgents.length===0}>立即执行</Button></div></div>
+  return <div className="space-y-4"><div><label className="text-sm font-medium">选择执行代理 ({execAgents.length} 已选)</label><div className="mt-2 space-y-1 max-h-40 overflow-y-auto">{onlineAgents.length===0?<p className="text-xs text-muted-foreground">无可用在线代理</p>:onlineAgents.map((a:any)=><label key={a.id} className="flex items-center gap-2 text-sm"><input type="checkbox" checked={execAgents.includes(a.id)} onChange={e=>setExecAgents(e.target.checked?[...execAgents,a.id]:execAgents.filter((id:string)=>id!==a.id))}/><span className="truncate">{a.name||a.id} ({a.address})</span></label>)}</div></div>{workflow.input_params?.length>0&&<div><label className="text-sm font-medium">输入参数</label><div className="space-y-2 mt-1">{workflow.input_params.map((p:any)=><div key={p.name}><label className="text-xs text-muted-foreground">{p.name}</label><Input className="h-8 mt-0.5" value={execInputs[p.name]||''} onChange={e=>setExecInputs({...execInputs,[p.name]:e.target.value})}/></div>)}</div></div>}</div>
 }
 
 function ExecutionsPanel({ executions }: { executions: WorkflowExecution[] }) {
