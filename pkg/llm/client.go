@@ -216,19 +216,23 @@ type ChatResponse struct {
 	} `json:"usage,omitempty"`
 }
 
-func NewClient(cfg Config) *Client {
-	// 独立 Transport: 放大每主机空闲连接数, 避免多智能体团队并行调用
-	// (同一 LLM 主机、同一 *http.Client) 时连接池争用导致部分请求挂起/被 cancel。
-	transport := http.DefaultTransport.(*http.Transport).Clone()
-	transport.MaxIdleConnsPerHost = 100
-	transport.MaxConnsPerHost = 0 // 0 = 不限制
+// pooledTransport 返回共享连接池配置的 Transport 副本:
+// 放大每主机空闲连接数, 避免并发调用(同一 LLM 主机)时连接池争用导致请求挂起/被 cancel。
+// NewClient 与 UpdateConfig 共用同一配置, 保证热更新后连接池参数不回退。
+func pooledTransport() *http.Transport {
+	tr := http.DefaultTransport.(*http.Transport).Clone()
+	tr.MaxIdleConnsPerHost = 100
+	tr.MaxConnsPerHost = 0 // 0 = 不限制
+	return tr
+}
 
+func NewClient(cfg Config) *Client {
 	if cfg.MaxRetries <= 0 {
 		cfg.MaxRetries = 3
 	}
 	return &Client{
 		config:     cfg,
-		client:     &http.Client{Timeout: cfg.Timeout, Transport: transport},
+		client:     &http.Client{Timeout: cfg.Timeout, Transport: pooledTransport()},
 		maxRetries: cfg.MaxRetries,
 	}
 }
@@ -689,6 +693,8 @@ func (c *Client) Embed(ctx context.Context, text string) ([]float32, error) {
 // UpdateConfig 原子更新 Client 的配置与 http.Client(热生效, 无需重启)。
 func (c *Client) UpdateConfig(cfg Config) {
 	c.config = cfg
-	c.client = &http.Client{Timeout: cfg.Timeout}
+	// 复用 pooledTransport 而非裸 http.Client: 避免热更新后退化为默认 Transport
+	// (每主机仅 2 条空闲连接), 并发对话将频繁新建 TCP 连接, 徒增首字延迟。
+	c.client = &http.Client{Timeout: cfg.Timeout, Transport: pooledTransport()}
 	slog.Info("llm client config updated", "model", cfg.Model, "base_url", cfg.BaseURL)
 }
