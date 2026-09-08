@@ -544,3 +544,26 @@
 .dark .markdown-body .hljs-number, .dark .markdown-body .hljs-symbol, .dark .markdown-body .hljs-link { color: #79c0ff; }
 /* 行内 code 在深色模式仍走 CSS 变量配色 */
 .dark .markdown-body code { background: rgba(255,255,255,0.08); color: #f778ba; }
+
+/* React Flow(拓扑/流程设计器): Controls / MiniMap 跟随主题变量 */
+.react-flow__controls {
+  border-radius: 8px;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  box-shadow: none;
+}
+.react-flow__controls button {
+  background: var(--card);
+  color: var(--foreground);
+  border-bottom: 1px solid var(--border);
+}
+.react-flow__controls button:hover { background: var(--muted); }
+.react-flow__controls button svg { fill: currentColor; }
+.react-flow__minimap {
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--card);
+  overflow: hidden;
+}
+.react-flow__edge-path { transition: stroke 0.15s ease; }
+.react-flow__handle { border: none; }
