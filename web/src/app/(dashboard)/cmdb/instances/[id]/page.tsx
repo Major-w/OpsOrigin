@@ -4,11 +4,12 @@ import { useParams, useNavigate } from 'react-router-dom'
 import { Link } from 'react-router-dom'
 import { useCMDBStore, type CIModel, type AttributeChange, type CIRelation } from '@/stores/cmdb'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
-import { Button, Table, Tag, Input, Modal, Select, Tabs, Popconfirm, message } from 'antd'
+import { Button, Table, Tag, Input, Modal, Select, Tabs, Popconfirm } from 'antd'
 import { formatTime, apiFetch, apiList } from '@/lib/utils'
 import { useCan } from '@/stores/permissions'
 import TopologyGraph from '@/components/TopologyGraph'
 import { SourceBadge, ProvenanceSummary } from '@/components/cmdb/SourceBadge'
+import { ConfirmDialog } from '@/components/ui/confirm-dialog'
 import { Pencil, Trash2, Unlink, AlertTriangle, Archive, ArchiveRestore, ChevronLeft, Plus } from 'lucide-react'
 import { getMessage } from '@/lib/message'
 
@@ -426,7 +427,12 @@ export default function CIInstanceDetailPage() {
                           <Link to={`/cmdb/instances/${peerId}`} className="text-xs hover:text-blue-600 hover:underline">{nameOf(peerId)}</Link>) },
                         { title: '类型', dataIndex: 'type', width: 130, render: (v: string) => <Tag className="text-[10px]">{v}</Tag> },
                         { title: '', key: 'op', width: 44, render: (_: unknown, r: any) => (canDelete
-                          ? <Button type="text" icon={<Unlink className="h-3 w-3" />} className="h-5 w-5 p-0" onClick={() => handleDeleteRel(r.id)} />
+                          ? (
+                            // 轻量行内删除档: Popconfirm 即可（契约两档: 行内=Popconfirm / 重破坏=ConfirmDialog+requireText）
+                            <Popconfirm title="解除该关联关系？" description="仅解除当前关系，不影响两端配置项。" onConfirm={() => handleDeleteRel(r.id)}>
+                              <Button type="text" icon={<Unlink className="h-3 w-3" />} className="h-5 w-5 p-0" />
+                            </Popconfirm>
+                          )
                           : null) },
                       ]}
                       pagination={false}
@@ -587,9 +593,15 @@ export default function CIInstanceDetailPage() {
         <div className="flex justify-end gap-2 mt-4"><Button type="default" onClick={() => setRelDialogOpen(false)} disabled={relSubmitting}>取消</Button><Button type="primary" onClick={handleCreateRel} disabled={!relForm.source_id || !relForm.target_id || relSubmitting}>创建{relSubmitting ? '…' : ''}</Button></div>
       </Modal>
 
-      <Popconfirm
+      {/* 重破坏操作: 需输入实例全名二次确认（契约: ConfirmDialog + requireText） */}
+      <ConfirmDialog
+        open={delOpen}
+        onClose={() => setDelOpen(false)}
         title="确认删除配置项"
-        description={`将永久删除配置项「${selectedCI?.name || ''}」，此操作不可撤销。请输入实例名称以确认删除。`}
+        description={`将永久删除配置项「${selectedCI?.name || ''}」及其全部关系与审计记录，此操作不可撤销。`}
+        confirmLabel="永久删除"
+        loading={delSubmitting}
+        requireText={selectedCI?.name || ''}
         onConfirm={async () => {
           setDelSubmitting(true)
           const ok = await remove(selectedCI?.id || '')
@@ -599,9 +611,6 @@ export default function CIInstanceDetailPage() {
           }
           setDelSubmitting(false)
         }}
-        open={delOpen}
-        onCancel={() => setDelOpen(false)}
-        okButtonProps={{ loading: delSubmitting }}
       />
     </div>
   )

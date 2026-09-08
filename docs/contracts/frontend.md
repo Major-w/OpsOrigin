@@ -12,7 +12,11 @@
 
 ## F2 操作逻辑闭环
 
-- **F2.1 危险操作二次确认**：删除/合并/批量删除/批量覆盖等**破坏性操作必须用 `components/ui/confirm-dialog.tsx`**，禁止原生 `confirm()`。校验：`grep -r "confirm(" web/src` 必须为 0。
+- **F2.1 危险操作二次确认**：禁止原生 `confirm()`。确认强度按破坏程度分两档，不得混用：
+  - **轻量行内删除 → antd `Popconfirm`**：单条数据行内删除、解除单项关联、停用/禁用等低破坏操作。`title`+`description` 必须写明后果（如「仅解除当前关系，不影响两端配置项」），文案不得与行为不符。
+  - **重破坏 → `components/ui/confirm-dialog.tsx`**：删除渠道/模型/实例/库级资源、归档恢复反向操作、批量删除/覆盖、合并、清空等不可逆操作；高风险场景必须加 `requireText`（输入资源全名方可确认，如实例名/模型名），**文案写「请输入 XX 确认」就必须真实带输入框**。
+  - **冒泡防护**：位于可点击整卡/整行的行内操作按钮（删除/编辑/收藏等）必须 `e.stopPropagation()`，禁止点击子操作触发卡片导航（如知识库列表删除曾误跳详情页）。
+  - 校验：`grep -r "confirm(" web/src` 必须为 0。
 - **F2.2 提交防重**：所有写操作（提交/保存/创建/批量）必须带 `submitting` 锁态：按钮 `disabled={... || submitting}` + 进行中文案 `…`，入口处 `if (submitting) return`。校验：人工 + grep 抽查。
 - **F2.3 反馈三件套**：写操作完成后必须「toast 结果 + 数据刷新（loadData/fetch）+ 状态迁移（关 Dialog/清选中）」，三者缺一不可。
 - **F2.4 权限门控**：页级读视图用 `useCan('xxx:read')` + 无权限态 UI；破坏性按钮额外 `useCan('xxx:write'|'delete'|'admin')`。权限 key 必须与 `docs/contracts/api.md` 权限点注册表一致。校验：grep 页面是否 import `useCan`。
