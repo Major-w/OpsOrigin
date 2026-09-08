@@ -26,6 +26,16 @@ func (s *SocialStore) migrate() {
 	s.db.Exec(`CREATE TABLE IF NOT EXISTS knowledge_follow_updates (article_id TEXT NOT NULL, user_id TEXT NOT NULL DEFAULT 'admin', updated_at TIMESTAMPTZ DEFAULT NOW(), read BOOLEAN DEFAULT false, PRIMARY KEY(article_id, user_id))`)
 	s.db.Exec(`CREATE TABLE IF NOT EXISTS knowledge_ratings (id TEXT PRIMARY KEY, article_id TEXT NOT NULL, user_id TEXT NOT NULL DEFAULT 'admin', rating INT NOT NULL CHECK(rating BETWEEN 1 AND 5), comment TEXT DEFAULT '', created_at TIMESTAMPTZ DEFAULT NOW())`)
 	s.db.Exec(`CREATE TABLE IF NOT EXISTS knowledge_comments (id TEXT PRIMARY KEY, article_id TEXT NOT NULL, user_id TEXT NOT NULL DEFAULT 'admin', content TEXT NOT NULL, parent_id TEXT DEFAULT '', created_at TIMESTAMPTZ DEFAULT NOW())`)
+	// 评分唯一化(幂等): 同一 (article_id,user_id) 只保留最后一次评分, 再加唯一约束保证 upsert 语义。
+	// 历史版本 Rate() 每次 INSERT 新行, 同用户多次评分会重复计入 avg/count —— 先清理再约束。
+	s.db.Exec(`DELETE FROM knowledge_ratings a USING knowledge_ratings b
+		WHERE a.article_id = b.article_id AND a.user_id = b.user_id
+		  AND (a.created_at < b.created_at OR (a.created_at = b.created_at AND a.id < b.id))`)
+	s.db.Exec(`DO $$ BEGIN
+		IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'knowledge_ratings_article_user_key') THEN
+			ALTER TABLE knowledge_ratings ADD CONSTRAINT knowledge_ratings_article_user_key UNIQUE (article_id, user_id);
+		END IF;
+	END $$`)
 }
 
 type ArticleStats struct {
@@ -72,6 +82,13 @@ func (s *SocialStore) GetStats(ctx context.Context, articleID, userID string) (*
 		st.Liked = liked > 0
 		st.Bookmarked = bookmarked > 0
 		st.Followed = followed > 0
+		// 当前用户评分(唯一记录, upsert 语义下即最近一次)
+		var ur sql.NullInt64
+		s.db.QueryRowContext(ctx, `SELECT rating FROM knowledge_ratings WHERE article_id=$1 AND user_id=$2`, articleID, userID).Scan(&ur)
+		if ur.Valid {
+			v := int(ur.Int64)
+			st.UserRating = &v
+		}
 	}
 	return st, nil
 }
@@ -99,9 +116,11 @@ func (s *SocialStore) ToggleBookmark(ctx context.Context, articleID, userID stri
 }
 
 func (s *SocialStore) Rate(ctx context.Context, articleID, userID string, rating int, comment string) error {
-	id := uuid.New().String()
-	_, err := s.db.ExecContext(ctx, `INSERT INTO knowledge_ratings(id,article_id,user_id,rating,comment,created_at) VALUES($1,$2,$3,$4,$5,$6)`,
-		id, articleID, userID, rating, comment, time.Now())
+	// upsert: 同用户对同一文章只保留最后一次评分, 修改即覆盖, 不累计
+	_, err := s.db.ExecContext(ctx, `INSERT INTO knowledge_ratings(id,article_id,user_id,rating,comment,created_at)
+		VALUES($1,$2,$3,$4,$5,$6)
+		ON CONFLICT (article_id,user_id) DO UPDATE SET rating=EXCLUDED.rating, comment=EXCLUDED.comment, created_at=NOW()`,
+		uuid.New().String(), articleID, userID, rating, comment, time.Now())
 	return err
 }
 

@@ -1,9 +1,9 @@
 
 import { useEffect, useRef, useState } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
-import { useKnowledgeStore, type Category, type PrecipitationRule } from '@/stores/knowledge'
+import { useKnowledgeStore, type PrecipitationRule } from '@/stores/knowledge'
 import { Card, CardContent } from '@/components/ui/card'
-import { Button, Select, Tag, Input, Popconfirm } from 'antd'
+import { Button, Select, Tag, Input, Popconfirm, Modal } from 'antd'
 import { formatTime } from '@/lib/utils'
 import { Plus, Trash2, BookOpen, Pencil, FolderPlus, Upload, Loader2, CheckCircle2, Bookmark, Bell, Settings2, ThumbsUp, MessageSquare, CalendarOff, Eye } from 'lucide-react'
 import { cn } from '@/lib/utils'
@@ -51,14 +51,15 @@ export default function KnowledgeListPage() {
   const [searchParams, setSearchParams] = useSearchParams()
   const store = useKnowledgeStore()
   const {
-    articles, fetch, remove, categories, categoryList, fetchCategories,
-    saveCategory, updateCategory, deleteCategory, importFile,
+    articles, fetch, remove, categories, fetchCategories,
+    importFile,
     listBookmarks, listFollows, listFollowUpdates, markFollowUpdateRead,
     listPrecipitationRules, savePrecipitationRule, deletePrecipitationRule, runPrecipitationRule,
     getStats,
   } = store
-  const [catDialog, setCatDialog] = useState(false)
-  const [catForm, setCatForm] = useState({ id: '', name: '', description: '', sort_order: 0, color: '' })
+  const [importing, setImporting] = useState(false)
+  const importRef = useRef<HTMLInputElement | null>(null)
+
   // 筛选条件 URL 参数化(?q=/?cat=): 支持刷新/分享/外链直达(如 AI 对话页知识范围 chip 跳转)
   const [filterCat, setFilterCat] = useState(() => searchParams.get('cat') || '')
   const [searchQ, setSearchQ] = useState(() => searchParams.get('q') || '')
@@ -68,9 +69,6 @@ export default function KnowledgeListPage() {
     if (filterCat) p.set('cat', filterCat)
     setSearchParams(p, { replace: true })
   }, [searchQ, filterCat, setSearchParams])
-  const [importing, setImporting] = useState(false)
-  const importRef = useRef<HTMLInputElement | null>(null)
-  const [pendingConfirm, setPendingConfirm] = useState<{ title: string; description: string; onConfirm: () => void | Promise<void> } | null>(null)
 
   // 视图过滤: 全部 / 我的收藏 / 我关注的
   const [view, setView] = useState<'all' | 'bookmarks' | 'follows'>('all')
@@ -117,24 +115,6 @@ export default function KnowledgeListPage() {
     setPrecipLoading(false)
   }
   useEffect(() => { if (precipOpen) loadPrecip() }, [precipOpen, listPrecipitationRules])
-
-  const handleSaveCategory = async () => {
-    if (!catForm.name.trim()) return getMessage().warning('请输入分类名称')
-    if (catForm.id) {
-      await updateCategory(catForm.id, catForm)
-    } else {
-      await saveCategory(catForm)
-    }
-    setCatForm({ id: '', name: '', description: '', sort_order: 0, color: '' })
-  }
-
-  const handleDeleteCategory = async (c: Category) => {
-    setPendingConfirm({
-      title: '删除分类',
-      description: `删除分类「${c.name}」？引用该分类的文章分类将被清空`,
-      onConfirm: async () => { await deleteCategory(c.id) },
-    })
-  }
 
   const handleImportFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0]
@@ -193,7 +173,7 @@ export default function KnowledgeListPage() {
         <Button size="middle" type="default" onClick={() => importRef.current?.click()} disabled={importing}>
           {importing ? <Loader2 className="h-4 w-4 mr-1 animate-spin" /> : <Upload className="h-4 w-4 mr-1" />}导入
         </Button>
-        <Button size="middle" type="default" onClick={() => setCatDialog(true)}><FolderPlus className="h-4 w-4 mr-1" />分类管理</Button>
+        <Button size="middle" type="default" onClick={() => navigate('/knowledge/categories')}><FolderPlus className="h-4 w-4 mr-1" />分类管理</Button>
         <Button size="middle" type="default" onClick={() => setPrecipOpen(true)}><Settings2 className="h-4 w-4 mr-1" />沉淀策略</Button>
         <Button size="middle" onClick={() => navigate('/knowledge/new')}><Plus className="h-4 w-4 mr-1" />新建文章</Button>
       </div>
@@ -243,9 +223,12 @@ export default function KnowledgeListPage() {
                     ? <Tag color="success"><CheckCircle2 className="h-2.5 w-2.5 mr-0.5" />已发布</Tag>
                     : <Tag color="warning">草稿</Tag>}
                   <Button type="text" size="middle" className="h-6 w-6 text-gray-500 hover:text-gray-900 dark:text-gray-400 dark:hover:text-white" onClick={e => { e.stopPropagation(); navigate(`/knowledge/${a.id}`) }}><Pencil className="h-3 w-3" /></Button>
-                  <Popconfirm title="确定删除该文章？" onConfirm={() => { void remove(a.id) }}>
-                    <Button type="text" size="middle" className="h-6 w-6 text-red-400"><Trash2 className="h-3 w-3" /></Button>
-                  </Popconfirm>
+                  {/* 删除必须阻断冒泡, 否则点击会先触发整卡 navigate 跳详情, Popconfirm 弹层被吞 */}
+                  <span onClick={e => e.stopPropagation()}>
+                    <Popconfirm title="确定删除该文章？" description="删除后不可恢复" onConfirm={() => { void remove(a.id) }}>
+                      <Button type="text" size="middle" className="h-6 w-6 text-red-400"><Trash2 className="h-3 w-3" /></Button>
+                    </Popconfirm>
+                  </span>
                 </div>
               </div>
               <p className="text-xs text-muted-foreground mt-1 line-clamp-2">{a.content ? stripMarkdown(a.content).slice(0, 120) : ''}</p>
@@ -283,81 +266,24 @@ export default function KnowledgeListPage() {
         })}
     </div>
 
-    {/* 分类管理弹窗 */}
-    {catDialog && <div className="fixed inset-0 z-50 flex items-center justify-center"><div className="fixed inset-0 bg-black/50" onClick={() => setCatDialog(false)} />
-      <div className="relative z-50 w-full max-w-md bg-white dark:bg-gray-900 rounded-xl border p-6 shadow-lg">
-        <h2 className="text-lg font-semibold mb-4 flex items-center gap-2"><FolderPlus className="h-5 w-5 text-blue-500" />分类管理</h2>
-        <div className="space-y-2 max-h-60 overflow-y-auto">
-          {categories.map(name => {
-            const cat = categoryList.find(c => c.name === name)
-            const hasArticles = articles.some(a => a.category === name)
-            return (
-              <div key={cat?.id || name} className="flex items-center justify-between px-3 py-2 rounded-lg border border-gray-200 dark:border-gray-800">
-                <div className="flex items-center gap-2 min-w-0">
-                  <div className="w-3 h-3 rounded-full shrink-0" style={{ backgroundColor: cat?.color || 'var(--muted-foreground)' }} />
-                  <span className="text-sm truncate">{name}</span>
-                  <span className="text-[10px] text-muted-foreground">{hasArticles ? '有文章' : '空'}</span>
-                </div>
-                <div className="flex gap-1 shrink-0">
-                  <Button
-                    type="text"
-                    size="middle"
-                    className="h-6 w-6"
-                    onClick={() => setCatForm({ id: cat?.id || '', name, description: cat?.description || '', sort_order: cat?.sort_order || 0, color: cat?.color || '' })}
-                    title="编辑"
-                  >
-                    <Pencil className="h-3 w-3" />
-                  </Button>
-                  <Button
-                    type="text"
-                    size="middle"
-                    className="h-6 w-6 text-red-400"
-                    onClick={() => handleDeleteCategory({ id: cat?.id || '', name, sort_order: 0 } as Category)}
-                    title="删除"
-                    disabled={!cat?.id}
-                  >
-                    <Trash2 className="h-3 w-3" />
-                  </Button>
-                </div>
-              </div>
-            )
-          })}
+    {/* 自动沉淀策略弹窗（antd Modal，主题 token 自动适配深浅色） */}
+    <Modal
+      open={precipOpen}
+      onCancel={() => setPrecipOpen(false)}
+      width={760}
+      footer={null}
+      title={(
+        <div className="flex items-center gap-2 text-base"><Settings2 className="h-4 w-4 text-indigo-500" />自动沉淀策略
+          <span className="text-xs font-normal text-muted-foreground">定义从运维事件(工单/告警/会话)自动沉淀为知识库文章的规则</span>
         </div>
-        <div className="space-y-2 mt-4 border-t pt-4">
-          <Input placeholder="新分类名称" value={catForm.name} onChange={e => setCatForm({ ...catForm, name: e.target.value })} />
-          <Input placeholder="描述(可选)" value={catForm.description} onChange={e => setCatForm({ ...catForm, description: e.target.value })} />
-          <div className="flex gap-2">
-            <input
-              type="color"
-              value={catForm.color || 'var(--primary)'}
-              onChange={e => setCatForm({ ...catForm, color: e.target.value })}
-              className="w-8 h-8 rounded cursor-pointer border-0"
-            />
-            <span className="text-xs text-muted-foreground self-center">选择颜色</span>
+      )}
+      styles={{ body: { maxHeight: '72vh', overflowY: 'auto' } }}
+    >
+        {precipForm === null && (
+          <div className="flex justify-end mb-3">
+            <Button size="small" onClick={() => setPrecipForm({ name: '', source: 'itsm', category: categories[0] || '', title_template: '', content_template: '', enabled: true, auto_publish: false })}><Plus className="h-4 w-4 mr-1" />新建策略</Button>
           </div>
-          <Button size="middle" className="w-full" onClick={handleSaveCategory} disabled={!catForm.name.trim()}>
-            <Plus className="h-4 w-4 mr-1" />{catForm.id ? '更新分类' : '添加分类'}
-          </Button>
-        </div>
-        <div className="flex justify-end mt-4"><Button type="default" onClick={() => setCatDialog(false)}>关闭</Button></div>
-      </div>
-    </div>}
-
-    {/* 自动沉淀策略弹窗 */}
-    {precipOpen && <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
-      <div className="fixed inset-0 bg-black/50" onClick={() => setPrecipOpen(false)} />
-      <div className="relative z-50 w-full max-w-3xl max-h-[92vh] overflow-y-auto bg-white dark:bg-gray-900 rounded-xl border p-6 shadow-lg">
-        <div className="flex items-center justify-between">
-          <div>
-            <h2 className="text-lg font-semibold flex items-center gap-2"><Settings2 className="h-5 w-5 text-indigo-500" />自动沉淀策略</h2>
-            <p className="text-xs text-muted-foreground mt-0.5">定义从运维事件(工单/告警/会话)自动沉淀为知识库文章的规则</p>
-          </div>
-          <div className="flex gap-2">
-            {precipForm === null && <Button size="middle" onClick={() => setPrecipForm({ name: '', source: 'itsm', category: categories[0] || '', title_template: '', content_template: '', enabled: true, auto_publish: false })}><Plus className="h-4 w-4 mr-1" />新建策略</Button>}
-            <Button type="text" size="middle" className="h-7 w-7" onClick={() => setPrecipOpen(false)}>✕</Button>
-          </div>
-        </div>
-
+        )}
         {precipLoading && precipRules.length === 0 ? <div className="py-10 text-center text-muted-foreground"><Loader2 className="h-6 w-6 mx-auto animate-spin" /></div> :
           precipForm !== null ? (
             <div className="space-y-3">
@@ -381,9 +307,9 @@ export default function KnowledgeListPage() {
             </div>
           ) : (
             <div className="space-y-2">
-              {precipRules.length === 0 && <p className="text-sm text-muted-foreground text-center py-8">暂无沉淀策略, 点击右上角"新建策略"</p>}
+              {precipRules.length === 0 && <p className="text-sm text-muted-foreground text-center py-8">暂无沉淀策略, 点击上方"新建策略"</p>}
               {precipRules.map(r => (
-                <div key={r.id} className="flex items-center justify-between px-3 py-2.5 rounded-lg border border-gray-200 dark:border-gray-800">
+                <div key={r.id} className="flex items-center justify-between px-3 py-2.5 rounded-lg border border-border">
                   <div className="min-w-0">
                     <div className="flex items-center gap-2">
                       <span className="text-sm font-medium truncate">{r.name}</span>
@@ -403,11 +329,6 @@ export default function KnowledgeListPage() {
               ))}
             </div>
           )}
-      </div>
-    </div>}
-
-    <Popconfirm title={pendingConfirm?.title || ''} description={pendingConfirm?.description || ''} onConfirm={async () => { if (pendingConfirm) await pendingConfirm.onConfirm(); setPendingConfirm(null) }} open={!!pendingConfirm} onCancel={() => setPendingConfirm(null)}>
-      <span />
-    </Popconfirm>
+    </Modal>
   </div>
 }

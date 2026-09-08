@@ -6,7 +6,10 @@ import { Button, Tag, Input, Modal, Popconfirm } from 'antd'
 import { Plus, Trash2, Pencil, FolderPlus, GripVertical, Palette } from 'lucide-react'
 import { cn } from '@/lib/utils'
 
-const DEFAULT_COLOR = 'var(--primary)'
+const DEFAULT_COLOR = '#3B82F6'
+
+/** 兼容存量 CSS 变量色值(如 var(--primary)) → 具体 hex；color input 不接受 CSS 变量，空/变量一律回落主色蓝 */
+const normalizeColor = (c?: string | null) => (!c || c.startsWith('var(')) ? DEFAULT_COLOR : c
 
 export default function KnowledgeCategoriesPage() {
   const { categoryList, fetchCategories, saveCategory, updateCategory, deleteCategory } =
@@ -21,7 +24,6 @@ export default function KnowledgeCategoriesPage() {
     color: DEFAULT_COLOR,
   })
   const [searchQ, setSearchQ] = useState('')
-  const [pendingDelete, setPendingDelete] = useState<Category | null>(null)
 
   useEffect(() => {
     fetchCategories()
@@ -35,7 +37,7 @@ export default function KnowledgeCategoriesPage() {
   }
 
   const openEdit = (cat: Category) => {
-    setForm({ ...cat })
+    setForm({ ...cat, color: normalizeColor(cat.color) })
     setDialogOpen(true)
   }
 
@@ -45,7 +47,7 @@ export default function KnowledgeCategoriesPage() {
       name: form.name!.trim(),
       description: form.description || '',
       sort_order: form.sort_order ?? 0,
-      color: form.color || DEFAULT_COLOR,
+      color: normalizeColor(form.color),
     }
     if (isEditing && form.id) {
       await updateCategory(form.id, payload)
@@ -53,12 +55,6 @@ export default function KnowledgeCategoriesPage() {
       await saveCategory(payload)
     }
     setDialogOpen(false)
-  }
-
-  const handleDelete = async () => {
-    if (!pendingDelete) return
-    await deleteCategory(pendingDelete.id)
-    setPendingDelete(null)
   }
 
   const sorted = [...categoryList]
@@ -107,7 +103,7 @@ export default function KnowledgeCategoriesPage() {
                   <GripVertical className="h-3.5 w-3.5 opacity-0 group-hover:opacity-40 transition-opacity cursor-grab shrink-0" />
                   <div
                     className="w-3 h-3 rounded-full shrink-0"
-                    style={{ backgroundColor: cat.color || DEFAULT_COLOR }}
+                    style={{ backgroundColor: normalizeColor(cat.color) }}
                   />
                   <span className="truncate flex-1">{cat.name}</span>
                   <Tag color="default" className="font-mono">
@@ -124,10 +120,10 @@ export default function KnowledgeCategoriesPage() {
                     <Palette className="h-3 w-3 text-muted-foreground" />
                     <div
                       className="w-4 h-4 rounded border border-border"
-                      style={{ backgroundColor: cat.color || DEFAULT_COLOR }}
+                      style={{ backgroundColor: normalizeColor(cat.color) }}
                     />
                     <span className="text-[10px] text-muted-foreground font-mono">
-                      {cat.color || DEFAULT_COLOR}
+                      {normalizeColor(cat.color)}
                     </span>
                   </div>
                   <Tag>
@@ -144,7 +140,7 @@ export default function KnowledgeCategoriesPage() {
                     <Pencil className="h-3 w-3 mr-1" />
                     编辑
                   </Button>
-                  <Popconfirm title={`删除分类「${cat.name}」？引用该分类的文章分类将被清空`} onConfirm={handleDelete}>
+                  <Popconfirm title={`删除分类「${cat.name}」？`} description="引用该分类的文章分类将被清空" onConfirm={async () => { await deleteCategory(cat.id) }}>
                     <Button
                       type="text"
                       size="middle"
@@ -210,7 +206,7 @@ export default function KnowledgeCategoriesPage() {
               <div className="flex items-center gap-2">
                 <input
                   type="color"
-                  value={form.color || DEFAULT_COLOR}
+                  value={normalizeColor(form.color)}
                   onChange={e => setForm({ ...form, color: e.target.value })}
                   className="w-9 h-9 rounded cursor-pointer border-0 p-0"
                 />
