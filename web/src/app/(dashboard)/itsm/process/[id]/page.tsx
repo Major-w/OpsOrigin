@@ -1,18 +1,18 @@
 
 import { useEffect, useState, useMemo, useCallback, useRef } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
-import dynamic from '@/lib/dynamic'
-
-const ReactFlow = dynamic(() => import('@xyflow/react').then(m => ({ default: m.ReactFlow })), { ssr: false })
-const Controls = dynamic(() => import('@xyflow/react').then(m => ({ default: m.Controls })), { ssr: false })
-const Background = dynamic(() => import('@xyflow/react').then(m => ({ default: m.Background })), { ssr: false })
-const MiniMap = dynamic(() => import('@xyflow/react').then(m => ({ default: m.MiniMap })), { ssr: false })
-const Handle = dynamic(() => import('@xyflow/react').then(m => ({ default: m.Handle })), { ssr: false })
-const ReactFlowProvider = dynamic(() => import('@xyflow/react').then(m => ({ default: m.ReactFlowProvider })), { ssr: false })
-const BaseEdge = dynamic(() => import('@xyflow/react').then(m => ({ default: m.BaseEdge })), { ssr: false })
-const EdgeLabelRenderer = dynamic(() => import('@xyflow/react').then(m => ({ default: m.EdgeLabelRenderer })), { ssr: false })
+// React Flow 定位样式必须本页自引:Vite 按需注入 CSS,深链直达设计器时
+// 若从未访问过 topology/ProcessFlowView,style.css 不会加载 → position:absolute
+// 全失效,画布 DOM 被按文档流堆到页面底部(视觉上只剩一团黑块)。
+import '@xyflow/react/dist/style.css'
+// @xyflow/react 必须静态整包引入：本文件同时静态引了 Position/getSmoothStepPath 等,
+// 库代码本就在主 bundle,把 Handle/ReactFlow 拆成异步 dynamic 会让句柄晚于节点测量挂载,
+// 触发 reactflow error#008(handle id null)——一大半连线静默不渲染,且 resize 不自愈。
+import {
+  ReactFlow, Controls, Background, MiniMap, Handle, ReactFlowProvider, useReactFlow,
+  BaseEdge, EdgeLabelRenderer, Position, getSmoothStepPath, MarkerType, BackgroundVariant,
+} from '@xyflow/react'
 import type { Node, NodeProps, EdgeProps, Connection, Edge } from '@xyflow/react'
-import { Position, getSmoothStepPath, MarkerType, BackgroundVariant } from '@xyflow/react'
 import { useProcessStore } from '@/stores/itsm/processes'
 import type { Process, ProcessStep } from '@/stores/itsm/types'
 import { useAgentStore } from '@/stores/agent'
@@ -32,7 +32,7 @@ import {
   Plus, Trash2, Save, X, Pencil, ChevronLeft, Loader2,
   PlayCircle, StopCircle, UserCheck, GitBranch,
   Clock, Bell, Server, FolderTree, FileText, Settings2, ChevronRight, ChevronLeft as CL,
-  Grid3x3, Undo2, Redo2, Users, Search, Route, AlertTriangle,
+  Grid3x3, Undo2, Redo2, Users, Search, Route, AlertTriangle, Wand2,
 } from 'lucide-react'
 import { App, Button, Form, Input, Modal, Tag } from 'antd'
 
@@ -148,6 +148,72 @@ function detectCycle(steps: ProcessStep[]): boolean {
  * 流程完整性校验：必须含开始/结束、不允许环路、从开始可达全部节点、全部节点可到达结束。
  * 任一不满足返回人类可读的错误提示（以「流程未设计完整」开头），满足返回 null。
  */
+/**
+ * 自动分层布局：把 DAG 排成自左向右的 BPMN 泳道。
+ *  - 层号 = 从开始节点出发的最长路径深度（开始层 0），网关分支天然同层并排；
+ *  - 每层内保持 steps 原顺序，垂直居中均分；
+ *  - 输出新的 steps（不可变，未变化节点引用不变）。
+ */
+const LAYOUT_COL_W = 280   // 层间距（容纳卡片宽 + 手柄余量）
+const LAYOUT_ROW_H = 116   // 层内垂直间距
+const LAYOUT_X0 = 96
+const LAYOUT_Y0 = 224
+function layoutFlow(steps: ProcessStep[]): ProcessStep[] {
+  if (steps.length === 0) return steps
+  const ids = new Set(steps.map(s => s.id))
+  // 邻接表 src → [tgt]（依赖方向：tgt.depends_on 里指向 src）
+  const succ = new Map<string, string[]>()
+  const indeg = new Map<string, number>()
+  for (const s of steps) { succ.set(s.id, []); indeg.set(s.id, 0) }
+  for (const s of steps) {
+    for (const d of s.depends_on || []) {
+      if (!ids.has(d.nodeId) || !succ.has(d.nodeId)) continue
+      succ.get(d.nodeId)!.push(s.id)
+      indeg.set(s.id, (indeg.get(s.id) || 0) + 1)
+    }
+  }
+  // Kahn 拓扑排序同时算最长路径层号
+  const layer = new Map<string, number>()
+  const q: string[] = []
+  for (const s of steps) { layer.set(s.id, 0); if ((indeg.get(s.id) || 0) === 0) q.push(s.id) }
+  let head = 0
+  while (head < q.length) {
+    const u = q[head++]
+    const lu = layer.get(u) || 0
+    for (const v of succ.get(u) || []) {
+      layer.set(v, Math.max(layer.get(v) || 0, lu + 1))
+      indeg.set(v, (indeg.get(v) || 0) - 1)
+      if (indeg.get(v) === 0) q.push(v)
+    }
+  }
+  // 兜底：环/孤立残留节点也给出层号，避免 NaN 定位
+  const maxLayer = Math.max(...steps.map(s => layer.get(s.id) || 0))
+  for (const s of steps) if ((layer.get(s.id) ?? -1) < 0) layer.set(s.id, maxLayer + 1)
+
+  const byLayer = new Map<number, ProcessStep[]>()
+  for (const s of steps) {
+    const l = layer.get(s.id) ?? 0
+    if (!byLayer.has(l)) byLayer.set(l, [])
+    byLayer.get(l)!.push(s)
+  }
+  const keys = [...byLayer.keys()].sort((a, b) => a - b)
+  const changed = new Set<string>()
+  const pos = new Map<string, { x: number; y: number }>()
+  for (const l of keys) {
+    const list = byLayer.get(l)!
+    const n = list.length
+    list.forEach((s, i) => {
+      pos.set(s.id, { x: LAYOUT_X0 + l * LAYOUT_COL_W, y: Math.round(LAYOUT_Y0 + (i - (n - 1) / 2) * LAYOUT_ROW_H) })
+    })
+  }
+  return steps.map(s => {
+    const p = pos.get(s.id)
+    if (!p || (s.position_x === p.x && s.position_y === p.y)) return s
+    changed.add(s.id)
+    return { ...s, position_x: p.x, position_y: p.y }
+  })
+}
+
 function validateFlow(steps: ProcessStep[]): string | null {
   const hasStart = steps.some(s => s.type === 'start')
   const hasEnd = steps.some(s => s.type === 'end')
@@ -315,7 +381,9 @@ const nodeTypes: Record<string, any> = {
 // ---- 可删除连线（悬停出现「×」，选中高亮；Delete 键同样可删）----
 function FlowEdge({ id, sourceX, sourceY, targetX, targetY, sourcePosition, targetPosition, markerEnd, data, selected }: EdgeProps) {
   const d = (data || {}) as Record<string, any>
-  const [path, labelX, labelY] = getSmoothStepPath({ sourceX, sourceY, targetX, targetY, sourcePosition, targetPosition, borderRadius: 14 })
+  // borderRadius 收到 2：BPMN 惯例是利落直角拐弯。14px 大圆角在小高度差时
+  // 两段圆弧拼成 S 波浪，视觉上像"自由弯曲"而不是流程图的正交连线。
+  const [path, labelX, labelY] = getSmoothStepPath({ sourceX, sourceY, targetX, targetY, sourcePosition, targetPosition, borderRadius: 2 })
   return <>
     <BaseEdge id={id} path={path} markerEnd={markerEnd}
       style={{ stroke: d.color, strokeWidth: selected ? 3 : 2, strokeDasharray: d.dash }}/>
@@ -341,6 +409,34 @@ function FlowEdge({ id, sourceX, sourceY, targetX, targetY, sourcePosition, targ
 }
 
 const edgeTypes: Record<string, any> = { flow: FlowEdge }
+
+/**
+ * fitSignal 变化时重新 fitView。
+ * 必须显式触发：自动分层布局在进入画布后异步改写节点坐标,
+ * ReactFlow 的初始化 fitView 只在首次测量时算一次, 布局后视口不再跟随,
+ * 整张图会停在错误的原点（节点滑出可视区）。
+ */
+function AutoFitter({ signal }: { signal: number }) {
+  const rf = useReactFlow()
+  const first = useRef(true)
+  useEffect(() => {
+    let cancelled = false
+    const t = setTimeout(() => {
+      // fitView 在节点未完成测量时会被 React Flow 排队, 测量完成后才真正执行,
+      // 所以缩放下限必须挂在 fitView 的 Promise 后面, 不能同步判断。
+      rf.fitView({ padding: 0.12, duration: first.current ? 0 : 250, maxZoom: 1 })
+        .then(() => {
+          if (cancelled) return
+          // 长流程全览缩放会低至 0.2、文字不可读：抬到 0.5 可读下限,
+          // 用户可用右下角 Controls 的 fit 按钮随时回全貌。
+          if (rf.getZoom() < 0.5) return rf.zoomTo(0.5, { duration: first.current ? 0 : 250 })
+        })
+        .finally(() => { if (!cancelled) first.current = false })
+    }, 80)
+    return () => { cancelled = true; clearTimeout(t) }
+  }, [signal, rf])
+  return null
+}
 
 // ---- 审批人选择器：用户列表勾选 + 用户组一键展开成员 ----
 interface UserRef { id: string; username: string; email?: string }
@@ -719,7 +815,7 @@ function EdgePanel({ source, target, cond, steps, mainForm, onChangeCond, onDele
 }
 
 // ---- BPMN canvas (presentational, steps 提升到页面层) ----
-function BPMNCanvas({ steps, scripts, channels, mainForm, users, groups, selId, setSelId, selEdge, setSelEdge, update, add, remove, onConnect, removeEdge, setEdgeCond, snap, onToggleSnap, onAlign }: {
+function BPMNCanvas({ steps, scripts, channels, mainForm, users, groups, selId, setSelId, selEdge, setSelEdge, update, add, remove, onConnect, removeEdge, setEdgeCond, snap, onToggleSnap, onAlign, onAutoLayout, fitSignal }: {
   steps: ProcessStep[]; scripts: any[]; channels: any[]; mainForm: FormSchema
   users: UserRef[]; groups: GroupRef[]
   selId: string | null; setSelId: (id: string | null) => void
@@ -731,7 +827,7 @@ function BPMNCanvas({ steps, scripts, channels, mainForm, users, groups, selId, 
   onConnect: (conn: Connection) => void
   removeEdge: (source: string, target: string) => void
   setEdgeCond: (source: string, target: string, cond: string) => void
-  snap: boolean; onToggleSnap: () => void; onAlign: () => void
+  snap: boolean; onToggleSnap: () => void; onAlign: () => void; onAutoLayout: () => void; fitSignal: number
 }) {
   const sel = steps.find(s => s.id === selId) || null
   const edgeSrc = selEdge ? steps.find(s => s.id === selEdge.source) : null
@@ -791,6 +887,8 @@ function BPMNCanvas({ steps, scripts, channels, mainForm, users, groups, selId, 
           <span className="flex items-center gap-1.5"><Grid3x3 className="h-3 w-3" />网格吸附</span><span>{snap ? '开' : '关'}</span>
         </button>
         <button type="button" onClick={onAlign} className="w-full flex items-center gap-2 px-2 py-1.5 text-xs rounded-md border border-dashed hover:border-solid hover:bg-accent"><Grid3x3 className="h-3 w-3" />对齐到网格</button>
+        <button type="button" onClick={onAutoLayout} className="w-full flex items-center gap-2 px-2 py-1.5 text-xs rounded-md border border-dashed hover:border-solid hover:bg-accent text-blue-500 dark:text-blue-400"><Wand2 className="h-3 w-3" />自动分层布局</button>
+        <p className="text-[10px] text-muted-foreground">· 自动按依赖关系排成自左向右的泳道：并行分支同层对齐，分支合并自动换层。</p>
       </div>
     </div>
     <div className="flex-1 border rounded-md overflow-hidden bg-muted/20">
@@ -802,12 +900,13 @@ function BPMNCanvas({ steps, scripts, channels, mainForm, users, groups, selId, 
         onPaneClick={() => { setSelId(null); setSelEdge(null) }}
         onNodesDelete={nodes => nodes.forEach(n => { if (n.type !== 'start') remove(n.id) })}
         onEdgesDelete={eds => eds.forEach(e => removeEdge(e.source, e.target))}
-        fitView deleteKeyCode={['Backspace','Delete']}
+        minZoom={0.08} maxZoom={1.5} deleteKeyCode={['Backspace','Delete']}
         snapToGrid={snap} snapGrid={[16, 16]}
         defaultEdgeOptions={{ type: 'flow' }}>
         <Controls position="bottom-right"/>
         <Background variant={BackgroundVariant.Dots} gap={20} size={1}/>
         <MiniMap position="bottom-left" nodeStrokeWidth={2} pannable zoomable style={{ height: 100 }}/>
+        <AutoFitter signal={fitSignal}/>
       </ReactFlow>
     </div>
     <div className="w-60 shrink-0 overflow-y-auto" style={{ maxHeight: 680 }}>
@@ -946,6 +1045,8 @@ export default function ITSMProcessDetailPage() {
   }, [])
   // 网格吸附 / 一键对齐
   const [snap, setSnap] = useState(true)
+  // 画布重适配信号：批量改坐标（自动分层/网格对齐）后让 ReactFlow 重新 fitView
+  const [fitSignal, setFitSignal] = useState(0)
   const alignToGrid = useCallback(() => {
     pushHistory()
     setSteps(prev => prev.map(s => ({
@@ -954,6 +1055,7 @@ export default function ITSMProcessDetailPage() {
       position_y: Math.round((s.position_y ?? 0) / 16) * 16,
     })))
     setDirty(true)
+    setFitSignal(v => v + 1)
   }, [pushHistory])
 
   // 流程级主表单 / SLA / 通知
@@ -1074,6 +1176,33 @@ export default function ITSMProcessDetailPage() {
     return () => window.removeEventListener('keydown', onKey)
   }, [step, undo, redo])
 
+  /** 一键自动分层布局：整张 DAG 排成自左向右泳道（可撤销） */
+  const handleAutoLayout = useCallback(() => {
+    if (steps.length === 0) return
+    pushHistory()
+    setSteps(prev => layoutFlow(prev))
+    setDirty(true)
+    setFitSignal(v => v + 1)
+  }, [steps.length, pushHistory])
+
+  // 进入「流程编排」画布：若载入的流程从未保存过坐标（全部为 null），自动做一次分层布局，
+  // 避免节点按数组顺序平铺成网格；布局后置 dirty（坐标变更需保存），用指纹避免切步重复触发。
+  const autoLayoutedRef = useRef<string | null>(null)
+  useEffect(() => {
+    if (step !== 1 || isNew || steps.length === 0) return
+    const hasPos = steps.some(s => s.position_x != null || s.position_y != null)
+    if (hasPos) return
+    const fp = steps.map(s => s.id).join(',')
+    if (autoLayoutedRef.current === fp) return
+    autoLayoutedRef.current = fp
+    pushHistory()
+    setSteps(prev => layoutFlow(prev))
+    setDirty(true)
+    setFitSignal(v => v + 1)
+    // 仅评估 step 切换；steps 内容变化由指纹兜底
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [step])
+
   const handleCreate = async () => {
     if (!newName.trim()) return
     setCreating(true)
@@ -1157,7 +1286,7 @@ export default function ITSMProcessDetailPage() {
           selId={selId} setSelId={setSelId} selEdge={selEdge} setSelEdge={setSelEdge}
           update={update} add={add} remove={remove} onConnect={onConnect}
           removeEdge={removeEdge} setEdgeCond={setEdgeCond}
-          snap={snap} onToggleSnap={() => setSnap(v => !v)} onAlign={alignToGrid} />
+          snap={snap} onToggleSnap={() => setSnap(v => !v)} onAlign={alignToGrid} onAutoLayout={handleAutoLayout} fitSignal={fitSignal} />
         <div className="flex justify-between items-center">
           <div className="flex gap-2">
             <Button onClick={() => setStep(0)}><CL className="h-4 w-4 mr-1"/>上一步</Button>
