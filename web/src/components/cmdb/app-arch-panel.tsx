@@ -29,13 +29,18 @@ const LAYER_META: Record<string, { label: string; color: string; border: string 
   other: { label: '其它', color: 'bg-gray-400', border: 'border-gray-300 dark:border-gray-600' },
 }
 
-export function AppArchPanel() {
+// defaultAppId：与主图谱共享当前根。三视图（图谱/矩阵/架构）此前各自维护一套选择，
+// 切换页签后还得重选一遍，这里让架构视图跟随主图的选中 CI。
+export function AppArchPanel({ defaultAppId }: { defaultAppId?: string } = {}) {
   const [cis, setCis] = useState<CIModel[]>([])
-  const [appId, setAppId] = useState('')
+  const [appId, setAppId] = useState(defaultAppId ?? '')
   const [depth, setDepth] = useState(2)
   const [topo, setTopo] = useState<AppTopology | null>(null)
   const [loading, setLoading] = useState(false)
   const [err, setErr] = useState('')
+
+  // 主图换了根就跟着换，避免切页签后看到的是上一根的架构
+  useEffect(() => { if (defaultAppId) setAppId(defaultAppId) }, [defaultAppId])
 
   useEffect(() => {
     apiList<CIModel>('/cmdb/ci?limit=2000').then(setCis).catch(() => setCis([]))

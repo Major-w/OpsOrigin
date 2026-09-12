@@ -2,12 +2,16 @@ package cmdb
 
 import (
 	"encoding/json"
-	"github.com/opsorigin/core/pkg/auth"
-	"github.com/opsorigin/core/pkg/httputil"
+	"fmt"
 	"net/http"
+	"sort"
 	"strconv"
 
+	"github.com/opsorigin/core/pkg/auth"
+	"github.com/opsorigin/core/pkg/httputil"
+
 	"github.com/opsorigin/core/internal/cmdb/model"
+	"github.com/opsorigin/core/internal/cmdb/pg"
 )
 
 // ============================================================
@@ -26,6 +30,138 @@ func (s *Service) handleStats(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	httputil.WriteJSON(w, 200, st)
+}
+
+// handleGetDashboard 返回当前用户的统计大屏布局定义（无记录返回空对象，前端回落默认）。
+func (s *Service) handleGetDashboard(w http.ResponseWriter, r *http.Request) {
+	tenantID := auth.TenantFromContext(r.Context())
+	userID := auth.UserIDFromContext(r.Context())
+	if s.pg == nil {
+		httputil.WriteJSON(w, 200, map[string]any{})
+		return
+	}
+	def, err := s.pg.GetDashboardLayout(r.Context(), tenantID, userID)
+	if err != nil {
+		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if def == nil {
+		httputil.WriteJSON(w, 200, map[string]any{})
+		return
+	}
+	httputil.WriteJSON(w, 200, def)
+}
+
+// handleSaveDashboard 保存当前用户的统计大屏布局定义（组件列表 + 网格布局）。
+func (s *Service) handleSaveDashboard(w http.ResponseWriter, r *http.Request) {
+	tenantID := auth.TenantFromContext(r.Context())
+	userID := auth.UserIDFromContext(r.Context())
+	if s.pg == nil {
+		httputil.WriteError(w, http.StatusServiceUnavailable, "存储不可用")
+		return
+	}
+	var def pg.DashboardLayout
+	if err := httputil.BindJSON(r, &def); err != nil {
+		httputil.WriteError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if err := s.pg.SaveDashboardLayout(r.Context(), tenantID, userID, &def); err != nil {
+		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	httputil.WriteJSON(w, 200, map[string]any{"ok": true})
+}
+
+// ============================================================
+// P2-1c 大屏 AI 洞察（规则派生，确定性、零 LLM 调用）
+// ============================================================
+
+// DashboardInsight 大屏上的 AI 洞察卡：由 Stats 规则派生, 提示配置基线健康度与待办。
+type DashboardInsight struct {
+	Level  string `json:"level"` // info | warn | risk
+	Title  string `json:"title"`
+	Detail string `json:"detail"`
+	Metric string `json:"metric,omitempty"` // 关键指标原文, 如 "关系密度 0.08"
+}
+
+// handleDashboardInsights 基于 IT 资源统计派生 3-5 条数据驱动洞察, 供大屏 AI 洞察卡展示。
+func (s *Service) handleDashboardInsights(w http.ResponseWriter, r *http.Request) {
+	tenantID := auth.TenantFromContext(r.Context())
+	if s.pg == nil {
+		httputil.WriteJSON(w, 200, []DashboardInsight{})
+		return
+	}
+	st, err := s.pg.Stats(r.Context(), tenantID)
+	if err != nil {
+		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	httputil.WriteJSON(w, 200, deriveInsights(st))
+}
+
+// deriveInsights 由统计快照规则派生洞察; 优先级 risk > warn > info, 最多 5 条。
+func deriveInsights(st *model.CMDBStats) []DashboardInsight {
+	ins := make([]DashboardInsight, 0, 6)
+	if st == nil {
+		return ins
+	}
+	inst := st.TotalInstances
+	rel := st.TotalRelations
+	relDensity := 0.0
+	if inst > 0 {
+		relDensity = float64(rel) / float64(inst)
+	}
+
+	// 1) 关系基线：未建任何关系 / 关系密度过低
+	if inst > 0 && rel == 0 {
+		ins = append(ins, DashboardInsight{Level: "risk", Title: "尚未建立任何 CI 依赖关系", Detail: "影响分析、故障溯源与变更影响评估均不可用，建议尽快通过采集器或手动补全 CI 间的依赖/归属关系。", Metric: "关系数 0"})
+	} else if inst > 5 && relDensity < 0.1 {
+		ins = append(ins, DashboardInsight{Level: "warn", Title: "拓扑关联稀疏", Detail: "当前配置项间平均关联不足 0.1 条，拓扑图几乎为空，建议补全依赖关系以支撑影响分析与根因定位。", Metric: fmt.Sprintf("关系密度 %.2f", relDensity)})
+	}
+
+	// 2) 非活跃实例占比
+	inactiveStatus := map[string]bool{"offline": true, "stopped": true, "maintenance": true, "error": true, "inactive": true, "abnormal": true, "archived": true, "故障": true, "离线": true, "维护": true, "停用": true}
+	inactive := 0
+	for _, s := range st.ByStatus {
+		if inactiveStatus[s.Status] {
+			inactive += s.Count
+		}
+	}
+	if inst > 0 {
+		ratio := float64(inactive) / float64(inst)
+		if ratio > 0.2 {
+			ins = append(ins, DashboardInsight{Level: "warn", Title: fmt.Sprintf("存在 %d 台非活跃实例", inactive), Detail: "离线/维护/停用资产占比偏高，建议核对后及时下线或归档，降低台账噪音与授权成本。", Metric: fmt.Sprintf("非活跃占比 %.0f%%", ratio*100)})
+		}
+	}
+
+	// 3) 资源类型集中度
+	if len(st.ByType) > 0 {
+		top := st.ByType[0]
+		if inst > 0 {
+			share := float64(top.Count) / float64(inst)
+			if share > 0.5 {
+				ins = append(ins, DashboardInsight{Level: "info", Title: "资源类型集中", Detail: fmt.Sprintf("「%s」占实例总数 %.0f%%，建议关注该类型容量水位与高可用冗余，避免单点风险。", top.TypeName, share*100), Metric: fmt.Sprintf("%s %.0f%%", top.TypeName, share*100)})
+			}
+		}
+	}
+
+	// 4) 模型覆盖度
+	if st.TotalModels <= 1 && inst > 0 {
+		ins = append(ins, DashboardInsight{Level: "info", Title: "资源模型覆盖单一", Detail: "当前仅定义 1 个资源模型，建议按业务域补充模型（如主机/数据库/中间件），提升 CMDB 表达力。", Metric: fmt.Sprintf("模型 %d 个", st.TotalModels)})
+	}
+
+	// 5) 空基线提示
+	if inst == 0 {
+		ins = append(ins, DashboardInsight{Level: "info", Title: "尚未纳管任何配置项", Detail: "CMDB 基线为空，建议通过采集器接入或手动导入，开始构建统一配置源。", Metric: "实例 0"})
+	}
+
+	// 按优先级排序后截断到 5 条
+	order := map[string]int{"risk": 0, "warn": 1, "info": 2}
+	sort.SliceStable(ins, func(i, j int) bool { return order[ins[i].Level] < order[ins[j].Level] })
+	if len(ins) > 5 {
+		ins = ins[:5]
+	}
+	return ins
 }
 
 // ============================================================

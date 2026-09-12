@@ -10,6 +10,7 @@ import {
 } from 'lucide-react'
 import { useWebSocket } from '@/lib/useWebSocket'
 import { apiFetch, apiList } from '@/lib/utils'
+import { RELATION_LABELS } from '@/lib/graph-colors'
 
 function AnimatedCounter({ value, label }: { value: number; label: string }) {
   const [display, setDisplay] = useState(0)
@@ -133,10 +134,15 @@ export default function DashboardPage() {
     { trace: '4e5f...2c7d', action: 'monitor.probe.run', actor: 'AI_AGENT', status: 'success' },
   ])
 
+  // 拓扑关系概览：读 /cmdb/stats 的按类型关系统计（此前是三个写死的数字）
+  const [relStats, setRelStats] = useState<{ relation_type: string; count: number }[] | null>(null)
+
   useEffect(() => { const t = setInterval(() => setTime(new Date()), 1000); return () => clearInterval(t) }, [])
 
   useEffect(() => {
     Promise.allSettled([
+      apiFetch<{ by_relation_type?: { relation_type: string; count: number }[] }>('/cmdb/stats')
+        .then(d => setRelStats(d?.by_relation_type ?? [])).catch(() => {}),
       apiList<any>('/cmdb/ci').then(d => setMetrics(m => ({ ...m, cmdb: d.length }))).catch(() => {}),
       apiList<any>('/monitor/targets').then(d => setMetrics(m => ({ ...m, targets: d.length }))).catch(() => {}),
       apiList<any>('/monitor/alerts').then(d => {
@@ -397,19 +403,24 @@ export default function DashboardPage() {
               <CardTitle className="text-sm">拓扑关系概览</CardTitle>
             </CardHeader>
             <CardContent>
-              <div className="grid grid-cols-3 gap-4 text-center">
-                {[
-                  { label: '物理关系', value: 234, icon: Server },
-                  { label: '依赖关系', value: 567, icon: GitBranch },
-                  { label: '网络关系', value: 189, icon: Wifi },
-                ].map((item, i) => (
-                  <div key={i} className="p-4 rounded-lg bg-gray-50 dark:bg-[rgba(255,255,255,0.02)] border border-gray-100 dark:border-[rgba(255,255,255,0.04)]">
-                    <item.icon className="w-6 h-6 mx-auto text-violet-500 dark:text-violet-400 mb-2" />
-                    <p className="metric-value text-xl text-gray-900 dark:text-white">{item.value}</p>
-                    <p className="text-[11px] text-muted-foreground mt-1">{item.label}</p>
-                  </div>
-                ))}
-              </div>
+              {relStats !== null && relStats.length === 0 ? (
+                <p className="py-6 text-center text-xs text-muted-foreground">暂无关系数据，先在 CMDB 中为 CI 建立关系</p>
+              ) : (
+                <div className="grid grid-cols-3 gap-4 text-center">
+                  {(relStats === null ? [null, null, null] : relStats.slice(0, 3)).map((r, i) => {
+                    const Icon = [Server, GitBranch, Wifi][i] ?? Server
+                    return (
+                      <div key={i} className="p-4 rounded-lg bg-gray-50 dark:bg-[rgba(255,255,255,0.02)] border border-gray-100 dark:border-[rgba(255,255,255,0.04)]">
+                        <Icon className="w-6 h-6 mx-auto text-violet-500 dark:text-violet-400 mb-2" />
+                        <p className="metric-value text-xl text-gray-900 dark:text-white">{r ? r.count : '—'}</p>
+                        <p className="text-[11px] text-muted-foreground mt-1">
+                          {r ? (RELATION_LABELS[r.relation_type] || r.relation_type) : '加载中'}
+                        </p>
+                      </div>
+                    )
+                  })}
+                </div>
+              )}
             </CardContent>
           </Card>
         </TabsContent>

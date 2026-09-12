@@ -30,15 +30,23 @@ type AttrStat struct {
 	Count int    `json:"count"`
 }
 
+// RelationTypeStat 是按关系类型聚合的关系统计。
+// 首页「拓扑关系概览」此前用的是三个写死的数字，改为读这里按类型出真实值。
+type RelationTypeStat struct {
+	RelationType string `json:"relation_type"`
+	Count        int    `json:"count"`
+}
+
 // CMDBStats 是 IT 资源统计大屏的数据结构。
 type CMDBStats struct {
-	TotalModels    int            `json:"total_models"`
-	TotalInstances int            `json:"total_instances"`
-	TotalRelations int            `json:"total_relations"`
-	ByCategory     []CategoryStat `json:"by_category"`
-	ByStatus       []StatusStat   `json:"by_status"`
-	ByType         []TypeStat     `json:"by_type"` // Top N 模型实例数
-	ByAttr         []AttrStat     `json:"by_attr"` // 按属性聚合（如 region/provider），Top N
+	TotalModels    int                `json:"total_models"`
+	TotalInstances int                `json:"total_instances"`
+	TotalRelations int                `json:"total_relations"`
+	ByCategory     []CategoryStat     `json:"by_category"`
+	ByStatus       []StatusStat       `json:"by_status"`
+	ByType         []TypeStat         `json:"by_type"` // Top N 模型实例数
+	ByAttr         []AttrStat         `json:"by_attr"` // 按属性聚合（如 region/provider），Top N
+	ByRelationType []RelationTypeStat `json:"by_relation_type"`
 }
 
 // ============================================================

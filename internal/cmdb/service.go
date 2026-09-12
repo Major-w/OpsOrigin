@@ -46,6 +46,9 @@ type Service struct {
 
 	// typeRegistry 是 AI 模型注册表 / 本体服务（cmd/core 注入 registry.New(pgRepo)），nil 安全。
 	typeRegistry registry.TypeRegistry
+
+	// usage 是 CMDB 数据消费分析采集器（EnableUsageAnalytics 后非 nil）。
+	usage *usageRecorder
 }
 
 func NewService(cfg *config.Config, pgRepo *pg.Repository, dgClient *dgraph.Client) *Service {
@@ -138,6 +141,20 @@ func (s *Service) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/v1/cmdb/idc/panorama", s.handleIDCPanorama) // 机房机柜 2D 数据
 	mux.HandleFunc("POST /api/v1/cmdb/drift/{id}/resolve", s.handleResolveDrift)
 
+	// CMDB 基线快照 + 环境漂移对比。
+	mux.HandleFunc("POST /api/v1/cmdb/snapshots", s.handleCaptureSnapshot)
+	mux.HandleFunc("GET /api/v1/cmdb/snapshots", s.handleListSnapshots)
+	mux.HandleFunc("POST /api/v1/cmdb/snapshots/compare", s.handleCompareSnapshots)
+	mux.HandleFunc("GET /api/v1/cmdb/snapshots/{id}", s.handleGetSnapshot)
+	mux.HandleFunc("DELETE /api/v1/cmdb/snapshots/{id}", s.handleDeleteSnapshot)
+
+	// 数据消费分析：CMDB API 被调用次数 / 热点数据 / 调用错误频率。
+	// 采集器未启用（无 PG 后端）时各端点返回 501。
+	mux.HandleFunc("GET /api/v1/cmdb/usage/summary", s.handleUsageSummary)
+	mux.HandleFunc("GET /api/v1/cmdb/usage/hotspots", s.handleUsageHotspots)
+	mux.HandleFunc("GET /api/v1/cmdb/usage/errors", s.handleUsageErrors)
+	mux.HandleFunc("GET /api/v1/cmdb/usage/status", s.handleUsageStatus)
+
 	// 保存的查询策略（"我想查"，P1-3）
 	mux.HandleFunc("GET /api/v1/cmdb/saved-queries", s.handleListSavedQueries)
 	mux.HandleFunc("POST /api/v1/cmdb/saved-queries", s.handleCreateSavedQuery)
@@ -145,7 +162,11 @@ func (s *Service) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("DELETE /api/v1/cmdb/saved-queries/{id}", s.handleDeleteSavedQuery)
 
 	mux.HandleFunc("GET /api/v1/cmdb/topology/{id}", s.handleGetTopology)
+	// 条件子图：按模型/环境/业务/关键字取子图，供依赖矩阵与大图场景使用（不再只有单根邻域）
+	mux.HandleFunc("GET /api/v1/cmdb/subgraph", s.handleGetSubgraph)
 	mux.HandleFunc("GET /api/v1/cmdb/impact/{id}", s.handleImpactAnalysis)
+	// 任意两 CI 间最短依赖路径查询(无向 BFS, 沿关系链)。
+	mux.HandleFunc("GET /api/v1/cmdb/path", s.handlePathQuery)
 	// 全景可观测拓扑（CMDB 拓扑 + 监控状态 + 告警 rollup 融合）：
 	// 纵向骨架 + 状态/告警叠加，调用链横向边按 layers 参数逐步启用。
 	mux.HandleFunc("GET /api/v1/panorama", s.handleGetPanorama)
@@ -176,6 +197,9 @@ func (s *Service) RegisterRoutes(mux *http.ServeMux) {
 
 	// P2-1 统计大屏
 	mux.HandleFunc("GET /api/v1/cmdb/stats", s.handleStats)
+	mux.HandleFunc("GET /api/v1/cmdb/dashboard", s.handleGetDashboard)
+	mux.HandleFunc("PUT /api/v1/cmdb/dashboard", s.handleSaveDashboard)
+	mux.HandleFunc("GET /api/v1/cmdb/dashboard/insights", s.handleDashboardInsights)
 
 	// P2-2 机房机柜（IDC / Rack / U 位）
 	mux.HandleFunc("GET /api/v1/cmdb/idc", s.handleListIDC)
@@ -319,44 +343,73 @@ func (s *Service) computeAggregates(ctx context.Context, tenantID string, ci *mo
 	}
 }
 
-// buildTopologyFromRelations 以 rootID 为起点, 在关系切片上做双向 BFS(深度 maxDepth),
-// 返回拓扑节点与边。节点名称/类型由调用方按需富化(pg 模式用 ListCI 映射)。
-func buildTopologyFromRelations(tenantID, rootID string, rels []*model.CIRelation, maxDepth int) ([]model.TopologyNode, []model.TopologyEdge) {
-	visited := map[string]bool{rootID: true}
-	var nodes []model.TopologyNode
-	var edges []model.TopologyEdge
+// buildTopologyFromRelations 以 roots 为起点, 在关系切片上做双向 BFS(深度 maxDepth),
+// 返回拓扑节点与边。节点名称/类型由调用方按需富化(pg 模式用按 ID 批量查询)。
+//
+// 两处关键约束(2026-09-12 重构):
+//  1. 先建邻接表再 BFS —— 原实现逐层线性扫全表关系, 复杂度 O(depth×V×E), 大租户下每次
+//     拓扑请求都要跑几百万次比较; 现改为一次性建 adj, 整体 O(V+E)。
+//  2. 节点按 BFS 访问顺序输出 —— 原实现从 map 遍历产出, Go map 迭代序随机, 导致
+//     handleGetTopology 的 nodes[:600] 截断砍掉的是"随机 600 个", 每次刷新保留的节点
+//     都不同、边还对不上。现在截断取的是"离根最近的 N 个", 结果确定可复现。
+func buildTopologyFromRelations(tenantID string, roots []string, rels []*model.CIRelation, maxDepth int) ([]model.TopologyNode, []model.TopologyEdge) {
+	type neighbor struct {
+		peer     string
+		sourceID string
+		targetID string
+		relType  string
+	}
 
-	frontier := []string{rootID}
+	adj := make(map[string][]neighbor, len(rels)*2)
+	for _, rel := range rels {
+		if rel.TenantID != tenantID {
+			continue
+		}
+		e := neighbor{peer: rel.TargetID, sourceID: rel.SourceID, targetID: rel.TargetID, relType: rel.RelationType}
+		adj[rel.SourceID] = append(adj[rel.SourceID], e)
+		adj[rel.TargetID] = append(adj[rel.TargetID], neighbor{
+			peer: rel.SourceID, sourceID: rel.SourceID, targetID: rel.TargetID, relType: rel.RelationType,
+		})
+	}
+
+	visited := make(map[string]bool, len(roots))
+	order := make([]string, 0, 64) // BFS 顺序, 保证输出稳定
+	var frontier []string
+	for _, root := range roots {
+		if root == "" || visited[root] {
+			continue
+		}
+		visited[root] = true
+		order = append(order, root)
+		frontier = append(frontier, root)
+	}
+
+	seenEdge := make(map[string]bool, len(rels))
+	edges := make([]model.TopologyEdge, 0, len(rels))
+
 	for depth := 0; depth < maxDepth && len(frontier) > 0; depth++ {
 		var next []string
 		for _, cid := range frontier {
-			for _, rel := range rels {
-				if rel.TenantID != tenantID {
-					continue
-				}
-				var neighbor string
-				if rel.SourceID == cid {
-					neighbor = rel.TargetID
-				} else if rel.TargetID == cid {
-					neighbor = rel.SourceID
-				} else {
-					continue
-				}
-				if !edgeExists(edges, rel.SourceID, rel.TargetID, rel.RelationType) {
+			for _, e := range adj[cid] {
+				key := e.sourceID + "|" + e.targetID + "|" + e.relType
+				if !seenEdge[key] {
+					seenEdge[key] = true
 					edges = append(edges, model.TopologyEdge{
-						SourceID: rel.SourceID, TargetID: rel.TargetID, RelationType: rel.RelationType,
+						SourceID: e.sourceID, TargetID: e.targetID, RelationType: e.relType,
 					})
 				}
-				if !visited[neighbor] {
-					visited[neighbor] = true
-					next = append(next, neighbor)
+				if !visited[e.peer] {
+					visited[e.peer] = true
+					order = append(order, e.peer)
+					next = append(next, e.peer)
 				}
 			}
 		}
 		frontier = next
 	}
 
-	for id := range visited {
+	nodes := make([]model.TopologyNode, 0, len(order))
+	for _, id := range order {
 		nodes = append(nodes, model.TopologyNode{ID: id, TenantID: tenantID})
 	}
 	return nodes, edges

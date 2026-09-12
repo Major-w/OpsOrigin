@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"strconv"
 	"strings"
 
 	"github.com/opsorigin/core/pkg/auth"
@@ -13,6 +14,11 @@ import (
 
 	"github.com/opsorigin/core/pkg/httputil"
 )
+
+// maxTopologyNodes 是单根拓扑返回的节点上限（大节点量保护）。
+// 当某 CI 为"超级节点"（直连上千个邻居）时，自动收缩到前 N 个节点，
+// 避免一次性拉取/渲染全部相邻节点导致前端卡死；前端据 truncated 标记提示用户。
+const maxTopologyNodes = 600
 
 // handleGetTopology godoc
 // @Summary 获取拓扑图
@@ -23,17 +29,37 @@ import (
 // @Success 200 {object} map[string]any "nodes: 节点列表, edges: 边列表"
 // @Router /api/v1/cmdb/ci/{id}/topology [get]
 // @Security BearerAuth
+// topoDepthOf 解析拓扑展开深度: 默认 3, 允许 1..5, 越界回落到默认。
+func topoDepthOf(r *http.Request) int {
+	if v := r.URL.Query().Get("depth"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n >= 1 && n <= 5 {
+			return n
+		}
+	}
+	return 3
+}
+
 func (s *Service) handleGetTopology(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	tenantID := auth.TenantFromContext(r.Context())
+	depth := topoDepthOf(r)
 
 	// 优先 dgraph(图库原生能力)
 	if s.dg != nil {
-		nodes, edges, err := s.dg.QueryTopology(r.Context(), tenantID, id, 3)
+		nodes, edges, err := s.dg.QueryTopology(r.Context(), tenantID, id, depth)
 		if err != nil {
 			slog.Error("query topology failed", "error", err)
 			httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 			return
+		}
+		// nil 切片会被序列化成 JSON null，前端 topology.nodes.length 直接崩；
+		// 三个分支统一兜底为空数组，保证"无关系"是一个正常状态而不是异常。
+		// dgraph 返回的是指针切片，同样兜底空数组
+		if nodes == nil {
+			nodes = []*model.TopologyNode{}
+		}
+		if edges == nil {
+			edges = []*model.TopologyEdge{}
 		}
 		httputil.WriteJSON(w, http.StatusOK, map[string]any{"nodes": nodes, "edges": edges})
 		return
@@ -47,25 +73,245 @@ func (s *Service) handleGetTopology(w http.ResponseWriter, r *http.Request) {
 			httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
-		nodes, edges := buildTopologyFromRelations(tenantID, id, rels, 3)
-		if cis, cerr := s.pg.ListCI(r.Context(), tenantID, ""); cerr == nil {
-			ciMap := make(map[string]*model.CIModel, len(cis))
-			for _, ci := range cis {
-				ciMap[ci.ID] = ci
+		nodes, edges := buildTopologyFromRelations(tenantID, []string{id}, rels, depth)
+		// nil 切片会被序列化成 JSON null，前端 topology.nodes.length 直接崩；
+		// 统一兜底为空数组，保证"无关系"是一个正常状态而不是异常。
+		if nodes == nil {
+			nodes = []model.TopologyNode{}
+		}
+		if edges == nil {
+			edges = []model.TopologyEdge{}
+		}
+		s.enrichTopologyNodes(r.Context(), tenantID, nodes)
+		// 大节点量保护：超规模连接时自动收缩到前 maxTopologyNodes 个节点。
+		// 节点已是 BFS 顺序(离根最近优先)，所以截断保留的是最有价值的那批，且结果稳定可复现。
+		resp := map[string]any{"nodes": nodes, "edges": edges}
+		if len(nodes) > maxTopologyNodes {
+			kept := make(map[string]bool, maxTopologyNodes)
+			truncatedNodes := nodes[:maxTopologyNodes]
+			for _, n := range truncatedNodes {
+				kept[n.ID] = true
 			}
-			for i := range nodes {
-				if ci, ok := ciMap[nodes[i].ID]; ok {
-					nodes[i].Name = ci.Name
-					nodes[i].Type = ci.TypeID
+			keptEdges := make([]model.TopologyEdge, 0, len(edges))
+			for _, e := range edges {
+				if kept[e.SourceID] && kept[e.TargetID] {
+					keptEdges = append(keptEdges, e)
 				}
 			}
+			resp = map[string]any{"nodes": truncatedNodes, "edges": keptEdges, "truncated": true}
 		}
-		httputil.WriteJSON(w, http.StatusOK, map[string]any{"nodes": nodes, "edges": edges})
+		httputil.WriteJSON(w, http.StatusOK, resp)
 		return
 	}
 
-	nodes, edges := s.mem.queryTopology(tenantID, id, 3)
+	nodes, edges := s.mem.queryTopology(tenantID, id, depth)
+	if nodes == nil {
+		nodes = []model.TopologyNode{}
+	}
+	if edges == nil {
+		edges = []model.TopologyEdge{}
+	}
 	httputil.WriteJSON(w, http.StatusOK, map[string]any{"nodes": nodes, "edges": edges})
+}
+
+// maxSubgraphNodes 条件子图返回的节点上限。
+// 依赖矩阵是 O(n²) DOM、图谱布局也是 O(n log n) 起步，这里比单根拓扑(600)更保守。
+const maxSubgraphNodes = 300
+
+// handleGetSubgraph godoc
+// @Summary 条件子图
+// @Description 按模型/环境/业务/关键字筛选 CI 组成子图，回答"某业务/某环境里谁依赖谁"，
+// 而不是单根拓扑那种"以某个 CI 为中心的三层邻域"。
+// expand=1 时改为以筛选结果为多根向外 BFS(depth)。
+// @Tags CMDB
+// @Produce json
+// @Param model_id query string false "模型类型 ID"
+// @Param env query string false "环境属性值"
+// @Param business query string false "业务属性值"
+// @Param q query string false "名称/属性关键字"
+// @Param depth query int false "扩展深度 1..5(仅 expand=1 生效)"
+// @Param limit query int false "节点上限，默认 200，最大 300"
+// @Param expand query int false "0=仅筛选集内部关系(默认)；1=以筛选集为多根向外扩展"
+// @Success 200 {object} map[string]any
+// @Router /api/v1/cmdb/subgraph [get]
+// @Security BearerAuth
+func (s *Service) handleGetSubgraph(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	tenantID := auth.TenantFromContext(ctx)
+	if s.pg == nil {
+		httputil.WriteError(w, http.StatusNotImplemented, "subgraph query requires postgres backend")
+		return
+	}
+
+	q := r.URL.Query()
+	modelID := q.Get("model_id")
+	env := strings.TrimSpace(q.Get("env"))
+	business := strings.TrimSpace(q.Get("business"))
+	keyword := strings.TrimSpace(q.Get("q"))
+	expand := q.Get("expand") == "1" || q.Get("expand") == "true"
+	depth := topoDepthOf(r)
+	limit := 200
+	if n, err := strconv.Atoi(q.Get("limit")); err == nil && n > 0 {
+		if n > maxSubgraphNodes {
+			n = maxSubgraphNodes
+		}
+		limit = n
+	}
+
+	// 1) 候选 CI：type/关键字下推到 SQL，env/business 是 EAV 属性只能内存过滤。
+	cis, err := s.listCandidatesForSubgraph(ctx, tenantID, modelID, keyword, limit)
+	if err != nil {
+		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	kept := make([]*model.CIModel, 0, len(cis))
+	for _, ci := range cis {
+		if matchAttrAny(ci.Attributes, env, "env", "environment") &&
+			matchAttrAny(ci.Attributes, business, "business", "business_service", "app") {
+			kept = append(kept, ci)
+		}
+	}
+	total := len(kept)
+	if total > limit {
+		kept = kept[:limit]
+	}
+
+	rels, err := s.pg.ListRelations(ctx, tenantID)
+	if err != nil {
+		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	var nodes []model.TopologyNode
+	var edges []model.TopologyEdge
+
+	if expand {
+		roots := make([]string, 0, len(kept))
+		for _, ci := range kept {
+			roots = append(roots, ci.ID)
+		}
+		nodes, edges = buildTopologyFromRelations(tenantID, roots, rels, depth)
+		if len(nodes) > limit {
+			nodes = nodes[:limit]
+			keptID := make(map[string]bool, len(nodes))
+			for _, n := range nodes {
+				keptID[n.ID] = true
+			}
+			filtered := make([]model.TopologyEdge, 0, len(edges))
+			for _, e := range edges {
+				if keptID[e.SourceID] && keptID[e.TargetID] {
+					filtered = append(filtered, e)
+				}
+			}
+			edges = filtered
+		}
+	} else {
+		// 真正的"子图"：节点集即筛选结果，只保留两端都在集内的边。
+		inSet := make(map[string]bool, len(kept))
+		nodes = make([]model.TopologyNode, 0, len(kept))
+		for _, ci := range kept {
+			inSet[ci.ID] = true
+			nodes = append(nodes, model.TopologyNode{ID: ci.ID, Name: ci.Name, Type: ci.TypeID, TenantID: tenantID})
+		}
+		seen := make(map[string]bool, len(rels))
+		edges = make([]model.TopologyEdge, 0, len(rels))
+		for _, rel := range rels {
+			if rel.TenantID != tenantID || !inSet[rel.SourceID] || !inSet[rel.TargetID] {
+				continue
+			}
+			key := rel.SourceID + "|" + rel.TargetID + "|" + rel.RelationType
+			if seen[key] {
+				continue
+			}
+			seen[key] = true
+			edges = append(edges, model.TopologyEdge{
+				SourceID: rel.SourceID, TargetID: rel.TargetID, RelationType: rel.RelationType,
+			})
+		}
+	}
+
+	s.enrichTopologyNodes(ctx, tenantID, nodes)
+	httputil.WriteJSON(w, http.StatusOK, map[string]any{
+		"nodes": nodes, "edges": edges, "total": total, "truncated": total > limit,
+	})
+}
+
+// listCandidatesForSubgraph 取子图候选 CI：带关键字时走 ILIKE 下推(限 100)，
+// 否则走分页查询按 limit 取，避免 ListCI 全表反序列化。
+func (s *Service) listCandidatesForSubgraph(ctx context.Context, tenantID, modelID, keyword string, limit int) ([]*model.CIModel, error) {
+	if keyword != "" {
+		return s.pg.ListCIByQuery(ctx, tenantID, modelID, keyword)
+	}
+	return s.pg.ListCIPaginated(ctx, tenantID, modelID, "name", "asc", limit, 0)
+}
+
+// matchAttrAny 在 CI 属性里按候选 key 依次匹配；期望值为空时视为不过滤。
+// EAV 属性没统一命名(env/environment 都见过)，所以按候选 key 兜底匹配。
+func matchAttrAny(attrs map[string]any, want string, keys ...string) bool {
+	if want == "" {
+		return true
+	}
+	for _, k := range keys {
+		if v, ok := attrs[k]; ok {
+			if s, ok := v.(string); ok && strings.EqualFold(strings.TrimSpace(s), want) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// enrichTopologyNodes 就地补全节点的名称与类型。
+// 只查当前拓扑实际用到的 ID(而非全租户 ListCI), 避免大租户下的整表反序列化。
+func (s *Service) enrichTopologyNodes(ctx context.Context, tenantID string, nodes []model.TopologyNode) {
+	if s.pg == nil || len(nodes) == 0 {
+		return
+	}
+	ids := make([]string, 0, len(nodes))
+	for _, n := range nodes {
+		ids = append(ids, n.ID)
+	}
+	cis, cerr := s.pg.GetCIsByIDs(ctx, tenantID, ids)
+	if cerr != nil {
+		slog.Warn("enrich topology nodes failed", "error", cerr)
+		return
+	}
+	ciMap := make(map[string]*model.CIModel, len(cis))
+	for _, ci := range cis {
+		ciMap[ci.ID] = ci
+	}
+	for i := range nodes {
+		missing := true
+		if ci, ok := ciMap[nodes[i].ID]; ok {
+			missing = false
+			if ci.Name != "" {
+				nodes[i].Name = ci.Name
+			}
+			if ci.TypeID != "" {
+				nodes[i].Type = ci.TypeID
+			}
+		}
+		// 名字留空会让前端卡片渲染成空白块，两种情况都要兜底：
+		// 一是关系还在但 CI 已被删除（悬空关系），二是 CI 存在但名称字段为空。
+		if nodes[i].Name == "" {
+			if missing {
+				nodes[i].Name = "(已删除) " + shortID(nodes[i].ID)
+			} else {
+				nodes[i].Name = "(未命名) " + shortID(nodes[i].ID)
+			}
+		}
+		if nodes[i].Type == "" {
+			nodes[i].Type = "unknown"
+		}
+	}
+}
+
+// shortID 取 UUID 前 8 位，用于悬空节点的可读标识。
+func shortID(id string) string {
+	if len(id) > 8 {
+		return id[:8]
+	}
+	return id
 }
 
 func (s *Service) handleImpactAnalysis(w http.ResponseWriter, r *http.Request) {

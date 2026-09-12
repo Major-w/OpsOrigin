@@ -73,6 +73,13 @@ func (r *Repository) migrateP2(ctx context.Context) error {
 			label   TEXT,
 			PRIMARY KEY (rack_id, unit)
 		)`,
+		`CREATE TABLE IF NOT EXISTS cmdb_dashboard_layout (
+			tenant_id  TEXT    NOT NULL DEFAULT 'default',
+			user_id    TEXT    NOT NULL DEFAULT '',
+			definition JSONB   NOT NULL DEFAULT '{}',
+			updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			PRIMARY KEY (tenant_id, user_id)
+		)`,
 	}
 	for _, s := range stmts {
 		if _, err := r.db.ExecContext(ctx, s); err != nil {
@@ -91,10 +98,11 @@ func (r *Repository) Stats(ctx context.Context, tenantID string) (*model.CMDBSta
 	// 预初始化各聚合切片为空数组(非 nil), 避免无数据时序列化为 JSON null,
 	// 否则前端直接访问 .length 会抛 TypeError 导致整页崩溃(资源统计页报错)。
 	st := &model.CMDBStats{
-		ByCategory: []model.CategoryStat{},
-		ByStatus:   []model.StatusStat{},
-		ByType:     []model.TypeStat{},
-		ByAttr:     []model.AttrStat{},
+		ByCategory:     []model.CategoryStat{},
+		ByStatus:       []model.StatusStat{},
+		ByType:         []model.TypeStat{},
+		ByAttr:         []model.AttrStat{},
+		ByRelationType: []model.RelationTypeStat{},
 	}
 	row := r.db.QueryRowContext(ctx, `SELECT
 		(SELECT COUNT(*) FROM cmdb_ci_model_type WHERE tenant_id=$1),
@@ -124,6 +132,23 @@ func (r *Repository) Stats(ctx context.Context, tenantID string) (*model.CMDBSta
 			return nil, fmt.Errorf("scan category stat: %w", err)
 		}
 		st.ByCategory = append(st.ByCategory, cs)
+	}
+	rows.Close()
+
+	// 按关系类型聚合（首页拓扑关系概览用，取代原先写死的 234/567/189）
+	rows, err = r.db.QueryContext(ctx, `
+		SELECT relation_type, COUNT(*) FROM cmdb_ci_relation WHERE tenant_id=$1
+		GROUP BY relation_type ORDER BY count DESC`, tenantID)
+	if err != nil {
+		return nil, fmt.Errorf("stats by relation type: %w", err)
+	}
+	for rows.Next() {
+		rs := model.RelationTypeStat{}
+		if err := rows.Scan(&rs.RelationType, &rs.Count); err != nil {
+			rows.Close()
+			return nil, fmt.Errorf("scan relation type stat: %w", err)
+		}
+		st.ByRelationType = append(st.ByRelationType, rs)
 	}
 	rows.Close()
 
@@ -234,6 +259,69 @@ func (r *Repository) Stats(ctx context.Context, tenantID string) (*model.CMDBSta
 		}
 	}
 	return st, nil
+}
+
+// ============================================================
+// P2-1b 统计大屏布局（可拖拽编辑定义，按用户持久化）
+// ============================================================
+
+// DashboardWidget 大屏上的一个组件定义（类型 + 标题）。
+type DashboardWidget struct {
+	ID    string `json:"id"`
+	Type  string `json:"type"`
+	Title string `json:"title"`
+}
+
+// DashboardGridItem 对应 react-grid-layout 的单个网格项坐标。
+type DashboardGridItem struct {
+	I string `json:"i"`
+	X int    `json:"x"`
+	Y int    `json:"y"`
+	W int    `json:"w"`
+	H int    `json:"h"`
+}
+
+// DashboardLayout 大屏完整定义：组件列表 + 网格布局。
+type DashboardLayout struct {
+	Widgets []DashboardWidget   `json:"widgets"`
+	Layout  []DashboardGridItem `json:"layout"`
+}
+
+// GetDashboardLayout 读取指定用户的布局定义；无记录返回 (nil, nil)，由前端回落默认。
+func (r *Repository) GetDashboardLayout(ctx context.Context, tenantID, userID string) (*DashboardLayout, error) {
+	var raw []byte
+	err := r.db.QueryRowContext(ctx,
+		`SELECT definition FROM cmdb_dashboard_layout WHERE tenant_id=$1 AND user_id=$2`, tenantID, userID).Scan(&raw)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("get dashboard layout: %w", err)
+	}
+	var def DashboardLayout
+	if len(raw) > 0 {
+		if err := json.Unmarshal(raw, &def); err != nil {
+			return nil, fmt.Errorf("unmarshal dashboard layout: %w", err)
+		}
+	}
+	return &def, nil
+}
+
+// SaveDashboardLayout Upsert 指定用户的布局定义。
+func (r *Repository) SaveDashboardLayout(ctx context.Context, tenantID, userID string, def *DashboardLayout) error {
+	b, err := json.Marshal(def)
+	if err != nil {
+		return fmt.Errorf("marshal dashboard layout: %w", err)
+	}
+	_, err = r.db.ExecContext(ctx,
+		`INSERT INTO cmdb_dashboard_layout (tenant_id, user_id, definition, updated_at)
+		 VALUES ($1, $2, $3, NOW())
+		 ON CONFLICT (tenant_id, user_id) DO UPDATE SET definition=$3, updated_at=NOW()`,
+		tenantID, userID, string(b))
+	if err != nil {
+		return fmt.Errorf("save dashboard layout: %w", err)
+	}
+	return nil
 }
 
 // ============================================================

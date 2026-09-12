@@ -9,9 +9,8 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/lib/pq"
 	"github.com/opsorigin/core/internal/cmdb/model"
-
-	_ "github.com/lib/pq"
 )
 
 var (
@@ -224,8 +223,28 @@ func (r *Repository) Migrate(ctx context.Context) error {
 	if _, err := r.db.ExecContext(ctx, `CREATE INDEX IF NOT EXISTS idx_civ_ci ON cmdb_ci_version(ci_id, version)`); err != nil {
 		return fmt.Errorf("create ci version index: %w", err)
 	}
+	// CMDB 基线快照表(捕获全量 CI + 关系, 用于环境漂移对比)。
+	if _, err := r.db.ExecContext(ctx, `
+		CREATE TABLE IF NOT EXISTS cmdb_snapshot (
+			id         TEXT PRIMARY KEY,
+			tenant_id  TEXT NOT NULL DEFAULT 'default',
+			name       TEXT NOT NULL,
+			ci_count   INTEGER NOT NULL DEFAULT 0,
+			rel_count  INTEGER NOT NULL DEFAULT 0,
+			data       JSONB NOT NULL DEFAULT '{}',
+			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+		)`); err != nil {
+		return fmt.Errorf("create cmdb_snapshot table: %w", err)
+	}
+	if _, err := r.db.ExecContext(ctx, `CREATE INDEX IF NOT EXISTS idx_snapshot_tenant ON cmdb_snapshot(tenant_id, created_at)`); err != nil {
+		return fmt.Errorf("create snapshot index: %w", err)
+	}
 	// P2 大块：统计/IDC/字段规则/消息订阅表
 	if err := r.migrateP2(ctx); err != nil {
+		return err
+	}
+	// 数据消费分析调用埋点表（022_cmdb_usage.sql 的运行时对齐路径）。
+	if err := r.EnsureUsageSchema(ctx); err != nil {
 		return err
 	}
 	return nil
@@ -809,6 +828,32 @@ func (r *Repository) GetCIAudit(ctx context.Context, ciID, tenantID string) ([]*
 
 func (r *Repository) ListCI(ctx context.Context, tenantID string, typeID string) ([]*model.CIModel, error) {
 	return r.ListCIPaginated(ctx, tenantID, typeID, "", "", 0, 0)
+}
+
+// GetCIsByIDs 按 ID 批量取 CI, 用于拓扑/路径等场景的节点富化。
+// 此前这些场景一律 ListCI(全租户) 再在内存建 map, 关系数一上来就是整表扫描 + 全量反序列化;
+// 改为按 ID 命中后, 一次拓扑请求只反序列化实际用到的节点(通常几十个)。
+func (r *Repository) GetCIsByIDs(ctx context.Context, tenantID string, ids []string) ([]*model.CIModel, error) {
+	if len(ids) == 0 {
+		return []*model.CIModel{}, nil
+	}
+	rows, err := r.db.QueryContext(ctx, `SELECT id, type_id, tenant_id, name, description, status, attributes, labels, channel, created_at, updated_at, attribute_meta
+		FROM cmdb_ci WHERE tenant_id = $1 AND id = ANY($2::text[])`,
+		tenantID, pq.Array(ids))
+	if err != nil {
+		return nil, fmt.Errorf("get cis by ids: %w", err)
+	}
+	defer rows.Close()
+
+	out := make([]*model.CIModel, 0, len(ids))
+	for rows.Next() {
+		ci, err := scanCI(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, ci)
+	}
+	return out, rows.Err()
 }
 
 // CountCIByAttrValue 统计「同租户 + 同模型类型」下某属性字段取指定值的 CI 数,

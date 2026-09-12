@@ -65,6 +65,26 @@ export interface TopologyEdge {
 export interface TopologyResult {
   nodes: TopologyNode[]
   edges: TopologyEdge[]
+  truncated?: boolean
+}
+
+// 条件子图查询参数（/cmdb/subgraph）：回答"某业务/某环境里谁依赖谁"，
+// 而不是单根拓扑那种"以某个 CI 为中心的三层邻域"。
+export interface SubgraphParams {
+  model_id?: string
+  env?: string
+  business?: string
+  q?: string
+  depth?: number
+  limit?: number
+  expand?: boolean
+}
+
+export interface SubgraphResult {
+  nodes: TopologyNode[]
+  edges: TopologyEdge[]
+  total: number
+  truncated: boolean
 }
 
 // 影响分析结果
@@ -95,7 +115,8 @@ interface CMDBState {
   deleteRelation: (id: string) => Promise<boolean>
   fetchModelTypes: () => Promise<void>
   createModelType: (data: Partial<CIModelType>) => Promise<boolean>
-  fetchTopology: (ciId: string) => Promise<TopologyResult | null>
+  fetchTopology: (ciId: string, depth?: number) => Promise<TopologyResult | null>
+  fetchSubgraph: (params: SubgraphParams) => Promise<SubgraphResult | null>
   fetchImpact: (ciId: string) => Promise<ImpactResult | null>
 }
 
@@ -236,13 +257,32 @@ export const useCMDBStore = create<CMDBState>((set, get) => ({
     }
   },
 
-  fetchTopology: async (ciId) => {
+  fetchTopology: async (ciId, depth) => {
     try {
-      const result = await apiFetch<TopologyResult>(`/cmdb/topology/${ciId}`)
+      const qs = depth && depth > 0 ? `?depth=${depth}` : ''
+      const result = await apiFetch<TopologyResult>(`/cmdb/topology/${ciId}${qs}`)
       set({ topology: result })
       return result
     } catch (e: any) {
       getMessage().error(`加载拓扑图失败: ${e.message}`)
+      return null
+    }
+  },
+
+  fetchSubgraph: async (params) => {
+    try {
+      const qs = new URLSearchParams()
+      if (params.model_id) qs.set('model_id', params.model_id)
+      if (params.env) qs.set('env', params.env)
+      if (params.business) qs.set('business', params.business)
+      if (params.q) qs.set('q', params.q)
+      if (params.depth) qs.set('depth', String(params.depth))
+      if (params.limit) qs.set('limit', String(params.limit))
+      if (params.expand) qs.set('expand', '1')
+      const result = await apiFetch<SubgraphResult>(`/cmdb/subgraph?${qs.toString()}`)
+      return result
+    } catch (e: any) {
+      getMessage().error(`加载条件子图失败: ${e.message}`)
       return null
     }
   },

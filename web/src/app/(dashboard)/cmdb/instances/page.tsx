@@ -53,6 +53,10 @@ export default function CMDBPage() {
   const [reconcileKeep, setReconcileKeep] = useState<Record<string, string>>({})
   const [batchDeleteOpen, setBatchDeleteOpen] = useState(false)
   const [batchDeleteSubmitting, setBatchDeleteSubmitting] = useState(false)
+  const [batchEditOpen, setBatchEditOpen] = useState(false)
+  const [batchEditField, setBatchEditField] = useState('')
+  const [batchEditValue, setBatchEditValue] = useState('')
+  const [batchEditSubmitting, setBatchEditSubmitting] = useState(false)
 
   useEffect(() => {
     apiList<typeof models[number]>('/cmdb/model-type?limit=1000')
@@ -102,6 +106,27 @@ export default function CMDBPage() {
       setChecked(new Set()); loadData()
       setBatchDeleteOpen(false)
     } catch (e: any) { getMessage().error('批量删除失败: ' + e.message) } finally { setBatchDeleteSubmitting(false) }
+  }
+
+  // 批量编辑：对选中 CI 设置一个属性字段为同一值（合并写，不动其它字段）
+  const openBatchEdit = () => {
+    const ids = checkedList()
+    if (!ids.length) return
+    setBatchEditField(''); setBatchEditValue(''); setBatchEditOpen(true)
+  }
+  const confirmBatchEdit = async () => {
+    const ids = checkedList()
+    if (!ids.length) return
+    if (!batchEditField.trim()) { getMessage().warning('请填写字段名'); return }
+    setBatchEditSubmitting(true)
+    try {
+      const res = await apiFetch<{ updated: number; failed: { id: string; error: string }[] }>('/cmdb/ci/batch-update', {
+        method: 'POST',
+        body: JSON.stringify({ ids, attrs: { [batchEditField.trim()]: batchEditValue } }),
+      })
+      getMessage().success(`已更新 ${res.updated} 个资产${res.failed?.length ? `，${res.failed.length} 个失败` : ''}`)
+      setChecked(new Set()); setBatchEditOpen(false); loadData()
+    } catch (e: any) { getMessage().error('批量编辑失败: ' + e.message) } finally { setBatchEditSubmitting(false) }
   }
 
   // 实体调解合并(IRE)
@@ -304,6 +329,9 @@ export default function CMDBPage() {
                     <span className="text-xs text-muted-foreground shrink-0">{checked.size > 0 ? `已选 ${checked.size} 项` : '勾选批量操作'}</span>
                     {checked.size > 0 && (
                       <div className="flex gap-1 ml-auto">
+                        {canWrite && (
+                          <Button type="default" size="middle" className="h-6 text-xs" onClick={openBatchEdit}><Pencil className="h-3 w-3 mr-1" />批量编辑</Button>
+                        )}
                         <Button type="default" size="middle" className="h-6 text-xs text-red-500" onClick={openBatchDelete}><Trash2 className="h-3 w-3 mr-1" />删除</Button>
                       </div>
                     )}
@@ -420,6 +448,15 @@ export default function CMDBPage() {
         onCancel={() => setBatchDeleteOpen(false)}
         okButtonProps={{ loading: batchDeleteSubmitting }}
       />
+
+      <Modal open={batchEditOpen} title="批量编辑" onCancel={() => setBatchEditOpen(false)}
+        onOk={confirmBatchEdit} confirmLoading={batchEditSubmitting} okText="应用" cancelText="取消">
+        <p className="text-sm text-muted-foreground mb-3">将向选中的 {checkedList().length} 个配置项写入同一字段值（其它字段不变）。</p>
+        <div className="space-y-3">
+          <div><label className="text-sm font-medium">字段名 *</label><Input value={batchEditField} onChange={e => setBatchEditField(e.target.value)} placeholder="如 owner / env / status" /></div>
+          <div><label className="text-sm font-medium">字段值</label><Input value={batchEditValue} onChange={e => setBatchEditValue(e.target.value)} placeholder="要写入的值" /></div>
+        </div>
+      </Modal>
 
       <Popconfirm
         title="确认实体调解合并"

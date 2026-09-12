@@ -71,6 +71,53 @@ const FIELD_TYPES: FieldTypeMeta[] = [
 const FIELD_GROUPS = ['文本', '数值', '选择', '日期时间', '特殊']
 const fieldTypeMeta = (t: FieldType) => FIELD_TYPES.find(m => m.value === t)
 
+// 继承字段预览：给定父模型，沿 ParentID 继承链回溯（带环检测），合并各代属性字段
+// （子类同名覆盖父类），以只读标签展示，让建模者在编辑期即看见"会继承到哪些字段"。
+function InheritedFieldsPreview({ parentId, models }: { parentId: string; models: CIModel[] }) {
+  const byId = new Map(models.map(m => [m.id, m]))
+  const chain: CIModel[] = []
+  const seen = new Set<string>()
+  let cur = byId.get(parentId)
+  // 父类在前（unshift），子类在后；同名以"更靠后(子类)"为准
+  while (cur && !seen.has(cur.id)) {
+    seen.add(cur.id)
+    chain.unshift(cur)
+    cur = cur.parent_id ? byId.get(cur.parent_id) : undefined
+  }
+  if (chain.length === 0) return null
+  const merged = new Map<string, SchemaField>()
+  const sourceOf = new Map<string, string>()
+  for (const m of chain) {
+    for (const f of m.fields) {
+      merged.set(f.name, f)
+      sourceOf.set(f.name, m.name)
+    }
+  }
+  const inherited = [...merged.values()]
+  return (
+    <div className="mt-3 rounded-md border border-dashed border-input p-3">
+      <p className="text-xs font-semibold text-muted-foreground mb-2">
+        继承字段预览（来自 {chain.map(m => m.name).join(' → ')}，共 {inherited.length} 个）
+      </p>
+      {inherited.length === 0 ? (
+        <p className="text-xs text-muted-foreground italic">父类暂未定义属性字段。</p>
+      ) : (
+        <div className="flex flex-wrap gap-1.5">
+          {inherited.map(f => (
+            <span key={f.name} className="inline-flex items-center gap-1 rounded border border-input bg-muted/30 px-2 py-0.5 text-xs">
+              <span className="font-medium">{f.name}</span>
+              <span className="text-muted-foreground">{fieldTypeMeta(f.type)?.label || f.type}</span>
+              {f.required && <span className="text-destructive">*</span>}
+              <span className="text-[10px] text-muted-foreground/70">· {sourceOf.get(f.name)}</span>
+            </span>
+          ))}
+        </div>
+      )}
+      <p className="mt-2 text-[11px] text-muted-foreground">这些字段会沿 ParentID 继承链自动合并到本模型，子类可覆盖同名属性；保存后即可在建实例时看到。</p>
+    </div>
+  )
+}
+
 interface CIModel {
   id: string
   name: string
@@ -80,6 +127,7 @@ interface CIModel {
   sub_category?: string
   show_in_menu: boolean
   parent_id?: string
+  abstract?: boolean
   builtin?: boolean
   author?: string
   fields: SchemaField[]
@@ -190,7 +238,7 @@ export default function CMDBModelsPage() {
   })
   const [form, setForm] = useState({
     name: '', description: '', icon: '🖥️', category: '基础设施资源',
-    sub_category: '', show_in_menu: true, parent_id: '',
+    sub_category: '', show_in_menu: true, parent_id: '', abstract: false,
   })
   const [fields, setFields] = useState<SchemaField[]>([])
   const [fieldDialogOpen, setFieldDialogOpen] = useState(false)
@@ -283,7 +331,7 @@ export default function CMDBModelsPage() {
         id: m.id, name: m.name, description: m.description || '',
         icon: m.icon || '📦', category: m.category || '基础设施资源',
         sub_category: m.sub_category || '', show_in_menu: m.show_in_menu !== false,
-        parent_id: m.parent_id || '', builtin: !!m.builtin, author: m.author,
+        parent_id: m.parent_id || '', builtin: !!m.builtin, author: m.author, abstract: !!m.abstract,
         fields: schemaToFields(m.schema), relations: (m.relations || []) as RelationDef[], ciCount: 0,
       })))
     }).catch((e: any) => { getMessage().error(`加载模型失败: ${e.message}`); setModels([]) })
@@ -299,7 +347,7 @@ export default function CMDBModelsPage() {
 
   const openCreate = () => {
     setEditModel(null)
-    setForm({ name: '', description: '', icon: '🖥️', category: categories[0]?.name || '基础设施资源', sub_category: '', show_in_menu: true, parent_id: '' })
+    setForm({ name: '', description: '', icon: '🖥️', category: categories[0]?.name || '基础设施资源', sub_category: '', show_in_menu: true, parent_id: '', abstract: false })
     setFields([])
     setRelations([])
     setModelTab('attrs')
@@ -314,7 +362,7 @@ export default function CMDBModelsPage() {
     setEditModel(model)
     setForm({
       name: model.name, description: model.description, icon: model.icon, category: model.category,
-      sub_category: model.sub_category || '', show_in_menu: model.show_in_menu, parent_id: model.parent_id || '',
+      sub_category: model.sub_category || '', show_in_menu: model.show_in_menu, parent_id: model.parent_id || '', abstract: !!model.abstract,
     })
     setFields([...model.fields])
     setRelations([...model.relations])
@@ -332,7 +380,7 @@ export default function CMDBModelsPage() {
     const payload: any = {
       name: form.name, description: form.description,
       icon: form.icon, category: form.category, sub_category: form.sub_category,
-      show_in_menu: form.show_in_menu, parent_id: form.parent_id || null,
+      show_in_menu: form.show_in_menu, parent_id: form.parent_id || null, abstract: !!form.abstract,
       schema: fieldsToSchema(fields),
       relations,
     }
@@ -725,7 +773,14 @@ export default function CMDBModelsPage() {
               <input type="checkbox" id="show-in-menu" checked={form.show_in_menu} onChange={e => setForm(f => ({ ...f, show_in_menu: e.target.checked }))} className="rounded" />
               <label htmlFor="show-in-menu" className="text-sm font-medium">在菜单显示</label>
             </div>
+            <div className="flex items-end gap-2">
+              <input type="checkbox" id="is-abstract" checked={!!form.abstract} onChange={e => setForm(f => ({ ...f, abstract: e.target.checked }))} className="rounded" />
+              <label htmlFor="is-abstract" className="text-sm font-medium">抽象父类（不可直接建实例，仅作继承基类）</label>
+            </div>
           </div>
+          {form.parent_id && (
+            <InheritedFieldsPreview parentId={form.parent_id} models={models} />
+          )}
 
           {/* 字段列表 / 关系定义：两个子页签 */}
           <Tabs activeKey={modelTab} onChange={(v) => setModelTab(v as 'attrs' | 'rels')} style={{ marginTop: 12 }} items={[
