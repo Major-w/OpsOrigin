@@ -38,6 +38,11 @@ export const FIELD_TYPES: { value: FormFieldType; label: string }[] = [
   { value: 'user', label: '选人' },
   { value: 'ci', label: '选配置项' },
   { value: 'cascader', label: '级联' },
+  { value: 'password', label: '密码' },
+  { value: 'time', label: '时间' },
+  { value: 'timerange', label: '时间段' },
+  { value: 'link', label: '链接' },
+  { value: 'expression', label: '计算/表达式' },
 ]
 
 export const OPTION_TYPES: FormFieldType[] = ['select', 'multiselect', 'user', 'ci', 'cascader']
@@ -62,7 +67,7 @@ const ATTACHMENT_PRESETS: { label: string; patch: Partial<FormFieldDef> }[] = [
  * 这样从调色板拖出两个普通控件时，会自然落在同一行，满足「一行放多个控件」。
  */
 export function defaultColSpan(type: FormFieldType): number {
-  const wide = new Set<FormFieldType>(['textarea', 'richtext', 'attachment', 'table'])
+  const wide = new Set<FormFieldType>(['textarea', 'richtext', 'attachment', 'table', 'expression'])
   return wide.has(type) ? 12 : 6
 }
 
@@ -395,7 +400,7 @@ export function FieldPropertyPanel({
   const isUser = field.type === 'user'
   // 选人控件有专属的候选范围配置，不再暴露通用的 source/静态选项编辑
   const supportsOptions = OPTION_TYPES.includes(field.type) && !isUser
-  const isTextual = ['text', 'textarea'].includes(field.type)
+  const isTextual = ['text', 'textarea', 'password', 'time', 'timerange', 'link', 'expression'].includes(field.type)
   const isCascader = field.type === 'cascader'
   const typeLabel = FIELD_TYPES.find(t => t.value === field.type)?.label || field.type
 
@@ -506,7 +511,7 @@ export function FieldPropertyPanel({
           <input type="checkbox" className="h-3.5 w-3.5" checked={!!field.readonly} disabled={disabled} onChange={e => onChange({ readonly: e.target.checked })} />
           只读
         </label>
-        <Labeled label="默认值" inline>
+        <Labeled label={field.type === 'expression' ? '表达式内容（对终端用户只读展示）' : '默认值'} inline>
           <input
             className={`${inputCls} w-40`}
             value={field.default === undefined || field.default === null ? '' : String(field.default)}

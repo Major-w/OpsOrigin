@@ -87,8 +87,10 @@ func timerDueAt(inst *ProcessInstance, step *Step, now time.Time) *time.Time {
 	return &due
 }
 
-// recordTimerStarted 落到 timer 步骤时记录开始时间(幂等, 已有则不覆盖), 供到期判定。
-func recordTimerStarted(inst *ProcessInstance, step *Step, now time.Time) {
+// recordStepEntered 记录流程实例"进入某步骤"的时间(RFC3339, 幂等不覆盖)。
+// 人工任务与定时器都是"停留型"步骤——OLA 与定时器到期判定都以此作为计时起点,
+// 与工单 UpdatedAt 无关(写评论/改字段不应重置环节耗时)。
+func recordStepEntered(inst *ProcessInstance, step *Step, now time.Time) {
 	if inst.StepResults == nil {
 		inst.StepResults = map[string]any{}
 	}
@@ -100,4 +102,30 @@ func recordTimerStarted(inst *ProcessInstance, step *Step, now time.Time) {
 		rec["started_at"] = now.Format(time.RFC3339)
 	}
 	inst.StepResults[step.ID] = rec
+}
+
+// recordTimerStarted 是 recordStepEntered 的历史别名，保留以免打断既有调用方。
+func recordTimerStarted(inst *ProcessInstance, step *Step, now time.Time) {
+	recordStepEntered(inst, step, now)
+}
+
+// StepEnteredAt 返回实例停留在当前步骤的起始时间(供 OLA 环节耗时计算)。
+// 取不到(步骤未记录/非停留步骤)时返回 nil，由调用方决定兜底基准。
+func StepEnteredAt(inst *ProcessInstance) *time.Time {
+	if inst == nil || inst.StepResults == nil || inst.CurrentStep == "" {
+		return nil
+	}
+	rec, ok := inst.StepResults[inst.CurrentStep].(map[string]any)
+	if !ok {
+		return nil
+	}
+	switch v := rec["started_at"].(type) {
+	case string:
+		if t, err := time.Parse(time.RFC3339, v); err == nil {
+			return &t
+		}
+	case time.Time:
+		return &v
+	}
+	return nil
 }

@@ -9,6 +9,7 @@ import (
 
 	"github.com/opsorigin/core/internal/itsm/model"
 	"github.com/opsorigin/core/internal/itsm/ola"
+	"github.com/opsorigin/core/internal/itsm/process"
 	"github.com/opsorigin/core/internal/itsm/sla"
 	"github.com/opsorigin/core/pkg/auth"
 
@@ -49,40 +50,76 @@ func (s *Service) checkOLA(ctx context.Context) {
 
 func (s *Service) checkOLATenant(ctx context.Context, tenantID string) {
 	policies, err := s.olaStore.List(ctx, tenantID)
-	if err != nil || len(policies) == 0 {
+	if err != nil {
+		slog.Error("itsm: OLA policy list failed", "tenant", tenantID, "error", err)
 		return
 	}
-	for _, pol := range policies {
-		if !pol.Enabled {
+	enabled := make([]*ola.Policy, 0, len(policies))
+	for i := range policies {
+		if policies[i].Enabled && policies[i].DurationHours > 0 {
+			enabled = append(enabled, &policies[i])
+		}
+	}
+	if len(enabled) == 0 {
+		return
+	}
+	// 全量工单只取一次：原实现在 checkOLAPolicy 内按策略各拉一次，
+	// 形成「策略数 × 全表扫描」的放大（策略一多就白白重复查库）。
+	tickets, err := s.store.ListActiveTicketsWithDeadline(ctx, tenantID)
+	if err != nil {
+		slog.Error("itsm: OLA ticket list failed", "tenant", tenantID, "error", err)
+		return
+	}
+	if len(tickets) == 0 {
+		return
+	}
+	s.checkOLAPolicies(ctx, tenantID, enabled, tickets)
+}
+
+// checkOLAPolicies 按「流程绑定」分桶匹配策略：绑定了 process_id 的策略只作用于该流程，
+// 未绑定的(空)是全局策略，对所有在途工单生效。
+func (s *Service) checkOLAPolicies(ctx context.Context, tenantID string, policies []*ola.Policy, tickets []*model.Ticket) {
+	byProcess := make(map[string][]*ola.Policy, len(policies))
+	for _, p := range policies {
+		byProcess[p.ProcessID] = append(byProcess[p.ProcessID], p)
+	}
+	for _, t := range tickets {
+		matched := byProcess[t.ProcessID]
+		if t.ProcessID != "" {
+			matched = append(append(make([]*ola.Policy, 0, len(matched)+len(byProcess[""])), matched...), byProcess[""]...)
+		}
+		if len(matched) == 0 {
 			continue
 		}
-		if pol.DurationHours <= 0 {
-			continue
+		// 计时基准：流程实例当前步骤的进入时间（与工单 UpdatedAt 无关，
+		// 否则写条评论/改个字段就把环节耗时清零，OLA 形同虚设）。
+		base := s.olaElapsedBase(ctx, tenantID, t)
+		for _, pol := range matched {
+			deadline := time.Duration(pol.DurationHours) * time.Hour
+			remaining := deadline - time.Since(base)
+			if remaining <= 0 {
+				slog.Warn("itsm: OLA breached", "ticket", t.ID, "policy", pol.Name, "since", base)
+				s.broadcastEvent(tenantID, map[string]any{"type": "ola_breached", "ticket_id": t.ID, "policy": pol.Name})
+			} else if remaining < 1*time.Hour {
+				slog.Info("itsm: OLA warning", "ticket", t.ID, "policy", pol.Name, "remaining", remaining)
+				s.broadcastEvent(tenantID, map[string]any{"type": "ola_warning", "ticket_id": t.ID, "policy": pol.Name, "remaining_seconds": int(remaining.Seconds())})
+			}
 		}
-		s.checkOLAPolicy(ctx, tenantID, pol)
 	}
 }
 
-func (s *Service) checkOLAPolicy(ctx context.Context, tenantID string, pol ola.Policy) {
-	tickets, err := s.store.ListActiveTicketsWithDeadline(ctx, tenantID)
-	if err != nil {
-		return
-	}
-	deadline := time.Duration(pol.DurationHours) * time.Hour
-	for _, t := range tickets {
-		if pol.ProcessID != "" && t.ProcessID != pol.ProcessID {
-			continue
-		}
-		elapsed := time.Since(t.UpdatedAt)
-		remaining := deadline - elapsed
-		if remaining <= 0 {
-			slog.Warn("itsm: OLA breached", "ticket", t.ID, "policy", pol.Name)
-			s.broadcastEvent(tenantID, map[string]any{"type": "ola_breached", "ticket_id": t.ID, "policy": pol.Name})
-		} else if remaining < 1*time.Hour {
-			slog.Info("itsm: OLA warning", "ticket", t.ID, "policy", pol.Name, "remaining", remaining)
-			s.broadcastEvent(tenantID, map[string]any{"type": "ola_warning", "ticket_id": t.ID, "policy": pol.Name, "remaining_seconds": int(remaining.Seconds())})
+// olaElapsedBase 返回 OLA 计时的起点：优先流程实例当前步骤的进入时间，
+// 其次实例启动时间，都没有流程时退回工单创建时间。
+func (s *Service) olaElapsedBase(ctx context.Context, tenantID string, t *model.Ticket) time.Time {
+	if t.ProcessID != "" && s.processStore != nil {
+		if inst, err := s.processStore.GetInstance(ctx, t.ID, tenantID); err == nil && inst != nil {
+			if at := process.StepEnteredAt(inst); at != nil {
+				return *at
+			}
+			return inst.StartedAt
 		}
 	}
+	return t.CreatedAt
 }
 
 func (s *Service) slaForRisk(risk model.RiskLevel) time.Duration {
@@ -167,11 +204,8 @@ func (s *Service) checkSLATenant(ctx context.Context, tenantID string) {
 		deadline := *t.DeadlineAt
 		totalDuration := deadline.Sub(t.CreatedAt)
 		elapsed := now.Sub(t.CreatedAt)
-
-		// 扣除挂起时间: 挂起期间 SLA 不计时，需从已用时中减去累计挂起秒数
-		if t.HoldSeconds > 0 {
-			elapsed -= time.Duration(t.HoldSeconds) * time.Second
-		}
+		// 挂起补偿统一在 handleResume 里通过顺延 DeadlineAt 完成，此处【不再】重复扣减
+		// HoldSeconds —— 否则同一段挂起时间被补偿两次，挂起次数越多 SLA 越宽松。
 
 		// SLA breached
 		if now.After(deadline) && !t.SLABreached {

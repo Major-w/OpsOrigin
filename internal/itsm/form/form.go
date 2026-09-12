@@ -23,9 +23,14 @@ const (
 	TypeRichText    FieldType = "richtext"   // 富文本(值为 HTML/纯文本字符串)
 	TypeTable       FieldType = "table"      // 表格(值为二维字符串数组 [][]string)
 	TypeBool        FieldType = "bool"
-	TypeUser        FieldType = "user"     // 选人（source=iam:user，前端下拉搜索）
-	TypeCI          FieldType = "ci"       // 选配置项（source=cmdb:<typeName>，前端下拉搜索）
-	TypeCascader    FieldType = "cascader" // 级联（如 系统→环境）
+	TypeUser        FieldType = "user"       // 选人（source=iam:user，前端下拉搜索）
+	TypeCI          FieldType = "ci"         // 选配置项（source=cmdb:<typeName>，前端下拉搜索）
+	TypeCascader    FieldType = "cascader"   // 级联（如 系统→环境）
+	TypePassword    FieldType = "password"   // 密码（前端掩码输入，值为字符串）
+	TypeTime        FieldType = "time"       // 时间（HH:mm）
+	TypeTimeRange   FieldType = "timerange"  // 时间段（HH:mm~HH:mm）
+	TypeLink        FieldType = "link"       // 链接（URL）
+	TypeExpression  FieldType = "expression" // 计算/表达式（只读展示，值为表达式文本）
 )
 
 // 条件运算符

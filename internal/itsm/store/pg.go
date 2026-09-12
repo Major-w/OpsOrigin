@@ -54,6 +54,10 @@ func (s *PGStore) Init(ctx context.Context) error {
 			sla_breached        BOOLEAN DEFAULT FALSE,
 			sla_breached_at     TIMESTAMPTZ,
 			sla_escalation_level INTEGER DEFAULT 0,
+			hold_at             TIMESTAMPTZ,
+			hold_seconds        INTEGER DEFAULT 0,
+			approval_chain      TEXT,
+			approval_status     TEXT,
 			custom_fields       TEXT DEFAULT '{}'
 		)`)
 	if err != nil {
@@ -236,6 +240,14 @@ func (s *PGStore) migrate(ctx context.Context) {
 		`ALTER TABLE itsm_tickets ADD COLUMN IF NOT EXISTS on_hold BOOLEAN DEFAULT FALSE`,
 		`ALTER TABLE itsm_tickets ADD COLUMN IF NOT EXISTS hold_reason TEXT`,
 		`ALTER TABLE itsm_tickets ADD COLUMN IF NOT EXISTS hold_until_at TIMESTAMPTZ`,
+		// hold_at / hold_seconds 曾长期缺失：列没建、Update 也没写，
+		// 导致挂起时长从未落库 —— resume 时 HoldAt 恒为 nil，SLA 挂起补偿在 PG 部署下从未真正生效。
+		`ALTER TABLE itsm_tickets ADD COLUMN IF NOT EXISTS hold_at TIMESTAMPTZ`,
+		`ALTER TABLE itsm_tickets ADD COLUMN IF NOT EXISTS hold_seconds INTEGER DEFAULT 0`,
+		// approval_chain / approval_status 同样曾缺失：多级审批链(顺序/并行)在 PG 部署下
+		// 读回恒为 nil，审批直接退化成单人即过，投票记录全丢。
+		`ALTER TABLE itsm_tickets ADD COLUMN IF NOT EXISTS approval_chain TEXT`,
+		`ALTER TABLE itsm_tickets ADD COLUMN IF NOT EXISTS approval_status TEXT`,
 		`ALTER TABLE itsm_tickets ADD COLUMN IF NOT EXISTS related_ticket_ids TEXT DEFAULT '[]'`,
 		`ALTER TABLE itsm_tickets ADD COLUMN IF NOT EXISTS catalog_id TEXT DEFAULT ''`,
 	}
@@ -254,6 +266,8 @@ func (s *PGStore) Create(ctx context.Context, ticket *model.Ticket) error {
 	ciIDsJSON, _ := json.Marshal(ticket.CIIDs)
 	customFieldsJSON, _ := json.Marshal(ticket.CustomFields)
 	relatedJSON, _ := json.Marshal(ticket.RelatedTicketIDs)
+	approvalChainJSON, _ := json.Marshal(ticket.ApprovalChain)
+	approvalStatusJSON, _ := json.Marshal(ticket.ApprovalStatus)
 
 	_, err := s.db.ExecContext(ctx, `
 		INSERT INTO itsm_tickets
@@ -263,8 +277,11 @@ func (s *PGStore) Create(ctx context.Context, ticket *model.Ticket) error {
 			 labels, trace_id, scheduled_at, deadline_at, created_at, updated_at,
 			 approved_at, executed_at, completed_at, rolled_back_at, process_id, custom_fields,
 			 assignee, assigned_at, satisfaction,
-			 on_hold, hold_reason, hold_until_at, related_ticket_ids, catalog_id)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35,$36,$37)`,
+			 on_hold, hold_reason, hold_until_at, related_ticket_ids, catalog_id,
+			 hold_at, hold_seconds,
+			 approval_chain, approval_status,
+			 sla_warning_notified, sla_breached, sla_breached_at, sla_escalation_level)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35,$36,$37,$38,$39,$40,$41,$42,$43,$44,$45)`,
 		ticket.ID, ticket.TenantID, ticket.Title, nullable(ticket.Description),
 		string(ticket.RiskLevel), string(ticket.Status), nullable(ticket.ChangePlan),
 		nullable(ticket.RollbackPlan), ticket.CreatedBy, ticket.CreatedByType,
@@ -278,7 +295,10 @@ func (s *PGStore) Create(ctx context.Context, ticket *model.Ticket) error {
 		nullableTime(ticket.CompletedAt), nullableTime(ticket.RolledBackAt),
 		nullable(ticket.ProcessID), string(customFieldsJSON),
 		nullable(ticket.Assignee), nullableTime(ticket.AssignedAt), ticket.Satisfaction,
-		ticket.OnHold, nullable(ticket.HoldReason), nullableTime(ticket.HoldUntilAt), string(relatedJSON), nullable(ticket.CatalogID))
+		ticket.OnHold, nullable(ticket.HoldReason), nullableTime(ticket.HoldUntilAt), string(relatedJSON), nullable(ticket.CatalogID),
+		nullableTime(ticket.HoldAt), ticket.HoldSeconds,
+		string(approvalChainJSON), string(approvalStatusJSON),
+		ticket.SLAWarningNotified, ticket.SLABreached, nullableTime(ticket.SLABreachedAt), ticket.SLAEscalationLevel)
 	if err != nil {
 		return fmt.Errorf("insert ticket: %w", err)
 	}
@@ -301,6 +321,12 @@ func (s *PGStore) Get(ctx context.Context, id, tenantID string) (*model.Ticket, 
 	var holdReason sql.NullString
 	var holdUntilAt sql.NullTime
 	var relatedJSON sql.NullString
+	var holdAt sql.NullTime
+	var holdSeconds sql.NullInt64
+	var slaWarning, slaBreached sql.NullBool
+	var slaBreachedAt sql.NullTime
+	var slaEscalationLevel sql.NullInt64
+	var approvalChainJSON, approvalStatusJSON sql.NullString
 
 	err := s.db.QueryRowContext(ctx, `
 		SELECT id, tenant_id, title, description, risk_level, status, change_plan,
@@ -309,7 +335,10 @@ func (s *PGStore) Get(ctx context.Context, id, tenantID string) (*model.Ticket, 
 		       labels, trace_id, scheduled_at, deadline_at, created_at, updated_at,
 		       approved_at, executed_at, completed_at, rolled_back_at, process_id, custom_fields,
 		       assignee, assigned_at, satisfaction,
-		       on_hold, hold_reason, hold_until_at, related_ticket_ids, catalog_id
+		       on_hold, hold_reason, hold_until_at, related_ticket_ids, catalog_id,
+		       hold_at, hold_seconds,
+		       sla_warning_notified, sla_breached, sla_breached_at, sla_escalation_level,
+		       approval_chain, approval_status
 		FROM itsm_tickets WHERE id = $1 AND tenant_id = $2`, id, tenantID).Scan(
 		&t.ID, &t.TenantID, &t.Title, &desc, &t.RiskLevel, &t.Status,
 		&changePlan, &rollbackPlan, &t.CreatedBy, &t.CreatedByType,
@@ -318,7 +347,10 @@ func (s *PGStore) Get(ctx context.Context, id, tenantID string) (*model.Ticket, 
 		&scheduledAt, &deadlineAt, &t.CreatedAt, &t.UpdatedAt,
 		&approvedAt, &executedAt, &completedAt, &rolledBackAt, &processID, &customFieldsJSON,
 		&assignee, &assignedAt, &satisfaction,
-		&t.OnHold, &holdReason, &holdUntilAt, &relatedJSON, &catalogID)
+		&t.OnHold, &holdReason, &holdUntilAt, &relatedJSON, &catalogID,
+		&holdAt, &holdSeconds,
+		&slaWarning, &slaBreached, &slaBreachedAt, &slaEscalationLevel,
+		&approvalChainJSON, &approvalStatusJSON)
 	if err != nil {
 		if err == sql.ErrNoRows {
 			return nil, ErrNotFound
@@ -353,6 +385,26 @@ func (s *PGStore) Get(ctx context.Context, id, tenantID string) (*model.Ticket, 
 	setTimePtr(&t.RolledBackAt, rolledBackAt)
 	setTimePtr(&t.ScheduledAt, scheduledAt)
 	setTimePtr(&t.DeadlineAt, deadlineAt)
+	setTimePtr(&t.HoldAt, holdAt)
+	if holdSeconds.Valid {
+		t.HoldSeconds = int(holdSeconds.Int64)
+	}
+	if slaWarning.Valid {
+		t.SLAWarningNotified = slaWarning.Bool
+	}
+	if slaBreached.Valid {
+		t.SLABreached = slaBreached.Bool
+	}
+	setTimePtr(&t.SLABreachedAt, slaBreachedAt)
+	if slaEscalationLevel.Valid {
+		t.SLAEscalationLevel = int(slaEscalationLevel.Int64)
+	}
+	if approvalChainJSON.Valid && approvalChainJSON.String != "" && approvalChainJSON.String != "null" {
+		json.Unmarshal([]byte(approvalChainJSON.String), &t.ApprovalChain)
+	}
+	if approvalStatusJSON.Valid && approvalStatusJSON.String != "" && approvalStatusJSON.String != "null" {
+		json.Unmarshal([]byte(approvalStatusJSON.String), &t.ApprovalStatus)
+	}
 	if labelsJSON.Valid {
 		json.Unmarshal([]byte(labelsJSON.String), &t.Labels)
 	}
@@ -378,6 +430,8 @@ func (s *PGStore) Update(ctx context.Context, ticket *model.Ticket) error {
 	ciIDsJSON, _ := json.Marshal(ticket.CIIDs)
 	customFieldsJSON, _ := json.Marshal(ticket.CustomFields)
 	relatedJSON, _ := json.Marshal(ticket.RelatedTicketIDs)
+	approvalChainJSON, _ := json.Marshal(ticket.ApprovalChain)
+	approvalStatusJSON, _ := json.Marshal(ticket.ApprovalStatus)
 
 	result, err := s.db.ExecContext(ctx, `
 		UPDATE itsm_tickets SET
@@ -388,8 +442,11 @@ func (s *PGStore) Update(ctx context.Context, ticket *model.Ticket) error {
 			trace_id=$17, updated_at=$18, approved_at=$19, executed_at=$20,
 			completed_at=$21, rolled_back_at=$22, scheduled_at=$23, deadline_at=$24,
 			process_id=$25, custom_fields=$26, assignee=$27, assigned_at=$28, satisfaction=$29,
-			on_hold=$30, hold_reason=$31, hold_until_at=$32, related_ticket_ids=$33
-		WHERE id=$34 AND tenant_id=$35`,
+			on_hold=$30, hold_reason=$31, hold_until_at=$32, related_ticket_ids=$33,
+			hold_at=$34, hold_seconds=$35,
+			sla_warning_notified=$36, sla_breached=$37, sla_breached_at=$38, sla_escalation_level=$39,
+			catalog_id=$40, approval_chain=$41, approval_status=$42
+		WHERE id=$43 AND tenant_id=$44`,
 		ticket.Title, nullable(ticket.Description), string(ticket.RiskLevel),
 		string(ticket.Status), nullable(ticket.ChangePlan),
 		nullable(ticket.RollbackPlan), ticket.CreatedBy, ticket.CreatedByType,
@@ -403,6 +460,9 @@ func (s *PGStore) Update(ctx context.Context, ticket *model.Ticket) error {
 		nullable(ticket.ProcessID), string(customFieldsJSON),
 		nullable(ticket.Assignee), nullableTime(ticket.AssignedAt), ticket.Satisfaction,
 		ticket.OnHold, nullable(ticket.HoldReason), nullableTime(ticket.HoldUntilAt), string(relatedJSON),
+		nullableTime(ticket.HoldAt), ticket.HoldSeconds,
+		ticket.SLAWarningNotified, ticket.SLABreached, nullableTime(ticket.SLABreachedAt), ticket.SLAEscalationLevel,
+		nullable(ticket.CatalogID), string(approvalChainJSON), string(approvalStatusJSON),
 		ticket.ID, ticket.TenantID)
 	if err != nil {
 		return fmt.Errorf("update ticket: %w", err)
@@ -421,7 +481,10 @@ func (s *PGStore) List(ctx context.Context, tenantID string, status model.Ticket
 	                  labels, trace_id, scheduled_at, deadline_at, created_at, updated_at,
 	                  approved_at, executed_at, completed_at, rolled_back_at, process_id, custom_fields,
 	                  assignee, assigned_at, satisfaction,
-	                  on_hold, hold_reason, hold_until_at, related_ticket_ids
+	                  on_hold, hold_reason, hold_until_at, related_ticket_ids,
+	                  hold_at, hold_seconds,
+	                  sla_warning_notified, sla_breached, sla_breached_at, sla_escalation_level,
+	                  catalog_id, approval_chain, approval_status
 	           FROM itsm_tickets WHERE tenant_id = $1`
 	args := []any{tenantID}
 
@@ -453,6 +516,13 @@ func (s *PGStore) List(ctx context.Context, tenantID string, status model.Ticket
 		var holdReason sql.NullString
 		var holdUntilAt sql.NullTime
 		var relatedJSON sql.NullString
+		var holdAt sql.NullTime
+		var holdSeconds sql.NullInt64
+		var slaWarning, slaBreached sql.NullBool
+		var slaBreachedAt sql.NullTime
+		var slaEscalationLevel sql.NullInt64
+		var catalogID sql.NullString
+		var approvalChainJSON, approvalStatusJSON sql.NullString
 
 		if err := rows.Scan(
 			&t.ID, &t.TenantID, &t.Title, &desc, &t.RiskLevel, &t.Status,
@@ -462,7 +532,10 @@ func (s *PGStore) List(ctx context.Context, tenantID string, status model.Ticket
 			&scheduledAt, &deadlineAt, &t.CreatedAt, &t.UpdatedAt,
 			&approvedAt, &executedAt, &completedAt, &rolledBackAt, &processID, &customFieldsJSON,
 			&assignee, &assignedAt, &satisfaction,
-			&t.OnHold, &holdReason, &holdUntilAt, &relatedJSON); err != nil {
+			&t.OnHold, &holdReason, &holdUntilAt, &relatedJSON,
+			&holdAt, &holdSeconds,
+			&slaWarning, &slaBreached, &slaBreachedAt, &slaEscalationLevel,
+			&catalogID, &approvalChainJSON, &approvalStatusJSON); err != nil {
 			return nil, fmt.Errorf("scan ticket: %w", err)
 		}
 
@@ -498,6 +571,27 @@ func (s *PGStore) List(ctx context.Context, tenantID string, status model.Ticket
 		}
 		t.HoldReason = nullableStr(holdReason)
 		setTimePtr(&t.HoldUntilAt, holdUntilAt)
+		setTimePtr(&t.HoldAt, holdAt)
+		if holdSeconds.Valid {
+			t.HoldSeconds = int(holdSeconds.Int64)
+		}
+		if slaWarning.Valid {
+			t.SLAWarningNotified = slaWarning.Bool
+		}
+		if slaBreached.Valid {
+			t.SLABreached = slaBreached.Bool
+		}
+		setTimePtr(&t.SLABreachedAt, slaBreachedAt)
+		if slaEscalationLevel.Valid {
+			t.SLAEscalationLevel = int(slaEscalationLevel.Int64)
+		}
+		t.CatalogID = nullableStr(catalogID)
+		if approvalChainJSON.Valid && approvalChainJSON.String != "" && approvalChainJSON.String != "null" {
+			json.Unmarshal([]byte(approvalChainJSON.String), &t.ApprovalChain)
+		}
+		if approvalStatusJSON.Valid && approvalStatusJSON.String != "" && approvalStatusJSON.String != "null" {
+			json.Unmarshal([]byte(approvalStatusJSON.String), &t.ApprovalStatus)
+		}
 		if len(relatedJSON.String) > 0 && relatedJSON.String != "[]" {
 			json.Unmarshal([]byte(relatedJSON.String), &t.RelatedTicketIDs)
 		}
@@ -931,7 +1025,9 @@ func (s *PGStore) ListActiveTicketsWithDeadline(ctx context.Context, tenantID st
 			rollback_reason, ci_ids, webhook_url, labels, trace_id, scheduled_at, deadline_at,
 			created_at, updated_at, approved_at, executed_at, completed_at, rolled_back_at,
 			sla_warning_notified, sla_breached, sla_breached_at, sla_escalation_level, custom_fields,
-			process_id, assignee
+			process_id, assignee,
+			hold_at, hold_seconds, catalog_id, approval_chain, approval_status,
+			on_hold, hold_reason, hold_until_at, assigned_at, satisfaction, related_ticket_ids
 		FROM itsm_tickets
 		WHERE tenant_id = $1 AND status IN ('draft','pending_review','approved','executing')
 		  AND deadline_at IS NOT NULL AND COALESCE(on_hold, false) = false`,
@@ -946,6 +1042,13 @@ func (s *PGStore) ListActiveTicketsWithDeadline(ctx context.Context, tenantID st
 		var ciIDsJSON, labelsJSON, customFieldsJSON []byte
 		var processID, assignee, changePlan, rollbackPlan sql.NullString
 		var scheduledAt, deadlineAt, approvedAt, executedAt, completedAt, rolledBackAt, slaBreachedAt sql.NullTime
+		var holdAt sql.NullTime
+		var holdSeconds sql.NullInt64
+		var catalogID sql.NullString
+		var approvalChainJSON, approvalStatusJSON sql.NullString
+		var holdReason, relatedJSON sql.NullString
+		var holdUntilAt, assignedAt sql.NullTime
+		var satisfaction sql.NullInt32
 		err := rows.Scan(
 			&t.ID, &t.TenantID, &t.Title, &t.Description, &t.RiskLevel, &t.Status,
 			&changePlan, &rollbackPlan, &t.CreatedBy, &t.CreatedByType,
@@ -955,9 +1058,32 @@ func (s *PGStore) ListActiveTicketsWithDeadline(ctx context.Context, tenantID st
 			&approvedAt, &executedAt, &completedAt, &rolledBackAt,
 			&t.SLAWarningNotified, &t.SLABreached, &slaBreachedAt, &t.SLAEscalationLevel,
 			&customFieldsJSON, &processID, &assignee,
+			&holdAt, &holdSeconds,
+			&catalogID, &approvalChainJSON, &approvalStatusJSON,
+			&t.OnHold, &holdReason, &holdUntilAt, &assignedAt, &satisfaction, &relatedJSON,
 		)
 		if err != nil {
 			return nil, err
+		}
+		setTimePtr(&t.HoldAt, holdAt)
+		if holdSeconds.Valid {
+			t.HoldSeconds = int(holdSeconds.Int64)
+		}
+		t.CatalogID = nullableStr(catalogID)
+		t.HoldReason = nullableStr(holdReason)
+		setTimePtr(&t.HoldUntilAt, holdUntilAt)
+		setTimePtr(&t.AssignedAt, assignedAt)
+		if satisfaction.Valid {
+			t.Satisfaction = int(satisfaction.Int32)
+		}
+		if approvalChainJSON.Valid && approvalChainJSON.String != "" && approvalChainJSON.String != "null" {
+			json.Unmarshal([]byte(approvalChainJSON.String), &t.ApprovalChain)
+		}
+		if approvalStatusJSON.Valid && approvalStatusJSON.String != "" && approvalStatusJSON.String != "null" {
+			json.Unmarshal([]byte(approvalStatusJSON.String), &t.ApprovalStatus)
+		}
+		if relatedJSON.Valid && relatedJSON.String != "" && relatedJSON.String != "[]" && relatedJSON.String != "null" {
+			json.Unmarshal([]byte(relatedJSON.String), &t.RelatedTicketIDs)
 		}
 		t.ChangePlan = nullableStr(changePlan)
 		t.RollbackPlan = nullableStr(rollbackPlan)
@@ -1005,7 +1131,9 @@ func (s *PGStore) ListOnHoldTicketsPastDue(ctx context.Context, tenantID string)
 			rollback_reason, ci_ids, webhook_url, labels, trace_id, scheduled_at, deadline_at,
 			created_at, updated_at, approved_at, executed_at, completed_at, rolled_back_at,
 			sla_warning_notified, sla_breached, sla_breached_at, sla_escalation_level, custom_fields,
-			process_id, assignee, on_hold, hold_reason, hold_until_at
+			process_id, assignee, on_hold, hold_reason, hold_until_at,
+			hold_at, hold_seconds, catalog_id, approval_chain, approval_status,
+			assigned_at, satisfaction, related_ticket_ids
 		FROM itsm_tickets
 		WHERE tenant_id = $1 AND COALESCE(on_hold, false) = true
 		  AND hold_until_at IS NOT NULL AND hold_until_at <= NOW()`,
@@ -1022,6 +1150,13 @@ func (s *PGStore) ListOnHoldTicketsPastDue(ctx context.Context, tenantID string)
 		var slaBreachedAt, deadlineAt, holdUntilAt sql.NullTime
 		var slaEscalationLevel sql.NullInt64
 		var processID, assignee, changePlan, rollbackPlan sql.NullString
+		var holdAt sql.NullTime
+		var holdSeconds sql.NullInt64
+		var catalogID sql.NullString
+		var approvalChainJSON, approvalStatusJSON sql.NullString
+		var assignedAt sql.NullTime
+		var satisfaction sql.NullInt32
+		var relatedJSON sql.NullString
 		if err := rows.Scan(
 			&t.ID, &t.TenantID, &t.Title, &t.Description, &t.RiskLevel, &t.Status,
 			&changePlan, &rollbackPlan, &t.CreatedBy, &t.CreatedByType, &t.ApprovedBy,
@@ -1031,6 +1166,9 @@ func (s *PGStore) ListOnHoldTicketsPastDue(ctx context.Context, tenantID string)
 			&t.ExecutedAt, &t.CompletedAt, &t.RolledBackAt,
 			&slaWarningNotified, &slaBreached, &slaBreachedAt, &slaEscalationLevel,
 			&customFieldsJSON, &processID, &assignee, &t.OnHold, &t.HoldReason, &holdUntilAt,
+			&holdAt, &holdSeconds,
+			&catalogID, &approvalChainJSON, &approvalStatusJSON,
+			&assignedAt, &satisfaction, &relatedJSON,
 		); err != nil {
 			return nil, err
 		}
@@ -1046,6 +1184,24 @@ func (s *PGStore) ListOnHoldTicketsPastDue(ctx context.Context, tenantID string)
 		}
 		if holdUntilAt.Valid {
 			t.HoldUntilAt = &holdUntilAt.Time
+		}
+		setTimePtr(&t.HoldAt, holdAt)
+		if holdSeconds.Valid {
+			t.HoldSeconds = int(holdSeconds.Int64)
+		}
+		t.CatalogID = nullableStr(catalogID)
+		if approvalChainJSON.Valid && approvalChainJSON.String != "" && approvalChainJSON.String != "null" {
+			json.Unmarshal([]byte(approvalChainJSON.String), &t.ApprovalChain)
+		}
+		if approvalStatusJSON.Valid && approvalStatusJSON.String != "" && approvalStatusJSON.String != "null" {
+			json.Unmarshal([]byte(approvalStatusJSON.String), &t.ApprovalStatus)
+		}
+		setTimePtr(&t.AssignedAt, assignedAt)
+		if satisfaction.Valid {
+			t.Satisfaction = int(satisfaction.Int32)
+		}
+		if relatedJSON.Valid && relatedJSON.String != "" && relatedJSON.String != "[]" && relatedJSON.String != "null" {
+			json.Unmarshal([]byte(relatedJSON.String), &t.RelatedTicketIDs)
 		}
 		if ciIDsJSON != nil {
 			json.Unmarshal(ciIDsJSON, &t.CIIDs)

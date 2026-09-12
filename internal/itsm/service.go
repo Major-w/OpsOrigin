@@ -323,6 +323,7 @@ func (s *Service) CreateTicket(ctx context.Context, req model.CreateTicketReques
 		CIIDs:         req.CIIDs,
 		CustomFields:  req.CustomFields,
 		CatalogID:     req.CatalogID,
+		ApprovalChain: req.ApprovalChain, // 审批链配置(顺序/并行), 之前漏装配导致多级审批从未生效
 		TraceID:       traceIDFromCtx(ctx),
 		ScheduledAt:   req.ScheduledAt,
 		DeadlineAt:    req.DeadlineAt,

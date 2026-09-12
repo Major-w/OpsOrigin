@@ -303,10 +303,11 @@ func (s *Service) runAutomatedDepth(ctx context.Context, proc *Process, inst *Pr
 			return cur, nil
 		}
 		if cur.Type == StepUser {
+			recordStepEntered(inst, cur, time.Now())
 			return cur, nil // 等待人工审批
 		}
 		if cur.Type == StepTimer {
-			recordTimerStarted(inst, cur, time.Now())
+			recordStepEntered(inst, cur, time.Now())
 			return cur, nil // 等待定时器到期(由 StartTimerChecker 推进)
 		}
 		if cur.Type == StepService && cur.ActionType != "" && s.actionExec != nil {

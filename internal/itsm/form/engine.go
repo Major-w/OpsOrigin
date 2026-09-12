@@ -242,6 +242,28 @@ func validateFieldWith(f FieldDef, v any, opts []FieldOption) error {
 				}
 			}
 		}
+	case TypePassword, TypeTime, TypeLink, TypeExpression:
+		// 字符串族：密码/时间/链接/表达式均按文本校验（长度 + 可选正则）。
+		// 表达式通常是只读字段，校验在 ReadOnly 分支已提前 return，这里仅兜底。
+		s, ok := v.(string)
+		if !ok {
+			return fmt.Errorf("字段 %s(%s) 应为文本", f.Label, f.Key)
+		}
+		if err := checkLen(f, s); err != nil {
+			return err
+		}
+		if err := checkRegex(f, s); err != nil {
+			return err
+		}
+	case TypeTimeRange:
+		// 时间段：值为 "开始~结束"（HH:mm~HH:mm）的纯文本，宽松按字符串校验。
+		s, ok := v.(string)
+		if !ok {
+			return fmt.Errorf("字段 %s(%s) 应为时间段文本", f.Label, f.Key)
+		}
+		if err := checkLen(f, s); err != nil {
+			return err
+		}
 	default:
 		return fmt.Errorf("字段 %s(%s) 类型 %s 不支持", f.Label, f.Key, f.Type)
 	}

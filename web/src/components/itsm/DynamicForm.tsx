@@ -25,6 +25,11 @@ export type FormFieldType =
   | 'user'
   | 'ci'
   | 'cascader'
+  | 'password'
+  | 'time'
+  | 'timerange'
+  | 'link'
+  | 'expression'
 
 export interface FormFieldOption {
   value: string
@@ -673,6 +678,89 @@ function FieldControl({
           disabled={disabled}
           onChange={onChange}
           loadOptions={loadOptions}
+        />
+      )
+    case 'password':
+      return (
+        <input
+          type="password"
+          className={fieldBaseCls}
+          value={(value as string) ?? ''}
+          placeholder={field.placeholder || '请输入密码'}
+          disabled={disabled}
+          onChange={e => onChange(e.target.value)}
+        />
+      )
+    case 'time':
+      return (
+        <input
+          type="time"
+          className={fieldBaseCls}
+          value={(value as string) ?? ''}
+          disabled={disabled}
+          onChange={e => onChange(e.target.value)}
+        />
+      )
+    case 'timerange': {
+      // 值形如 "HH:mm~HH:mm"，拆成起止两个 time 输入
+      const parts = typeof value === 'string' && value.includes('~') ? value.split('~') : ['', '']
+      const setRange = (i: number, v: string) => {
+        const next = [parts[0], parts[1]]
+        next[i] = v
+        onChange(next[0] || next[1] ? `${next[0]}~${next[1]}` : '')
+      }
+      return (
+        <div className="flex items-center gap-2">
+          <input
+            type="time"
+            className={fieldBaseCls}
+            value={parts[0]}
+            disabled={disabled}
+            onChange={e => setRange(0, e.target.value)}
+          />
+          <span className="text-muted-foreground text-sm">~</span>
+          <input
+            type="time"
+            className={fieldBaseCls}
+            value={parts[1]}
+            disabled={disabled}
+            onChange={e => setRange(1, e.target.value)}
+          />
+        </div>
+      )
+    }
+    case 'link':
+      return (
+        <div className="space-y-1">
+          <input
+            type="url"
+            className={fieldBaseCls}
+            value={(value as string) ?? ''}
+            placeholder={field.placeholder || 'https://'}
+            disabled={disabled}
+            onChange={e => onChange(e.target.value)}
+          />
+          {typeof value === 'string' && value.trim() !== '' && !disabled && (
+            <a
+              href={value}
+              target="_blank"
+              rel="noreferrer"
+              className="text-xs text-primary underline underline-offset-2 break-all"
+            >
+              {value}
+            </a>
+          )}
+        </div>
+      )
+    case 'expression':
+      // 计算/表达式字段：只读展示，内容取自默认表达式（field.default）。
+      return (
+        <input
+          type="text"
+          className={`${fieldBaseCls} font-mono bg-muted/40 text-muted-foreground`}
+          value={(field.default as string) ?? ''}
+          disabled
+          placeholder="表达式（只读展示）"
         />
       )
     case 'text':

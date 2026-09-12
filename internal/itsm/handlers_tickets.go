@@ -860,17 +860,21 @@ func (s *Service) handleResume(w http.ResponseWriter, r *http.Request) {
 	ticket.HoldReason = ""
 	ticket.HoldUntilAt = nil
 
-	// 计算本次挂起时长并累加
+	// 计算本次挂起时长并累加（HoldSeconds 是"累计挂起秒数"，仅用于展示与审计）
 	if ticket.HoldAt != nil {
 		holdDuration := int(now.Sub(*ticket.HoldAt).Seconds())
+		if holdDuration < 0 {
+			holdDuration = 0
+		}
 		ticket.HoldSeconds += holdDuration
 		ticket.HoldAt = nil
-	}
 
-	// 如果有截止时间，延长挂起时长
-	if ticket.DeadlineAt != nil {
-		extended := ticket.DeadlineAt.Add(time.Duration(ticket.HoldSeconds) * time.Second)
-		ticket.DeadlineAt = &extended
+		// 顺延 SLA 截止时间：只补【本次】挂起时长。
+		// 原实现用累计 HoldSeconds 顺延，导致第二次挂起时把第一次已补过的时长又补一遍。
+		if ticket.DeadlineAt != nil {
+			extended := ticket.DeadlineAt.Add(time.Duration(holdDuration) * time.Second)
+			ticket.DeadlineAt = &extended
+		}
 	}
 
 	if err := s.store.Update(r.Context(), ticket); err != nil {
