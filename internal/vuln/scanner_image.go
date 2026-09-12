@@ -2,13 +2,8 @@ package vuln
 
 import (
 	"context"
-	"fmt"
 	"log/slog"
 	"strings"
-	"time"
-
-	"github.com/google/uuid"
-	"github.com/opsorigin/core/internal/vuln/model"
 )
 
 // RegistryConfig 镜像仓库凭据(随扫描请求传入,按扫描隔离)。
@@ -37,17 +32,16 @@ func NewImageScanner(runner AgentRunner, reg RegistryConfig, enumerate bool, age
 }
 
 // trivyImageScript 在目标主机安装(若缺失)并运行 `trivy image <ref>`。
-// 仓库凭据经环境变量注入(避开参数转义),--skip-db-update 适配无 DB 的 agent 环境。
+// 仓库凭据经环境变量注入(避开参数转义);库新鲜度与退出码处理与主机扫描一致:
+// 库过期先刷新,刷新失败但本地有库则降级重试,最终退出码透传给上游。
 func trivyImageScript(ref, user, pass string) string {
 	var b strings.Builder
-	b.WriteString("#!/bin/bash\n")
-	b.WriteString("set -o pipefail\n")
-	b.WriteString("command -v trivy >/dev/null 2>&1 || { curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b /usr/local/bin; }\n")
+	b.WriteString(trivyScanPreamble())
 	if user != "" {
 		b.WriteString("export TRIVY_USERNAME=" + quoteShellArg(user) + "\n")
 		b.WriteString("export TRIVY_PASSWORD=" + quoteShellArg(pass) + "\n")
 	}
-	b.WriteString("trivy image --format json --severity HIGH,CRITICAL --skip-db-update " + quoteShellArg(ref) + " 2>/dev/null || true\n")
+	b.WriteString(trivyRunBlock("trivy image --format json --severity HIGH,CRITICAL " + quoteShellArg(ref)))
 	return b.String()
 }
 
@@ -56,14 +50,12 @@ func trivyImageScript(ref, user, pass string) string {
 // 输出 JSON 数组供 parseTrivy 解析。仓库凭据经环境变量注入。
 func trivyRegistryScript(url, user, pass string) string {
 	var b strings.Builder
-	b.WriteString("#!/bin/bash\n")
-	b.WriteString("set -o pipefail\n")
-	b.WriteString("command -v trivy >/dev/null 2>&1 || { curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b /usr/local/bin; }\n")
+	b.WriteString(trivyScanPreamble())
 	if user != "" {
 		b.WriteString("export TRIVY_USERNAME=" + quoteShellArg(user) + "\n")
 		b.WriteString("export TRIVY_PASSWORD=" + quoteShellArg(pass) + "\n")
 	}
-	b.WriteString("trivy registry --format json --severity HIGH,CRITICAL --skip-db-update " + quoteShellArg(url) + " 2>/dev/null || true\n")
+	b.WriteString(trivyRunBlock("trivy registry --format json --severity HIGH,CRITICAL " + quoteShellArg(url)))
 	return b.String()
 }
 
@@ -74,8 +66,8 @@ func quoteShellArg(s string) string {
 
 // Scan 对每个 ImageRef 经 Agent 在目标主机运行 `trivy image`,解析 JSON 汇总 findings。
 // enumerate 模式(registry_auto)且无显式清单时,改走 scanRegistry 自动枚举仓库全部镜像。
-// 单镜像/单仓库失败仅记日志并跳过,不拖垮整轮;无目标资产返回空。
-func (s *ImageScanner) Scan(ctx context.Context, tenantID, scanID, scanType string, demoMode bool, inventory []InventoryEntry) ([]*model.Finding, error) {
+// 单个镜像/单仓库失败不拖垮整轮,但计入 Failed;无目标资产显式记录原因。
+func (s *ImageScanner) Scan(ctx context.Context, tenantID, scanID, scanType string, demoMode bool, inventory []InventoryEntry) (*ScanResult, error) {
 	if s.enumerate && len(inventory) == 0 {
 		return s.scanRegistry(ctx, tenantID, scanID, scanType)
 	}
@@ -95,99 +87,89 @@ func (s *ImageScanner) Scan(ctx context.Context, tenantID, scanID, scanType stri
 		seen[e.ImageRef] = true
 		targets = append(targets, target{ref: e.ImageRef, agentID: e.AgentID})
 	}
+	res := &ScanResult{}
 	if len(targets) == 0 {
-		return nil, nil
+		res.addError("未提供任何待扫描镜像")
+		return res, nil
 	}
+	res.Targets = len(targets)
 
-	var findings []*model.Finding
 	for _, t := range targets {
 		script := trivyImageScript(t.ref, s.reg.Username, s.reg.Password)
-		out, _, err := s.runner.RunScriptOnAgent(ctx, t.agentID, tenantID, script, nil, 600, "")
+		out, exitCode, err := s.runner.RunScriptOnAgent(ctx, t.agentID, tenantID, script, nil, 600, "")
 		if err != nil {
-			slog.Error("vuln: image scan failed, skipped", "agent", t.agentID, "ref", t.ref, "error", err)
+			slog.Error("vuln: image scan failed", "agent", t.agentID, "ref", t.ref, "error", err)
+			res.Failed++
+			res.addError("镜像 %s 执行失败: %v", t.ref, err)
 			continue
 		}
-		m, perr := parseTrivy(out)
+		if exitCode != 0 {
+			slog.Error("vuln: image scan non-zero exit", "agent", t.agentID, "ref", t.ref, "exit", exitCode)
+			res.Failed++
+			res.addError("镜像 %s 扫描退出码 %d(trivy 未成功执行)", t.ref, exitCode)
+			continue
+		}
+		body, dbAt := parseScanOutput(out)
+		m, perr := parseTrivy(body)
 		if perr != nil {
-			slog.Error("vuln: parse trivy image output failed, skipped", "agent", t.agentID, "ref", t.ref, "error", perr)
+			slog.Error("vuln: parse trivy image output failed", "agent", t.agentID, "ref", t.ref, "error", perr)
+			res.Failed++
+			res.addError("镜像 %s 输出解析失败(非预期 JSON)", t.ref)
 			continue
 		}
-		for tgt, vs := range m {
-			for _, v := range vs {
-				sev := mapSeverity(v.Severity)
-				if scanType == string(model.ScanTypeQuick) && sev.Rank() < 3 {
-					continue
-				}
-				findings = append(findings, &model.Finding{
-					ID:          uuid.New().String(),
-					ScanID:      scanID,
-					TenantID:    tenantID,
-					CVE:         v.VulnerabilityID,
-					Title:       fmt.Sprintf("%s (image: %s)", v.Title, tgt),
-					Description: v.Title,
-					Severity:    sev,
-					Affected:    v.PkgName,
-					Installed:   v.InstalledVersion,
-					Fixed:       v.FixedVersion,
-					Reference:   v.PrimaryURL,
-					Rank:        sev.Rank(),
-					CreatedAt:   time.Now(),
-				})
-			}
+		if dbAt != nil && (res.DBUpdatedAt == nil || dbAt.After(*res.DBUpdatedAt)) {
+			res.DBUpdatedAt = dbAt
 		}
+		// 镜像扫描以镜像全引用作为资产归属,使去重键能区分不同镜像的同一 CVE。
+		res.appendHost(t.ref)
+		res.Findings = append(res.Findings, findingsFromTrivy(tenantID, scanID, scanType, t.ref, m)...)
 	}
-	return findings, nil
+	return res, nil
 }
 
 // scanRegistry 经 Agent 在目标主机跑 `trivy registry <url>`,自动枚举仓库内
 // 全部 repos/tags 并扫描,解析 JSON 数组汇总 findings。
-// 依赖仓库开放 catalog 列举(私有仓库需相应配置);无 agent/无 url/失败 时返回空(不报错拖垮)。
-func (s *ImageScanner) scanRegistry(ctx context.Context, tenantID, scanID, scanType string) ([]*model.Finding, error) {
+// 依赖仓库开放 catalog 列举(私有仓库需相应配置);失败原因显式回传,不再静默返回空。
+func (s *ImageScanner) scanRegistry(ctx context.Context, tenantID, scanID, scanType string) (*ScanResult, error) {
+	res := &ScanResult{}
 	if s.runner == nil || s.agentID == "" {
-		return nil, nil
+		res.addError("registry 自动枚举需要指定执行 Agent")
+		return res, nil
 	}
 	if s.reg.URL == "" {
-		slog.Error("vuln: registry auto-enumerate requires registry.url")
-		return nil, nil
+		res.addError("registry 自动枚举需要 registry.url")
+		return res, nil
 	}
+	res.Targets = 1
 	script := trivyRegistryScript(s.reg.URL, s.reg.Username, s.reg.Password)
-	out, _, err := s.runner.RunScriptOnAgent(ctx, s.agentID, tenantID, script, nil, 900, "")
+	out, exitCode, err := s.runner.RunScriptOnAgent(ctx, s.agentID, tenantID, script, nil, 900, "")
 	if err != nil {
-		slog.Error("vuln: registry enumerate scan failed, skipped", "agent", s.agentID, "url", s.reg.URL, "error", err)
-		return nil, nil
+		slog.Error("vuln: registry enumerate scan failed", "agent", s.agentID, "url", s.reg.URL, "error", err)
+		res.Failed++
+		res.addError("仓库 %s 枚举失败: %v", s.reg.URL, err)
+		return res, nil
 	}
-	m, perr := parseTrivy(out)
+	if exitCode != 0 {
+		slog.Error("vuln: registry enumerate non-zero exit", "agent", s.agentID, "url", s.reg.URL, "exit", exitCode)
+		res.Failed++
+		res.addError("仓库 %s 扫描退出码 %d(trivy 未成功执行)", s.reg.URL, exitCode)
+		return res, nil
+	}
+	body, dbAt := parseScanOutput(out)
+	m, perr := parseTrivy(body)
 	if perr != nil {
-		slog.Error("vuln: parse trivy registry output failed, skipped", "url", s.reg.URL, "error", perr)
-		return nil, nil
+		slog.Error("vuln: parse trivy registry output failed", "url", s.reg.URL, "error", perr)
+		res.Failed++
+		res.addError("仓库 %s 输出解析失败(非预期 JSON)", s.reg.URL)
+		return res, nil
 	}
-	var findings []*model.Finding
+	res.DBUpdatedAt = dbAt
 	for tgt, vs := range m {
-		for _, v := range vs {
-			sev := mapSeverity(v.Severity)
-			if scanType == string(model.ScanTypeQuick) && sev.Rank() < 3 {
-				continue
-			}
-			ref := tgt
-			if ref == "" {
-				ref = "(unknown)"
-			}
-			findings = append(findings, &model.Finding{
-				ID:          uuid.New().String(),
-				ScanID:      scanID,
-				TenantID:    tenantID,
-				CVE:         v.VulnerabilityID,
-				Title:       fmt.Sprintf("%s (image: %s)", v.Title, ref),
-				Description: v.Title,
-				Severity:    sev,
-				Affected:    v.PkgName,
-				Installed:   v.InstalledVersion,
-				Fixed:       v.FixedVersion,
-				Reference:   v.PrimaryURL,
-				Rank:        sev.Rank(),
-				CreatedAt:   time.Now(),
-			})
+		ref := tgt
+		if ref == "" {
+			ref = s.reg.URL
 		}
+		res.Findings = append(res.Findings, findingsFromTrivy(tenantID, scanID, scanType, ref, map[string][]trivyVuln{ref: vs})...)
 	}
-	return findings, nil
+	return res, nil
 }
