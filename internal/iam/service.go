@@ -307,6 +307,9 @@ func seedPermissions() []Permission {
 		{Name: "audit:read", Description: "查看审计日志", Category: "审计"},
 		{Name: "system:admin", Description: "系统级管理(全权限)", Category: "系统"},
 		{Name: "ai:tool:exec", Description: "执行运维工具/脚本(高危)", Category: "运维工具"},
+		{Name: "apikey:self", Description: "管理自己的 API Key(继承本人权限)", Category: "用户权限"},
+		{Name: "vuln:read", Description: "查看漏洞扫描与漏洞明细", Category: "漏洞扫描"},
+		{Name: "vuln:write", Description: "发起/删除扫描,处置漏洞(修复/忽略/误报)", Category: "漏洞扫描"},
 	}
 }
 
@@ -327,6 +330,7 @@ func (s *Service) seedBuiltinRoles() {
 			"user:read", "user:write",
 			"agent:read", "agent:write",
 			"audit:read", "system:admin", "ai:tool:exec",
+			"vuln:read", "vuln:write",
 		}},
 		{"operator", "操作员", "日常运维操作,无系统级权限", []string{
 			"cmdb:read", "cmdb:write",
@@ -335,6 +339,7 @@ func (s *Service) seedBuiltinRoles() {
 			"user:read",
 			"agent:read", "agent:write",
 			"audit:read", "ai:tool:exec",
+			"vuln:read", "vuln:write",
 		}},
 		{"viewer", "只读用户", "仅可查看,不可修改", []string{
 			"cmdb:read",
@@ -343,6 +348,7 @@ func (s *Service) seedBuiltinRoles() {
 			"user:read",
 			"agent:read",
 			"audit:read",
+			"vuln:read",
 		}},
 	}
 	for _, b := range builtins {

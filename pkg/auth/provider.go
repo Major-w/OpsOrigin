@@ -64,6 +64,8 @@ type Provider struct {
 	// serviceToken 内部服务共享密钥。空串 = 断言头通道关闭(fail-closed)。
 	serviceToken string
 	enricher     PrincipalEnricher
+	// apiKeyResolver API Key 校验器。nil = X-API-Key 通道关闭(fail-closed)。
+	apiKeyResolver APIKeyResolver
 }
 
 type Claims struct {
@@ -248,6 +250,22 @@ func (p *Provider) Middleware(next http.Handler) http.Handler {
 		// 到这里的请求一律视为不可信来源:剥离其自带的身份/权限断言头,
 		// 杜绝「登录用户伪造 X-Principal-ID 冒充他人 / 自报 X-Permissions 提权」。
 		stripAssertionHeaders(r)
+
+		// API Key 通道:X-API-Key / Authorization: ApiKey <key>。
+		// 主体由服务端按 Key 绑定关系解析(非请求自述),再经 enrich 按用户当前角色
+		// 走 IAM 聚合富化 —— 与 JWT 同一条路径,故 Key 自动继承用户权限。
+		// 未注入校验器(通道未开启)时不拦截,回落常规鉴权路径。
+		if p.apiKeyResolver != nil {
+			if rawKey := extractAPIKey(r); rawKey != "" {
+				nctx, ok := p.authenticateAPIKey(r.Context(), rawKey)
+				if !ok {
+					http.Error(w, `{"error":"invalid api key"}`, http.StatusUnauthorized)
+					return
+				}
+				next.ServeHTTP(w, r.WithContext(nctx))
+				return
+			}
+		}
 
 		// DEV 模式：JWT secret 是默认值时自动注入 admin 主体，免登录。
 		// 注意:此处只写 context,绝不回写请求头 —— 断言头必须只有可信通道能产生。

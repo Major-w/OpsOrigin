@@ -25,6 +25,14 @@ const (
 	// PermissionAIToolExec 允许调用 /api/v1/ai/tools/{name}/execute 直接执行运维工具
 	// (含 script_run 在受管主机上执行脚本,属高风险操作)。
 	PermissionAIToolExec = "ai:tool:exec"
+	// PermissionAPIKeySelf 允许管理「属于自己的」API Key(列表/新建/轮换/吊销)。
+	// 默认授予所有内置角色:API Key 绑定到用户并继承该用户的权限,
+	// 因此自助管理不会带来任何额外授权面(能力上限 = 用户自身权限)。
+	PermissionAPIKeySelf = "apikey:self"
+	// PermissionVulnRead 查看漏洞扫描任务、漏洞明细与统计。
+	PermissionVulnRead = "vuln:read"
+	// PermissionVulnWrite 发起/删除扫描,以及处置漏洞(标记修复/忽略/误报)。
+	PermissionVulnWrite = "vuln:write"
 )
 
 // Role 角色常量
@@ -43,7 +51,7 @@ var RolePermissions = map[string][]string{
 		PermissionUserRead, PermissionUserWrite,
 		PermissionAgentRead, PermissionAgentWrite,
 		PermissionAuditRead, PermissionSystemAdmin,
-		PermissionAIToolExec,
+		PermissionAIToolExec, PermissionAPIKeySelf,
 	},
 	RoleOperator: {
 		PermissionCMDBRead, PermissionCMDBWrite,
@@ -51,7 +59,7 @@ var RolePermissions = map[string][]string{
 		PermissionITSMRead, PermissionITSMWrite,
 		PermissionUserRead,
 		PermissionAgentRead, PermissionAgentWrite,
-		PermissionAuditRead, PermissionAIToolExec,
+		PermissionAuditRead, PermissionAIToolExec, PermissionAPIKeySelf,
 	},
 	RoleViewer: {
 		PermissionCMDBRead,
@@ -59,7 +67,7 @@ var RolePermissions = map[string][]string{
 		PermissionITSMRead,
 		PermissionUserRead,
 		PermissionAgentRead,
-		PermissionAuditRead,
+		PermissionAuditRead, PermissionAPIKeySelf,
 	},
 }
 
@@ -247,6 +255,20 @@ var PathPermissionMapping = map[string]string{
 	"POST /api/v1/chatops":   PermissionSystemAdmin,
 	"PUT /api/v1/chatops":    PermissionSystemAdmin,
 	"DELETE /api/v1/chatops": PermissionSystemAdmin,
+	// API Key 自助管理:Key 绑定用户并继承其权限,故管理自己的 Key 不额外提权。
+	// 越权边界(代他人建 Key / 查看全租户 Key)在 apikey 服务内按角色二次判定。
+	"GET /api/v1/api-keys":    PermissionAPIKeySelf,
+	"POST /api/v1/api-keys":   PermissionAPIKeySelf,
+	"DELETE /api/v1/api-keys": PermissionAPIKeySelf,
+	// CMDB 数据消费分析:与 CMDB 读权限同级(只读统计视图)。
+	"GET /api/v1/cmdb/usage": PermissionCMDBRead,
+	// 漏洞扫描:查看(vuln:read)与发起/处置(vuln:write)。
+	// 未映射时中间件只认证不鉴权,故必须显式声明,否则任意登录用户可建/删扫描。
+	"GET /api/v1/vuln":    PermissionVulnRead,
+	"POST /api/v1/vuln":   PermissionVulnWrite,
+	"PUT /api/v1/vuln":    PermissionVulnWrite,
+	"PATCH /api/v1/vuln":  PermissionVulnWrite,
+	"DELETE /api/v1/vuln": PermissionVulnWrite,
 }
 
 // AutoPermissionMiddleware 自动权限检查中间件
