@@ -38,6 +38,10 @@ interface _ChatState {
     onTruncated?: (note: string) => void,
     /** 本轮随消息上传的附件(图片/文档)元数据, 后端转为多模态片段。 */
     attachments?: { id?: string; name: string; type: string }[],
+    /** SSE event:clarify — 用户问题模糊时 AI 反问需要补充的信息。 */
+    onClarify?: (question: string) => void,
+    /** SSE event:suggestions — 可点击的继续追问建议。 */
+    onSuggestions?: (items: string[]) => void,
   ) => Promise<void>
   loadConversations: (agentId?: string) => Promise<any[]>
   saveConversation: (conv: any) => Promise<any | null>
@@ -60,17 +64,14 @@ interface _TeamState {
   ) => Promise<void>
 }
 
+import type { AgentLite, CreateAgentPayload } from './ai/agents'
+
 interface _AgentState {
-  agents: any[]
-  tools: any[]
-  plans: any[]
+  agents: AgentLite[]
   loading: boolean
   error: string | null
   fetchAgents: () => Promise<void>
-  fetchTools: () => Promise<void>
-  fetchPlans: () => Promise<void>
-  createAgent: (data: any) => Promise<boolean>
-  executePlan: (data: any) => Promise<boolean>
+  createAgent: (data: CreateAgentPayload) => Promise<boolean>
 }
 
 interface _ApprovalState {

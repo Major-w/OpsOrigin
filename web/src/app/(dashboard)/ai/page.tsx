@@ -9,7 +9,8 @@ import { Button, Input, Select, Space, Modal, Popconfirm } from 'antd'
 import {
   Sparkles, History, Settings, BarChart3, Share2, Lock, PanelLeftClose, PanelLeftOpen,
   AlertTriangle, XCircle, CheckCircle, Loader2, Brain, Bookmark, Download, Save, Terminal, Paperclip,
-  FileDown, Presentation,
+  FileDown, Presentation, Server, FileBarChart, Bug, ClipboardList, BookOpen, Database, Bell,
+  Maximize2, Minimize2,
 } from 'lucide-react'
 import { exportDocFile } from '@/lib/doc-export'
 import { cn } from '@/lib/utils'
@@ -24,11 +25,16 @@ import { getMessage } from '@/lib/message'
 // 工作区(工具产物) / 上下文用量条 / 只读共享权限门禁 / 记忆·知识库·下载·归档 消息操作。
 // ============================================================================
 
+// 场景化快捷入口: 卡片化展示(图标 + 标题 + 描述), 降低首问门槛
 const QUICK_ACTIONS = [
-  { label: '查询主机状态', icon: Sparkles, prompt: '帮我查询所有主机的运行状态' },
-  { label: '执行巡检任务', icon: Terminal, prompt: '执行一次自动化巡检任务' },
-  { label: '生成运维报告', icon: Sparkles, prompt: '生成本周的运维报告' },
-  { label: '排查故障', icon: Sparkles, prompt: '帮我排查当前系统的异常情况' },
+  { label: '查询主机状态', icon: Server, desc: '汇总在线/离线与负载', prompt: '帮我查询所有主机的运行状态，并按负载从高到低列出 Top 10' },
+  { label: '执行巡检任务', icon: ClipboardList, desc: '自动巡检并给出风险项', prompt: '执行一次自动化巡检任务，输出异常项与处理建议' },
+  { label: '生成运维报告', icon: FileBarChart, desc: '本周运维总结与趋势', prompt: '生成本周的运维报告，包含告警、变更、故障与容量趋势' },
+  { label: '排查故障', icon: Bug, desc: '定位根因并给修复步骤', prompt: '帮我排查当前系统的异常情况，给出根因分析与分步修复建议' },
+  { label: '告警根因分析', icon: Bell, desc: '关联指标/日志定位源头', prompt: '分析最近 24 小时的高频告警，找出根因并给出抑制建议' },
+  { label: '生成 Runbook', icon: BookOpen, desc: '输出可执行处置手册', prompt: '为「磁盘空间不足」场景生成一份标准 Runbook，含前置检查、处置步骤与回滚方案' },
+  { label: 'SQL 优化建议', icon: Database, desc: '慢查询诊断与索引建议', prompt: '分析这条慢查询 SQL 的执行计划，给出优化建议与索引方案' },
+  { label: '容量预测', icon: BarChart3, desc: '基于历史推算扩容时点', prompt: '基于过去 30 天的资源使用数据，预测未来 90 天的容量需求与扩容时点' },
 ]
 
 // 欢迎词(改这里即可调整 AI 助手首屏文案)
@@ -114,6 +120,47 @@ export default function AIPage() {
   const [pendingArtifactId, setPendingArtifactId] = useState<string | null>(null)
   const [pendingWsFileId, setPendingWsFileId] = useState<string | null>(null)
 
+  // —— 全屏: CSS 铺满隐藏后台布局(侧栏/面包屑) + 整个文档进入原生全屏(隐藏浏览器 chrome)。
+  // 原生全屏必须对 documentElement 调用: 若只对容器调用, antd 弹层(Modal/Popconfirm 挂在 body)会
+  // 落在全屏元素之外而不可见, 分享/删除等弹窗会"点了没反应"。
+  const shellRef = useRef<HTMLDivElement>(null)
+  const [nativeFs, setNativeFs] = useState(false)
+  const [cssFs, setCssFs] = useState(false)
+  const isFullscreen = nativeFs || cssFs
+
+  const toggleFullscreen = async () => {
+    if (isFullscreen) {
+      if (document.fullscreenElement) { try { await document.exitFullscreen() } catch { /* 忽略 */ } }
+      setCssFs(false)
+      return
+    }
+    setCssFs(true)
+    // 原生全屏需用户手势触发; 不支持/被拒时静默降级为纯 CSS 铺满(仍占满视口)
+    try {
+      if (document.documentElement.requestFullscreen) await document.documentElement.requestFullscreen()
+    } catch { /* 降级: 仅 CSS 铺满 */ }
+  }
+
+  // 原生全屏状态同步: 浏览器 Esc / F11 退出时同步收起 CSS 铺满, 一次退出即回到常规视图
+  useEffect(() => {
+    const onChange = () => {
+      const active = !!document.fullscreenElement
+      setNativeFs(active)
+      if (!active) setCssFs(false)
+    }
+    document.addEventListener('fullscreenchange', onChange)
+    return () => document.removeEventListener('fullscreenchange', onChange)
+  }, [])
+  // 纯 CSS 铺满(原生不可用时)的 Esc 退出
+  useEffect(() => {
+    if (!cssFs || nativeFs) return
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setCssFs(false) }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [cssFs, nativeFs])
+  // 卸载时兜底退出原生全屏, 避免路由离开后仍停留在全屏
+  useEffect(() => () => { if (document.fullscreenElement) document.exitFullscreen().catch(() => {}) }, [])
+
   // —— 对话附件: 待发送列表 + 上传中计数(上传完成即入列, 发送时随消息附带) ——
   const [pendingFiles, setPendingFiles] = useState<ChatAttachmentMeta[]>([])
   const [uploadingCount, setUploadingCount] = useState(0)
@@ -125,7 +172,17 @@ export default function AIPage() {
   )
   // 窄屏抽屉式侧栏: 选中/新建会话后自动收起, 不遮挡对话区
   const closeSidebarOnNarrow = () => {
-    if (typeof window !== 'undefined' && window.matchMedia('(max-width: 767px)').matches) setSidebarOpen(false)
+    if (typeof window !== 'undefined' && window.matchMedia('(max: 767px)').matches) setSidebarOpen(false)
+  }
+  // 切换运行级模型: 选中推理模型时提示「首答前先深度思考, 较慢但质量更高」,
+  // 直接缓解此前「AI 对话慢」的体感误判——用户能主动区分推理/极速模型。
+  const handleModelChange = (m: string) => {
+    setSelectedModel(m)
+    if (!m) return
+    const info = models.find(x => x.model === m)
+    if (info?.reasoning) {
+      getMessage().info('已选推理模型：首答前会先深度思考（较慢），质量更高；追求极速可切回「自动」或极速模型')
+    }
   }
 
   const handleFiles = async (files: File[]) => {
@@ -157,7 +214,13 @@ export default function AIPage() {
   const [dragActive, setDragActive] = useState(false)
 
   // 键盘快捷键: Cmd/Ctrl+K 聚焦输入框 / Esc 停止生成(编辑框内 Esc 由编辑器自处理, 此处跳过) /
-  // 输入框为空时 ↑ 回填上一条用户消息(终端习惯, 便于快速修改重发)
+  // 输入框为空时 ↑/↓ 在历史提问里前后翻(终端习惯, 便于快速修改重发)
+  // 历史提问栈(发送顺序): ↑ 往更早翻, ↓ 往更新翻, 翻回起点为空输入
+  const userPrompts = useMemo(
+    () => messages.filter(m => m.role === 'user' && m.content).map(m => m.content),
+    [messages],
+  )
+  const histIdxRef = useRef(-1) // -1=未翻历史; 0=最近一条, 依次更早
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') {
@@ -167,14 +230,27 @@ export default function AIPage() {
       }
       const inEditor = (e.target as HTMLElement | null)?.closest?.('textarea, input, [contenteditable="true"]')
       if (e.key === 'Escape' && streaming && !inEditor) { stopGeneration(); return }
-      if (e.key === 'ArrowUp' && !streaming && e.target === inputTaRef.current && !input) {
-        const lastUser = [...messages].reverse().find(m => m.role === 'user')
-        if (lastUser) { e.preventDefault(); setInput(lastUser.content) }
+      if (e.target !== inputTaRef.current || streaming || userPrompts.length === 0) return
+      if (e.key === 'ArrowUp') {
+        // 多行内容且光标不在首行时不劫持(保留正常光标移动)
+        const ta = inputTaRef.current
+        if (ta && ta.selectionStart > 0) return
+        const next = histIdxRef.current + 1
+        if (next >= userPrompts.length) return
+        histIdxRef.current = next
+        e.preventDefault()
+        setInput(userPrompts[userPrompts.length - 1 - next])
+      } else if (e.key === 'ArrowDown') {
+        if (histIdxRef.current < 0) return
+        const next = histIdxRef.current - 1
+        histIdxRef.current = next
+        e.preventDefault()
+        setInput(next < 0 ? '' : userPrompts[userPrompts.length - 1 - next])
       }
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [streaming, stopGeneration, input, messages, setInput])
+  }, [streaming, stopGeneration, setInput, userPrompts])
 
   // 会话级导出: 当前全部消息落为 Markdown 文件(失败消息标注原因, 附件仅记名)
   const exportSessionMd = () => {
@@ -257,7 +333,7 @@ export default function AIPage() {
         // (attachment://<id>#<name> 引用)还原, 不再依赖正文里的 [附件] 标记行。
         const msgs: ChatMessage[] = conv.messages
           .filter((m: any) => m.role === 'user' || m.role === 'assistant')
-          .filter((m: any) => m.role !== 'assistant' || (m.content || '').trim())
+          .filter((m: any) => m.role !== 'assistant' || (m.content || '').trim() || (m.content_parts && m.content_parts.length > 0))
           .map((m: any, i: number) => {
             const atts = extractAttachmentsFromParts(m.content_parts)
             const msg: ChatMessage = { id: `${id}-${i}`, role: m.role, content: m.content || '', timestamp: Date.now() }
@@ -544,7 +620,14 @@ export default function AIPage() {
   return (
     // 高度对齐 layout.tsx 顶部面包屑栏(px-6 py-3 + 一行文字 + border ≈ 45px):
     // 页面正好填满面包屑以下视口, 输入区不被挤出屏幕, 对话区拿到最大垂直空间。
-    <div className="p-3 md:p-6 h-[calc(100vh-45px)] flex flex-col">
+    // 全屏时改为铺满视口(原生 Fullscreen 用 h-screen; 降级模式用 fixed 覆盖后台布局)。
+    <div
+      ref={shellRef}
+      className={cn(
+        'p-3 md:p-6 flex flex-col bg-background',
+        cssFs ? 'fixed inset-0 z-[60]' : nativeFs ? 'h-screen' : 'h-[calc(100vh-45px)]',
+      )}
+    >
       <div className="flex items-center justify-between mb-3 gap-2">
         <div className="min-w-0">
           <h1 className="text-xl font-bold flex items-center gap-2"><Sparkles className="h-5 w-5 text-blue-500 shrink-0" />AI 助手</h1>
@@ -553,6 +636,10 @@ export default function AIPage() {
         <div className="flex items-center gap-2 shrink-0">
           {mode === 'normal' && (<Button size="middle" onClick={() => navigate('/ai/analytics')} title="分析"><BarChart3 className="h-4 w-4" /><span className="max-sm:hidden">分析</span></Button>)}
           {mode === 'normal' && (<Button size="middle" onClick={exportSessionMd} title="将当前会话导出为 Markdown"><Download className="h-4 w-4" /><span className="max-sm:hidden">导出会话</span></Button>)}
+          <Button size="middle" onClick={toggleFullscreen} title={isFullscreen ? '退出全屏（Esc）' : '全屏对话'}>
+            {isFullscreen ? <Minimize2 className="h-4 w-4" /> : <Maximize2 className="h-4 w-4" />}
+            <span className="max-sm:hidden">{isFullscreen ? '退出全屏' : '全屏'}</span>
+          </Button>
           <Button size="middle" onClick={() => navigate('/ai/models')} title="模型"><Brain className="h-4 w-4" /><span className="max-sm:hidden">模型</span></Button>
           <Button size="middle" onClick={() => navigate('/ai/settings')} title="设置"><Settings className="h-4 w-4" /><span className="max-sm:hidden">设置</span></Button>
         </div>
@@ -623,23 +710,31 @@ export default function AIPage() {
               onEditResend={editAndResend}
               modelOptions={healthyModelOptions}
               onRetryWithModel={retryWithModel}
+              onSuggestion={(t) => { if (!streaming && canUseAI) send(t) }}
               extraActions={renderMsgActions}
               loading={streaming}
               loadingText="思考中..."
+              enableSearch
               emptyQuickActions={
-                <>
+                <div className="w-full max-w-2xl grid grid-cols-1 sm:grid-cols-2 gap-3">
                   {QUICK_ACTIONS.map(a => (
                     <button
                       key={a.label}
-                      onClick={() => { if (!streaming && canUseAI) { send(a.prompt, pendingFiles); setPendingFiles([]) } }}
+                      title="点击填入输入框，可修改后再发送"
+                      onClick={() => { if (!streaming && canUseAI) { setInput(a.prompt); inputTaRef.current?.focus() } }}
                       disabled={streaming || !canUseAI}
-                      className="flex items-center gap-2 text-left rounded-lg border border-border bg-background hover:bg-accent hover:border-blue-300 dark:hover:border-blue-500/40 px-3 py-2.5 transition-colors disabled:opacity-50 group"
+                      className="flex items-start gap-2.5 text-left rounded-xl border border-border bg-background hover:bg-accent hover:border-blue-300 dark:hover:border-blue-500/40 px-3 py-2.5 transition-colors disabled:opacity-50 group"
                     >
-                      <a.icon className="h-4 w-4 text-blue-500 shrink-0" />
-                      <span className="text-xs text-foreground/90 group-hover:text-blue-600 dark:group-hover:text-blue-300 transition-colors">{a.label}</span>
+                      <span className="mt-0.5 h-7 w-7 shrink-0 rounded-lg bg-blue-500/10 text-blue-500 flex items-center justify-center">
+                        <a.icon className="h-4 w-4" />
+                      </span>
+                      <span className="min-w-0">
+                        <span className="block text-xs font-medium text-foreground/90 group-hover:text-blue-600 dark:group-hover:text-blue-300 transition-colors">{a.label}</span>
+                        {a.desc && <span className="block text-[11px] text-muted-foreground mt-0.5 leading-snug">{a.desc}</span>}
+                      </span>
                     </button>
                   ))}
-                </>
+                </div>
               }
               endRef={messagesEndRef}
               className="p-4"
@@ -654,7 +749,7 @@ export default function AIPage() {
               onExecutorChange={setExecutor}
               models={models}
               selectedModel={selectedModel}
-              onModelChange={setSelectedModel}
+              onModelChange={handleModelChange}
               knowledgeCategories={knowledgeCategories}
               knowledgeCategoryOptions={knowledgeCategoryOptions}
               onKnowledgeCategoriesChange={setKnowledgeCategories}
@@ -665,7 +760,7 @@ export default function AIPage() {
             <ChatInputBar
               value={input}
               onChange={setInput}
-              onSend={() => { send(input, pendingFiles); setPendingFiles([]) }}
+              onSend={() => { histIdxRef.current = -1; send(input, pendingFiles); setPendingFiles([]) }}
               onStop={stopGeneration}
               onFiles={handleFiles}
               streaming={streaming}
@@ -673,6 +768,8 @@ export default function AIPage() {
               // 欢迎态(messages.length===1)已在消息区渲染场景卡片(点击即发送), 此处不再重复展示胶囊
               enableQuickActions={!streaming && messages.length > 1}
               quickActions={QUICK_ACTIONS}
+              // 提示词库: 选模板插入输入框(复用 /ai/prompts), 让沉淀的团队话术真正被一线取用
+              enablePromptLibrary
               textareaRef={inputTaRef}
               variant="page"
               inputFooter={inputFooter}

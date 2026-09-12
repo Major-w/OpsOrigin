@@ -611,14 +611,22 @@ func (e *Engine) Chat(ctx context.Context, agentID, prompt string, history []llm
 }
 
 // ChatReasoning 思维链模式:返回思考过程和最终答案。
-// 优先返回模型原生 reasoning_content(DeepSeek-R1/Qwen 等),缺失时降级到 prompt 伪思维链。
-func (e *Engine) ChatReasoning(ctx context.Context, agentID, prompt string, history []llm.Message, conversationID, model string, explore bool, parts ...llm.ContentPart) (thinking string, answer string, convID string, err error) {
-	answer, reasoning, _, convID, err := e.chatWithToolsConv(ctx, agentID, prompt, history, true, conversationID, model, explore, parts)
+// nativeReasoning=true 时信任模型通过 reasoning_content 输出思维链,不在 prompt 中强制 <think> 格式,
+// 避免原生推理模型(DeepSeek-R1/glm-4 等)把推理文本重复写入 content。
+// nativeReasoning=false 时保留原行为:prompt 要求 <think>...</think><answer>...</answer>,
+// 模型若未输出 reasoning_content 则从 content 中解析 CoT。
+func (e *Engine) ChatReasoning(ctx context.Context, agentID, prompt string, history []llm.Message, conversationID, model string, explore bool, nativeReasoning bool, parts ...llm.ContentPart) (thinking string, answer string, convID string, err error) {
+	forcePrompt := !nativeReasoning
+	answer, reasoning, _, convID, err := e.chatWithToolsConv(ctx, agentID, prompt, history, forcePrompt, conversationID, model, explore, parts)
 	if err != nil {
 		return "", "", "", err
 	}
 	if reasoning != "" {
 		return reasoning, answer, convID, nil
+	}
+	if nativeReasoning {
+		// 原生推理模型未输出 reasoning_content 时直接返回正文,不尝试从 content 中剥离 CoT
+		return "", answer, convID, nil
 	}
 	thinking, answer = parseCoT(answer)
 	return thinking, answer, convID, nil
@@ -693,6 +701,9 @@ func stripThinkTags(s string) string {
 
 // thinkFilter 流式场景下的增量思维链过滤器: token 是逐块到达的, 标签可能被切在两个 chunk 之间,
 // 因此需缓存尾部"可能是不完整标签"的若干字节, 待下个 chunk 再判定。
+// 同时回吐 (clean, think) 两段: clean 是 <think> 之外的可见内容, think 是本次分片中已闭合的
+// 思维链正文(未闭合部分留在内部, 由 flush 兜底丢弃或回收)。caller 把 think emit 为
+// "event: thinking", 即可在前端 ThinkingBlock 独立折叠展示, 避免与答案混在同一个气泡里。
 type thinkFilter struct {
 	pending string
 	inThink bool
@@ -719,20 +730,27 @@ func utf8SafeKeepSuffix(s string, maxKeep int) (prefix, suffix string) {
 	return s[:cut], s[cut:]
 }
 
-// feed 输入一个流式分片, 返回可安全输出给用户的文本(思维链内容被丢弃)。
-func (f *thinkFilter) feed(s string) string {
+// feed 输入一个流式分片, 返回 (clean, think):
+//   - clean: <think> 之外的可见文本, 可直接 emit("token", ...);
+//   - think: 本次分片中已完整闭合的 <think> 内的思维链正文(可能为空, 表示本片未闭合或无 <think>)。
+//
+// 跨 chunk 标签切分: pending 缓存尾部可能是不完整标签的若干字节, 待下个 chunk 再判定。
+func (f *thinkFilter) feed(s string) (clean, think string) {
 	f.pending += s
-	var out strings.Builder
+	var outC, outT strings.Builder
 	for {
 		iOpen, iClose := strings.Index(f.pending, thinkTagOpen), strings.Index(f.pending, thinkTagClose)
 		if f.inThink {
 			if iClose < 0 {
-				// 仍在思维链内: 丢弃已确认部分, 仅保留可能是不完整结束标签的尾部
+				// 仍在思维链内: 累计已确认部分到 think, 仅保留可能是不完整结束标签的尾部
 				if len(f.pending) > thinkTagMaxLen-1 {
-					_, f.pending = utf8SafeKeepSuffix(f.pending, thinkTagMaxLen-1)
+					var safe string
+					safe, f.pending = utf8SafeKeepSuffix(f.pending, thinkTagMaxLen-1)
+					outT.WriteString(safe)
 				}
 				break
 			}
+			outT.WriteString(f.pending[:iClose])
 			f.inThink = false
 			f.pending = f.pending[iClose+len(thinkTagClose):]
 			continue
@@ -745,34 +763,138 @@ func (f *thinkFilter) feed(s string) string {
 			}
 			var safe string
 			safe, f.pending = utf8SafeKeepSuffix(f.pending, keep)
-			out.WriteString(safe)
+			outC.WriteString(safe)
 			break
 		}
 		if iClose >= 0 && (iOpen < 0 || iClose < iOpen) {
-			out.WriteString(f.pending[:iClose])
+			outC.WriteString(f.pending[:iClose])
 			f.pending = f.pending[iClose+len(thinkTagClose):]
 			continue
 		}
-		out.WriteString(f.pending[:iOpen])
+		outC.WriteString(f.pending[:iOpen])
 		f.pending = f.pending[iOpen+len(thinkTagOpen):]
 		f.inThink = true
 	}
-	return out.String()
+	return outC.String(), outT.String()
 }
 
-// flush 流结束时输出残留缓冲; 思维链未闭合(缺少结束标签)时丢弃, 避免把推理过程泄漏给用户。
-func (f *thinkFilter) flush() string {
+// flush 流结束时输出残留缓冲, 返回 (clean, think):
+//   - 思维链已闭合: clean 取 </think> 之后的部分, think 取闭合的 <think> 内容;
+//   - 思维链未闭合(缺少结束标签): 丢弃, 避免把推理过程泄漏给用户(返回 "", "")。
+func (f *thinkFilter) flush() (clean, think string) {
 	rest := f.pending
 	wasInThink := f.inThink
 	f.pending = ""
 	f.inThink = false
-	if i := strings.Index(rest, thinkTagClose); i >= 0 {
-		return rest[i+len(thinkTagClose):]
-	}
 	if wasInThink {
-		return ""
+		// 未闭合: 整段丢弃, 不返回任何内容
+		return "", ""
 	}
-	return rest
+	if iOpen := strings.Index(rest, thinkTagOpen); iOpen >= 0 {
+		// 残留里同时含 <think> 起点与 </think> 终点: 取中间作为 think, 之后部分作为 clean
+		after := rest[iOpen+len(thinkTagOpen):]
+		if iClose := strings.Index(after, thinkTagClose); iClose >= 0 {
+			return after[iClose+len(thinkTagClose):], after[:iClose]
+		}
+		// 仅 <think> 起点无对应终点: 起点之后整段丢弃(类似未闭合)
+		return "", ""
+	}
+	if iClose := strings.Index(rest, thinkTagClose); iClose >= 0 {
+		return rest[iClose+len(thinkTagClose):], ""
+	}
+	return rest, ""
+}
+
+// ============================================================
+// 中文分步推理结构剥离(与 thinkFilter 互补)
+// ============================================================
+// 背景: 原生推理模型(如 glm-4.6v-flash)在用户 prompt 含「先分步推理分析再给答案」类指令时,
+// 会把推理过程以可见双段格式写进 content: 以「分步推理分析 / 思考过程」开头, 以「再给出最终答案 / 最终答案」
+// 分隔——之前是推理、之后是答案。此时 content 无 <think> 标签, thinkFilter 无法折叠, 前端整段当答案。
+// cnCoTFilter 在流式循环里把这种中文双段结构的前段物理折叠为 thinking(emit 给前端), 后段作为答案,
+// 与是否开启「深度思考」开关、是否走 reasoning_content 通道无关。
+type cnCoTFilter struct {
+	matched bool            // 首个 chunk 是否以推理前缀开头, 进入 CoT 提取模式
+	done    bool            // 是否已越过分隔符进入答案区
+	buf     strings.Builder // 分隔符前的累积缓冲(用于跨 chunk 查找分隔符)
+}
+
+func newCnCoTFilter() *cnCoTFilter { return &cnCoTFilter{} }
+
+var cnCoTPrefixes = []string{
+	"先进行分步推理分析", "先分步推理分析", "分步推理分析",
+	"思考过程", "推理分析", "先进行推理分析",
+}
+
+var cnCoTSeps = []string{
+	"再给出最终答案", "再给出最终回答", "最终答案", "最终回答",
+	"最终答案如下", "以下是最终答案",
+}
+
+// feed 输入一个流式分片, 返回 (clean, think):
+//   - clean: 本次分片中分隔符之后的答案文本(可能为空)
+//   - think: 本次分片中分隔符之前的推理文本(增量, 可能为空)
+//
+// 仅当 content 以推理前缀开头时进入提取模式; 否则原样透传(不误伤普通回答)。
+// 分隔符跨 chunk 切分时, buf 缓存保证仍能识别。
+func (f *cnCoTFilter) feed(s string) (clean, think string) {
+	if f.done {
+		return s, ""
+	}
+	if !f.matched {
+		t := strings.TrimLeft(s, "\n\t ")
+		for _, p := range cnCoTPrefixes {
+			if strings.HasPrefix(t, p) {
+				f.matched = true
+				break
+			}
+		}
+		if !f.matched {
+			return s, ""
+		}
+	}
+	prevLen := f.buf.Len()
+	f.buf.WriteString(s)
+	text := f.buf.String()
+	sepIdx, sepLen := -1, 0
+	for _, sep := range cnCoTSeps {
+		if i := strings.Index(text, sep); i >= 0 {
+			sepIdx, sepLen = i, len(sep)
+			break
+		}
+	}
+	if sepIdx < 0 {
+		// 分隔符未出现: 本次分片整段作为 thinking 增量实时 emit
+		return "", s
+	}
+	f.done = true
+	f.buf.Reset()
+	thinkPart := ""
+	if sepIdx > prevLen {
+		thinkPart = strings.TrimRight(text[prevLen:sepIdx], "\n\t ")
+	}
+	return strings.TrimLeft(text[sepIdx+sepLen:], "\n\t "), thinkPart
+}
+
+// flush 流结束时若已匹配但未找到分隔符, 之前已增量 emit 所有分片作为 thinking, 无需再发。
+func (f *cnCoTFilter) flush() (clean, think string) {
+	return "", ""
+}
+
+// answerTagOpen/answerTagClose 答案标签: 与 CoT prompt 配套, 模型应把最终答案包在这两个标签里。
+// 引擎在 thinkFilter 之外对 clean 内容做一次轻量清洗, 把标签自身剥离、保留内容。
+// 不做跨 chunk 缓存: 标签极短, 切分概率低, 极端情况下残留半个标签不影响答案内容完整性。
+const (
+	answerTagOpen  = "<answer>"
+	answerTagClose = "</answer>"
+)
+
+// stripAnswerTags 去除答案正文里的 <answer>...</answer> 标签(保留内容)。
+func stripAnswerTags(s string) string {
+	if !strings.Contains(s, answerTagOpen) && !strings.Contains(s, answerTagClose) {
+		return s
+	}
+	return strings.ReplaceAll(strings.ReplaceAll(s, answerTagOpen, ""), answerTagClose, "")
 }
 
 func toolCallSig(tcs []llm.ToolCall) string {
@@ -1087,7 +1209,7 @@ toolLoop:
 
 	// 持久化本轮(仅成功且 conv 已加载/新建时)
 	if conv != nil && err == nil {
-		roundMsgs := msgs[roundStart:]
+		roundMsgs := filterEmptyAssistant(msgs[roundStart:])
 		conv.Messages = append(conv.Messages, roundMsgs...)
 		if hc.changed {
 			// 滚动摘要回写: 下轮直接复用, 不重调摘要 LLM(消息本体保留, 前端仍可见全文)。
@@ -1126,7 +1248,29 @@ func (e *Engine) buildMessages(ctx context.Context, agentID, userPrompt string, 
 	msgs := []llm.Message{{Role: "system", Content: sys}}
 	// 注意: 历史压缩(compactHistory)已上移到 chatWithToolsConv/chatWithToolsStream —— 那里才持有
 	// 会话的滚动摘要状态(Conversation.Summary), 压缩后需回写; 本函数只负责拼装。
-	msgs = append(msgs, history...)
+	// 历史里的助手消息可能带 [^id] 引用标注, 下发给模型前必须剥离, 否则模型会把旧引用
+	// 抄进新答案, 导致"每轮都贴出前面的引用来源"。
+	for _, m := range history {
+		if m.Role != "assistant" {
+			msgs = append(msgs, m)
+			continue
+		}
+		cm := m
+		cm.Content = citationRE.ReplaceAllString(m.Content, "")
+		if len(cm.ContentParts) > 0 {
+			cp := make([]llm.ContentPart, 0, len(cm.ContentParts))
+			for _, p := range cm.ContentParts {
+				switch p.Type {
+				case "text":
+					cp = append(cp, llm.ContentPart{Type: "text", Text: citationRE.ReplaceAllString(p.Text, "")})
+				default:
+					cp = append(cp, p)
+				}
+			}
+			cm.ContentParts = cp
+		}
+		msgs = append(msgs, cm)
+	}
 	// roundStart 指向"本轮用户消息"在 msgs 中的下标: 持久化时 msgs[roundStart:] 即本轮回合(user + assistant/tool),
 	// 跳过 system 与历史, 避免重复累积。
 	roundStart := len(msgs)
@@ -1451,6 +1595,19 @@ func clampStr(s string, n int) string {
 		return s
 	}
 	return s[:n]
+}
+
+// filterEmptyAssistant 移除无实质内容的助手消息(正文/工具调用/推理过程全空),
+// 避免失败或空响应落库后历史回放出现空气泡。
+func filterEmptyAssistant(msgs []llm.Message) []llm.Message {
+	out := make([]llm.Message, 0, len(msgs))
+	for _, m := range msgs {
+		if m.Role == "assistant" && strings.TrimSpace(m.Content) == "" && len(m.ToolCalls) == 0 && strings.TrimSpace(m.ReasoningContent) == "" {
+			continue
+		}
+		out = append(out, m)
+	}
+	return out
 }
 
 // builtinToolDenyList 不被暴露给模型的内建工具(避免自我递归或噪音调用)。
@@ -2609,10 +2766,14 @@ const DefaultSystemPrompt = "你是 OpsOrigin 智能运维助手,帮助用户完
 // citationGuidance 注入到 system prompt 的引用标注指引(实现 RAG grounding)。
 // 要求模型在引用知识库/工具结果时用 [^<id>] 标注,并在文末列出引用来源。
 const citationGuidance = `引用与溯源要求:
-- 当你依据知识库文章(knowledge_search 返回结果的 id 字段)或工具返回数据作答时,必须在正文中用 [^<文章ID>] 标注引用,例如 [^a1b2c3]。
-- 回答结尾用 "## 引用来源" 列出所有被引用文章的标题与 ID。
+- 当你依据知识库文章(knowledge_search 返回结果的 id)、CMDB 配置项(cmdb_query 返回的 CI id)或监控数据作答时,必须在正文中用带类型的引用标注标明出处,格式为 [^<类型>:<ID>]:
+  - 知识库文章: [^kb:<文章ID>]  (knowledge_search 返回的 id)
+  - CMDB 配置项: [^ci:<CI的ID>]  (cmdb_query 返回的 CI id)
+  - 监控指标/告警: [^mon:<ID>]   (监控查询返回的 ID)
+  - 仅引用知识库且不想写类型时,也可简写 [^<文章ID>] (视为 kb 类型)。
+- 回答结尾用 "## 引用来源" 列出所有被引用条目的标题与 ID。
 - 未引用任何资料时无需列出。
-- 禁止编造不存在的文章 ID;只能引用工具实际返回给你的资料 ID。`
+- 禁止编造不存在的 ID;只能引用工具实际返回给你的资料 ID。`
 
 // explorePrompt 自主模式(explore=true)附加到 system prompt 的执行方法论。
 // 核心: 先规划 → 逐步执行(可多轮工具调用) → 检查 → 总结报告。
@@ -2676,8 +2837,9 @@ func (e *Engine) resolveSystemPrompt(agentID string) string {
 // citationRE 匹配模型回答中的引用标注 [^<id>]。
 var citationRE = regexp.MustCompile(`\[\^([^\]]+)\]`)
 
-// ExtractCitations 从模型回答中解析引用标注 [^<id>], 返回去重后的文章 ID 列表。
-// 用于在 API 响应/落库中暴露"引用来源", 实现 RAG 回答的可溯源(grounding)。
+// ExtractCitations 从模型回答中解析引用标注 [^<id>] / [^<类型>:<ID>], 返回去重后的引用串列表。
+// 引用串保留类型前缀: kb:<文章ID> / ci:<CI的ID> / mon:<ID>; 无前缀的简写视为 kb 类型,原样返回。
+// 该列表用于在 API 响应/落库中暴露"引用来源", 实现 RAG 回答的可溯源(grounding); 前端据此渲染多类型内联 chip。
 func ExtractCitations(text string) []string {
 	seen := make(map[string]struct{})
 	var out []string
@@ -3060,6 +3222,12 @@ func (e *Engine) chatWithToolsStream(ctx context.Context, agentID, prompt string
 	// thinkFlt 跨轮复用的思维链过滤器: 流式 token 可能把 <think> 标签切在两个 chunk 之间,
 	// 需等整段流结束后再 flush 残留, 故声明在循环外。
 	thinkFlt := newThinkFilter()
+	// cnCoTFilter 与 thinkFlt 并列: 处理中文「分步推理分析…再给出最终答案」双段结构(原生推理模型
+	// 在用户 prompt 诱导下把推理写进 content 可见区时), 把前段折叠为 thinking 事件。
+	cnFlt := newCnCoTFilter()
+	// cnFltReasoning 处理原生推理通道: 部分后端(如智谱 glm-4.6v-flash)会把完整中文双段结构
+	// 写进 reasoning_content, 导致答案也泄漏到 thinking 块。用独立过滤器拆分, 与 content 互不干扰。
+	cnFltReasoning := newCnCoTFilter()
 streamToolLoop:
 	for round := 0; round < maxRounds; round++ {
 		slot, ok := e.acquireLLMSlot(ctx)
@@ -3083,17 +3251,45 @@ streamToolLoop:
 		var truncated bool
 		var lastFinish string
 		for sc := range ch {
-			// 正文中可能混入 <think> 思维链标记(可能跨 chunk 切分), 过滤后再推给前端。
+			// 正文中可能混入 <think> 思维链标记(可能跨 chunk 切分), 过滤后再推给前端:
+			//   clean  → emit("token", ...) 作为答案正文
+			//   think  → emit("thinking", ...) 作为折叠的思考块(与答案物理隔离)
+			// <answer> 标签仅在正文做轻量清洗(标签本身剥离, 内容保留), 不跨 chunk 处理:
+			// 这两个标签都是 8 字节的短字符串, 单 chunk 边界切开的概率极低, 极端情况下
+			// 用户看到的也只是半个标签, 不会污染答案内容。
 			if sc.Content != "" {
-				if clean := thinkFlt.feed(sc.Content); clean != "" {
-					emit("token", clean)
-					content += clean
+				clean, think := thinkFlt.feed(sc.Content)
+				clean = stripAnswerTags(clean)
+				if clean != "" {
+					// 中文分步推理双段结构剥离: 把「分步推理分析…再给出最终答案」的前段折叠为 thinking
+					cClean, cThink := cnFlt.feed(clean)
+					if cThink != "" {
+						emit("thinking", cThink)
+						reasoningAcc += cThink
+					}
+					if cClean != "" {
+						emit("token", cClean)
+						content += cClean
+					}
+				}
+				if think != "" {
+					emit("thinking", think)
+					reasoningAcc += think
 				}
 			}
 			if sc.Reasoning != "" {
-				emit("thinking", sc.Reasoning)
+				// 原生推理通道同样需要做中文双段剥离: 模型可能把「先分步推理…再给出最终答案」
+				// 整体写进 reasoning_content, 若直接 emit 则答案会泡在 thinking 块里。
+				rClean, rThink := cnFltReasoning.feed(sc.Reasoning)
+				if rThink != "" {
+					emit("thinking", rThink)
+					reasoningAcc += rThink
+				}
+				if rClean != "" {
+					emit("token", rClean)
+					content += rClean
+				}
 			}
-			reasoningAcc += sc.Reasoning
 			// 上游以 finish_reason="length" 收尾 → 命中 max_tokens 上限, 输出被截断。
 			// 透传一个 truncated 事件让前端追加「输出可能不完整」提示, 而不是只看到半个回答。
 			if sc.FinishReason == "length" && !truncated {
@@ -3250,9 +3446,20 @@ streamToolLoop:
 		}
 	}
 	// 冲刷思维链过滤器的残留缓冲(尾部安全文本); 思维链未闭合的残留会被丢弃。
-	if tail := thinkFlt.flush(); tail != "" {
-		emit("token", tail)
-		content += tail
+	// 残留的 think 仅 emit 给前端, 不再累加 reasoningAcc(reasoningAcc 是每轮局部变量,
+	// 末轮已通过 msgs 持久化; 此处只兜底保证流式末端不丢前端展示)。
+	if tail, think := thinkFlt.flush(); tail != "" || think != "" {
+		// 残留的 think 仅 emit 给前端, 不再累加 reasoningAcc(reasoningAcc 是每轮局部变量,
+		// 仅用于本轮落库思维链; 这里已无新增, 保持原行为)。
+		_, _ = cnFlt.flush()          // 与 thinkFlt 对称: 已匹配的 CoT 此前已增量 emit, flush 无需再发
+		_, _ = cnFltReasoning.flush() // reasoning 通道同理
+		if tail != "" {
+			emit("token", tail)
+			content += tail
+		}
+		if think != "" {
+			emit("thinking", think)
+		}
 	}
 	if !completed {
 		// 不再下发硬 error 事件: 已流式推送的部分内容保留, 补一句友好提示并正常结束 SSE。
@@ -3290,7 +3497,7 @@ streamToolLoop:
 
 	// 持久化本轮(仅成功且 conv 已加载/新建时)
 	if conv != nil && err == nil {
-		roundMsgs := msgs[roundStart:]
+		roundMsgs := filterEmptyAssistant(msgs[roundStart:])
 		conv.Messages = append(conv.Messages, roundMsgs...)
 		if hc.changed {
 			// 滚动摘要回写: 下轮直接复用, 不重调摘要 LLM。

@@ -41,6 +41,8 @@ export interface ModelInfo {
   base_url?: string
   weight?: number
   healthy?: boolean
+  /** 是否为推理模型(先深度思考再作答, 首答较慢但质量更高); 后端 /ai/models 已返回 */
+  reasoning?: boolean
 }
 
 export interface CreateTeamPayload {

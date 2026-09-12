@@ -3,17 +3,17 @@ import { useEffect, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useKnowledgeStore } from '@/stores/knowledge'
 import { Button, Image, Input, Upload } from 'antd'
-import { apiFetch } from '@/lib/utils'
 import { useAuthStore } from '@/stores/auth'
 import { MarkdownViewer } from '@/components/markdown-viewer'
+import { AIWriteModal, useAIWrite } from '@/components/ai/ai-write-modal'
 import dynamic from '@/lib/dynamic'
 
 const RichTextEditor = dynamic(() => import('@/components/rich-text-editor').then(m => ({ default: m.RichTextEditor })), { ssr: false, loading: () => <div className="h-64 bg-muted animate-pulse rounded" /> })
 import { fileToCompressedDataUrl } from '@/lib/image-utils'
 import { cn } from '@/lib/utils'
 import {
-  ArrowLeft, Save, Loader2, Sparkles, Wand2, Eye, EyeOff,
-  PenLine, AlignLeft, MoveHorizontal, MoveVertical, X,
+  ArrowLeft, Save, Loader2, Sparkles, Eye, EyeOff,
+  PenLine, AlignLeft, MoveHorizontal, MoveVertical,
   Image as ImageIcon, Link2, CheckCircle2, Upload as UploadIcon,
 } from 'lucide-react'
 import { getMessage } from '@/lib/message'
@@ -33,9 +33,6 @@ export default function KnowledgeNewPage() {
   const [previewOn, setPreviewOn] = useState(true)
   const [direction, setDirection] = useState<'row' | 'col'>('row')
   const [ratio, setRatio] = useState(0.42) // 预览区占比(宽/高)
-  const [aiOpen, setAiOpen] = useState(false)
-  const [aiPrompt, setAiPrompt] = useState('')
-  const [aiGen, setAiGen] = useState(false)
   const [saving, setSaving] = useState(false)
   const [formError, setFormError] = useState('')
 
@@ -45,6 +42,15 @@ export default function KnowledgeNewPage() {
   const [mdImgMenu, setMdImgMenu] = useState(false)
   const mdImgInputRef = useRef<HTMLInputElement>(null)
   const mdTextareaRef = useRef<HTMLTextAreaElement>(null)
+
+  // AI 辅助编写: 编辑器空行输入 / 唤起弹窗, 生成 Markdown 回填到光标处(复用 mdTextareaRef)
+  const aiWrite = useAIWrite({
+    getContent: () => form.content,
+    setContent: (v) => setForm(f => ({ ...f, content: v })),
+    defaultCategory: form.category,
+    categories,
+    editorRef: mdTextareaRef,
+  })
 
   useEffect(() => { fetchCategories() }, [fetchCategories])
 
@@ -103,33 +109,6 @@ export default function KnowledgeNewPage() {
     setMdImgMenu(false)
     const url = window.prompt('图片URL')
     if (url) insertMdAtCursor(`![图片](${url})`)
-  }
-
-  const handleAIGenerate = async () => {
-    if (!form.title.trim() && !aiPrompt.trim()) {
-      getMessage().error('请先填写标题或AI提示词')
-      return
-    }
-    setAiGen(true)
-    try {
-      const res = await apiFetch<{ content: string }>('/ai/chat', {
-        method: 'POST',
-        body: JSON.stringify({
-          prompt: `写一篇运维知识库文章,题目是"${form.title.trim() || aiPrompt.trim()}".请生成Markdown格式的完整文章,包含背景、步骤、注意事项等。直接输出文章正文,不要加任何前缀说明。`,
-          stream: false,
-        }),
-      })
-      const content = res.content || ''
-      if (content) {
-        setForm(f => ({ ...f, content }))
-        getMessage().success('AI 草稿已生成')
-      } else {
-        getMessage().error('AI 未返回内容')
-      }
-    } catch (e: any) {
-      getMessage().error('AI生成失败: ' + e.message)
-    }
-    setAiGen(false)
   }
 
   const handleSave = async (status: 'draft' | 'published' = 'draft') => {
@@ -259,7 +238,7 @@ export default function KnowledgeNewPage() {
             <input ref={mdImgInputRef} type="file" accept="image/*" className="hidden" onChange={onPickMdImage} />
           </div>
         )}
-        <Button size="middle" type={aiOpen ? 'primary' : 'default'} onClick={() => setAiOpen(v => !v)}><Sparkles className="h-3.5 w-3.5 mr-1" />AI 伴写</Button>
+        <Button size="middle" type="default" onClick={aiWrite.openModal} title="空行输入 / 也可唤起"><Sparkles className="h-3.5 w-3.5 mr-1" />AI 编写</Button>
       </div>
 
       {/* 编辑区 + 预览区 (可拖拽调整比例) */}
@@ -274,7 +253,8 @@ export default function KnowledgeNewPage() {
                   className="w-full h-full min-h-[320px] bg-background px-3 py-2 text-sm font-mono resize-none focus-visible:outline-none"
                   value={form.content}
                   onChange={e => setForm({ ...form, content: e.target.value })}
-                  placeholder="文章正文 (Markdown, 支持表格/任务列表等 GFM 语法)"
+                  onKeyDown={aiWrite.onEditorKeyDown}
+                  placeholder="文章正文 (Markdown, 支持表格/任务列表等 GFM 语法，空行输入 / 唤起 AI 编写)"
                 />}
           </div>
         </div>
@@ -305,28 +285,8 @@ export default function KnowledgeNewPage() {
         )}
       </div>
 
-      {/* AI 伴写折叠面板 */}
-      {aiOpen && (
-        <div className="shrink-0 border rounded-md p-3 space-y-2 bg-muted/30">
-          <div className="flex items-center justify-between">
-            <h3 className="text-sm font-medium flex items-center gap-1"><Wand2 className="h-4 w-4 text-amber-500" />AI 伴写</h3>
-            <Button type="text" size="middle" className="h-6 w-6 text-gray-500 hover:text-gray-900 dark:text-gray-400 dark:hover:text-white" onClick={() => setAiOpen(false)}><X className="h-3.5 w-3.5" /></Button>
-          </div>
-          <p className="text-xs text-muted-foreground">输入提示词让 AI 生成文章草稿，将替换当前正文</p>
-          <div className="flex gap-2">
-            <textarea
-              className="flex h-16 flex-1 rounded-md border border-input bg-background px-2 py-1 text-xs"
-              value={aiPrompt}
-              onChange={e => setAiPrompt(e.target.value)}
-              placeholder="例如: 介绍一下Linux磁盘空间清理的步骤和注意事项"
-            />
-            <Button size="middle" onClick={handleAIGenerate} disabled={aiGen} className="shrink-0">
-              {aiGen ? <Loader2 className="h-3.5 w-3.5 mr-1 animate-spin" /> : <Sparkles className="h-3.5 w-3.5 mr-1" />}
-              {aiGen ? '生成中…' : '生成草稿'}
-            </Button>
-          </div>
-        </div>
-      )}
+      {/* AI 辅助编写弹窗(工具栏按钮 / 编辑器空行输入 / 唤起), 生成结果回填正文光标处 */}
+      <AIWriteModal {...aiWrite.modalProps} />
     </div>
   )
 }

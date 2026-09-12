@@ -3,6 +3,7 @@ import { Fragment, useEffect, useRef, useState } from 'react'
 import { renderMarkdown, renderExploreContent, renderMarkdownCached, renderExploreContentCached } from '@/lib/ai-render'
 import { highlightCode, highlightAllCode } from '@/lib/code-highlight'
 import { bindImageLightbox } from '@/components/ai/image-lightbox'
+import { linkifyInlineCites } from '@/components/ai/cite'
 import dynamic from '@/lib/dynamic'
 
 const MermaidBlock = dynamic(() => import('@/components/mermaid-block').then(m => ({ default: m.MermaidBlock })), { ssr: false, loading: () => <div className="h-8" /> })
@@ -73,7 +74,7 @@ export function AiMarkdown({ content, streaming, citationIds, citationAnchor }: 
       pre.parentNode?.insertBefore(wrap, pre)
       // pre 原自带 rounded/my-2, 收编进 wrap 后改贴边
       pre.classList.remove('my-2', 'rounded')
-      pre.classList.add('rounded-none', 'my-0')
+      pre.classList.add('rounded-none', 'my-0', 'overflow-x-auto')
       wrap.appendChild(pre)
 
       // 头部栏
@@ -110,9 +111,9 @@ export function AiMarkdown({ content, streaming, citationIds, citationAnchor }: 
       if (streaming) wrap.dataset.fold = '-'
       else applyCodeFold(wrap, pre)
     }
-    // 引用内联标记: 正文 [n] → 可点击上标
-    if (citationIds && citationIds.length && citationAnchor && shouldLinkify(root, citationAnchor, citationIds.length, streaming)) {
-      linkifyInlineCitations(root, citationAnchor, citationIds)
+    // 引用内联标记: 正文 [^type:id] → 多类型内联 chip
+    if (citationIds && citationIds.length && citationAnchor) {
+      linkifyInlineCites(root, citationIds, citationAnchor)
     }
     return unbindImg
   })
@@ -149,8 +150,8 @@ export function ExploreMarkdown({ content, streaming, citationIds, citationAncho
   useEffect(() => {
     if (ref.current) {
       highlightAllCode(ref.current)
-      if (citationIds && citationIds.length && citationAnchor && shouldLinkify(ref.current, citationAnchor, citationIds.length, streaming)) {
-        linkifyInlineCitations(ref.current, citationAnchor, citationIds)
+      if (citationIds && citationIds.length && citationAnchor) {
+        linkifyInlineCites(ref.current, citationIds, citationAnchor)
       }
       return bindImageLightbox(ref.current)
     }
@@ -163,68 +164,6 @@ export function ExploreMarkdown({ content, streaming, citationIds, citationAncho
       dangerouslySetInnerHTML={{ __html: (streaming ? renderExploreContent : renderExploreContentCached)(content) }}
     />
   )
-}
-
-/** 非流式消息内容恒定: 引用内联化做过一次即可, 避免每帧重复遍历 DOM(流式期间内容在变, 需每帧重做) */
-function shouldLinkify(el: HTMLElement, anchor: string, n: number, streaming?: boolean) {
-  const key = `${anchor}:${n}`
-  if (streaming) return true
-  if (el.dataset.citeLink === key) return false
-  el.dataset.citeLink = key
-  return true
-}
-
-/** 将容器内正文 [n] 标记(在 citationIds 范围内)转为可点击上标, 跳转 cite-{anchor}-{n}。
- *  跳过 code/pre/a 等元素内部, 避免破坏代码与已有链接。 */
-function linkifyInlineCitations(root: HTMLElement, anchor: string, ids: string[]) {
-  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
-    acceptNode(node) {
-      const p = node.parentElement
-      if (!p) return NodeFilter.FILTER_REJECT
-      if (p.closest('pre, code, a, button, sup')) return NodeFilter.FILTER_REJECT
-      return NodeFilter.FILTER_ACCEPT
-    },
-  })
-  const targets: Text[] = []
-  let n = walker.nextNode()
-  while (n) {
-    targets.push(n as Text)
-    n = walker.nextNode()
-  }
-  const re = /\[(\d+)\]/g
-  for (const node of targets) {
-    const text = node.nodeValue || ''
-    if (!re.test(text)) continue
-    re.lastIndex = 0
-    let m: RegExpExecArray | null
-    let last = 0
-    let changed = false
-    const frag = document.createDocumentFragment()
-    while ((m = re.exec(text))) {
-      const idx = parseInt(m[1], 10)
-      if (idx < 1 || idx > ids.length) continue
-      changed = true
-      if (m.index > last) frag.appendChild(document.createTextNode(text.slice(last, m.index)))
-      const sup = document.createElement('sup')
-      sup.className = 'ai-cite-ref'
-      const a = document.createElement('a')
-      a.href = `#cite-${anchor}-${idx}`
-      a.dataset.target = `cite-${anchor}-${idx}`
-      a.title = ids[idx - 1] || ''
-      a.textContent = `[${idx}]`
-      a.onclick = (e) => {
-        e.preventDefault()
-        scrollToCite(anchor, idx)
-      }
-      sup.appendChild(a)
-      frag.appendChild(sup)
-      last = m.index + m[0].length
-    }
-    if (changed) {
-      if (last < text.length) frag.appendChild(document.createTextNode(text.slice(last)))
-      node.parentNode?.replaceChild(frag, node)
-    }
-  }
 }
 
 /** 超过该行数的代码块默认收起, 避免长脚本占满整屏 */

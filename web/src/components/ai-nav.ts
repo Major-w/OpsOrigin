@@ -1,5 +1,5 @@
 import {
-  MessagesSquare, Package, Radar, Users, Gauge, FlaskConical,
+  MessagesSquare, Package, Radar, Users, Gauge, FlaskConical, ShieldCheck,
   Store, Wrench, BarChart3, Settings, Cpu, Webhook, type LucideIcon,
 } from 'lucide-react'
 
@@ -18,6 +18,7 @@ export const AI_ASSISTANT_NAV: AINavItem[] = [
   { to: '/ai/teams', label: '智能体团队', icon: Users },
   { to: '/ai/impact', label: '运营效果', icon: Gauge },
   { to: '/ai/drills', label: '故障演练', icon: FlaskConical },
+  { to: '/ai/sre', label: 'SRE 工作台', icon: ShieldCheck },
   { to: '/ai/marketplace', label: '技能市场', icon: Store },
   { to: '/ai/mcp', label: 'MCP 工具', icon: Wrench },
   { to: '/ai/analytics', label: '使用分析', icon: BarChart3 },

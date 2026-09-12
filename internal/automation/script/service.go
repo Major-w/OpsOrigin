@@ -233,7 +233,16 @@ type Service struct {
 	agentRunner  AgentRunner
 	cmdWhitelist *command.Whitelist
 	dangerous    *command.DangerousPolicy
+	gen          Generator // AI 辅助编写脚本注入的 LLM 生成器; nil = 未启用
 }
+
+// Generator 由 LLM 客户端适配注入,用于 AI 辅助编写脚本(一次性生成,不污染会话上下文)。
+type Generator interface {
+	Generate(ctx context.Context, system, user string) (string, error)
+}
+
+// SetGenerator 注入 LLM 生成器,启用「AI 辅助编写脚本」(由编辑器 / 斜杠命令或工具栏按钮触发)。
+func (s *Service) SetGenerator(g Generator) { s.gen = g }
 
 func (s *Service) SetDangerousPolicy(dp *command.DangerousPolicy) {
 	s.dangerous = dp
@@ -288,6 +297,7 @@ func (s *Service) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/v1/scripts/{id}/versions/{version}", s.handleGetVersion)
 	mux.HandleFunc("GET /api/v1/scripts/{id}/diff", s.handleDiff)
 	mux.HandleFunc("POST /api/v1/scripts/check", s.handleCheck)
+	mux.HandleFunc("POST /api/v1/scripts/ai-write", s.handleAIWrite)
 	mux.HandleFunc("POST /api/v1/scripts/{id}/publish", s.handlePublish)
 	mux.HandleFunc("POST /api/v1/scripts/{id}/approve", s.handleApprove)
 	mux.HandleFunc("POST /api/v1/scripts/{id}/reject", s.handleReject)

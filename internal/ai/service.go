@@ -162,18 +162,40 @@ func (s *Service) SetCitationVerifier(fn func(ctx context.Context, tenant string
 }
 
 // validCitations 过滤无效引用: verifier 未注入或查询失败时放行原列表(宁可多展示也不误杀)。
+// 引用串可能带类型前缀(kb:/ci:/mon:): 仅 kb 类型(知识库文章)需要走 verifier 存在性校验,
+// ci(CMDB 配置项)/mon(监控) 类型无法用知识库 verifier 校验, 直接保留(其存在性由前端跳转时再核验)。
 func (s *Service) validCitations(ctx context.Context, tenantID string, ids []string) []string {
-	if len(ids) == 0 || s.citeVerifyFn == nil {
+	if len(ids) == 0 {
 		return ids
 	}
-	ok := s.citeVerifyFn(ctx, tenantID, ids)
-	if len(ok) == 0 {
-		return nil
-	}
 	out := make([]string, 0, len(ids))
+	var kbRaw []string
 	for _, id := range ids {
-		if ok[id] {
-			out = append(out, id)
+		// 带类型前缀且非 kb → 直接保留(免校验)
+		if i := strings.Index(id, ":"); i > 0 {
+			switch id[:i] {
+			case "ci", "mon":
+				out = append(out, id)
+				continue
+			case "kb":
+				kbRaw = append(kbRaw, id[i+1:])
+				continue
+			}
+		}
+		// 无前缀 或 未知前缀 → 视为 kb 原文, 走校验
+		kbRaw = append(kbRaw, id)
+	}
+	if len(kbRaw) == 0 {
+		return out
+	}
+	if s.citeVerifyFn == nil {
+		out = append(out, kbRaw...)
+		return out
+	}
+	ok := s.citeVerifyFn(ctx, tenantID, kbRaw)
+	for _, raw := range kbRaw {
+		if ok[raw] {
+			out = append(out, raw) // 保持 kb 无前缀, 兼容旧前端
 		}
 	}
 	return out
@@ -402,6 +424,47 @@ type chatRequest struct {
 	Parts []llm.ContentPart `json:"-"` // 已解析的多模态片段(服务端内部传递, 不接受客户端输入)
 }
 
+// isNativeReasoner 判断模型是否原生支持 reasoning_content 推理字段。
+//
+// 背景(关键): 引擎对非原生推理模型始终给 prompt 追加
+// "<think>先进行分步推理分析</think><answer>再给出最终答案</answer>" 的格式要求(与是否开深度思考开关无关),
+// 这样即使用户仅用"先分步推理分析再给答案"类指令而未开开关, 思考也能被 thinkFilter 分流折叠。
+// 这对不支持原生推理字段的模型是必要的(prompt 伪思维链), 但对原生推理模型是"双重指令"——
+// 模型既通过 reasoning_content 输出思维链, 又把同样的推理文本以"分步推理分析:"写进 content,
+// 导致前端看到"思考过程与答案混在一起"。
+//
+// 在非流式路径(ChatReasoning)中, 原生推理模型不再注入 <think> prompt, 让它只走
+// reasoning_content 通道, content 保持只有最终答案。
+//
+// 注意: 流式路径(ChatStream)对**非原生**推理模型(forceCoTPrompt := !isNativeReasoner(model))注入
+// <think> prompt, 确保 thinkFilter 能把模型可能写进 content 的思维链物理分流; 原生推理模型不注入
+// (避免双重指令), 但其 content 里由用户 prompt 诱导的「分步推理分析…再给出最终答案」双段由 cnCoTFilter
+// 在流式循环里折叠为 event:thinking。reasoning_content 通道的捕获与二者都不冲突。
+//
+// 未识别的模型一律按"非原生"处理(保留原行为, 最保守)。
+func isNativeReasoner(model string) bool {
+	m := strings.ToLower(strings.TrimSpace(model))
+	if m == "" {
+		return false
+	}
+	// 常见原生推理模型标识。注意刻意收紧: 过宽的前缀(如 "glm-4")会把同代非推理模型
+	// (glm-4-flash / glm-4-air)也算进来, 反而丢掉本该有的 CoT。漏判的代价远小于误判——
+	// 漏判只是回到"加 <think> prompt"的原行为, 误判则会让本可展示的思维链消失。
+	nativeKeys := []string{
+		"glm-4.5", "glm-4.6", "glm-5", "glm-zero", // 智谱思考系列(glm-4.6v-flash 等)
+		"deepseek-r1", "deepseek-reasoner", // DeepSeek 推理系列
+		"qwq",      // 阿里 QwQ 推理
+		"o1", "o3", // OpenAI 推理系列
+		"reasoner", "reasoning", // 通用兜底关键字
+	}
+	for _, k := range nativeKeys {
+		if strings.Contains(m, k) {
+			return true
+		}
+	}
+	return false
+}
+
 func (s *Service) handleChat(w http.ResponseWriter, r *http.Request) {
 	var req chatRequest
 	if err := httputil.BindJSON(r, &req); err != nil {
@@ -453,13 +516,26 @@ func (s *Service) handleChat(w http.ResponseWriter, r *http.Request) {
 	agentic.AIConcurrentSessions.Inc()
 	defer agentic.AIConcurrentSessions.Dec()
 
+	// Q1: 模糊意图追问 + 继续追问建议(与主回答并发生成, 不阻塞首 token)。
+	// 仅当 prompt 疑似模糊/简短时才触发额外一次 LLM 调用, 明确长问不打扰。
+	clarifyCh := make(chan *ClarificationResult, 1)
+	if shouldGenerateClarify(req.Prompt) {
+		go func() {
+			defer func() { _ = recover() }()
+			res, _ := s.generateClarify(r.Context(), req.Prompt)
+			clarifyCh <- res
+		}()
+	} else {
+		clarifyCh <- nil
+	}
+
 	if req.Stream {
-		s.handleChatStream(w, r, &req)
+		s.handleChatStream(w, r, &req, clarifyCh)
 		return
 	}
 
 	if req.Reasoning && !req.Stream {
-		thinking, answer, convID, err := s.Engine.ChatReasoning(r.Context(), req.AgentID, req.Prompt, req.History, req.ConversationID, req.Model, req.Explore, parts...)
+		thinking, answer, convID, err := s.Engine.ChatReasoning(r.Context(), req.AgentID, req.Prompt, req.History, req.ConversationID, req.Model, req.Explore, isNativeReasoner(req.Model), parts...)
 		if err != nil {
 			slog.Warn("ai chat reasoning failed", "model", req.Model, "conversation_id", req.ConversationID, "err", err.Error())
 			httputil.WriteError(w, chatErrorStatus(err), chatFriendlyError(err.Error()))
@@ -467,13 +543,19 @@ func (s *Service) handleChat(w http.ResponseWriter, r *http.Request) {
 		}
 		answer = stripEmptyCitationSection(answer)
 		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]any{
+		payload := map[string]any{
 			"content":         answer,
 			"thinking":        thinking,
 			"conversation_id": convID,
 			"message_id":      req.MessageID,
 			"citations":       s.validCitations(r.Context(), tenantID, agentic.ExtractCitations(answer)),
-		})
+		}
+		if extra := buildClarifyMap(awaitClarify(clarifyCh)); extra != nil {
+			for k, v := range extra {
+				payload[k] = v
+			}
+		}
+		_ = json.NewEncoder(w).Encode(payload)
 		if convID != "" {
 			go s.Engine.AutoTitleConversation(r.Context(), tenantID, convID)
 		}
@@ -487,19 +569,25 @@ func (s *Service) handleChat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(map[string]any{
+	payload := map[string]any{
 		"content":         out,
 		"conversation_id": convID,
 		"message_id":      req.MessageID,
 		"citations":       s.validCitations(r.Context(), tenantID, agentic.ExtractCitations(out)),
-	})
+	}
+	if extra := buildClarifyMap(awaitClarify(clarifyCh)); extra != nil {
+		for k, v := range extra {
+			payload[k] = v
+		}
+	}
+	_ = json.NewEncoder(w).Encode(payload)
 	if convID != "" {
 		go s.Engine.AutoTitleConversation(r.Context(), tenantID, convID)
 	}
 }
 
-// handleChatStream SSE 流式输出。
-func (s *Service) handleChatStream(w http.ResponseWriter, r *http.Request, req *chatRequest) {
+// handleChatStream SSE 流式输出。clarifyCh 用于在主回答流结束后下发模糊意图追问与继续追问建议。
+func (s *Service) handleChatStream(w http.ResponseWriter, r *http.Request, req *chatRequest, clarifyCh chan *ClarificationResult) {
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		httputil.WriteError(w, http.StatusInternalServerError, "streaming not supported")
@@ -550,7 +638,17 @@ func (s *Service) handleChatStream(w http.ResponseWriter, r *http.Request, req *
 		"prompt_len", len(req.Prompt),
 		"attachments", len(req.Attachments))
 
-	ch, convID, err := s.Engine.ChatStream(ctx, req.AgentID, req.Prompt, req.History, req.Reasoning, req.ConversationID, req.Explore, req.Model, req.Parts...)
+	// 非原生推理模型始终注入 <think>...</think><answer>...</answer> 格式提示(与是否开启"深度思考"开关无关):
+	//   - 引擎的 thinkFilter 会在流式过程中把 <think> 块单独抽成 event: thinking,
+	//     推给前端 ThinkingBlock 折叠展示, 与答案物理隔离。
+	//   - 之前"原生推理模型只走 reasoning_content"的策略在 glm-4.6v-flash 等
+	//     实际未启用 thinking 参数的模型上会失效: 模型把推理和答案一起写进 content,
+	//     导致"思考过程与答案混在一起"。统一注入 prompt 是更稳的兜底。
+	// 非原生推理模型始终注入 <think>...</think> 格式: 确保 thinkFilter 能把模型可能写进 content 的
+	// 思维链物理分流; 原生推理模型(isNativeReasoner)走 reasoning_content 通道, 不注入(避免双重指令),
+	// 其 content 里由用户 prompt 诱导的「分步推理分析…再给出最终答案」双段由 cnCoTFilter 负责折叠。
+	forceCoTPrompt := !isNativeReasoner(req.Model)
+	ch, convID, err := s.Engine.ChatStream(ctx, req.AgentID, req.Prompt, req.History, forceCoTPrompt, req.ConversationID, req.Explore, req.Model, req.Parts...)
 	if err != nil {
 		// 记录原始错误(模型/路由/解析等)便于排查; UI 走 chatFriendlyError 文案。
 		slog.Warn("ai chat stream init failed",
@@ -618,6 +716,22 @@ func (s *Service) handleChatStream(w http.ResponseWriter, r *http.Request, req *
 		if cb, err := json.Marshal(cites); err == nil {
 			fmt.Fprintf(w, "event: citations\ndata: %s\n\n", cb)
 			flusher.Flush()
+		}
+	}
+	// Q1: 模糊意图追问 + 继续追问建议(与主回答并发生成, 此处收敛下发)。
+	// clarify 事件: 用户问题模糊时 AI 反问缺哪些信息; suggestions 事件: 可点击的继续追问建议。
+	if res := awaitClarifyWithin(clarifyCh, 4*time.Second); res != nil {
+		if res.NeedClarify && strings.TrimSpace(res.Question) != "" {
+			if b, err := json.Marshal(map[string]any{"question": res.Question}); err == nil {
+				fmt.Fprintf(w, "event: clarify\ndata: %s\n\n", b)
+				flusher.Flush()
+			}
+		}
+		if len(res.Suggestions) > 0 {
+			if b, err := json.Marshal(res.Suggestions); err == nil {
+				fmt.Fprintf(w, "event: suggestions\ndata: %s\n\n", b)
+				flusher.Flush()
+			}
 		}
 	}
 	fmt.Fprint(w, "data: [DONE]\n\n")

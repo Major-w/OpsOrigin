@@ -259,6 +259,7 @@ export default function PureMode({ onExitPure }: { onExitPure: () => void }) {
               onFeedback={submitFb}
               loading={streaming}
               loadingText={mode === 'explore' ? 'AI 正在规划并执行…' : 'AI 正在思考…'}
+              onSuggestion={send}
               endRef={listEndRef}
               className="px-5 py-5"
             />
@@ -325,6 +326,7 @@ export default function PureMode({ onExitPure }: { onExitPure: () => void }) {
               streaming={streaming}
               enableQuickActions={!streaming}
               quickActions={QUICK_ACTIONS}
+              enablePromptLibrary
               variant="panel"
               className="px-5 py-3"
             />

@@ -242,6 +242,7 @@ type Service struct {
 	store    Store
 	social   *SocialStore
 	objStore *objectstore.Client // 附件二进制落对象存储; nil = 回退数据库 bytea
+	gen      Generator           // AI 辅助编写注入的 LLM 生成器; nil = 未启用
 }
 
 func NewService(db *sql.DB) *Service {
@@ -363,6 +364,8 @@ func (s *Service) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/v1/knowledge/import", s.handleImport)
 	// P1 文件导入: 后端解析 .md/.txt/.json/.pdf/.docx → 建文章
 	mux.HandleFunc("POST /api/v1/knowledge/import-file", s.handleImportFile)
+	// AI 辅助编写知识: 一次性生成 Markdown 回填编辑器(由 / 斜杠命令或工具栏按钮触发)
+	mux.HandleFunc("POST /api/v1/knowledge/ai-write", s.handleAIWrite)
 	// —— 文章附件 ——
 	mux.HandleFunc("POST /api/v1/knowledge/{id}/attachments", s.handleUploadAttachment)
 	mux.HandleFunc("GET /api/v1/knowledge/{id}/attachments", s.handleListAttachments)
@@ -375,6 +378,14 @@ func (s *Service) SetEmbedder(e Embedder) {
 	if ps, ok := s.store.(*pgStore); ok {
 		ps.SetEmbedder(e)
 	}
+}
+
+// SetGenerator 注入 LLM 生成器,启用「AI 辅助编写知识」(由编辑器 / 斜杠命令或工具栏按钮触发)。
+func (s *Service) SetGenerator(g Generator) { s.gen = g }
+
+// Generator 由 LLM 客户端适配注入,用于 AI 辅助编写知识(一次性生成,不污染会话上下文)。
+type Generator interface {
+	Generate(ctx context.Context, system, user string) (string, error)
 }
 
 // SetSocialStore 注入社交存储,使文章更新时能为关注者生成更新通知。

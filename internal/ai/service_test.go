@@ -84,3 +84,29 @@ func TestValidCitations(t *testing.T) {
 		t.Fatalf("nil input: want empty, got %v", got)
 	}
 }
+
+// TestIsNativeReasoner 校验原生推理模型判定: 识别到的模型不再注入 <think> prompt,
+// 未识别的模型一律按非原生处理(保留 prompt 伪思维链这一最保守行为)。
+func TestIsNativeReasoner(t *testing.T) {
+	native := []string{
+		"glm-4.6v-flash", "GLM-4.6V-Flash", "glm-5.3-flash", "glm-4.5-air",
+		"deepseek-r1", "deepseek-reasoner",
+		"qwq-32b",
+		"o1-mini", "o3-mini",
+	}
+	for _, m := range native {
+		if !isNativeReasoner(m) {
+			t.Errorf("isNativeReasoner(%q) = false, want true", m)
+		}
+	}
+	nonNative := []string{
+		// 同代非推理模型必须判 false: 前缀过宽会误伤, 让本该有的 CoT 消失
+		"", "deepseek-chat", "glm-4-flash", "glm-4-air", "glm-4-plus",
+		"qwen-turbo", "gpt-4o", "custom-model", "kimi-k2",
+	}
+	for _, m := range nonNative {
+		if isNativeReasoner(m) {
+			t.Errorf("isNativeReasoner(%q) = true, want false", m)
+		}
+	}
+}

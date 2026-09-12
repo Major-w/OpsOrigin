@@ -31,6 +31,10 @@ interface ChatState {
     onTruncated?: (note: string) => void,
     /** 本轮随消息上传的附件(图片/文档)元数据, 后端转为多模态片段(attachment:// 引用)。 */
     attachments?: { id?: string; name: string; type: string }[],
+    /** SSE event:clarify — 用户问题模糊时 AI 反问需要补充的信息。 */
+    onClarify?: (question: string) => void,
+    /** SSE event:suggestions — 可点击的继续追问建议。 */
+    onSuggestions?: (items: string[]) => void,
   ) => Promise<void>
   loadConversations: (agentId?: string) => Promise<any[]>
   saveConversation: (conv: any) => Promise<any | null>
@@ -63,7 +67,7 @@ export const useChatStore = create<ChatState>((set) => ({
       return null
     }
   },
-  streamChat: async (prompt, onToken, onDone, history = [], agentId, reasoning, onThinking, explore, onAsk, serverConvId, signal, model, onError, onToolCall, knowledgeCategories, onTruncated?: (note: string) => void, attachments?: { id?: string; name: string; type: string }[]) => {
+  streamChat: async (prompt, onToken, onDone, history = [], agentId, reasoning, onThinking, explore, onAsk, serverConvId, signal, model, onError, onToolCall, knowledgeCategories, onTruncated?: (note: string) => void, attachments?: { id?: string; name: string; type: string }[], onClarify?: (question: string) => void, onSuggestions?: (items: string[]) => void) => {
     try {
       const messageId = `msg_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`
       const body: any = { prompt, history, stream: true, message_id: messageId }
@@ -174,6 +178,24 @@ export const useChatStore = create<ChatState>((set) => ({
             } catch { /* data 为纯文本 */ }
             currentEvent = ''
             onTruncated?.(String(m))
+            continue
+          }
+          // 用户问题模糊 → AI 反问需要补充哪些信息(结构化, 前端渲染为澄清卡片)。
+          if (currentEvent === 'clarify') {
+            try {
+              const j = JSON.parse(data) as { question?: string }
+              if (j?.question) onClarify?.(j.question)
+            } catch {}
+            currentEvent = ''
+            continue
+          }
+          // 继续追问建议(可点击 chips, 点击即作为下一条消息发送)。
+          if (currentEvent === 'suggestions') {
+            try {
+              const arr = JSON.parse(data) as string[]
+              if (Array.isArray(arr) && arr.length) onSuggestions?.(arr)
+            } catch {}
+            currentEvent = ''
             continue
           }
           currentEvent = ''

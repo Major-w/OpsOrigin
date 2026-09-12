@@ -10,20 +10,25 @@
 // 通过 props/variant 适配三处差异, 消除三套重复 UI。
 // ============================================================================
 
-import { memo, useCallback, useEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from 'react'
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from 'react'
 import { useAIStore, useTeams, type TeamStreamEvent, type AgentTeam } from '@/stores/ai'
 import type { ModelInfo, PendingApproval } from '@/stores/ai/types'
 import { renderMarkdown, renderMarkdownCached } from '@/lib/ai-render'
 import { AiMarkdown, ExploreMarkdown, scrollToCite } from '@/components/ai-markdown'
+import { parseCite, citeMeta, CiteChip, CitationRow, citeRoute } from '@/components/ai/cite'
+import { ActionableArtifactList, detectActionableArtifacts } from '@/components/ai/actionable-artifact'
 import { exportDocFile } from '@/lib/doc-export'
 import { LightboxHost, openLightbox } from '@/components/ai/image-lightbox'
 import { Modal } from 'antd'
-import { cn, apiFetchRaw } from '@/lib/utils'
+import { cn, apiFetchRaw, apiList } from '@/lib/utils'
+import { getMessage } from '@/lib/message'
+import { useThemeStore } from '@/stores/theme'
 import {
   Bot, User, Send, Square, Loader2, Terminal, Brain, CheckCircle, AlertTriangle,
   ThumbsUp, ThumbsDown, Users, Sparkles, XCircle, Settings, Lock, Share2, Trash2,
   Paperclip, FileText, Image as ImageIcon, X, Search, Copy, RefreshCw, Check, ArrowDown,
-  ChevronRight, Download, FileDown, Presentation, Pencil,
+  ChevronRight, ChevronUp, ChevronDown, Download, FileDown, Presentation, Pencil,
+  HelpCircle, CornerDownRight, BookMarked,
 } from 'lucide-react'
 
 // ---------------------------------------------------------------------------
@@ -46,6 +51,20 @@ export interface Executor {
 // 全页(/ai) 为多会话后端工作台, 语义不同, 不并入此共享草稿。
 export const SHARED_SESSION_KEY = 'ai.shared.session'
 export const SHARED_CONV_ID_KEY = 'ai.shared.convId'
+
+// --- localStorage 会话持久化的配额护栏 ---
+// 只存「刷新后仍要看见的东西」: 正文外的思考过程/工具链/引用/用量/闭环标记都要留,
+// 否则刷新一次会话就退化成纯文本(此前只存 role+content, 这正是问题的根因)。
+// 但 localStorage 单域 ~5MB, 故对超长文本按条截断并把条数封顶, 保尾部(最近对话最有价值)。
+const PERSIST_MAX_MESSAGES = 200
+const PERSIST_MAX_TEXT = 8000
+const PERSIST_MAX_TOOL_RESULT = 2000
+
+/** 超长文本截断(仅作用于落盘副本, 不影响内存与实时渲染) */
+function clipPersist(s: string | undefined, max: number): string | undefined {
+  if (!s) return s
+  return s.length > max ? `${s.slice(0, max)}\n…（已截断）` : s
+}
 
 export interface ToolCallLocal {
   id: string
@@ -72,6 +91,10 @@ export interface ChatMessage {
   errorText?: string
   /** 输出被 max_tokens 上限截断(上游 finish_reason=length), 由后端 SSE event:truncated 触发 */
   truncated?: string
+  /** 用户问题模糊时 AI 的反问(后端 SSE event:clarify / 非流式 clarification 字段) */
+  clarification?: string
+  /** 继续追问建议(可点击 chips, 点击即作为下一条消息发送) */
+  suggestions?: string[]
   timestamp: number
   toolCalls?: ToolCallLocal[]
   messageId?: string
@@ -272,49 +295,63 @@ export function AttachmentThumb({ att }: { att: ChatAttachmentMeta }) {
 }
 
 /**
- * 思考卡(主流 AI 交互, 参考 DeepSeek/豆包):
- *  - live(流式思考中, 尚无正文): 展开的「思考中…」区块, 实时滚动展示思考内容;
- *  - 结束/历史: 折叠为一行「已深度思考(用时 X 秒)」, 点击展开详情, 默认不打扰。
+ * 思考卡(参考 Claude / 豆包 / Kimi 主流交互):
+ *  - 顶部一行可点击的灰色 header: 图标 + 标题 + 用时 + 旋转箭头;
+ *  - 展开后是一个浅灰背景的滚动区域, 展示思考正文;
+ *  - 流式思考中 header 显示「思考中…(N 秒)」并自动滚动到底部;
+ *  - 思考结束后自动折叠为「已深度思考(用时 X 秒)」或「已思考」, 不打扰正文。
  */
 export function ThinkingBlock({ thinking, live, thinkMs }: { thinking: string; live: boolean; thinkMs?: number }) {
-  const scrollRef = useRef<HTMLDivElement>(null)
-  const [open, setOpen] = useState(false)
-  // live 态实时计时(DeepSeek 风格「思考中… 5 秒」), 结束后由 thinkMs 静态展示
+  const bodyRef = useRef<HTMLDivElement>(null)
+  const [open, setOpen] = useState(live)
+
+  // live 变化时: live=true 自动展开; live=false(思考结束)自动收起
+  useEffect(() => { setOpen(live) }, [live])
+
+  // live 态实时计时
   const thinkStartRef = useRef(0)
   const [liveSecs, setLiveSecs] = useState(0)
   useEffect(() => {
-    if (live && scrollRef.current) scrollRef.current.scrollTop = scrollRef.current.scrollHeight
-  }, [thinking, live])
-  useEffect(() => {
     if (!live) return
     thinkStartRef.current = Date.now()
+    setLiveSecs(0)
     const iv = setInterval(() => setLiveSecs(Math.round((Date.now() - thinkStartRef.current) / 1000)), 1000)
     return () => clearInterval(iv)
   }, [live])
-  // 思考结束瞬间从展开态自动收起, 保持「完成后只留一行」的主流观感
-  useEffect(() => { if (!live) setOpen(false) }, [live])
 
-  if (live) {
-    return (
-      <div className="mb-2 rounded-lg border border-blue-200/60 dark:border-blue-500/25 bg-blue-50/50 dark:bg-blue-500/[0.06] overflow-hidden">
-        <div className="px-3 pt-2 pb-1 flex items-center gap-1.5 text-xs text-blue-600 dark:text-blue-400 font-medium">
-          <Loader2 className="h-3 w-3 animate-spin" />
-          思考中…{liveSecs > 0 ? `（${liveSecs} 秒）` : ''}
-        </div>
-        <div ref={scrollRef} className="max-h-44 overflow-y-auto px-3 pb-2 text-xs leading-relaxed text-muted-foreground whitespace-pre-wrap">
-          {thinking}
-        </div>
-      </div>
-    )
-  }
+  // live 态内容自动滚动到底部
+  useEffect(() => {
+    if (live && bodyRef.current) bodyRef.current.scrollTop = bodyRef.current.scrollHeight
+  }, [thinking, live])
+
+  const hasTime = typeof thinkMs === 'number' && thinkMs > 0
+  const headerText = live
+    ? `思考中…${liveSecs > 0 ? `（${liveSecs} 秒）` : ''}`
+    : hasTime
+      ? `已深度思考（用时 ${(thinkMs / 1000).toFixed(1)} 秒）`
+      : '已思考'
+
   return (
-    <details open={open} onToggle={e => setOpen((e.target as HTMLDetailsElement).open)} className="mb-2 group/think">
-      <summary className="text-xs text-muted-foreground cursor-pointer hover:text-foreground select-none inline-flex items-center gap-1.5 list-none">
-        <Brain className="h-3 w-3 text-violet-500" />
-        <span className="group-open/think:hidden">已深度思考{typeof thinkMs === 'number' && thinkMs > 0 ? `（用时 ${(thinkMs / 1000).toFixed(1)} 秒）` : ''}</span>
-        <span className="hidden group-open/think:inline">收起思考过程</span>
+    <details
+      open={open}
+      onToggle={e => setOpen((e.target as HTMLDetailsElement).open)}
+      className="mb-3 group/think rounded-xl border border-gray-200/70 dark:border-white/[0.06] bg-gray-50/70 dark:bg-gray-900/40 overflow-hidden"
+    >
+      <summary className="flex items-center justify-between gap-2 px-3 py-2 text-xs cursor-pointer select-none list-none [&::-webkit-details-marker]:hidden">
+        <div className="flex items-center gap-2 min-w-0">
+          {live ? (
+            <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin text-slate-500 dark:text-slate-400" />
+          ) : (
+            <Sparkles className="h-3.5 w-3.5 shrink-0 text-slate-500 dark:text-slate-400" />
+          )}
+          <span className="font-medium text-slate-600 dark:text-slate-300 truncate">{headerText}</span>
+        </div>
+        <ChevronDown className="h-3.5 w-3.5 shrink-0 text-slate-400 transition-transform duration-300 ease-out group-open/think:rotate-180" />
       </summary>
-      <div className="mt-1 p-2 rounded bg-gray-100 dark:bg-gray-800 text-xs whitespace-pre-wrap text-muted-foreground border-l-2 border-violet-300 dark:border-violet-500/40 max-h-72 overflow-y-auto">
+      <div
+        ref={bodyRef}
+        className="max-h-48 overflow-y-auto px-3 pb-3 pt-1 text-[12px] leading-relaxed text-slate-500 dark:text-slate-400 whitespace-pre-wrap"
+      >
         {thinking}
       </div>
     </details>
@@ -380,17 +417,34 @@ export function useAIChat(opts: UseAIChatOptions) {
       try {
         const raw = localStorage.getItem(persistKey)
         if (raw) {
-          const parsed = JSON.parse(raw) as { role: string; content: string }[]
+          const parsed = JSON.parse(raw) as Partial<ChatMessage>[]
           if (Array.isArray(parsed) && parsed.length > 0) {
+            // 恢复完整会话: 思考过程/工具链/引用/用量/附件/截断与澄清标记一并还原,
+            // 不再只留 role+content(刷新后等同于丢了半条回答的上下文)。
             return parsed.map((m, i) => ({
               id: `m_${Date.now()}_${i}`,
               role: m.role === 'user' ? 'user' : 'assistant',
               content: m.content || '',
-              timestamp: Date.now(),
+              thinking: m.thinking,
+              thinkMs: m.thinkMs,
+              durationMs: m.durationMs,
+              attachments: m.attachments,
+              citations: m.citations,
+              feedback_rating: m.feedback_rating,
+              truncated: m.truncated,
+              clarification: m.clarification,
+              suggestions: m.suggestions,
+              toolCalls: m.toolCalls,
+              messageId: m.messageId,
+              timestamp: m.timestamp || Date.now(),
+              // 落盘时只保留终态: 中断的流不该在刷新后仍显示「生成中」
+              ...(m.status === 'error'
+                ? { status: 'error' as const, errorText: m.errorText }
+                : { status: 'done' as const }),
             }))
           }
         }
-      } catch { /* ignore */ }
+      } catch { /* 解析失败(旧格式/被裁剪)则退回欢迎语 */ }
     }
     return [welcomeMsg]
   })
@@ -416,7 +470,13 @@ export function useAIChat(opts: UseAIChatOptions) {
   // 流式渲染节流: token 先累积到 ref, 每帧(rAF)合并提交一次, 避免一个 token 一次全量 setState
   const rafRef = useRef<number | null>(null)
 
-  useEffect(() => () => { if (rafRef.current != null) cancelAnimationFrame(rafRef.current) }, [])
+  useEffect(() => () => {
+    // 卸载清理: 切页/关浮窗时必须中止在途 SSE —— 否则后台继续拉流、白烧 token,
+    // 且 rAF 回调会写已卸载组件的 state(React 虽降噪但仍是泄漏源)。
+    if (rafRef.current != null) { cancelAnimationFrame(rafRef.current); rafRef.current = null }
+    abortRef.current?.abort()
+    abortRef.current = null
+  }, [])
 
   useEffect(() => { fetchAgents(); fetchModels() }, [fetchAgents, fetchModels])
   useEffect(() => { if (enableTeam && mode === 'team') teamApi.loadTeams() }, [enableTeam, mode, teamApi])
@@ -429,13 +489,38 @@ export function useAIChat(opts: UseAIChatOptions) {
     }
   }, [models, selectedModel])
 
-  // 会话持久化(localStorage, 仅存 role/content, 刷新不丢)
+  // 会话持久化(localStorage): 保留完整消息(思考/工具链/引用/用量/闭环标记), 刷新不丢
   useEffect(() => {
     if (!persistKey) return
     try {
-      const slim = messages.filter(m => m.id !== welcomeId).map(m => ({ role: m.role, content: m.content }))
+      const slim = messages
+        .filter(m => m.id !== welcomeId)
+        .slice(-PERSIST_MAX_MESSAGES)
+        .map(m => ({
+          role: m.role,
+          content: m.content,
+          ...(m.thinking ? { thinking: clipPersist(m.thinking, PERSIST_MAX_TEXT) } : {}),
+          ...(m.thinkMs != null ? { thinkMs: m.thinkMs } : {}),
+          ...(m.durationMs != null ? { durationMs: m.durationMs } : {}),
+          ...(m.attachments?.length ? { attachments: m.attachments } : {}),
+          ...(m.citations?.length ? { citations: m.citations } : {}),
+          ...(m.feedback_rating ? { feedback_rating: m.feedback_rating } : {}),
+          ...(m.truncated ? { truncated: m.truncated } : {}),
+          ...(m.clarification ? { clarification: m.clarification } : {}),
+          ...(m.suggestions?.length ? { suggestions: m.suggestions } : {}),
+          ...(m.messageId ? { messageId: m.messageId } : {}),
+          ...(m.toolCalls?.length
+            ? { toolCalls: m.toolCalls.map(tc => ({
+                ...tc,
+                args: clipPersist(tc.args, PERSIST_MAX_TOOL_RESULT) || '',
+                result: clipPersist(tc.result, PERSIST_MAX_TOOL_RESULT) || '',
+              })) }
+            : {}),
+          ...(m.status === 'error' ? { status: 'error', errorText: m.errorText } : {}),
+          timestamp: m.timestamp,
+        }))
       localStorage.setItem(persistKey, JSON.stringify(slim))
-    } catch { /* ignore */ }
+    } catch { /* 配额超限等: 静默降级为不持久化, 不影响本次会话 */ }
   }, [messages, persistKey, welcomeId])
 
   const defaultHistory = (msgs: ChatMessage[]): { role: string; content: string }[] =>
@@ -574,6 +659,14 @@ export function useAIChat(opts: UseAIChatOptions) {
         setMessages(prev => prev.map(m => (m.id === aiId ? { ...m, truncated: note || '输出触达 max_tokens 上限, 可能不完整' } : m)))
       },
       attachments?.map(a => ({ id: a.id, name: a.name, type: a.type })),
+      // Q1: 用户问题模糊 → AI 反问需要补充的信息(后端 SSE event:clarify)
+      (question: string) => {
+        setMessages(prev => prev.map(m => (m.id === aiId ? { ...m, clarification: question } : m)))
+      },
+      // Q1: 继续追问建议(后端 SSE event:suggestions), 渲染为可点击 chips
+      (items: string[]) => {
+        setMessages(prev => prev.map(m => (m.id === aiId ? { ...m, suggestions: items } : m)))
+      },
     )
   }
 
@@ -834,6 +927,9 @@ function CitationList({ ids, msgId }: { ids: string[]; msgId?: string }) {
     let cancelled = false
     for (const id of key.split('|').filter(Boolean)) {
       if (citationTitleCache.has(id)) continue
+      // 仅知识库类型需要远程取标题; ci/mon 无标题接口, 直接展示原始 ID
+      const { type } = parseCite(id)
+      if (type !== 'kb') continue
       apiFetchRaw(`/knowledge/${encodeURIComponent(id)}`)
         .then(r => (r.ok ? r.json() : null))
         .then((a: any) => {
@@ -856,32 +952,10 @@ function CitationList({ ids, msgId }: { ids: string[]; msgId?: string }) {
       {ids.map((id, i) => {
         const title = titles[id]
         const itemId = msgId ? `cite-${msgId}-${i + 1}` : undefined
-        if (dead[id] && !title) {
-          return (
-            <div
-              key={`${id}-${i}`}
-              id={itemId}
-              className="flex items-center gap-1.5 text-[10px] text-muted-foreground/70 pl-2 border-l-2 border-gray-200 dark:border-white/10 truncate cursor-not-allowed"
-              title="该文章不存在或已删除"
-            >
-              <span className="shrink-0 h-3.5 w-3.5 rounded-full bg-gray-200 dark:bg-gray-700 text-gray-500 flex items-center justify-center text-[9px] font-semibold">{i + 1}</span>
-              [{id}] 文章不存在或已删除
-            </div>
-          )
-        }
         return (
-          <a
-            key={`${id}-${i}`}
-            id={itemId}
-            href={`/knowledge/${encodeURIComponent(id)}`}
-            target="_blank"
-            rel="noopener"
-            className="flex items-center gap-1.5 text-[10px] text-blue-500 hover:underline pl-2 border-l-2 border-blue-200 dark:border-blue-500/30 truncate transition-colors"
-            title={title || id}
-          >
-            <span className="shrink-0 h-3.5 w-3.5 rounded-full bg-blue-500/15 text-blue-600 dark:text-blue-300 flex items-center justify-center text-[9px] font-semibold">{i + 1}</span>
-            {title ? <><span className="truncate">{title}</span> <span className="text-muted-foreground">[{id}]</span></> : `[${id}]`}
-          </a>
+          <div key={`${id}-${i}`} id={itemId} className="flex items-center gap-1">
+            <CitationRow id={id} title={title} dead={dead[id]} anchor={msgId || undefined} />
+          </div>
         )
       })}
     </div>
@@ -907,13 +981,20 @@ interface ChatMessageListProps {
   modelOptions?: { value: string; label: string; disabled?: boolean }[]
   /** 在失败卡片选择模型后, 以该模型重发其前的用户消息 */
   onRetryWithModel?: (msg: ChatMessage, model: string) => void
+  /** 点击「继续追问建议」chip → 作为下一条消息发送 */
+  onSuggestion?: (text: string) => void
   extraActions?: (msg: ChatMessage) => ReactNode
   loading?: boolean
   loadingText?: string
   emptyQuickActions?: ReactNode
   endRef?: RefObject<HTMLDivElement>
   className?: string
+  /** 对话内搜索条(仅主对话页开启; 浮窗/面板等轻量场景保持关闭) */
+  enableSearch?: boolean
 }
+
+/** 长会话单帧挂载的消息窗口大小(条); 每点一次「加载更早」再往前补一批。 */
+const MESSAGE_WINDOW = 30
 
 // ---------------------------------------------------------------------------
 // useStickToBottom —— 主流对话产品的智能滚动(Claude/ChatGPT/DeepSeek 标配):
@@ -1196,14 +1277,23 @@ interface MessageItemProps {
   onRegenerate?: () => void
   onEditResend?: (msg: ChatMessage, newContent: string) => void
   onRetryWithModel?: (msg: ChatMessage, model: string) => void
+  /** 点击「继续追问建议」chip → 作为下一条消息发送 */
+  onSuggestion?: (text: string) => void
   extraActions?: (msg: ChatMessage) => ReactNode
+}
+
+/** 判断错误文本是否属于限流/繁忙类：此类错误换模型通常无效，不应展示「换模型重试」。 */
+const isRateLimitError = (err?: string) => {
+  if (!err) return false
+  const e = err.toLowerCase()
+  return e.includes('频率过高') || e.includes('当前繁忙') || e.includes('rate limit') || e.includes('429') || e.includes('too many requests')
 }
 
 const MessageItem = memo(function MessageItem({
   msg, variant, isLastAi, loading, copied, editing, editDraft,
   enableCitations, enableFeedback, enableTaskList, modelOptions,
   onCopy, setEditingId, setEditDraft,
-  onFeedback, onRetry, onRegenerate, onEditResend, onRetryWithModel, extraActions,
+  onFeedback, onRetry, onRegenerate, onEditResend, onRetryWithModel, onSuggestion, extraActions,
 }: MessageItemProps) {
   const isPanel = variant === 'panel'
   const isFloating = variant === 'floating'
@@ -1304,7 +1394,7 @@ const MessageItem = memo(function MessageItem({
                   return <AiMarkdown content={msg.content} streaming={streamingNow} citationIds={citeIds} citationAnchor={citeAnchor} />
                 })()}
 
-                {/* RAG 引用来源: 顶部可点击角标 + 底部列表(拉标题, 点击跳转文章) */}
+                {/* RAG 引用来源: 顶部多类型可点击 chip + 底部列表(拉标题, 点击跳转) */}
                 {enableCitations && msg.citations && msg.citations.length > 0 && (() => {
                   const ids = msg.citations.map(c => c.replace(/^\[|\]$/g, ''))
                   return (
@@ -1312,12 +1402,18 @@ const MessageItem = memo(function MessageItem({
                       <div className="flex flex-wrap items-center gap-1 mb-1">
                         <span className="text-[10px] text-muted-foreground">引用</span>
                         {ids.map((id, i) => (
-                          <button
+                          <CiteChip
                             key={id}
-                            onClick={() => scrollToCite(msg.id, i + 1)}
-                            className="text-[10px] px-1.5 py-0.5 rounded bg-blue-50 dark:bg-blue-500/10 text-blue-600 dark:text-blue-400 hover:bg-blue-100 dark:hover:bg-blue-500/20 transition-colors"
-                            title={id}
-                          >[{i + 1}]</button>
+                            id={id}
+                            onClick={() => {
+                              const el = document.getElementById(`cite-${msg.id}-${i + 1}`)
+                              if (el) {
+                                el.scrollIntoView({ behavior: 'smooth', block: 'center' })
+                                el.classList.add('ai-cite-flash')
+                                setTimeout(() => el.classList.remove('ai-cite-flash'), 1200)
+                              }
+                            }}
+                          />
                         ))}
                       </div>
                       <details id={`cites-${msg.id}`} className="rounded border border-gray-200 dark:border-[rgba(255,255,255,0.06)] px-2 py-1" open>
@@ -1326,6 +1422,14 @@ const MessageItem = memo(function MessageItem({
                       </details>
                     </div>
                   )
+                })()}
+
+                {/* 可操作产物: AI 生成的 SQL/Shell/Runbook 等, 支持一键采纳为工单 */}
+                {(() => {
+                  if (msg.status === 'streaming') return null
+                  const arts = detectActionableArtifacts(msg.content)
+                  if (!arts.length) return null
+                  return <ActionableArtifactList artifacts={arts} />
                 })()}
 
                 {/* 失败态: 错误提示 + 重试 */}
@@ -1340,7 +1444,7 @@ const MessageItem = memo(function MessageItem({
                         <button onClick={() => onRetry(msg)} className="text-[11px] text-red-600 dark:text-red-400 hover:underline font-medium">
                           ↻ 重试
                         </button>
-                        {onRetryWithModel && modelOptions && modelOptions.length > 0 && (
+                        {onRetryWithModel && modelOptions && modelOptions.length > 0 && !isRateLimitError(msg.errorText) && (
                           <select
                             value=""
                             onChange={e => { const v = e.target.value; if (v) onRetryWithModel(msg, v) }}
@@ -1370,6 +1474,36 @@ const MessageItem = memo(function MessageItem({
                         ↻ 重试
                       </button>
                     )}
+                  </div>
+                )}
+
+                {/* Q1: 用户问题模糊 → AI 反问需要补充哪些信息(结构化澄清卡片) */}
+                {msg.status !== 'error' && msg.clarification && (
+                  <div className="mt-2 rounded-md border border-blue-300 dark:border-blue-500/40 bg-blue-50 dark:bg-blue-500/10 p-2.5">
+                    <p className="text-[11px] font-medium text-blue-700 dark:text-blue-300 flex items-center gap-1">
+                      <HelpCircle className="h-3 w-3 shrink-0" />
+                      需要你补充一些信息
+                    </p>
+                    <p className="mt-1 text-[12px] text-blue-800 dark:text-blue-200 leading-relaxed whitespace-pre-wrap">
+                      {msg.clarification}
+                    </p>
+                  </div>
+                )}
+
+                {/* Q1: 继续追问建议(可点击, 点击即作为下一条消息发送; 仅最后一条回复展示, 避免历史堆积) */}
+                {msg.status !== 'error' && isLastAi && onSuggestion && !!msg.suggestions?.length && (
+                  <div className="mt-2 flex flex-wrap gap-1.5">
+                    {msg.suggestions.map((s, i) => (
+                      <button
+                        key={`${s}-${i}`}
+                        onClick={() => onSuggestion(s)}
+                        className="group/sg text-[11px] rounded-full border border-gray-300 dark:border-gray-600 px-2.5 py-1 text-muted-foreground hover:text-blue-600 hover:border-blue-400 dark:hover:text-blue-400 transition-colors inline-flex items-center gap-1"
+                        title="点击发送这条追问"
+                      >
+                        <CornerDownRight className="h-3 w-3 opacity-60 group-hover/sg:opacity-100" />
+                        {s}
+                      </button>
+                    ))}
                   </div>
                 )}
 
@@ -1523,7 +1657,7 @@ const MessageItem = memo(function MessageItem({
 export function ChatMessageList({
   messages, mode = 'normal', welcomeId = 'welcome', variant = 'page',
   enableCitations = false, enableFeedback = false, enableTaskList = false,
-  onFeedback, onRetry, onRegenerate, onEditResend, modelOptions, onRetryWithModel, extraActions, loading, loadingText, emptyQuickActions, endRef, className,
+  onFeedback, onRetry, onRegenerate, onEditResend, modelOptions, onRetryWithModel, onSuggestion, extraActions, loading, loadingText, emptyQuickActions, endRef, className, enableSearch = false,
 }: ChatMessageListProps) {
   const isPanel = variant === 'panel'
   const isFloating = variant === 'floating'
@@ -1532,6 +1666,43 @@ export function ChatMessageList({
   // 编辑并重发: 正在内联编辑的用户消息 id 与其草稿
   const [editingId, setEditingId] = useState<string | null>(null)
   const [editDraft, setEditDraft] = useState('')
+  // 对话内搜索(enableSearch 开启时): 命中标蓝 + 上/下一个跳转
+  const [searchTerm, setSearchTerm] = useState('')
+  const [hitId, setHitId] = useState<string | null>(null)
+  const [hitIdx, setHitIdx] = useState(0)
+  // 长会话窗口: 当前挂载的尾部消息条数(「加载更早」递增); 展开前后用 pendingExpandRef 校准滚动位置。
+  const [renderLimit, setRenderLimit] = useState(MESSAGE_WINDOW)
+  const pendingExpandRef = useRef<{ height: number; top: number } | null>(null)
+  const kw = searchTerm.trim().toLowerCase()
+  const searching = kw.length > 0
+  const matchIds = useMemo(
+    () => kw
+      ? messages
+          .filter(m => m.id !== welcomeId && (
+            (m.content || '').toLowerCase().includes(kw) ||
+            (m.thinking || '').toLowerCase().includes(kw)))
+          .map(m => m.id)
+      : [],
+    [messages, kw, welcomeId],
+  )
+  const goHit = useCallback((dir: 1 | -1) => {
+    if (matchIds.length === 0) return
+    const next = (hitIdx + dir + matchIds.length) % matchIds.length
+    setHitIdx(next)
+    setHitId(matchIds[next])
+  }, [matchIds, hitIdx])
+  // 关键词变化: 回到首个命中(流式期间不重置, 避免跳动)
+  useEffect(() => {
+    if (matchIds.length === 0) { setHitId(null); setHitIdx(0); return }
+    setHitIdx(0); setHitId(matchIds[0])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [kw])
+  // 命中切换: 滚动到对应消息
+  useEffect(() => {
+    if (!hitId) return
+    const el = document.getElementById(`msg-${hitId}`)
+    el?.scrollIntoView({ block: 'center', behavior: 'smooth' })
+  }, [hitId])
   // 智能滚动接管: 流式跟随 + 回到底部按钮(此前由调用方 messages 一变就强滚, 翻历史体验差)
   const { scrollRef, atBottom, onScroll, scrollToBottom } = useStickToBottom([messages, loading])
   // 单条复制反馈(稳定引用: MessageItem memo 依赖)
@@ -1544,14 +1715,15 @@ export function ChatMessageList({
   }, [])
   // 调用方回调多为每次渲染新建(未 useCallback): 经 latest-ref 转发保持稳定引用,
   // 使 MessageItem 的 memo 比较不因回调身份失效; 转发永远调用最新闭包, 无过期风险。
-  const latestCbsRef = useRef({ onFeedback, onRetry, onRegenerate, onEditResend, onRetryWithModel, extraActions })
-  latestCbsRef.current = { onFeedback, onRetry, onRegenerate, onEditResend, onRetryWithModel, extraActions }
+  const latestCbsRef = useRef({ onFeedback, onRetry, onRegenerate, onEditResend, onRetryWithModel, onSuggestion, extraActions })
+  latestCbsRef.current = { onFeedback, onRetry, onRegenerate, onEditResend, onRetryWithModel, onSuggestion, extraActions }
   const stableCbs = useMemo(() => ({
     onFeedback: (msg: ChatMessage, rating: 'up' | 'down') => latestCbsRef.current.onFeedback?.(msg, rating),
     onRetry: (msg: ChatMessage) => latestCbsRef.current.onRetry?.(msg),
     onRegenerate: () => latestCbsRef.current.onRegenerate?.(),
     onEditResend: (msg: ChatMessage, newContent: string) => latestCbsRef.current.onEditResend?.(msg, newContent),
     onRetryWithModel: (msg: ChatMessage, model: string) => latestCbsRef.current.onRetryWithModel?.(msg, model),
+    onSuggestion: (text: string) => latestCbsRef.current.onSuggestion?.(text),
     extraActions: (msg: ChatMessage) => latestCbsRef.current.extraActions?.(msg),
   }), [])
   // 首字骨架判定: loading 且占位助手气泡仍为空(与上方隐藏条件一致)
@@ -1559,16 +1731,104 @@ export function ChatMessageList({
     m.role === 'assistant' && m.id !== welcomeId &&
     !m.content && !m.thinking && !(m.toolCalls && m.toolCalls.length > 0) &&
     m.status !== 'error')
+  // 流式已产出正文/工具调用判定: 仅处于"只吐 thinking"阶段时, ThinkingBlock 自身已表达
+  // 「思考中」, 不再追加尾随指示气泡 —— 否则推理阶段会出现"思考块 + 思考中气泡"两条,
+  // 观感上像凭空多出一个滚动气泡、流结束后又莫名消失。
+  const lastAiMsg = useMemo(() => {
+    for (let i = messages.length - 1; i >= 0; i--) {
+      const m = messages[i]
+      if (m.role === 'assistant' && m.id !== welcomeId) return m
+    }
+    return undefined
+  }, [messages, welcomeId])
+  const streamingHasOutput = !!lastAiMsg && lastAiMsg.status !== 'error' &&
+    (!!(lastAiMsg.content || '').trim() || !!(lastAiMsg.toolCalls && lastAiMsg.toolCalls.length > 0))
   // 最后一条真实助手回复的索引: 「重新生成」只挂在这条下面
   let lastAiIdx = -1
   for (let i = messages.length - 1; i >= 0; i--) {
     if (messages[i].role === 'assistant' && messages[i].id !== welcomeId) { lastAiIdx = i; break }
   }
 
+  // 长会话渐进渲染: 默认只挂载尾部若干条, 顶部提供「加载更早」。
+  // 全量 messages.map 在数百条会话下每次流式 token 都要重算所有 markdown 节点,
+  // 是长会话卡顿的主因; 窗口化后单帧成本与窗口大小成正比, 与总条数无关。
+  // 搜索态例外: 需要跨全量命中, 临时放开窗口(throttle 由用户显式触发, 可接受)。
+  const sliceStart = searching ? 0 : Math.max(0, messages.length - renderLimit)
+  const visibleMessages = sliceStart > 0 ? messages.slice(sliceStart) : messages
+  const loadEarlier = useCallback(() => {
+    const el = scrollRef.current
+    if (el) pendingExpandRef.current = { height: el.scrollHeight, top: el.scrollTop }
+    setRenderLimit(prev => prev + MESSAGE_WINDOW)
+  }, [scrollRef])
+  // 展开更早消息后补回滚动偏移: 内容在可视区上方插入会把当前视野顶下去,
+  // 按插入高度差找回原位置, 观感上"历史在下方生长"而非跳走。
+  useLayoutEffect(() => {
+    const el = scrollRef.current
+    const pend = pendingExpandRef.current
+    if (!el || !pend) return
+    pendingExpandRef.current = null
+    el.scrollTop = pend.top + (el.scrollHeight - pend.height)
+  }, [renderLimit, scrollRef])
+
   return (
     <div className={cn('relative flex-1 min-h-0 flex flex-col')}>
+      {enableSearch && (
+        <div className="sticky top-0 z-10 flex items-center gap-1.5 px-3 py-2 bg-background/95 backdrop-blur border-b border-border">
+          <div className="relative flex-1">
+            <Search className="absolute left-2 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground pointer-events-none" />
+            <input
+              autoFocus
+              value={searchTerm}
+              onChange={e => setSearchTerm(e.target.value)}
+              onKeyDown={e => {
+                if (e.key === 'Enter') { e.preventDefault(); goHit(e.shiftKey ? -1 : 1) }
+                else if (e.key === 'Escape') setSearchTerm('')
+              }}
+              placeholder="在当前对话中搜索…"
+              className="w-full rounded-lg border border-border bg-background pl-7 pr-2 py-1.5 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-blue-400"
+            />
+          </div>
+          {kw && (
+            <span className="text-xs text-muted-foreground whitespace-nowrap tabular-nums">
+              {matchIds.length === 0 ? '无结果' : `${hitIdx + 1}/${matchIds.length}`}
+            </span>
+          )}
+          <button
+            type="button"
+            onClick={() => goHit(-1)}
+            disabled={matchIds.length === 0}
+            className="p-1.5 rounded-md text-muted-foreground hover:bg-accent disabled:opacity-40"
+            title="上一个 (Shift+Enter)"
+          >
+            <ChevronUp className="h-3.5 w-3.5" />
+          </button>
+          <button
+            type="button"
+            onClick={() => goHit(1)}
+            disabled={matchIds.length === 0}
+            className="p-1.5 rounded-md text-muted-foreground hover:bg-accent disabled:opacity-40"
+            title="下一个 (Enter)"
+          >
+            <ChevronDown className="h-3.5 w-3.5" />
+          </button>
+        </div>
+      )}
       <div ref={scrollRef} onScroll={onScroll} className={cn('flex-1 overflow-y-auto space-y-3 min-h-0', className)}>
-      {messages.map((msg, mi) => {
+      {/* 长会话: 顶部折叠入口, 点开再把更早一批挂回来(默认只渲染尾部窗口) */}
+      {sliceStart > 0 && (
+        <div className="flex justify-center pt-1">
+          <button
+            type="button"
+            onClick={loadEarlier}
+            className="h-7 px-3 rounded-full border border-gray-200 dark:border-gray-700 bg-background/95 text-[11px] text-muted-foreground hover:text-foreground hover:border-blue-300 dark:hover:border-blue-500/50 transition-colors"
+            title={`还有 ${sliceStart} 条更早的消息`}
+          >
+            加载更早的消息（{sliceStart}）
+          </button>
+        </div>
+      )}
+      {visibleMessages.map((msg, i) => {
+        const mi = sliceStart + i
         // 欢迎语: 居中无气泡大样式(空态观感对齐 Claude/ChatGPT 首屏); 内容静态走缓存渲染
         if (msg.id === welcomeId) {
           return (
@@ -1593,28 +1853,30 @@ export function ChatMessageList({
           return null
         }
         return (
-          <MessageItem
-            key={msg.id}
-            msg={msg}
-            variant={variant}
-            isLastAi={mi === lastAiIdx}
-            loading={!!loading}
-            copied={copiedId === msg.id}
-            editing={editingId === msg.id}
-            editDraft={editDraft}
-            enableCitations={enableCitations}
-            enableFeedback={enableFeedback}
-            enableTaskList={enableTaskList}
-            modelOptions={modelOptions}
-            onCopy={copyMessage}
-            setEditingId={setEditingId}
-            setEditDraft={setEditDraft}
-            {...stableCbs}
-          />
+          <div id={`msg-${msg.id}`} className={cn(hitId === msg.id && 'rounded-lg ring-2 ring-blue-400 scroll-mt-2')}>
+            <MessageItem
+              key={msg.id}
+              msg={msg}
+              variant={variant}
+              isLastAi={mi === lastAiIdx}
+              loading={!!loading}
+              copied={copiedId === msg.id}
+              editing={editingId === msg.id}
+              editDraft={editDraft}
+              enableCitations={enableCitations}
+              enableFeedback={enableFeedback}
+              enableTaskList={enableTaskList}
+              modelOptions={modelOptions}
+              onCopy={copyMessage}
+              setEditingId={setEditingId}
+              setEditDraft={setEditDraft}
+              {...stableCbs}
+            />
+          </div>
         )
       })}
 
-      {loading && (awaitingFirstToken ? (
+      {loading && awaitingFirstToken && (
         // 首字骨架屏: 首个 token 到达前的等待观感(对标 Claude/ChatGPT), 内容一到即被真实气泡取代
         <div className="flex gap-3 justify-start">
           {!isFloating && (
@@ -1628,8 +1890,11 @@ export function ChatMessageList({
             <div className="ai-skel-line h-2.5 w-28" />
           </div>
         </div>
-      ) : (
-        // 流式进行中的尾随指示: 提示仍在生成
+      )}
+      {loading && !awaitingFirstToken && streamingHasOutput && (
+        // 流式进行中的尾随指示: 提示仍在生成。
+        // 仅当已产出正文/工具调用才显示 —— 纯 thinking 阶段由 ThinkingBlock 自身表达「思考中」,
+        // 避免同时出现两个滚动气泡。
         <div className="flex gap-3 justify-start">
           {!isFloating && (
             <div className="h-8 w-8 rounded-full bg-blue-100 dark:bg-blue-500/20 flex items-center justify-center shrink-0">
@@ -1641,14 +1906,14 @@ export function ChatMessageList({
             <span>{loadingText || '生成中...'}</span>
           </div>
         </div>
-      ))}
+      )}
 
       {/* 图片页内预览宿主(全站单实例, openLightbox 触发) */}
       <LightboxHost />
 
-      {/* 空态快捷操作 */}
+      {/* 空态快捷操作: 由调用方控制内部网格, 外层只负责全宽居中, 避免双重 grid 把卡片挤成窄条 */}
       {emptyQuickActions && messages.length === 1 && (
-        <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 mt-2 px-3 sm:px-6 pb-4">{emptyQuickActions}</div>
+        <div className="w-full flex justify-center mt-2 px-3 sm:px-6 pb-4">{emptyQuickActions}</div>
       )}
 
       <div ref={endRef} />
@@ -1675,6 +1940,19 @@ export function ChatMessageList({
 
 interface QuickAction { label: string; prompt: string }
 
+/** 提示词库条目(与后端 agentic.PromptTemplate 对应, 仅取前端插入所需字段) */
+interface PromptLite {
+  id: string
+  name: string
+  scene?: string
+  description?: string
+  content: string
+  variables?: string[]
+  builtin?: boolean
+  is_default?: boolean
+  usage?: number
+}
+
 interface ChatInputBarProps {
   value: string
   onChange: (v: string) => void
@@ -1699,6 +1977,8 @@ interface ChatInputBarProps {
   knowledgeCategoryOptions?: string[]
   enableQuickActions?: boolean
   quickActions?: QuickAction[]
+  /** 提示词库: 在输入区暴露「模板」按钮, 选中把模板正文插入输入框({{变量}} 原样保留待人工补全) */
+  enablePromptLibrary?: boolean
   /** 附件: 传入则显示上传按钮并支持粘贴图片/文件(上传逻辑由调用方负责) */
   onFiles?: (files: File[]) => void
   /** 暴露内部 textarea: 供页面级快捷键(Cmd+K 聚焦 / ↑ 回填)使用。
@@ -1718,11 +1998,15 @@ export function ChatInputBar(props: ChatInputBarProps) {
     enableModel = false, enableAgent = false,
     enableKnowledgeScope = false, knowledgeCategories = [], knowledgeCategoryOptions = [], onKnowledgeCategoriesChange,
     enableQuickActions = false, quickActions = [],
+    enablePromptLibrary = false,
     onFiles, textareaRef,
     variant = 'page', inputFooter, className,
   } = props
 
-  const isDark = variant === 'panel'
+  // 纯净模式用 variant="panel", 但其容器是「跟随主题」的 bg-background(浅色主题下为白底)。
+  // 旧逻辑用 variant==='panel' 冒充 isDark 会强制白字, 在浅色主题下输入内容不可见。
+  // 这里改为读取真实主题, 让面板在浅/深两色下都正确配色。
+  const isDark = useThemeStore(s => s.theme === 'dark')
   const fileInputRef = useRef<HTMLInputElement>(null)
   const taRef = useRef<HTMLTextAreaElement | null>(null)
   // 自动增高(主流标配): 随内容长高, 超上限后内部滚动
@@ -1742,6 +2026,53 @@ export function ChatInputBar(props: ChatInputBarProps) {
       : [...knowledgeCategories, c]
     onKnowledgeCategoriesChange?.(next)
   }
+
+  // ---------------------- 提示词库（模板） ----------------------
+  // 与 AI 设置页同一份租户提示词库(GET /ai/prompts), 首次点开才拉取(不占用未使用入口的请求量)。
+  // 选择即插入输入框(不直接发送): 模板里的 {{变量}} 占位原样保留, 用户补完再发, 避免误发半成品。
+  const [promptOpen, setPromptOpen] = useState(false)
+  const [prompts, setPrompts] = useState<PromptLite[]>([])
+  const [promptLoading, setPromptLoading] = useState(false)
+  const [promptQuery, setPromptQuery] = useState('')
+  const promptLoadedRef = useRef(false)
+
+  const loadPrompts = useCallback(async () => {
+    if (promptLoadedRef.current) return
+    promptLoadedRef.current = true
+    setPromptLoading(true)
+    try {
+      const list = await apiList<PromptLite>('/ai/prompts')
+      // 过滤掉租户默认系统提示词: 它是 Agent 的人设/底层指令, 不适合作为用户消息模板插入
+      setPrompts((Array.isArray(list) ? list : []).filter(p => !p.is_default))
+    } catch {
+      promptLoadedRef.current = false // 允许下次点开重试
+      getMessage().error('提示词库加载失败')
+    } finally {
+      setPromptLoading(false)
+    }
+  }, [])
+
+  const openPromptPanel = () => {
+    const next = !promptOpen
+    setPromptOpen(next)
+    if (next) { setPromptQuery(''); void loadPrompts() }
+  }
+
+  const insertPrompt = (p: PromptLite) => {
+    const body = p.content || ''
+    onChange(value.trim() ? `${value.replace(/\s+$/, '')}\n\n${body}` : body)
+    setPromptOpen(false)
+    // 插入后回到输入框(下一帧再聚焦, 先让受控 value 更新完成)
+    requestAnimationFrame(() => taRef.current?.focus())
+  }
+
+  const pq = promptQuery.trim().toLowerCase()
+  const filteredPrompts = pq
+    ? prompts.filter(p =>
+        (p.name || '').toLowerCase().includes(pq) ||
+        (p.scene || '').toLowerCase().includes(pq) ||
+        (p.description || '').toLowerCase().includes(pq))
+    : prompts
 
   return (
     <div className={cn('border-t p-4 space-y-2 shrink-0', isDark && 'border-[rgba(255,255,255,0.04)]', variant === 'floating' && 'px-3 py-2.5', className)}>
@@ -1828,9 +2159,96 @@ export function ChatInputBar(props: ChatInputBarProps) {
         </div>
       )}
 
-      <div className="flex gap-2 items-end">
-        {onFiles && (
-          <>
+        <div className="flex gap-2 items-end">
+          {/* 提示词库: 选模板 → 插入输入框(不直接发送), {{变量}} 待补全 */}
+          {enablePromptLibrary && (
+            <div className="relative shrink-0">
+              <button
+                type="button"
+                onClick={openPromptPanel}
+                disabled={disabled || streaming}
+                className={cn(
+                  'flex items-center justify-center rounded-md border text-muted-foreground hover:text-blue-500 hover:border-blue-300 disabled:opacity-40 transition-colors',
+                  variant === 'page' ? 'h-9 w-9' : 'h-11 w-11 rounded-xl',
+                  isDark && 'border-white/10',
+                )}
+                title="插入提示词模板"
+                aria-label="提示词模板"
+              >
+                <BookMarked className="h-4 w-4" />
+              </button>
+              {promptOpen && (
+                <>
+                  {/* 点击外部关闭(轻量遮罩, 不吃输入框焦点) */}
+                  <div className="fixed inset-0 z-30" onClick={() => setPromptOpen(false)} />
+                  <div
+                    className={cn(
+                      // 面板配色走主题 token(不硬编码色值), 深浅两色自动适配
+                      'absolute bottom-full left-0 mb-2 z-40 w-[min(24rem,86vw)] max-h-[22rem] flex flex-col rounded-xl border shadow-xl bg-card border-border',
+                    )}
+                  >
+                    <div className="p-2 border-b border-border shrink-0">
+                      <input
+                        autoFocus
+                        value={promptQuery}
+                        onChange={e => setPromptQuery(e.target.value)}
+                        placeholder="搜索模板名称/场景…"
+                        className={cn(
+                          'w-full h-8 rounded-md border border-border bg-transparent px-2 text-sm focus:outline-none focus:ring-1 focus:ring-blue-400',
+                          isDark ? 'text-gray-100' : 'text-gray-800',
+                        )}
+                      />
+                    </div>
+                    <div className="flex-1 overflow-y-auto p-1.5 space-y-1">
+                      {promptLoading && (
+                        <div className="flex items-center gap-2 px-2 py-3 text-xs text-muted-foreground">
+                          <Loader2 className="h-3.5 w-3.5 animate-spin" /> 加载中…
+                        </div>
+                      )}
+                      {!promptLoading && filteredPrompts.length === 0 && (
+                        <div className="px-2 py-3 text-xs text-muted-foreground text-center">
+                          暂无可用模板（可在 AI 设置 → 提示词库中新建）
+                        </div>
+                      )}
+                      {!promptLoading && filteredPrompts.map(p => (
+                        <button
+                          key={p.id}
+                          type="button"
+                          onClick={() => insertPrompt(p)}
+                          className={cn(
+                            'w-full text-left rounded-lg px-2.5 py-2 transition-colors',
+                            isDark ? 'hover:bg-white/5' : 'hover:bg-gray-50',
+                          )}
+                          title={p.description || p.content.slice(0, 120)}
+                        >
+                          <div className="flex items-center gap-1.5">
+                            <span className={cn('text-sm font-medium truncate', isDark ? 'text-gray-100' : 'text-gray-800')}>
+                              {p.name || '未命名模板'}
+                            </span>
+                            {p.scene && (
+                              <span className="shrink-0 rounded-full border border-border px-1.5 text-[10px] text-muted-foreground">
+                                {p.scene}
+                              </span>
+                            )}
+                            {!!p.variables?.length && (
+                              <span className="shrink-0 rounded-full bg-blue-50 text-blue-700 dark:bg-blue-500/15 dark:text-blue-300 px-1.5 text-[10px]">
+                                {p.variables.length} 个变量
+                              </span>
+                            )}
+                          </div>
+                          {p.description && (
+                            <div className="mt-0.5 text-[11px] text-muted-foreground line-clamp-2">{p.description}</div>
+                          )}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                </>
+              )}
+            </div>
+          )}
+          {onFiles && (
+            <>
             <input
               ref={fileInputRef}
               type="file"
@@ -1941,7 +2359,10 @@ export function TeamChatView({
   teams, teamsLoading, selectedTeamId, onSelectTeam, teamTurns, teamInput, onTeamInput,
   teamStreaming, onSend, onManageTeams, variant = 'page', endRef,
 }: TeamChatViewProps) {
-  const isDark = variant === 'panel'
+  // 纯净模式用 variant="panel", 但其容器是「跟随主题」的 bg-background(浅色主题下为白底)。
+  // 旧逻辑用 variant==='panel' 冒充 isDark 会强制白字, 在浅色主题下输入内容不可见。
+  // 这里改为读取真实主题, 让面板在浅/深两色下都正确配色。
+  const isDark = useThemeStore(s => s.theme === 'dark')
   // 团队流式同样走智能滚动(跟随输出/翻历史不拽回)
   const teamScroll = useStickToBottom([teamTurns, teamStreaming])
   return (
@@ -2289,7 +2710,10 @@ export function ChatContextBar({
   contextTokens,
   className,
 }: ChatContextBarProps) {
-  const isDark = variant === 'panel'
+  // 纯净模式用 variant="panel", 但其容器是「跟随主题」的 bg-background(浅色主题下为白底)。
+  // 旧逻辑用 variant==='panel' 冒充 isDark 会强制白字, 在浅色主题下输入内容不可见。
+  // 这里改为读取真实主题, 让面板在浅/深两色下都正确配色。
+  const isDark = useThemeStore(s => s.theme === 'dark')
   const [scopeOpen, setScopeOpen] = useState(false)
   const scopeLabel = knowledgeScope.length === 0 ? '全部' : knowledgeScope.join('、')
   // models 为空也允许下拉, 让用户至少能看到/选择 auto(空值=按权重/健康路由)
@@ -2376,7 +2800,7 @@ export function ChatContextBar({
                 value={m.model}
                 title={m.name !== 'default' && m.name !== m.model ? `${m.model} · ${m.base_url || m.name}` : undefined}
               >
-                {m.healthy === false ? '⚠️ ' : ''}{m.name !== 'default' && m.name !== m.model ? m.name : m.model}{m.healthy === false ? '（降级）' : ''}
+                {m.reasoning ? '🧠 ' : ''}{m.healthy === false ? '⚠️ ' : ''}{m.name !== 'default' && m.name !== m.model ? m.name : m.model}{m.reasoning ? '（推理）' : ''}{m.healthy === false ? '（降级）' : ''}
               </option>
             ))}
           </select>
@@ -2533,6 +2957,43 @@ export function ConversationList({
   const filtered = kw
     ? conversations.filter(c => sanitizeConvTitle(c.title).toLowerCase().includes(kw))
     : conversations
+  // 置顶(pin): 仅前端 localStorage 持久化(不跨设备), 让常用对话恒定排最前
+  const PIN_KEY = 'oo.conv.pinned'
+  const [pinned, setPinned] = useState<string[]>(() => {
+    try { return JSON.parse(localStorage.getItem(PIN_KEY) || '[]') } catch { return [] }
+  })
+  const togglePin = (id: string) => {
+    const next = pinned.includes(id) ? pinned.filter(x => x !== id) : [id, ...pinned]
+    setPinned(next)
+    try { localStorage.setItem(PIN_KEY, JSON.stringify(next)) } catch {}
+  }
+  // 按更新时间分组的辅助(今天/昨天/本周/本月/更早)
+  const tsOf = (c: any) => new Date(c.updated_at || c.UpdatedAt || 0).getTime()
+  const dayGroup = (t: number) => {
+    const now = new Date()
+    const sod = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime()
+    const d = new Date(t)
+    const dsod = new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime()
+    const diff = sod - dsod
+    const day = 86400000
+    if (diff < day) return '今天'
+    if (diff < 2 * day) return '昨天'
+    if (diff < 7 * day) return '本周'
+    if (diff < 30 * day) return '本月'
+    return '更早'
+  }
+  const pinnedList = filtered.filter(c => pinned.includes(c.id))
+  const restList = filtered.filter(c => !pinned.includes(c.id))
+  const groups: { label: string; items: any[] }[] = []
+  if (pinnedList.length) groups.push({ label: '置顶', items: pinnedList })
+  const order = ['今天', '昨天', '本周', '本月', '更早']
+  const byDay = new Map<string, any[]>()
+  for (const c of restList) {
+    const g = dayGroup(tsOf(c))
+    if (!byDay.has(g)) byDay.set(g, [])
+    byDay.get(g)!.push(c)
+  }
+  for (const k of order) if (byDay.has(k)) groups.push({ label: k, items: byDay.get(k)! })
   return (
     <div className={cn('space-y-1', className)}>
       {onNew && (
@@ -2556,56 +3017,69 @@ export function ConversationList({
       ) : filtered.length === 0 ? (
         <p className="text-xs text-muted-foreground text-center py-3">无匹配会话</p>
       ) : (
-        filtered.map(c => {
-          const canRename = !!onRename && (!c.permission || c.permission === 'owner')
-          return (
-          <div key={c.id} className="group flex items-center gap-1">
-            {editingId === c.id ? (
-              <input
-                autoFocus
-                value={editTitle}
-                onChange={e => setEditTitle(e.target.value)}
-                onKeyDown={e => {
-                  if (e.key === 'Enter') commitRename(c.id)
-                  else if (e.key === 'Escape') setEditingId(null)
-                }}
-                onBlur={() => commitRename(c.id)}
-                placeholder="会话标题"
-                className="flex-1 min-w-0 text-sm rounded-lg border border-blue-300 dark:border-blue-500/40 bg-white dark:bg-gray-900 px-2.5 py-2 text-foreground focus:outline-none focus:ring-1 focus:ring-blue-400"
-              />
-            ) : (
-            <button
-              onClick={() => onSelect(c.id)}
-              onDoubleClick={canRename ? () => { setEditingId(c.id); setEditTitle(c.title || '') } : undefined}
-              title={canRename ? '双击重命名' : undefined}
-              className={cn(
-                'flex-1 min-w-0 text-left p-2.5 rounded-lg transition-colors',
-                c.id === activeId
-                  ? 'bg-blue-50 dark:bg-blue-500/10 ring-1 ring-blue-200 dark:ring-blue-500/30'
-                  : 'hover:bg-gray-100 dark:hover:bg-gray-800',
-              )}
-            >
-              <p className="text-sm font-medium truncate flex items-center gap-1">
-                {sanitizeConvTitle(c.title)}
-                {c.permission === 'edit' && <span className="text-[9px] px-1 py-0.5 rounded bg-violet-500/15 text-violet-500 shrink-0">共享·可编辑</span>}
-                {c.permission === 'view' && <span className="text-[9px] px-1 py-0.5 rounded bg-violet-500/15 text-violet-500 shrink-0 flex items-center gap-0.5"><Lock className="h-2.5 w-2.5" />共享·只读</span>}
-              </p>
-              <p className="text-xs text-muted-foreground mt-0.5">{new Date(c.updated_at || c.UpdatedAt || Date.now()).toLocaleString('zh-CN')}</p>
-            </button>
-            )}
-            {onShare && (!c.permission || c.permission === 'owner') && (
-              <button onClick={() => onShare(c)} className="opacity-0 group-hover:opacity-100 p-1.5 rounded-md text-muted-foreground hover:text-violet-500 hover:bg-violet-500/10 transition-opacity" title="分享会话">
-                <Share2 className="h-3.5 w-3.5" />
-              </button>
-            )}
-            {onDelete && (!c.permission || c.permission === 'owner') && (
-              <button onClick={() => onDelete(c.id)} className="opacity-0 group-hover:opacity-100 p-1.5 rounded-md text-red-400 hover:bg-red-500/10 transition-opacity" title="删除会话">
-                <Trash2 className="h-3.5 w-3.5" />
-              </button>
-            )}
+        groups.map(g => (
+          <div key={g.label} className="space-y-1">
+            <div className="px-1 pt-1.5 pb-0.5 text-[10px] font-medium uppercase tracking-wide text-muted-foreground/70">{g.label}</div>
+            {g.items.map(c => {
+              const isPinned = pinned.includes(c.id)
+              const canRename = !!onRename && (!c.permission || c.permission === 'owner')
+              return (
+              <div key={c.id} className="group flex items-center gap-1">
+                {editingId === c.id ? (
+                  <input
+                    autoFocus
+                    value={editTitle}
+                    onChange={e => setEditTitle(e.target.value)}
+                    onKeyDown={e => {
+                      if (e.key === 'Enter') commitRename(c.id)
+                      else if (e.key === 'Escape') setEditingId(null)
+                    }}
+                    onBlur={() => commitRename(c.id)}
+                    placeholder="会话标题"
+                    className="flex-1 min-w-0 text-sm rounded-lg border border-blue-300 dark:border-blue-500/40 bg-white dark:bg-gray-900 px-2.5 py-2 text-foreground focus:outline-none focus:ring-1 focus:ring-blue-400"
+                  />
+                ) : (
+                <button
+                  onClick={() => onSelect(c.id)}
+                  onDoubleClick={canRename ? () => { setEditingId(c.id); setEditTitle(c.title || '') } : undefined}
+                  title={canRename ? '双击重命名' : undefined}
+                  className={cn(
+                    'flex-1 min-w-0 text-left p-2.5 rounded-lg transition-colors',
+                    c.id === activeId
+                      ? 'bg-blue-50 dark:bg-blue-500/10 ring-1 ring-blue-200 dark:ring-blue-500/30'
+                      : 'hover:bg-gray-100 dark:hover:bg-gray-800',
+                  )}
+                >
+                  <p className="text-sm font-medium truncate flex items-center gap-1">
+                    {sanitizeConvTitle(c.title)}
+                    {c.permission === 'edit' && <span className="text-[9px] px-1 py-0.5 rounded bg-violet-500/15 text-violet-500 shrink-0">共享·可编辑</span>}
+                    {c.permission === 'view' && <span className="text-[9px] px-1 py-0.5 rounded bg-violet-500/15 text-violet-500 shrink-0 flex items-center gap-0.5"><Lock className="h-2.5 w-2.5" />共享·只读</span>}
+                  </p>
+                  <p className="text-xs text-muted-foreground mt-0.5">{new Date(c.updated_at || c.UpdatedAt || Date.now()).toLocaleString('zh-CN')}</p>
+                </button>
+                )}
+                <button
+                  onClick={() => togglePin(c.id)}
+                  className={cn('p-1.5 rounded-md transition-opacity shrink-0', isPinned ? 'text-amber-500 opacity-100' : 'text-muted-foreground opacity-0 group-hover:opacity-100 hover:text-amber-500 hover:bg-amber-500/10')}
+                  title={isPinned ? '取消置顶' : '置顶会话'}
+                >
+                  📌
+                </button>
+                {onShare && (!c.permission || c.permission === 'owner') && (
+                  <button onClick={() => onShare(c)} className="opacity-0 group-hover:opacity-100 p-1.5 rounded-md text-muted-foreground hover:text-violet-500 hover:bg-violet-500/10 transition-opacity" title="分享会话">
+                    <Share2 className="h-3.5 w-3.5" />
+                  </button>
+                )}
+                {onDelete && (!c.permission || c.permission === 'owner') && (
+                  <button onClick={() => onDelete(c.id)} className="opacity-0 group-hover:opacity-100 p-1.5 rounded-md text-red-400 hover:bg-red-500/10 transition-opacity" title="删除会话">
+                    <Trash2 className="h-3.5 w-3.5" />
+                  </button>
+                )}
+              </div>
+              )
+            })}
           </div>
-          )
-        })
+        ))
       )}
     </div>
   )

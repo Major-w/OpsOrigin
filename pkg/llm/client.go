@@ -408,10 +408,11 @@ func (c *Client) readSSE(ctx context.Context, r io.ReadCloser, ch chan<- StreamC
 				var chunk struct {
 					Choices []struct {
 						Delta struct {
-							Content   string `json:"content"`
-							Reasoning string `json:"reasoning"`
-							Role      string `json:"role"`
-							ToolCalls []struct {
+							Content          string `json:"content"`
+							Reasoning        string `json:"reasoning"`
+							ReasoningContent string `json:"reasoning_content"`
+							Role             string `json:"role"`
+							ToolCalls        []struct {
 								Index    int    `json:"index"`
 								ID       string `json:"id"`
 								Type     string `json:"type"`
@@ -446,7 +447,11 @@ func (c *Client) readSSE(ctx context.Context, r io.ReadCloser, ch chan<- StreamC
 							}
 							acc.args += tc.Function.Arguments
 						}
-						sc := StreamChunk{Content: c.Delta.Content, Reasoning: c.Delta.Reasoning, FinishReason: c.FinishReason}
+						reasoning := c.Delta.Reasoning
+						if reasoning == "" {
+							reasoning = c.Delta.ReasoningContent
+						}
+						sc := StreamChunk{Content: c.Delta.Content, Reasoning: reasoning, FinishReason: c.FinishReason}
 						ch <- sc
 					}
 				}

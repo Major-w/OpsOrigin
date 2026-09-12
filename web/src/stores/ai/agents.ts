@@ -3,53 +3,50 @@ import { create } from 'zustand'
 import { apiFetch, apiList } from '@/lib/utils'
 import { getMessage } from '@/lib/message'
 
+/** 数字员工(Agent)摘要。字段随后端版本演进, 用 unknown 索引签名吸纳新增字段(拒绝 any)。 */
+export interface AgentLite {
+  id: string
+  name: string
+  description?: string
+  system_prompt?: string
+  model_name?: string
+  tools?: string[]
+  enabled?: boolean
+  created_at?: string
+  updated_at?: string
+  [key: string]: unknown
+}
+
+/** 新建数字员工的入参(createAgent)。 */
+export interface CreateAgentPayload {
+  name: string
+  description?: string
+  system_prompt?: string
+  model_name?: string
+  tools?: string[]
+  [key: string]: unknown
+}
+
 interface AgentState {
-  agents: any[]
-  tools: any[]
-  plans: any[]
+  agents: AgentLite[]
   loading: boolean
   error: string | null
   fetchAgents: () => Promise<void>
-  fetchTools: () => Promise<void>
-  fetchPlans: () => Promise<void>
-  createAgent: (data: any) => Promise<boolean>
-  executePlan: (data: any) => Promise<boolean>
+  createAgent: (data: CreateAgentPayload) => Promise<boolean>
 }
 
 export const useAgentAIStore = create<AgentState>((set, get) => ({
   agents: [],
-  tools: [],
-  plans: [],
   loading: false,
   error: null,
   fetchAgents: async () => {
     set({ loading: true })
     try {
-      const agents = await apiList<any>('/ai/agents')
-      set({ agents, loading: false })
+      const agents = await apiList<AgentLite>('/ai/agents')
+      set({ agents: Array.isArray(agents) ? agents : [], loading: false, error: null })
     } catch (e: any) {
-      set({ loading: false })
+      set({ loading: false, error: e?.message || '加载 AI 代理失败' })
       getMessage().error(`加载AI代理失败: ${e.message}`)
-    }
-  },
-  fetchTools: async () => {
-    set({ loading: true })
-    try {
-      const tools = await apiList<any>('/ai/tools')
-      set({ tools, loading: false })
-    } catch (e: any) {
-      set({ loading: false })
-      getMessage().error(`加载AI工具失败: ${e.message}`)
-    }
-  },
-  fetchPlans: async () => {
-    set({ loading: true })
-    try {
-      const plans = await apiList<any>('/ai/plans')
-      set({ plans, loading: false })
-    } catch (e: any) {
-      set({ loading: false })
-      getMessage().error(`加载执行计划失败: ${e.message}`)
     }
   },
   createAgent: async (data) => {
@@ -60,17 +57,6 @@ export const useAgentAIStore = create<AgentState>((set, get) => ({
       return true
     } catch (e: any) {
       getMessage().error(`创建AI代理失败: ${e.message}`)
-      return false
-    }
-  },
-  executePlan: async (data) => {
-    try {
-      await apiFetch('/ai/plans', { method: 'POST', body: JSON.stringify(data) })
-      getMessage().success('执行计划成功')
-      await get().fetchPlans()
-      return true
-    } catch (e: any) {
-      getMessage().error(`执行计划失败: ${e.message}`)
       return false
     }
   },

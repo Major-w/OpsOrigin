@@ -1,5 +1,5 @@
 
-import { useEffect, useState, useMemo } from 'react'
+import { useEffect, useState, useMemo, useRef } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import { useScriptStore, type Script, type ExecutionResult, type ScriptVersion, type DiffEntry, type CheckResult } from '@/stores/script'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
@@ -13,6 +13,8 @@ import { Plus, Trash2, Code2, FileText, Copy, Clock, Play, History, Pencil, Term
 import { cn, formatTime, apiFetch, apiList } from '@/lib/utils'
 import { validateName, sanitizeName, NAME_RULE_TEXT } from '@/lib/validate'
 import { getMessage } from '@/lib/message'
+import { AICodeWriteModal } from '@/components/ai/ai-code-write-modal'
+import type { EditorView } from '@codemirror/view'
 
 const SCRIPT_TYPES = [
   { value: 'shell', label: 'Shell', color: 'text-blue-500' },
@@ -151,7 +153,9 @@ export default function ScriptDetailPage() {
   // 语法检查
   const [checking, setChecking] = useState(false)
   const [checkResult, setCheckResult] = useState<CheckResult | null>(null)
-  const [aiGenerating, setAiGenerating] = useState(false)
+  // AI 辅助编写弹窗: 编辑器空行行首输入 `/` 或点工具栏按钮唤起, 生成结果插入光标处
+  const [aiWriteOpen, setAiWriteOpen] = useState(false)
+  const codeViewRef = useRef<EditorView | null>(null)
 
   // 执行历史
   const [executions, setExecutions] = useState<ExecutionResult[]>([])
@@ -311,23 +315,33 @@ export default function ScriptDetailPage() {
     }
   }
 
-  const handleAIGenerate = async () => {
-    const nameErr = validateName(form.name, '脚本名称')
-    if (nameErr) { getMessage().error(nameErr); return }
-    setAiGenerating(true)
-    try {
-      const lang = form.type === 'shell' ? 'bash' : form.type === 'python' ? 'python' : 'batch'
-      const res = await apiFetch<{ content: string }>('/v1/ai/chat', {
-        method: 'POST',
-        body: JSON.stringify({ prompt: `写一个${lang}脚本,功能是"${form.name}${form.description?':'+form.description:''}"。只输出完整可执行代码,不要加解释。`, stream: false }),
-      })
-      if (res.content) {
-        let code = res.content.replace(/```[\s\S]*?\n/g, '').replace(/```/g, '').trim()
-        setForm(f => ({ ...f, content: code }))
-        getMessage().success('AI 已生成脚本代码')
-      }
-    } catch (e: any) { getMessage().error('AI 生成失败: ' + e.message) }
-    setAiGenerating(false)
+  // AI 辅助编写: 编辑器空行行首输入 `/` 唤起弹窗(不落字符), 生成代码后插入光标处
+  const handleEditorKeyDown = (e: KeyboardEvent, view: EditorView): boolean => {
+    if (e.key !== '/' || e.isComposing) return false
+    const sel = view.state.selection.main
+    const line = view.state.doc.lineAt(sel.from)
+    if (view.state.sliceDoc(line.from, sel.from).trim() === '') {
+      setAiWriteOpen(true)
+      return true
+    }
+    return false
+  }
+
+  const insertCodeAtCursor = (code: string) => {
+    const view = codeViewRef.current
+    if (!view) {
+      setForm(f => ({ ...f, content: f.content ? `${f.content}\n${code}` : code }))
+      return
+    }
+    const sel = view.state.selection.main
+    const doc = view.state.doc
+    const preSep = sel.from > 0 && doc.sliceString(sel.from - 1, sel.from) !== '\n' ? '\n' : ''
+    const insert = `${preSep}${code}\n`
+    view.dispatch({
+      changes: { from: sel.from, to: sel.to, insert },
+      selection: { anchor: sel.from + insert.length },
+    })
+    view.focus()
   }
 
   const handleSave = async () => {
@@ -509,9 +523,9 @@ export default function ScriptDetailPage() {
                 {checking ? <Loader2 className="h-3.5 w-3.5 mr-1 animate-spin" /> : <AlertCircle className="h-3.5 w-3.5 mr-1" />}
                 语法检查
               </Button>
-              <Button onClick={handleAIGenerate} disabled={!form.name.trim() || aiGenerating}>
-                {aiGenerating ? <Loader2 className="h-3.5 w-3.5 mr-1 animate-spin" /> : <Sparkles className="h-3.5 w-3.5 mr-1" />}
-                AI 生成
+              <Button onClick={() => setAiWriteOpen(true)} title="空行开头输入 / 也可唤起">
+                <Sparkles className="h-3.5 w-3.5 mr-1" />
+                AI 编写
               </Button>
               <Button type="primary" size="middle" onClick={handleSave} disabled={!form.name.trim() || !form.content.trim()}>
                 <Save className="h-3.5 w-3.5 mr-1" />{isNew ? '创建' : '保存'}
@@ -618,6 +632,8 @@ export default function ScriptDetailPage() {
                   language={form.type}
                   height="320px"
                   placeholder="#!/bin/bash\necho hello world"
+                  viewRef={codeViewRef}
+                  onKeyDown={handleEditorKeyDown}
                 />
                 {checkResult && !checkResult.valid && (
                   <div className="mt-2 p-3 rounded-md border border-destructive/30 bg-destructive/5">
@@ -1454,6 +1470,16 @@ export default function ScriptDetailPage() {
           </div>
         </Modal>
       )}
+
+      {/* AI 辅助编写脚本: `/` 斜杠或工具栏按钮唤起, 生成结果插入编辑器光标处 */}
+      <AICodeWriteModal
+        open={aiWriteOpen}
+        onClose={() => setAiWriteOpen(false)}
+        onInsert={insertCodeAtCursor}
+        language={form.type}
+        scriptName={form.name || form.description}
+        currentContent={form.content}
+      />
     </div>
   )
 }

@@ -98,6 +98,7 @@ export default function AIAssistant() {
         enableTaskList
         loading={streaming}
         loadingText="AI 正在思考…"
+        onSuggestion={send}
         endRef={listEndRef}
         className="px-3.5 py-3"
       />

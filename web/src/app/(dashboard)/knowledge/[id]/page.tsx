@@ -36,9 +36,11 @@ import {
   Shield,
   Lock,
   CheckCircle2,
+  Sparkles,
 } from 'lucide-react'
 import { useAuthStore } from '@/stores/auth'
 import { getMessage } from '@/lib/message'
+import { AIWriteModal, useAIWrite } from '@/components/ai/ai-write-modal'
 
 const getCurrentUser = () => useAuthStore.getState().user?.username || 'anonymous'
 
@@ -125,6 +127,14 @@ export default function KnowledgeDetailPage() {
   const [showVersions, setShowVersions] = useState(false)
   const [versionsLoaded, setVersionsLoaded] = useState(false)
   const [rollingBack, setRollingBack] = useState(false)
+
+  // AI 辅助编写: 编辑器空行输入 / 唤起弹窗, 生成 Markdown 回填到光标处
+  const aiWrite = useAIWrite({
+    getContent: () => form.content,
+    setContent: (v) => setForm(f => ({ ...f, content: v })),
+    defaultCategory: form.category,
+    categories,
+  })
 
   const [bookmarked, setBookmarked] = useState(false)
   const [followed, setFollowed] = useState(false)
@@ -569,16 +579,23 @@ export default function KnowledgeDetailPage() {
                 </button>
               )}
             </div>
-            {/* 预览开关 */}
+            {/* 预览开关 + AI 辅助编写 */}
             <div className="flex items-center gap-2">
               <Button size="middle" type={editPreview ? 'primary' : 'default'} onClick={() => setEditPreview(v => !v)}>
                 {editPreview ? '预览开' : '预览关'}
               </Button>
+              <Button size="middle" type="default" onClick={aiWrite.openModal}>
+                <Sparkles className="h-4 w-4 mr-1" />
+                AI 编写
+              </Button>
+              <span className="text-[11px] text-muted-foreground">空行输入 / 可唤起 AI 编写</span>
             </div>
             <div className="flex gap-2 min-h-[500px]">
               <textarea
+                ref={aiWrite.editorRef}
                 value={form.content}
                 onChange={e => setForm({ ...form, content: e.target.value })}
+                onKeyDown={aiWrite.onEditorKeyDown}
                 placeholder="文章正文（Markdown 格式）"
                 className={cn(
                   "rounded-md border border-input bg-background px-4 py-3 text-sm font-mono resize-none outline-none focus:ring-1 focus:ring-ring",
@@ -877,6 +894,9 @@ export default function KnowledgeDetailPage() {
       <Popconfirm title={pendingConfirm?.title || ''} description={pendingConfirm?.description || ''} onConfirm={async () => { if (pendingConfirm) await pendingConfirm.onConfirm(); setPendingConfirm(null) }} open={!!pendingConfirm} onCancel={() => setPendingConfirm(null)}>
         <span />
       </Popconfirm>
+
+      {/* AI 辅助编写弹窗(工具栏按钮 / 编辑器空行输入 / 唤起) */}
+      <AIWriteModal {...aiWrite.modalProps} />
     </div>
   )
 }

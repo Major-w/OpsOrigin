@@ -135,6 +135,45 @@ func TestExtractCitations(t *testing.T) {
 	}
 }
 
+// TestBuildMessagesStripsCitations 验证历史中的助手消息下发给模型前会剥离 [^id] 引用标注,
+// 防止模型把旧引用抄进新答案(引用来源应是回答级而非对话级)。
+func TestBuildMessagesStripsCitations(t *testing.T) {
+	e := NewEngine(mcp.NewRegistry(), ratelimit.New(), nil, nil)
+	history := []llm.Message{
+		{Role: "user", Content: "hi"},
+		{Role: "assistant", Content: "之前参考[^kubectl-ref]和[^disk-ref]回答过。"},
+	}
+	msgs, _ := e.buildMessages(context.Background(), "", "新问", history, "", nil)
+	if len(msgs) != 4 {
+		t.Fatalf("expected system+history+user=4 msgs, got %d", len(msgs))
+	}
+	got := msgs[2].Content
+	want := "之前参考和回答过。"
+	if got != want {
+		t.Errorf("assistant history citation not stripped: got %q want %q", got, want)
+	}
+}
+
+// TestFilterEmptyAssistant 验证无正文/无工具调用/无推理的助手消息不会落库。
+func TestFilterEmptyAssistant(t *testing.T) {
+	in := []llm.Message{
+		{Role: "user", Content: "hi"},
+		{Role: "assistant", Content: ""},
+		{Role: "assistant", Content: "  ", ReasoningContent: "  "},
+		{Role: "assistant", Content: "ok"},
+		{Role: "assistant", Content: "", ToolCalls: []llm.ToolCall{{ID: "1"}}},
+	}
+	out := filterEmptyAssistant(in)
+	if len(out) != 3 {
+		t.Fatalf("expected 3 messages (user+ok+toolcall), got %d: %+v", len(out), out)
+	}
+	for _, m := range out {
+		if m.Role == "assistant" && strings.TrimSpace(m.Content) == "" && len(m.ToolCalls) == 0 {
+			t.Fatalf("empty assistant message should be filtered: %+v", m)
+		}
+	}
+}
+
 // newTestEngine 构造带 script_run(写/执行类) 与 knowledge_search(只读) 两个工具的最小引擎, 用于校验 execToolChecked 的 RBAC/截断行为。
 func newTestEngine(t *testing.T) *Engine {
 	t.Helper()

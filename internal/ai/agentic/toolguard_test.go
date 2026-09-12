@@ -27,54 +27,185 @@ func TestStripThinkTags(t *testing.T) {
 
 // TestThinkFilterStreaming 验证流式增量过滤: 标签可能被切在两个 chunk 之间,
 // 且未闭合的思维链残留必须在 flush 时丢弃, 不能泄漏给用户。
+// 新版同时回吐 (clean, think): think 段送往 event: thinking(ThinkingBlock 折叠展示),
+// clean 段送往 event: token(答案正文)。
 func TestThinkFilterStreaming(t *testing.T) {
 	// 1) 标签被切分到多个 chunk
 	f := newThinkFilter()
-	var out string
+	var clean, think string
 	open := thinkTagOpen
 	close := thinkTagClose
 	for _, chunk := range []string{"答案一", open[:6], open[6:] + "推理中", close[:6], close[6:] + "答案二"} {
-		out += f.feed(chunk)
+		c, th := f.feed(chunk)
+		clean += c
+		think += th
 	}
-	out += f.flush()
-	if out != "答案一答案二" {
-		t.Fatalf("split tags: got %q, want %q", out, "答案一答案二")
+	c, th := f.flush()
+	clean += c
+	think += th
+	if clean != "答案一答案二" {
+		t.Fatalf("split tags clean: got %q, want %q", clean, "答案一答案二")
+	}
+	if think != "推理中" {
+		t.Fatalf("split tags think: got %q, want %q", think, "推理中")
 	}
 
 	// 2) 孤立结束标签(起始在 reasoning_content 中)
 	f = newThinkFilter()
-	out = f.feed("正文内容") + f.feed("</think>") + f.feed("后续")
-	out += f.flush()
-	if out != "正文内容后续" {
-		t.Fatalf("orphan close tag: got %q, want %q", out, "正文内容后续")
+	clean, think = "", ""
+	c, _ = f.feed("正文内容")
+	clean += c
+	c, _ = f.feed("</think>")
+	clean += c
+	c, _ = f.feed("后续")
+	clean += c
+	c, th = f.flush()
+	clean += c
+	think += th
+	if clean != "正文内容后续" {
+		t.Fatalf("orphan close tag: got %q, want %q", clean, "正文内容后续")
 	}
 
 	// 3) 思维链未闭合: 残留必须在 flush 时丢弃
 	f = newThinkFilter()
-	out = f.feed("可见内容") + f.feed("<think>未闭合推理...")
-	out += f.flush()
-	if out != "可见内容" {
-		t.Fatalf("unclosed think: got %q, want %q", out, "可见内容")
+	clean, think = "", ""
+	c, _ = f.feed("可见内容")
+	clean += c
+	c, _ = f.feed("<think>未闭合推理...")
+	clean += c
+	c, th = f.flush()
+	clean += c
+	think += th
+	if clean != "可见内容" {
+		t.Fatalf("unclosed think clean: got %q, want %q", clean, "可见内容")
+	}
+	if think != "" {
+		t.Fatalf("unclosed think must drop, got %q", think)
 	}
 
 	// 4) 普通文本不应被吞尾(尾部不足一个标签长度时保留缓冲, flush 后完整输出)
 	f = newThinkFilter()
-	out = f.feed("abcdefghij") + f.flush()
-	if out != "abcdefghij" {
-		t.Fatalf("plain text: got %q, want %q", out, "abcdefghij")
+	clean, think = "", ""
+	c, _ = f.feed("abcdefghij")
+	clean += c
+	c, th = f.flush()
+	clean += c
+	think += th
+	if clean != "abcdefghij" {
+		t.Fatalf("plain text: got %q, want %q", clean, "abcdefghij")
 	}
 
 	// 5) 中文 chunk 边界不能切出非法 UTF-8(P0: thinkTagMaxLen 需与字符边界对齐)
 	f = newThinkFilter()
-	out = ""
+	clean, think = "", ""
 	msg := "你好世界"
-	// 在“世”字中间切断(chunk 边界落在多字节字符内部), 验证不会输出半截字符导致乱码
+	// 在"世"字中间切断(chunk 边界落在多字节字符内部), 验证不会输出半截字符导致乱码
 	for _, chunk := range []string{msg[:7], msg[7:]} {
-		out += f.feed(chunk)
+		c, _ = f.feed(chunk)
+		clean += c
 	}
-	out += f.flush()
-	if out != "你好世界" {
-		t.Fatalf("utf8 boundary: got %q, want %q", out, "你好世界")
+	c, th = f.flush()
+	clean += c
+	think += th
+	if clean != "你好世界" {
+		t.Fatalf("utf8 boundary: got %q, want %q", clean, "你好世界")
+	}
+}
+
+// TestCnCoTFilterStreaming 验证中文「分步推理分析…再给出最终答案」双段结构被折叠为 thinking。
+func TestCnCoTFilterStreaming(t *testing.T) {
+	// 1) 完整双段, 分隔符在 chunk 边界之后才出现 → 前段折叠为 thinking, 后段为 clean(增量 emit 不重复)
+	f := newCnCoTFilter()
+	var clean, think string
+	chunks := []string{
+		"先进行分步推理分析\n\n",
+		"用户问的是通用运维知识, 我无法查询实时系统。\n",
+		"我的知识来自预训练语料。\n",
+		"再给出最终答案\n\n",
+		"Linux 常用命令包括 ls、cd、ps 等。",
+	}
+	for _, chunk := range chunks {
+		c, th := f.feed(chunk)
+		clean += c
+		think += th
+	}
+	c, th := f.flush()
+	clean += c
+	think += th
+	if think == "" {
+		t.Fatalf("cnCoT: expect non-empty thinking, got empty")
+	}
+	if !strings.Contains(think, "用户问的是通用运维知识") || !strings.Contains(think, "预训练语料") {
+		t.Fatalf("cnCoT thinking should contain the reasoning part, got %q", think)
+	}
+	if clean != "Linux 常用命令包括 ls、cd、ps 等。" {
+		t.Fatalf("cnCoT clean: got %q, want %q", clean, "Linux 常用命令包括 ls、cd、ps 等。")
+	}
+
+	// 2) 普通回答(不以推理前缀开头)应原样透传, 不进入提取模式
+	f = newCnCoTFilter()
+	clean, think = "", ""
+	c, th = f.feed("Linux 常用命令有 ls、cd、ps。")
+	clean += c
+	think += th
+	c, th = f.flush()
+	clean += c
+	think += th
+	if clean != "Linux 常用命令有 ls、cd、ps。" {
+		t.Fatalf("cnCoT plain pass-through: got %q, want %q", clean, "Linux 常用命令有 ls、cd、ps。")
+	}
+	if think != "" {
+		t.Fatalf("cnCoT plain must not produce thinking, got %q", think)
+	}
+
+	// 3) 分隔符跨 chunk 切分(「最终答案」被切成两半)仍能识别
+	f = newCnCoTFilter()
+	clean, think = "", ""
+	c, th = f.feed("分步推理分析\n前因后果。")
+	clean += c
+	think += th
+	c, th = f.feed("最") // 「最终答案」的前一字残片
+	clean += c
+	think += th
+	c, th = f.feed("终答案\n\n这是答案正文。")
+	clean += c
+	think += th
+	c, th = f.flush()
+	clean += c
+	think += th
+	if !strings.Contains(think, "前因后果") {
+		t.Fatalf("cnCoT cross-chunk think: got %q", think)
+	}
+	if clean != "这是答案正文。" {
+		t.Fatalf("cnCoT cross-chunk clean: got %q, want %q", clean, "这是答案正文。")
+	}
+
+	// 4) 复现截图场景: 原生推理通道把完整中文双段写进 reasoning_content,
+	//    其中「再给出最终答案」后的 bullets 必须拆出来作为 clean 答案, 不泡在 thinking 里。
+	f = newCnCoTFilter()
+	clean, think = "", ""
+	chunks = []string{
+		"先进行分步推理分析\n\n",
+		"用户询问我是否具备高等数学知识。这是一个关于我知识库覆盖范围的问题。",
+		"我的知识来源于大规模文本数据集的预训练, 包含数学文献、教科书和学术文章。",
+		"再给出最终答案\n\n",
+		"是的, 我具备处理高等数学知识的能力。包括但不限于:\n",
+		"• 微积分: 极限、导数、积分、多元微积分等。\n",
+		"• 线性代数: 矩阵运算、向量空间、特征值与特征向量等。",
+	}
+	for _, chunk := range chunks {
+		c, th := f.feed(chunk)
+		clean += c
+		think += th
+	}
+	c, th = f.flush()
+	clean += c
+	think += th
+	if !strings.Contains(think, "高等数学知识") || strings.Contains(think, "是的, 我具备") {
+		t.Fatalf("cnCoT screenshot thinking: got %q", think)
+	}
+	if !strings.HasPrefix(clean, "是的, 我具备") {
+		t.Fatalf("cnCoT screenshot clean: got %q", clean)
 	}
 }
 

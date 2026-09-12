@@ -1,6 +1,7 @@
 export { useChatStore } from './chat'
 export { useTeamStore, useTeams } from './teams'
 export { useAgentAIStore } from './agents'
+export type { AgentLite, CreateAgentPayload } from './agents'
 export { useApprovalStore } from './approval'
 export { useWorkforceStore, useAgentTemplates, useSceneTemplates, useInspections } from './workforce'
 export type { AgentTeam, TeamMember, TeamMode, TeamRole, ChatMessage, ModelInfo, CreateTeamPayload, UpdateTeamPayload, ApprovalPolicy, ApprovalMode, PendingApproval, TeamStreamEvent } from './types'
