@@ -200,11 +200,12 @@ type PresentationOutline = { title: string; slides: { title: string; bullets: st
 // 走 apiFetchRaw 自动附带 Authorization 头 —— 此前裸 fetch 缺 token, 后端直接返回
 // 401 "missing authorization header"。
 async function fetchPresentationOutline(md: string, fallbackName: string): Promise<PresentationOutline> {
+  // redirectOn401=false: 导出属旁路操作, 401 只报错不跳转登录(否则点一次 PPT 就把整页踢到登录页)
   const res = await apiFetchRaw('/ai/presentation', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ title: titleFromMd(md, fallbackName), content: md }),
-  })
+  }, { redirectOn401: false })
   if (!res.ok) {
     const b = await res.json().catch(() => ({} as { error?: string }))
     throw new Error(b?.error || `HTTP ${res.status}`)
@@ -298,7 +299,10 @@ export async function exportDocFile(md: string, fallbackName: string, fmt: 'docx
   } catch (e: any) {
     if (e?.message === 'EMPTY') return false // 空大纲已在上层静默/提示过
     if (e?.message === 'TOO_LARGE') getMessage().warning('文档过大，AI 演示生成仅支持 2MB 以内的文档')
-    else getMessage().error(`生成失败: ${e?.message || '未知错误'}`)
+    else if (e?.message === 'unauthorized' || /401|登录|未授权|authorization/i.test(String(e?.message || ''))) {
+      // 不再整页跳转登录: 提示用户自行处理, 保留当前会话内容
+      getMessage().error('登录状态已失效或权限不足，请重新登录后重试（当前页面内容不会丢失）')
+    } else getMessage().error(`生成失败: ${e?.message || '未知错误'}`)
     return false
   } finally {
     exporting.delete(k)

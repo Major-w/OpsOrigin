@@ -43,6 +43,7 @@ const AIMcpPage = React.lazy(() => import('./app/(dashboard)/ai/mcp/page'))
 const AIMarketplacePage = React.lazy(() => import('./app/(dashboard)/ai/marketplace/page'))
 const AIScenesPage = React.lazy(() => import('./app/(dashboard)/ai/scenes/page'))
 const AIDrillsPage = React.lazy(() => import('./app/(dashboard)/ai/drills/page'))
+const AISREPage = React.lazy(() => import('./app/(dashboard)/ai/sre/page'))
 const AISettingsPage = React.lazy(() => import('./app/(dashboard)/ai/settings/page'))
 const AIChatOpsPage = React.lazy(() => import('./app/(dashboard)/ai/chatops/page'))
 const AIModelsLayoutPage = React.lazy(() => import('./app/(dashboard)/ai/models/layout'))
@@ -51,6 +52,7 @@ const AIModelNewPage = React.lazy(() => import('./app/(dashboard)/ai/models/new/
 const AIModelDetailPage = React.lazy(() => import('./app/(dashboard)/ai/models/[id]/page'))
 const CMDBPage = React.lazy(() => import('./app/(dashboard)/cmdb/page'))
 const CMDBStatsPage = React.lazy(() => import('./app/(dashboard)/cmdb/stats/page'))
+const CMDBScreenPage = React.lazy(() => import('./app/cmdb/screen/page'))
 const CMDBAutoCollectPage = React.lazy(() => import('./app/(dashboard)/cmdb/auto-collect/page'))
 const CMDBModelsPage = React.lazy(() => import('./app/(dashboard)/cmdb/models/page'))
 const CMDBImpactPage = React.lazy(() => import('./app/(dashboard)/cmdb/impact/page'))
@@ -65,6 +67,8 @@ const CMDBTopologyPage = React.lazy(() => import('./app/(dashboard)/cmdb/topolog
 const CMDBSubscriptionsPage = React.lazy(() => import('./app/(dashboard)/cmdb/subscriptions/page'))
 const CMDBIdcPage = React.lazy(() => import('./app/(dashboard)/cmdb/idc/page'))
 const CMDBSearchPage = React.lazy(() => import('./app/(dashboard)/cmdb/search/page'))
+const CMDBSnapshotsPage = React.lazy(() => import('./app/(dashboard)/cmdb/snapshots/page'))
+const CMDBUsagePage = React.lazy(() => import('./app/(dashboard)/cmdb/usage/page'))
 const ScriptsPage = React.lazy(() => import('./app/(dashboard)/scripts/page'))
 const ScriptDetailPage = React.lazy(() => import('./app/(dashboard)/scripts/[id]/page'))
 const KnowledgePage = React.lazy(() => import('./app/(dashboard)/knowledge/page'))
@@ -78,6 +82,7 @@ const SystemCollectionPolicyPage = React.lazy(() => import('./app/(dashboard)/sy
 const SystemRolesPage = React.lazy(() => import('./app/(dashboard)/system/roles/page'))
 const SystemAuthPage = React.lazy(() => import('./app/(dashboard)/system/auth/page'))
 const SystemUsersPage = React.lazy(() => import('./app/(dashboard)/system/users/page'))
+const SystemAPIKeysPage = React.lazy(() => import('./app/(dashboard)/system/api-keys/page'))
 const SystemSettingsPage = React.lazy(() => import('./app/(dashboard)/system/settings/page'))
 const AuditPage = React.lazy(() => import('./app/(dashboard)/audit/page'))
 const LowcodePage = React.lazy(() => import('./app/(dashboard)/lowcode/page'))
@@ -182,6 +187,7 @@ function App() {
                 <Route path="/ai/marketplace" element={<AIMarketplacePage />} />
                 <Route path="/ai/scenes" element={<AIScenesPage />} />
                 <Route path="/ai/drills" element={<AIDrillsPage />} />
+                <Route path="/ai/sre" element={<AISREPage />} />
                 <Route path="/ai/settings" element={<AISettingsPage />} />
                 <Route path="/ai/chatops" element={<AIChatOpsPage />} />
                 {/* 模型管理：列表（唯一定义入口，含权重/类型/可见性/主LLM）+ 新增 / 详情子路由 */}
@@ -207,6 +213,8 @@ function App() {
                 <Route path="/cmdb/subscriptions" element={<CMDBSubscriptionsPage />} />
                 <Route path="/cmdb/idc" element={<CMDBIdcPage />} />
                 <Route path="/cmdb/search" element={<CMDBSearchPage />} />
+                <Route path="/cmdb/snapshots" element={<CMDBSnapshotsPage />} />
+                <Route path="/cmdb/usage" element={<CMDBUsagePage />} />
                 <Route path="/scripts" element={<ScriptsPage />} />
                 <Route path="/scripts/:id" element={<ScriptDetailPage />} />
                 <Route path="/knowledge" element={<KnowledgePage />} />
@@ -220,6 +228,7 @@ function App() {
                 <Route path="/system/roles" element={<SystemRolesPage />} />
                 <Route path="/system/auth" element={<SystemAuthPage />} />
                 <Route path="/system/users" element={<SystemUsersPage />} />
+                <Route path="/system/api-keys" element={<SystemAPIKeysPage />} />
                 <Route path="/system/settings" element={<SystemSettingsPage />} />
                 <Route path="/audit" element={<AuditPage />} />
                 <Route path="/lowcode" element={<LowcodePage />} />
@@ -246,6 +255,9 @@ function App() {
                 <Route path="/itsm/tickets/:id/sla" element={<ITSMTicketSlaPage />} />
                 <Route path="/itsm/tickets/:id/sla-log" element={<ITSMTicketSlaLogPage />} />
               </Route>
+
+              {/* 独立投放大屏：脱离后台框架，整屏固定深色 */}
+              <Route path="/cmdb/screen" element={<CMDBScreenPage />} />
 
               <Route path="/" element={<Navigate to="/dashboard" replace />} />
               <Route path="*" element={<Navigate to="/dashboard" replace />} />

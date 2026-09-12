@@ -57,7 +57,11 @@ export async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> 
   const perms = getPermissions()
   if (perms) headers['X-Permissions'] = perms.join(',')
 
-  const res = await fetch(`${apiBase}${path}`, { headers, ...init })
+  // 同 apiFetchRaw：调用方自带 headers 时与默认鉴权头合并，不能整体覆盖。
+  const res = await fetch(`${apiBase}${path}`, {
+    ...init,
+    headers: { ...headers, ...((init?.headers as Record<string, string> | undefined) ?? {}) },
+  })
   if (res.status === 401) {
     if (typeof window !== 'undefined') {
       localStorage.removeItem('opsorigin_token')
@@ -78,7 +82,13 @@ export async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> 
  * 返回原始 Response 的底层请求（用于下载 blob / 上传文件等需要非 JSON 体的场景）。
  * 自动附带与 apiFetch 一致的鉴权头与 principal 头，并处理 401 跳转。
  */
-export async function apiFetchRaw(path: string, init?: RequestInit): Promise<Response> {
+export async function apiFetchRaw(
+  path: string,
+  init?: RequestInit,
+  // redirectOn401=false: 401 时只抛错不跳转登录。用于导出/PPT 等"可失败"的旁路操作——
+  // 全局跳转会把正在编辑的用户整页踢走, 这类操作失败只需提示, 交由用户自行决定。
+  opts?: { redirectOn401?: boolean },
+): Promise<Response> {
   const headers: Record<string, string> = {
     'X-Trace-ID': typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : Math.random().toString(36).slice(2),
   }
@@ -92,9 +102,14 @@ export async function apiFetchRaw(path: string, init?: RequestInit): Promise<Res
   const perms = getPermissions()
   if (perms) headers['X-Permissions'] = perms.join(',')
 
-  const res = await fetch(`${apiBase}${path}`, { headers, ...init })
+  // init.headers 必须与默认鉴权头「合并」而非覆盖：调用方只要自带 Content-Type，
+  // 旧写法 `{ headers, ...init }` 会把 Authorization/X-Trace-ID 整个顶掉 → 401。
+  const res = await fetch(`${apiBase}${path}`, {
+    ...init,
+    headers: { ...headers, ...((init?.headers as Record<string, string> | undefined) ?? {}) },
+  })
   if (res.status === 401) {
-    if (typeof window !== 'undefined') {
+    if (typeof window !== 'undefined' && opts?.redirectOn401 !== false) {
       localStorage.removeItem('opsorigin_token')
       localStorage.removeItem('opsorigin_user')
       window.location.href = '/login'

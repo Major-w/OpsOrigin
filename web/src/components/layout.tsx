@@ -4,7 +4,7 @@ import { Link } from 'react-router-dom'
 import { useNavigate } from 'react-router-dom'
 import usePathname from '@/lib/use-pathname'
 import { cn } from '@/lib/utils'
-import { Server, TicketCheck, Activity, Bot, Shield, LayoutDashboard, Hexagon, LogOut, User, Terminal, Workflow, Clock, Search, BookOpen, Calendar, GitBranch, Package, Bell, Key, Blocks, Users, Settings, Sun, Moon, Scan, Bug, Download, PackagePlus, Network, AlertTriangle, History, FileText, Rocket, AppWindow, FileCheck2, Cloud, Play, Sparkles, Database, Radio, BarChart3, Building2, TrendingUp, Store, Cpu, Webhook, Mail, MessageSquare, FolderOpen, ShieldAlert, ShieldCheck, PanelLeftClose, PanelLeftOpen, type LucideIcon } from 'lucide-react'
+import { Server, TicketCheck, Activity, Bot, Shield, LayoutDashboard, Hexagon, LogOut, User, Terminal, Workflow, Clock, Search, BookOpen, Calendar, GitBranch, Package, Bell, Key, Blocks, Users, Settings, Sun, Moon, Scan, Bug, Download, PackagePlus, Network, AlertTriangle, History, FileText, Rocket, AppWindow, FileCheck2, Cloud, Play, Sparkles, Database, Radio, BarChart3, Building2, Camera, TrendingUp, Store, Cpu, Webhook, Mail, MessageSquare, FolderOpen, ShieldAlert, ShieldCheck, PanelLeftClose, PanelLeftOpen, type LucideIcon } from 'lucide-react'
 import { useAuthStore } from '@/stores/auth'
 import { MessageBell } from '@/components/message-bell'
 import { useThemeStore } from '@/stores/theme'
@@ -81,6 +81,7 @@ const navGroups: (NavItem | NavGroup)[] = [
         label: '关系与依赖', icon: Network, items: [
           { to: '/cmdb/topology', label: '拓扑可视化', icon: Network },
           { to: '/cmdb/impact', label: '影响分析', icon: AlertTriangle },
+          { to: '/cmdb/snapshots', label: '基线快照', icon: Camera },
         ]
       },
       { to: '/cmdb/idc', label: '机房机柜', icon: Building2 },
@@ -88,6 +89,7 @@ const navGroups: (NavItem | NavGroup)[] = [
         label: '数据治理', icon: ShieldCheck, items: [
           { to: '/cmdb/quality', label: '数据质量', icon: ShieldAlert },
           { to: '/cmdb/data-policy', label: '数据权限', icon: ShieldCheck },
+          { to: '/cmdb/usage', label: '数据消费分析', icon: Activity },
         ]
       },
       {
@@ -145,6 +147,7 @@ const navGroups: (NavItem | NavGroup)[] = [
       { to: '/system/groups', label: '用户组管理', icon: Users },
       { to: '/system/roles', label: '角色管理', icon: Shield },
       { to: '/system/auth', label: '认证设置', icon: Key },
+      { to: '/system/api-keys', label: 'API Key 管理', icon: Key },
       { to: '/system/notifications', label: '消息通知设置', icon: Bell },
       { to: '/system/settings', label: '全局参数', icon: Settings },
       { to: '/system/health', label: '自监控', icon: Activity },

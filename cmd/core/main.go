@@ -20,6 +20,7 @@ import (
 	"github.com/opsorigin/core/internal/agentmgr"
 	"github.com/opsorigin/core/internal/ai"
 	"github.com/opsorigin/core/internal/ai/agentic"
+	"github.com/opsorigin/core/internal/apikey"
 	"github.com/opsorigin/core/internal/audit"
 	"github.com/opsorigin/core/internal/automation/actions"
 	"github.com/opsorigin/core/internal/automation/inboundbot"
@@ -110,6 +111,49 @@ type wsHubRegistrar struct{ hub *ws.Hub }
 
 func (r *wsHubRegistrar) RegisterRoutes(mux *http.ServeMux) {
 	mux.Handle("/api/v1/ws", r.hub)
+}
+
+// llmGeneratorAdapter 把 *llm.Client 适配为各模块的 Generator 窄接口(knowledge/script 等),
+// 供「AI 辅助编写」一次性生成内容(文章 Markdown 或脚本代码),不污染会话上下文。
+type llmGeneratorAdapter struct{ client *llm.Client }
+
+func (g llmGeneratorAdapter) Generate(ctx context.Context, system, user string) (string, error) {
+	resp, err := g.client.Chat(ctx, llm.ChatRequest{
+		Messages: []llm.Message{
+			{Role: "system", Content: system},
+			{Role: "user", Content: user},
+		},
+		MaxTokens:   4096,
+		Temperature: 0.7,
+	})
+	if err != nil {
+		return "", err
+	}
+	if len(resp.Choices) == 0 {
+		return "", fmt.Errorf("llm 未返回任何内容")
+	}
+	return strings.TrimSpace(resp.Choices[0].Message.Content), nil
+}
+
+// providerConfigs 把配置中的模型池映射为路由用 provider 列表。
+// 启动与 LLM 配置热更新共用同一映射,避免两处漂移。
+func providerConfigs(cfg *config.Config) []agentic.ProviderConfig {
+	out := make([]agentic.ProviderConfig, 0, len(cfg.LLM.Providers))
+	for _, p := range cfg.LLM.Providers {
+		out = append(out, agentic.ProviderConfig{
+			Name:       p.Name,
+			APIKey:     p.APIKey,
+			Model:      p.Model,
+			BaseURL:    p.BaseURL,
+			Weight:     p.Weight,
+			Types:      p.Types,
+			Type:       p.Type,
+			Visibility: p.Visibility,
+			CreatedBy:  p.CreatedBy,
+			Primary:    p.Primary,
+		})
+	}
+	return out
 }
 
 func main() {
@@ -719,21 +763,7 @@ func main() {
 
 	// 多模型路由池(P3): 主配置为兜底 provider, 附加 provider 按权重参与路由(失败自动降级)。
 	// 模型列表的 Type/Visibility/CreatedBy/Primary 元数据一并透传, 供 auto 模式按类型+可见性选型。
-	var llmProviders []agentic.ProviderConfig
-	for _, p := range cfg.LLM.Providers {
-		llmProviders = append(llmProviders, agentic.ProviderConfig{
-			Name:       p.Name,
-			APIKey:     p.APIKey,
-			Model:      p.Model,
-			BaseURL:    p.BaseURL,
-			Weight:     p.Weight,
-			Types:      p.Types,
-			Type:       p.Type,
-			Visibility: p.Visibility,
-			CreatedBy:  p.CreatedBy,
-			Primary:    p.Primary,
-		})
-	}
+	llmProviders := providerConfigs(cfg)
 
 	// 主 provider 配置: 若 LLM 后端未配置 API key, 自动回退到池内权重最高且
 	// 已配置 key 的 provider, 使「仅用模型池」也能驱动聊天/报表/embedding 全链路。
@@ -754,7 +784,11 @@ func main() {
 		EmbeddingBaseURL: cfg.LLM.EmbeddingBaseURL,
 	})
 	if knowledgeSvc != nil {
-		knowledgeSvc.SetEmbedder(llmClient) // 注入向量生成器,新建/更新知识库文章自动写入 embedding
+		knowledgeSvc.SetEmbedder(llmClient)                               // 注入向量生成器,新建/更新知识库文章自动写入 embedding
+		knowledgeSvc.SetGenerator(llmGeneratorAdapter{client: llmClient}) // 注入 LLM 生成器,启用 AI 辅助编写知识
+	}
+	if scriptSvc != nil {
+		scriptSvc.SetGenerator(llmGeneratorAdapter{client: llmClient}) // 注入 LLM 生成器,启用 AI 辅助编写脚本
 	}
 
 	llmRouter := agentic.NewModelRouter(primaryCfg, llmProviders)
@@ -1097,6 +1131,29 @@ func main() {
 	rbacMiddleware.SetPermissionResolver(iamSvc.ResolvePermissions)
 	server.WithMiddleware(rbacMiddleware.AutoPermissionMiddleware)
 
+	// API Key 管理(绑定用户、默认继承用户权限):
+	//  1) 注册自助管理路由 /api/v1/api-keys;
+	//  2) 把「用户当前角色/状态」解析器注入 Key 服务 —— 鉴权时实时回查,
+	//     用户角色变更后名下 Key 权限自动跟随;
+	//  3) 把 Key 服务注册为 auth.APIKeyResolver,打开 X-API-Key 鉴权通道。
+	apikeySvc := apikey.NewService(apikey.NewStore(db))
+	if db != nil {
+		if err := apikeySvc.EnsureSchema(ctx); err != nil {
+			slog.Error("apikey schema init failed", "error", err)
+		}
+	}
+	if userSvc != nil {
+		apikeySvc.SetIdentityResolver(userSvc.ResolveIdentity)
+	}
+	apikeySvc.StartUsageWorker(ctx)
+	server.RegisterService(apikeySvc)
+	authProvider.SetAPIKeyResolver(apikeySvc)
+
+	// CMDB 数据消费分析:采集器 + /api/v1/cmdb/usage/* 只读聚合端点。
+	// 中间件注册在鉴权链最内层(紧贴 mux),才能读到 mux 回填的 r.Pattern / PathValue。
+	cmdbSvc.EnableUsageAnalytics(ctx)
+	server.WithMiddleware(cmdbSvc.UsageMiddleware)
+
 	aiSvc := ai.NewService(cfg, llmClient, rdbClient, db)
 	if db != nil {
 		aiSvc.Engine.SetStore(agentic.NewPGStore(db))
@@ -1221,7 +1278,22 @@ func main() {
 	aiSvc.StartExternalMCP(context.Background())
 	aiSvc.SetRAGFunc(toolSet.RAGContext)
 	aiSvc.SetCitationVerifier(toolSet.ValidKnowledgeIDs)
-	ai.LLMConfigHook = func(cfg2 llm.Config) { aiSvc.UpdateLLMConfig(cfg2) }
+	ai.LLMConfigHook = func(cfg2 llm.Config) {
+		aiSvc.UpdateLLMConfig(cfg2)
+		// aiSvc 内部是「新建客户端」式热替换,知识库持有的直连客户端(向量化 embedding /
+		// AI 辅助编写)不会随之刷新,这里同步重建,否则改完主模型或模型池后二者仍在用旧
+		// key/model。ResolvePrimary 会透传平台级 embedding 配置,与启动时解析口径一致。
+		if kc := agentic.ResolvePrimary(cfg2, providerConfigs(cfg)); kc.APIKey != "" {
+			kc2 := llm.NewClient(kc)
+			if knowledgeSvc != nil {
+				knowledgeSvc.SetEmbedder(kc2)
+				knowledgeSvc.SetGenerator(llmGeneratorAdapter{client: kc2})
+			}
+			if scriptSvc != nil {
+				scriptSvc.SetGenerator(llmGeneratorAdapter{client: kc2})
+			}
+		}
+	}
 
 	// 任务产物沉淀知识库(T2): doc_to_knowledge 工具经此回调创建文章草稿(默认 draft, 人工审核发布)。
 	if knowledgeSvc != nil {
@@ -1423,6 +1495,8 @@ func main() {
 	// 注入 Agent 下发通道(供 AgentScanner 经 Tunnel 下发 trivy/grype)。
 	vulnSvc.SetAgentRunner(agentSvc)
 	server.RegisterService(vulnSvc)
+	// 计划扫描调度器:按 schedule(daily/weekly) 检查到期任务并按原参数重跑。
+	vulnSvc.StartScheduler(ctx)
 
 	go func() {
 		if err := tunnelServer.Start(ctx); err != nil {
