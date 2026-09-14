@@ -82,7 +82,7 @@ func newTestServices(t *testing.T, server *Server, cfg *config.Config, authProv 
 	itsmSvc := itsm.NewService(cfg, nil)
 	server.RegisterService(itsmSvc)
 
-	monitorSvc := monitor.NewService(cfg, nil)
+	monitorSvc := monitor.NewService(cfg, nil, nil)
 	server.RegisterService(monitorSvc)
 
 	userSvc := user.NewService(nil, authProv)
