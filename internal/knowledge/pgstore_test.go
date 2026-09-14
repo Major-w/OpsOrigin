@@ -154,10 +154,10 @@ func TestRunReindexPassReindexesNullRows(t *testing.T) {
 	mock.ExpectQuery("SELECT a.id, a.tenant_id FROM knowledge_articles a").
 		WillReturnRows(sqlmock.NewRows([]string{"id", "tenant_id"}).AddRow("a1", "default"))
 	// 2) drainPending: 拉取文章
-	mock.ExpectQuery("SELECT id,tenant_id,title,content,category,tags,views,status,version,created_at,updated_at FROM knowledge_articles WHERE id=\\$1 AND tenant_id=\\$2").
+	mock.ExpectQuery("SELECT id,tenant_id,title,content,category,tags,views,status,version,expires_at,view_permission,edit_permission,created_at,updated_at FROM knowledge_articles WHERE id=\\$1 AND tenant_id=\\$2").
 		WithArgs("a1", "default").
-		WillReturnRows(sqlmock.NewRows([]string{"id", "tenant_id", "title", "content", "category", "tags", "views", "status", "version", "created_at", "updated_at"}).
-			AddRow("a1", "default", "Title", "Content", "cat", []byte("[]"), 0, "draft", 1, now, now))
+		WillReturnRows(sqlmock.NewRows([]string{"id", "tenant_id", "title", "content", "category", "tags", "views", "status", "version", "expires_at", "view_permission", "edit_permission", "created_at", "updated_at"}).
+			AddRow("a1", "default", "Title", "Content", "cat", []byte("[]"), 0, "draft", 1, now, "", "", now, now))
 	// 3) syncChunks: 删旧块 + 插块(embedding [0.1,0.2])
 	mock.ExpectExec("DELETE FROM knowledge_chunks").
 		WillReturnResult(sqlmock.NewResult(0, 1))
@@ -197,10 +197,10 @@ func TestReindexBackoffAvoidsHammering(t *testing.T) {
 
 	s.enqueueRetry("a1", "default")
 	// 第一次 drain: 拉取文章 → syncChunks(删块+插块, embed 失败→missing=true) → 退避重新入队。
-	mock.ExpectQuery("SELECT id,tenant_id,title,content,category,tags,views,status,version,created_at,updated_at FROM knowledge_articles WHERE id=\\$1 AND tenant_id=\\$2").
+	mock.ExpectQuery("SELECT id,tenant_id,title,content,category,tags,views,status,version,expires_at,view_permission,edit_permission,created_at,updated_at FROM knowledge_articles WHERE id=\\$1 AND tenant_id=\\$2").
 		WithArgs("a1", "default").
-		WillReturnRows(sqlmock.NewRows([]string{"id", "tenant_id", "title", "content", "category", "tags", "views", "status", "version", "created_at", "updated_at"}).
-			AddRow("a1", "default", "Title", "Content", "cat", []byte("[]"), 0, "draft", 1, now, now))
+		WillReturnRows(sqlmock.NewRows([]string{"id", "tenant_id", "title", "content", "category", "tags", "views", "status", "version", "expires_at", "view_permission", "edit_permission", "created_at", "updated_at"}).
+			AddRow("a1", "default", "Title", "Content", "cat", []byte("[]"), 0, "draft", 1, now, "", "", now, now))
 	mock.ExpectExec("DELETE FROM knowledge_chunks").
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectExec("INSERT INTO knowledge_chunks").
