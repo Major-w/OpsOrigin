@@ -572,6 +572,76 @@ const docTemplate = `{
                 }
             }
         },
+        "/api/v1/cmdb/subgraph": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "按模型/环境/业务/关键字筛选 CI 组成子图，回答\"某业务/某环境里谁依赖谁\"，",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "CMDB"
+                ],
+                "summary": "条件子图",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "模型类型 ID",
+                        "name": "model_id",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "环境属性值",
+                        "name": "env",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "业务属性值",
+                        "name": "business",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "名称/属性关键字",
+                        "name": "q",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "description": "扩展深度 1..5(仅 expand=1 生效)",
+                        "name": "depth",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "description": "节点上限，默认 200，最大 300",
+                        "name": "limit",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "description": "0=仅筛选集内部关系(默认)；1=以筛选集为多根向外扩展",
+                        "name": "expand",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
         "/api/v1/itsm/tickets": {
             "get": {
                 "security": [

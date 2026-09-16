@@ -25,10 +25,11 @@ make contract
 校验项（`scripts/contract-check.sh`）：
 1. 竞品/品牌字样扫描（git grep，全仓）——**FAIL 级**
 2. 前端 `tsc --noEmit`——**FAIL 级**
-3. 后端 `gofmt -l` + `go vet ./...`——**FAIL 级**
-4. 前端原生 `confirm(` 残留——**FAIL 级**（必须 0）
-5. 前端硬编码色（`bg-[#`/`text-[#`/`border-[#`）——**WARN 级**（SVG 图元必要除外）
-6. 后端裸 SQL / `context.Background()`——**WARN 级**（命中须人工确认在白名单场景）
+3. 前端 `web/` Vitest——**FAIL 级**
+4. 后端 `gofmt -l` + `go vet ./...`——**FAIL 级**
+5. 前端原生 `confirm(` 残留——**FAIL 级**（必须 0）
+6. 前端硬编码色（`bg-[#`/`text-[#`/`border-[#`）——**WARN 级**（SVG 图元必要除外）
+7. 后端裸 SQL / `context.Background()`——**WARN 级**（命中须人工确认在白名单场景）
 
 > 校验未通过 = 任务未完成。WARN 项需在提交说明中注明理由。
 

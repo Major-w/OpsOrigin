@@ -52,5 +52,12 @@
 grep -rn "confirm(" web/src                    # 必须 0 命中
 grep -rnE "bg-\[#|text-\[#|border-\[#" web/src # 必须 0 命中（SVG 图元必要除外）
 npx tsc --noEmit                                    # 0 error（在 web 下）
+npm test                                            # vitest 0 fail（在 web 下）
 ```
 完整校验：`make contract`。
+
+## F8 测试门禁（测共享层，不测页面实现）
+
+- **F8.1** 改 `web/src/lib/**`、`web/src/stores/**`、`web/src/components/ui/**` 时须同步补 `*.test.ts(x)`，覆盖行为契约（鉴权头、401、权限乐观放行、危险确认 `requireText`、错误态重试）。禁止为 ProTable/拓扑/画布写快照。
+- **F8.2** CI 与 `make contract` 跑的是 **`web/`**（Vite 主前端），不是 `web-next`。
+- **F8.3** 覆盖率闸只打在 `lib/` + `stores/`（`vitest.config.ts` 已排除 `src/app/**`），页面行数不作为门槛。
