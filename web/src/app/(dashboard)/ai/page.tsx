@@ -1,22 +1,22 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { useAIStore } from '@/stores/ai'
+import { useChatStore, useAgentAIStore } from '@/stores/ai'
 import { useKnowledgeStore } from '@/stores/knowledge'
 import { useCan } from '@/stores/permissions'
-import { useAIChat, ChatMessageList, ChatInputBar, TeamChatView, ChatContextBar, ConversationList, estimateContextTokens, AttachmentChip, extractAttachmentsFromParts, type ChatMessage, type ChatAttachmentMeta } from '@/components/ai/chat-kernel'
+import { useAIChat, ChatMessageList, ChatInputBar, TeamChatView, ChatContextBar, ConversationList, estimateContextTokens, AttachmentChip, extractAttachmentsFromParts, type ChatMessage, type ChatAttachmentMeta, type ConversationItem } from '@/components/ai/chat-kernel'
 import { Button, Input, Select, Space, Modal, Popconfirm } from 'antd'
 import {
   Sparkles, History, Settings, BarChart3, Share2, Lock, PanelLeftClose, PanelLeftOpen,
   AlertTriangle, XCircle, CheckCircle, Loader2, Brain, Bookmark, Download, Save, Terminal, Paperclip,
-  FileDown, Presentation, Server, FileBarChart, Bug, ClipboardList, BookOpen, Database, Bell,
+  FileDown, Server, FileBarChart, Bug, ClipboardList, BookOpen, Database, Bell,
   Maximize2, Minimize2,
 } from 'lucide-react'
 import { exportDocFile } from '@/lib/doc-export'
-import { cn } from '@/lib/utils'
-import { apiFetchRaw } from '@/lib/utils'
+import { cn, apiFetch, apiFetchRaw } from '@/lib/utils'
 import { useThemeStore } from '@/stores/theme'
 import { getMessage } from '@/lib/message'
+import { t, useLocale } from '@/lib/i18n'
 
 // ============================================================================
 // AI 助手（全页 /ai）
@@ -25,26 +25,27 @@ import { getMessage } from '@/lib/message'
 // 工作区(工具产物) / 上下文用量条 / 只读共享权限门禁 / 记忆·知识库·下载·归档 消息操作。
 // ============================================================================
 
-// 场景化快捷入口: 卡片化展示(图标 + 标题 + 描述), 降低首问门槛
-const QUICK_ACTIONS = [
-  { label: '查询主机状态', icon: Server, desc: '汇总在线/离线与负载', prompt: '帮我查询所有主机的运行状态，并按负载从高到低列出 Top 10' },
-  { label: '执行巡检任务', icon: ClipboardList, desc: '自动巡检并给出风险项', prompt: '执行一次自动化巡检任务，输出异常项与处理建议' },
-  { label: '生成运维报告', icon: FileBarChart, desc: '本周运维总结与趋势', prompt: '生成本周的运维报告，包含告警、变更、故障与容量趋势' },
-  { label: '排查故障', icon: Bug, desc: '定位根因并给修复步骤', prompt: '帮我排查当前系统的异常情况，给出根因分析与分步修复建议' },
-  { label: '告警根因分析', icon: Bell, desc: '关联指标/日志定位源头', prompt: '分析最近 24 小时的高频告警，找出根因并给出抑制建议' },
-  { label: '生成 Runbook', icon: BookOpen, desc: '输出可执行处置手册', prompt: '为「磁盘空间不足」场景生成一份标准 Runbook，含前置检查、处置步骤与回滚方案' },
-  { label: 'SQL 优化建议', icon: Database, desc: '慢查询诊断与索引建议', prompt: '分析这条慢查询 SQL 的执行计划，给出优化建议与索引方案' },
-  { label: '容量预测', icon: BarChart3, desc: '基于历史推算扩容时点', prompt: '基于过去 30 天的资源使用数据，预测未来 90 天的容量需求与扩容时点' },
-]
-
-// 欢迎词(改这里即可调整 AI 助手首屏文案)
-const WELCOME_MESSAGE = '你好！我是 OpsOrigin AI 助手，可以帮你完成运维任务。\n\n👉 **快速开始：** 点击右上角「设置」→「模型」配置 LLM API Key 即可使用。\n\n配置完成后可直接在下方提问，或点击下方快捷操作开始。'
-
 export default function AIPage() {
-  const { loadConversations, submitFeedback: submitFB, fetchAgents } = useAIStore()
+  const loadConversations = useChatStore(s => s.loadConversations)
+  const submitFB = useChatStore(s => s.submitFeedback)
+  const fetchAgents = useAgentAIStore(s => s.fetchAgents)
   const { theme } = useThemeStore()
   const navigate = useNavigate()
   const canUseAI = useCan('ai:tool:exec')
+  const locale = useLocale()
+
+  const QUICK_ACTIONS = useMemo(() => [
+    { label: t('ai.quickActions.queryHost'), icon: Server, desc: t('ai.quickActions.queryHostDesc'), prompt: t('ai.quickActions.queryHostPrompt') },
+    { label: t('ai.quickActions.inspection'), icon: ClipboardList, desc: t('ai.quickActions.inspectionDesc'), prompt: t('ai.quickActions.inspectionPrompt') },
+    { label: t('ai.quickActions.report'), icon: FileBarChart, desc: t('ai.quickActions.reportDesc'), prompt: t('ai.quickActions.reportPrompt') },
+    { label: t('ai.quickActions.troubleshoot'), icon: Bug, desc: t('ai.quickActions.troubleshootDesc'), prompt: t('ai.quickActions.troubleshootPrompt') },
+    { label: t('ai.quickActions.alertAnalysis'), icon: Bell, desc: t('ai.quickActions.alertAnalysisDesc'), prompt: t('ai.quickActions.alertAnalysisPrompt') },
+    { label: t('ai.quickActions.runbook'), icon: BookOpen, desc: t('ai.quickActions.runbookDesc'), prompt: t('ai.quickActions.runbookPrompt') },
+    { label: t('ai.quickActions.sqlOptimize'), icon: Database, desc: t('ai.quickActions.sqlOptimizeDesc'), prompt: t('ai.quickActions.sqlOptimizePrompt') },
+    { label: t('ai.quickActions.capacityPredict'), icon: BarChart3, desc: t('ai.quickActions.capacityPredictDesc'), prompt: t('ai.quickActions.capacityPredictPrompt') },
+  ], [locale])
+
+  const WELCOME_MESSAGE = useMemo(() => t('ai.welcome'), [locale])
 
   // 历史压缩: 最近 20 条, 超预算从最新往前裁剪(与 chat-kernel 默认一致, 这里保留 HIST_BUDGET 行为)
   const buildHistory = (msgs: ChatMessage[]): { role: string; content: string }[] => {
@@ -98,12 +99,10 @@ export default function AIPage() {
   // 知识范围选择器选项(挂载时加载分类列表)
   const knowledgeCategoryOptions = useKnowledgeStore(s => s.categories)
   useEffect(() => { useKnowledgeStore.getState().fetchCategories() }, [])
-  // 数字员工(Agent)列表: 供对话页临时选择绑定(普通/探索模式)
-  useEffect(() => { fetchAgents() }, [])
 
   // —— 本页独有状态 ——
   const [showHistory, setShowHistory] = useState(false)
-  const [conversations, setConversations] = useState<any[]>([])
+  const [conversations, setConversations] = useState<ConversationItem[]>([])
   const [sidebarOpen, setSidebarOpen] = useState<boolean>(() => {
     if (typeof window === 'undefined') return true
     const stored = localStorage.getItem('ai.sidebarOpen')
@@ -195,7 +194,7 @@ export default function AIPage() {
       try {
         const fd = new FormData()
         fd.append('file', f)
-        const resp = await fetch('/api/v1/ai/attachments', { method: 'POST', headers: authHeaders(), body: fd })
+        const resp = await apiFetchRaw('/ai/attachments', { method: 'POST', body: fd })
         if (!resp.ok) throw new Error(`上传失败(${resp.status})`)
         const meta = await resp.json()
         setPendingFiles(prev => [...prev, { id: meta.id, name: meta.file_name, type: meta.file_type, size: meta.file_size }])
@@ -275,7 +274,7 @@ export default function AIPage() {
 
   useEffect(() => {
     if (mode === 'normal') loadConversations(selectedAgent?.id).then(setConversations)
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- loadConversations 引用稳定, 仅在 mode/agent 切换时触发
   }, [mode, selectedAgent])
 
   // 一轮流式结束后延迟刷新会话列表: 新会话首轮完成后端正用 LLM 生成自动标题(约 1~3 秒)
@@ -287,28 +286,24 @@ export default function AIPage() {
       const t = setTimeout(() => { loadConversations(selectedAgent?.id).then(setConversations) }, 3000)
       return () => clearTimeout(t)
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- 仅监听 streaming 变化, 其他引用在闭包内保持最新
   }, [streaming])
   // 滚动已由 ChatMessageList/TeamChatView 内部 useStickToBottom 接管(跟随流式 + 回到底部),
   // 这里不再 messages 一变就强滚(翻历史会被硬拽回底的糟糕体验)
   useEffect(() => { loadArtifacts(convId); loadWorkspace(convId) }, [convId])
 
   // ----- 会话产物 / 工作区 -----
-  const authHeaders = (): Record<string, string> => {
-    const token = localStorage.getItem('opsorigin_token')
-    return token ? { Authorization: `Bearer ${token}` } : {}
-  }
   const loadArtifacts = async (id: string) => {
     if (!id) { setArtifacts([]); return }
     try {
-      const r = await fetch(`/api/v1/ai/conversations/${id}/artifacts`, { headers: authHeaders() })
+      const r = await apiFetchRaw(`/ai/conversations/${id}/artifacts`)
       if (r.ok) setArtifacts(await r.json())
     } catch {}
   }
   const loadWorkspace = async (id: string) => {
     if (!id) { setWorkspaceFiles([]); return }
     try {
-      const r = await fetch(`/api/v1/ai/conversations/${id}/workspace`, { headers: authHeaders() })
+      const r = await apiFetchRaw(`/ai/conversations/${id}/workspace`)
       if (r.ok) setWorkspaceFiles(await r.json())
     } catch {}
   }
@@ -357,11 +352,7 @@ export default function AIPage() {
     const id = pendingConvId
     if (!id) return
     try {
-      const token = localStorage.getItem('opsorigin_token')
-      const resp = await fetch(`${window.location.origin}/api/v1/ai/conversations/${id}`, {
-        method: 'DELETE',
-        headers: token ? { Authorization: `Bearer ${token}` } : undefined,
-      })
+      const resp = await apiFetchRaw(`/ai/conversations/${id}`, { method: 'DELETE' })
       if (!resp.ok) throw new Error(`删除失败(${resp.status})`)
       getMessage().success('会话已删除')
       if (id === convId) {
@@ -388,8 +379,8 @@ export default function AIPage() {
       if (messages[i].role === 'user') { problem = messages[i].content.replace(/\s+/g, ' ').slice(0, 40) || '对话要点'; break }
     }
     try {
-      const r = await fetch('/api/v1/ai/memories', {
-        method: 'POST', headers: { 'Content-Type': 'application/json', ...authHeaders() },
+      const r = await apiFetchRaw('/ai/memories', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ agent_id: selectedAgent?.id || '', category: '对话要点', problem, resolution: msg.content.slice(0, 500) }),
       })
       if (!r.ok) throw new Error(`保存失败(${r.status})`)
@@ -423,8 +414,8 @@ export default function AIPage() {
     if (!msg.content.trim()) return
     if (!convId) { getMessage().error('请先新建或选择对话会话'); return }
     try {
-      const r = await fetch(`/api/v1/ai/conversations/${convId}/artifacts`, {
-        method: 'POST', headers: { 'Content-Type': 'application/json', ...authHeaders() },
+      const r = await apiFetchRaw(`/ai/conversations/${convId}/artifacts`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ message_id: msg.id, file_name: `ai-${msg.id}.md`, content: msg.content }),
       })
       if (!r.ok) throw new Error(`保存失败(${r.status})`)
@@ -451,7 +442,7 @@ export default function AIPage() {
     const aid = pendingArtifactId
     if (!aid) return
     try {
-      await fetch(`/api/v1/ai/conversations/${convId}/artifacts/${aid}`, { method: 'DELETE', headers: authHeaders() })
+      await apiFetchRaw(`/ai/conversations/${convId}/artifacts/${aid}`, { method: 'DELETE' })
       getMessage().success('已删除')
       loadArtifacts(convId)
     } catch (e: any) { getMessage().error('删除失败: ' + e.message) }
@@ -476,7 +467,7 @@ export default function AIPage() {
     const fid = pendingWsFileId
     if (!fid) return
     try {
-      await fetch(`/api/v1/ai/conversations/${convId}/workspace/${fid}`, { method: 'DELETE', headers: authHeaders() })
+      await apiFetchRaw(`/ai/conversations/${convId}/workspace/${fid}`, { method: 'DELETE' })
       getMessage().success('已删除')
       loadWorkspace(convId)
     } catch (e: any) { getMessage().error('删除失败: ' + e.message) }
@@ -501,10 +492,9 @@ export default function AIPage() {
   // 会话重命名(ConversationList 双击标题): PATCH 后刷新列表
   const handleRenameConversation = async (id: string, title: string) => {
     try {
-      const token = localStorage.getItem('opsorigin_token')
-      const resp = await fetch(`/api/v1/ai/conversations/${id}`, {
+      const resp = await apiFetchRaw(`/ai/conversations/${id}`, {
         method: 'PATCH',
-        headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ title }),
       })
       if (!resp.ok) throw new Error(`重命名失败(${resp.status})`)
@@ -520,8 +510,8 @@ export default function AIPage() {
   const saveShare = async () => {
     if (!shareConv || !shareForm.target_id.trim()) { getMessage().error('请填写目标用户/组 ID'); return }
     try {
-      const r = await fetch(`/api/v1/ai/conversations/${shareConv.id}/shares`, {
-        method: 'POST', headers: { 'Content-Type': 'application/json', ...authHeaders() },
+      const r = await apiFetchRaw(`/ai/conversations/${shareConv.id}/shares`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(shareForm),
       })
       if (!r.ok) throw new Error(`共享失败(${r.status})`)
@@ -532,12 +522,12 @@ export default function AIPage() {
   }
 
   // 上下文用量估算
-  const estTokens = messages.reduce((n, m) => n + Math.ceil((m.content?.length || 0) / 2), 0)
-  const ctxPct = Math.min(100, Math.round((estTokens / 32000) * 100))
+  const memoizedCtxTokens = useMemo(() => estimateContextTokens(messages), [messages])
+  const ctxPct = Math.min(100, Math.round((memoizedCtxTokens / 32000) * 100))
 
-  // 消息导出 docx/pptx(纯前端转换, loading 态 + 防重)
+  // 消息导出 docx(纯前端转换, loading 态 + 防重)
   const [exportingMsg, setExportingMsg] = useState<string | null>(null)
-  const exportMsgAs = async (msg: ChatMessage, fmt: 'docx' | 'pptx') => {
+  const exportMsgAs = async (msg: ChatMessage, fmt: 'docx') => {
     if (exportingMsg) return
     const k = `${msg.id}:${fmt}`
     setExportingMsg(k)
@@ -560,9 +550,6 @@ export default function AIPage() {
       <button onClick={() => exportMsgAs(msg, 'docx')} disabled={!!exportingMsg} className="p-1 rounded text-[10px] text-muted-foreground hover:text-blue-500 transition-colors disabled:opacity-50" title="导出 Word (.docx)">
         {exportingMsg === `${msg.id}:docx` ? <Loader2 className="h-3 w-3 animate-spin" /> : <FileDown className="h-3 w-3" />}
       </button>
-      <button onClick={() => exportMsgAs(msg, 'pptx')} disabled={!!exportingMsg} className="p-1 rounded text-[10px] text-muted-foreground hover:text-blue-500 transition-colors disabled:opacity-50" title="AI 重编生成演示文稿 (.pptx)">
-        {exportingMsg === `${msg.id}:pptx` ? <Loader2 className="h-3 w-3 animate-spin" /> : <Presentation className="h-3 w-3" />}
-      </button>
       <button onClick={() => downloadMsgAsMd(msg)} className="p-1 rounded text-[10px] text-muted-foreground hover:text-blue-500 transition-colors" title="下载为 Markdown">
         <Download className="h-3 w-3" />
       </button>
@@ -580,7 +567,7 @@ export default function AIPage() {
           <div className={cn('h-full rounded-full transition-all', ctxPct > 85 ? 'bg-red-500' : ctxPct > 60 ? 'bg-amber-500' : 'bg-blue-500')} style={{ width: `${ctxPct}%` }} />
         </div>
         <p className="text-[10px] text-muted-foreground whitespace-nowrap">
-          {estTokens >= 1000 ? `≈ ${(estTokens / 1000).toFixed(1)}k tokens` : `≈ ${estTokens} tokens`}
+          {memoizedCtxTokens >= 1000 ? `≈ ${(memoizedCtxTokens / 1000).toFixed(1)}k tokens` : `≈ ${memoizedCtxTokens} tokens`}
           {ctxPct >= 85 ? ' · 上下文偏满，建议新开对话' : ''}
         </p>
       </div>
@@ -630,7 +617,7 @@ export default function AIPage() {
     >
       <div className="flex items-center justify-between mb-3 gap-2">
         <div className="min-w-0">
-          <h1 className="text-xl font-bold flex items-center gap-2"><Sparkles className="h-5 w-5 text-blue-500 shrink-0" />AI 助手</h1>
+          <h1 className="text-xl font-bold flex items-center gap-2"><Sparkles className="h-5 w-5 text-blue-500 shrink-0" />{t('ai.assistant')}</h1>
         </div>
         {/* 窄屏按钮只留图标(title 提示), 文字标签 sm 以上显示 */}
         <div className="flex items-center gap-2 shrink-0">
@@ -649,6 +636,13 @@ export default function AIPage() {
           窄屏(<md)侧栏变绝对定位抽屉覆盖在对话区上, 不挤压聊天主区; md 以上恢复常规左栏 */}
       {mode !== 'team' && (
         <div className="flex-1 flex gap-4 min-h-0 relative">
+          {/* 移动端侧栏遮罩层 */}
+          {sidebarOpen && (
+            <div
+              className="hidden max-md:block fixed inset-0 bg-black/40 z-20"
+              onClick={() => { setSidebarOpen(false); localStorage.setItem('ai.sidebarOpen', 'false') }}
+            />
+          )}
           {sidebarOpen ? (
             <div className="w-64 shrink-0 border rounded-lg overflow-hidden flex flex-col max-md:absolute max-md:inset-y-0 max-md:left-0 max-md:z-30 max-md:shadow-xl max-md:bg-background">
               <div className="p-3 border-b flex items-center justify-between">
@@ -753,7 +747,7 @@ export default function AIPage() {
               knowledgeCategories={knowledgeCategories}
               knowledgeCategoryOptions={knowledgeCategoryOptions}
               onKnowledgeCategoriesChange={setKnowledgeCategories}
-              contextTokens={estimateContextTokens(messages)}
+              contextTokens={memoizedCtxTokens}
               variant="page"
               onConfigure={() => navigate('/ai/settings')}
             />

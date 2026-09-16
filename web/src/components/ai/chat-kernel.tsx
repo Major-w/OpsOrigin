@@ -11,7 +11,8 @@
 // ============================================================================
 
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from 'react'
-import { useAIStore, useTeams, type TeamStreamEvent, type AgentTeam } from '@/stores/ai'
+import { useChatStore, useAgentAIStore, useApprovalStore, useTeams, type TeamStreamEvent, type AgentTeam } from '@/stores/ai'
+import type { AgentLite } from '@/stores/ai/agents'
 import type { ModelInfo, PendingApproval } from '@/stores/ai/types'
 import { renderMarkdown, renderMarkdownCached } from '@/lib/ai-render'
 import { AiMarkdown, ExploreMarkdown, scrollToCite } from '@/components/ai-markdown'
@@ -27,7 +28,7 @@ import {
   Bot, User, Send, Square, Loader2, Terminal, Brain, CheckCircle, AlertTriangle,
   ThumbsUp, ThumbsDown, Users, Sparkles, XCircle, Settings, Lock, Share2, Trash2,
   Paperclip, FileText, Image as ImageIcon, X, Search, Copy, RefreshCw, Check, ArrowDown,
-  ChevronRight, ChevronUp, ChevronDown, Download, FileDown, Presentation, Pencil,
+  ChevronRight, ChevronUp, ChevronDown, Download, FileDown, Pencil,
   HelpCircle, CornerDownRight, BookMarked,
 } from 'lucide-react'
 
@@ -64,6 +65,77 @@ const PERSIST_MAX_TOOL_RESULT = 2000
 function clipPersist(s: string | undefined, max: number): string | undefined {
   if (!s) return s
   return s.length > max ? `${s.slice(0, max)}\n…（已截断）` : s
+}
+
+/**
+ * 检测并分离思考内容：某些模型(如 GLM)会将思考过程作为普通 token 输出，
+ * 而非使用 event:thinking 格式。此函数检测这种模式并分离思考与回答。
+ */
+function extractThinkingFromContent(content: string): { thinking: string; answer: string } | null {
+  if (!content) return null
+
+  // 检测思考内容的特征：包含编号步骤和加粗标记
+  const hasStepPattern = /^\d+\.\s+\*\*[^*]+\*\*：/m.test(content)
+  const hasThinkingLanguage = /这属于|我必须|我不应该|根据规则|根据我的规则|我应该直接回答/.test(content)
+
+  if (!hasStepPattern && !hasThinkingLanguage) return null
+
+  // 找到思考与回答的分界点
+  // 思考内容以编号步骤开始，回答以实际内容开始
+  // 关键：找到"构建回答："后面的计划内容结束点
+
+  // 模式1：找到实际回答的开始（通常是直接陈述，不是计划）
+  const answerStartPatterns = [
+    /^作为 OpsOrigin 智能运维助手/m,
+    /^我是 OpsOrigin 智能运维助手/m,
+    /^我的核心功能是/m,
+    /^我可以/m,
+    /^我能够/m,
+    /^我无法/m,
+  ]
+
+  let splitIndex = -1
+
+  // 先找"构建回答："的位置
+  const buildMatch = content.match(/\*\*构建回答：\*\*/)
+  if (buildMatch && buildMatch.index !== undefined) {
+    // 从"构建回答："之后开始找实际回答的开始
+    const afterBuild = content.slice(buildMatch.index)
+    const lines = afterBuild.split('\n')
+
+    // 找到计划内容结束的位置（跳过所有以 * 开头的计划行）
+    let planEndIndex = 0
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i]
+      if (line.trim().startsWith('*') || line.trim() === '' || line.includes('以一个直接的回答开始') || line.includes('以一个直接的陈述开始')) {
+        planEndIndex = i + 1
+      } else {
+        // 找到非计划行，这就是实际回答的开始
+        break
+      }
+    }
+
+    // 计算实际回答的起始位置
+    const planContent = lines.slice(0, planEndIndex).join('\n')
+    const answerStart = buildMatch.index + planContent.length
+
+    // 检查后面的内容是否是实际回答
+    const potentialAnswer = content.slice(answerStart).trim()
+    if (potentialAnswer.length > 0) {
+      splitIndex = answerStart
+    }
+  }
+
+  if (splitIndex === -1) return null
+
+  const thinking = content.slice(0, splitIndex).trim()
+  const answer = content.slice(splitIndex).trim()
+
+  // 验证：思考内容应该包含多个段落或列表项
+  const thinkingLines = thinking.split('\n').filter(l => l.trim())
+  if (thinkingLines.length < 3) return null
+
+  return { thinking, answer }
 }
 
 export interface ToolCallLocal {
@@ -178,21 +250,6 @@ export interface ChatAttachmentMeta {
 const ATTACH_LINE_RE = /^\[附件\] (.+?) \((.+?), (.+?)\)$/
 
 /** 从消息文本解析附件标记行, 返回正文与附件列表(历史会话加载时还原 chip 渲染)。 */
-export function parseAttachmentLines(content: string): { text: string; attachments: ChatAttachmentMeta[] } {
-  const attachments: ChatAttachmentMeta[] = []
-  const lines = content.split('\n')
-  const kept: string[] = []
-  for (const ln of lines) {
-    const m = ln.trim().match(ATTACH_LINE_RE)
-    if (m) {
-      attachments.push({ name: m[1], type: m[2], size: parseSizeText(m[3]) })
-    } else {
-      kept.push(ln)
-    }
-  }
-  return { text: kept.join('\n').replace(/\n{3,}$/, '\n\n').trimEnd(), attachments }
-}
-
 /** 从服务端持久化的 content_parts 提取附件引用(attachment://<id>#<name>), 历史会话加载时还原 chip / 缩略图。 */
 export function extractAttachmentsFromParts(parts?: any[]): ChatAttachmentMeta[] {
   if (!parts?.length) return []
@@ -214,26 +271,11 @@ export function extractAttachmentsFromParts(parts?: any[]): ChatAttachmentMeta[]
   return out
 }
 
-/** "12.3 KB"/"2.0 MB"/"480 B" → 字节数(仅用于展示大小, 不精确也可接受)。 */
-function parseSizeText(s: string): number {
-  const m = s.match(/^([\d.]+)\s*(B|KB|MB|GB)?$/i)
-  if (!m) return 0
-  const n = parseFloat(m[1]) || 0
-  const unit = (m[2] || 'B').toUpperCase()
-  return Math.round(n * (unit === 'GB' ? 1 << 30 : unit === 'MB' ? 1 << 20 : unit === 'KB' ? 1 << 10 : 1))
-}
-
 /** 字节数 → 人类可读(与后端 formatSizeShort 语义一致)。 */
 export function formatBytes(n: number): string {
   if (n >= 1 << 20) return (n / (1 << 20)).toFixed(1) + ' MB'
   if (n >= 1 << 10) return (n / (1 << 10)).toFixed(1) + ' KB'
   return `${n} B`
-}
-
-/** 把附件元数据格式化为追加到消息正文的标记行(与后端持久化/解析约定一致)。 */
-export function formatAttachmentLines(att?: ChatAttachmentMeta[]): string {
-  if (!att?.length) return ''
-  return '\n\n' + att.map(a => `[附件] ${a.name} (${a.type || 'application/octet-stream'}, ${formatBytes(a.size ?? 0)})`).join('\n')
 }
 
 /** 附件 chip: 图标 + 文件名 + 大小(消息气泡内与输入区待发送区共用)。 */
@@ -350,11 +392,176 @@ export function ThinkingBlock({ thinking, live, thinkMs }: { thinking: string; l
       </summary>
       <div
         ref={bodyRef}
-        className="max-h-48 overflow-y-auto px-3 pb-3 pt-1 text-[12px] leading-relaxed text-slate-500 dark:text-slate-400 whitespace-pre-wrap"
+        className={cn(
+          'overflow-y-auto px-3 pb-3 pt-1 text-[12px] leading-relaxed text-slate-500 dark:text-slate-400 whitespace-pre-wrap',
+          'transition-[max-height] duration-300 ease-in-out',
+          open ? 'max-h-48' : 'max-h-0'
+        )}
       >
         {thinking}
       </div>
     </details>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// TaskTimeline —— 任务执行时间线(增强版任务列表)
+// ---------------------------------------------------------------------------
+
+interface TaskTimelineProps {
+  toolCalls: ToolCallLocal[]
+  className?: string
+}
+
+/** 解析工具调用的描述文本和行数变化 */
+function parseToolCallInfo(tc: ToolCallLocal): { description: string; lineStats?: { added: number; removed: number } } {
+  const name = tc.name || ''
+  const args = typeof tc.args === 'string' ? tc.args : JSON.stringify(tc.args)
+  const result = tc.result || ''
+
+  // 文件操作类工具
+  if (name.includes('write') || name.includes('create') || name.includes('file')) {
+    // 尝试从参数中提取文件名
+    const fileMatch = args.match(/["']?file[_name]?["']?\s*[:=]\s*["']([^"']+)["']/i)
+    const fileName = fileMatch?.[1] || args.slice(0, 50)
+
+    // 尝试从结果中提取行数变化
+    const lineMatch = result.match(/\+(\d+)\s+-(\d+)/)
+    if (lineMatch) {
+      return {
+        description: `创建 ${fileName}`,
+        lineStats: { added: parseInt(lineMatch[1]), removed: parseInt(lineMatch[2]) }
+      }
+    }
+    return { description: `创建 ${fileName}` }
+  }
+
+  if (name.includes('read') || name.includes('load')) {
+    const fileMatch = args.match(/["']?file[_name]?["']?\s*[:=]\s*["']([^"']+)["']/i)
+    const fileName = fileMatch?.[1] || args.slice(0, 50)
+    return { description: `已读取 ${fileName}` }
+  }
+
+  if (name.includes('exec') || name.includes('run') || name.includes('bash') || name.includes('shell')) {
+    // 命令执行
+    const cmdMatch = args.match(/["']?command["']?\s*[:=]\s*["']([^"']+)["']/i)
+    const cmd = cmdMatch?.[1] || args.slice(0, 50)
+    return { description: `执行命令: ${cmd}` }
+  }
+
+  if (name.includes('search') || name.includes('find') || name.includes('query')) {
+    return { description: `搜索: ${args.slice(0, 50)}` }
+  }
+
+  if (name.includes('agent') || name.includes('team')) {
+    return { description: `已完成 ${name}` }
+  }
+
+  // 默认显示工具名
+  return { description: name }
+}
+
+/** 获取工具类型的图标 */
+function getToolIcon(tc: ToolCallLocal) {
+  const name = tc.name || ''
+
+  if (name.includes('write') || name.includes('create') || name.includes('file')) {
+    return <FileText className="h-3.5 w-3.5 text-blue-500" />
+  }
+  if (name.includes('read') || name.includes('load')) {
+    return <BookMarked className="h-3.5 w-3.5 text-green-500" />
+  }
+  if (name.includes('exec') || name.includes('run') || name.includes('bash') || name.includes('shell')) {
+    return <Terminal className="h-3.5 w-3.5 text-purple-500" />
+  }
+  if (name.includes('search') || name.includes('find') || name.includes('query')) {
+    return <Search className="h-3.5 w-3.5 text-orange-500" />
+  }
+  if (name.includes('agent') || name.includes('team')) {
+    return <Bot className="h-3.5 w-3.5 text-cyan-500" />
+  }
+
+  return <Settings className="h-3.5 w-3.5 text-gray-500" />
+}
+
+function TaskTimeline({ toolCalls, className }: TaskTimelineProps) {
+  if (!toolCalls || toolCalls.length === 0) return null
+
+  return (
+    <div className={cn('space-y-1', className)}>
+      {toolCalls.map((tc, index) => {
+        const info = parseToolCallInfo(tc)
+        const icon = getToolIcon(tc)
+        const isLast = index === toolCalls.length - 1
+
+        return (
+          <details
+            key={tc.id}
+            className={cn(
+              'group/task rounded-lg border overflow-hidden transition-colors',
+              tc.status === 'running'
+                ? 'border-amber-300 bg-amber-50/50 dark:border-amber-500/30 dark:bg-amber-500/10'
+                : 'border-gray-200/60 dark:border-white/[0.06] hover:bg-gray-50/50 dark:hover:bg-white/[0.02]',
+            )}
+          >
+            <summary className="flex items-center gap-2 px-3 py-2 cursor-pointer select-none list-none [&::-webkit-details-marker]:hidden">
+              {/* 时间线连接线 */}
+              {!isLast && (
+                <div className="absolute left-[18px] top-8 w-px h-[calc(100%-8px)] bg-gray-200 dark:bg-white/10" />
+              )}
+
+              {/* 图标 */}
+              <div className="relative z-10 shrink-0">
+                {tc.status === 'running' ? (
+                  <Loader2 className="h-3.5 w-3.5 animate-spin text-amber-500" />
+                ) : (
+                  icon
+                )}
+              </div>
+
+              {/* 描述 */}
+              <span className="flex-1 text-xs text-foreground/80 truncate">{info.description}</span>
+
+              {/* 行数变化 */}
+              {info.lineStats && (
+                <span className="text-[10px] font-mono shrink-0">
+                  <span className="text-green-600 dark:text-green-400">+{info.lineStats.added}</span>
+                  <span className="text-red-600 dark:text-red-400 ml-1">-{info.lineStats.removed}</span>
+                </span>
+              )}
+
+              {/* 状态 */}
+              {tc.status === 'running' && (
+                <span className="text-[10px] text-amber-600 dark:text-amber-400 shrink-0">执行中…</span>
+              )}
+
+              {/* 展开指示器 */}
+              <ChevronDown className="h-3.5 w-3.5 shrink-0 text-muted-foreground transition-transform duration-200 group-open/task:rotate-180" />
+            </summary>
+
+            {/* 详情面板 */}
+            <div className="px-3 pb-3 pt-1 space-y-2 border-t border-gray-100 dark:border-white/5">
+              {tc.args && (
+                <div>
+                  <div className="text-[10px] text-muted-foreground mb-1">参数</div>
+                  <pre className="rounded bg-black/5 dark:bg-black/20 p-2 text-[10px] overflow-x-auto whitespace-pre-wrap font-mono leading-relaxed">
+                    {fmtToolArgs(typeof tc.args === 'string' ? tc.args : JSON.stringify(tc.args))}
+                  </pre>
+                </div>
+              )}
+              {tc.result && (
+                <div>
+                  <div className="text-[10px] text-muted-foreground mb-1">结果</div>
+                  <pre className="rounded bg-black/5 dark:bg-black/20 p-2 text-[10px] overflow-x-auto whitespace-pre-wrap font-mono leading-relaxed max-h-40 overflow-y-auto">
+                    {tc.result}
+                  </pre>
+                </div>
+              )}
+            </div>
+          </details>
+        )
+      })}
+    </div>
   )
 }
 
@@ -378,8 +585,6 @@ interface UseAIChatOptions {
   enableTeam?: boolean
   // 是否启用 abort(浮窗/纯净=true; 全页=false)
   enableAbort?: boolean
-  // 思考过程已默认常开, 开关与持久化 key 均废弃(保留字段定义避免老调用报错)
-  showThinkingKey?: string
   // 默认模式
   defaultMode?: ChatMode
   // 是否暴露"知识范围"选择器(全页/纯净=true; 浮窗=false)
@@ -401,14 +606,17 @@ export function useAIChat(opts: UseAIChatOptions) {
     enableKnowledgeScope = false,
   } = opts
 
-  const { streamChat, respondApproval, models, agents, fetchAgents, fetchModels } = useAIStore()
+  const streamChat = useChatStore(s => s.streamChat)
+  const models = useChatStore(s => s.models)
+  const fetchModels = useChatStore(s => s.fetchModels)
+  const respondApproval = useApprovalStore(s => s.respondApproval)
+  const agents = useAgentAIStore(s => s.agents)
+  const fetchAgents = useAgentAIStore(s => s.fetchAgents)
   const teamApi = useTeams()
 
   const [mode, setMode] = useState<ChatMode>(defaultMode)
-  // 思考过程展示默认常开(产品决策: 去掉开关按钮, 思考步骤默认折叠可见入口)
-  const [showThinking] = useState<boolean>(true)
   const [selectedModel, setSelectedModel] = useState('')
-  const [selectedAgent, setSelectedAgent] = useState<any>(null)
+  const [selectedAgent, setSelectedAgent] = useState<AgentLite | null>(null)
   const [knowledgeCategories, setKnowledgeCategories] = useState<string[]>([])
 
   const [messages, setMessages] = useState<ChatMessage[]>(() => {
@@ -626,7 +834,17 @@ export function useAIChat(opts: UseAIChatOptions) {
           if (meta?.message_id && !acc.trim()) {
             return { ...m, status: 'error', errorText: '模型未返回任何内容：可能是 max_tokens 设置过小或该模型当前不可用，请重试或切换模型' }
           }
-          return { ...m, status: 'done', citations: meta?.citations ?? m.citations, messageId: meta?.message_id ?? m.messageId, durationMs: Date.now() - startAt }
+          // 检测思考内容是否混入正文(某些模型不使用 event:thinking 格式)
+          let finalContent = m.content
+          let finalThinking = m.thinking
+          if (!finalThinking && finalContent) {
+            const extracted = extractThinkingFromContent(finalContent)
+            if (extracted) {
+              finalThinking = extracted.thinking
+              finalContent = extracted.answer
+            }
+          }
+          return { ...m, status: 'done', content: finalContent, thinking: finalThinking, citations: meta?.citations ?? m.citations, messageId: meta?.message_id ?? m.messageId, durationMs: Date.now() - startAt }
         }))
         if (meta?.conversation_id && meta.conversation_id !== cid) {
           setConvId(meta.conversation_id)
@@ -636,8 +854,8 @@ export function useAIChat(opts: UseAIChatOptions) {
       },
       history,
       selectedAgent?.id,
-      showThinking,
-      showThinking ? onThinking : undefined,
+      true, // reasoning: 思考过程已默认常开
+      onThinking,
       true, // explore 标志: 模式概念已移除, 恒为 true——后端按执行者是否绑定工具自主决定行为
       onAsk,
       cid,
@@ -840,9 +1058,6 @@ export function useAIChat(opts: UseAIChatOptions) {
     setTeamStreaming(false)
   }
 
-  // 思考过程已默认常开, 开关按钮移除; 保留空实现兼容既有调用方
-  const toggleThinking = () => {}
-
   // —— 执行者(替代原「模式」的用户视角) ——
   // 内部仍复用 mode/selectedAgent/selectedTeamId 三套状态(团队渲染分支/工具链依赖它们),
   // 但对外只暴露一个「执行者」概念, 三者由它统一驱动。
@@ -866,7 +1081,6 @@ export function useAIChat(opts: UseAIChatOptions) {
     mode, setMode,
     // 执行者(用户唯一入口)
     executor, setExecutor,
-    showThinking, toggleThinking,
     selectedModel, setSelectedModel,
     selectedAgent, setSelectedAgent,
     knowledgeCategories, setKnowledgeCategories,
@@ -1071,7 +1285,7 @@ export function detectDocArtifact(content: string): DocArtifact | null {
 
 function useDocActions(doc: DocArtifact) {
   const [copied, setCopied] = useState(false)
-  const [exporting, setExporting] = useState<'docx' | 'pptx' | null>(null)
+  const [exporting, setExporting] = useState<'docx' | null>(null)
   const copyDoc = async () => {
     try {
       await navigator.clipboard.writeText(doc.body)
@@ -1088,8 +1302,8 @@ function useDocActions(doc: DocArtifact) {
     a.click()
     URL.revokeObjectURL(url)
   }
-  // 纯前端导出 docx/pptx（浏览器内转换，loading 态 + 模块级防重）
-  const exportAs = async (fmt: 'docx' | 'pptx') => {
+  // 纯前端导出 docx（浏览器内转换，loading 态 + 模块级防重）
+  const exportAs = async (fmt: 'docx') => {
     if (exporting) return
     setExporting(fmt)
     try {
@@ -1144,15 +1358,6 @@ function DocumentViewer({ doc, onClose }: { doc: DocArtifact; onClose: () => voi
           docx
         </button>
         <button
-          onClick={() => exportAs('pptx')}
-          disabled={!!exporting}
-          className="px-2.5 py-1.5 rounded-md text-xs text-muted-foreground hover:bg-gray-100 dark:hover:bg-white/10 transition-colors flex items-center gap-1 disabled:opacity-50"
-          title="AI 重编生成演示文稿 (.pptx)"
-        >
-          {exporting === 'pptx' ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Presentation className="h-3.5 w-3.5" />}
-          pptx
-        </button>
-        <button
           onClick={downloadDoc}
           className="px-2.5 py-1.5 rounded-md text-xs text-muted-foreground hover:bg-gray-100 dark:hover:bg-white/10 transition-colors flex items-center gap-1"
           title="下载 .md"
@@ -1165,7 +1370,7 @@ function DocumentViewer({ doc, onClose }: { doc: DocArtifact; onClose: () => voi
   )
 }
 
-/** 聊天内的文档卡片: 标题 + 字数 + 两行预览, 操作: 打开预览 / 复制 / 下载 / 导出 docx·pptx。 */
+/** 聊天内的文档卡片: 标题 + 字数 + 两行预览, 操作: 打开预览 / 复制 / 下载 / 导出 docx。 */
 function DocumentCard({ doc }: { doc: DocArtifact }) {
   const [open, setOpen] = useState(false)
   const { copied, copyDoc, downloadDoc, exporting, exportAs } = useDocActions(doc)
@@ -1215,14 +1420,6 @@ function DocumentCard({ doc }: { doc: DocArtifact }) {
             title="导出 Word (.docx)"
           >
             {exporting === 'docx' ? <Loader2 className="h-3 w-3 animate-spin" /> : <FileDown className="h-3 w-3" />} docx
-          </button>
-          <button
-            onClick={() => exportAs('pptx')}
-            disabled={!!exporting}
-            className="px-2 py-1 rounded text-[11px] text-muted-foreground hover:text-blue-500 transition-colors flex items-center gap-1 disabled:opacity-50"
-            title="AI 重编生成演示文稿 (.pptx)"
-          >
-            {exporting === 'pptx' ? <Loader2 className="h-3 w-3 animate-spin" /> : <Presentation className="h-3 w-3" />} pptx
           </button>
         </div>
       </div>
@@ -1298,7 +1495,11 @@ const MessageItem = memo(function MessageItem({
   const isPanel = variant === 'panel'
   const isFloating = variant === 'floating'
   return (
-        <div className={cn('group/msg flex gap-3', msg.role === 'user' ? 'justify-end' : 'justify-start')}>
+        <div
+          className={cn('group/msg flex gap-3 animate-[fade-in-up_0.3s_ease-out]', msg.role === 'user' ? 'justify-end' : 'justify-start')}
+          role="article"
+          aria-label={msg.role === 'user' ? '用户消息' : '助手回复'}
+        >
           {msg.role === 'assistant' && (
             <div className={cn(
               'h-8 w-8 rounded-full bg-blue-100 dark:bg-blue-500/20 flex items-center justify-center shrink-0',
@@ -1322,49 +1523,15 @@ const MessageItem = memo(function MessageItem({
           )}>
             {msg.role === 'assistant' ? (
               <>
-                {/* 任务列表: 工具调用并发可视化(默认折叠) */}
+                {/* 任务时间线: 工具调用可视化(增强版, 支持行数变化和详情展开) */}
                 {enableTaskList && msg.toolCalls && msg.toolCalls.length > 0 && (
-                  <details className="mb-2 group/task">
-                    <summary className="text-xs text-muted-foreground cursor-pointer hover:text-foreground flex items-center gap-1">
+                  <div className="mb-3">
+                    <div className="text-xs text-muted-foreground mb-1.5 flex items-center gap-1">
                       <Terminal className="h-3 w-3" />任务列表 ({msg.toolCalls.length})
                       {msg.toolCalls.some(t => t.status === 'running') && <Loader2 className="h-3 w-3 animate-spin text-blue-500" />}
-                    </summary>
-                    <div className="mt-1 space-y-1">
-                      {msg.toolCalls.map(tc => (
-                        <details key={tc.id} className={cn(
-                          'rounded border text-xs overflow-hidden',
-                          tc.status === 'running'
-                            ? 'border-amber-300 bg-amber-50 dark:border-amber-500/30 dark:bg-amber-500/10'
-                            : tc.status === 'done'
-                              ? 'border-gray-200 dark:border-[rgba(255,255,255,0.06)]'
-                              : 'border-red-300 bg-red-50 dark:border-red-500/30 dark:bg-red-500/10',
-                        )}>
-                          <summary className="flex items-center gap-2 px-2 py-1 cursor-pointer select-none list-none [&::-webkit-details-marker]:hidden">
-                            {tc.status === 'running'
-                              ? <Loader2 className="h-3 w-3 animate-spin text-amber-500 shrink-0" />
-                              : tc.status === 'done'
-                                ? <CheckCircle className="h-3 w-3 text-green-500 shrink-0" />
-                                : <XCircle className="h-3 w-3 text-red-500 shrink-0" />}
-                            <code className="font-mono font-semibold">{tc.name}</code>
-                            {tc.status === 'running' && <span className="text-[10px] text-amber-600 dark:text-amber-400">执行中…</span>}
-                            {tc.status === 'done' && <span className="text-[10px] text-muted-foreground ml-auto">完成</span>}
-                          </summary>
-                          {tc.args && (
-                            <div className="px-2 pb-1.5">
-                              <div className="text-[10px] text-muted-foreground mb-0.5">参数</div>
-                              <pre className="rounded bg-black/5 dark:bg-black/20 p-1.5 text-[10px] overflow-x-auto whitespace-pre-wrap font-mono leading-relaxed">{fmtToolArgs(typeof tc.args === 'string' ? tc.args : JSON.stringify(tc.args))}</pre>
-                            </div>
-                          )}
-                          {tc.result && (
-                            <div className="px-2 pb-1.5">
-                              <div className="text-[10px] text-muted-foreground mb-0.5">结果</div>
-                              <pre className="rounded bg-black/5 dark:bg-black/20 p-1.5 text-[10px] overflow-x-auto whitespace-pre-wrap font-mono leading-relaxed max-h-40 overflow-y-auto">{tc.result}</pre>
-                            </div>
-                          )}
-                        </details>
-                      ))}
                     </div>
-                  </details>
+                    <TaskTimeline toolCalls={msg.toolCalls} />
+                  </div>
                 )}
 
                 {/* 思考过程(主流交互): 流式思考中展开实时展示, 结束后折叠为一行「已深度思考」 */}
@@ -1396,7 +1563,8 @@ const MessageItem = memo(function MessageItem({
 
                 {/* RAG 引用来源: 顶部多类型可点击 chip + 底部列表(拉标题, 点击跳转) */}
                 {enableCitations && msg.citations && msg.citations.length > 0 && (() => {
-                  const ids = msg.citations.map(c => c.replace(/^\[|\]$/g, ''))
+                  // 清理引用ID: 去除 [ ] ^ 等标记字符, 保留 kb:1 / ci:1 / mon:1 等格式
+                  const ids = msg.citations.map(c => c.replace(/[\[\]^]/g, ''))
                   return (
                     <div className="mt-2">
                       <div className="flex flex-wrap items-center gap-1 mb-1">
@@ -1521,19 +1689,19 @@ const MessageItem = memo(function MessageItem({
                       {canCopy && (
                         <button
                           onClick={() => onCopy(msg)}
-                          className={cn('p-1 rounded text-[10px] transition-colors', copied ? 'text-blue-500 bg-blue-50 dark:bg-blue-500/10' : 'text-muted-foreground hover:text-blue-500')}
+                          className={cn('p-2 rounded text-[10px] transition-colors', copied ? 'text-blue-500 bg-blue-50 dark:bg-blue-500/10' : 'text-muted-foreground hover:text-blue-500')}
                           title={copied ? '已复制' : '复制内容'}
                         >
-                          {copied ? <Check className="h-3 w-3" /> : <Copy className="h-3 w-3" />}
+                          {copied ? <Check className="h-4 w-4" /> : <Copy className="h-4 w-4" />}
                         </button>
                       )}
                       {canRegen && (
                         <button
                           onClick={onRegenerate}
-                          className="p-1 rounded text-[10px] text-muted-foreground hover:text-blue-500 transition-colors"
+                          className="p-2 rounded text-[10px] text-muted-foreground hover:text-blue-500 transition-colors"
                           title="重新生成"
                         >
-                          <RefreshCw className="h-3 w-3" />
+                          <RefreshCw className="h-4 w-4" />
                         </button>
                       )}
                       {enableFeedback && onFeedback && (
@@ -1541,20 +1709,20 @@ const MessageItem = memo(function MessageItem({
                         <button
                           onClick={() => { if (msg.feedback_rating !== 'up') onFeedback(msg, 'up') }}
                           disabled={!!msg.feedback_rating}
-                          className={cn('p-1 rounded text-[10px] transition-colors', msg.feedback_rating === 'up' ? 'text-blue-500 bg-blue-50 dark:bg-blue-500/10' : 'text-muted-foreground hover:text-blue-500')}
+                          className={cn('p-2 rounded text-[10px] transition-colors', msg.feedback_rating === 'up' ? 'text-blue-500 bg-blue-50 dark:bg-blue-500/10' : 'text-muted-foreground hover:text-blue-500')}
                           title="有帮助"
                         >
-                          <ThumbsUp className="h-3 w-3" />
+                          <ThumbsUp className="h-4 w-4" />
                         </button>
                         <button
                           onClick={() => { if (msg.feedback_rating !== 'down') onFeedback(msg, 'down') }}
                           disabled={!!msg.feedback_rating}
-                          className={cn('p-1 rounded text-[10px] transition-colors', msg.feedback_rating === 'down' ? 'text-red-500 bg-red-50 dark:bg-red-500/10' : 'text-muted-foreground hover:text-red-500')}
+                          className={cn('p-2 rounded text-[10px] transition-colors', msg.feedback_rating === 'down' ? 'text-red-500 bg-red-50 dark:bg-red-500/10' : 'text-muted-foreground hover:text-red-500')}
                           title="没帮助"
                         >
-                          <ThumbsDown className="h-3 w-3" />
+                          <ThumbsDown className="h-4 w-4" />
                         </button>
-                        <span className="w-px h-3 bg-gray-200 dark:bg-gray-700 mx-0.5" />
+                        <span className="w-px h-4 bg-gray-200 dark:bg-gray-700 mx-0.5" />
                       </>
                       )}
                       {extraActions && extraActions(msg)}
@@ -1630,19 +1798,19 @@ const MessageItem = memo(function MessageItem({
           {msg.role === 'user' && onEditResend && !loading && !editing && msg.content.trim() && (
             <button
               onClick={() => { setEditDraft(msg.content); setEditingId(msg.id) }}
-              className="opacity-0 group-hover/msg:opacity-100 self-start mt-1.5 p-1 rounded text-muted-foreground hover:text-blue-500 transition-opacity"
+              className="opacity-0 group-hover/msg:opacity-100 self-start mt-1.5 p-2 rounded text-muted-foreground hover:text-blue-500 transition-opacity"
               title="编辑并重发"
             >
-              <Pencil className="h-3.5 w-3.5" />
+              <Pencil className="h-4 w-4" />
             </button>
           )}
           {msg.role === 'user' && msg.content.trim() && (
             <button
               onClick={() => onCopy(msg)}
-              className="opacity-0 group-hover/msg:opacity-100 self-start mt-1.5 p-1 rounded text-muted-foreground hover:text-blue-500 transition-opacity"
+              className="opacity-0 group-hover/msg:opacity-100 self-start mt-1.5 p-2 rounded text-muted-foreground hover:text-blue-500 transition-opacity"
               title={copied ? '已复制' : '复制内容'}
             >
-              {copied ? <Check className="h-3.5 w-3.5 text-blue-500" /> : <Copy className="h-3.5 w-3.5" />}
+              {copied ? <Check className="h-4 w-4 text-blue-500" /> : <Copy className="h-4 w-4" />}
             </button>
           )}
           {msg.role === 'user' && (
@@ -1744,10 +1912,12 @@ export function ChatMessageList({
   const streamingHasOutput = !!lastAiMsg && lastAiMsg.status !== 'error' &&
     (!!(lastAiMsg.content || '').trim() || !!(lastAiMsg.toolCalls && lastAiMsg.toolCalls.length > 0))
   // 最后一条真实助手回复的索引: 「重新生成」只挂在这条下面
-  let lastAiIdx = -1
-  for (let i = messages.length - 1; i >= 0; i--) {
-    if (messages[i].role === 'assistant' && messages[i].id !== welcomeId) { lastAiIdx = i; break }
-  }
+  const lastAiIdx = useMemo(() => {
+    for (let i = messages.length - 1; i >= 0; i--) {
+      if (messages[i].role === 'assistant' && messages[i].id !== welcomeId) return i
+    }
+    return -1
+  }, [messages, welcomeId])
 
   // 长会话渐进渲染: 默认只挂载尾部若干条, 顶部提供「加载更早」。
   // 全量 messages.map 在数百条会话下每次流式 token 都要重算所有 markdown 节点,
@@ -1813,7 +1983,7 @@ export function ChatMessageList({
           </button>
         </div>
       )}
-      <div ref={scrollRef} onScroll={onScroll} className={cn('flex-1 overflow-y-auto space-y-3 min-h-0', className)}>
+      <div ref={scrollRef} onScroll={onScroll} className={cn('flex-1 overflow-y-auto space-y-3 min-h-0', className)} aria-live="polite" aria-label="对话消息">
       {/* 长会话: 顶部折叠入口, 点开再把更早一批挂回来(默认只渲染尾部窗口) */}
       {sliceStart > 0 && (
         <div className="flex justify-center pt-1">
@@ -1853,9 +2023,8 @@ export function ChatMessageList({
           return null
         }
         return (
-          <div id={`msg-${msg.id}`} className={cn(hitId === msg.id && 'rounded-lg ring-2 ring-blue-400 scroll-mt-2')}>
+          <div key={msg.id} id={`msg-${msg.id}`} className={cn(hitId === msg.id && 'rounded-lg ring-2 ring-blue-400 scroll-mt-2')}>
             <MessageItem
-              key={msg.id}
               msg={msg}
               variant={variant}
               isLastAi={mi === lastAiIdx}
@@ -1966,9 +2135,9 @@ interface ChatInputBarProps {
   models?: ModelInfo[]
   selectedModel?: string
   onModelChange?: (v: string) => void
-  agents?: any[]
-  selectedAgent?: any
-  onAgentChange?: (a: any) => void
+  agents?: AgentLite[]
+  selectedAgent?: AgentLite | null
+  onAgentChange?: (a: AgentLite | null) => void
   enableModel?: boolean
   enableAgent?: boolean
   enableKnowledgeScope?: boolean
@@ -2670,8 +2839,8 @@ export interface ChatContextBarProps {
   /** 执行者: 默认助手 / 数字员工 / 智能体团队 三合一选择(替代原「模式」+「助手」两个概念) */
   executor?: Executor
   /** 可选执行者列表: 数字员工 + 智能体团队(下拉分组展示) */
-  agents?: any[]
-  teams?: any[]
+  agents?: AgentLite[]
+  teams?: AgentTeam[]
   onExecutorChange?: (x: Executor) => void
   /** 模型列表 + 当前值 + 切换回调: 三者齐备时「模型」chip 变为下拉可直接切换 */
   models?: ModelInfo[]
@@ -2954,9 +3123,10 @@ export function ConversationList({
     await onRename(id, title)
   }
   const kw = query.trim().toLowerCase()
-  const filtered = kw
+  const filtered = useMemo(() => kw
     ? conversations.filter(c => sanitizeConvTitle(c.title).toLowerCase().includes(kw))
     : conversations
+  , [conversations, kw])
   // 置顶(pin): 仅前端 localStorage 持久化(不跨设备), 让常用对话恒定排最前
   const PIN_KEY = 'oo.conv.pinned'
   const [pinned, setPinned] = useState<string[]>(() => {
@@ -2982,18 +3152,21 @@ export function ConversationList({
     if (diff < 30 * day) return '本月'
     return '更早'
   }
-  const pinnedList = filtered.filter(c => pinned.includes(c.id))
-  const restList = filtered.filter(c => !pinned.includes(c.id))
-  const groups: { label: string; items: any[] }[] = []
-  if (pinnedList.length) groups.push({ label: '置顶', items: pinnedList })
-  const order = ['今天', '昨天', '本周', '本月', '更早']
-  const byDay = new Map<string, any[]>()
-  for (const c of restList) {
-    const g = dayGroup(tsOf(c))
-    if (!byDay.has(g)) byDay.set(g, [])
-    byDay.get(g)!.push(c)
-  }
-  for (const k of order) if (byDay.has(k)) groups.push({ label: k, items: byDay.get(k)! })
+  const groups = useMemo(() => {
+    const pinnedList = filtered.filter(c => pinned.includes(c.id))
+    const restList = filtered.filter(c => !pinned.includes(c.id))
+    const result: { label: string; items: any[] }[] = []
+    if (pinnedList.length) result.push({ label: '置顶', items: pinnedList })
+    const order = ['今天', '昨天', '本周', '本月', '更早']
+    const byDay = new Map<string, any[]>()
+    for (const c of restList) {
+      const g = dayGroup(tsOf(c))
+      if (!byDay.has(g)) byDay.set(g, [])
+      byDay.get(g)!.push(c)
+    }
+    for (const k of order) if (byDay.has(k)) result.push({ label: k, items: byDay.get(k)! })
+    return result
+  }, [filtered, pinned])
   return (
     <div className={cn('space-y-1', className)}>
       {onNew && (

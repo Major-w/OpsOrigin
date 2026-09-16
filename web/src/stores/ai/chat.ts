@@ -37,7 +37,6 @@ interface ChatState {
     onSuggestions?: (items: string[]) => void,
   ) => Promise<void>
   loadConversations: (agentId?: string) => Promise<any[]>
-  saveConversation: (conv: any) => Promise<any | null>
   submitFeedback: (params: { conversation_id?: string; message_id?: string; rating: 'up' | 'down'; comment?: string }) => Promise<boolean>
 }
 
@@ -222,16 +221,6 @@ export const useChatStore = create<ChatState>((set) => ({
       return await apiList<any>(`/ai/conversations${params}`)
     } catch {
       return []
-    }
-  },
-  saveConversation: async (conv) => {
-    try {
-      return await apiFetch<any>('/ai/conversations', {
-        method: 'POST',
-        body: JSON.stringify(conv),
-      })
-    } catch {
-      return null
     }
   },
   submitFeedback: async (params) => {

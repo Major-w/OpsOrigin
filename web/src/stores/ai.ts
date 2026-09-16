@@ -44,7 +44,6 @@ interface _ChatState {
     onSuggestions?: (items: string[]) => void,
   ) => Promise<void>
   loadConversations: (agentId?: string) => Promise<any[]>
-  saveConversation: (conv: any) => Promise<any | null>
   submitFeedback: (params: { conversation_id?: string; message_id?: string; rating: 'up' | 'down'; comment?: string }) => Promise<boolean>
 }
 

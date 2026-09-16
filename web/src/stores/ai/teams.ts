@@ -1,6 +1,6 @@
 
 import { create } from 'zustand'
-import { apiFetch, apiList } from '@/lib/utils'
+import { apiFetch, apiFetchRaw, apiList } from '@/lib/utils'
 import type { AgentTeam, CreateTeamPayload, UpdateTeamPayload, ChatMessage, TeamStreamEvent } from './types'
 import { isTeamStreamEvent } from './types'
 import { getMessage } from '@/lib/message'
@@ -75,8 +75,8 @@ export const useTeamStore = create<TeamState>((set, get) => ({
   },
   streamTeamChat: async (teamId, msg, history, onEvent) => {
     try {
-      const resp = await fetch(
-        `${window.location.origin}/api/v1/ai/teams/${encodeURIComponent(teamId)}/chat`,
+      const resp = await apiFetchRaw(
+        `/ai/teams/${encodeURIComponent(teamId)}/chat`,
         {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
