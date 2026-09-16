@@ -13,7 +13,9 @@ import { Breadcrumb } from '@/components/ui/breadcrumb'
 import LocaleSwitcher from '@/components/ui/locale-switcher'
 import AIAssistant from '@/components/ai-assistant'
 import PureMode from '@/components/pure-mode'
-import { AI_ASSISTANT_NAV } from '@/components/ai-nav'
+import { getAINavItems } from '@/components/ai-nav'
+import { t, useLocale } from '@/lib/i18n'
+import { useMemo } from 'react'
 
 interface NavItem {
   to: string
@@ -31,131 +33,6 @@ interface NavGroup {
   icon: LucideIcon
   items: (NavItem | NavSubGroup)[]
 }
-
-const navGroups: (NavItem | NavGroup)[] = [
-  { to: '/dashboard', label: '仪表盘', icon: LayoutDashboard },
-  { to: '/reports', label: '报表中心', icon: BarChart3 },
-  {
-    label: '基础功能管理', icon: Settings, items: [
-      { to: '/resources', label: '资源纳管', icon: Server },
-      { to: '/credentials', label: '凭证管理', icon: Key },
-      { to: '/lowcode', label: '低代码编排', icon: Blocks },
-      { to: '/scripts', label: '脚本管理', icon: Terminal },
-      { to: '/workflows', label: '作业流程', icon: GitBranch },
-    ]
-  },
-  {
-    label: 'ITSM', icon: TicketCheck, items: [
-      { to: '/itsm/overview', label: '总览', icon: LayoutDashboard },
-      { to: '/itsm/portal', label: '服务门户', icon: Store },
-      { to: '/itsm/tickets', label: '工单列表', icon: TicketCheck },
-      { to: '/itsm/change', label: '变更日历', icon: Calendar },
-      { to: '/itsm/change-assess', label: '变更影响评估', icon: FileText },
-      { to: '/itsm/reports', label: '自定义报表', icon: BarChart3 },
-      {
-        label: '服务管理', items: [
-          { to: '/itsm/process', label: '流程定义', icon: GitBranch },
-          { to: '/itsm/catalog', label: '服务目录定义', icon: Package },
-          { to: '/itsm/sla-ola', label: 'SLA/OLA', icon: Clock },
-          { to: '/itsm/sla-breached', label: 'SLA 违规', icon: AlertTriangle },
-          { to: '/itsm/form-dicts', label: '数据字典', icon: Database },
-        ]
-      },
-      { to: '/itsm/oncall', label: '值班管理', icon: Calendar },
-      { to: '/itsm/oncall/calendar', label: '值班日历', icon: Calendar },
-      { to: '/itsm/inbound', label: '入站配置', icon: Webhook },
-    ]
-  },
-  {
-    label: '知识库', icon: BookOpen, items: [
-      { to: '/knowledge', label: '文章列表', icon: BookOpen },
-      { to: '/knowledge/categories', label: '分类管理', icon: FolderOpen },
-    ]
-  },
-  {
-    label: 'CMDB', icon: Server, items: [
-      { to: '/cmdb', label: '概览', icon: LayoutDashboard },
-      { to: '/cmdb/instances', label: '实例管理', icon: Server },
-      { to: '/cmdb/stats', label: '资源统计', icon: BarChart3 },
-      {
-        label: '关系与依赖', icon: Network, items: [
-          { to: '/cmdb/topology', label: '拓扑可视化', icon: Network },
-          { to: '/cmdb/impact', label: '影响分析', icon: AlertTriangle },
-          { to: '/cmdb/snapshots', label: '基线快照', icon: Camera },
-        ]
-      },
-      { to: '/cmdb/idc', label: '机房机柜', icon: Building2 },
-      {
-        label: '数据治理', icon: ShieldCheck, items: [
-          { to: '/cmdb/quality', label: '数据质量', icon: ShieldAlert },
-          { to: '/cmdb/data-policy', label: '数据权限', icon: ShieldCheck },
-          { to: '/cmdb/usage', label: '数据消费分析', icon: Activity },
-        ]
-      },
-      {
-        label: '配置项设置', icon: Package, items: [
-          { to: '/cmdb/models', label: '模型管理', icon: Package },
-          { to: '/cmdb/auto-collect', label: '自动采集', icon: Radio },
-          { to: '/cmdb/subscriptions', label: '消息订阅', icon: Bell },
-          { to: '/cmdb/history', label: '版本追溯', icon: History },
-        ]
-      },
-      {
-        label: '高级检索', icon: Search, items: [
-          { to: '/cmdb/search', label: '全局搜索', icon: Search },
-          { to: '/cmdb/query', label: '综合查询', icon: GitBranch },
-        ]
-      },
-    ]
-  },
-  {
-    label: '监控中心', icon: Activity, items: [
-      { to: '/monitor', label: '监控总览', icon: Activity },
-      { to: '/monitor/alerts', label: '告警中心', icon: AlertTriangle },
-      { to: '/monitor/collection', label: '监控采集', icon: Radio },
-      { to: '/monitor/plugins', label: '监控插件', icon: Blocks },
-      { to: '/monitor/targets', label: '监控配置', icon: Settings },
-      { to: '/monitor/predict', label: '趋势预测', icon: TrendingUp },
-      { to: '/monitor/panorama', label: '可观测全景', icon: Activity },
-    ]
-  },
-  {
-    label: '自动化运维', icon: Workflow, items: [
-      { to: '/auto', label: '运维总览', icon: Workflow },
-      { to: '/auto/job', label: '作业中心', icon: Play },
-      { to: '/schedules', label: '定时任务', icon: Clock },
-      { to: '/auto/inspection', label: '自动化巡检', icon: Scan },
-      { to: '/auto/vuln-scan', label: '漏洞扫描', icon: Bug },
-      { to: '/auto/patch', label: '补丁安装', icon: Download },
-      { to: '/auto/software', label: '文件分发', icon: PackagePlus },
-    ]
-  },
-  {
-    label: '应用发布', icon: Rocket, items: [
-      { to: '/deploy/apps', label: '应用管理', icon: AppWindow },
-      { to: '/deploy/releases', label: '发布单', icon: FileCheck2 },
-      { to: '/deploy/environments', label: '环境管理', icon: Cloud },
-      { to: '/deploy/history', label: '发布历史', icon: History },
-    ]
-  },
-  {
-    label: 'AI 助手', icon: Bot, items: AI_ASSISTANT_NAV,
-  },
-  {
-    label: '系统管理', icon: Users, items: [
-      { to: '/system/users', label: '用户管理', icon: Users },
-      { to: '/system/groups', label: '用户组管理', icon: Users },
-      { to: '/system/roles', label: '角色管理', icon: Shield },
-      { to: '/system/auth', label: '认证设置', icon: Key },
-      { to: '/system/api-keys', label: 'API Key 管理', icon: Key },
-      { to: '/system/notifications', label: '消息通知设置', icon: Bell },
-      { to: '/system/settings', label: '全局参数', icon: Settings },
-      { to: '/system/health', label: '自监控', icon: Activity },
-      { to: '/system/collection-policy', label: '采集策略', icon: Database },
-      { to: '/audit', label: '审计日志', icon: Shield },
-    ]
-  },
-]
 
 function isNavItem(v: NavItem | NavSubGroup): v is NavItem {
   return 'to' in v
@@ -296,14 +173,138 @@ export function Layout({ children }: { children: React.ReactNode }) {
   const pathname = usePathname()
   const navigate = useNavigate()
   const { user, logout } = useAuthStore()
-  // 默认所有分组折叠（仅显示组标题），登录后菜单收起；当前路由命中的分组会自动展开。
+  const { theme, toggle } = useThemeStore()
+  const locale = useLocale()
+  const navGroups: (NavItem | NavGroup)[] = useMemo(() => [
+    { to: '/dashboard', label: t('dashboard.title'), icon: LayoutDashboard },
+    { to: '/reports', label: t('reports.title'), icon: BarChart3 },
+    {
+      label: t('nav.basicManagement'), icon: Settings, items: [
+        { to: '/resources', label: t('resources.title'), icon: Server },
+        { to: '/credentials', label: t('credentials.title'), icon: Key },
+        { to: '/lowcode', label: t('lowcode.title'), icon: Blocks },
+        { to: '/scripts', label: t('scripts.title'), icon: Terminal },
+        { to: '/workflows', label: t('workflows.title'), icon: GitBranch },
+      ]
+    },
+    {
+      label: 'ITSM', icon: TicketCheck, items: [
+        { to: '/itsm/overview', label: t('itsm.overview'), icon: LayoutDashboard },
+        { to: '/itsm/portal', label: t('itsm.portal'), icon: Store },
+        { to: '/itsm/tickets', label: t('itsm.tickets'), icon: TicketCheck },
+        { to: '/itsm/change', label: t('itsm.change'), icon: Calendar },
+        { to: '/itsm/change-assess', label: t('itsm.changeAssess'), icon: FileText },
+        { to: '/itsm/reports', label: t('itsm.reports'), icon: BarChart3 },
+        {
+          label: t('nav.serviceManagement'), items: [
+            { to: '/itsm/process', label: t('itsm.process'), icon: GitBranch },
+            { to: '/itsm/catalog', label: t('itsm.catalog'), icon: Package },
+            { to: '/itsm/sla-ola', label: t('itsm.slaOla'), icon: Clock },
+            { to: '/itsm/sla-breached', label: t('itsm.slaBreached'), icon: AlertTriangle },
+            { to: '/itsm/form-dicts', label: t('itsm.formDicts'), icon: Database },
+          ]
+        },
+        { to: '/itsm/oncall', label: t('itsm.oncall'), icon: Calendar },
+        { to: '/itsm/oncall/calendar', label: t('itsm.oncallCalendar'), icon: Calendar },
+        { to: '/itsm/inbound', label: t('itsm.inbound'), icon: Webhook },
+      ]
+    },
+    {
+      label: t('knowledge.title'), icon: BookOpen, items: [
+        { to: '/knowledge', label: t('knowledge.articleList'), icon: BookOpen },
+        { to: '/knowledge/categories', label: t('knowledge.categories'), icon: FolderOpen },
+      ]
+    },
+    {
+      label: t('cmdb.title'), icon: Server, items: [
+        { to: '/cmdb', label: t('cmdb.overview'), icon: LayoutDashboard },
+        { to: '/cmdb/instances', label: t('cmdb.instances'), icon: Server },
+        { to: '/cmdb/stats', label: t('cmdb.stats'), icon: BarChart3 },
+        {
+          label: t('nav.relationsAndDeps'), icon: Network, items: [
+            { to: '/cmdb/topology', label: t('cmdb.topology'), icon: Network },
+            { to: '/cmdb/impact', label: t('cmdb.impact'), icon: AlertTriangle },
+            { to: '/cmdb/snapshots', label: t('cmdb.snapshots'), icon: Camera },
+          ]
+        },
+        { to: '/cmdb/idc', label: t('cmdb.idc'), icon: Building2 },
+        {
+          label: t('nav.dataGovernance'), icon: ShieldCheck, items: [
+            { to: '/cmdb/quality', label: t('cmdb.quality'), icon: ShieldAlert },
+            { to: '/cmdb/data-policy', label: t('cmdb.dataPolicy'), icon: ShieldCheck },
+            { to: '/cmdb/usage', label: t('cmdb.usage'), icon: Activity },
+          ]
+        },
+        {
+          label: t('nav.ciSettings'), icon: Package, items: [
+            { to: '/cmdb/models', label: t('cmdb.models'), icon: Package },
+            { to: '/cmdb/auto-collect', label: t('cmdb.autoCollect'), icon: Radio },
+            { to: '/cmdb/subscriptions', label: t('cmdb.subscriptions'), icon: Bell },
+            { to: '/cmdb/history', label: t('cmdb.history'), icon: History },
+          ]
+        },
+        {
+          label: t('nav.advancedSearch'), icon: Search, items: [
+            { to: '/cmdb/search', label: t('cmdb.search'), icon: Search },
+            { to: '/cmdb/query', label: t('cmdb.query'), icon: GitBranch },
+          ]
+        },
+      ]
+    },
+    {
+      label: t('monitor.title'), icon: Activity, items: [
+        { to: '/monitor', label: t('monitor.overview'), icon: Activity },
+        { to: '/monitor/alerts', label: t('monitor.center'), icon: AlertTriangle },
+        { to: '/monitor/collection', icon: Radio, label: t('monitor.collection') },
+        { to: '/monitor/plugins', label: t('monitor.plugins'), icon: Blocks },
+        { to: '/monitor/targets', label: t('monitor.configuration'), icon: Settings },
+        { to: '/monitor/predict', label: t('monitor.predict'), icon: TrendingUp },
+        { to: '/monitor/panorama', label: t('monitor.panorama'), icon: Activity },
+      ]
+    },
+    {
+      label: t('auto.title'), icon: Workflow, items: [
+        { to: '/auto', label: t('auto.overview'), icon: Workflow },
+        { to: '/auto/job', label: t('auto.job'), icon: Play },
+        { to: '/schedules', label: t('schedules.title'), icon: Clock },
+        { to: '/auto/inspection', label: t('auto.inspection'), icon: Scan },
+        { to: '/auto/vuln-scan', label: t('auto.vulnScan'), icon: Bug },
+        { to: '/auto/patch', label: t('auto.patch'), icon: Download },
+        { to: '/auto/software', label: t('auto.software'), icon: PackagePlus },
+      ]
+    },
+    {
+      label: t('nav.deploy'), icon: Rocket, items: [
+        { to: '/deploy/apps', label: t('deploy.apps'), icon: AppWindow },
+        { to: '/deploy/releases', label: t('deploy.releases'), icon: FileCheck2 },
+        { to: '/deploy/environments', label: t('deploy.environments'), icon: Cloud },
+        { to: '/deploy/history', label: t('deploy.history'), icon: History },
+      ]
+    },
+    {
+      label: t('ai.assistant'), icon: Bot, items: getAINavItems(),
+    },
+    {
+      label: t('system.title'), icon: Users, items: [
+        { to: '/system/users', label: t('system.users'), icon: Users },
+        { to: '/system/groups', label: t('system.groups'), icon: Users },
+        { to: '/system/roles', label: t('system.roles'), icon: Shield },
+        { to: '/system/auth', label: t('system.auth'), icon: Key },
+        { to: '/system/api-keys', label: t('system.apiKeys'), icon: Key },
+        { to: '/system/notifications', label: t('system.notifications'), icon: Bell },
+        { to: '/system/settings', label: t('system.settings'), icon: Settings },
+        { to: '/system/health', label: t('system.health'), icon: Activity },
+        { to: '/system/collection-policy', label: t('system.collectionPolicy'), icon: Database },
+        { to: '/audit', label: t('audit.title'), icon: Shield },
+      ]
+    },
+  ], [locale])
+
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>(() => {
     const init: Record<string, boolean> = {}
     for (const g of navGroups) if (isNavGroup(g)) init[g.label] = true
     return init
   })
-  const { theme, toggle } = useThemeStore()
-  // 侧栏整体收起(图标窄条模式): localStorage 持久化, 收起时仅显示图标、点击图标或展开按钮恢复。
   const [sidebarCollapsed, setSidebarCollapsed] = useState<boolean>(() => {
     if (typeof window === 'undefined') return false
     try { return localStorage.getItem('opsorigin_sidebar_collapsed') === '1' } catch { return false }
@@ -312,7 +313,6 @@ export function Layout({ children }: { children: React.ReactNode }) {
     setSidebarCollapsed(v)
     try { localStorage.setItem('opsorigin_sidebar_collapsed', v ? '1' : '0') } catch { /* ignore */ }
   }
-  // 纯净模式：优先读「登录后默认进入」偏好，否则读「本次会话是否纯静态」偏好
   const [pureMode, setPureMode] = useState<boolean>(() => {
     if (typeof window === 'undefined') return false
     try {

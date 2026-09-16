@@ -3,7 +3,7 @@
 // SSE 客户端走 fetch 流式解析(EventSource 无法带 Authorization 头), 与对话流同模式。
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { Button, Input, Modal, Select, Tag } from 'antd'
-import { Loader2, Play, Plus, Square, Pause, ListTodo, FileText, CircleCheck, CircleX, Ban, Download, BookPlus, ShieldAlert, Sparkles, X, MessageSquare, Users, Gauge, Clock, FileDown, Presentation } from 'lucide-react'
+import { Loader2, Play, Plus, Square, Pause, ListTodo, FileText, CircleCheck, CircleX, Ban, Download, BookPlus, ShieldAlert, Sparkles, X, MessageSquare, Users, Gauge, Clock, FileDown } from 'lucide-react'
 import { apiFetch, apiFetchRaw, cn } from '@/lib/utils'
 import { getMessage } from '@/lib/message'
 import { exportDocFile } from '@/lib/doc-export'
@@ -184,8 +184,8 @@ export default function AITasksPage() {
     getMessage().info(`请在任务执行或对话中让 AI 执行 doc_to_knowledge 沉淀「${a.file_name}」, 草稿生成后到知识库审核发布`)
   }
 
-  // 产物导出 docx/pptx: 仅对 markdown 产物, 内容从预览缓存/重新拉取(纯前端转换)
-  const exportArtifactAs = async (a: TaskArtifact, fmt: 'docx' | 'pptx', cachedContent?: string) => {
+  // 产物导出 docx: 仅对 markdown 产物, 内容从预览缓存/重新拉取(纯前端转换)
+  const exportArtifactAs = async (a: TaskArtifact, fmt: 'docx', cachedContent?: string) => {
     const k = `${a.id}:${fmt}`
     if (exportingArt) return
     setExportingArt(k)
@@ -633,9 +633,6 @@ export default function AITasksPage() {
                   <button onClick={() => exportArtifactAs(a, 'docx')} disabled={!!exportingArt} className="p-1 rounded text-muted-foreground hover:text-blue-500 opacity-0 group-hover:opacity-100 transition-opacity disabled:opacity-50" title="导出 Word (.docx)">
                     {exportingArt === `${a.id}:docx` ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <FileDown className="h-3.5 w-3.5" />}
                   </button>
-                  <button onClick={() => exportArtifactAs(a, 'pptx')} disabled={!!exportingArt} className="p-1 rounded text-muted-foreground hover:text-blue-500 opacity-0 group-hover:opacity-100 transition-opacity disabled:opacity-50" title="AI 重编生成演示文稿 (.pptx)">
-                    {exportingArt === `${a.id}:pptx` ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Presentation className="h-3.5 w-3.5" />}
-                  </button>
                 </>
               )}
               <button onClick={() => downloadArtifact(a)} className="p-1 rounded text-muted-foreground hover:text-blue-500 opacity-0 group-hover:opacity-100 transition-opacity" title="下载">
@@ -661,9 +658,6 @@ export default function AITasksPage() {
             return a ? [
               <Button key="dl-docx" size="small" loading={exportingArt === `${a.id}:docx`} disabled={!!exportingArt} onClick={() => exportArtifactAs(a, 'docx', preview.content)}>
                 <FileDown className="h-3 w-3 mr-1" />导出 docx
-              </Button>,
-              <Button key="dl-pptx" size="small" loading={exportingArt === `${a.id}:pptx`} disabled={!!exportingArt} onClick={() => exportArtifactAs(a, 'pptx', preview.content)}>
-                <Presentation className="h-3 w-3 mr-1" />AI 生成演示
               </Button>,
             ] : null
           })(),

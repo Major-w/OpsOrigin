@@ -3,75 +3,76 @@ import { useMemo } from 'react'
 import { Link, useLocation } from 'react-router-dom'
 import { ChevronRight, Home } from 'lucide-react'
 import { cn } from '@/lib/utils'
+import { t, useLocale } from '@/lib/i18n'
 
-// 路由名称映射
-const ROUTE_NAMES: Record<string, string> = {
-  dashboard: '仪表盘',
-  cmdb: 'CMDB',
-  models: '模型管理',
-  instances: '实例管理',
-  search: '高级搜索',
-  stats: '资源统计',
-  topology: '拓扑视图',
-  impact: '影响分析',
-  quality: '数据质量',
-  query: '高级查询',
-  idc: '机房机柜',
-  auto: '自动化运维',
-  job: '任务管理',
-  patch: '补丁管理',
-  inspection: '巡检管理',
-  software: '软件管理',
-  vuln: '漏洞扫描',
-  monitor: '监控中心',
-  panorama: '全景监控',
-  predict: '智能预测',
-  targets: '监控对象',
-  alerts: '告警管理',
-  collection: '采集管理',
-  plugins: '插件管理',
-  itsm: 'ITSM',
-  tickets: '工单管理',
-  process: '流程管理',
-  sla: 'SLA 管理',
-  ola: 'OLA 管理',
-  oncall: '值班管理',
-  change: '变更管理',
-  changeAssess: '变更评估',
-  knowledge: '知识库',
-  catalog: '服务目录',
-  portal: '服务门户',
-  inbound: '工单接入',
-  deploy: '应用发布',
-  apps: '应用管理',
-  environments: '环境管理',
-  releases: '发布管理',
-  ai: 'AI 中心',
-  analytics: '智能分析',
-  teams: '团队管理',
-  inspections: '智能巡检',
-  mcp: 'MCP 管理',
-  marketplace: '技能市场',
-  scenes: '场景编排',
-  drills: '演练管理',
-  settings: 'AI 设置',
-  scripts: '脚本管理',
-  resources: '资源管理',
-  credentials: '凭证管理',
-  system: '系统管理',
-  users: '用户管理',
-  roles: '角色管理',
-  groups: '分组管理',
-  auth: '认证配置',
-  health: '系统健康',
-  notifications: '通知管理',
-  audit: '审计日志',
-  lowcode: '低代码',
-  pages: '页面管理',
-  guide: '使用指南',
-  reports: '报表中心',
-  schedules: '定时任务',
-  workflows: '工作流',
+// 路由名称映射(使用 t() 实现国际化)
+const ROUTE_KEYS: Record<string, string> = {
+  dashboard: 'breadcrumb.dashboard',
+  cmdb: 'nav.cmdb',
+  models: 'breadcrumb.models',
+  instances: 'breadcrumb.instances',
+  search: 'breadcrumb.search',
+  stats: 'breadcrumb.stats',
+  topology: 'breadcrumb.topology',
+  impact: 'breadcrumb.impact',
+  quality: 'breadcrumb.quality',
+  query: 'breadcrumb.query',
+  idc: 'breadcrumb.idc',
+  auto: 'breadcrumb.auto',
+  job: 'breadcrumb.job',
+  patch: 'breadcrumb.patch',
+  inspection: 'breadcrumb.inspection',
+  software: 'breadcrumb.software',
+  vuln: 'breadcrumb.vuln',
+  monitor: 'breadcrumb.monitor',
+  panorama: 'breadcrumb.panorama',
+  predict: 'breadcrumb.predict',
+  targets: 'breadcrumb.targets',
+  alerts: 'breadcrumb.alerts',
+  collection: 'breadcrumb.collection',
+  plugins: 'breadcrumb.plugins',
+  itsm: 'nav.itsm',
+  tickets: 'breadcrumb.tickets',
+  process: 'breadcrumb.process',
+  sla: 'breadcrumb.sla',
+  ola: 'breadcrumb.ola',
+  oncall: 'breadcrumb.oncall',
+  change: 'breadcrumb.change',
+  changeAssess: 'breadcrumb.changeAssess',
+  knowledge: 'breadcrumb.knowledge',
+  catalog: 'breadcrumb.catalog',
+  portal: 'breadcrumb.portal',
+  inbound: 'breadcrumb.inbound',
+  deploy: 'breadcrumb.deploy',
+  apps: 'breadcrumb.apps',
+  environments: 'breadcrumb.environments',
+  releases: 'breadcrumb.releases',
+  ai: 'breadcrumb.ai',
+  analytics: 'breadcrumb.analytics',
+  teams: 'breadcrumb.teams',
+  inspections: 'breadcrumb.inspections',
+  mcp: 'breadcrumb.mcp',
+  marketplace: 'breadcrumb.marketplace',
+  scenes: 'breadcrumb.scenes',
+  drills: 'breadcrumb.drills',
+  settings: 'breadcrumb.settings',
+  scripts: 'breadcrumb.scripts',
+  resources: 'breadcrumb.resources',
+  credentials: 'breadcrumb.credentials',
+  system: 'breadcrumb.system',
+  users: 'breadcrumb.users',
+  roles: 'breadcrumb.roles',
+  groups: 'breadcrumb.groups',
+  auth: 'breadcrumb.auth',
+  health: 'breadcrumb.health',
+  notifications: 'breadcrumb.notifications',
+  audit: 'breadcrumb.audit',
+  lowcode: 'breadcrumb.lowcode',
+  pages: 'breadcrumb.pages',
+  guide: 'breadcrumb.guide',
+  reports: 'breadcrumb.reports',
+  schedules: 'breadcrumb.schedules',
+  workflows: 'breadcrumb.workflows',
 }
 
 interface BreadcrumbItem {
@@ -86,6 +87,7 @@ interface BreadcrumbProps {
 
 export function Breadcrumb({ items: customItems, className }: BreadcrumbProps) {
   const location = useLocation()
+  const locale = useLocale()
 
   const breadcrumbItems = useMemo(() => {
     if (customItems) return customItems
@@ -98,12 +100,13 @@ export function Breadcrumb({ items: customItems, className }: BreadcrumbProps) {
 
     segments.forEach((segment, index) => {
       const path = '/' + segments.slice(0, index + 1).join('/')
-      const name = ROUTE_NAMES[segment] || segment
+      const key = ROUTE_KEYS[segment]
+      const name = key ? t(key) : segment
       items.push({ label: name, path: index < segments.length - 1 ? path : undefined })
     })
 
     return items
-  }, [location.pathname, customItems])
+  }, [location.pathname, customItems, locale])
 
   return (
     <nav className={cn("flex items-center gap-1 text-xs text-muted-foreground", className)}>

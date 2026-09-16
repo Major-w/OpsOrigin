@@ -1,13 +1,14 @@
 
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useAIStore } from '@/stores/ai'
 import { useKnowledgeStore } from '@/stores/knowledge'
 import { useAIChat, ChatMessageList, ChatInputBar, TeamChatView, ApprovalBar, ChatContextBar, ConversationList, estimateContextTokens, SHARED_SESSION_KEY, SHARED_CONV_ID_KEY } from '@/components/ai/chat-kernel'
 import usePathname from '@/lib/use-pathname'
 import { apiFetchRaw } from '@/lib/utils'
-import { AI_ASSISTANT_NAV } from '@/components/ai-nav'
+import { getAINavItems } from '@/components/ai-nav'
 import { cn } from '@/lib/utils'
+import { t, useLocale } from '@/lib/i18n'
 import {
   Bot, X, Trash2, History, BarChart3, Settings, PanelLeftClose, Brain,
 } from 'lucide-react'
@@ -21,21 +22,21 @@ import {
 
 const DEFAULT_KEY = 'opsorigin_pure_default'
 
-const QUICK_ACTIONS = [
-  { label: '查询主机状态', prompt: '帮我查询所有主机的运行状态' },
-  { label: '执行巡检任务', prompt: '执行一次自动化巡检任务' },
-  { label: '生成运维报告', prompt: '生成本周的运维报告' },
-  { label: '排查故障', prompt: '帮我排查当前系统的异常情况' },
-]
-
-const WELCOME = '欢迎进入 **纯净模式** 🤖\n\n这是一个以 AI 对话为核心的工作界面：\n- 左侧是「AI 助手」菜单，可一键进入场景包、数字员工、主动巡检、智能体团队等能力\n- 中间随时向我提问：查询主机、发起工单、分析告警、写知识库文章…\n- 右上角可切换「自主模式 / 团队模式」，给出目标由我规划执行或多人协作\n\n直接开始吧。'
-
 export default function PureMode({ onExitPure }: { onExitPure: () => void }) {
   const navigate = useNavigate()
   const pathname = usePathname()
+  const locale = useLocale()
   const loadConversations = useAIStore(s => s.loadConversations)
   const submitFeedback = useAIStore(s => s.submitFeedback)
   const fetchAgents = useAIStore(s => s.fetchAgents)
+
+  const WELCOME = useMemo(() => t('pureMode.welcome'), [locale])
+  const QUICK_ACTIONS = useMemo(() => [
+    { label: t('pureMode.queryHost'), prompt: t('pureMode.queryHostPrompt') },
+    { label: t('pureMode.executeInspection'), prompt: t('pureMode.executeInspectionPrompt') },
+    { label: t('pureMode.generateReport'), prompt: t('pureMode.generateReportPrompt') },
+    { label: t('pureMode.troubleshoot'), prompt: t('pureMode.troubleshootPrompt') },
+  ], [locale])
 
   const chat = useAIChat({
     welcome: WELCOME,
@@ -158,17 +159,17 @@ export default function PureMode({ onExitPure }: { onExitPure: () => void }) {
             <Bot className="w-6 h-6 text-blue-400" strokeWidth={1.5} />
           </div>
           <div className="flex-1 min-w-0">
-            <span className="text-sm font-semibold tracking-tight">纯净模式</span>
+            <span className="text-sm font-semibold tracking-tight">{t('pureMode.workspace')}</span>
             <p className="text-[10px] text-muted-foreground tracking-wider uppercase">AI Workspace</p>
           </div>
-          <button onClick={onExitPure} className="p-1.5 rounded-md transition-colors text-white bg-blue-500 hover:bg-blue-600" title="退出纯净模式">
+          <button onClick={onExitPure} className="p-1.5 rounded-md transition-colors text-white bg-blue-500 hover:bg-blue-600" title={t('pureMode.exit')}>
             <PanelLeftClose className="h-4 w-4" />
           </button>
         </div>
 
         <nav className="flex-1 p-2 space-y-0.5 overflow-y-auto pt-3">
-          <p className="px-3 pb-1 text-[10px] uppercase tracking-wider text-muted-foreground/70">AI 助手</p>
-          {AI_ASSISTANT_NAV.map(item => {
+          <p className="px-3 pb-1 text-[10px] uppercase tracking-wider text-muted-foreground/70">{t('ai.assistant')}</p>
+          {getAINavItems().map(item => {
             const Icon = item.icon
             const active = item.to === pathname || pathname.startsWith(item.to + '/')
             return (
@@ -191,7 +192,7 @@ export default function PureMode({ onExitPure }: { onExitPure: () => void }) {
 
         <div className={cn('px-4 py-3 border-t border-border space-y-3 shrink-0')}>
           <label className="flex items-center justify-between gap-2 cursor-pointer select-none">
-            <span className="text-[11px] text-muted-foreground leading-tight">登录后默认<br />进入纯净模式</span>
+            <span className="text-[11px] text-muted-foreground leading-tight">{t('pureMode.defaultLogin')}</span>
             <button
               type="button"
               role="switch"
@@ -203,7 +204,7 @@ export default function PureMode({ onExitPure }: { onExitPure: () => void }) {
             </button>
           </label>
           <button onClick={onExitPure} className="w-full flex items-center justify-center gap-1.5 py-1.5 rounded-lg text-xs font-semibold text-white bg-blue-500 hover:bg-blue-600 transition-colors shadow-sm">
-            <X className="h-3.5 w-3.5" /> 退出纯净模式
+            <X className="h-3.5 w-3.5" /> {t('pureMode.exit')}
           </button>
         </div>
       </aside>
@@ -215,7 +216,7 @@ export default function PureMode({ onExitPure }: { onExitPure: () => void }) {
           'h-14 flex items-center justify-between px-5 border-b border-border bg-background/70 shrink-0 gap-2',
         )}>
           <div className="flex items-center gap-2 min-w-0">
-            <span className="text-sm font-semibold shrink-0">AI 工作区</span>
+            <span className="text-sm font-semibold shrink-0">{t('pureMode.workspace')}</span>
             <span className={cn('text-[10px] px-1.5 py-0.5 rounded shrink-0', 'bg-gray-100 text-gray-500 dark:bg-white/10 dark:text-gray-300')}>OpsOrigin</span>
           </div>
           <div className="flex items-center gap-1.5 shrink-0">
@@ -223,23 +224,23 @@ export default function PureMode({ onExitPure }: { onExitPure: () => void }) {
               <button onClick={handleOpenHistory} className={cn(
                 'p-1.5 rounded-md transition-colors text-muted-foreground hover:text-foreground hover:bg-black/5 dark:hover:bg-white/10',
                 showHistory && 'text-blue-500',
-              )} title="会话历史">
+              )} title={t('pureMode.history')}>
                 <History className="h-3.5 w-3.5" />
               </button>
             )}
-            <button onClick={() => goto('/ai/analytics')} className="p-1.5 rounded-md transition-colors text-muted-foreground hover:text-foreground hover:bg-black/5 dark:hover:bg-white/10" title="AI 分析">
+            <button onClick={() => goto('/ai/analytics')} className="p-1.5 rounded-md transition-colors text-muted-foreground hover:text-foreground hover:bg-black/5 dark:hover:bg-white/10" title={t('ai.usageAnalytics')}>
               <BarChart3 className="h-3.5 w-3.5" />
             </button>
-            <button onClick={() => goto('/ai/models')} className="p-1.5 rounded-md transition-colors text-muted-foreground hover:text-foreground hover:bg-black/5 dark:hover:bg-white/10" title="模型管理">
+            <button onClick={() => goto('/ai/models')} className="p-1.5 rounded-md transition-colors text-muted-foreground hover:text-foreground hover:bg-black/5 dark:hover:bg-white/10" title={t('ai.models')}>
               <Brain className="h-3.5 w-3.5" />
             </button>
-            <button onClick={() => goto('/ai/settings')} className="p-1.5 rounded-md transition-colors text-muted-foreground hover:text-foreground hover:bg-black/5 dark:hover:bg-white/10" title="智能体工作台">
+            <button onClick={() => goto('/ai/settings')} className="p-1.5 rounded-md transition-colors text-muted-foreground hover:text-foreground hover:bg-black/5 dark:hover:bg-white/10" title={t('ai.agentWorkbench')}>
               <Settings className="h-3.5 w-3.5" />
             </button>
-            <button onClick={clear} className="p-1.5 rounded-md transition-colors text-muted-foreground hover:text-foreground hover:bg-black/5 dark:hover:bg-white/10" title="清空会话">
+            <button onClick={clear} className="p-1.5 rounded-md transition-colors text-muted-foreground hover:text-foreground hover:bg-black/5 dark:hover:bg-white/10" title={t('ai.floating.clear')}>
               <Trash2 className="h-3.5 w-3.5" />
             </button>
-            <button onClick={onExitPure} className="p-1.5 rounded-md transition-colors text-white bg-blue-500 hover:bg-blue-600 md:hidden" title="退出纯净模式">
+            <button onClick={onExitPure} className="p-1.5 rounded-md transition-colors text-white bg-blue-500 hover:bg-blue-600 md:hidden" title={t('pureMode.exit')}>
               <X className="h-4 w-4" />
             </button>
           </div>
@@ -258,7 +259,7 @@ export default function PureMode({ onExitPure }: { onExitPure: () => void }) {
               enableTaskList
               onFeedback={submitFb}
               loading={streaming}
-              loadingText={mode === 'explore' ? 'AI 正在规划并执行…' : 'AI 正在思考…'}
+              loadingText={mode === 'explore' ? t('pureMode.loadingThinking') : t('pureMode.loading')}
               onSuggestion={send}
               endRef={listEndRef}
               className="px-5 py-5"
@@ -269,8 +270,8 @@ export default function PureMode({ onExitPure }: { onExitPure: () => void }) {
               <div className="absolute inset-0 z-20 flex">
                 <div className="w-72 h-full overflow-y-auto p-3 space-y-2 shrink-0 backdrop-blur-2xl bg-popover/95 border-r border-border">
                   <div className="flex items-center justify-between mb-2">
-                    <span className="text-sm font-medium">会话历史</span>
-                    <button onClick={() => setShowHistory(false)} className="p-1 rounded hover:bg-black/5 dark:hover:bg-white/10 text-muted-foreground" title="收起">
+                    <span className="text-sm font-medium">{t('pureMode.history')}</span>
+                    <button onClick={() => setShowHistory(false)} className="p-1 rounded hover:bg-black/5 dark:hover:bg-white/10 text-muted-foreground" title={t('pureMode.closeHistory')}>
                       <X className="h-4 w-4" />
                     </button>
                   </div>
@@ -279,24 +280,24 @@ export default function PureMode({ onExitPure }: { onExitPure: () => void }) {
                     activeId={convId}
                     onSelect={(id) => handleLoadConversation(id)}
                     onNew={() => clear()}
-                    emptyText="暂无对话记录"
+                    emptyText={t('pureMode.noConversations')}
                   />
                   {/* 本会话产物(探索模式归档的报告/文件) */}
                   <div className="pt-3 mt-3" style={{ borderTop: '1px solid var(--border)' }}>
-                    <p className="text-xs font-medium mb-1.5">本会话产物（{artifacts.length}）</p>
+                    <p className="text-xs font-medium mb-1.5">{t('pureMode.artifacts')}（{artifacts.length}）</p>
                     {artifacts.length === 0 ? (
-                      <p className="text-xs text-muted-foreground">{convId ? '暂无产物' : '探索模式产出的报告/文件会归档到这里'}</p>
+                      <p className="text-xs text-muted-foreground">{convId ? t('pureMode.noArtifacts') : t('pureMode.noArtifactsDesc')}</p>
                     ) : (
                       artifacts.map(a => (
                         <div key={a.id} className="flex items-center justify-between gap-2 p-2 mb-1 rounded-lg bg-gray-50 dark:bg-gray-800">
                           <span className="text-xs truncate" title={a.file_name}>{a.file_name}</span>
-                          <button onClick={() => downloadArtifact(a.id)} className="text-xs text-blue-500 hover:underline shrink-0">下载</button>
+                          <button onClick={() => downloadArtifact(a.id)} className="text-xs text-blue-500 hover:underline shrink-0">{t('pureMode.download')}</button>
                         </div>
                       ))
                     )}
                   </div>
                 </div>
-                <button className="flex-1 h-full" onClick={() => setShowHistory(false)} aria-label="关闭历史" />
+                <button className="flex-1 h-full" onClick={() => setShowHistory(false)} aria-label={t('pureMode.closeHistory')} />
               </div>
             )}
 

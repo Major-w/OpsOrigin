@@ -8,6 +8,7 @@ import type { ColumnsState } from '@ant-design/pro-components'
 import { Code2, Terminal, Hash, Clock, GitBranch, Star, Download, Upload as UploadIcon, Plus, Trash2, Copy, Pencil, Loader2, FileCode, CheckCircle, FileText } from 'lucide-react'
 import { cn, formatTime, apiFetch } from '@/lib/utils'
 import { getMessage } from '@/lib/message'
+import { t, useLocale } from '@/lib/i18n'
 import { Button, Modal, Tag, Popconfirm, message } from 'antd'
 import type { TablePaginationConfig } from 'antd'
 
@@ -54,6 +55,7 @@ export default function ScriptsPage() {
   const [selectedRowKeys, setSelectedRowKeys] = useState<React.Key[]>([])
   const [typeFilter, setTypeFilter] = useState<string | null>(null)
   const [searchValues, setSearchValues] = useState<Record<string, any>>({})
+  const locale = useLocale()
   const [columnsState, setColumnsState] = useState<Record<string, ColumnsState>>({})
 
 
@@ -363,17 +365,17 @@ export default function ScriptsPage() {
 
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-2xl font-bold">脚本管理</h1>
-          <p className="text-sm text-muted-foreground">运维脚本管理、参数化定义与执行历史</p>
+          <h1 className="text-2xl font-bold">{t('scripts.title')}</h1>
+          <p className="text-sm text-muted-foreground">{t('scripts.subtitle')}</p>
         </div>
       </div>
 
       <StatisticCardGroup loading={loading} columns={5}>
-        <StatisticCard title="脚本总数" value={stats.total} icon={<FileCode className="h-3 w-3" />} onClick={() => handleCardClick(null)} active={typeFilter === null} />
+        <StatisticCard title={t('scripts.total')} value={stats.total} icon={<FileCode className="h-3 w-3" />} onClick={() => handleCardClick(null)} active={typeFilter === null} />
         <StatisticCard title="Shell" value={stats.shell} icon={<Terminal className="h-3 w-3" />} className="text-blue-500" onClick={() => handleCardClick('shell')} active={typeFilter === 'shell'} />
         <StatisticCard title="Python" value={stats.python} icon={<Code2 className="h-3 w-3" />} className="text-blue-500" onClick={() => handleCardClick('python')} active={typeFilter === 'python'} />
-        <StatisticCard title="其他类型" value={stats.other} icon={<FileText className="h-3 w-3" />} className="text-amber-500" />
-        <StatisticCard title="已收藏" value={stats.starred} icon={<Star className="h-3 w-3" />} className="text-amber-500" onClick={() => handleCardClick('starred')} active={typeFilter === 'starred'} />
+        <StatisticCard title={t('scripts.other')} value={stats.other} icon={<FileText className="h-3 w-3" />} className="text-amber-500" />
+        <StatisticCard title={t('scripts.starred')} value={stats.starred} icon={<Star className="h-3 w-3" />} className="text-amber-500" onClick={() => handleCardClick('starred')} active={typeFilter === 'starred'} />
       </StatisticCardGroup>
 
       <ProTable<Script>

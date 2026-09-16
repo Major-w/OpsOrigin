@@ -11,6 +11,7 @@ import { cn, apiFetch, apiFetchRaw, apiList } from '@/lib/utils'
 import { useThemeStore } from '@/stores/theme'
 import { useAIStore, type ApprovalMode } from '@/stores/ai'
 import { getMessage } from '@/lib/message'
+import { t, useLocale } from '@/lib/i18n'
 const APPROVAL_MODES: { value: ApprovalMode; label: string; desc: string }[] = [
   { value: 'sensitive_only', label: '仅敏感操作询问', desc: '默认安全策略：script_run 等写/执行类操作弹窗确认，只读操作直接执行' },
   { value: 'always_ask', label: '每次询问', desc: '所有 AI 操作执行前都须人工确认，最严格' },
@@ -126,6 +127,7 @@ function SkillsEditor({ value, onChange }: { value: SkillFormItem[]; onChange: (
 export default function AISettingsPage() {
   const { agents, fetchAgents, createAgent } = useAIStore()
   const { theme } = useThemeStore()
+  const locale = useLocale()
   const [activeTab, setActiveTab] = useState('agents')
   const [form, setForm] = useState<{ name: string; model_name: string; system_prompt: string; knowledge_categories: string[]; tools: string[]; skills: SkillFormItem[] }>({ name: '', model_name: '', system_prompt: '', knowledge_categories: [], tools: [], skills: [] })
   const [sysConfig, setSysConfig] = useState<any>(null)
@@ -1241,9 +1243,9 @@ export default function AISettingsPage() {
         <div>
           <h1 className="text-2xl font-bold flex items-center gap-2">
             <Settings2 className="h-6 w-6 text-blue-500" />
-            AI 智能体配置
+            {t('ai.settings.agentConfig')}
           </h1>
-          <p className="text-sm text-muted-foreground">管理 Agent、提示词、模型与审批策略；MCP 工具的注册与启停请前往「MCP 工具」页</p>
+          <p className="text-sm text-muted-foreground">{t('ai.settings.agentConfigDesc')}</p>
         </div>
       </div>
 
@@ -1256,27 +1258,27 @@ export default function AISettingsPage() {
       <Tabs activeKey={activeTab} onChange={setActiveTab} className="flex-1 flex flex-col min-h-0" items={[
         {
           key: 'agents',
-          label: <span><Bot className="h-4 w-4 mr-1.5 inline" />我的智能体</span>,
+          label: <span><Bot className="h-4 w-4 mr-1.5 inline" />{t('ai.settings.agents')}</span>,
           children: <AgentsContent />,
         },
         {
           key: 'digital',
-          label: <span><Sparkles className="h-4 w-4 mr-1.5 inline" />数字员工</span>,
+          label: <span><Sparkles className="h-4 w-4 mr-1.5 inline" />{t('ai.settings.digitalWorkers')}</span>,
           children: <RoleTemplatesPanel />,
         },
         {
           key: 'prompts',
-          label: <span><Wand2 className="h-4 w-4 mr-1.5 inline" />提示词</span>,
+          label: <span><Wand2 className="h-4 w-4 mr-1.5 inline" />{t('ai.settings.prompts')}</span>,
           children: <PromptsContent />,
         },
         {
           key: 'approval',
-          label: <span><ShieldCheck className="h-4 w-4 mr-1.5 inline" />审批策略</span>,
+          label: <span><ShieldCheck className="h-4 w-4 mr-1.5 inline" />{t('ai.settings.approval')}</span>,
           children: <ApprovalContent />,
         },
         {
           key: 'evolution',
-          label: <span><RefreshCw className="h-4 w-4 mr-1.5 inline" />进化</span>,
+          label: <span><RefreshCw className="h-4 w-4 mr-1.5 inline" />{t('ai.settings.evolution')}</span>,
           children: <EvolutionContent />,
         },
       ]} />
