@@ -1242,6 +1242,8 @@ func (e *Engine) buildMessages(ctx context.Context, agentID, userPrompt string, 
 	}
 	// 注入引用标注指引(RAG grounding): 让模型在引用知识库/工具结果时标注来源。
 	sys += "\n\n" + citationGuidance
+	// 注入输出纪律: 抑制推理模型把思维链收尾(计划/自评)续写进正文(见 answerHygiene 注释)。
+	sys += "\n\n" + answerHygiene
 	if sysExtra != "" {
 		sys += "\n\n" + sysExtra
 	}
@@ -2774,6 +2776,19 @@ const citationGuidance = `引用与溯源要求:
 - 回答结尾用 "## 引用来源" 列出所有被引用条目的标题与 ID。
 - 未引用任何资料时无需列出。
 - 禁止编造不存在的 ID;只能引用工具实际返回给你的资料 ID。`
+
+// answerHygiene 输出纪律: 抑制推理模型把思维链收尾(回答计划/自我评估)续写进正文。
+// 背景: glm-4.6v-flash 等原生推理模型在思考通道输出大部分思维链后, 偶发把收尾的
+// "回答计划 + 自我评估"续写进 content 可见区 —— 这类文本不以任何 cnCoTFilter 已知
+// 前缀(分步推理分析/思考过程等)开头, 流式过滤器无法识别, 前端就会看到"思考与答案混在一起"。
+// 官方 thinking 参数只控制思考开/关、不保证零泄漏(模型已知局限), 故在 system prompt
+// 加输出纪律从源头抑制, 与 thinkFilter/cnCoTFilter 过滤器构成双层防御。
+// 注意第 4 条豁免: explorePrompt 的自主模式明确要求 <plan>/<step> 结构化标注, 不得被本纪律压制。
+const answerHygiene = `【输出纪律】
+1. 全部推理、分析、回答计划与自我评估只允许通过思考通道(reasoning_content)输出; 正文一旦开始, 不得再在正文里继续或补充思考。
+2. 最终回答的正文必须直接呈现答案本身: 禁止包含推理过程复述、回答步骤计划、格式选择说明(如"我将使用项目符号列表"), 以及对回答的自我评价(如"这个计划直接回答了用户的问题")。
+3. 正文只描述事实、结论与操作内容本身, 不描述"你打算如何回答"。
+4. 例外: 当本提示明确要求输出结构化标注(如 <plan>/<step>)时, 按其要求输出, 不受第 2/3 条限制。`
 
 // explorePrompt 自主模式(explore=true)附加到 system prompt 的执行方法论。
 // 核心: 先规划 → 逐步执行(可多轮工具调用) → 检查 → 总结报告。

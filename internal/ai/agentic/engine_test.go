@@ -154,6 +154,24 @@ func TestBuildMessagesStripsCitations(t *testing.T) {
 	}
 }
 
+// TestBuildMessagesIncludesAnswerHygiene 守卫: system prompt 必须包含输出纪律(answerHygiene),
+// 抑制推理模型把思维链收尾(回答计划/自我评估)续写进正文造成"思考与答案混在一起"。
+// 若移除注入点(buildMessages 中的 answerHygiene 拼接), 本测试失败。
+func TestBuildMessagesIncludesAnswerHygiene(t *testing.T) {
+	e := NewEngine(mcp.NewRegistry(), ratelimit.New(), nil, nil)
+	msgs, _ := e.buildMessages(context.Background(), "", "你好", nil, "", nil)
+	if len(msgs) == 0 || msgs[0].Role != "system" {
+		t.Fatalf("expected system message first, got %+v", msgs)
+	}
+	if !strings.Contains(msgs[0].Content, "【输出纪律】") {
+		t.Errorf("system prompt missing answerHygiene guidance")
+	}
+	// 自主模式豁免条款必须同时存在, 避免 <plan>/<step> 结构化标注被输出纪律压制。
+	if !strings.Contains(msgs[0].Content, "<plan>/<step>") {
+		t.Errorf("answerHygiene missing structured-tag exemption")
+	}
+}
+
 // TestFilterEmptyAssistant 验证无正文/无工具调用/无推理的助手消息不会落库。
 func TestFilterEmptyAssistant(t *testing.T) {
 	in := []llm.Message{
