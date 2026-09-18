@@ -5,15 +5,16 @@
 //  1. 模型在回复中调用 MCP 工具 image_generate(prompt, size?)
 //  2. 本工具从 sysconfig 读智谱 provider 的 api_key + base_url,
 //     POST /images/generations 获取图片 URL(智谱通常返回 24h 有效的 CDN URL)
-//  3. 返回 {url, model, size} 给引擎,  引擎将 URL 注入模型上下文
-//  4. 模型在最终回复中按 markdown 图片语法 `![描述](url)` 输出
-//  5. 前端 renderInline 已支持 ![alt](url) 渲染(URL 协议白名单限 http/https/data/绝对路径)
+//  3. 若已接入 MinIO: 下载 CDN 图片 → 上传到 MinIO(ai-images/<uuid>.png) → 返回 7 天预签名 URL
+//     未接入 MinIO 时优雅降级: 直接返回智谱 CDN URL(24h 有效)
+//  4. 返回 {url, model, size} 给引擎, 引擎将 URL 注入模型上下文
+//  5. 模型在最终回复中按 markdown 图片语法 `![描述](url)` 输出
+//  6. 前端 renderInline 已支持 ![alt](url) 渲染(URL 协议白名单限 http/https/data/绝对路径)
 //
 // 选型说明:
 //   - 优先用名字含 zhipu 的 provider 的 key(base_url 直接来自 provider, 走 /api/paas/v4),
 //     若用户没单独建 zhipu provider 则回退到 cfg.LLM 主配置(默认 api_key + base_url)。
-//   - 后续要长期化(URL 永久有效)可上传到自己的 MinIO + 反代端点, 当前先用智谱 CDN 直链,
-//     对话内能立刻看到效果。
+//   - 已接入 MinIO 时图片持久化到对象存储(7 天预签名 URL), 未接入时降级为智谱 CDN 直链(24h 有效)。
 package agentic
 
 import (
@@ -26,6 +27,8 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/google/uuid"
 )
 
 // cogview 默认尺寸(智谱官方推荐区间)
@@ -43,7 +46,7 @@ type imageGenerateArgs struct {
 
 // imageGenerateResult 工具出参(返回给模型继续生成回答)。
 type imageGenerateResult struct {
-	URL    string `json:"url"`    // 图片直链(智谱 CDN, 24h 有效)
+	URL    string `json:"url"`    // 图片直链(MinIO 预签名 7d 有效; 未接 MinIO 时为智谱 CDN 24h 有效)
 	Model  string `json:"model"`  // 实际使用的模型 ID
 	Size   string `json:"size"`   // 实际尺寸
 	Prompt string `json:"prompt"` // 实际提示词(便于模型在回答中引用)
@@ -74,12 +77,53 @@ func (ts *MCPToolSet) imageGenerate(ctx context.Context, args map[string]any) (a
 		baseURL = "https://open.bigmodel.cn/api/paas/v4"
 	}
 
-	url, err := callCogview(ctx, apiKey, baseURL, model, prompt, size)
+	cdnURL, err := callCogview(ctx, apiKey, baseURL, model, prompt, size)
 	if err != nil {
 		return nil, fmt.Errorf("image_generate: %w", err)
 	}
-	slog.Info("image_generate ok", "model", model, "size", size, "prompt_len", len(prompt))
-	return imageGenerateResult{URL: url, Model: model, Size: size, Prompt: prompt}, nil
+
+	finalURL := cdnURL
+	if ts.objStore != nil {
+		if persisted, perr := ts.persistImage(ctx, cdnURL); perr != nil {
+			slog.Warn("image_generate: MinIO persist failed, fallback to CDN URL", "err", perr)
+		} else {
+			finalURL = persisted
+		}
+	}
+
+	slog.Info("image_generate ok", "model", model, "size", size, "prompt_len", len(prompt), "persisted", ts.objStore != nil)
+	return imageGenerateResult{URL: finalURL, Model: model, Size: size, Prompt: prompt}, nil
+}
+
+// persistImage 从 CDN 下载图片并上传到 MinIO, 返回 7 天有效的预签名 URL。
+func (ts *MCPToolSet) persistImage(ctx context.Context, cdnURL string) (string, error) {
+	resp, err := http.Get(cdnURL)
+	if err != nil {
+		return "", fmt.Errorf("download: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("download status %d", resp.StatusCode)
+	}
+	data, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", fmt.Errorf("read body: %w", err)
+	}
+
+	key := "ai-images/" + uuid.NewString() + ".png"
+	ct := resp.Header.Get("Content-Type")
+	if ct == "" {
+		ct = "image/png"
+	}
+	if err := ts.objStore.Put(ctx, key, bytes.NewReader(data), int64(len(data)), ct); err != nil {
+		return "", fmt.Errorf("upload: %w", err)
+	}
+
+	u, err := ts.objStore.PresignedURL(key, 7*24*time.Hour)
+	if err != nil {
+		return "", fmt.Errorf("presign: %w", err)
+	}
+	return u.String(), nil
 }
 
 // resolveZhipuCreds 优先从 cfg.LLM.Providers 中找名字含 zhipu 的 provider; 否则回退到主 LLM 配置。

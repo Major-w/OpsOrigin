@@ -1256,9 +1256,22 @@ func main() {
 	toolSet.SetScriptExecutor(scriptSvc) // AI 的 script_run 工具经 script 服务→Agent 通道真实执行
 	toolSet.SetEmbedder(llmClient)       // 知识库检索启用语义向量匹配
 
-	toolSet.SetConfig(cfg) // image_generate 等需要从 sysconfig 读 LLM provider key/base_url 的工具用
+	toolSet.SetConfig(cfg)           // image_generate 等需要从 sysconfig 读 LLM provider key/base_url 的工具用
+	toolSet.SetObjectStore(osClient) // image_generate 生成的图片持久化到 MinIO(nil 时降级为 CDN 直链)
 	// 审批策略: 引擎层按策略(每次询问/始终允许/仅敏感)做交互式确认, 白名单外且未获确认的脚本走 ITSM 工单兜底。
 	toolSet.SetExternalApproval(aiSvc.Engine.ScriptApprovalChecker)
+	// 代码编写类工具(coding_*): 沙箱根默认 = 进程 cwd(通常为仓库根), 可由 OPSORIGIN_AI_CODING_ROOT 显式覆盖;
+	// 写/执行类(coding_edit_file/write_file/apply_patch/run_shell)必须经 CodingApprovalChecker 交互式审批(SSE ask + 超时 fail-closed)。
+	if root := os.Getenv("OPSORIGIN_AI_CODING_ROOT"); root != "" {
+		toolSet.SetCodingSandbox(root)
+	} else if wd, werr := os.Getwd(); werr == nil {
+		// 未显式配置沙箱根: 默认 = 进程 cwd(通常为整个仓库根)。
+		// 此时 AI 可读写仓内全部文件, 仅 .git/.env/密钥等受保护路径被写保护拦截。
+		// 生产环境建议设置 OPSORIGIN_AI_CODING_ROOT 将范围收窄到目标项目目录。
+		slog.Warn("AI coding sandbox root not set; defaulting to process cwd (entire repo). Set OPSORIGIN_AI_CODING_ROOT to narrow the scope.", "cwd", wd)
+		toolSet.SetCodingSandbox(wd)
+	}
+	toolSet.SetCodingApproval(aiSvc.Engine.CodingApprovalChecker)
 	// 知识库-AI 绑定: 按 Agent 解析其绑定的知识库分类, RAG 检索与 knowledge_search 工具据此过滤。
 	toolSet.SetKnowledgeCategoriesResolver(aiSvc.Engine.AgentKnowledgeCategories)
 	// P0-2: AI 可直接执行的脚本白名单(免人工审批); 缺省全部须经审批。格式: 逗号分隔的 script_id 或 script_name。

@@ -512,6 +512,32 @@ func (e *Engine) loadFromStore() error {
 			Skills:              a.Skills,
 		}
 	}
+	// 平台内置预设 Agent 注入: coding-assistant / doc-assistant 属于 PresetAgentTemplates
+	// (不自动实例化为 DB 记录), 需按需注入内存使其可被 GET /api/v1/ai/agents 返回并被预选;
+	// 若用户已在 DB 中编辑/实例化同名 Agent, 上面加载已覆盖, 此处跳过。
+	for _, tpl := range PresetAgentTemplates {
+		if tpl.ID != "coding-assistant" && tpl.ID != "doc-assistant" {
+			continue
+		}
+		if _, ok := e.agents[tpl.ID]; ok {
+			continue
+		}
+		now := time.Now()
+		e.agents[tpl.ID] = &model.AgentInstance{
+			ID:                  tpl.ID,
+			TenantID:            "default",
+			Name:                tpl.Name,
+			ModelName:           tpl.ModelName,
+			SystemPrompt:        tpl.SystemPrompt,
+			Status:              "active",
+			CreatedAt:           now,
+			UpdatedAt:           now,
+			KnowledgeCategories: tpl.KnowledgeCategories,
+			Tools:               tpl.Tools,
+			Skills:              tpl.Skills,
+		}
+		slog.Info("injected built-in preset agent", "id", tpl.ID, "name", tpl.Name)
+	}
 	teams, err := e.store.ListTeams(ctx, "default")
 	if err != nil {
 		return err
@@ -1051,12 +1077,27 @@ toolLoop:
 		step.Reasoning = choiceMsg.ReasoningContent
 
 		if len(choiceMsg.ToolCalls) == 0 {
-			step.Finished = true
-			turn.Steps = append(turn.Steps, step)
-			content = choiceMsg.Content
-			reasoningAcc = choiceMsg.ReasoningContent
-			completed = true
-			break
+			// 文本形态工具调用兜底: 部分模型不经 Function Calling 协议, 而把调用以
+			// <tool_call>{...}</tool_call> 或 ```python name(...)``` 纯文本吐出,
+			// 若不解析会把伪调用当最终答案(用户看到"我要调用 xx"后卡住)。先尝试还原。
+			if tcs := extractTextToolCalls(choiceMsg.Content, toolNameSet(tools)); len(tcs) > 0 {
+				slog.Info("recovered text-form tool calls", "count", len(tcs), "tools", func() []string {
+					ns := make([]string, 0, len(tcs))
+					for _, tc := range tcs {
+						ns = append(ns, tc.Function.Name)
+					}
+					return ns
+				}())
+				choiceMsg.ToolCalls = tcs
+				msgs[len(msgs)-1] = choiceMsg // 回填 assistant 消息的 tool_calls, 保证后续 tool 消息协议完整
+			} else {
+				step.Finished = true
+				turn.Steps = append(turn.Steps, step)
+				content = choiceMsg.Content
+				reasoningAcc = choiceMsg.ReasoningContent
+				completed = true
+				break
+			}
 		}
 
 		// 空结果重试处理(模型无关, 须先于死循环检测): 本轮调用的工具在上轮全部返回空(count:0 等),
@@ -1972,6 +2013,24 @@ func (e *Engine) ScriptApprovalChecker(ctx context.Context, scriptID, targetAgen
 	return false, "操作被用户拒绝" + suffixComment(resp.Comment)
 }
 
+// CodingApprovalChecker 代码编写类工具(写/执行)的交互式人工审批, 注入到 MCPToolSet.codingApproval。
+// 与 ScriptApprovalChecker 同走 SSE ask 事件 + 超时 fail-closed; 但 coding 写/执行类始终要求确认(不依赖策略放行),
+// 因为直接改动本仓库代码风险高, 必须人点确认才执行。只读类(coding_read/list/grep)不走此审批。
+func (e *Engine) CodingApprovalChecker(ctx context.Context, tool, agentID string, args map[string]any, summary string) (bool, string) {
+	argsJSON, _ := json.Marshal(args)
+	policy := e.GetApprovalPolicy(agentIDFrom(ctx))
+	timeout := time.Duration(policy.AskTimeoutSec) * time.Second
+	resp := e.approvals.Request(ctx, tenantOf(ctx), agentIDFrom(ctx), tool, string(argsJSON), summary, timeout)
+	if resp == nil {
+		return false, "操作未获批准(审批超时或已取消), 已停止执行"
+	}
+	if resp.Action == "approve" {
+		slog.Info("ai coding op approved by human", "tool", tool, "agent", agentID, "by", resp.By)
+		return true, ""
+	}
+	return false, "操作被用户拒绝" + suffixComment(resp.Comment)
+}
+
 // suffixComment 拼接审批备注(可选)。
 func suffixComment(comment string) string {
 	if comment == "" {
@@ -1983,9 +2042,15 @@ func suffixComment(comment string) string {
 // privilegedTools 需要 ai:tool:exec 权限的高风险/写操作工具。
 // 仅 script_run(在受管主机执行脚本) 与 ticket_create(创建工单) 受此约束;
 // 只读工具(cmdb_query / knowledge_search) 任何已认证用户均可经 AI 调用。
+// coding 写/执行类(coding_edit_file / coding_write_file / coding_apply_patch / coding_run_shell) 同样受限,
+// 需 ai:tool:exec 权限 + 交互式人工审批双保险(只读类 coding_read/list/grep 不在此列, 仅受 sandboxRoot 限定)。
 var privilegedTools = map[string]bool{
-	"script_run":    true,
-	"ticket_create": true,
+	"script_run":         true,
+	"ticket_create":      true,
+	"coding_edit_file":   true,
+	"coding_write_file":  true,
+	"coding_apply_patch": true,
+	"coding_run_shell":   true,
 }
 
 // ToolPolicy 描述某连接器/工具的审批策略级别, 经 #404 钩子链的 PreToolCall 闸门生效。
@@ -2773,6 +2838,8 @@ const citationGuidance = `引用与溯源要求:
   - CMDB 配置项: [^ci:<CI的ID>]  (cmdb_query 返回的 CI id)
   - 监控指标/告警: [^mon:<ID>]   (监控查询返回的 ID)
   - 仅引用知识库且不想写类型时,也可简写 [^<文章ID>] (视为 kb 类型)。
+  - 溯源增强(推荐): 若 knowledge_search 结果里该条带 chunk_id(命中具体片段, 尤其来自附件抽取的片段),
+    请写成 [^kb:<文章ID>#<块ID>], 用户点击引用即可跳到原文对应片段并高亮; 不带也合法。
 - 回答结尾用 "## 引用来源" 列出所有被引用条目的标题与 ID。
 - 未引用任何资料时无需列出。
 - 禁止编造不存在的 ID;只能引用工具实际返回给你的资料 ID。`
@@ -3262,6 +3329,12 @@ streamToolLoop:
 		}
 
 		var reasoningAcc string
+		// roundContent 本轮可见正文累计(含被抑制的伪调用原文), 供文本形态工具调用兜底解析;
+		// 与跨轮的 content(最终答案)分离, 避免上一轮内容混入本轮判定。
+		roundContent := ""
+		// callFlt 抑制 <tool_call>…</tool_call> 伪调用块进入可见正文(防"卡住"观感),
+		// 原文折叠进 thinking 并累计到 roundContent 供兜底解析。
+		callFlt := newPseudoCallFilter()
 		var toolCalls []llm.ToolCall
 		var truncated bool
 		var lastFinish string
@@ -3283,8 +3356,18 @@ streamToolLoop:
 						reasoningAcc += cThink
 					}
 					if cClean != "" {
-						emit("token", cClean)
-						content += cClean
+						// 文本形态工具调用抑制: <tool_call>…</tool_call> 伪调用块不进正文,
+						// 原文折叠进 thinking; clean 进正文。两者都累计进 roundContent 供兜底解析。
+						pClean, pCaptured := callFlt.feed(cClean)
+						if pCaptured != "" {
+							emit("thinking", pCaptured)
+							roundContent += pCaptured
+						}
+						if pClean != "" {
+							emit("token", pClean)
+							content += pClean
+							roundContent += pClean
+						}
 					}
 				}
 				if think != "" {
@@ -3321,6 +3404,20 @@ streamToolLoop:
 		// 槽位须覆盖整个流式消费期(而非 StreamChat 返回即释放), 否则流式并发将失控(P0-3)。
 		e.releaseLLMSlot(slot)
 
+		// 冲刷伪调用过滤器残留: 未闭合的 <tool_call> 块整体折叠进 thinking(不进正文),
+		// 剩余普通文本正常下发。均累计进 roundContent 供兜底解析。
+		if pTail, pCaptured := callFlt.flush(); pTail != "" || pCaptured != "" {
+			if pCaptured != "" {
+				emit("thinking", pCaptured)
+				roundContent += pCaptured
+			}
+			if pTail != "" {
+				emit("token", pTail)
+				content += pTail
+				roundContent += pTail
+			}
+		}
+
 		// 截断持久化: length 到限已由 truncated 标记; 流式中途断连/取消(无任何 finish_reason)
 		// 同样意味着生成未收尾, 落库时打上标志, 历史回放可见「输出不完整」而不是莫名的半截话。
 		if lastFinish == "" {
@@ -3333,12 +3430,25 @@ streamToolLoop:
 		step.Reasoning = reasoningAcc
 
 		if len(toolCalls) == 0 {
-			// 终轮: 答案已通过流式推送给前端
-			e.recordStreamTokens(agentID, content)
-			step.Finished = true
-			turn.Steps = append(turn.Steps, step)
-			completed = true
-			break
+			// 文本形态工具调用兜底(与非流式路径对齐): 模型把调用以
+			// <tool_call>{...}</tool_call> 或 ```python name(...)``` 纯文本吐出时,
+			// 还原为真实工具调用继续循环, 否则用户只会看到伪调用文本后"卡住"。
+			if tcs := extractTextToolCalls(roundContent, toolNameSet(tools)); len(tcs) > 0 {
+				slog.Info("recovered text-form tool calls", "count", len(tcs), "round", round)
+				emit("token", "\n\n（已识别模型以文本形式发起的工具调用，正在执行…）\n")
+				toolCalls = tcs
+				// 回填刚 append 的 assistant 消息的 tool_calls, 保证后续 tool 消息协议完整。
+				if len(msgs) > 0 {
+					msgs[len(msgs)-1].ToolCalls = tcs
+				}
+			} else {
+				// 终轮: 答案已通过流式推送给前端
+				e.recordStreamTokens(agentID, content)
+				step.Finished = true
+				turn.Steps = append(turn.Steps, step)
+				completed = true
+				break
+			}
 		}
 
 		// 空结果重试处理(模型无关, 须先于死循环检测): 本轮调用的工具在上轮全部返回空(count:0 等),

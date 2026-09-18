@@ -1,6 +1,6 @@
 import {
   MessagesSquare, Package, Radar, Users, Gauge, FlaskConical, ShieldCheck,
-  Store, Wrench, BarChart3, Settings, Cpu, Webhook, type LucideIcon,
+  Store, Wrench, BarChart3, Settings, Cpu, Webhook, Code2, type LucideIcon,
 } from 'lucide-react'
 import { t } from '@/lib/i18n'
 
@@ -21,6 +21,7 @@ export function getAINavItems(): AINavItem[] {
     { to: '/ai/impact', label: t('ai.opsEffect'), icon: Gauge },
     { to: '/ai/drills', label: t('ai.drill'), icon: FlaskConical },
     { to: '/ai/sre', label: t('ai.sreWorkbench'), icon: ShieldCheck },
+    { to: '/ai/coding', label: t('ai.coding'), icon: Code2 },
     { to: '/ai/marketplace', label: t('ai.marketplace'), icon: Store },
     { to: '/ai/mcp', label: t('ai.mcp'), icon: Wrench },
     { to: '/ai/analytics', label: t('ai.usageAnalytics'), icon: BarChart3 },
