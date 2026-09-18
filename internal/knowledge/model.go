@@ -31,6 +31,13 @@ type Category struct {
 	CreatedAt   time.Time `json:"created_at"`
 }
 
+// ChunkRef 知识块引用(用于附件抽取结果预览 / 引用溯源定位)。
+type ChunkRef struct {
+	ID      string `json:"id"`
+	Heading string `json:"heading,omitempty"`
+	Content string `json:"content"`
+}
+
 // ArticleVersion 文章历史版本快照(编辑历史可回滚)。
 type ArticleVersion struct {
 	ID        string    `json:"id"`

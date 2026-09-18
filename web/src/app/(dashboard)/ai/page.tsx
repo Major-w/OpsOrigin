@@ -10,7 +10,7 @@ import {
   Sparkles, History, Settings, BarChart3, Share2, Lock, PanelLeftClose, PanelLeftOpen,
   AlertTriangle, XCircle, CheckCircle, Loader2, Brain, Bookmark, Download, Save, Terminal, Paperclip,
   FileDown, Server, FileBarChart, Bug, ClipboardList, BookOpen, Database, Bell,
-  Maximize2, Minimize2,
+  Maximize2, Minimize2, Columns3,
 } from 'lucide-react'
 import { exportDocFile } from '@/lib/doc-export'
 import { cn, apiFetch, apiFetchRaw } from '@/lib/utils'
@@ -777,6 +777,23 @@ export default function AIPage() {
                   <span className="inline-flex items-center gap-1.5 px-2 py-1 rounded-lg text-[11px] border border-dashed border-gray-300 dark:border-gray-600 text-muted-foreground">
                     <Loader2 className="h-3 w-3 animate-spin" />上传中…
                   </span>
+                )}
+                {/* 多文件对比问答: 附了 2 个及以上文档时给一键指令, 省去用户自己写提示词。
+                    附件正文由服务端抽取后注入(支持 PDF/Word/Excel/PPT/文本), 模型直接横向比对。 */}
+                {pendingFiles.length >= 2 && (
+                  <button
+                    type="button"
+                    className="inline-flex items-center gap-1.5 px-2 py-1 rounded-lg text-[11px] border border-sky-500/40 bg-sky-500/10 text-sky-600 dark:text-sky-300 hover:brightness-110 transition"
+                    title="插入对比指令: 让 AI 横向比对这些附件"
+                    onClick={() => {
+                      const names = pendingFiles.map(f => f.name).join('、')
+                      setInput(prev => (prev ? prev.replace(/\s*$/, ' ') : '') +
+                        `请对比分析以下 ${pendingFiles.length} 个文档（${names}）的异同：先给出结论，再用表格逐项对比关键差异，最后指出需要注意的风险点。`)
+                      inputTaRef.current?.focus()
+                    }}
+                  >
+                    <Columns3 className="h-3 w-3" />对比这些文件
+                  </button>
                 )}
               </div>
             )}

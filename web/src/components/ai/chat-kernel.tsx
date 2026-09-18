@@ -30,7 +30,9 @@ import {
   Paperclip, FileText, Image as ImageIcon, X, Search, Copy, RefreshCw, Check, ArrowDown,
   ChevronRight, ChevronUp, ChevronDown, Download, FileDown, Pencil,
   HelpCircle, CornerDownRight, BookMarked,
+  Eye, FileEdit, FilePlus2, FileDiff, FolderTree,
 } from 'lucide-react'
+import { CodingToolCard } from './coding-tool-card'
 
 // ---------------------------------------------------------------------------
 // 共享类型
@@ -419,6 +421,20 @@ function parseToolCallInfo(tc: ToolCallLocal): { description: string; lineStats?
   const args = typeof tc.args === 'string' ? tc.args : JSON.stringify(tc.args)
   const result = tc.result || ''
 
+  // 代码助手工具: 给出精确的文件/操作描述(覆盖下方通用分支)
+  if (name.startsWith('coding_')) {
+    let p = ''
+    try { const a = JSON.parse(args); p = a.path || '' } catch { /* args 非 JSON 时忽略 */ }
+    const cmd = (args.match(/["']?command["']?\s*[:=]\s*["']([^"']+)["']/i) || [])[1] || ''
+    if (name.includes('read')) return { description: `读取 ${p}` }
+    if (name.includes('write')) return { description: `新建 ${p}` }
+    if (name.includes('edit')) return { description: `编辑 ${p}` }
+    if (name.includes('grep')) return { description: '搜索内容' }
+    if (name.includes('list')) return { description: '列出目录' }
+    if (name.includes('patch')) return { description: '应用补丁' }
+    if (name.includes('run') || name.includes('shell')) return { description: `执行: ${cmd || args.slice(0, 40)}` }
+  }
+
   // 文件操作类工具
   if (name.includes('write') || name.includes('create') || name.includes('file')) {
     // 尝试从参数中提取文件名
@@ -464,6 +480,15 @@ function parseToolCallInfo(tc: ToolCallLocal): { description: string; lineStats?
 /** 获取工具类型的图标 */
 function getToolIcon(tc: ToolCallLocal) {
   const name = tc.name || ''
+
+  // 代码助手工具专属图标
+  if (name.startsWith('coding_read_file')) return <Eye className="h-3.5 w-3.5 text-sky-500" />
+  if (name.startsWith('coding_write_file')) return <FilePlus2 className="h-3.5 w-3.5 text-green-500" />
+  if (name.startsWith('coding_edit_file')) return <FileEdit className="h-3.5 w-3.5 text-amber-500" />
+  if (name.startsWith('coding_apply_patch')) return <FileDiff className="h-3.5 w-3.5 text-purple-500" />
+  if (name.startsWith('coding_list_files')) return <FolderTree className="h-3.5 w-3.5 text-indigo-500" />
+  if (name.startsWith('coding_grep_files')) return <Search className="h-3.5 w-3.5 text-orange-500" />
+  if (name.startsWith('coding_run_shell')) return <Terminal className="h-3.5 w-3.5 text-violet-500" />
 
   if (name.includes('write') || name.includes('create') || name.includes('file')) {
     return <FileText className="h-3.5 w-3.5 text-blue-500" />
@@ -539,25 +564,31 @@ function TaskTimeline({ toolCalls, className }: TaskTimelineProps) {
               <ChevronDown className="h-3.5 w-3.5 shrink-0 text-muted-foreground transition-transform duration-200 group-open/task:rotate-180" />
             </summary>
 
-            {/* 详情面板 */}
-            <div className="px-3 pb-3 pt-1 space-y-2 border-t border-gray-100 dark:border-white/5">
-              {tc.args && (
-                <div>
-                  <div className="text-[10px] text-muted-foreground mb-1">参数</div>
-                  <pre className="rounded bg-black/5 dark:bg-black/20 p-2 text-[10px] overflow-x-auto whitespace-pre-wrap font-mono leading-relaxed">
-                    {fmtToolArgs(typeof tc.args === 'string' ? tc.args : JSON.stringify(tc.args))}
-                  </pre>
-                </div>
-              )}
-              {tc.result && (
-                <div>
-                  <div className="text-[10px] text-muted-foreground mb-1">结果</div>
-                  <pre className="rounded bg-black/5 dark:bg-black/20 p-2 text-[10px] overflow-x-auto whitespace-pre-wrap font-mono leading-relaxed max-h-40 overflow-y-auto">
-                    {tc.result}
-                  </pre>
-                </div>
-              )}
-            </div>
+            {/* 详情面板: coding_* 工具走富视图(行内 diff / 终端 / 文件预览), 其余保留原样 */}
+            {tc.name.startsWith('coding_') ? (
+              <div id={`coding-tc-${tc.id}`} className="px-3 pb-3 pt-1 border-t border-gray-100 dark:border-white/5">
+                <CodingToolCard toolCall={tc} />
+              </div>
+            ) : (
+              <div className="px-3 pb-3 pt-1 space-y-2 border-t border-gray-100 dark:border-white/5">
+                {tc.args && (
+                  <div>
+                    <div className="text-[10px] text-muted-foreground mb-1">参数</div>
+                    <pre className="rounded bg-black/5 dark:bg-black/20 p-2 text-[10px] overflow-x-auto whitespace-pre-wrap font-mono leading-relaxed">
+                      {fmtToolArgs(typeof tc.args === 'string' ? tc.args : JSON.stringify(tc.args))}
+                    </pre>
+                  </div>
+                )}
+                {tc.result && (
+                  <div>
+                    <div className="text-[10px] text-muted-foreground mb-1">结果</div>
+                    <pre className="rounded bg-black/5 dark:bg-black/20 p-2 text-[10px] overflow-x-auto whitespace-pre-wrap font-mono leading-relaxed max-h-40 overflow-y-auto">
+                      {tc.result}
+                    </pre>
+                  </div>
+                )}
+              </div>
+            )}
           </details>
         )
       })}

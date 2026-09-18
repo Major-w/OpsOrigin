@@ -97,6 +97,11 @@ func (s *pgStore) init(ctx context.Context) {
 	}
 	s.db.ExecContext(ctx, `CREATE INDEX IF NOT EXISTS idx_knowledge_chunks_article ON knowledge_chunks(article_id)`)
 	s.db.ExecContext(ctx, `CREATE INDEX IF NOT EXISTS idx_knowledge_chunks_tenant ON knowledge_chunks(tenant_id)`)
+	// —— 附件解析入库: 块可来自文章正文或文章下的附件(兼容老库补列) ——
+	// source: article|attachment; attachment_id: 来源附件(BIGSERIAL), 文章正文块为 NULL。
+	s.db.ExecContext(ctx, `ALTER TABLE knowledge_chunks ADD COLUMN IF NOT EXISTS source TEXT DEFAULT 'article'`)
+	s.db.ExecContext(ctx, `ALTER TABLE knowledge_chunks ADD COLUMN IF NOT EXISTS attachment_id BIGINT`)
+	s.db.ExecContext(ctx, `CREATE INDEX IF NOT EXISTS idx_knowledge_chunks_attachment ON knowledge_chunks(attachment_id)`)
 	// HNSW 索引加速余弦检索;创建失败(老版本 pgvector)不致命,仍走全表余弦。
 	s.db.ExecContext(ctx, `CREATE INDEX IF NOT EXISTS idx_knowledge_chunks_embedding ON knowledge_chunks USING hnsw (embedding vector_cosine_ops)`)
 	// 兼容旧索引(历史文章级向量), 保留不删。
@@ -151,6 +156,10 @@ func (s *pgStore) init(ctx context.Context) {
 		slog.Warn("knowledge: create kb_attachments table failed", "err", err)
 	}
 	s.db.ExecContext(ctx, `CREATE INDEX IF NOT EXISTS idx_kb_attachments_article ON kb_attachments(article_id, tenant_id)`)
+	// —— 附件解析入库状态: indexed=是否抽文本切片完成, index_error=失败原因, chunk_count=产出块数 ——
+	s.db.ExecContext(ctx, `ALTER TABLE kb_attachments ADD COLUMN IF NOT EXISTS indexed BOOLEAN DEFAULT false`)
+	s.db.ExecContext(ctx, `ALTER TABLE kb_attachments ADD COLUMN IF NOT EXISTS index_error TEXT`)
+	s.db.ExecContext(ctx, `ALTER TABLE kb_attachments ADD COLUMN IF NOT EXISTS chunk_count INT DEFAULT 0`)
 
 	s.vectorEnabled = true
 	slog.Info("knowledge: pgvector semantic search enabled (chunk-level)")
@@ -176,29 +185,128 @@ func (s *pgStore) embedRaw(ctx context.Context, text string) ([]float32, error) 
 // 调用方可据此决定是否把文章加入异步重试队列(后台补算)。
 // 无向量能力时仍落块(支撑关键词检索), embedding 留 NULL。
 func (s *pgStore) syncChunks(ctx context.Context, a *Article) (missing bool, err error) {
-	if _, err := s.db.ExecContext(ctx, `DELETE FROM knowledge_chunks WHERE article_id=$1 AND tenant_id=$2`, a.ID, a.TenantID); err != nil {
+	// 只清理「正文块」: 附件块(attachment_id 非空)由 syncAttachmentChunks 单独维护,
+	// 否则编辑一次正文就会把附件抽取出来的知识块连带删掉。
+	if _, err := s.db.ExecContext(ctx,
+		`DELETE FROM knowledge_chunks WHERE article_id=$1 AND tenant_id=$2 AND attachment_id IS NULL`, a.ID, a.TenantID); err != nil {
 		return false, err
 	}
 	chunks := chunkMarkdown(a.Content)
+	missing = s.insertChunks(ctx, a.TenantID, a.ID, 0, "article", "", chunks)
+	return missing, nil
+}
+
+// insertChunks 批量写入块并逐块计算 embedding。
+// attID=0 表示文章正文块; attID>0 表示为某附件抽取的块(heading 前缀带上附件名便于溯源)。
+func (s *pgStore) insertChunks(ctx context.Context, tenantID, articleID string, attID int64, source, headingPrefix string, chunks []Chunk) (missing bool) {
 	for _, c := range chunks {
 		vc := any(nil)
 		if s.vectorEnabled && s.embedder != nil {
 			v, err := s.embedRaw(ctx, chunkEmbedText(&c))
 			if err != nil {
-				slog.Warn("knowledge: chunk embed failed", "article", a.ID, "chunk", c.Index, "err", err)
+				slog.Warn("knowledge: chunk embed failed", "article", articleID, "chunk", c.Index, "err", err)
 				missing = true
 			} else {
 				vc = vecLiteral(v)
 			}
 		}
+		heading := c.Heading
+		if headingPrefix != "" && heading != headingPrefix {
+			if heading != "" {
+				heading = headingPrefix + " › " + heading
+			} else {
+				heading = headingPrefix
+			}
+		}
+		attKey := any(nil)
+		if attID > 0 {
+			attKey = attID
+		}
 		if _, err := s.db.ExecContext(ctx,
-			`INSERT INTO knowledge_chunks(id,article_id,tenant_id,chunk_index,heading,content,embedding,created_at)
-			 VALUES($1,$2,$3,$4,$5,$6,$7,$8) ON CONFLICT(id) DO NOTHING`,
-			uuid.New().String(), a.ID, a.TenantID, c.Index, c.Heading, c.Content, vc, time.Now()); err != nil {
-			slog.Warn("knowledge: insert chunk failed", "article", a.ID, "chunk", c.Index, "err", err)
+			`INSERT INTO knowledge_chunks(id,article_id,tenant_id,chunk_index,heading,content,embedding,created_at,source,attachment_id)
+			 VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) ON CONFLICT(id) DO NOTHING`,
+			uuid.New().String(), articleID, tenantID, c.Index, heading, c.Content, vc, time.Now(), source, attKey); err != nil {
+			slog.Warn("knowledge: insert chunk failed", "article", articleID, "chunk", c.Index, "err", err)
 		}
 	}
-	return missing, nil
+	return missing
+}
+
+// syncAttachmentChunks 为一个附件重建知识块: 删旧块 → 切块 → 逐块 embedding。
+// 与正文块同表同结构, 因此复用现有检索 SQL(按 article_id 聚合)即可被 AI 召回。
+func (s *pgStore) syncAttachmentChunks(ctx context.Context, tenantID, articleID string, attID int64, title string, content string) (int, bool, error) {
+	if _, err := s.db.ExecContext(ctx,
+		`DELETE FROM knowledge_chunks WHERE tenant_id=$1 AND attachment_id=$2`, tenantID, attID); err != nil {
+		return 0, false, err
+	}
+	chunks := chunkMarkdown(content)
+	if len(chunks) == 0 {
+		return 0, false, nil
+	}
+	missing := s.insertChunks(ctx, tenantID, articleID, attID, "attachment", title, chunks)
+	return len(chunks), missing, nil
+}
+
+// DeleteAttachmentChunks 删除某附件的全部知识块(附件删除时调用)。
+func (s *pgStore) DeleteAttachmentChunks(ctx context.Context, tenantID string, attID int64) error {
+	_, err := s.db.ExecContext(ctx, `DELETE FROM knowledge_chunks WHERE tenant_id=$1 AND attachment_id=$2`, tenantID, attID)
+	return err
+}
+
+// SetAttachmentIndexState 回写附件的解析入库状态(成功/失败原因/块数)。
+func (s *pgStore) SetAttachmentIndexState(ctx context.Context, tenantID string, attID int64, indexed bool, errMsg string, chunkCount int) {
+	if _, err := s.db.ExecContext(ctx,
+		`UPDATE kb_attachments SET indexed=$1, index_error=$2, chunk_count=$3 WHERE id=$4 AND tenant_id=$5`,
+		indexed, nullableText(errMsg), chunkCount, attID, tenantID); err != nil {
+		slog.Warn("knowledge: update attachment index state failed", "att", attID, "err", err)
+	}
+}
+
+func nullableText(s string) any {
+	if s == "" {
+		return nil
+	}
+	return s
+}
+
+// GetChunk 按块 ID 读取知识块(供引用溯源跳转定位原文片段)。
+// 同时校验块归属于给定文章与租户, 避免跨文章/跨租户越权读取; 返回 nil,nil 表示不存在。
+func (s *pgStore) GetChunk(ctx context.Context, tenantID, articleID, chunkID string) (*ChunkRef, error) {
+	c := &ChunkRef{}
+	err := s.db.QueryRowContext(ctx,
+		`SELECT id, heading, content FROM knowledge_chunks
+		 WHERE id=$1 AND tenant_id=$2 AND article_id=$3`, chunkID, tenantID, articleID).
+		Scan(&c.ID, &c.Heading, &c.Content)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return c, nil
+}
+
+// ListAttachmentChunks 列出某附件抽取出的知识块(供预览/溯源展示)。
+func (s *pgStore) ListAttachmentChunks(ctx context.Context, tenantID string, attID int64, limit int) ([]ChunkRef, error) {
+	if limit <= 0 || limit > 200 {
+		limit = 50
+	}
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT id, heading, content FROM knowledge_chunks WHERE tenant_id=$1 AND attachment_id=$2 ORDER BY chunk_index LIMIT $3`,
+		tenantID, attID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make([]ChunkRef, 0)
+	for rows.Next() {
+		var c ChunkRef
+		if err := rows.Scan(&c.ID, &c.Heading, &c.Content); err != nil {
+			return nil, err
+		}
+		out = append(out, c)
+	}
+	return out, rows.Err()
 }
 
 func vecLiteral(v []float32) any {
@@ -670,9 +778,13 @@ func (s *pgStore) AddAttachment(ctx context.Context, a *ArticleAttachment) error
 	).Scan(&a.ID)
 }
 
+// attachmentSelectCols 附件查询列(含解析入库状态三列, 兼容老库补列前为 NULL/默认 false)。
+const attachmentSelectCols = `id, article_id, tenant_id, file_name, file_size, file_type, uploaded_by, object_key, created_at,
+		COALESCE(indexed,false), COALESCE(index_error,''), COALESCE(chunk_count,0)`
+
 func (s *pgStore) ListAttachments(ctx context.Context, articleID, tenantID string) ([]*ArticleAttachment, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT id, article_id, tenant_id, file_name, file_size, file_type, uploaded_by, object_key, created_at
+		SELECT `+attachmentSelectCols+`
 		FROM kb_attachments WHERE article_id=$1 AND tenant_id=$2 ORDER BY created_at DESC`, articleID, tenantID)
 	if err != nil {
 		return nil, err
@@ -681,7 +793,8 @@ func (s *pgStore) ListAttachments(ctx context.Context, articleID, tenantID strin
 	out := make([]*ArticleAttachment, 0)
 	for rows.Next() {
 		a := &ArticleAttachment{}
-		if err := rows.Scan(&a.ID, &a.ArticleID, &a.TenantID, &a.FileName, &a.FileSize, &a.FileType, &a.UploadedBy, &a.ObjectKey, &a.CreatedAt); err != nil {
+		if err := rows.Scan(&a.ID, &a.ArticleID, &a.TenantID, &a.FileName, &a.FileSize, &a.FileType, &a.UploadedBy, &a.ObjectKey, &a.CreatedAt,
+			&a.Indexed, &a.IndexError, &a.ChunkCount); err != nil {
 			return nil, err
 		}
 		out = append(out, a)
@@ -692,9 +805,10 @@ func (s *pgStore) ListAttachments(ctx context.Context, articleID, tenantID strin
 func (s *pgStore) GetAttachment(ctx context.Context, aid int64, articleID, tenantID string) (*ArticleAttachment, error) {
 	a := &ArticleAttachment{}
 	err := s.db.QueryRowContext(ctx, `
-		SELECT id, article_id, tenant_id, file_name, file_size, file_type, uploaded_by, object_key, data, created_at
+		SELECT `+attachmentSelectCols+`, data
 		FROM kb_attachments WHERE id=$1 AND article_id=$2 AND tenant_id=$3`, aid, articleID, tenantID).
-		Scan(&a.ID, &a.ArticleID, &a.TenantID, &a.FileName, &a.FileSize, &a.FileType, &a.UploadedBy, &a.ObjectKey, &a.Data, &a.CreatedAt)
+		Scan(&a.ID, &a.ArticleID, &a.TenantID, &a.FileName, &a.FileSize, &a.FileType, &a.UploadedBy, &a.ObjectKey, &a.CreatedAt,
+			&a.Indexed, &a.IndexError, &a.ChunkCount, &a.Data)
 	if err != nil {
 		if err == sql.ErrNoRows {
 			return nil, ErrNotFound
@@ -712,6 +826,10 @@ func (s *pgStore) DeleteAttachment(ctx context.Context, aid int64, articleID, te
 	}
 	if n, _ := res.RowsAffected(); n == 0 {
 		return ErrNotFound
+	}
+	// 连带删除该附件抽取出的知识块, 避免附件删了内容仍能被检索到。
+	if err := s.DeleteAttachmentChunks(ctx, tenantID, aid); err != nil {
+		slog.Warn("knowledge: delete attachment chunks failed", "att", aid, "err", err)
 	}
 	return nil
 }

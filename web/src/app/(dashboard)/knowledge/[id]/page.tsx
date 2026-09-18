@@ -1,6 +1,6 @@
 
 import { useEffect, useRef, useState } from 'react'
-import { useParams, useNavigate } from 'react-router-dom'
+import { useParams, useNavigate, useSearchParams } from 'react-router-dom'
 import { useKnowledgeStore, type ArticleVersion } from '@/stores/knowledge'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Tag as AntTag, Button, Popconfirm } from 'antd'
@@ -37,10 +37,13 @@ import {
   Lock,
   CheckCircle2,
   Sparkles,
+  RefreshCw,
+  Quote,
 } from 'lucide-react'
 import { useAuthStore } from '@/stores/auth'
 import { getMessage } from '@/lib/message'
 import { AIWriteModal, useAIWrite } from '@/components/ai/ai-write-modal'
+import { AttachmentPreview } from '@/components/knowledge/attachment-preview'
 
 const getCurrentUser = () => useAuthStore.getState().user?.username || 'anonymous'
 
@@ -53,6 +56,10 @@ interface ArticleAttachment {
   uploaded_by: string
   object_key?: string
   created_at: string
+  /** 解析入库状态: 已抽文本切块并嵌入, 可被 AI 检索 */
+  indexed?: boolean
+  index_error?: string
+  chunk_count?: number
 }
 
 const fmtSize = (n: number) =>
@@ -156,6 +163,44 @@ export default function KnowledgeDetailPage() {
   const [uploading, setUploading] = useState(false)
   const attInputRef = useRef<HTMLInputElement>(null)
   const [pendingConfirm, setPendingConfirm] = useState<{ title: string; description: string; onConfirm: () => void | Promise<void> } | null>(null)
+  // 在线预览: 点击附件先开弹层(图片/PDF 内联, Office/文本走后端抽取), 下载仍保留独立出口
+  const [previewAtt, setPreviewAtt] = useState<ArticleAttachment | null>(null)
+  const [reindexing, setReindexing] = useState<number | null>(null)
+
+  // 引用溯源: AI 回答的引用带块锚点时跳到 ?chunk=<块ID>, 此处拉取并高亮对应片段
+  const [searchParams] = useSearchParams()
+  const chunkParam = searchParams.get('chunk') || ''
+  const [citedChunk, setCitedChunk] = useState<{ heading?: string; content: string } | null>(null)
+  const chunkRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    if (!chunkParam) { setCitedChunk(null); return }
+    let cancelled = false
+    apiFetch<{ heading?: string; content: string }>(`/knowledge/${articleId}/chunks/${encodeURIComponent(chunkParam)}`)
+      .then(c => { if (!cancelled) setCitedChunk(c || null) })
+      .catch(() => { if (!cancelled) setCitedChunk(null) })
+    return () => { cancelled = true }
+  }, [chunkParam])
+
+  useEffect(() => {
+    if (citedChunk && chunkRef.current) {
+      chunkRef.current.scrollIntoView({ behavior: 'smooth', block: 'center' })
+    }
+  }, [citedChunk])
+
+  const handleReindexAtt = async (a: ArticleAttachment) => {
+    setReindexing(a.id)
+    try {
+      const r = await apiFetch<{ indexed: boolean; index_error?: string; chunk_count?: number }>(
+        `/knowledge/${articleId}/attachments/${a.id}/reindex`, { method: 'POST' })
+      if (r?.indexed) getMessage().success(`已解析入库，共 ${r.chunk_count ?? 0} 个片段`)
+      else getMessage().warning(r?.index_error || '未能解析入库')
+      await loadAttachments()
+    } catch (err: any) {
+      getMessage().error('重新解析失败: ' + err.message)
+    }
+    setReindexing(null)
+  }
 
   const loadAttachments = async () => {
     try {
@@ -785,6 +830,19 @@ export default function KnowledgeDetailPage() {
         </article>
       )}
 
+      {/* 引用溯源: 从 AI 回答的引用跳转进来时, 高亮命中的原文片段 */}
+      {citedChunk && (
+        <div ref={chunkRef} className="rounded-lg border-l-4 border-sky-500 bg-sky-500/10 px-4 py-3">
+          <div className="flex items-center gap-1.5 text-xs font-medium text-sky-700 dark:text-sky-300 mb-1">
+            <Quote className="h-3.5 w-3.5" />
+            AI 引用的原文片段{citedChunk.heading ? ` · ${citedChunk.heading}` : ''}
+          </div>
+          <div className="whitespace-pre-wrap break-words text-xs leading-relaxed text-foreground/90">
+            {citedChunk.content}
+          </div>
+        </div>
+      )}
+
       {/* 附件 */}
       <Card>
         <CardHeader className="pb-3">
@@ -813,11 +871,46 @@ export default function KnowledgeDetailPage() {
             <div key={a.id} className="flex items-center justify-between px-3 py-2 rounded-lg border border-gray-200 dark:border-gray-800 hover:bg-muted/50 transition-colors">
               <div className="min-w-0 flex-1 flex items-center gap-2">
                 <FileText className="h-4 w-4 text-muted-foreground shrink-0" />
-                <span className="text-xs truncate">{a.file_name}</span>
+                <button
+                  type="button"
+                  className="text-xs truncate hover:underline hover:text-primary text-left"
+                  title="点击预览"
+                  onClick={() => setPreviewAtt(a)}
+                >
+                  {a.file_name}
+                </button>
                 <span className="text-[10px] text-muted-foreground shrink-0">{fmtSize(a.file_size)}</span>
                 <span className="text-[10px] text-muted-foreground shrink-0">{formatTime(a.created_at)}</span>
+                {/* 解析入库状态: 决定该附件内容能否被 AI 检索到 */}
+                {a.indexed ? (
+                  <span className="text-[10px] shrink-0 px-1.5 py-0.5 rounded-full bg-emerald-500/15 text-emerald-600 dark:text-emerald-300" title="内容已抽取切片并向量化，可被 AI 检索">
+                    已入库 {a.chunk_count ?? 0} 段
+                  </span>
+                ) : (
+                  <span
+                    className="text-[10px] shrink-0 px-1.5 py-0.5 rounded-full bg-amber-500/15 text-amber-600 dark:text-amber-300"
+                    title={a.index_error || '尚未解析入库，AI 检索不到该附件内容'}
+                  >
+                    未入库
+                  </span>
+                )}
               </div>
               <div className="flex items-center gap-1 shrink-0">
+                <Button type="text" size="middle" className="h-6 w-6 text-gray-500 hover:text-gray-900 dark:text-gray-400 dark:hover:text-white" title="预览" onClick={() => setPreviewAtt(a)}>
+                  <Eye className="h-3.5 w-3.5" />
+                </Button>
+                {!a.indexed && (
+                  <Button
+                    type="text"
+                    size="middle"
+                    className="h-6 w-6 text-amber-500"
+                    title="重新解析入库"
+                    disabled={reindexing === a.id}
+                    onClick={() => handleReindexAtt(a)}
+                  >
+                    {reindexing === a.id ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="h-3.5 w-3.5" />}
+                  </Button>
+                )}
                 <Button type="text" size="middle" className="h-6 w-6 text-gray-500 hover:text-gray-900 dark:text-gray-400 dark:hover:text-white" title="下载" onClick={() => handleDownloadAtt(a)}>
                   <Download className="h-3.5 w-3.5" />
                 </Button>
@@ -897,6 +990,14 @@ export default function KnowledgeDetailPage() {
 
       {/* AI 辅助编写弹窗(工具栏按钮 / 编辑器空行输入 / 唤起) */}
       <AIWriteModal {...aiWrite.modalProps} />
+
+      {/* 附件在线预览弹层 */}
+      <AttachmentPreview
+        open={!!previewAtt}
+        articleId={articleId}
+        attachment={previewAtt}
+        onClose={() => setPreviewAtt(null)}
+      />
     </div>
   )
 }

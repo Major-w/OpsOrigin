@@ -27,7 +27,12 @@ export const citeMeta: Record<CiteType, CiteMeta> = {
     short: 'K',
     color: 'text-sky-600 dark:text-sky-300',
     bg: 'bg-sky-500/15 border-sky-500/30',
-    route: (raw) => `/knowledge/${encodeURIComponent(raw)}`,
+    // raw 可带块锚点 "<文章ID>#<块ID>": 带锚点时跳原文并定位到该片段(引用溯源)。
+    route: (raw) => {
+      const i = raw.indexOf('#')
+      if (i > 0) return `/knowledge/${encodeURIComponent(raw.slice(0, i))}?chunk=${encodeURIComponent(raw.slice(i + 1))}`
+      return `/knowledge/${encodeURIComponent(raw)}`
+    },
   },
   ci: {
     label: 'CMDB',

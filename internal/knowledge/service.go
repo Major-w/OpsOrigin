@@ -1,31 +1,26 @@
 package knowledge
 
 import (
-	"archive/zip"
 	"bytes"
 	"context"
 	"database/sql"
-	"encoding/hex"
 	"encoding/json"
-	"encoding/xml"
 	"errors"
 	"fmt"
-	"github.com/opsorigin/core/pkg/auth"
 	"io"
 	"log/slog"
 	"net/http"
 	"path/filepath"
-	"regexp"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/google/uuid"
-	pdfapi "github.com/pdfcpu/pdfcpu/pkg/api"
-	pdfmodel "github.com/pdfcpu/pdfcpu/pkg/pdfcpu/model"
 
 	"github.com/opsorigin/core/internal/objectstore"
+	"github.com/opsorigin/core/pkg/auth"
+	"github.com/opsorigin/core/pkg/docextract"
 	"github.com/opsorigin/core/pkg/httputil"
 )
 
@@ -67,6 +62,10 @@ type ArticleAttachment struct {
 	ObjectKey  string    `json:"object_key"`
 	Data       []byte    `json:"-"`
 	CreatedAt  time.Time `json:"created_at"`
+	// —— 解析入库状态(上传后自动抽文本→切块→embedding, 使附件内容可被 AI 检索) ——
+	Indexed    bool   `json:"indexed"`               // 是否已成功解析入库
+	IndexError string `json:"index_error,omitempty"` // 失败原因(空=成功或未尝试)
+	ChunkCount int    `json:"chunk_count"`           // 产出知识块数
 }
 
 type MemoryStore struct {
@@ -371,6 +370,15 @@ func (s *Service) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/v1/knowledge/{id}/attachments", s.handleListAttachments)
 	mux.HandleFunc("GET /api/v1/knowledge/{id}/attachments/{aid}", s.handleDownloadAttachment)
 	mux.HandleFunc("DELETE /api/v1/knowledge/{id}/attachments/{aid}", s.handleDeleteAttachment)
+	// —— 附件解析入库 / 在线预览 ——
+	mux.HandleFunc("POST /api/v1/knowledge/{id}/attachments/{aid}/reindex", s.handleReindexAttachment)
+	mux.HandleFunc("GET /api/v1/knowledge/{id}/attachments/{aid}/text", s.handleAttachmentText)
+	mux.HandleFunc("GET /api/v1/knowledge/{id}/attachments/{aid}/chunks", s.handleAttachmentChunks)
+	// 网页 URL 抓取入库(带 SSRF 防护)
+	mux.HandleFunc("POST /api/v1/knowledge/import-url", s.handleImportURL)
+	// 引用溯源: 按块 ID 取原文片段(挂在文章下, 同时校验归属; 放在 /knowledge/{id}/... 下
+	// 避免与 /knowledge/{id}/versions 等既有路由在 Go 1.22 ServeMux 下冲突)
+	mux.HandleFunc("GET /api/v1/knowledge/{id}/chunks/{chunk}", s.handleGetChunk)
 }
 
 // SetEmbedder 注入向量生成器,使新建/更新文章自动写入 embedding 以支持语义检索。
@@ -719,165 +727,14 @@ func parseImportFile(name string, data []byte) ([]Article, error) {
 			return nil, fmt.Errorf("JSON 解析失败: %w", err)
 		}
 		return items, nil
-	case ".pdf":
-		text, err := extractPDFText(data)
+	default:
+		// PDF/Office/HTML/纯文本统一走共享抽取器(pkg/docextract), 与附件解析入库同一实现。
+		text, err := docextract.ExtractText(name, data)
 		if err != nil {
 			return nil, err
 		}
 		return []Article{{Title: base, Content: text}}, nil
-	case ".docx":
-		text, err := extractDocxText(data)
-		if err != nil {
-			return nil, err
-		}
-		return []Article{{Title: base, Content: text}}, nil
-	default: // .md/.markdown/.txt 等纯文本
-		return []Article{{Title: base, Content: string(data)}}, nil
 	}
-}
-
-// extractPDFText 用 pdfcpu 抽取每页内容流(自动解压 FlateDecode 等), 再从中解析可读文本。
-// pdfcpu 对最简/压缩/复杂排版 PDF 的读取比旧库更稳; 扫描件(纯图片)仍抽不到文本。
-func extractPDFText(data []byte) (string, error) {
-	conf := pdfmodel.NewDefaultConfiguration()
-	conf.ValidationMode = pdfmodel.ValidationRelaxed
-	var contents []string
-	err := pdfapi.ExtractContent(bytes.NewReader(data), nil, func(rd io.Reader, _ int) error {
-		b, e := io.ReadAll(rd)
-		if e != nil {
-			return e
-		}
-		contents = append(contents, string(b))
-		return nil
-	}, conf)
-	if err != nil {
-		return "", fmt.Errorf("PDF 解析失败: %w", err)
-	}
-	text := extractTextFromPDFContent(contents)
-	if strings.TrimSpace(text) == "" {
-		return "", fmt.Errorf("PDF 未提取到文本(可能为扫描件/图片型 PDF)")
-	}
-	return text, nil
-}
-
-var (
-	reTJPDF      = regexp.MustCompile(`\[([^\]]*)\]\s*TJ`)
-	reParenPDF   = regexp.MustCompile(`\(((?:\\.|[^()\\])*)\)`)
-	reParenTjPDF = regexp.MustCompile(`\(((?:\\.|[^()\\])*)\)\s*Tj`)
-	reHexTjPDF   = regexp.MustCompile(`<([0-9A-Fa-f]+)>\s*Tj`)
-	reHexTJPDF   = regexp.MustCompile(`<([0-9A-Fa-f]+)>`)
-)
-
-// extractTextFromPDFContent 从 pdfcpu 抽取的内容流中解析可读文本:
-// 支持 (str) Tj、[(str) num ...] TJ 字距数组、<hex> 十六进制串及其组合。
-func extractTextFromPDFContent(contents []string) string {
-	var out strings.Builder
-	for _, c := range contents {
-		// 1) TJ 字距数组: 抽取其中所有 (str) 与 <hex>, 忽略数字间距
-		for _, m := range reTJPDF.FindAllStringSubmatch(c, -1) {
-			for _, p := range reParenPDF.FindAllStringSubmatch(m[1], -1) {
-				out.WriteString(unescapePDFString(p[1]))
-			}
-			for _, h := range reHexTJPDF.FindAllStringSubmatch(m[1], -1) {
-				out.WriteString(decodePDFHex(h[1]))
-			}
-			out.WriteString("\n")
-		}
-		// 2) 独立 (str) Tj
-		for _, m := range reParenTjPDF.FindAllStringSubmatch(c, -1) {
-			out.WriteString(unescapePDFString(m[1]))
-			out.WriteString("\n")
-		}
-		// 3) 独立 <hex> Tj
-		for _, m := range reHexTjPDF.FindAllStringSubmatch(c, -1) {
-			out.WriteString(decodePDFHex(m[1]))
-			out.WriteString("\n")
-		}
-	}
-	return strings.TrimSpace(out.String())
-}
-
-func unescapePDFString(s string) string {
-	return strings.NewReplacer(
-		`\(`, "(", `\)`, ")", `\\`, "\\",
-		`\n`, "\n", `\r`, "\r", `\t`, "\t",
-	).Replace(s)
-}
-
-func decodePDFHex(s string) string {
-	if len(s)%2 != 0 {
-		s += "0"
-	}
-	b, err := hex.DecodeString(s)
-	if err != nil {
-		return ""
-	}
-	return string(b)
-}
-
-// extractDocxText 零依赖: docx 是 zip 包, 读取 word/document.xml 抽取 <w:t> 文本。
-func extractDocxText(data []byte) (string, error) {
-	zr, err := zip.NewReader(bytes.NewReader(data), int64(len(data)))
-	if err != nil {
-		return "", fmt.Errorf("docx 解压失败(非有效 .docx): %w", err)
-	}
-	var docFile *zip.File
-	for _, f := range zr.File {
-		if f.Name == "word/document.xml" {
-			docFile = f
-			break
-		}
-	}
-	if docFile == nil {
-		return "", fmt.Errorf("docx 内未找到 word/document.xml")
-	}
-	rc, err := docFile.Open()
-	if err != nil {
-		return "", err
-	}
-	defer rc.Close()
-	raw, err := io.ReadAll(rc)
-	if err != nil {
-		return "", err
-	}
-	return extractDocxTextFromXML(raw), nil
-}
-
-// extractDocxTextFromXML 流式解析 document.xml: 收集 <w:t> 文本, 段落(<w:p>)间换行。
-func extractDocxTextFromXML(raw []byte) string {
-	var sb strings.Builder
-	dec := xml.NewDecoder(bytes.NewReader(raw))
-	var inText, inPara bool
-	for {
-		tok, err := dec.Token()
-		if err != nil {
-			break
-		}
-		switch el := tok.(type) {
-		case xml.StartElement:
-			switch el.Name.Local {
-			case "t":
-				inText = true
-			case "p":
-				inPara = true
-			}
-		case xml.EndElement:
-			switch el.Name.Local {
-			case "t":
-				inText = false
-			case "p":
-				if inPara {
-					sb.WriteString("\n")
-				}
-				inPara = false
-			}
-		case xml.CharData:
-			if inText {
-				sb.Write(el)
-			}
-		}
-	}
-	return strings.TrimRight(sb.String(), "\n")
 }
 
 // —— 文章附件: 上传/列表/下载/删除 ——
@@ -906,18 +763,22 @@ func (s *Service) handleUploadAttachment(w http.ResponseWriter, r *http.Request)
 	if uploadedBy == "" {
 		uploadedBy = "anonymous"
 	}
+	// 浏览器给的 Content-Type 常是 application/octet-stream, 按扩展名校正后再落库,
+	// 否则下载/预览会拿到错误类型(预览弹层据此分流渲染)。
+	fileType := normalizeFileType(header.Header.Get("Content-Type"), header.Filename)
 	att := &ArticleAttachment{
 		ArticleID:  id,
 		TenantID:   tenantID,
 		FileName:   header.Filename,
 		FileSize:   header.Size,
-		FileType:   header.Header.Get("Content-Type"),
+		FileType:   fileType,
 		UploadedBy: uploadedBy,
 		Data:       data,
 	}
 	if s.objStore != nil {
-		key := fmt.Sprintf("kb/%s/%s", id, uuid.NewString())
-		if err := s.objStore.Put(r.Context(), key, bytes.NewReader(data), int64(len(data)), header.Header.Get("Content-Type")); err != nil {
+		// 对象 key 保留扩展名: 便于直接按 key 下载/预览, 也避免排障时无法辨认文件类型。
+		key := fmt.Sprintf("kb/%s/%s%s", id, uuid.NewString(), strings.ToLower(filepath.Ext(header.Filename)))
+		if err := s.objStore.Put(r.Context(), key, bytes.NewReader(data), int64(len(data)), fileType); err != nil {
 			httputil.WriteError(w, http.StatusInternalServerError, "failed to store attachment: "+err.Error())
 			return
 		}
@@ -928,6 +789,9 @@ func (s *Service) handleUploadAttachment(w http.ResponseWriter, r *http.Request)
 		httputil.WriteError(w, http.StatusInternalServerError, "failed to save attachment: "+err.Error())
 		return
 	}
+	// 解析入库: 抽文本 → 切块 → embedding, 使附件内容可被 AI 检索问答。
+	// 失败只记 index_error, 不影响附件存储与下载。
+	s.indexAttachment(r.Context(), att, data)
 	httputil.WriteJSON(w, http.StatusCreated, att)
 }
 
@@ -960,11 +824,17 @@ func (s *Service) handleDownloadAttachment(w http.ResponseWriter, r *http.Reques
 		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	w.Header().Set("Content-Disposition", "attachment; filename=\""+att.FileName+"\"")
-	if att.FileType != "" {
-		w.Header().Set("Content-Type", att.FileType)
-	}
+	// —— 在线预览 ——
+	// 默认 inline(浏览器直接打开); ?download=1 才强制下载。
+	// 安全: html/htm/svg 内联等于同源执行脚本(存储型 XSS), 一律降级为纯文本渲染。
+	ct := normalizeFileType(att.FileType, att.FileName)
+	ext := strings.ToLower(filepath.Ext(att.FileName))
+	forceDownload := r.URL.Query().Get("download") == "1"
+	ct, disposition := previewHeaders(ct, ext, att.FileName, forceDownload)
+	w.Header().Set("Content-Type", ct)
+	w.Header().Set("Content-Disposition", disposition)
 	w.Header().Set("Content-Length", strconv.FormatInt(att.FileSize, 10))
+	w.Header().Set("Cache-Control", "private, max-age=300")
 	if att.ObjectKey != "" && s.objStore != nil {
 		if err := s.objStore.Get(r.Context(), w, att.ObjectKey); err != nil {
 			slog.Warn("kb attachment object read failed", "key", att.ObjectKey, "err", err)

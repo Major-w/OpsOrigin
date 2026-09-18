@@ -170,6 +170,14 @@ func (s *Service) validCitations(ctx context.Context, tenantID string, ids []str
 	}
 	out := make([]string, 0, len(ids))
 	var kbRaw []string
+	// 引用串可带块锚点(溯源跳原文片段): kb:<文章ID>#<块ID>。
+	// verifier 只认文章 ID, 故校验前剥离锚点、校验后按原样回带。
+	stripAnchor := func(raw string) string {
+		if i := strings.Index(raw, "#"); i > 0 {
+			return raw[:i]
+		}
+		return raw
+	}
 	for _, id := range ids {
 		// 带类型前缀且非 kb → 直接保留(免校验)
 		if i := strings.Index(id, ":"); i > 0 {
@@ -178,24 +186,40 @@ func (s *Service) validCitations(ctx context.Context, tenantID string, ids []str
 				out = append(out, id)
 				continue
 			case "kb":
-				kbRaw = append(kbRaw, id[i+1:])
+				kbRaw = append(kbRaw, stripAnchor(id[i+1:]))
 				continue
 			}
 		}
 		// 无前缀 或 未知前缀 → 视为 kb 原文, 走校验
-		kbRaw = append(kbRaw, id)
+		kbRaw = append(kbRaw, stripAnchor(id))
 	}
 	if len(kbRaw) == 0 {
 		return out
 	}
+	// 记录 剥离后的ID → 原始串, 校验通过后回带完整串(保留块锚点)。
+	original := make(map[string]string, len(ids))
+	for _, id := range ids {
+		if i := strings.Index(id, ":"); i > 0 && id[:i] == "kb" {
+			original[stripAnchor(id[i+1:])] = id
+			continue
+		}
+		if i := strings.Index(id, ":"); i > 0 && (id[:i] == "ci" || id[:i] == "mon") {
+			continue
+		}
+		if _, exists := original[stripAnchor(id)]; !exists {
+			original[stripAnchor(id)] = id
+		}
+	}
 	if s.citeVerifyFn == nil {
-		out = append(out, kbRaw...)
+		for _, raw := range kbRaw {
+			out = append(out, original[raw])
+		}
 		return out
 	}
 	ok := s.citeVerifyFn(ctx, tenantID, kbRaw)
 	for _, raw := range kbRaw {
 		if ok[raw] {
-			out = append(out, raw) // 保持 kb 无前缀, 兼容旧前端
+			out = append(out, original[raw])
 		}
 	}
 	return out

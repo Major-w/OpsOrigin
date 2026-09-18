@@ -19,6 +19,7 @@ import (
 	"strings"
 
 	"github.com/opsorigin/core/pkg/auth"
+	"github.com/opsorigin/core/pkg/docextract"
 	"github.com/opsorigin/core/pkg/llm"
 )
 
@@ -160,10 +161,35 @@ func (s *Service) partForAttachment(ctx context.Context, att ChatAttachment) []l
 			Text: fmt.Sprintf("\n\n【附件 %s 内容】\n%s", att.FileName, body),
 		}}
 	}
-	// PDF/Office 等: 模型侧无通用内联协议, 明确告知存在与获取方式, 避免模型"假装看懂"。
+	// PDF / Office(OOXML) / HTML: 服务端抽成纯文本后注入正文。
+	// 此前这里只回一句"暂不支持", 等于上传了也白传 —— 与知识库附件解析入库共用 pkg/docextract,
+	// 保证同一个文件在"对话"和"知识库"两条链路上抽出的内容一致。
+	if docextract.Parseable(att.FileName) {
+		data, err := s.readObject(ctx, att)
+		if err != nil {
+			return []llm.ContentPart{{Type: "text", Text: fmt.Sprintf("[文件 %s 读取失败]", att.FileName)}}
+		}
+		body, err := docextract.ExtractText(att.FileName, data)
+		if err != nil {
+			slog.Warn("ai multimodal extract failed", "id", att.ID, "file", att.FileName, "err", err)
+			return []llm.ContentPart{{
+				Type: "text",
+				Text: fmt.Sprintf("\n\n[用户上传了附件 %s（%s，%s）。服务端解析失败: %s]",
+					att.FileName, att.FileType, formatSizeShort(att.FileSize), err.Error()),
+			}}
+		}
+		if len(body) > maxInlineTextBytes {
+			body = body[:maxInlineTextBytes] + "\n...(已截断)"
+		}
+		return []llm.ContentPart{{
+			Type: "text",
+			Text: fmt.Sprintf("\n\n【附件 %s 内容】\n%s", att.FileName, body),
+		}}
+	}
+	// 其余二进制(压缩包/音视频等): 模型侧无通用内联协议, 明确告知, 避免模型"假装看懂"。
 	return []llm.ContentPart{{
 		Type: "text",
-		Text: fmt.Sprintf("\n\n[用户上传了附件 %s（%s，%s）。当前模型暂不支持直接解析该格式，请告知用户改用图片或文本格式上传]",
+		Text: fmt.Sprintf("\n\n[用户上传了附件 %s（%s，%s）。当前模型暂不支持直接解析该格式，请告知用户改用图片、文本或 PDF/Office 文档上传]",
 			att.FileName, att.FileType, formatSizeShort(att.FileSize)),
 	}}
 }
