@@ -11,6 +11,7 @@ import {
 import { useWebSocket } from '@/lib/useWebSocket'
 import { apiFetch, apiList } from '@/lib/utils'
 import { RELATION_LABELS } from '@/lib/graph-colors'
+import { t } from '@/lib/i18n'
 
 function AnimatedCounter({ value, label }: { value: number; label: string }) {
   const [display, setDisplay] = useState(0)
@@ -193,28 +194,28 @@ export default function DashboardPage() {
       {/* Tabs */}
       <Tabs value={activeTab} onValueChange={setActiveTab}>
         <TabsList className="mb-4">
-          <TabsTrigger value="overview">汇总</TabsTrigger>
+          <TabsTrigger value="overview">{t('dashboard.tabOverview')}</TabsTrigger>
           <TabsTrigger value="cmdb">CMDB</TabsTrigger>
           <TabsTrigger value="itsm">ITSM</TabsTrigger>
-          <TabsTrigger value="release">应用发布</TabsTrigger>
-          <TabsTrigger value="monitor">监控</TabsTrigger>
-          <TabsTrigger value="automation">自动化运维</TabsTrigger>
+          <TabsTrigger value="release">{t('dashboard.tabRelease')}</TabsTrigger>
+          <TabsTrigger value="monitor">{t('dashboard.tabMonitor')}</TabsTrigger>
+          <TabsTrigger value="automation">{t('dashboard.tabAutomation')}</TabsTrigger>
         </TabsList>
         <TabsContent value="overview">
           {/* Top KPI */}
           <div className="grid gap-4 grid-cols-2 lg:grid-cols-4">
-            <MetricCard icon={Server} title="CMDB 资产" value={metrics.cmdb} label="已录入资产" trend="+12% 较上月" trendUp color="violet" />
-            <MetricCard icon={Wifi} title="监控目标" value={metrics.targets} label="在线目标" trend="稳定" trendUp color="blue" />
-            <MetricCard icon={AlertTriangle} title="活跃告警" value={metrics.alerts} label="待处理告警" trend={metrics.alerts > 0 ? `${metrics.alerts} 条待处理` : '无告警'} trendUp={metrics.alerts === 0} color="amber" />
-            <MetricCard icon={Bot} title="AI Agents" value={metrics.agents} label="运行中" trend="+2 本周新增" trendUp color="blue" />
+            <MetricCard icon={Server} title={t('dashboard.cmdbAssets')} value={metrics.cmdb} label={t('dashboard.cmdbAssetsLabel')} trend={t('dashboard.monthCompare', { pct: 12 })} trendUp color="violet" />
+            <MetricCard icon={Wifi} title={t('dashboard.monitorTargets')} value={metrics.targets} label={t('dashboard.onlineTargets')} trend={t('dashboard.stable')} trendUp color="blue" />
+            <MetricCard icon={AlertTriangle} title={t('dashboard.activeAlerts')} value={metrics.alerts} label={t('dashboard.pendingAlerts')} trend={metrics.alerts > 0 ? t('dashboard.pendingAlertsUnit', { count: metrics.alerts }) : t('dashboard.noAlerts')} trendUp={metrics.alerts === 0} color="amber" />
+            <MetricCard icon={Bot} title="AI Agents" value={metrics.agents} label={t('dashboard.running')} trend={t('dashboard.weekNew', { count: 2 })} trendUp color="blue" />
           </div>
 
           {/* Second row: ITSM + Deploy */}
           <div className="grid gap-4 grid-cols-2 lg:grid-cols-4">
-            <MetricCard icon={TicketCheck} title="ITSM 工单" value={metrics.tickets} label="总工单" trend={`${metrics.openTickets} 个待处理`} trendUp={metrics.openTickets === 0} color="cyan" />
-            <MetricCard icon={Shield} title="SLA 达标率" value={Math.round(metrics.sla)} label="%" trend="目标 99%" trendUp={metrics.sla >= 99} color="blue" />
-            <MetricCard icon={GitBranch} title="应用发布" value={metrics.deployments} label="本月发布" trend={`${metrics.successRate}% 成功率`} trendUp color="pink" />
-            <MetricCard icon={Zap} title="自动化率" value={87} label="%" trend="+5% 较上月" trendUp color="orange" />
+            <MetricCard icon={TicketCheck} title={t('dashboard.itsmTickets')} value={metrics.tickets} label={t('dashboard.totalTickets')} trend={t('dashboard.pendingOpen', { count: metrics.openTickets })} trendUp={metrics.openTickets === 0} color="cyan" />
+            <MetricCard icon={Shield} title={t('dashboard.slaRate')} value={Math.round(metrics.sla)} label="%" trend={t('dashboard.slaTarget')} trendUp={metrics.sla >= 99} color="blue" />
+            <MetricCard icon={GitBranch} title={t('dashboard.deployments')} value={metrics.deployments} label={t('dashboard.monthlyReleases')} trend={t('dashboard.successRateLabel', { rate: metrics.successRate })} trendUp color="pink" />
+            <MetricCard icon={Zap} title={t('dashboard.automationRate')} value={87} label="%" trend={t('dashboard.monthCompare', { pct: 5 })} trendUp color="orange" />
           </div>
 
           {/* Middle: System Health + Alerts */}
@@ -225,7 +226,7 @@ export default function DashboardPage() {
                 <div className="flex items-center justify-between">
                   <CardTitle className="flex items-center gap-2">
                     <Cpu className="w-3.5 h-3.5 text-muted-foreground/60" strokeWidth={1.5} />
-                    系统健康
+                    {t('dashboard.systemHealth')}
                   </CardTitle>
                   <span className="text-[11px] text-muted-foreground/50 font-mono">updated 12s ago</span>
                 </div>
@@ -255,7 +256,7 @@ export default function DashboardPage() {
               <CardHeader className="py-3">
                 <CardTitle className="flex items-center gap-2">
                   <AlertTriangle className="w-3.5 h-3.5 text-muted-foreground/60" strokeWidth={1.5} />
-                  最近告警
+                  {t('dashboard.recentAlerts')}
                 </CardTitle>
               </CardHeader>
               <CardContent className="space-y-2">
@@ -285,7 +286,7 @@ export default function DashboardPage() {
               <CardHeader className="py-3">
                 <CardTitle className="flex items-center gap-2">
                   <Activity className="w-3.5 h-3.5 text-muted-foreground/60" strokeWidth={1.5} />
-                  操作流水
+                  {t('dashboard.operationTrace')}
                 </CardTitle>
               </CardHeader>
               <CardContent>
@@ -309,17 +310,17 @@ export default function DashboardPage() {
               <CardHeader className="py-3">
                 <CardTitle className="flex items-center gap-2">
                   <HardDrive className="w-3.5 h-3.5 text-muted-foreground/60" strokeWidth={1.5} />
-                  自愈管道
+                  {t('dashboard.selfHealingPipeline')}
                 </CardTitle>
               </CardHeader>
               <CardContent>
                 <div className="relative">
                   {[
-                    { step: 'Monitor', status: 'active', desc: '指标采集正常' },
-                    { step: 'Detect', status: 'active', desc: '异常检测待命中' },
-                    { step: 'Analyze', status: 'idle', desc: 'AI 分析就绪' },
-                    { step: 'Execute', status: 'idle', desc: '执行器待命中' },
-                    { step: 'Verify', status: 'idle', desc: '自愈验证已就绪' },
+                    { step: 'Monitor', status: 'active', desc: t('dashboard.monitorDesc') },
+                    { step: 'Detect', status: 'active', desc: t('dashboard.detectDesc') },
+                    { step: 'Analyze', status: 'idle', desc: t('dashboard.analyzeDesc') },
+                    { step: 'Execute', status: 'idle', desc: t('dashboard.executeDesc') },
+                    { step: 'Verify', status: 'idle', desc: t('dashboard.verifyDesc') },
                   ].map((p, i) => (
                     <div key={p.step} className="flex items-center gap-4 py-3 group animate-fade-in-up" style={{ animationDelay: `${i * 0.08}s` }}>
                       <div className="flex flex-col items-center">
@@ -349,43 +350,43 @@ export default function DashboardPage() {
         {/* ============ CMDB 页签 ============ */}
         <TabsContent value="cmdb" className="mt-6 space-y-6">
           <div className="grid gap-4 grid-cols-2 lg:grid-cols-4">
-            <MetricCard icon={Server} title="资产总数" value={metrics.cmdb} label="已录入" color="violet" />
-            <MetricCard icon={Layers} title="模型数量" value={12} label="已定义模型" color="blue" />
-            <MetricCard icon={Search} title="今日查询" value={342} label="次搜索" color="blue" />
-            <MetricCard icon={TrendingUp} title="资产变更" value={28} label="本周变更" color="amber" />
+            <MetricCard icon={Server} title={t('dashboard.totalAssets')} value={metrics.cmdb} label={t('dashboard.recorded')} color="violet" />
+            <MetricCard icon={Layers} title={t('dashboard.modelCount')} value={12} label={t('dashboard.definedModels')} color="blue" />
+            <MetricCard icon={Search} title={t('dashboard.todayQueries')} value={342} label={t('dashboard.queryCount')} color="blue" />
+            <MetricCard icon={TrendingUp} title={t('dashboard.assetChanges')} value={28} label={t('dashboard.weekChanges')} color="amber" />
           </div>
 
           <div className="grid gap-4 lg:grid-cols-2">
             <Card>
               <CardHeader className="py-3">
-                <CardTitle className="text-sm">资产类型分布</CardTitle>
+                <CardTitle className="text-sm">{t('dashboard.assetTypeDist')}</CardTitle>
               </CardHeader>
               <CardContent>
                 <BarChart data={[
-                  { label: '服务器', value: 156, color: 'bg-violet-400' },
-                  { label: '数据库', value: 42, color: 'bg-blue-400' },
-                  { label: '网络设备', value: 89, color: 'bg-blue-400' },
-                  { label: '中间件', value: 67, color: 'bg-amber-400' },
-                  { label: '应用服务', value: 124, color: 'bg-pink-400' },
-                  { label: '存储', value: 31, color: 'bg-cyan-400' },
+                  { label: t('dashboard.servers'), value: 156, color: 'bg-violet-400' },
+                  { label: t('dashboard.databases'), value: 42, color: 'bg-blue-400' },
+                  { label: t('dashboard.networkDevices'), value: 89, color: 'bg-blue-400' },
+                  { label: t('dashboard.middleware'), value: 67, color: 'bg-amber-400' },
+                  { label: t('dashboard.appServices'), value: 124, color: 'bg-pink-400' },
+                  { label: t('dashboard.storage'), value: 31, color: 'bg-cyan-400' },
                 ]} />
               </CardContent>
             </Card>
 
             <Card>
               <CardHeader className="py-3">
-                <CardTitle className="text-sm">最近资产变更</CardTitle>
+                <CardTitle className="text-sm">{t('dashboard.recentAssetChanges')}</CardTitle>
               </CardHeader>
               <CardContent className="space-y-2">
                 {[
-                  { time: '10:32', action: '新增', target: 'prod-web-03', type: '服务器' },
-                  { time: '09:15', action: '更新', target: 'redis-cluster', type: '中间件' },
-                  { time: '08:47', action: '下线', target: 'test-db-02', type: '数据库' },
-                  { time: '昨天', action: '新增', target: 'k8s-node-12', type: '服务器' },
+                  { time: '10:32', action: t('dashboard.actionAdd'), target: 'prod-web-03', type: t('dashboard.servers') },
+                  { time: '09:15', action: t('dashboard.actionUpdate'), target: 'redis-cluster', type: t('dashboard.middleware') },
+                  { time: '08:47', action: t('dashboard.actionDecommission'), target: 'test-db-02', type: t('dashboard.databases') },
+                  { time: t('dashboard.yesterday'), action: t('dashboard.actionAdd'), target: 'k8s-node-12', type: t('dashboard.servers') },
                 ].map((item, i) => (
                   <div key={i} className="flex items-center justify-between p-2 rounded-lg bg-gray-50 dark:bg-[rgba(255,255,255,0.02)] border border-gray-100 dark:border-[rgba(255,255,255,0.04)]">
                     <div className="flex items-center gap-3">
-                      <Tag color={item.action === '新增' ? 'success' : item.action === '下线' ? 'error' : 'default'}>{item.action}</Tag>
+                      <Tag color={item.action === t('dashboard.actionAdd') ? 'success' : item.action === t('dashboard.actionDecommission') ? 'error' : 'default'}>{item.action}</Tag>
                       <span className="text-xs font-mono text-gray-900 dark:text-white">{item.target}</span>
                     </div>
                     <div className="flex items-center gap-2">
@@ -400,11 +401,11 @@ export default function DashboardPage() {
 
           <Card>
             <CardHeader className="py-3">
-              <CardTitle className="text-sm">拓扑关系概览</CardTitle>
+              <CardTitle className="text-sm">{t('dashboard.topologyOverview')}</CardTitle>
             </CardHeader>
             <CardContent>
               {relStats !== null && relStats.length === 0 ? (
-                <p className="py-6 text-center text-xs text-muted-foreground">暂无关系数据，先在 CMDB 中为 CI 建立关系</p>
+                <p className="py-6 text-center text-xs text-muted-foreground">{t('dashboard.noRelationData')}</p>
               ) : (
                 <div className="grid grid-cols-3 gap-4 text-center">
                   {(relStats === null ? [null, null, null] : relStats.slice(0, 3)).map((r, i) => {
@@ -414,7 +415,7 @@ export default function DashboardPage() {
                         <Icon className="w-6 h-6 mx-auto text-violet-500 dark:text-violet-400 mb-2" />
                         <p className="metric-value text-xl text-gray-900 dark:text-white">{r ? r.count : '—'}</p>
                         <p className="text-[11px] text-muted-foreground mt-1">
-                          {r ? (RELATION_LABELS[r.relation_type] || r.relation_type) : '加载中'}
+                          {r ? (RELATION_LABELS[r.relation_type] || r.relation_type) : t('dashboard.loading')}
                         </p>
                       </div>
                     )
@@ -428,37 +429,37 @@ export default function DashboardPage() {
         {/* ============ ITSM 页签 ============ */}
         <TabsContent value="itsm" className="mt-6 space-y-6">
           <div className="grid gap-4 grid-cols-2 lg:grid-cols-4">
-            <MetricCard icon={TicketCheck} title="总工单" value={metrics.tickets} label="累计工单" color="cyan" />
-            <MetricCard icon={Clock} title="待处理" value={metrics.openTickets} label="待处理工单" color="amber" />
-            <MetricCard icon={Shield} title="SLA 达标率" value={Math.round(metrics.sla)} label="%" color="blue" />
-            <MetricCard icon={Users} title="处理人" value={8} label="在线处理人" color="blue" />
+            <MetricCard icon={TicketCheck} title={t('dashboard.totalTickets')} value={metrics.tickets} label={t('dashboard.cumulativeTickets')} color="cyan" />
+            <MetricCard icon={Clock} title={t('dashboard.pending')} value={metrics.openTickets} label={t('dashboard.pendingTickets')} color="amber" />
+            <MetricCard icon={Shield} title={t('dashboard.slaRate')} value={Math.round(metrics.sla)} label="%" color="blue" />
+            <MetricCard icon={Users} title={t('dashboard.handlers')} value={8} label={t('dashboard.onlineHandlers')} color="blue" />
           </div>
 
           <div className="grid gap-4 lg:grid-cols-2">
             <Card>
               <CardHeader className="py-3">
-                <CardTitle className="text-sm">工单状态分布</CardTitle>
+                <CardTitle className="text-sm">{t('dashboard.ticketStatusDist')}</CardTitle>
               </CardHeader>
               <CardContent>
                 <BarChart data={[
-                  { label: '待处理', value: 12, color: 'bg-amber-400' },
-                  { label: '处理中', value: 8, color: 'bg-blue-400' },
-                  { label: '已完成', value: 45, color: 'bg-blue-400' },
-                  { label: '已关闭', value: 156, color: 'bg-gray-400' },
+                  { label: t('dashboard.pending'), value: 12, color: 'bg-amber-400' },
+                  { label: t('dashboard.processing'), value: 8, color: 'bg-blue-400' },
+                  { label: t('dashboard.completed'), value: 45, color: 'bg-blue-400' },
+                  { label: t('dashboard.closed'), value: 156, color: 'bg-gray-400' },
                 ]} />
               </CardContent>
             </Card>
 
             <Card>
               <CardHeader className="py-3">
-                <CardTitle className="text-sm">工单类型统计</CardTitle>
+                <CardTitle className="text-sm">{t('dashboard.ticketTypeStats')}</CardTitle>
               </CardHeader>
               <CardContent>
                 <BarChart data={[
-                  { label: '故障', value: 23, color: 'bg-red-400' },
-                  { label: '请求', value: 67, color: 'bg-blue-400' },
-                  { label: '变更', value: 34, color: 'bg-amber-400' },
-                  { label: '咨询', value: 45, color: 'bg-blue-400' },
+                  { label: t('dashboard.incident'), value: 23, color: 'bg-red-400' },
+                  { label: t('dashboard.request'), value: 67, color: 'bg-blue-400' },
+                  { label: t('dashboard.change'), value: 34, color: 'bg-amber-400' },
+                  { label: t('dashboard.inquiry'), value: 45, color: 'bg-blue-400' },
                 ]} />
               </CardContent>
             </Card>
@@ -466,19 +467,19 @@ export default function DashboardPage() {
 
           <Card>
             <CardHeader className="py-3">
-              <CardTitle className="text-sm">最近工单</CardTitle>
+              <CardTitle className="text-sm">{t('dashboard.recentTickets')}</CardTitle>
             </CardHeader>
             <CardContent className="space-y-2">
               {[
                 { id: 'TK-001', title: '数据库连接池告警', status: 'open', priority: 'P1', assignee: '张三', time: '10:32' },
                 { id: 'TK-002', title: 'API 网关性能优化', status: 'processing', priority: 'P2', assignee: '李四', time: '09:15' },
-                { id: 'TK-003', title: '服务器扩容申请', status: 'open', priority: 'P3', assignee: '王五', time: '昨天' },
-                { id: 'TK-004', title: 'SSL 证书更新', status: 'closed', priority: 'P2', assignee: '赵六', time: '昨天' },
+                { id: 'TK-003', title: '服务器扩容申请', status: 'open', priority: 'P3', assignee: '王五', time: t('dashboard.yesterday') },
+                { id: 'TK-004', title: 'SSL 证书更新', status: 'closed', priority: 'P2', assignee: '赵六', time: t('dashboard.yesterday') },
               ].map((item, i) => (
                 <div key={i} className="flex items-center justify-between p-3 rounded-lg bg-gray-50 dark:bg-[rgba(255,255,255,0.02)] border border-gray-100 dark:border-[rgba(255,255,255,0.04)]">
                   <div className="flex items-center gap-3">
                     <Tag color={item.status === 'open' ? 'error' : item.status === 'processing' ? 'warning' : 'success'}>
-                      {item.status === 'open' ? '待处理' : item.status === 'processing' ? '处理中' : '已完成'}
+                      {item.status === 'open' ? t('dashboard.pending') : item.status === 'processing' ? t('dashboard.processing') : t('dashboard.completed')}
                     </Tag>
                     <div>
                       <span className="text-xs font-mono text-blue-500 dark:text-blue-400">{item.id}</span>
@@ -499,46 +500,46 @@ export default function DashboardPage() {
         {/* ============ 应用发布页签 ============ */}
         <TabsContent value="release" className="mt-6 space-y-6">
           <div className="grid gap-4 grid-cols-2 lg:grid-cols-4">
-            <MetricCard icon={GitBranch} title="本月发布" value={24} label="次发布" color="pink" />
-            <MetricCard icon={CheckCircle} title="成功率" value={96} label="%" color="blue" />
-            <MetricCard icon={Timer} title="平均耗时" value={12} label="分钟" color="blue" />
-            <MetricCard icon={Package} title="应用数" value={18} label="个应用" color="violet" />
+            <MetricCard icon={GitBranch} title={t('dashboard.monthlyReleases')} value={24} label={t('dashboard.releaseCount')} color="pink" />
+            <MetricCard icon={CheckCircle} title={t('dashboard.successRate')} value={96} label="%" color="blue" />
+            <MetricCard icon={Timer} title={t('dashboard.avgDuration')} value={12} label={t('dashboard.minutes')} color="blue" />
+            <MetricCard icon={Package} title={t('dashboard.appCount')} value={18} label={t('dashboard.appUnit')} color="violet" />
           </div>
 
           <div className="grid gap-4 lg:grid-cols-2">
             <Card>
               <CardHeader className="py-3">
-                <CardTitle className="text-sm">发布趋势 (近7天)</CardTitle>
+                <CardTitle className="text-sm">{t('dashboard.releaseTrend')}</CardTitle>
               </CardHeader>
               <CardContent>
                 <BarChart data={[
-                  { label: '周一', value: 5, color: 'bg-pink-400' },
-                  { label: '周二', value: 3, color: 'bg-pink-400' },
-                  { label: '周三', value: 4, color: 'bg-pink-400' },
-                  { label: '周四', value: 6, color: 'bg-pink-400' },
-                  { label: '周五', value: 2, color: 'bg-pink-400' },
-                  { label: '周六', value: 1, color: 'bg-pink-400' },
-                  { label: '周日', value: 3, color: 'bg-pink-400' },
+                  { label: t('dashboard.dayMon'), value: 5, color: 'bg-pink-400' },
+                  { label: t('dashboard.dayTue'), value: 3, color: 'bg-pink-400' },
+                  { label: t('dashboard.dayWed'), value: 4, color: 'bg-pink-400' },
+                  { label: t('dashboard.dayThu'), value: 6, color: 'bg-pink-400' },
+                  { label: t('dashboard.dayFri'), value: 2, color: 'bg-pink-400' },
+                  { label: t('dashboard.daySat'), value: 1, color: 'bg-pink-400' },
+                  { label: t('dashboard.daySun'), value: 3, color: 'bg-pink-400' },
                 ]} />
               </CardContent>
             </Card>
 
             <Card>
               <CardHeader className="py-3">
-                <CardTitle className="text-sm">发布环境分布</CardTitle>
+                <CardTitle className="text-sm">{t('dashboard.releaseEnvDist')}</CardTitle>
               </CardHeader>
               <CardContent>
                 <div className="grid grid-cols-2 gap-4">
                   {[
-                    { env: '生产环境', count: 12, color: 'text-red-500 dark:text-red-400' },
-                    { env: '预发环境', count: 8, color: 'text-amber-500 dark:text-amber-400' },
-                    { env: '测试环境', count: 45, color: 'text-blue-500 dark:text-blue-400' },
-                    { env: '开发环境', count: 120, color: 'text-blue-500 dark:text-blue-400' },
+                    { env: t('dashboard.envProd'), count: 12, color: 'text-red-500 dark:text-red-400' },
+                    { env: t('dashboard.envStaging'), count: 8, color: 'text-amber-500 dark:text-amber-400' },
+                    { env: t('dashboard.envTest'), count: 45, color: 'text-blue-500 dark:text-blue-400' },
+                    { env: t('dashboard.envDev'), count: 120, color: 'text-blue-500 dark:text-blue-400' },
                   ].map((item, i) => (
                     <div key={i} className="p-3 rounded-lg bg-gray-50 dark:bg-[rgba(255,255,255,0.02)] border border-gray-100 dark:border-[rgba(255,255,255,0.04)]">
                       <p className="text-xs text-muted-foreground">{item.env}</p>
                       <p className={`metric-value text-2xl ${item.color} mt-1`}>{item.count}</p>
-                      <p className="text-[10px] text-muted-foreground/60 mt-0.5">次发布</p>
+                      <p className="text-[10px] text-muted-foreground/60 mt-0.5">{t('dashboard.releaseCount')}</p>
                     </div>
                   ))}
                 </div>
@@ -548,19 +549,19 @@ export default function DashboardPage() {
 
           <Card>
             <CardHeader className="py-3">
-              <CardTitle className="text-sm">最近发布记录</CardTitle>
+              <CardTitle className="text-sm">{t('dashboard.recentReleases')}</CardTitle>
             </CardHeader>
             <CardContent className="space-y-2">
               {[
-                { id: 'REL-001', app: 'user-service', version: 'v2.3.1', env: '生产', status: 'success', time: '10:32', duration: '8min' },
-                { id: 'REL-002', app: 'api-gateway', version: 'v1.8.0', env: '预发', status: 'running', time: '09:45', duration: '进行中' },
-                { id: 'REL-003', app: 'order-service', version: 'v3.1.0', env: '生产', status: 'success', time: '昨天', duration: '12min' },
-                { id: 'REL-004', app: 'payment-service', version: 'v2.0.3', env: '生产', status: 'failed', time: '昨天', duration: '5min' },
+                { id: 'REL-001', app: 'user-service', version: 'v2.3.1', env: t('dashboard.envProd'), status: 'success', time: '10:32', duration: '8min' },
+                { id: 'REL-002', app: 'api-gateway', version: 'v1.8.0', env: t('dashboard.envStaging'), status: 'running', time: '09:45', duration: t('dashboard.inProgress') },
+                { id: 'REL-003', app: 'order-service', version: 'v3.1.0', env: t('dashboard.envProd'), status: 'success', time: t('dashboard.yesterday'), duration: '12min' },
+                { id: 'REL-004', app: 'payment-service', version: 'v2.0.3', env: t('dashboard.envProd'), status: 'failed', time: t('dashboard.yesterday'), duration: '5min' },
               ].map((item, i) => (
                 <div key={i} className="flex items-center justify-between p-3 rounded-lg bg-gray-50 dark:bg-[rgba(255,255,255,0.02)] border border-gray-100 dark:border-[rgba(255,255,255,0.04)]">
                   <div className="flex items-center gap-3">
                     <Tag color={item.status === 'success' ? 'success' : item.status === 'running' ? 'warning' : 'error'}>
-                      {item.status === 'success' ? '成功' : item.status === 'running' ? '发布中' : '失败'}
+                      {item.status === 'success' ? t('dashboard.releaseSuccess') : item.status === 'running' ? t('dashboard.releaseRunning') : t('dashboard.releaseFailed')}
                     </Tag>
                     <div>
                       <span className="text-xs font-mono text-pink-500 dark:text-pink-400">{item.id}</span>
@@ -582,40 +583,40 @@ export default function DashboardPage() {
         {/* ============ 监控页签 ============ */}
         <TabsContent value="monitor" className="mt-6 space-y-6">
           <div className="grid gap-4 grid-cols-2 lg:grid-cols-4">
-            <MetricCard icon={Wifi} title="监控目标" value={metrics.targets} label="在线目标" color="blue" />
-            <MetricCard icon={AlertTriangle} title="活跃告警" value={metrics.alerts} label="待处理" color="amber" />
-            <MetricCard icon={Activity} title="探测次数" value={15600} label="今日探测" color="blue" />
-            <MetricCard icon={TrendingUp} title="可用性" value={99} label="%" color="blue" />
+            <MetricCard icon={Wifi} title={t('dashboard.monitorTargets')} value={metrics.targets} label={t('dashboard.onlineTargets')} color="blue" />
+            <MetricCard icon={AlertTriangle} title={t('dashboard.activeAlerts')} value={metrics.alerts} label={t('dashboard.pendingAlerts')} color="amber" />
+            <MetricCard icon={Activity} title={t('dashboard.probeCount')} value={15600} label={t('dashboard.todayProbes')} color="blue" />
+            <MetricCard icon={TrendingUp} title={t('dashboard.availability')} value={99} label="%" color="blue" />
           </div>
 
           <div className="grid gap-4 lg:grid-cols-2">
             <Card>
               <CardHeader className="py-3">
-                <CardTitle className="text-sm">告警趋势 (近7天)</CardTitle>
+                <CardTitle className="text-sm">{t('dashboard.alertTrend')}</CardTitle>
               </CardHeader>
               <CardContent>
                 <BarChart data={[
-                  { label: '周一', value: 12, color: 'bg-amber-400' },
-                  { label: '周二', value: 8, color: 'bg-amber-400' },
-                  { label: '周三', value: 15, color: 'bg-red-400' },
-                  { label: '周四', value: 6, color: 'bg-amber-400' },
-                  { label: '周五', value: 10, color: 'bg-amber-400' },
-                  { label: '周六', value: 3, color: 'bg-blue-400' },
-                  { label: '周日', value: 5, color: 'bg-blue-400' },
+                  { label: t('dashboard.dayMon'), value: 12, color: 'bg-amber-400' },
+                  { label: t('dashboard.dayTue'), value: 8, color: 'bg-amber-400' },
+                  { label: t('dashboard.dayWed'), value: 15, color: 'bg-red-400' },
+                  { label: t('dashboard.dayThu'), value: 6, color: 'bg-amber-400' },
+                  { label: t('dashboard.dayFri'), value: 10, color: 'bg-amber-400' },
+                  { label: t('dashboard.daySat'), value: 3, color: 'bg-blue-400' },
+                  { label: t('dashboard.daySun'), value: 5, color: 'bg-blue-400' },
                 ]} />
               </CardContent>
             </Card>
 
             <Card>
               <CardHeader className="py-3">
-                <CardTitle className="text-sm">告警级别分布</CardTitle>
+                <CardTitle className="text-sm">{t('dashboard.alertLevelDist')}</CardTitle>
               </CardHeader>
               <CardContent>
                 <div className="grid grid-cols-3 gap-4">
                   {[
-                    { level: '严重', count: 3, color: 'text-red-500 dark:text-red-400', bg: 'bg-red-50 dark:bg-red-500/10' },
-                    { level: '警告', count: 8, color: 'text-amber-500 dark:text-amber-400', bg: 'bg-amber-50 dark:bg-amber-500/10' },
-                    { level: '通知', count: 15, color: 'text-blue-500 dark:text-blue-400', bg: 'bg-blue-50 dark:bg-blue-500/10' },
+                    { level: t('dashboard.severityCritical'), count: 3, color: 'text-red-500 dark:text-red-400', bg: 'bg-red-50 dark:bg-red-500/10' },
+                    { level: t('dashboard.severityWarning'), count: 8, color: 'text-amber-500 dark:text-amber-400', bg: 'bg-amber-50 dark:bg-amber-500/10' },
+                    { level: t('dashboard.severityInfo'), count: 15, color: 'text-blue-500 dark:text-blue-400', bg: 'bg-blue-50 dark:bg-blue-500/10' },
                   ].map((item, i) => (
                     <div key={i} className={`p-4 rounded-lg text-center ${item.bg}`}>
                       <p className={`metric-value text-3xl ${item.color}`}>{item.count}</p>
@@ -629,7 +630,7 @@ export default function DashboardPage() {
 
           <Card>
             <CardHeader className="py-3">
-              <CardTitle className="text-sm">最近告警</CardTitle>
+              <CardTitle className="text-sm">{t('dashboard.recentAlerts')}</CardTitle>
             </CardHeader>
             <CardContent className="space-y-2">
               {alerts.map((alert, i) => (
@@ -655,15 +656,15 @@ export default function DashboardPage() {
 
           <Card>
             <CardHeader className="py-3">
-              <CardTitle className="text-sm">监控目标状态</CardTitle>
+              <CardTitle className="text-sm">{t('dashboard.targetStatus')}</CardTitle>
             </CardHeader>
             <CardContent>
               <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
                 {[
-                  { label: '服务器', total: 45, online: 43 },
-                  { label: '数据库', total: 12, online: 12 },
-                  { label: '网络设备', total: 28, online: 27 },
-                  { label: '中间件', total: 35, online: 34 },
+                  { label: t('dashboard.servers'), total: 45, online: 43 },
+                  { label: t('dashboard.databases'), total: 12, online: 12 },
+                  { label: t('dashboard.networkDevices'), total: 28, online: 27 },
+                  { label: t('dashboard.middleware'), total: 35, online: 34 },
                 ].map((item, i) => (
                   <div key={i} className="p-3 rounded-lg bg-gray-50 dark:bg-[rgba(255,255,255,0.02)] border border-gray-100 dark:border-[rgba(255,255,255,0.04)]">
                     <p className="text-xs text-muted-foreground">{item.label}</p>
@@ -684,16 +685,16 @@ export default function DashboardPage() {
         {/* ============ 自动化运维页签 ============ */}
         <TabsContent value="automation" className="mt-6 space-y-6">
           <div className="grid gap-4 grid-cols-2 lg:grid-cols-4">
-            <MetricCard icon={Workflow} title="定时任务" value={12} label="个任务" color="blue" />
-            <MetricCard icon={Zap} title="自动化巡检" value={8} label="今日完成" color="blue" />
-            <MetricCard icon={Shield} title="漏洞扫描" value={3} label="个待处理" color="amber" />
-            <MetricCard icon={Package} title="补丁安装" value={5} label="待安装" color="violet" />
+            <MetricCard icon={Workflow} title={t('dashboard.scheduledTasks')} value={12} label={t('dashboard.taskUnit')} color="blue" />
+            <MetricCard icon={Zap} title={t('dashboard.inspections')} value={8} label={t('dashboard.todayCompleted')} color="blue" />
+            <MetricCard icon={Shield} title={t('dashboard.vulnScan')} value={3} label={t('dashboard.pendingUnit')} color="amber" />
+            <MetricCard icon={Package} title={t('dashboard.patchInstall')} value={5} label={t('dashboard.pendingInstall')} color="violet" />
           </div>
 
           <div className="grid gap-4 lg:grid-cols-2">
             <Card>
               <CardHeader className="py-3">
-                <CardTitle className="text-sm">巡检任务状态</CardTitle>
+                <CardTitle className="text-sm">{t('dashboard.inspectionStatus')}</CardTitle>
               </CardHeader>
               <CardContent className="space-y-2">
                 {[
@@ -705,12 +706,12 @@ export default function DashboardPage() {
                   <div key={i} className="flex items-center justify-between p-2 rounded-lg bg-gray-50 dark:bg-[rgba(255,255,255,0.02)] border border-gray-100 dark:border-[rgba(255,255,255,0.04)]">
                     <div className="flex items-center gap-2">
                       <Tag color={item.status === 'success' ? 'success' : 'warning'} className="text-[10px]">
-                        {item.status === 'success' ? '成功' : '部分通过'}
+                        {item.status === 'success' ? t('dashboard.inspectionSuccess') : t('dashboard.inspectionPartial')}
                       </Tag>
                       <span className="text-xs text-gray-900 dark:text-white">{item.name}</span>
                     </div>
                     <div className="flex items-center gap-3 text-xs text-muted-foreground">
-                      <span>{item.targets} 台</span>
+                      <span>{t('dashboard.unitTai', { count: item.targets })}</span>
                       <span className="font-mono">{item.time}</span>
                     </div>
                   </div>
@@ -720,15 +721,15 @@ export default function DashboardPage() {
 
             <Card>
               <CardHeader className="py-3">
-                <CardTitle className="text-sm">漏洞扫描概览</CardTitle>
+                <CardTitle className="text-sm">{t('dashboard.vulnOverview')}</CardTitle>
               </CardHeader>
               <CardContent>
                 <div className="grid grid-cols-2 gap-4">
                   {[
-                    { level: '严重', count: 3, color: 'text-red-500 dark:text-red-400', bg: 'bg-red-50 dark:bg-red-500/10' },
-                    { level: '高危', count: 8, color: 'text-orange-500 dark:text-orange-400', bg: 'bg-orange-50 dark:bg-orange-500/10' },
-                    { level: '中危', count: 16, color: 'text-amber-500 dark:text-amber-400', bg: 'bg-amber-50 dark:bg-amber-500/10' },
-                    { level: '低危', count: 31, color: 'text-blue-500 dark:text-blue-400', bg: 'bg-blue-50 dark:bg-blue-500/10' },
+                    { level: t('dashboard.vulnCritical'), count: 3, color: 'text-red-500 dark:text-red-400', bg: 'bg-red-50 dark:bg-red-500/10' },
+                    { level: t('dashboard.vulnHigh'), count: 8, color: 'text-orange-500 dark:text-orange-400', bg: 'bg-orange-50 dark:bg-orange-500/10' },
+                    { level: t('dashboard.vulnMedium'), count: 16, color: 'text-amber-500 dark:text-amber-400', bg: 'bg-amber-50 dark:bg-amber-500/10' },
+                    { level: t('dashboard.vulnLow'), count: 31, color: 'text-blue-500 dark:text-blue-400', bg: 'bg-blue-50 dark:bg-blue-500/10' },
                   ].map((item, i) => (
                     <div key={i} className={`p-3 rounded-lg text-center ${item.bg}`}>
                       <p className={`metric-value text-2xl ${item.color}`}>{item.count}</p>
@@ -743,7 +744,7 @@ export default function DashboardPage() {
           <div className="grid gap-4 lg:grid-cols-2">
             <Card>
               <CardHeader className="py-3">
-                <CardTitle className="text-sm">补丁安装进度</CardTitle>
+                <CardTitle className="text-sm">{t('dashboard.patchProgress')}</CardTitle>
               </CardHeader>
               <CardContent className="space-y-3">
                 {[
@@ -766,7 +767,7 @@ export default function DashboardPage() {
 
             <Card>
               <CardHeader className="py-3">
-                <CardTitle className="text-sm">软件部署统计</CardTitle>
+                <CardTitle className="text-sm">{t('dashboard.softwareDeployStats')}</CardTitle>
               </CardHeader>
               <CardContent>
                 <BarChart data={[
