@@ -97,7 +97,8 @@ func TestSearchKnowledgeCacheHit(t *testing.T) {
 	// 第一次: embedder=nil -> 仅关键词路(块级), 数据库返回一行。
 	mock.ExpectQuery("SELECT c.article_id, a.title, c.heading").
 		WithArgs("%disk full%", 500, 15, "default").
-		WillReturnRows(sqlmock.NewRows([]string{"article_id", "title", "heading", "snippet"}).AddRow("a1", "Disk Full", "2 磁盘满", "cleanup steps"))
+		WillReturnRows(sqlmock.NewRows([]string{"article_id", "title", "heading", "snippet", "chunk_id", "source"}).
+			AddRow("a1", "Disk Full", "2 磁盘满", "cleanup steps", "k1", "article"))
 
 	items1, err := ts.searchKnowledge(ctx, "disk full", 5, 500, nil)
 	if err != nil {

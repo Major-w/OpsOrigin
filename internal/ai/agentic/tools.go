@@ -17,6 +17,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/opsorigin/core/internal/ai/mcp"
 	"github.com/opsorigin/core/internal/command"
+	"github.com/opsorigin/core/internal/objectstore"
 	"github.com/opsorigin/core/pkg/config"
 )
 
@@ -69,6 +70,17 @@ type MCPToolSet struct {
 	// cfg 全局配置指针(image_generate 等需要从 sysconfig 读 LLM provider key/base_url 的工具用)。
 	// 由 main.go 在 NewMCPToolSet 后注入; sysconfig 更新通过同一指针共享, 无需再同步。
 	cfg *config.Config
+
+	// objStore 对象存储(image_generate 生成的图片持久化到 MinIO, 避免智谱 CDN URL 24h 过期)。
+	// nil 时优雅降级: 直接返回上游 CDN URL(与未接入 MinIO 时行为一致)。
+	objStore *objectstore.Client
+
+	// sandboxRoot 代码编写类工具(coding_*)的目录沙箱根: 只能操作此目录子树, 防止越权读写本仓库外文件。
+	// 空=未配置, coding 写/执行类工具将直接拒绝(只读类亦拒绝, fail-closed)。
+	sandboxRoot string
+	// codingApproval 代码编写工具(写/执行类)的交互式人工审批器; 未注入时写/执行类一律拒绝(fail-closed)。
+	// 由 engine.CodingApprovalChecker 注入, 复用同一套 SSE ask 事件 + 超时 fail-closed 机制。
+	codingApproval func(ctx context.Context, tool, agentID string, args map[string]any, summary string) (approved bool, reason string)
 }
 
 func NewMCPToolSet(db *sql.DB) *MCPToolSet {
@@ -112,6 +124,20 @@ func (ts *MCPToolSet) SetKnowledgeCategoriesResolver(fn func(agentID string) []s
 // SetConfig 注入全局配置指针(image_generate 等需要从 sysconfig 读取 LLM provider key/base_url 的工具使用)。
 // 同一指针在 sysconfig 更新时被原地修改字段, 故无需重复同步。
 func (ts *MCPToolSet) SetConfig(cfg *config.Config) { ts.cfg = cfg }
+
+// SetCodingSandbox 设置代码编写类工具的目录沙箱根(coding_* 工具只能操作此目录子树)。
+// 未设置时coding 工具全部拒绝(fail-closed), 确保不会在任意目录读写文件。
+func (ts *MCPToolSet) SetCodingSandbox(root string) { ts.sandboxRoot = root }
+
+// SetCodingApproval 注入代码编写工具(写/执行类)的交互式人工审批器。
+// 未注入时写/执行类工具直接拒绝(fail-closed), 只读类不受审批约束但仍受 sandboxRoot 限定。
+func (ts *MCPToolSet) SetCodingApproval(fn func(ctx context.Context, tool, agentID string, args map[string]any, summary string) (approved bool, reason string)) {
+	ts.codingApproval = fn
+}
+
+// SetObjectStore 注入对象存储(image_generate 生成的图片持久化到 MinIO, 避免 CDN URL 过期)。
+// nil 安全: 未注入时 image_generate 直接返回上游 CDN URL。
+func (ts *MCPToolSet) SetObjectStore(os *objectstore.Client) { ts.objStore = os }
 
 // categoriesFor 解析 Agent 绑定的知识库分类(可能为 nil=全部)。
 func (ts *MCPToolSet) categoriesFor(agentID string) []string {
@@ -815,11 +841,12 @@ func (ts *MCPToolSet) searchKnowledge(ctx context.Context, query string, limit, 
 				qArgs = append(qArgs, catArg)
 			}
 			if rows, qerr := ts.db.QueryContext(ctx,
-				`SELECT c.article_id, a.title, c.heading, LEFT(c.content, $2) AS snippet
-				 FROM knowledge_chunks c
-				 JOIN knowledge_articles a ON a.id = c.article_id AND a.tenant_id = c.tenant_id
-				 WHERE c.tenant_id=$4 AND c.embedding IS NOT NULL`+catClause+`
-				 ORDER BY c.embedding <=> $1::vector LIMIT $3`,
+				`SELECT c.article_id, a.title, c.heading, LEFT(c.content, $2) AS snippet,
+			        c.id AS chunk_id, COALESCE(c.source,'article') AS source
+			 FROM knowledge_chunks c
+			 JOIN knowledge_articles a ON a.id = c.article_id AND a.tenant_id = c.tenant_id
+			 WHERE c.tenant_id=$4 AND c.embedding IS NOT NULL`+catClause+`
+			 ORDER BY c.embedding <=> $1::vector LIMIT $3`,
 				qArgs...); qerr == nil {
 				vecHits, _ = scanChunkHits(rows)
 			} else {
@@ -834,7 +861,8 @@ func (ts *MCPToolSet) searchKnowledge(ctx context.Context, query string, limit, 
 		iArgs = append(iArgs, catArg)
 	}
 	if rows, qerr := ts.db.QueryContext(ctx,
-		`SELECT c.article_id, a.title, c.heading, LEFT(c.content, $2) AS snippet
+		`SELECT c.article_id, a.title, c.heading, LEFT(c.content, $2) AS snippet,
+		        c.id AS chunk_id, COALESCE(c.source,'article') AS source
 		 FROM knowledge_chunks c
 		 JOIN knowledge_articles a ON a.id = c.article_id AND a.tenant_id = c.tenant_id
 		 WHERE c.tenant_id=$4 AND (a.title ILIKE $1 OR c.content ILIKE $1)`+catClause+` LIMIT $3`,
@@ -863,16 +891,18 @@ type knowledgeHit struct {
 	title     string
 	heading   string
 	snippet   string
+	chunkID   string // 命中块 ID: 供引用溯源跳原文并高亮(附件块同样带 ID)
+	source    string // article | attachment: 命中来自正文还是附件抽取
 }
 
-// scanChunkHits 扫描块级检索结果(article_id/title/heading/snippet)。
+// scanChunkHits 扫描块级检索结果(article_id/title/heading/snippet/chunk_id/source)。
 func scanChunkHits(rows *sql.Rows) ([]knowledgeHit, error) {
 	defer rows.Close()
 	var hits []knowledgeHit
 	for rows.Next() {
 		var h knowledgeHit
 		var heading sql.NullString
-		if err := rows.Scan(&h.articleID, &h.title, &heading, &h.snippet); err != nil {
+		if err := rows.Scan(&h.articleID, &h.title, &heading, &h.snippet, &h.chunkID, &h.source); err != nil {
 			return nil, err
 		}
 		h.heading = heading.String
@@ -891,6 +921,7 @@ func rrfMergeChunks(vec, kw []knowledgeHit, limit int) []map[string]any {
 		score   float64
 		matches []map[string]any
 		snippet string
+		chunkID string // 首个命中块的 ID(引用溯源锚点)
 	}
 	agg := map[string]*articleAgg{}
 	seenHeading := map[string]map[string]bool{} // articleID -> heading 去重
@@ -906,11 +937,15 @@ func rrfMergeChunks(vec, kw []knowledgeHit, limit int) []map[string]any {
 			a.score += 1.0 / (float64(rrfK) + float64(i+1))
 			if a.snippet == "" {
 				a.snippet = h.snippet
+				a.chunkID = h.chunkID // 首个(最高分)命中块作为溯源锚点
 			}
 			// 同一文章内按 heading 去重合并命中块
 			if !seenHeading[h.articleID][h.heading+"|"+h.snippet] {
 				seenHeading[h.articleID][h.heading+"|"+h.snippet] = true
-				a.matches = append(a.matches, map[string]any{"heading": h.heading, "snippet": h.snippet})
+				a.matches = append(a.matches, map[string]any{
+					"heading": h.heading, "snippet": h.snippet,
+					"chunk_id": h.chunkID, "source": h.source,
+				})
 			}
 		}
 	}
@@ -932,6 +967,7 @@ func rrfMergeChunks(vec, kw []knowledgeHit, limit int) []map[string]any {
 		items = append(items, map[string]any{
 			"id": a.id, "title": a.title, "snippet": a.snippet,
 			"matches": a.matches, "score": round3(a.score),
+			"chunk_id": a.chunkID, // 引用溯源: 前端可链到 /knowledge/{id}?chunk={chunk_id}
 		})
 	}
 	return items
@@ -1034,6 +1070,104 @@ func (ts *MCPToolSet) Register(reg *mcp.Registry) {
 		Handler: ts.imageGenerate,
 	})
 
+	// 文档生成: 模型主动调用生成真实可下载的 .pptx 演示文稿(纯 Go 手写 OOXML, 零外部依赖)。
+	// 返回 {url, file_name, slide_count, title}; 模型在最终回复里用 markdown 链接 [file_name](url) 输出, 前端渲染下载。
+	reg.Register(mcp.ToolDefinition{
+		Name: "pptx_generate",
+		Description: "Generate a downloadable PowerPoint (.pptx) presentation from structured content. " +
+			"Args: title(string) REQUIRED deck title (shown on the cover slide); subtitle(string) optional subtitle on cover; " +
+			"slides(array) REQUIRED list of content slides, each {title(string), bullets(array of string, optional)}; " +
+			"file_name(string) optional output file name. " +
+			"Returns {url, file_name, slide_count, title}. In your final reply, output a markdown download link [<file_name>](<url>) so the UI can render it. " +
+			"Use this tool whenever the user asks for a PPT / slide deck / presentation; first plan the outline (title + per-slide title/bullets) then call it.",
+		Parameters: map[string]mcp.ParamSchema{
+			"title":     {Type: "string", Description: "演示文稿标题(封面页主标题)", Required: true},
+			"subtitle":  {Type: "string", Description: "封面页副标题(可选)", Required: false},
+			"slides":    {Type: "array", Description: "内容页列表, 每项 {title: 页标题, bullets: 要点数组(可选)}", Required: true},
+			"file_name": {Type: "string", Description: "输出文件名(可选, 默认按时间戳命名)", Required: false},
+		},
+		Handler: ts.pptxGenerate,
+	})
+
+	// 文档生成: 生成真实可下载的 .docx Word 文档(纯 Go 手写 OOXML, 零外部依赖)。
+	// 返回 {url, file_name, section_count, title}; 模型用 markdown 链接 [file_name](url) 输出。
+	reg.Register(mcp.ToolDefinition{
+		Name: "docx_generate",
+		Description: "Generate a downloadable Word (.docx) document from structured content. " +
+			"Args: title(string) REQUIRED document title (rendered as the title line); " +
+			"sections(array) REQUIRED list of sections, each {heading(string), paragraphs(array of string, optional), bullets(array of string, optional)}; " +
+			"file_name(string) optional output file name. " +
+			"Returns {url, file_name, section_count, title}. In your final reply, output a markdown download link [<file_name>](<url>). " +
+			"Use this tool whenever the user asks for a Word doc / report / proposal / 文档 / 方案 / 报告; first plan the outline (title + sections) then call it.",
+		Parameters: map[string]mcp.ParamSchema{
+			"title":     {Type: "string", Description: "文档主标题(标题行)", Required: true},
+			"sections":  {Type: "array", Description: "章节列表, 每项 {heading: 章节标题, paragraphs: 段落数组(可选), bullets: 要点数组(可选)}", Required: true},
+			"file_name": {Type: "string", Description: "输出文件名(可选)", Required: false},
+		},
+		Handler: ts.docxGenerate,
+	})
+
+	// 表格生成: 生成真实可下载的 .xlsx Excel 表格(纯 Go 手写 OOXML, 零外部依赖)。
+	// 返回 {url, file_name, sheet_count}; 模型用 markdown 链接 [file_name](url) 输出。
+	reg.Register(mcp.ToolDefinition{
+		Name: "xlsx_generate",
+		Description: "Generate a downloadable Excel (.xlsx) workbook from structured tabular data. " +
+			"Args: sheets(array) REQUIRED list of sheets, each {name(string, optional), headers(array of string, optional), rows(array of array, optional)}; " +
+			"or use top-level headers(array) + rows(array of array) for a single-sheet workbook; " +
+			"file_name(string) optional output file name. " +
+			"Returns {url, file_name, sheet_count}. In your final reply, output a markdown download link [<file_name>](<url>). " +
+			"Use this tool whenever the user asks for a spreadsheet / table / 表格 / 台账 / 导出数据; build the headers + rows then call it.",
+		Parameters: map[string]mcp.ParamSchema{
+			"sheets":    {Type: "array", Description: "多工作表, 每项 {name: 表名(可选), headers: 表头数组(可选), rows: 二维行数据(可选)}", Required: false},
+			"headers":   {Type: "array", Description: "单表便捷入口: 表头数组(与 rows 配合构造第一个 sheet)", Required: false},
+			"rows":      {Type: "array", Description: "单表便捷入口: 二维行数据(每行为单元格数组)", Required: false},
+			"file_name": {Type: "string", Description: "输出文件名(可选)", Required: false},
+		},
+		Handler: ts.xlsxGenerate,
+	})
+
+	// 文档生成: 生成真实可下载的 .pdf (纯 Go 手写 PDF, 内嵌 CJK 字体以支持中文, 零外部依赖)。
+	// 返回 {url, file_name, page_count, title}; 模型用 markdown 链接 [file_name](url) 输出。
+	reg.Register(mcp.ToolDefinition{
+		Name: "pdf_generate",
+		Description: "Generate a downloadable PDF document (with Chinese/CJK support) from structured content. " +
+			"Args: title(string) optional document title (rendered as the H1 heading); " +
+			"blocks(array) optional list of content blocks, each {type(string, one of heading|paragraph|bullet|pagebreak), level(number, heading level 1-3 optional), text(string)}; " +
+			"content(string) optional fallback plain text (split by newline into paragraphs) when blocks is omitted; " +
+			"file_name(string) optional output file name. " +
+			"Returns {url, file_name, page_count, title}. In your final reply, output a markdown download link [<file_name>](<url>). " +
+			"Use this tool whenever the user asks for a PDF / 报告(需 PDF) / 文档(要 PDF 格式); prefer pdf_generate over docx_generate only when PDF format is explicitly required.",
+		Parameters: map[string]mcp.ParamSchema{
+			"title":     {Type: "string", Description: "文档主标题(作为一级标题)", Required: false},
+			"blocks":    {Type: "array", Description: "结构化内容块列表, 每项 {type: heading|paragraph|bullet|pagebreak, level: 标题级别(可选), text: 文本}", Required: false},
+			"content":   {Type: "string", Description: "纯文本内容(按换行拆分段落), 不传 blocks 时使用", Required: false},
+			"file_name": {Type: "string", Description: "输出文件名(可选, 默认按时间戳命名)", Required: false},
+		},
+		Handler: ts.pdfGenerate,
+	})
+
+	// 通用文本文件生成: 覆盖 csv/md/txt/json/html/xml/yaml/sql 等纯文本类型, 字节直存对象存储。
+	// 返回 {url, file_name, size_bytes, content_type}; 模型用 markdown 链接 [file_name](url) 输出。
+	reg.Register(mcp.ToolDefinition{
+		Name: "file_generate",
+		Description: "Generate a downloadable plain-text file of an arbitrary type (csv / markdown / txt / json / html / xml / yaml / sql / log / ini / source code, etc.). " +
+			"Args: file_name(string) REQUIRED output file name WITH extension (e.g. report.md, data.csv, config.yaml); " +
+			"content(string) REQUIRED file body; content_type(string) optional MIME override (inferred from extension by default). " +
+			"Returns {url, file_name, size_bytes, content_type}. In your final reply, output a markdown download link [<file_name>](<url>). " +
+			"Use this tool whenever the user needs a downloadable text file of a type not covered by pptx/docx/xlsx/pdf_generate.",
+		Parameters: map[string]mcp.ParamSchema{
+			"file_name":    {Type: "string", Description: "输出文件名(必填, 需含扩展名, 如 report.md)", Required: true},
+			"content":      {Type: "string", Description: "文件正文内容", Required: true},
+			"content_type": {Type: "string", Description: "MIME 类型(可选, 默认按扩展名推断)", Required: false},
+		},
+		Handler: ts.fileGenerate,
+	})
+
+	// 代码编写类工具(coding_*): 仅当沙箱根已配置才注册, 否则静默跳过, 避免暴露未隔离的文件操作。
+	if ts.sandboxRoot != "" {
+		ts.registerCodingTools(reg)
+	}
+
 	annotateBuiltinToolRisks(reg)
 }
 
@@ -1047,6 +1181,11 @@ var builtinToolRisks = map[string]string{
 	"script_executions": "read",
 	"knowledge_search":  "read",
 	"image_generate":    "write",
+	"pptx_generate":     "write",
+	"docx_generate":     "write",
+	"xlsx_generate":     "write",
+	"pdf_generate":      "write",
+	"file_generate":     "write",
 	"script_generate":   "write",
 	"ticket_create":     "write",
 	"script_run":        "critical",
