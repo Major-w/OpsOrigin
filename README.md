@@ -56,7 +56,7 @@ OpsOrigin 是面向企业 IT 运维的 **AI 原生控制面底座**：以 Go 高
 
 ```bash
 cp .env.example .env
-docker compose -f deploy/docker-compose.yml up -d postgres dgraph-zero dgraph-alpha redis
+docker compose -f deploy/docker-compose.yml up -d postgres dgraph-zero dgraph-alpha redis minio
 go run ./cmd/core                       # 后端 :8080
 cd web && npm install && npm run dev   # 前端 :3000
 ```

@@ -125,6 +125,16 @@ start_deps() {
     sleep 1
   done
   log "Dgraph 已就绪"
+
+  info "等待 MinIO 对象存储就绪..."
+  tries=0
+  until docker compose -f "$COMPOSE_FILE" -p "$COMPOSE_PROJECT" exec -T minio \
+      curl -sf http://localhost:9000/minio/health/live >/dev/null 2>&1; do
+    tries=$((tries + 1))
+    [[ $tries -gt 30 ]] && { warn "MinIO 健康检查未通过（附件/对话产物将回退数据库存储）"; return 0; }
+    sleep 1
+  done
+  log "MinIO 已就绪（桶 opsorigin 由后端首次连接时自动创建）"
 }
 
 stop_deps() {

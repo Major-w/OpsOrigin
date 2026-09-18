@@ -163,17 +163,15 @@ func (s *Service) TicketMetricsBySource(ctx context.Context, tenantID, source st
 func (s *Service) handleList(w http.ResponseWriter, r *http.Request) {
 	tenantID := auth.TenantFromContext(r.Context())
 	status := model.TicketStatus(r.URL.Query().Get("status"))
+	p := store.ParsePageParams(r.URL.Query())
 
-	tickets, err := s.store.List(r.Context(), tenantID, status)
+	result, err := s.store.ListPaged(r.Context(), tenantID, status, p)
 	if err != nil {
 		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	if tickets == nil {
-		tickets = []*model.Ticket{}
-	}
 
-	httputil.WriteJSON(w, http.StatusOK, tickets)
+	httputil.WriteJSON(w, http.StatusOK, result)
 }
 
 // currentVoteStep 返回工单当前步骤中需要多人表决的 user 步骤(配了静态审批人或审批人取值字段), 否则 nil。

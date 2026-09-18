@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"time"
 
 	"github.com/google/uuid"
@@ -598,6 +599,142 @@ func (s *PGStore) List(ctx context.Context, tenantID string, status model.Ticket
 		tickets = append(tickets, t)
 	}
 	return tickets, rows.Err()
+}
+
+func (s *PGStore) ListPaged(ctx context.Context, tenantID string, status model.TicketStatus, p PageParams) (*PageResult[*model.Ticket], error) {
+	const cols = `id, tenant_id, title, description, risk_level, status, change_plan,
+	                  rollback_plan, created_by, created_by_type, approved_by, reject_reason,
+	                  completed_by, rolled_back_by, rollback_reason, ci_ids, webhook_url,
+	                  labels, trace_id, scheduled_at, deadline_at, created_at, updated_at,
+	                  approved_at, executed_at, completed_at, rolled_back_at, process_id, custom_fields,
+	                  assignee, assigned_at, satisfaction,
+	                  on_hold, hold_reason, hold_until_at, related_ticket_ids,
+	                  hold_at, hold_seconds,
+	                  sla_warning_notified, sla_breached, sla_breached_at, sla_escalation_level,
+	                  catalog_id, approval_chain, approval_status`
+
+	where := `WHERE tenant_id = $1`
+	args := []any{tenantID}
+	if status != "" {
+		where += ` AND status = $2`
+		args = append(args, string(status))
+	}
+
+	var total int
+	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM itsm_tickets `+where, args...).Scan(&total); err != nil {
+		return nil, fmt.Errorf("count tickets: %w", err)
+	}
+
+	query := `SELECT ` + cols + ` FROM itsm_tickets ` + where + ` ORDER BY created_at DESC LIMIT $` + strconv.Itoa(len(args)+1) + ` OFFSET $` + strconv.Itoa(len(args)+2)
+	args = append(args, p.PageSize, p.Offset())
+
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("list tickets paged: %w", err)
+	}
+	defer rows.Close()
+
+	var tickets []*model.Ticket
+	for rows.Next() {
+		t := &model.Ticket{}
+		var desc, changePlan, rollbackPlan, approvedBy, rejectReason, webhookURL sql.NullString
+		var completedBy, rolledBackBy, rollbackReason sql.NullString
+		var labelsJSON, ciIDsJSON sql.NullString
+		var customFieldsJSON sql.NullString
+		var processID sql.NullString
+		var assignee sql.NullString
+		var assignedAt sql.NullTime
+		var satisfaction sql.NullInt32
+		var approvedAt, executedAt, completedAt, rolledBackAt sql.NullTime
+		var scheduledAt, deadlineAt sql.NullTime
+		var holdReason sql.NullString
+		var holdUntilAt sql.NullTime
+		var relatedJSON sql.NullString
+		var holdAt sql.NullTime
+		var holdSeconds sql.NullInt64
+		var slaWarning, slaBreached sql.NullBool
+		var slaBreachedAt sql.NullTime
+		var slaEscalationLevel sql.NullInt64
+		var catalogID sql.NullString
+		var approvalChainJSON, approvalStatusJSON sql.NullString
+
+		if err := rows.Scan(
+			&t.ID, &t.TenantID, &t.Title, &desc, &t.RiskLevel, &t.Status,
+			&changePlan, &rollbackPlan, &t.CreatedBy, &t.CreatedByType,
+			&approvedBy, &rejectReason, &completedBy, &rolledBackBy, &rollbackReason,
+			&ciIDsJSON, &webhookURL, &labelsJSON, &t.TraceID,
+			&scheduledAt, &deadlineAt, &t.CreatedAt, &t.UpdatedAt,
+			&approvedAt, &executedAt, &completedAt, &rolledBackAt, &processID, &customFieldsJSON,
+			&assignee, &assignedAt, &satisfaction,
+			&t.OnHold, &holdReason, &holdUntilAt, &relatedJSON,
+			&holdAt, &holdSeconds,
+			&slaWarning, &slaBreached, &slaBreachedAt, &slaEscalationLevel,
+			&catalogID, &approvalChainJSON, &approvalStatusJSON); err != nil {
+			return nil, fmt.Errorf("scan ticket: %w", err)
+		}
+
+		t.ProcessID = nullableStr(processID)
+		t.Description = nullableStr(desc)
+		t.ChangePlan = nullableStr(changePlan)
+		t.RollbackPlan = nullableStr(rollbackPlan)
+		t.ApprovedBy = nullableStr(approvedBy)
+		t.RejectReason = nullableStr(rejectReason)
+		t.CompletedBy = nullableStr(completedBy)
+		t.RolledBackBy = nullableStr(rolledBackBy)
+		t.RollbackReason = nullableStr(rollbackReason)
+		t.WebhookURL = nullableStr(webhookURL)
+		t.Assignee = nullableStr(assignee)
+		setTimePtr(&t.AssignedAt, assignedAt)
+		if satisfaction.Valid {
+			t.Satisfaction = int(satisfaction.Int32)
+		}
+		setTimePtr(&t.ApprovedAt, approvedAt)
+		setTimePtr(&t.ExecutedAt, executedAt)
+		setTimePtr(&t.CompletedAt, completedAt)
+		setTimePtr(&t.RolledBackAt, rolledBackAt)
+		setTimePtr(&t.ScheduledAt, scheduledAt)
+		setTimePtr(&t.DeadlineAt, deadlineAt)
+		if labelsJSON.Valid {
+			json.Unmarshal([]byte(labelsJSON.String), &t.Labels)
+		}
+		if ciIDsJSON.Valid && ciIDsJSON.String != "" {
+			json.Unmarshal([]byte(ciIDsJSON.String), &t.CIIDs)
+		}
+		if customFieldsJSON.Valid && customFieldsJSON.String != "" && customFieldsJSON.String != "{}" {
+			json.Unmarshal([]byte(customFieldsJSON.String), &t.CustomFields)
+		}
+		t.HoldReason = nullableStr(holdReason)
+		setTimePtr(&t.HoldUntilAt, holdUntilAt)
+		setTimePtr(&t.HoldAt, holdAt)
+		if holdSeconds.Valid {
+			t.HoldSeconds = int(holdSeconds.Int64)
+		}
+		if slaWarning.Valid {
+			t.SLAWarningNotified = slaWarning.Bool
+		}
+		if slaBreached.Valid {
+			t.SLABreached = slaBreached.Bool
+		}
+		setTimePtr(&t.SLABreachedAt, slaBreachedAt)
+		if slaEscalationLevel.Valid {
+			t.SLAEscalationLevel = int(slaEscalationLevel.Int64)
+		}
+		t.CatalogID = nullableStr(catalogID)
+		if approvalChainJSON.Valid && approvalChainJSON.String != "" && approvalChainJSON.String != "null" {
+			json.Unmarshal([]byte(approvalChainJSON.String), &t.ApprovalChain)
+		}
+		if approvalStatusJSON.Valid && approvalStatusJSON.String != "" && approvalStatusJSON.String != "null" {
+			json.Unmarshal([]byte(approvalStatusJSON.String), &t.ApprovalStatus)
+		}
+		if len(relatedJSON.String) > 0 && relatedJSON.String != "[]" {
+			json.Unmarshal([]byte(relatedJSON.String), &t.RelatedTicketIDs)
+		}
+		tickets = append(tickets, t)
+	}
+	if tickets == nil {
+		tickets = []*model.Ticket{}
+	}
+	return &PageResult[*model.Ticket]{Items: tickets, Total: total, Page: p.Page, PageSize: p.PageSize}, rows.Err()
 }
 
 func (s *PGStore) AddEvent(ctx context.Context, event *model.TicketEvent) error {
@@ -1401,6 +1538,61 @@ func (s *PGStore) ListChanges(ctx context.Context, tenantID string) ([]*model.Ch
 		result = append(result, c)
 	}
 	return result, rows.Err()
+}
+
+func (s *PGStore) ListChangesPaged(ctx context.Context, tenantID string, p PageParams) (*PageResult[*model.ChangeRequest], error) {
+	var total int
+	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM itsm_changes WHERE tenant_id = $1`, tenantID).Scan(&total); err != nil {
+		return nil, fmt.Errorf("count changes: %w", err)
+	}
+
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT id, tenant_id, ticket_id, title, description, risk_level, status,
+		       change_type, impact, urgency, cab_members, approvals, plan,
+		       rollback_plan, created_by, created_at, updated_at,
+		       scheduled_at, window_start, window_end
+		FROM itsm_changes WHERE tenant_id = $1
+		ORDER BY created_at DESC LIMIT $2 OFFSET $3`, tenantID, p.PageSize, p.Offset())
+	if err != nil {
+		return nil, fmt.Errorf("list changes paged: %w", err)
+	}
+	defer rows.Close()
+	var result []*model.ChangeRequest
+	for rows.Next() {
+		c := &model.ChangeRequest{}
+		var desc, changeType, impact, urgency, plan, rollbackPlan, createdBy, ticketID sql.NullString
+		var cabMembersJSON, approvalsJSON []byte
+		var scheduledAt, windowStart, windowEnd sql.NullTime
+		if err := rows.Scan(
+			&c.ID, &c.TenantID, &ticketID, &c.Title, &desc, &c.RiskLevel, &c.Status,
+			&changeType, &impact, &urgency, &cabMembersJSON, &approvalsJSON,
+			&plan, &rollbackPlan, &createdBy, &c.CreatedAt, &c.UpdatedAt,
+			&scheduledAt, &windowStart, &windowEnd); err != nil {
+			return nil, fmt.Errorf("scan change: %w", err)
+		}
+		c.TicketID = nullableStr(ticketID)
+		c.Description = nullableStr(desc)
+		c.ChangeType = nullableStr(changeType)
+		c.Impact = nullableStr(impact)
+		c.Urgency = nullableStr(urgency)
+		c.Plan = nullableStr(plan)
+		c.RollbackPlan = nullableStr(rollbackPlan)
+		c.CreatedBy = nullableStr(createdBy)
+		setTimePtr(&c.ScheduledAt, scheduledAt)
+		setTimePtr(&c.WindowStart, windowStart)
+		setTimePtr(&c.WindowEnd, windowEnd)
+		if cabMembersJSON != nil {
+			json.Unmarshal(cabMembersJSON, &c.CABMembers)
+		}
+		if approvalsJSON != nil {
+			json.Unmarshal(approvalsJSON, &c.Approvals)
+		}
+		result = append(result, c)
+	}
+	if result == nil {
+		result = []*model.ChangeRequest{}
+	}
+	return &PageResult[*model.ChangeRequest]{Items: result, Total: total, Page: p.Page, PageSize: p.PageSize}, rows.Err()
 }
 
 func (s *PGStore) UpdateChange(ctx context.Context, change *model.ChangeRequest) error {

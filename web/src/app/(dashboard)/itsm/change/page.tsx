@@ -69,7 +69,7 @@ export default function ChangeManagementPage() {
   const fetchChanges = useCallback(async () => {
     setLoading(true)
     try {
-      const data = await apiList<ChangeRequest>('/itsm/changes')
+      const data = await apiList<ChangeRequest>('/itsm/changes?page_size=200')
       setChanges(data || [])
     } catch { /* ignore */ }
     setLoading(false)

@@ -58,15 +58,15 @@ func (s *Service) handleCreateChange(w http.ResponseWriter, r *http.Request) {
 
 func (s *Service) handleListChanges(w http.ResponseWriter, r *http.Request) {
 	tenantID := auth.TenantFromContext(r.Context())
-	changes, err := s.store.ListChanges(r.Context(), tenantID)
+	p := store.ParsePageParams(r.URL.Query())
+
+	result, err := s.store.ListChangesPaged(r.Context(), tenantID, p)
 	if err != nil {
 		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	if changes == nil {
-		changes = []*model.ChangeRequest{}
-	}
-	httputil.WriteJSON(w, http.StatusOK, changes)
+
+	httputil.WriteJSON(w, http.StatusOK, result)
 }
 
 func (s *Service) handleGetChange(w http.ResponseWriter, r *http.Request) {

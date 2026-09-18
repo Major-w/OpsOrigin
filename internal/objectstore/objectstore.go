@@ -5,6 +5,8 @@ package objectstore
 import (
 	"context"
 	"io"
+	"net/url"
+	"time"
 
 	"github.com/minio/minio-go/v7"
 	"github.com/minio/minio-go/v7/pkg/credentials"
@@ -67,4 +69,9 @@ func (c *Client) Get(ctx context.Context, w io.Writer, key string) error {
 // Remove 删除对象。
 func (c *Client) Remove(ctx context.Context, key string) error {
 	return c.mc.RemoveObject(ctx, c.bucket, key, minio.RemoveObjectOptions{})
+}
+
+// PresignedURL 生成限时 GET 预签名 URL(供前端直接下载/展示, 无需暴露桶公共读权限)。
+func (c *Client) PresignedURL(key string, expiry time.Duration) (*url.URL, error) {
+	return c.mc.PresignedGetObject(context.Background(), c.bucket, key, expiry, nil)
 }

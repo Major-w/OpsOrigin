@@ -18,6 +18,7 @@ type Store interface {
 	Get(ctx context.Context, id, tenantID string) (*model.Ticket, error)
 	Update(ctx context.Context, ticket *model.Ticket) error
 	List(ctx context.Context, tenantID string, status model.TicketStatus) ([]*model.Ticket, error)
+	ListPaged(ctx context.Context, tenantID string, status model.TicketStatus, p PageParams) (*PageResult[*model.Ticket], error)
 	AddEvent(ctx context.Context, event *model.TicketEvent) error
 	GetEvents(ctx context.Context, ticketID, tenantID string) ([]*model.TicketEvent, error)
 	GetStats(ctx context.Context, tenantID string) (*model.ITSMStats, error)
@@ -47,6 +48,7 @@ type Store interface {
 	CreateChange(ctx context.Context, change *model.ChangeRequest) error
 	GetChange(ctx context.Context, id, tenantID string) (*model.ChangeRequest, error)
 	ListChanges(ctx context.Context, tenantID string) ([]*model.ChangeRequest, error)
+	ListChangesPaged(ctx context.Context, tenantID string, p PageParams) (*PageResult[*model.ChangeRequest], error)
 	UpdateChange(ctx context.Context, change *model.ChangeRequest) error
 	// Form schemas (dynamic form definitions)
 	GetFormSchema(ctx context.Context, tenantID, scope string) (*form.FormSchema, error)
@@ -143,6 +145,36 @@ func (s *MemoryStore) List(ctx context.Context, tenantID string, status model.Ti
 		result = append(result, t)
 	}
 	return result, nil
+}
+
+func (s *MemoryStore) ListPaged(ctx context.Context, tenantID string, status model.TicketStatus, p PageParams) (*PageResult[*model.Ticket], error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	var filtered []*model.Ticket
+	for _, t := range s.tickets {
+		if t.TenantID != tenantID {
+			continue
+		}
+		if status != "" && t.Status != status {
+			continue
+		}
+		filtered = append(filtered, t)
+	}
+	total := len(filtered)
+	start := p.Offset()
+	if start > total {
+		start = total
+	}
+	end := start + p.PageSize
+	if end > total {
+		end = total
+	}
+	items := filtered[start:end]
+	if items == nil {
+		items = []*model.Ticket{}
+	}
+	return &PageResult[*model.Ticket]{Items: items, Total: total, Page: p.Page, PageSize: p.PageSize}, nil
 }
 
 func (s *MemoryStore) AddEvent(ctx context.Context, event *model.TicketEvent) error {
@@ -578,6 +610,31 @@ func (s *MemoryStore) ListChanges(ctx context.Context, tenantID string) ([]*mode
 		}
 	}
 	return result, nil
+}
+
+func (s *MemoryStore) ListChangesPaged(ctx context.Context, tenantID string, p PageParams) (*PageResult[*model.ChangeRequest], error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	var filtered []*model.ChangeRequest
+	for _, c := range s.changes {
+		if c.TenantID == tenantID {
+			filtered = append(filtered, c)
+		}
+	}
+	total := len(filtered)
+	start := p.Offset()
+	if start > total {
+		start = total
+	}
+	end := start + p.PageSize
+	if end > total {
+		end = total
+	}
+	items := filtered[start:end]
+	if items == nil {
+		items = []*model.ChangeRequest{}
+	}
+	return &PageResult[*model.ChangeRequest]{Items: items, Total: total, Page: p.Page, PageSize: p.PageSize}, nil
 }
 
 func (s *MemoryStore) UpdateChange(ctx context.Context, change *model.ChangeRequest) error {

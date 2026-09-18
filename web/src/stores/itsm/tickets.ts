@@ -42,7 +42,7 @@ export const useTicketStore = create<TicketState>((set, get) => ({
   fetch: async () => {
     set({ loading: true })
     try {
-      const tickets = await apiList<Ticket>('/itsm/tickets')
+      const tickets = await apiList<Ticket>('/itsm/tickets?page_size=200')
       set({ tickets, loading: false })
     } catch (e: any) {
       set({ loading: false })

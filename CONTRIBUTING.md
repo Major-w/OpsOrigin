@@ -30,7 +30,7 @@
 
 1. Fork 本仓库并 clone 到本地
 2. 新建分支：`git checkout -b feat/your-feature`
-3. 本地起依赖：`docker compose -f deploy/docker-compose.yml up -d postgres redis`（可选 dgraph）
+3. 本地起依赖：`docker compose -f deploy/docker-compose.yml up -d postgres redis minio`（可选 dgraph）
 4. 后端：`go run ./cmd/core`；前端：`cd web && npm run dev`
 5. 完成开发后自测（见下），推送分支并提交 Pull Request
 6. PR 需通过 CI（lint / build / test / integration）方可合并
