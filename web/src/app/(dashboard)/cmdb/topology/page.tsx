@@ -1,6 +1,8 @@
 
 import { useEffect, useState, useRef, useMemo, useCallback } from 'react'
+import { useNavigate } from 'react-router-dom'
 import { useCMDBStore, type TopologyNode, type TopologyEdge, type TopologyResult } from '@/stores/cmdb'
+import { type AlertEvent } from '@/stores/monitor'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button, Tag, Input, Tabs, Segmented, Modal, AutoComplete, Select } from 'antd'
 import { AppArchPanel } from '@/components/cmdb/app-arch-panel'
@@ -11,7 +13,7 @@ import {
   Server, Database, Cloud, Globe, Boxes, Shield, Link2, Download, ChevronUp, ChevronDown,
   FileSpreadsheet, FileCode, ArrowUpFromLine, ArrowDownToLine, GitCompareArrows,
 } from 'lucide-react'
-import { cn, formatTime, apiFetch } from '@/lib/utils'
+import { cn, formatTime, apiFetch, apiList } from '@/lib/utils'
 import { useCan } from '@/stores/permissions'
 import { getMessage } from '@/lib/message'
 import { toPng } from 'html-to-image'
@@ -380,6 +382,8 @@ type CMDBNodeData = {
   connectable?: boolean
   /** 画布内搜索命中 */
   isMatch?: boolean
+  /** 该 CI 的活跃告警计数(告警 × CMDB 联动) */
+  alerts?: { critical: number; warning: number; info: number; total: number }
 }
 type CMDBRFNode = Node<CMDBNodeData>
 type CMDBRFGroupNode = Node<CMDBGroupData>
@@ -433,6 +437,17 @@ function CMDBNode({ data }: NodeProps<CMDBRFNode>) {
               data.status === 'active' ? 'bg-emerald-500' : 'bg-amber-500',
             )}
           />
+        )}
+        {data.alerts && data.alerts.total > 0 && (
+          <span
+            title={`活跃告警: ${data.alerts.critical} 严重 / ${data.alerts.warning} 警告 / ${data.alerts.info} 提示`}
+            className={cn(
+              'absolute -right-2 -bottom-2 min-w-[16px] h-4 px-1 rounded-full border-2 border-background text-[10px] font-bold leading-[12px] text-white flex items-center justify-center',
+              data.alerts.critical > 0 ? 'bg-red-500' : data.alerts.warning > 0 ? 'bg-orange-500' : 'bg-blue-500',
+            )}
+          >
+            {data.alerts.total}
+          </span>
         )}
         {data.isRoot && (
           <span className="absolute -top-[9px] left-1/2 -translate-x-1/2 rounded-full bg-blue-600 px-1.5 text-[10px] leading-[15px] text-white shadow-sm">
@@ -554,6 +569,27 @@ function LayerBands({ rows, totalW }: { rows: LayerRow[]; totalW: number }) {
 export default function TopologyPage() {
   const canRead = useCan('cmdb:read')
   const { items, topology, impactResult, modelTypes, fetch, search, fetchTopology, fetchSubgraph, fetchImpact, fetchModelTypes } = useCMDBStore()
+  const navigate = useNavigate()
+  // 监控活跃告警(静默拉取, 无权限/失败时不打扰 CMDB 用户)。用于告警 × CMDB 联动。
+  const [monitorAlerts, setMonitorAlerts] = useState<AlertEvent[]>([])
+  // 按 ci_id 聚合监控活跃告警计数, 用于拓扑节点角标与详情面板联动(告警 × CMDB)
+  const alertMap = useMemo(() => {
+    const m = new Map<string, { critical: number; warning: number; info: number; total: number }>()
+    for (const a of monitorAlerts) {
+      const cid = a.source_ci_id
+      if (!cid) continue
+      const e = m.get(cid) || { critical: 0, warning: 0, info: 0, total: 0 }
+      e.total++
+      if (a.severity === 'critical') e.critical++
+      else if (a.severity === 'warning') e.warning++
+      else e.info++
+      m.set(cid, e)
+    }
+    return m
+  }, [monitorAlerts])
+  useEffect(() => {
+    apiList<AlertEvent>('/monitor/alerts').then(list => setMonitorAlerts(list || [])).catch(() => {})
+  }, [])
   const [selectedCI, setSelectedCI] = useState<string>('')
   const [searchQ, setSearchQ] = useState('')
   const [selectedNode, setSelectedNode] = useState<TopologyNode | null>(null)
@@ -876,12 +912,13 @@ export default function TopologyPage() {
           isDimmed,
           connectable: connectMode,
           isMatch: !!matchIds?.has(n.id),
+          alerts: alertMap.get(n.id),
         },
       })
     }
     setRfNodes(next)
   }, [activeTopology, selectedCI, selectedNode, impactIdSet, impactOn, focusId, focusNeighbors, ciById, resetTick,
-    connectMode, hideIsolated, neighborMap, setRfNodes, baseNodes, collapsedGroups, collapsedTypes, matchIds, pathSet, dirSet])
+    connectMode, hideIsolated, neighborMap, setRfNodes, baseNodes, collapsedGroups, collapsedTypes, matchIds, pathSet, dirSet, alertMap])
 
   // 布局或数据变化后自动适配视口：禁用动画(duration:0)避免 LayerBands 同步滞后
   useEffect(() => {
@@ -1714,6 +1751,26 @@ export default function TopologyPage() {
                 <p className="text-[10px] text-muted-foreground/60 mt-3">
                   创建于 {formatTime(selectedCIDetail.created_at)} · 更新于 {formatTime(selectedCIDetail.updated_at)}
                 </p>
+                {(() => {
+                  const al = alertMap.get(selectedNode.id)
+                  if (!al || al.total === 0) return null
+                  return (
+                    <div className="mt-3 rounded-lg border border-red-500/30 bg-red-500/5 p-3">
+                      <div className="flex items-center justify-between gap-2 flex-wrap">
+                        <div className="flex items-center gap-2 text-sm">
+                          <AlertTriangle className="h-4 w-4 text-red-500" />
+                          <span className="font-medium">活跃告警 {al.total}</span>
+                          {al.critical > 0 && <Tag color="red" className="text-[10px]">{al.critical} 严重</Tag>}
+                          {al.warning > 0 && <Tag color="orange" className="text-[10px]">{al.warning} 警告</Tag>}
+                          {al.info > 0 && <Tag color="blue" className="text-[10px]">{al.info} 提示</Tag>}
+                        </div>
+                        <Button size="small" onClick={() => navigate(`/monitor/alerts?ci_id=${encodeURIComponent(selectedNode.id)}`)}>
+                          查看并处置
+                        </Button>
+                      </div>
+                    </div>
+                  )
+                })()}
               </CardContent>
             </Card>
           )}
