@@ -643,9 +643,36 @@ func sleepCtx(ctx context.Context, d time.Duration) error {
 	}
 }
 
+// embedBatchMaxInputs 单次 /v1/embeddings 请求携带的最大文本条数。
+// 各供应商对 input 数组长度与总 token 都有上限(常见 2048 条 / 部分实现更严),
+// 这里保守取 64, 既摊薄往返次数又留足余量; 超出的部分继续分批请求。
+const embedBatchMaxInputs = 64
+
 // Embed 调用 OpenAI 兼容的 /v1/embeddings 端点，返回文本的向量表示。
 // 用于 RAG 知识库语义检索。embedding 模型/端点可独立配置，缺省复用聊天配置。
 func (c *Client) Embed(ctx context.Context, text string) ([]float32, error) {
+	vecs, err := c.embed(ctx, []string{text})
+	if err != nil {
+		return nil, err
+	}
+	if len(vecs) == 0 || len(vecs[0]) == 0 {
+		return nil, fmt.Errorf("llm: embed returned empty vector")
+	}
+	return vecs[0], nil
+}
+
+// EmbedBatch 一次请求为多条文本生成向量(input 数组形态)。
+// 知识库分块入库时把整篇文章的块合并成一次调用，替代逐块串行请求，
+// 显著降低 embedding 往返次数与整体耗时。返回顺序与入参一致。
+func (c *Client) EmbedBatch(ctx context.Context, texts []string) ([][]float32, error) {
+	if len(texts) == 0 {
+		return nil, nil
+	}
+	return c.embed(ctx, texts)
+}
+
+// embed 是 Embed / EmbedBatch 的共用实现: 按批次调用 /v1/embeddings 并按 index 还原顺序。
+func (c *Client) embed(ctx context.Context, texts []string) ([][]float32, error) {
 	model := c.config.EmbeddingModel
 	if model == "" {
 		model = "text-embedding-3-small"
@@ -658,7 +685,28 @@ func (c *Client) Embed(ctx context.Context, text string) ([]float32, error) {
 		return nil, fmt.Errorf("llm: embedding base url not configured")
 	}
 
-	body, _ := json.Marshal(map[string]any{"model": model, "input": text})
+	out := make([][]float32, 0, len(texts))
+	for start := 0; start < len(texts); start += embedBatchMaxInputs {
+		end := start + embedBatchMaxInputs
+		if end > len(texts) {
+			end = len(texts)
+		}
+		batch, err := c.embedOnce(ctx, base, model, texts[start:end])
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, batch...)
+	}
+	if len(out) != len(texts) {
+		return nil, fmt.Errorf("llm: embed returned %d vectors for %d inputs", len(out), len(texts))
+	}
+	return out, nil
+}
+
+// embedOnce 发起一次 /v1/embeddings 请求, 按响应中的 index 还原与入参一致的顺序
+// (部分兼容实现不保证 data 顺序)。
+func (c *Client) embedOnce(ctx context.Context, base, model string, texts []string) ([][]float32, error) {
+	body, _ := json.Marshal(map[string]any{"model": model, "input": texts})
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, joinEndpoint(base, "/v1/embeddings"), bytes.NewReader(body))
 	if err != nil {
 		return nil, fmt.Errorf("llm: embed request: %w", err)
@@ -683,16 +731,28 @@ func (c *Client) Embed(ctx context.Context, text string) ([]float32, error) {
 
 	var er struct {
 		Data []struct {
+			Index     int       `json:"index"`
 			Embedding []float32 `json:"embedding"`
 		} `json:"data"`
 	}
 	if err := json.Unmarshal(respBody, &er); err != nil {
 		return nil, fmt.Errorf("llm: embed unmarshal: %w", err)
 	}
-	if len(er.Data) == 0 || len(er.Data[0].Embedding) == 0 {
-		return nil, fmt.Errorf("llm: embed returned empty vector")
+	if len(er.Data) == 0 {
+		return nil, fmt.Errorf("llm: embed returned no data")
 	}
-	return er.Data[0].Embedding, nil
+	vecs := make([][]float32, len(texts))
+	for i, d := range er.Data {
+		idx := d.Index
+		// 兼容不返回 index 的实现: 回落到响应出现顺序。
+		if idx < 0 || idx >= len(vecs) || (idx == 0 && i != 0) {
+			idx = i
+		}
+		if idx >= 0 && idx < len(vecs) {
+			vecs[idx] = d.Embedding
+		}
+	}
+	return vecs, nil
 }
 
 // UpdateConfig 原子更新 Client 的配置与 http.Client(热生效, 无需重启)。

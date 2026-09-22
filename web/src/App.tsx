@@ -76,6 +76,8 @@ const ScriptsPage = React.lazy(() => import('./app/(dashboard)/scripts/page'))
 const ScriptDetailPage = React.lazy(() => import('./app/(dashboard)/scripts/[id]/page'))
 const KnowledgePage = React.lazy(() => import('./app/(dashboard)/knowledge/page'))
 const KnowledgeCategoriesPage = React.lazy(() => import('./app/(dashboard)/knowledge/categories/page'))
+const KnowledgeInsightsPage = React.lazy(() => import('./app/(dashboard)/knowledge/insights/page'))
+const KnowledgeRetrievalPage = React.lazy(() => import('./app/(dashboard)/knowledge/retrieval/page'))
 const KnowledgeNewPage = React.lazy(() => import('./app/(dashboard)/knowledge/new/page'))
 const KnowledgeDetailPage = React.lazy(() => import('./app/(dashboard)/knowledge/[id]/page'))
 const SystemNotificationsPage = React.lazy(() => import('./app/(dashboard)/system/notifications/page'))
@@ -225,6 +227,8 @@ function App() {
                 <Route path="/scripts/:id" element={<ScriptDetailPage />} />
                 <Route path="/knowledge" element={<KnowledgePage />} />
                 <Route path="/knowledge/categories" element={<KnowledgeCategoriesPage />} />
+                <Route path="/knowledge/insights" element={<KnowledgeInsightsPage />} />
+                <Route path="/knowledge/retrieval" element={<KnowledgeRetrievalPage />} />
                 <Route path="/knowledge/new" element={<KnowledgeNewPage />} />
                 <Route path="/knowledge/:id" element={<KnowledgeDetailPage />} />
                 <Route path="/system/notifications" element={<SystemNotificationsPage />} />

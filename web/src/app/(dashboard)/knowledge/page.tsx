@@ -1,13 +1,14 @@
 
 import { useEffect, useRef, useState } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
-import { useKnowledgeStore, type PrecipitationRule } from '@/stores/knowledge'
+import { useKnowledgeStore, type PrecipitationRule, type Article } from '@/stores/knowledge'
 import { Card, CardContent } from '@/components/ui/card'
 import { Button, Select, Tag, Input, Popconfirm, Modal } from 'antd'
-import { formatTime } from '@/lib/utils'
-import { Plus, Trash2, BookOpen, Pencil, FolderPlus, Upload, Loader2, CheckCircle2, Bookmark, Bell, Settings2, ThumbsUp, MessageSquare, CalendarOff, Eye } from 'lucide-react'
-import { cn } from '@/lib/utils'
+import { formatTime, apiFetch, cn } from '@/lib/utils'
+import { Plus, Trash2, BookOpen, Pencil, FolderPlus, Upload, Loader2, CheckCircle2, Bookmark, Bell, Settings2, ThumbsUp, MessageSquare, CalendarOff, Eye, Sparkles, Search } from 'lucide-react'
 import { useAuthStore } from '@/stores/auth'
+import { useIAMStore } from '@/stores/iam'
+import { usePermissions } from '@/stores/permissions'
 import { getMessage } from '@/lib/message'
 
 const getKBUser = () => useAuthStore.getState().user?.username || 'anonymous'
@@ -18,6 +19,63 @@ const VIEW_PERM_BADGES: Record<string, string> = { team: '团队', owner: '仅�
 const isExpired = (expiresAt?: string | null) => {
   if (!expiresAt) return false
   return new Date(expiresAt) < new Date()
+}
+
+/** 当前查看者的身份，用于复刻后端「按提问者身份」的可见性判定 */
+type Viewer = { userID: string; groupIDs: string[] }
+
+/**
+ * 三态结论：yes 确定会被检索 / no 确定不会 / unknown 依据不足，不敢断言。
+ *
+ * 为什么需要 unknown：team 分支的判定依赖「当前用户属于哪些组」，而组列表来自
+ * `GET /iam/groups`（需要 `iam:read`）。拿不到组列表时，"不在我的组集合里"并不能推出
+ * "不可召回" —— 此时若显示「AI 不检索」就是在撒谎（作者/成员明明能检索到）。
+ * owner 分支不依赖组列表（作者 ID 在文章上、我的 ID 在登录态里），故始终可精确判定。
+ */
+type AIRetrievability = 'yes' | 'no' | 'unknown'
+
+/**
+ * 该文章对**当前查看者**是否会被 AI 检索召回 —— 必须与后端 scope 谓词保持同一口径。
+ *
+ * 后端谓词（internal/ai/agentic/scope.go）：
+ *   公开 OR (owner 且 author_id = 提问者) OR (team 且 owner_group_ids 与提问者所属组有交集)
+ * 且都必须满足 status=published 与未过期。身份解析不出来时退化为「仅公开」。
+ */
+function aiRetrievability(a: Article, viewer: Viewer, groupsKnown: boolean): AIRetrievability {
+  if (a.status !== 'published') return 'no'
+  if (isExpired(a.expires_at)) return 'no'
+  const perm = a.view_permission || 'all'
+  if (perm === 'all') return 'yes'
+  if (!viewer.userID) return 'no' // 未识别身份 → 后端退化为仅公开，这是确定的
+  if (perm === 'owner') {
+    return a.author_id && a.author_id === viewer.userID ? 'yes' : 'no'
+  }
+  if (perm === 'team') {
+    const groups = a.owner_group_ids || []
+    if (!groups.length) return 'no' // 归属为空 → 对任何人不可见（确定）
+    if (groups.some(id => viewer.groupIDs.includes(id))) return 'yes'
+    return groupsKnown ? 'no' : 'unknown'
+  }
+  return 'no' // 未知取值一律按不可检索（fail-closed）
+}
+
+/** 不可检索的原因，用于 hover 说明：避免作者以为"已经给团队了"，实际谁都没检索到。 */
+function aiBlockReason(a: Article, viewer: Viewer, groupsKnown: boolean): string {
+  if (a.status !== 'published') return '未发布：只有「已发布」的文章参与 AI 检索'
+  if (isExpired(a.expires_at)) return '已过期：过期后自动退出 AI 检索'
+  const perm = a.view_permission || 'all'
+  if (perm === 'team') {
+    if (!(a.owner_group_ids || []).length) return '仅团队可见但未指定归属团队：归属为空时对任何人都不参与检索'
+    if (!groupsKnown) return '仅团队可见：无权限读取用户组，无法判断你是否在归属团队内（团队成员可被检索到）'
+    return viewer.userID
+      ? '仅团队可见：你属于该团队时 AI 才能检索到'
+      : '仅团队可见：未识别到你的身份，AI 只检索公开文章'
+  }
+  if (perm === 'owner') {
+    if (!a.author_id) return '仅自己可见但未记录作者：无法判定归属，对任何人都不参与检索'
+    return '仅自己可见：只有作者本人提问时 AI 才能检索到'
+  }
+  return '不会被 AI 检索'
 }
 
 /** 轻量 Markdown 清洗: 去掉标记符号, 得到适合列表摘要的纯文本 */
@@ -60,9 +118,60 @@ export default function KnowledgeListPage() {
   const [importing, setImporting] = useState(false)
   const importRef = useRef<HTMLInputElement | null>(null)
 
+  // 归属团队的 ID → 名称映射（卡片上要显示「团队：运维组、网络组」而不是一串 ID）
+  const { groups, fetchGroups } = useIAMStore()
+  useEffect(() => { fetchGroups() }, [fetchGroups])
+  const groupName = (id: string) => groups.find(g => g.id === id)?.name || id
+
+  // 当前查看者身份：team/owner 文章的「AI 可检索」是相对结论，必须按查看者判定
+  const viewerUserID = useAuthStore(s => s.user?.user_id) || ''
+  const viewerGroupIDs = groups.filter(g => (g.user_ids || []).includes(viewerUserID)).map(g => g.id)
+  const viewer = { userID: viewerUserID, groupIDs: viewerGroupIDs }
+  // 组列表是否"可信"：需要 iam:read 且已加载完，否则 team 分支只能给 unknown（不撒谎）
+  const permsLoaded = usePermissions(s => s.loaded)
+  const perms = usePermissions(s => s.permissions)
+  const groupsKnown = permsLoaded && perms.includes('iam:read')
+
   // 筛选条件 URL 参数化(?q=/?cat=): 支持刷新/分享/外链直达(如 AI 对话页知识范围 chip 跳转)
   const [filterCat, setFilterCat] = useState(() => searchParams.get('cat') || '')
   const [searchQ, setSearchQ] = useState(() => searchParams.get('q') || '')
+
+  // —— 语义搜索(用户级知识查询入口) ——
+  // 输入停顿后调后端真检索(与 AI 同一条召回路径): 返回块级命中片段与相关度。
+  // 后端未接检索引擎(501)或请求失败时回退为本地子串过滤, 搜索框永不失效。
+  interface SemanticMatch { heading?: string; snippet?: string }
+  interface SemanticItem {
+    id: string
+    title: string
+    snippet: string
+    score: number
+    chunk_id?: string
+    matches?: SemanticMatch[]
+  }
+  const [semantic, setSemantic] = useState<SemanticItem[] | null>(null)
+  const [semanticSource, setSemanticSource] = useState<'semantic' | 'local'>('local')
+  const [searching, setSearching] = useState(false)
+  useEffect(() => {
+    const q = searchQ.trim()
+    if (!q) { setSemantic(null); setSearching(false); return }
+    setSearching(true)
+    const timer = setTimeout(async () => {
+      try {
+        const params = new URLSearchParams({ q, limit: '10' })
+        if (filterCat) params.set('cat', filterCat)
+        const d = await apiFetch<{ items: SemanticItem[]; source?: string }>(`/knowledge/search?${params}`)
+        setSemantic(d?.items || [])
+        setSemanticSource('semantic')
+      } catch (err: any) {
+        // 检索引擎未接入(501)或接口不可达: 静默回退本地过滤, 不弹错误打断浏览
+        setSemantic(null)
+        setSemanticSource('local')
+      } finally {
+        setSearching(false)
+      }
+    }, 350)
+    return () => clearTimeout(timer)
+  }, [searchQ, filterCat])
   useEffect(() => {
     const p = new URLSearchParams()
     if (searchQ.trim()) p.set('q', searchQ.trim())
@@ -203,10 +312,51 @@ export default function KnowledgeListPage() {
             { value: 'title', label: '标题排序' },
           ]}
         />
-        <Input className="w-44 h-8" placeholder="搜索标题/正文..." allowClear value={searchQ} onChange={e => setSearchQ(e.target.value)} />
+        <Input
+          className="w-64 h-8"
+          placeholder="搜索知识（语义 + 关键词）..."
+          allowClear
+          prefix={<Search className="h-3.5 w-3.5 text-muted-foreground" />}
+          suffix={searching ? <Loader2 className="h-3.5 w-3.5 animate-spin text-muted-foreground" /> : null}
+          value={searchQ}
+          onChange={e => setSearchQ(e.target.value)}
+        />
       </div>
     </div>
 
+    {/* 语义搜索激活: 展示块级命中片段(与 AI 同一条召回路径), 而不是本地过滤的整卡列表 */}
+    {searchQ.trim() && semanticSource === 'semantic' ? (
+      <div className="space-y-2">
+        <div className="text-xs text-muted-foreground">
+          找到 {semantic?.length ?? 0} 条相关内容
+          {semantic && semantic.length === 0 && ' —— 试试换个说法，或直接问 AI 助手'}
+        </div>
+        {(semantic || []).map(it => {
+          const top = (it.matches && it.matches[0]) || null
+          return (
+            <Card
+              key={it.id}
+              className="cursor-pointer hover:border-primary/50"
+              onClick={() => navigate(it.chunk_id ? `/knowledge/${it.id}?chunk=${encodeURIComponent(it.chunk_id)}` : `/knowledge/${it.id}`)}
+            >
+              <CardContent className="p-3">
+                <div className="flex items-center justify-between gap-2">
+                  <h3 className="text-sm font-medium truncate flex-1">{it.title}</h3>
+                  <Tag color="blue" className="shrink-0">相关度 {Math.round((it.score || 0) * 100)}%</Tag>
+                </div>
+                {top?.heading && <p className="text-[11px] text-muted-foreground mt-1">{top.heading}</p>}
+                <p className="text-xs text-muted-foreground mt-1 line-clamp-2 whitespace-pre-wrap">
+                  {(top?.snippet || it.snippet || '').slice(0, 220)}
+                </p>
+                {(it.matches?.length ?? 0) > 1 && (
+                  <p className="text-[10px] text-muted-foreground mt-1">另有 {it.matches!.length - 1} 处命中段落</p>
+                )}
+              </CardContent>
+            </Card>
+          )
+        })}
+      </div>
+    ) : (
     <div className="grid gap-3 md:grid-cols-2">
       {visible.length === 0 ? <Card className="col-span-2"><CardContent className="py-10 text-center text-muted-foreground"><BookOpen className="h-10 w-10 mx-auto mb-2 opacity-30" /><p>暂无文章</p></CardContent></Card> :
         visible.map(a => {
@@ -219,9 +369,14 @@ export default function KnowledgeListPage() {
                   {a.title}
                 </h3>
                 <div className="flex items-center gap-1 shrink-0">
+                  {/* 状态机(P3-3): 四态徽标(草稿/待评审/已发布/已归档), 已归档不参与 AI 检索 */}
                   {a.status === 'published'
                     ? <Tag color="success"><CheckCircle2 className="h-2.5 w-2.5 mr-0.5" />已发布</Tag>
-                    : <Tag color="warning">草稿</Tag>}
+                    : a.status === 'in_review'
+                      ? <Tag color="processing">待评审</Tag>
+                      : a.status === 'archived'
+                        ? <Tag color="default">已归档</Tag>
+                        : <Tag color="warning">草稿</Tag>}
                   <Button type="text" size="middle" className="h-6 w-6 text-gray-500 hover:text-gray-900 dark:text-gray-400 dark:hover:text-white" onClick={e => { e.stopPropagation(); navigate(`/knowledge/${a.id}`) }}><Pencil className="h-3 w-3" /></Button>
                   {/* 删除必须阻断冒泡, 否则点击会先触发整卡 navigate 跳详情, Popconfirm 弹层被吞 */}
                   <span onClick={e => e.stopPropagation()}>
@@ -245,8 +400,37 @@ export default function KnowledgeListPage() {
                   </Tag>
                 )}
                 {a.view_permission && a.view_permission !== 'all' && (
-                  <span className="text-[10px] text-muted-foreground">{VIEW_PERM_BADGES[a.view_permission] || a.view_permission}</span>
+                  <span className="text-[10px] text-muted-foreground">
+                    {a.view_permission === 'team' && (a.owner_group_ids?.length ?? 0) > 0
+                      ? `团队：${a.owner_group_ids!.map(groupName).join('、')}`
+                      : (VIEW_PERM_BADGES[a.view_permission] || a.view_permission)}
+                  </span>
                 )}
+                {/* AI 可检索性：把"会不会被 AI 检索到"直接标在卡片上，比藏在详情页更有用。
+                    team/owner 是相对可见性 —— 同一篇文章作者看到"可检索"、他人看到"不检索"属正常。
+                    拿不到组列表时 team 分支给「视团队而定」而不是「不检索」：不确定就别说满。 */}
+                {(() => {
+                  const r = aiRetrievability(a, viewer, groupsKnown)
+                  if (r === 'yes') {
+                    return (
+                      <Tag color="blue" className="m-0 text-[10px] gap-0.5" title="对你而言，该文章会被 AI 检索召回">
+                        <Sparkles className="h-2.5 w-2.5" />AI 可检索
+                      </Tag>
+                    )
+                  }
+                  if (r === 'unknown') {
+                    return (
+                      <span className="text-[10px] text-muted-foreground" title={aiBlockReason(a, viewer, groupsKnown)}>
+                        AI 检索：视团队而定
+                      </span>
+                    )
+                  }
+                  return (
+                    <span className="text-[10px] text-muted-foreground" title={aiBlockReason(a, viewer, groupsKnown)}>
+                      AI 不检索
+                    </span>
+                  )
+                })()}
                 <div className="flex items-center gap-2 ml-auto shrink-0">
                   {a.author && <span className="text-[10px] text-muted-foreground max-w-[80px] truncate" title={a.author}>{a.author}</span>}
                   {(a.views || 0) > 0 && (
@@ -265,6 +449,7 @@ export default function KnowledgeListPage() {
           </Card>
         })}
     </div>
+    )}
 
     {/* 自动沉淀策略弹窗（antd Modal，主题 token 自动适配深浅色） */}
     <Modal

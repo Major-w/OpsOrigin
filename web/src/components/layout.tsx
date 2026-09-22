@@ -4,8 +4,9 @@ import { Link } from 'react-router-dom'
 import { useNavigate } from 'react-router-dom'
 import usePathname from '@/lib/use-pathname'
 import { cn } from '@/lib/utils'
-import { Server, TicketCheck, Activity, Bot, Shield, LayoutDashboard, Hexagon, LogOut, User, Terminal, Workflow, Clock, Search, BookOpen, Calendar, GitBranch, Package, Bell, Key, Blocks, Users, Settings, Sun, Moon, Scan, Bug, Download, PackagePlus, Network, AlertTriangle, History, FileText, Rocket, AppWindow, FileCheck2, Cloud, Play, Sparkles, Database, Radio, BarChart3, Building2, Camera, TrendingUp, Store, Cpu, Webhook, Mail, MessageSquare, FolderOpen, ShieldAlert, ShieldCheck, PanelLeftClose, PanelLeftOpen, type LucideIcon } from 'lucide-react'
+import { Server, TicketCheck, Activity, FlaskConical, Bot, Shield, LayoutDashboard, Hexagon, LogOut, User, Terminal, Workflow, Clock, Search, BookOpen, Calendar, GitBranch, Package, Bell, Key, Blocks, Users, Settings, Sun, Moon, Scan, Bug, Download, PackagePlus, Network, AlertTriangle, History, FileText, Rocket, AppWindow, FileCheck2, Cloud, Play, Sparkles, Database, Radio, BarChart3, Building2, Camera, TrendingUp, Store, Cpu, Webhook, Mail, MessageSquare, FolderOpen, ShieldAlert, ShieldCheck, PanelLeftClose, PanelLeftOpen, type LucideIcon } from 'lucide-react'
 import { useAuthStore } from '@/stores/auth'
+import { useAccess } from '@/access'
 import { MessageBell } from '@/components/message-bell'
 import { useThemeStore } from '@/stores/theme'
 import { ScrollToTop } from '@/components/ui/scroll-to-top'
@@ -175,6 +176,7 @@ export function Layout({ children }: { children: React.ReactNode }) {
   const { user, logout } = useAuthStore()
   const { theme, toggle } = useThemeStore()
   const locale = useLocale()
+  const { canKnowledgeManage } = useAccess()
   const navGroups: (NavItem | NavGroup)[] = useMemo(() => [
     { to: '/dashboard', label: t('dashboard.title'), icon: LayoutDashboard },
     { to: '/reports', label: t('reports.title'), icon: BarChart3 },
@@ -213,6 +215,14 @@ export function Layout({ children }: { children: React.ReactNode }) {
       label: t('knowledge.title'), icon: BookOpen, items: [
         { to: '/knowledge', label: t('knowledge.articleList'), icon: BookOpen },
         { to: '/knowledge/categories', label: t('knowledge.categories'), icon: FolderOpen },
+        // 检索可观测(P1-2/P1-4): 零结果查询 = 知识盲区清单, 收敛到 knowledge:manage
+        ...(canKnowledgeManage
+          ? [
+              { to: '/knowledge/insights', label: t('knowledge.insights'), icon: Activity },
+              // 检索测试台(迭代一): 真实检索路径的逐步归因
+              { to: '/knowledge/retrieval', label: t('knowledge.retrievalLab'), icon: FlaskConical },
+            ]
+          : []),
       ]
     },
     {
@@ -300,7 +310,7 @@ export function Layout({ children }: { children: React.ReactNode }) {
         { to: '/audit', label: t('audit.title'), icon: Shield },
       ]
     },
-  ], [locale])
+  ], [locale, canKnowledgeManage])
 
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>(() => {
     const init: Record<string, boolean> = {}

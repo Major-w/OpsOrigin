@@ -3,9 +3,10 @@ import { useEffect, useRef, useState } from 'react'
 import { useParams, useNavigate, useSearchParams } from 'react-router-dom'
 import { useKnowledgeStore, type ArticleVersion } from '@/stores/knowledge'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
-import { Tag as AntTag, Button, Popconfirm } from 'antd'
+import { Tag as AntTag, Button, Popconfirm, Modal, Select, Input as AntInput } from 'antd'
 import { formatTime, apiFetch, apiFetchRaw, cn } from '@/lib/utils'
 import { MarkdownViewer } from '@/components/markdown-viewer'
+import { OwnerGroupSelect } from '@/components/knowledge/owner-group-select'
 import {
   ArrowLeft,
   Eye,
@@ -44,8 +45,54 @@ import { useAuthStore } from '@/stores/auth'
 import { getMessage } from '@/lib/message'
 import { AIWriteModal, useAIWrite } from '@/components/ai/ai-write-modal'
 import { AttachmentPreview } from '@/components/knowledge/attachment-preview'
+import { ChunkExplorer } from '@/components/knowledge/chunk-explorer'
 
 const getCurrentUser = () => useAuthStore.getState().user?.username || 'anonymous'
+
+// —— 状态机(P3-3): 与后端 internal/knowledge/lifecycle.go 的 articleTransitions 保持一致 ——
+// 后端是唯一真源(不合法迁移会返回 409), 这里只是把可选动作提前渲染出来。
+const STATUS_META: Record<string, { label: string; color: string }> = {
+  draft: { label: '草稿', color: 'default' },
+  in_review: { label: '待评审', color: 'orange' },
+  published: { label: '已发布', color: 'blue' },
+  archived: { label: '已归档', color: 'default' },
+}
+
+const STATUS_ACTIONS: Record<string, { to: string; label: string; hint: string }[]> = {
+  draft: [
+    { to: 'in_review', label: '提交评审', hint: '交由他人复核后再发布' },
+    { to: 'published', label: '直接发布', hint: '立即参与 AI 检索' },
+    { to: 'archived', label: '归档', hint: '下架保留, 不参与检索' },
+  ],
+  in_review: [
+    { to: 'published', label: '评审通过并发布', hint: '通过评审, 参与 AI 检索' },
+    { to: 'draft', label: '驳回为草稿', hint: '需填写驳回原因, 作者可据此修改' },
+    { to: 'archived', label: '归档', hint: '不再需要这篇知识' },
+  ],
+  published: [
+    { to: 'in_review', label: '撤回复审', hint: '先撤下待复核' },
+    { to: 'draft', label: '撤回为草稿', hint: '下架并转回草稿继续修改' },
+    { to: 'archived', label: '归档', hint: '下架保留, 不参与检索' },
+  ],
+  archived: [
+    { to: 'draft', label: '恢复为草稿', hint: '重新编辑后再发布' },
+    { to: 'published', label: '重新发布', hint: '立即参与 AI 检索' },
+  ],
+}
+
+/** 状态流转/评审轨迹(P3-3): 与后端 internal/knowledge.ArticleReview 字段对齐。 */
+interface ArticleReview {
+  id: string
+  article_id: string
+  from: string
+  to: string
+  note?: string
+  actor: string
+  created_at: string
+}
+
+const statusLabel = (s: string) => STATUS_META[s]?.label || s
+
 
 interface ArticleAttachment {
   id: number
@@ -128,6 +175,7 @@ export default function KnowledgeDetailPage() {
     expires_at: '',
     view_permission: 'all',
     edit_permission: 'owner',
+    owner_group_ids: [] as string[],
   })
 
   const [versions, setVersions] = useState<ArticleVersion[]>([])
@@ -262,10 +310,54 @@ export default function KnowledgeDetailPage() {
     })
   }
 
+  // 状态流转与评审轨迹(P3-3)
+  const [reviews, setReviews] = useState<ArticleReview[]>([])
+  const [transitionOpen, setTransitionOpen] = useState(false)
+  const [transitionTo, setTransitionTo] = useState('')
+  const [transitionNote, setTransitionNote] = useState('')
+  const [transitioning, setTransitioning] = useState(false)
+
   useEffect(() => {
     fetchArticles()
     fetchCategories()
   }, [fetchArticles, fetchCategories])
+
+  const loadReviews = async () => {
+    try {
+      const res = await apiFetch<{ items: ArticleReview[] }>(`/knowledge/${articleId}/reviews?limit=20`)
+      setReviews(res.items || [])
+    } catch {
+      setReviews([])
+    }
+  }
+
+  useEffect(() => { if (articleId) loadReviews() }, [articleId])
+
+  // 状态流转: 提交防重 + toast + 数据刷新(F2.2/F2.3)
+  const handleTransition = async () => {
+    if (transitioning || !transitionTo) return
+    setTransitioning(true)
+    try {
+      const res = await apiFetch<{ retrievable: boolean }>(`/knowledge/${articleId}/transition`, {
+        method: 'POST',
+        body: JSON.stringify({ to: transitionTo, note: transitionNote.trim() }),
+      })
+      getMessage().success(
+        transitionTo === 'published'
+          ? (res?.retrievable === false ? '状态已更新' : '文章已发布，AI 现在可以检索到它')
+          : `已${statusLabel(transitionTo) === transitionTo ? '更新状态' : `转为${statusLabel(transitionTo)}`}`,
+      )
+      setTransitionOpen(false)
+      setTransitionNote('')
+      setTransitionTo('')
+      await fetchArticles()
+      await loadReviews()
+    } catch (err: any) {
+      getMessage().error(err?.message || '状态流转失败')
+    } finally {
+      setTransitioning(false)
+    }
+  }
 
   useEffect(() => {
     if (article) {
@@ -278,6 +370,7 @@ export default function KnowledgeDetailPage() {
         expires_at: article.expires_at ? article.expires_at.slice(0, 16) : '',
         view_permission: article.view_permission || 'all',
         edit_permission: article.edit_permission || 'owner',
+        owner_group_ids: article.owner_group_ids || [],
       })
     }
   }, [article])
@@ -326,6 +419,11 @@ export default function KnowledgeDetailPage() {
       getMessage().error('标题不能为空')
       return
     }
+    // 归属校验：team 可见但没选归属团队 → 该文章对任何人都不可见（后端同样 400 兜底）。
+    if (form.view_permission === 'team' && form.owner_group_ids.length === 0) {
+      getMessage().error('请选择归属团队：否则该文章对任何人都不可见')
+      return
+    }
     setSaving(true)
     const data = {
       ...form,
@@ -340,16 +438,6 @@ export default function KnowledgeDetailPage() {
     if (ok) setEditable(false)
   }
 
-  const handlePublish = async () => {
-    setSaving(true)
-    const ok = await update(articleId, { status: 'published' })
-    setSaving(false)
-    if (ok) {
-      await fetchArticles()
-      getMessage().success('文章已发布')
-    }
-  }
-
   const handleCancel = () => {
     if (article) {
       setForm({
@@ -361,6 +449,7 @@ export default function KnowledgeDetailPage() {
         expires_at: article.expires_at ? article.expires_at.slice(0, 16) : '',
         view_permission: article.view_permission || 'all',
         edit_permission: article.edit_permission || 'owner',
+        owner_group_ids: article.owner_group_ids || [],
       })
     }
     setEditable(false)
@@ -501,15 +590,20 @@ export default function KnowledgeDetailPage() {
           </h1>
         </div>
         <div className="flex gap-2">
-          {!editable && article.status === 'draft' && (
+          {!editable && (STATUS_ACTIONS[article.status] || []).length > 0 && (
             <Button
-              type="primary"
+              type={article.status === 'published' ? 'default' : 'primary'}
               size="middle"
-              onClick={handlePublish}
+              onClick={() => {
+                const next = STATUS_ACTIONS[article.status] || []
+                setTransitionTo(next[0]?.to || '')
+                setTransitionNote('')
+                setTransitionOpen(true)
+              }}
               disabled={saving}
             >
               <CheckCircle2 className="h-4 w-4 mr-1" />
-              发布
+              {article.status === 'published' ? '状态流转' : article.status === 'in_review' ? '评审' : '发布 / 流转'}
             </Button>
           )}
           {!editable && (
@@ -595,13 +689,28 @@ export default function KnowledgeDetailPage() {
                 <select
                   className="h-9 rounded-md border border-input bg-background px-3 text-sm"
                   value={form.view_permission}
-                  onChange={e => setForm({ ...form, view_permission: e.target.value })}
+                  onChange={e => {
+                    const v = e.target.value
+                    // 切离「仅团队」时清空归属：残留的团队选择会在下次切回 team 时静默生效（越权可见）。
+                    setForm(f => ({ ...f, view_permission: v, owner_group_ids: v === 'team' ? f.owner_group_ids : [] }))
+                  }}
                 >
                   <option value="all">所有人</option>
                   <option value="team">仅团队</option>
                   <option value="owner">仅自己</option>
                 </select>
               </div>
+              {/* 归属团队：选了谁，谁就能在 AI 检索里命中这篇文章；为空则对任何人都不可见。 */}
+              {form.view_permission === 'team' && (
+                <div className="flex flex-col gap-1">
+                  <label className="text-[11px] text-muted-foreground">归属团队</label>
+                  <OwnerGroupSelect
+                    value={form.owner_group_ids}
+                    onChange={ids => setForm(f => ({ ...f, owner_group_ids: ids }))}
+                    invalid={form.owner_group_ids.length === 0}
+                  />
+                </div>
+              )}
               <div className="flex flex-col gap-1">
                 <label className="text-[11px] text-muted-foreground">编辑权限</label>
                 <select
@@ -633,7 +742,7 @@ export default function KnowledgeDetailPage() {
                 <Sparkles className="h-4 w-4 mr-1" />
                 AI 编写
               </Button>
-              <span className="text-[11px] text-muted-foreground">空行输入 / 可唤起 AI 编写</span>
+              <span className="text-[11px] text-muted-foreground">空行输入 / 可打开命令清单</span>
             </div>
             <div className="flex gap-2 min-h-[500px]">
               <textarea
@@ -677,9 +786,9 @@ export default function KnowledgeDetailPage() {
               <AntTag color="default">{article.category}</AntTag>
             )}
             <AntTag
-              color={article.status === 'published' ? 'blue' : 'default'}
+              color={STATUS_META[article.status]?.color || 'default'}
             >
-              {article.status === 'published' ? '已发布' : '草稿'}
+              {statusLabel(article.status)}
             </AntTag>
             {(article.tags || []).map(tag => (
               <AntTag key={tag} className="gap-1">
@@ -925,6 +1034,9 @@ export default function KnowledgeDetailPage() {
         </CardContent>
       </Card>
 
+      {/* 分块可视化(批次 5): 看文章被切成哪几段、每段多大、什么形态 —— 调分块质量时最直观 */}
+      <ChunkExplorer articleId={articleId} />
+
       {/* Version History */}
       <Card>
         <CardHeader className="pb-3">
@@ -988,8 +1100,84 @@ export default function KnowledgeDetailPage() {
         <span />
       </Popconfirm>
 
-      {/* AI 辅助编写弹窗(工具栏按钮 / 编辑器空行输入 / 唤起) */}
+      {/* 评审轨迹(P3-3): 谁在什么时候把文章改成了什么状态, 驳回原因留在这里 */}
+      {reviews.length > 0 && (
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-base flex items-center gap-2">
+              <History className="h-4 w-4" />评审与状态轨迹
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+            <ol className="space-y-3">
+              {reviews.map(r => (
+                <li key={r.id} className="flex gap-3 text-sm">
+                  <span className="mt-1.5 h-2 w-2 shrink-0 rounded-full bg-primary/60" />
+                  <div className="min-w-0 flex-1">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span className="text-muted-foreground">{statusLabel(r.from)}</span>
+                      <ArrowLeft className="h-3 w-3 rotate-180 text-muted-foreground" />
+                      <span className="font-medium">{statusLabel(r.to)}</span>
+                      <span className="text-xs text-muted-foreground">
+                        {r.actor} · {formatTime(r.created_at)}
+                      </span>
+                    </div>
+                    {r.note && (
+                      <p className="mt-0.5 text-xs text-muted-foreground break-words">备注：{r.note}</p>
+                    )}
+                  </div>
+                </li>
+              ))}
+            </ol>
+          </CardContent>
+        </Card>
+      )}
+
+      {/* 状态流转弹窗(P3-3): 目标状态只能从合法迁移里选, 备注会写入评审轨迹 */}
+      <Modal
+        title="状态流转"
+        open={transitionOpen}
+        onCancel={() => setTransitionOpen(false)}
+        onOk={handleTransition}
+        okText="确认流转"
+        confirmLoading={transitioning}
+        okButtonProps={{ disabled: !transitionTo }}
+        destroyOnClose
+      >
+        <div className="space-y-3 py-1">
+          <div className="flex items-center gap-2 text-sm text-muted-foreground">
+            当前状态
+            <AntTag color={STATUS_META[article.status]?.color || 'default'}>{statusLabel(article.status)}</AntTag>
+          </div>
+          <Select
+            className="w-full"
+            value={transitionTo || undefined}
+            placeholder="选择目标状态"
+            onChange={setTransitionTo}
+            options={(STATUS_ACTIONS[article.status] || []).map(a => ({
+              value: a.to,
+              label: `${a.label}（${a.hint}）`,
+            }))}
+          />
+          <AntInput.TextArea
+            rows={3}
+            maxLength={500}
+            showCount
+            placeholder="评审备注 / 驳回原因（可选，会记录到评审轨迹）"
+            value={transitionNote}
+            onChange={e => setTransitionNote(e.target.value)}
+          />
+          {transitionTo && transitionTo !== 'published' && (
+            <p className="text-xs text-muted-foreground">
+              转为{statusLabel(transitionTo)}后，该文章不再被 AI 检索召回（知识块保留，重新发布无需重建索引）。
+            </p>
+          )}
+        </div>
+      </Modal>
+
+      {/* AI 辅助编写弹窗(工具栏按钮 / 编辑器空行输入 / 命令清单选中「AI 编写」唤起) */}
       <AIWriteModal {...aiWrite.modalProps} />
+      {aiWrite.slashMenu}
 
       {/* 附件在线预览弹层 */}
       <AttachmentPreview

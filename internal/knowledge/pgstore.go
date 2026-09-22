@@ -2,7 +2,9 @@ package knowledge
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -12,6 +14,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/lib/pq"
 )
 
 // Embedder 计算文本的向量表示,供 RAG 语义检索使用。
@@ -20,10 +23,25 @@ type Embedder interface {
 	Embed(ctx context.Context, text string) ([]float32, error)
 }
 
+// BatchEmbedder 是 Embedder 的可选扩展: 一次请求为多条文本生成向量。
+// llm.Client 已实现(OpenAI 兼容 /v1/embeddings 的 input 数组形态)。
+// 未实现时 embedRawBatch 自动回落到逐条 Embed, 行为不变。
+type BatchEmbedder interface {
+	EmbedBatch(ctx context.Context, texts []string) ([][]float32, error)
+}
+
 type pgStore struct {
 	db            *sql.DB
 	embedder      Embedder
 	vectorEnabled bool
+	// 全文检索能力开关: tsvector(英文词元) 与 pg_trgm(中文 ILIKE 索引扫描), 建索引失败时各自降级。
+	tsvEnabled  bool
+	trgmEnabled bool
+	// halfvecEnabled: pgvector 是否支持 halfvec(0.7+), 决定 HNSW 索引用半精度表达式还是原生列。
+	halfvecEnabled bool
+	// idxDims: 各表已建 HNSW 索引的维度。换 embedding 模型后维度变化时据此重建,
+	// 否则索引表达式与检索表达式不匹配, 检索静默退化为全表余弦。
+	idxDims map[string]int
 
 	// —— P3-1 增量索引自愈:embedding 失败的文章进入重试队列,后台循环带退避重试 ——
 	mu      sync.Mutex
@@ -66,6 +84,65 @@ func (s *pgStore) init(ctx context.Context) {
 	s.db.ExecContext(ctx, `ALTER TABLE knowledge_articles ADD COLUMN IF NOT EXISTS expires_at TIMESTAMPTZ`)
 	s.db.ExecContext(ctx, `ALTER TABLE knowledge_articles ADD COLUMN IF NOT EXISTS view_permission TEXT DEFAULT 'all'`)
 	s.db.ExecContext(ctx, `ALTER TABLE knowledge_articles ADD COLUMN IF NOT EXISTS edit_permission TEXT DEFAULT 'owner'`)
+	// —— 可见性归属列(权限感知检索的前置数据) ——
+	// view_permission 决定"怎么判定", owner_group_ids 决定"判定给谁":
+	//   owner → author_id 命中提问者; team → owner_group_ids 与提问者所属团队有交集。
+	// owner_group_ids 用 NOT NULL DEFAULT '{}' 把 NULL 与空串两种"空态"在 schema 层消灭
+	// (view_permission 的空串缺陷就是双态导致的静默失效)。PG 11+ 对已存在表加带默认值的
+	// NOT NULL 列是 metadata-only, 不重写表。
+	s.db.ExecContext(ctx, `ALTER TABLE knowledge_articles ADD COLUMN IF NOT EXISTS author_id TEXT DEFAULT ''`)
+	s.db.ExecContext(ctx, `ALTER TABLE knowledge_articles ADD COLUMN IF NOT EXISTS owner_group_ids TEXT[] NOT NULL DEFAULT '{}'::text[]`)
+	s.db.ExecContext(ctx, `CREATE INDEX IF NOT EXISTS idx_knowledge_articles_scope ON knowledge_articles(tenant_id, view_permission)`)
+	s.db.ExecContext(ctx, `CREATE INDEX IF NOT EXISTS idx_knowledge_articles_owner_groups ON knowledge_articles USING gin(owner_group_ids)`)
+	// 双态兜底(与 deploy/migrations/027_knowledge_visibility.sql 等价): 上面的 ADD COLUMN IF NOT EXISTS
+	// 在"该列已被以可空形态建出"时会整句跳过, NOT NULL 定义随之失效。先把 NULL 行归一为空数组,
+	// 避免数组重叠谓词遇到 NULL 行时语义不可预期。无 NULL 行时为空更新。
+	s.db.ExecContext(ctx, `UPDATE knowledge_articles SET owner_group_ids = '{}'::text[] WHERE owner_group_ids IS NULL`)
+	s.db.ExecContext(ctx, `UPDATE knowledge_articles SET author_id = '' WHERE author_id IS NULL`)
+
+	// —— P1-2/P1-4 检索可观测: 每次 AI 检索留痕(零结果查询 = 知识盲区清单) ——
+	// 必须放在 pgvector 分支之前: 该分支不可用时 init 会提前 return, 放其后会导致表缺失、
+	// 留痕写入报 42P01(与上面补列的注意事项同因)。
+	// categories 存逗号分隔的分类绑定(Agent 知识库范围), 便于回溯"某次检索到底在哪个知识范围内跑空"。
+	if _, err := s.db.ExecContext(ctx, `
+		CREATE TABLE IF NOT EXISTS knowledge_search_logs (
+			id TEXT PRIMARY KEY,
+			tenant_id TEXT NOT NULL,
+			query TEXT NOT NULL,
+			mode TEXT NOT NULL DEFAULT 'rrf',
+			categories TEXT DEFAULT '',
+			vec_hits INT NOT NULL DEFAULT 0,
+			kw_hits INT NOT NULL DEFAULT 0,
+			hit_count INT NOT NULL DEFAULT 0,
+			zero_result BOOLEAN NOT NULL DEFAULT false,
+			latency_ms DOUBLE PRECISION NOT NULL DEFAULT 0,
+			top_score DOUBLE PRECISION NOT NULL DEFAULT 0,
+			agent_id TEXT DEFAULT '',
+			user_id TEXT DEFAULT '',
+			created_at TIMESTAMPTZ NOT NULL
+		)`); err != nil {
+		slog.Warn("knowledge: create search logs table failed", "err", err)
+	}
+	s.db.ExecContext(ctx, `CREATE INDEX IF NOT EXISTS idx_knowledge_search_logs_time ON knowledge_search_logs(tenant_id, created_at DESC)`)
+	s.db.ExecContext(ctx, `CREATE INDEX IF NOT EXISTS idx_knowledge_search_logs_zero ON knowledge_search_logs(tenant_id, zero_result, created_at DESC)`)
+	s.db.ExecContext(ctx, `CREATE INDEX IF NOT EXISTS idx_knowledge_search_logs_query ON knowledge_search_logs(tenant_id, query)`)
+
+	// —— P3-3 评审轨迹: 状态流转留痕(谁在何时把文章从哪个状态改到哪个状态、驳回原因) ——
+	// 同样放在 pgvector 分支之前(该分支不可用时 init 会提前 return)。
+	if _, err := s.db.ExecContext(ctx, `
+		CREATE TABLE IF NOT EXISTS knowledge_article_reviews (
+			id TEXT PRIMARY KEY,
+			article_id TEXT NOT NULL,
+			tenant_id TEXT NOT NULL,
+			from_status TEXT NOT NULL,
+			to_status TEXT NOT NULL,
+			note TEXT DEFAULT '',
+			actor TEXT DEFAULT '',
+			created_at TIMESTAMPTZ NOT NULL
+		)`); err != nil {
+		slog.Warn("knowledge: create article reviews table failed", "err", err)
+	}
+	s.db.ExecContext(ctx, `CREATE INDEX IF NOT EXISTS idx_knowledge_reviews_article ON knowledge_article_reviews(article_id, tenant_id, created_at DESC)`)
 
 	// —— 尝试启用 pgvector 语义检索(可选,失败则降级为 ILIKE 关键词匹配) ——
 	if _, err := s.db.ExecContext(ctx, `CREATE EXTENSION IF NOT EXISTS vector`); err != nil {
@@ -102,10 +179,75 @@ func (s *pgStore) init(ctx context.Context) {
 	s.db.ExecContext(ctx, `ALTER TABLE knowledge_chunks ADD COLUMN IF NOT EXISTS source TEXT DEFAULT 'article'`)
 	s.db.ExecContext(ctx, `ALTER TABLE knowledge_chunks ADD COLUMN IF NOT EXISTS attachment_id BIGINT`)
 	s.db.ExecContext(ctx, `CREATE INDEX IF NOT EXISTS idx_knowledge_chunks_attachment ON knowledge_chunks(attachment_id)`)
-	// HNSW 索引加速余弦检索;创建失败(老版本 pgvector)不致命,仍走全表余弦。
-	s.db.ExecContext(ctx, `CREATE INDEX IF NOT EXISTS idx_knowledge_chunks_embedding ON knowledge_chunks USING hnsw (embedding vector_cosine_ops)`)
-	// 兼容旧索引(历史文章级向量), 保留不删。
-	s.db.ExecContext(ctx, `CREATE INDEX IF NOT EXISTS idx_knowledge_embedding ON knowledge_articles USING hnsw (embedding vector_cosine_ops)`)
+	// —— P1-2 向量维度标记: 换 embedding 模型后旧维度向量自动失效, 避免污染检索结果 ——
+	s.db.ExecContext(ctx, `ALTER TABLE knowledge_chunks ADD COLUMN IF NOT EXISTS embed_dim INT`)
+	s.db.ExecContext(ctx, `CREATE INDEX IF NOT EXISTS idx_knowledge_chunks_dim ON knowledge_chunks(embed_dim)`)
+	// —— P0-1 全文检索: tsvector 列 + GIN 索引(英文/带空格词元) 与 pg_trgm(中文 ILIKE 加速) ——
+	// 此前关键词路是裸 ILIKE '%q%': 前导通配符走不了 B-tree, 只能全表扫描。
+	s.db.ExecContext(ctx, `ALTER TABLE knowledge_chunks ADD COLUMN IF NOT EXISTS content_tsv tsvector`)
+	if _, err := s.db.ExecContext(ctx, `CREATE INDEX IF NOT EXISTS idx_knowledge_chunks_tsv ON knowledge_chunks USING gin(content_tsv)`); err != nil {
+		slog.Warn("knowledge: chunks tsvector GIN index unavailable", "err", err)
+	} else {
+		s.tsvEnabled = true
+	}
+	// pg_trgm 让 ILIKE '%中文%' 能走 GIN 索引扫描(中文 trigram 覆盖有限, 但对 3 字以上词语有效)。
+	if _, err := s.db.ExecContext(ctx, `CREATE EXTENSION IF NOT EXISTS pg_trgm`); err != nil {
+		slog.Warn("knowledge: pg_trgm unavailable, ILIKE stays sequential scan", "err", err)
+	} else {
+		if _, err := s.db.ExecContext(ctx, `CREATE INDEX IF NOT EXISTS idx_knowledge_chunks_trgm ON knowledge_chunks USING gin(content gin_trgm_ops)`); err != nil {
+			slog.Warn("knowledge: chunks trigram GIN index failed", "err", err)
+		} else {
+			s.trgmEnabled = true
+		}
+	}
+	// 存量回填: 建列之前入库的块 content_tsv 为 NULL, 不回填会检索不到
+	if res, err := s.db.ExecContext(ctx,
+		`UPDATE knowledge_chunks SET content_tsv = to_tsvector('simple', coalesce(heading,'') || ' ' || content)
+		 WHERE content_tsv IS NULL`); err != nil {
+		slog.Warn("knowledge: backfill content_tsv failed", "err", err)
+	} else if n, _ := res.RowsAffected(); n > 0 {
+		slog.Info("knowledge: backfilled content_tsv for existing chunks", "rows", n)
+	}
+	// 存量回填: embed_dim 列晚于 embedding 列引入, 老数据为 NULL 会被维度过滤(embed_dim=$n)漏掉。
+	if res, err := s.db.ExecContext(ctx,
+		`UPDATE knowledge_chunks SET embed_dim = vector_dims(embedding)
+		 WHERE embedding IS NOT NULL AND embed_dim IS NULL`); err == nil {
+		if n, _ := res.RowsAffected(); n > 0 {
+			slog.Info("knowledge: backfilled embed_dim for existing chunks", "rows", n)
+		}
+	}
+	// 存量清理: 早期切分器会给空/纯空白正文补「内容为空」的占位块。这类块没有信息量,
+	// 却会被送去 embedding 并作为命中占据 top-k 名额。切分器已改为空内容返回 0 块,
+	// 这里顺手清掉历史遗留(幂等: 清完再跑影响 0 行), 免去存量环境手动跑迁移。
+	if res, err := s.db.ExecContext(ctx,
+		`DELETE FROM knowledge_chunks WHERE btrim(coalesce(content, '')) = ''`); err != nil {
+		slog.Warn("knowledge: cleanup blank chunks failed", "err", err)
+	} else if n, _ := res.RowsAffected(); n > 0 {
+		slog.Info("knowledge: removed blank placeholder chunks", "rows", n)
+	}
+	// 存量回填: view_permission 的语义是 all(默认), 但写入路径历史上一律原样落库,
+	// 于是大量「已发布」文章的该字段是空串。检索侧对可见性是 fail-closed 判定
+	// (只有公开可召回), 空串会被当成"受限"→ 这批文章静默变成 AI 不可见。
+	// 归一为显式 'all', 使库内取值不再依赖读取侧兜底(幂等: 补完再跑影响 0 行)。
+	if res, err := s.db.ExecContext(ctx,
+		`UPDATE knowledge_articles SET view_permission = 'all'
+		 WHERE COALESCE(view_permission, '') = ''`); err != nil {
+		slog.Warn("knowledge: backfill view_permission failed", "err", err)
+	} else if n, _ := res.RowsAffected(); n > 0 {
+		slog.Info("knowledge: backfilled view_permission=all for blank articles", "rows", n)
+	}
+	// —— P2-2 内容哈希: 编辑文章时只有变化的块需要重新 embedding ——
+	// 此前 syncChunks 一律「删光旧块 → 全文重新 embedding」, 改一个小节也要为整篇付费;
+	// ReindexAll(force) 同样是纯全量重算。记录块内容哈希后, 未变化的块可直接复用旧向量。
+	// 换 embedding 模型时必须绕过复用(force=true), 否则旧维度向量会被原样搬回来。
+	s.db.ExecContext(ctx, `ALTER TABLE knowledge_chunks ADD COLUMN IF NOT EXISTS content_hash TEXT`)
+	s.db.ExecContext(ctx, `CREATE INDEX IF NOT EXISTS idx_knowledge_chunks_hash ON knowledge_chunks(article_id, tenant_id, content_hash)`)
+	// HNSW 索引加速余弦检索。此前 embedding 是裸 vector 列, 原生 HNSW 因"无维度"与
+	// "2000 维上限"两类错误从未建成, 检索一直全表余弦; 改为 halfvec 表达式索引(见该函数注释)。
+	s.halfvecEnabled = s.probeHalfvec(ctx)
+	s.ensureHNSWIndex(ctx, "knowledge_chunks")
+	// 兼容旧结构(历史文章级向量), 保留不删。
+	s.ensureHNSWIndex(ctx, "knowledge_articles")
 
 	// —— P1 内容管理: 分类元数据 + 文章版本快照 ——
 	if _, err := s.db.ExecContext(ctx, `
@@ -165,6 +307,127 @@ func (s *pgStore) init(ctx context.Context) {
 	slog.Info("knowledge: pgvector semantic search enabled (chunk-level)")
 }
 
+// ensureHNSWIndex 确保向量表上有可用的 HNSW 索引, 返回已建索引的维度(0 = 未建成)。
+//
+// 两道现实约束决定了这里必须走"半精度表达式索引", 而不是教科书式的原生写法:
+//  1. 原生 `USING hnsw (embedding vector_cosine_ops)` 要求列有确定维度, 而 embedding 列
+//     是裸 vector(允许混存维度) —— 直接建索引必报 "column does not have dimensions";
+//  2. 即便先把列固化成 vector(D), 原生 HNSW 还有 2000 维硬上限, 而智谱 embedding-3
+//     是 2048 维 —— 报 "column cannot have more than 2000 dimensions for hnsw index"。
+//
+// 此前这两类错误都只被 slog.Warn 吞掉, 于是索引从未真正生效, 向量检索一直退化为
+// 全表余弦扫描(块数上千后延迟显著上升)。改用 `USING hnsw ((embedding::halfvec(D))
+// halfvec_cosine_ops)` 后: halfvec 上限 4000 维、索引体积减半, 且与检索侧
+// vectorOrderExpr 的表达式逐字一致, 能真正命中索引。
+//
+// 维度取自库中已有向量的实际维度(embed_dim, 有 B-tree 索引, 探测代价低)。
+// 换 embedding 模型导致维度变化时按新维度重建索引, 避免索引与查询表达式不匹配而静默退化。
+// 库为空时返回 0, 由后台自愈循环在首批向量入库后补建。table 只接受白名单内的表名。
+func (s *pgStore) ensureHNSWIndex(ctx context.Context, table string) int {
+	if !s.vectorEnabled {
+		return 0
+	}
+	switch table { // 白名单: 仅这两张已知表带 embedding 列
+	case "knowledge_chunks", "knowledge_articles":
+	default:
+		return 0
+	}
+	dim, ok := s.detectVectorDim(ctx, table)
+	if !ok {
+		return 0
+	}
+	if s.indexDimOf(table) == dim {
+		return dim // 已按该维度建好, 无需重复 DDL
+	}
+
+	halfIdx := "idx_" + table + "_embedding_half"
+	rawIdx := "idx_" + table + "_embedding"
+	// 维度变化或首次建索引: 先清掉可能存在的旧索引, 避免留下与查询表达式不匹配的僵尸索引
+	// (索引名与表名均为内部常量, 不接受外部输入)。
+	s.db.ExecContext(ctx, `DROP INDEX IF EXISTS `+halfIdx)
+	s.db.ExecContext(ctx, `DROP INDEX IF EXISTS `+rawIdx)
+
+	if s.halfvecEnabled {
+		if _, err := s.db.ExecContext(ctx, fmt.Sprintf(
+			`CREATE INDEX %s ON %s USING hnsw ((embedding::halfvec(%d)) halfvec_cosine_ops)`,
+			halfIdx, table, dim)); err != nil {
+			slog.Warn("knowledge: halfvec HNSW index unavailable (向量检索走全表余弦)", "table", table, "dim", dim, "err", err)
+			return 0
+		}
+		s.setIndexDim(table, dim)
+		slog.Info("knowledge: halfvec HNSW index ready", "table", table, "dim", dim)
+		return dim
+	}
+
+	// pgvector < 0.7 无 halfvec: 回退"固化维度 + 原生索引"(受 2000 维上限约束)
+	if dim > 2000 {
+		slog.Warn("knowledge: embedding dim exceeds 2000 and halfvec unavailable, 向量检索走全表余弦",
+			"table", table, "dim", dim, "hint", "升级 pgvector 到 0.7+")
+		return 0
+	}
+	if _, err := s.db.ExecContext(ctx, fmt.Sprintf(
+		`ALTER TABLE %s ALTER COLUMN embedding TYPE vector(%d)`, table, dim)); err != nil {
+		slog.Warn("knowledge: pin embedding dimension failed", "table", table, "dim", dim, "err", err)
+		return 0
+	}
+	if _, err := s.db.ExecContext(ctx, fmt.Sprintf(
+		`CREATE INDEX %s ON %s USING hnsw (embedding vector_cosine_ops)`, rawIdx, table)); err != nil {
+		slog.Warn("knowledge: HNSW index unavailable (向量检索走全表余弦)", "table", table, "err", err)
+		return 0
+	}
+	s.setIndexDim(table, dim)
+	slog.Info("knowledge: native HNSW index ready", "table", table, "dim", dim)
+	return dim
+}
+
+// probeHalfvec 探测 pgvector 是否支持 halfvec 类型(0.7+), 决定索引与检索表达式的形态。
+func (s *pgStore) probeHalfvec(ctx context.Context) bool {
+	var ok bool
+	if err := s.db.QueryRowContext(ctx, `SELECT '[0]'::halfvec(1) IS NOT NULL`).Scan(&ok); err != nil {
+		slog.Info("knowledge: halfvec unsupported (pgvector < 0.7), 索引回退原生 vector", "err", err)
+		return false
+	}
+	return ok
+}
+
+// indexDimOf 返回某张表已建 HNSW 索引的维度(0 = 未建)。
+func (s *pgStore) indexDimOf(table string) int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.idxDims[table]
+}
+
+// setIndexDim 记录某张表已建 HNSW 索引的维度。
+func (s *pgStore) setIndexDim(table string, dim int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.idxDims == nil {
+		s.idxDims = map[string]int{}
+	}
+	s.idxDims[table] = dim
+}
+
+// detectVectorDim 探测表内已有向量的维度; 维度唯一时返回 (dim, true)。
+// 走 embed_dim(有索引)而非 vector_dims(embedding): 后者需全表扫描, 后台循环每轮调用会拖慢。
+func (s *pgStore) detectVectorDim(ctx context.Context, table string) (int, bool) {
+	var variants, dim sql.NullInt64
+	if err := s.db.QueryRowContext(ctx, fmt.Sprintf(
+		`SELECT count(DISTINCT embed_dim), min(embed_dim) FROM %s WHERE embedding IS NOT NULL`, table)).
+		Scan(&variants, &dim); err != nil {
+		return 0, false
+	}
+	if !variants.Valid || variants.Int64 == 0 || !dim.Valid || dim.Int64 <= 0 {
+		// 库为空(或维度全空): 无从推断维度, 留给后台循环在数据入库后建
+		return 0, false
+	}
+	if variants.Int64 > 1 {
+		slog.Warn("knowledge: mixed embedding dimensions detected, HNSW index skipped (需重建向量)",
+			"table", table, "variants", variants.Int64)
+		return 0, false
+	}
+	return int(dim.Int64), true
+}
+
 // SetEmbedder 注入向量生成器;仅在 pgvector 可用时才会写入 embedding。
 func (s *pgStore) SetEmbedder(e Embedder) { s.embedder = e }
 
@@ -180,35 +443,131 @@ func (s *pgStore) embedRaw(ctx context.Context, text string) ([]float32, error) 
 	return s.embedder.Embed(ctx, text)
 }
 
-// syncChunks 为文章同步分块: 删旧块 → Markdown 标题感知切块 → 逐块 embedding 落库。
+// syncChunks 为文章同步分块: 取旧块向量缓存 → 删旧块 → Markdown 标题感知切块 → 分块 embedding 落库。
 // 返回 (missingEmbedding, err): missingEmbedding=true 表示存在块向量缺失(embed 失败或不可用),
 // 调用方可据此决定是否把文章加入异步重试队列(后台补算)。
 // 无向量能力时仍落块(支撑关键词检索), embedding 留 NULL。
+// 默认开启「内容哈希复用」: 未变化的块直接沿用旧向量, 只对新增/改动的块调用 embedding。
 func (s *pgStore) syncChunks(ctx context.Context, a *Article) (missing bool, err error) {
+	return s.syncChunksWithReuse(ctx, a, true)
+}
+
+// syncChunksWithReuse 是 syncChunks 的可控变体。
+// reuse=false 时禁用内容哈希复用并重建全部向量 —— 换 embedding 模型后必须如此,
+// 否则旧维度向量会被原样搬回, 检索端按维度过滤时表现为"文章存在但检索不到"。
+func (s *pgStore) syncChunksWithReuse(ctx context.Context, a *Article, reuse bool) (missing bool, err error) {
 	// 只清理「正文块」: 附件块(attachment_id 非空)由 syncAttachmentChunks 单独维护,
 	// 否则编辑一次正文就会把附件抽取出来的知识块连带删掉。
+	// 复用缓存必须在删除之前读取 —— 删完就没有旧的向量可比对了。
+	var cached map[string]cachedVector
+	if reuse {
+		cached = s.loadReusableVectors(ctx, a.ID, a.TenantID)
+	}
 	if _, err := s.db.ExecContext(ctx,
 		`DELETE FROM knowledge_chunks WHERE article_id=$1 AND tenant_id=$2 AND attachment_id IS NULL`, a.ID, a.TenantID); err != nil {
 		return false, err
 	}
-	chunks := chunkMarkdown(a.Content)
-	missing = s.insertChunks(ctx, a.TenantID, a.ID, 0, "article", "", chunks)
-	return missing, nil
+	chunks, truncated := chunkMarkdown(a.Content)
+	if truncated {
+		// 静默丢内容会导致"文档里明明写了却检索不到", 必须留痕。
+		slog.Warn("knowledge: article exceeded chunk limit, tail content dropped",
+			"article", a.ID, "limit", chunkMaxBlocks)
+	}
+	// 空正文/纯空白正文切不出块: 旧块已在上面删掉, 这里直接返回, 避免落占位空块。
+	if len(chunks) == 0 {
+		return false, nil
+	}
+	return s.insertChunks(ctx, a.TenantID, a.ID, 0, "article", "", chunks, cached), nil
 }
 
-// insertChunks 批量写入块并逐块计算 embedding。
+// cachedVector 是可复用的旧向量: 已序列化好的 vector 字面量 + 维度。
+type cachedVector struct {
+	literal string
+	dim     int
+}
+
+// loadReusableVectors 读取文章现有正文块的内容哈希 → 向量映射, 供 syncChunks 复用。
+// 只取「哈希非空 + 向量非空 + 维度已知」的块; 查不到时返回 nil(等价于不复用)。
+func (s *pgStore) loadReusableVectors(ctx context.Context, articleID, tenantID string) map[string]cachedVector {
+	if !s.vectorEnabled || s.embedder == nil {
+		return nil
+	}
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT content_hash, embedding::text, embed_dim
+		 FROM knowledge_chunks
+		 WHERE article_id=$1 AND tenant_id=$2 AND attachment_id IS NULL
+		   AND content_hash IS NOT NULL AND embedding IS NOT NULL AND embed_dim IS NOT NULL`,
+		articleID, tenantID)
+	if err != nil {
+		slog.Warn("knowledge: load reusable vectors failed", "article", articleID, "err", err)
+		return nil
+	}
+	defer rows.Close()
+	out := make(map[string]cachedVector)
+	for rows.Next() {
+		var hash, lit string
+		var dim int
+		if err := rows.Scan(&hash, &lit, &dim); err != nil {
+			continue
+		}
+		out[hash] = cachedVector{literal: lit, dim: dim}
+	}
+	return out
+}
+
+// chunkContentHash 计算块的可复用性指纹: 嵌入文本(标题路径 + 正文)的 SHA-256。
+// 用嵌入文本而非纯 content, 因为标题路径也参与向量计算, 标题变化同样需要重算。
+func chunkContentHash(c *Chunk) string {
+	sum := sha256.Sum256([]byte(chunkEmbedText(c)))
+	return hex.EncodeToString(sum[:])
+}
+
+// embedRawBatch 批量计算向量。BatchEmbedder 可用时一次请求, 否则逐条调用 Embed。
+// 返回的切片与 texts 等长; 单条失败时该位置为 nil(不中断整批)。
+func (s *pgStore) embedRawBatch(ctx context.Context, texts []string) [][]float32 {
+	out := make([][]float32, len(texts))
+	if len(texts) == 0 || !s.vectorEnabled || s.embedder == nil {
+		return out
+	}
+	if be, ok := s.embedder.(BatchEmbedder); ok {
+		vecs, err := be.EmbedBatch(ctx, texts)
+		if err == nil && len(vecs) == len(texts) {
+			return vecs
+		}
+		// 批量失败或返回条数不匹配(部分上游实现会丢条目) → 回落逐条, 保证不整批丢失。
+		if err != nil {
+			slog.Warn("knowledge: batch embed failed, falling back to per-item", "count", len(texts), "err", err)
+		}
+	}
+	for i, t := range texts {
+		v, err := s.embedRaw(ctx, t)
+		if err != nil {
+			continue
+		}
+		out[i] = v
+	}
+	return out
+}
+
+// insertChunks 批量写入块并计算 embedding。
 // attID=0 表示文章正文块; attID>0 表示为某附件抽取的块(heading 前缀带上附件名便于溯源)。
-func (s *pgStore) insertChunks(ctx context.Context, tenantID, articleID string, attID int64, source, headingPrefix string, chunks []Chunk) (missing bool) {
-	for _, c := range chunks {
-		vc := any(nil)
-		if s.vectorEnabled && s.embedder != nil {
-			v, err := s.embedRaw(ctx, chunkEmbedText(&c))
-			if err != nil {
-				slog.Warn("knowledge: chunk embed failed", "article", articleID, "chunk", c.Index, "err", err)
-				missing = true
-			} else {
-				vc = vecLiteral(v)
-			}
+// cached 非空时按内容哈希复用旧向量: 命中则完全不调用 embedding 接口, 只对新增/改动的块批量计算。
+func (s *pgStore) insertChunks(ctx context.Context, tenantID, articleID string, attID int64, source, headingPrefix string, chunks []Chunk, cached map[string]cachedVector) (missing bool) {
+	// —— 1) 预处理: 过滤空块、拼接 heading 前缀、计算内容哈希 ——
+	type prepared struct {
+		chunk   Chunk
+		heading string
+		hash    string
+		// 复用的旧向量(命中时非空)
+		reused *cachedVector
+	}
+	items := make([]prepared, 0, len(chunks))
+	for i := range chunks {
+		c := chunks[i]
+		// 防御: 空内容块永远不该入库(既浪费一次 embedding, 又会占 top-k 名额挤掉有效片段)。
+		// 切分器已保证不产出空块, 这里再兜一层, 避免未来新增调用方绕过该约定。
+		if strings.TrimSpace(c.Content) == "" {
+			continue
 		}
 		heading := c.Heading
 		if headingPrefix != "" && heading != headingPrefix {
@@ -218,33 +577,118 @@ func (s *pgStore) insertChunks(ctx context.Context, tenantID, articleID string, 
 				heading = headingPrefix
 			}
 		}
-		attKey := any(nil)
-		if attID > 0 {
-			attKey = attID
+		p := prepared{chunk: c, heading: heading, hash: chunkContentHash(&c)}
+		if cv, ok := cached[p.hash]; ok && cv.literal != "" {
+			hit := cv
+			p.reused = &hit
+		}
+		items = append(items, p)
+	}
+
+	// —— 2) 收集需要新算向量的块, 批量 embedding ——
+	var needIdx []int
+	var needTexts []string
+	if s.vectorEnabled && s.embedder != nil {
+		for i := range items {
+			if items[i].reused != nil {
+				continue
+			}
+			needIdx = append(needIdx, i)
+			needTexts = append(needTexts, chunkEmbedText(&items[i].chunk))
+		}
+	}
+	vecs := s.embedRawBatch(ctx, needTexts)
+	// vecOf: 块下标 → 新算出的向量(仅成功项); 未命中的块保持 nil, embedding 留 NULL 等待重试。
+	vecOf := make(map[int][]float32, len(needIdx))
+	for n, i := range needIdx {
+		if n < len(vecs) && len(vecs[n]) > 0 {
+			vecOf[i] = vecs[n]
+			continue
+		}
+		slog.Warn("knowledge: chunk embed failed", "article", articleID, "chunk", items[i].chunk.Index)
+		missing = true
+	}
+	if len(needIdx) > 0 {
+		KnowledgeEmbedReusedChunks.Add(float64(len(items) - len(needIdx)))
+		KnowledgeEmbedComputedChunks.Add(float64(len(needIdx)))
+	}
+
+	// —— 3) 落库 ——
+	attKey := any(nil)
+	if attID > 0 {
+		attKey = attID
+	}
+	for i := range items {
+		it := &items[i]
+		var vc, dim any
+		if it.reused != nil {
+			vc = it.reused.literal
+			dim = it.reused.dim
+		} else if v, ok := vecOf[i]; ok {
+			vc = vecLiteral(v)
+			// 记录向量维度: 换 embedding 模型后旧维度块会被检索自动过滤, 不会与查询向量混算。
+			dim = len(v)
 		}
 		if _, err := s.db.ExecContext(ctx,
-			`INSERT INTO knowledge_chunks(id,article_id,tenant_id,chunk_index,heading,content,embedding,created_at,source,attachment_id)
-			 VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) ON CONFLICT(id) DO NOTHING`,
-			uuid.New().String(), articleID, tenantID, c.Index, heading, c.Content, vc, time.Now(), source, attKey); err != nil {
-			slog.Warn("knowledge: insert chunk failed", "article", articleID, "chunk", c.Index, "err", err)
+			`INSERT INTO knowledge_chunks(id,article_id,tenant_id,chunk_index,heading,content,embedding,created_at,source,attachment_id,embed_dim,content_tsv,content_hash)
+			 VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,to_tsvector('simple', $5 || ' ' || $6),$12) ON CONFLICT(id) DO NOTHING`,
+			uuid.New().String(), articleID, tenantID, it.chunk.Index, it.heading, it.chunk.Content, vc, time.Now(), source, attKey, dim, it.hash); err != nil {
+			slog.Warn("knowledge: insert chunk failed", "article", articleID, "chunk", it.chunk.Index, "err", err)
 		}
 	}
 	return missing
 }
 
+// chunkIndexResult 是切块入库的结果: 块数 / 是否有块缺失 embedding / 是否触发块数上限被截断。
+type chunkIndexResult struct {
+	count     int
+	missing   bool
+	truncated bool
+}
+
 // syncAttachmentChunks 为一个附件重建知识块: 删旧块 → 切块 → 逐块 embedding。
 // 与正文块同表同结构, 因此复用现有检索 SQL(按 article_id 聚合)即可被 AI 召回。
-func (s *pgStore) syncAttachmentChunks(ctx context.Context, tenantID, articleID string, attID int64, title string, content string) (int, bool, error) {
+func (s *pgStore) syncAttachmentChunks(ctx context.Context, tenantID, articleID string, attID int64, title string, content string) (chunkIndexResult, error) {
 	if _, err := s.db.ExecContext(ctx,
 		`DELETE FROM knowledge_chunks WHERE tenant_id=$1 AND attachment_id=$2`, tenantID, attID); err != nil {
-		return 0, false, err
+		return chunkIndexResult{}, err
 	}
-	chunks := chunkMarkdown(content)
+	chunks, truncated := chunkMarkdown(content)
 	if len(chunks) == 0 {
-		return 0, false, nil
+		return chunkIndexResult{}, nil
 	}
-	missing := s.insertChunks(ctx, tenantID, articleID, attID, "attachment", title, chunks)
-	return len(chunks), missing, nil
+	// 附件块同样按内容哈希复用: 重复导入同一份附件(或重试)不会重复付费。
+	cached := s.loadReusableVectorsForAttachment(ctx, tenantID, attID)
+	missing := s.insertChunks(ctx, tenantID, articleID, attID, "attachment", title, chunks, cached)
+	return chunkIndexResult{count: len(chunks), missing: missing, truncated: truncated}, nil
+}
+
+// loadReusableVectorsForAttachment 读取某附件现有块的内容哈希 → 向量映射。
+func (s *pgStore) loadReusableVectorsForAttachment(ctx context.Context, tenantID string, attID int64) map[string]cachedVector {
+	if !s.vectorEnabled || s.embedder == nil {
+		return nil
+	}
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT content_hash, embedding::text, embed_dim
+		 FROM knowledge_chunks
+		 WHERE tenant_id=$1 AND attachment_id=$2
+		   AND content_hash IS NOT NULL AND embedding IS NOT NULL AND embed_dim IS NOT NULL`,
+		tenantID, attID)
+	if err != nil {
+		slog.Warn("knowledge: load reusable attachment vectors failed", "att", attID, "err", err)
+		return nil
+	}
+	defer rows.Close()
+	out := make(map[string]cachedVector)
+	for rows.Next() {
+		var hash, lit string
+		var dim int
+		if err := rows.Scan(&hash, &lit, &dim); err != nil {
+			continue
+		}
+		out[hash] = cachedVector{literal: lit, dim: dim}
+	}
+	return out
 }
 
 // DeleteAttachmentChunks 删除某附件的全部知识块(附件删除时调用)。
@@ -309,6 +753,33 @@ func (s *pgStore) ListAttachmentChunks(ctx context.Context, tenantID string, att
 	return out, rows.Err()
 }
 
+// ListArticleChunks 列出某篇文章正文切块(分块可视化用)。
+// 只取正文块(attachment_id IS NULL); 附件块由 ListAttachmentChunks 单独承载。
+// chunk_index 是切块顺序, 前端据此还原"文章被切成哪几段、每段多大"。
+func (s *pgStore) ListArticleChunks(ctx context.Context, tenantID, articleID string, limit int) ([]ChunkRef, error) {
+	if limit <= 0 || limit > 500 {
+		limit = 200
+	}
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT id, heading, content FROM knowledge_chunks
+		 WHERE tenant_id=$1 AND article_id=$2 AND attachment_id IS NULL AND (source IS NULL OR source='article')
+		 ORDER BY chunk_index LIMIT $3`,
+		tenantID, articleID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make([]ChunkRef, 0)
+	for rows.Next() {
+		var c ChunkRef
+		if err := rows.Scan(&c.ID, &c.Heading, &c.Content); err != nil {
+			return nil, err
+		}
+		out = append(out, c)
+	}
+	return out, rows.Err()
+}
+
 func vecLiteral(v []float32) any {
 	if len(v) == 0 {
 		return nil
@@ -338,12 +809,14 @@ func (s *pgStore) Create(ctx context.Context, a *Article) error {
 	if a.Version <= 0 {
 		a.Version = 1
 	}
+	// 可见性留空时补文档默认值(空串会被检索侧的 fail-closed 谓词当成"受限"而永不召回)。
+	a.normalizeVisibility()
 	b, _ := json.Marshal(a.Tags)
 	// 文章落库(块级向量在 syncChunks 中处理, 不再写 articles.embedding)
 	if _, err := s.db.ExecContext(ctx,
-		`INSERT INTO knowledge_articles(id,tenant_id,title,content,category,tags,status,version,expires_at,view_permission,edit_permission,created_at,updated_at)
-		 VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) ON CONFLICT(id) DO NOTHING`,
-		a.ID, a.TenantID, a.Title, a.Content, a.Category, b, a.Status, a.Version, a.ExpiresAt, a.ViewPermission, a.EditPermission, a.CreatedAt, a.UpdatedAt); err != nil {
+		`INSERT INTO knowledge_articles(id,tenant_id,title,content,category,tags,status,version,expires_at,view_permission,edit_permission,author_id,owner_group_ids,created_at,updated_at)
+		 VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15) ON CONFLICT(id) DO NOTHING`,
+		a.ID, a.TenantID, a.Title, a.Content, a.Category, b, a.Status, a.Version, a.ExpiresAt, a.ViewPermission, a.EditPermission, a.AuthorID, pq.Array(a.OwnerGroupIDs), a.CreatedAt, a.UpdatedAt); err != nil {
 		return err
 	}
 	// 同步分块; 块向量缺失(embed 失败)时入异步重试队列补算
@@ -356,8 +829,8 @@ func (s *pgStore) Create(ctx context.Context, a *Article) error {
 func (s *pgStore) Get(ctx context.Context, id, tenantID string) (*Article, error) {
 	a := &Article{}
 	var tags []byte
-	err := s.db.QueryRowContext(ctx, `SELECT id,tenant_id,title,content,category,tags,views,status,version,expires_at,view_permission,edit_permission,created_at,updated_at FROM knowledge_articles WHERE id=$1 AND tenant_id=$2`, id, tenantID).
-		Scan(&a.ID, &a.TenantID, &a.Title, &a.Content, &a.Category, &tags, &a.Views, &a.Status, &a.Version, &a.ExpiresAt, &a.ViewPermission, &a.EditPermission, &a.CreatedAt, &a.UpdatedAt)
+	err := s.db.QueryRowContext(ctx, `SELECT id,tenant_id,title,content,category,tags,views,status,version,expires_at,view_permission,edit_permission,author_id,owner_group_ids,created_at,updated_at FROM knowledge_articles WHERE id=$1 AND tenant_id=$2`, id, tenantID).
+		Scan(&a.ID, &a.TenantID, &a.Title, &a.Content, &a.Category, &tags, &a.Views, &a.Status, &a.Version, &a.ExpiresAt, &a.ViewPermission, &a.EditPermission, &a.AuthorID, pq.Array(&a.OwnerGroupIDs), &a.CreatedAt, &a.UpdatedAt)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -369,7 +842,7 @@ func (s *pgStore) Get(ctx context.Context, id, tenantID string) (*Article, error
 }
 
 func (s *pgStore) List(ctx context.Context, tenantID, category string) ([]*Article, error) {
-	q := `SELECT id,tenant_id,title,content,category,tags,views,status,version,expires_at,view_permission,edit_permission,created_at,updated_at FROM knowledge_articles WHERE tenant_id=$1`
+	q := `SELECT id,tenant_id,title,content,category,tags,views,status,version,expires_at,view_permission,edit_permission,author_id,owner_group_ids,created_at,updated_at FROM knowledge_articles WHERE tenant_id=$1`
 	args := []any{tenantID}
 	if category != "" {
 		q += ` AND category=$2`
@@ -385,7 +858,7 @@ func (s *pgStore) List(ctx context.Context, tenantID, category string) ([]*Artic
 	for rows.Next() {
 		a := &Article{}
 		var tags []byte
-		if err := rows.Scan(&a.ID, &a.TenantID, &a.Title, &a.Content, &a.Category, &tags, &a.Views, &a.Status, &a.Version, &a.ExpiresAt, &a.ViewPermission, &a.EditPermission, &a.CreatedAt, &a.UpdatedAt); err != nil {
+		if err := rows.Scan(&a.ID, &a.TenantID, &a.Title, &a.Content, &a.Category, &tags, &a.Views, &a.Status, &a.Version, &a.ExpiresAt, &a.ViewPermission, &a.EditPermission, &a.AuthorID, pq.Array(&a.OwnerGroupIDs), &a.CreatedAt, &a.UpdatedAt); err != nil {
 			return nil, err
 		}
 		_ = json.Unmarshal(tags, &a.Tags)
@@ -414,10 +887,12 @@ func (s *pgStore) Update(ctx context.Context, a *Article) error {
 	if a.Status == "" {
 		a.Status = "draft"
 	}
+	// 同上: 编辑保存时若前端没带可见性字段, 不能把已公开的文章改成"空=受限"。
+	a.normalizeVisibility()
 	b, _ := json.Marshal(a.Tags)
 	if _, err := s.db.ExecContext(ctx,
-		`UPDATE knowledge_articles SET title=$2,content=$3,category=$4,tags=$5,status=$6,version=$7,expires_at=$8,view_permission=$9,edit_permission=$10,updated_at=$11 WHERE id=$1 AND tenant_id=$12`,
-		a.ID, a.Title, a.Content, a.Category, b, a.Status, a.Version, a.ExpiresAt, a.ViewPermission, a.EditPermission, a.UpdatedAt, a.TenantID); err != nil {
+		`UPDATE knowledge_articles SET title=$2,content=$3,category=$4,tags=$5,status=$6,version=$7,expires_at=$8,view_permission=$9,edit_permission=$10,author_id=$11,owner_group_ids=$12,updated_at=$13 WHERE id=$1 AND tenant_id=$14`,
+		a.ID, a.Title, a.Content, a.Category, b, a.Status, a.Version, a.ExpiresAt, a.ViewPermission, a.EditPermission, a.AuthorID, pq.Array(a.OwnerGroupIDs), a.UpdatedAt, a.TenantID); err != nil {
 		return err
 	}
 	// 同步分块; 块向量缺失时入异步重试队列补算
@@ -456,17 +931,42 @@ func (s *pgStore) Delete(ctx context.Context, id, tenantID string) error {
 	return err
 }
 
+// unindexedArticleJoin / unindexedArticlePredicate 定义「需要重建索引的文章」口径。
+//
+// 口径 = 正文非空, 且以下任一成立:
+//   - 完全没有正文块(c.id IS NULL) —— 从未分块, 例如升级前的存量文章;
+//   - 存在正文块但缺向量(c.embedding IS NULL) —— 半索引: 分块成功但 embedding 失败。
+//
+// 修复前只判定 `c.id IS NULL`, 半索引文章(部分/全部块向量为空)既不会被入队重试,
+// 也不计入未索引指标, 于是永久退化为只能被关键词命中且没有任何告警。
+// 正文为空的文章切不出块属预期, 必须排除, 否则会被反复入队空转。
+// 附件块(attachment_id 非空)由 syncAttachmentChunks 单独维护, 不参与本文口径。
+const unindexedArticleJoin = `
+	LEFT JOIN knowledge_chunks c
+	  ON c.article_id = a.id AND c.tenant_id = a.tenant_id AND c.attachment_id IS NULL`
+
+const unindexedArticlePredicate = `
+	WHERE btrim(coalesce(a.content, '')) <> ''
+	  AND (c.id IS NULL OR c.embedding IS NULL)`
+
 // ReindexAll 为存量文章补建分块索引(知识库升级到块级 RAG 后的一次性回填)。
+// force=true 时连已分块的文章一并重建 —— 更换 embedding 模型后旧维度向量会被检索自动过滤掉,
+// 若不强制重建, 这些文章会长期退化成只有关键词检索, 且没有任何报错提示。
+// force=false 时按 unindexedArticlePredicate 口径挑选(含半索引文章)。
+// 单篇重算后若仍有块缺向量(embedding 服务抖动/限流), 该文章会进入异步重试队列。
 // 仅 vectorEnabled 时有意义;逐条处理便于失败隔离。返回处理的文章数。
-func (s *pgStore) ReindexAll(ctx context.Context) (int, error) {
+func (s *pgStore) ReindexAll(ctx context.Context, force bool) (int, error) {
 	if !s.vectorEnabled {
 		return 0, fmt.Errorf("vector search not available")
 	}
+	// force 模式去掉 JOIN/排除条件, 全表重建。
+	where := unindexedArticleJoin + unindexedArticlePredicate
+	if force {
+		where = ""
+	}
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT a.id, a.tenant_id, a.title, a.content, a.category, a.tags, a.created_at, a.updated_at
-		FROM knowledge_articles a
-		LEFT JOIN knowledge_chunks c ON c.article_id = a.id AND c.tenant_id = a.tenant_id
-		WHERE c.id IS NULL`)
+		SELECT DISTINCT a.id, a.tenant_id, a.title, a.content, a.category, a.tags, a.created_at, a.updated_at
+		FROM knowledge_articles a`+where)
 	if err != nil {
 		return 0, err
 	}
@@ -479,11 +979,22 @@ func (s *pgStore) ReindexAll(ctx context.Context) (int, error) {
 			return n, err
 		}
 		_ = json.Unmarshal(tags, &a.Tags)
-		if _, err := s.syncChunks(ctx, a); err != nil {
+		missing, err := s.syncChunksWithReuse(ctx, a, !force)
+		if err != nil {
 			slog.Warn("knowledge: reindex chunks failed", "id", a.ID, "err", err)
 			continue
 		}
+		if missing {
+			// 半索引: 块已落库但向量缺失, 交给异步重试队列按指数退避补算, 不再静默丢弃。
+			slog.Warn("knowledge: reindex left chunks without embedding, queued for retry", "id", a.ID)
+			s.enqueueRetry(a.ID, a.TenantID)
+		}
 		n++
+	}
+	if force {
+		// 换 embedding 模型后向量维度会变, 必须按新维度重建 HNSW 索引:
+		// 索引表达式与检索表达式不匹配时会静默退化为全表余弦, 没有任何报错。
+		s.ensureHNSWIndex(ctx, "knowledge_chunks")
 	}
 	return n, rows.Err()
 }
@@ -509,13 +1020,13 @@ func (s *pgStore) PendingReindexCount() int {
 	return len(s.pending)
 }
 
-// enqueueUnindexed 扫描无分块的文章,补充进重试队列(幂等:已入队的不重复添加)。
-// 作为"安全网"覆盖循环启动前/队列空窗期已存在的未分块文章。
+// enqueueUnindexed 扫描「需重建索引」的文章(含半索引),补充进重试队列(幂等:已入队的不重复添加)。
+// 作为"安全网"覆盖循环启动前/队列空窗期已存在的未索引或半索引文章。
 func (s *pgStore) enqueueUnindexed(ctx context.Context) {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT a.id, a.tenant_id FROM knowledge_articles a
-		LEFT JOIN knowledge_chunks c ON c.article_id = a.id AND c.tenant_id = a.tenant_id
-		WHERE c.id IS NULL LIMIT 500`)
+		SELECT DISTINCT a.id, a.tenant_id FROM knowledge_articles a`+
+		unindexedArticleJoin+unindexedArticlePredicate+`
+		LIMIT 500`)
 	if err != nil {
 		slog.Warn("knowledge: scan unindexed failed", "err", err)
 		return
@@ -584,17 +1095,25 @@ func backoffForAttempt(attempts int) time.Duration {
 	return b
 }
 
-// refreshUnindexedMetric 刷新 knowledge_unindexed_articles 指标(当前无分块的文章数)。
+// refreshUnindexedMetric 刷新 knowledge_unindexed_articles 指标。
+// 口径与 enqueueUnindexed / ReindexAll 一致(正文非空且无块或缺向量的文章数),
+// 否则指标会低于实际待办量, 半索引问题在监控上看不出来。
+// refreshUnindexedMetric 刷新「仍未进入语义检索的文章数」指标。
 func (s *pgStore) refreshUnindexedMetric(ctx context.Context) {
-	var n int
+	KnowledgeUnindexedArticles.Set(float64(s.countUnindexedArticles(ctx)))
+}
+
+// countUnindexedArticles 返回当前仍未完成索引的文章数(无正文块或块缺向量)。
+// 与 refreshUnindexedMetric 同口径, 供检索可观测页与指标共用。
+func (s *pgStore) countUnindexedArticles(ctx context.Context) int64 {
+	var n int64
 	if err := s.db.QueryRowContext(ctx, `
-		SELECT COUNT(*) FROM knowledge_articles a
-		LEFT JOIN knowledge_chunks c ON c.article_id = a.id AND c.tenant_id = a.tenant_id
-		WHERE c.id IS NULL`).Scan(&n); err != nil {
+		SELECT COUNT(DISTINCT a.id) FROM knowledge_articles a`+
+		unindexedArticleJoin+unindexedArticlePredicate).Scan(&n); err != nil {
 		slog.Warn("knowledge: count unindexed failed", "err", err)
-		return
+		return 0
 	}
-	KnowledgeUnindexedArticles.Set(float64(n))
+	return n
 }
 
 // RunReindexPass 执行一轮增量索引自愈:扫描未索引行入队 → 处理到期任务 → 刷新指标。
@@ -605,6 +1124,9 @@ func (s *pgStore) RunReindexPass(ctx context.Context) {
 	}
 	s.enqueueUnindexed(ctx)
 	s.drainPending(ctx)
+	// 空库启动时无数据可探测维度, HNSW 索引建不出来; 首批向量入库后在此补建。
+	// 同时兼作换 embedding 模型后的索引重建探测(维度一致时 ensureHNSWIndex 直接返回, 无 DDL)。
+	s.ensureHNSWIndex(ctx, "knowledge_chunks")
 	s.refreshUnindexedMetric(ctx)
 }
 

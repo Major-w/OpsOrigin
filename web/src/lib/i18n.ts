@@ -367,6 +367,8 @@ const zhCN: Record<string, string> = {
   'knowledge.categories': '分类管理',
   'knowledge.new': '新建文档',
   'knowledge.articleList': '文章列表',
+  'knowledge.insights': '检索可观测',
+  'knowledge.retrievalLab': '检索测试台',
 
   // AI
   'ai.title': 'AI 中心',
@@ -1008,6 +1010,8 @@ const enUS: Record<string, string> = {
   'knowledge.categories': 'Categories',
   'knowledge.new': 'New Document',
   'knowledge.articleList': 'Article List',
+  'knowledge.insights': 'Retrieval Insights',
+  'knowledge.retrievalLab': 'Retrieval Lab',
 
   // AI
   'ai.title': 'AI Center',

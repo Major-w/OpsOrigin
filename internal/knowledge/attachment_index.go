@@ -89,6 +89,23 @@ func extractAttachmentText(name string, data []byte) (string, error) {
 	return docextract.ExtractText(name, data)
 }
 
+// handleListArticleChunks 列出文章正文切块(分块可视化: 看文章被切成哪几段、每段多大)。
+func (s *Service) handleListArticleChunks(w http.ResponseWriter, r *http.Request) {
+	articleID := r.PathValue("id")
+	tenantID := auth.TenantFromContext(r.Context())
+	idx, ok := s.store.(attachmentIndexer)
+	if !ok {
+		httputil.WriteJSON(w, http.StatusOK, []ChunkRef{})
+		return
+	}
+	list, err := idx.ListArticleChunks(r.Context(), tenantID, articleID, 200)
+	if err != nil {
+		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	httputil.WriteJSON(w, http.StatusOK, list)
+}
+
 // handleGetChunk 按块 ID 取知识块内容(引用溯源: 跳到原文后定位并高亮该片段)。
 func (s *Service) handleGetChunk(w http.ResponseWriter, r *http.Request) {
 	articleID := r.PathValue("id")
@@ -184,10 +201,11 @@ func percentEncodeUTF8(name string) string {
 
 // attachmentIndexer 具备附件块索引能力的存储(仅 pgStore 实现; MemoryStore 无检索需求)。
 type attachmentIndexer interface {
-	syncAttachmentChunks(ctx context.Context, tenantID, articleID string, attID int64, title, content string) (int, bool, error)
+	syncAttachmentChunks(ctx context.Context, tenantID, articleID string, attID int64, title, content string) (chunkIndexResult, error)
 	SetAttachmentIndexState(ctx context.Context, tenantID string, attID int64, indexed bool, errMsg string, chunkCount int)
 	DeleteAttachmentChunks(ctx context.Context, tenantID string, attID int64) error
 	ListAttachmentChunks(ctx context.Context, tenantID string, attID int64, limit int) ([]ChunkRef, error)
+	ListArticleChunks(ctx context.Context, tenantID, articleID string, limit int) ([]ChunkRef, error)
 	GetChunk(ctx context.Context, tenantID, articleID, chunkID string) (*ChunkRef, error)
 }
 
@@ -225,19 +243,28 @@ func (s *Service) indexAttachment(ctx context.Context, att *ArticleAttachment, d
 	title := att.FileName
 	heading := "# " + title
 	content := heading + "\n\n" + text
-	n, missing, err := idx.syncAttachmentChunks(ctx, att.TenantID, att.ArticleID, att.ID, title, content)
+	res, err := idx.syncAttachmentChunks(ctx, att.TenantID, att.ArticleID, att.ID, title, content)
 	if err != nil {
 		reason(err)
 		return
 	}
-	if missing {
-		slog.Warn("knowledge: attachment chunks missing embedding", "att", att.ID, "chunks", n)
+	if res.missing {
+		slog.Warn("knowledge: attachment chunks missing embedding", "att", att.ID, "chunks", res.count)
 	}
-	idx.SetAttachmentIndexState(ctx, att.TenantID, att.ID, true, "", n)
+	// 截断不是失败(内容仍可检索), 但要让用户看见, 否则会以为整篇都入库了。
+	note := ""
+	if res.truncated {
+		note = fmt.Sprintf("文档过长, 仅前 %d 段入库", chunkMaxBlocks)
+		slog.Warn("knowledge: attachment exceeded chunk limit, tail content dropped",
+			"att", att.ID, "file", att.FileName, "limit", chunkMaxBlocks)
+	}
+	idx.SetAttachmentIndexState(ctx, att.TenantID, att.ID, true, note, res.count)
 	att.Indexed = true
-	att.IndexError = ""
-	att.ChunkCount = n
-	slog.Info("knowledge: attachment indexed", "att", att.ID, "file", att.FileName, "chunks", n)
+	att.IndexError = note
+	att.ChunkCount = res.count
+	// 附件内容刚入库, 清 AI 侧检索缓存让它立即可被引用(否则要等 5 分钟 TTL)。
+	s.invalidateSearchCache()
+	slog.Info("knowledge: attachment indexed", "att", att.ID, "file", att.FileName, "chunks", res.count, "truncated", res.truncated)
 }
 
 // loadAttachmentBytes 取附件二进制: 对象存储优先, 否则回退 DB bytea。

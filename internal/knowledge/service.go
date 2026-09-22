@@ -48,6 +48,13 @@ type Store interface {
 	ListAttachments(ctx context.Context, articleID, tenantID string) ([]*ArticleAttachment, error)
 	GetAttachment(ctx context.Context, aid int64, articleID, tenantID string) (*ArticleAttachment, error)
 	DeleteAttachment(ctx context.Context, aid int64, articleID, tenantID string) error
+
+	// —— P3-3 状态机: 流转 + 评审轨迹 ——
+	Transition(ctx context.Context, id, tenantID, to, note, actor string) (*Article, error)
+	ListReviews(ctx context.Context, articleID, tenantID string, limit int) ([]*ArticleReview, error)
+
+	// —— P3-1 创建去重 ——
+	FindDuplicates(ctx context.Context, tenantID, title, content, excludeID string, limit int) ([]*DuplicateCandidate, error)
 }
 
 // ArticleAttachment 知识文章附件元数据。二进制在对象存储(MinIO/COS/OSS), ObjectKey 为空时回退 Data(bytea)。
@@ -73,6 +80,7 @@ type MemoryStore struct {
 	articles    map[string]*Article
 	attachments map[int64]*ArticleAttachment
 	nextAttID   int64
+	reviews     []*ArticleReview // 状态流转/评审轨迹(P3-3, 内存模式)
 }
 
 func NewMemoryStore() *MemoryStore {
@@ -86,6 +94,7 @@ func (s *MemoryStore) Create(ctx context.Context, a *Article) error {
 	now := time.Now()
 	a.CreatedAt = now
 	a.UpdatedAt = now
+	a.normalizeVisibility()
 	s.articles[a.ID] = a
 	return nil
 }
@@ -124,6 +133,7 @@ func (s *MemoryStore) Update(ctx context.Context, a *Article) error {
 		return nil
 	}
 	a.UpdatedAt = time.Now()
+	a.normalizeVisibility()
 	s.articles[a.ID] = a
 	return nil
 }
@@ -242,6 +252,17 @@ type Service struct {
 	social   *SocialStore
 	objStore *objectstore.Client // 附件二进制落对象存储; nil = 回退数据库 bytea
 	gen      Generator           // AI 辅助编写注入的 LLM 生成器; nil = 未启用
+	logs     *SearchLogStore     // AI 检索留痕(P1-2/P1-4); nil = 内存模式, 留痕关闭
+	ragEval  RAGEvaluator        // RAG 效果评估器(P1-1); nil = 未接 AI 引擎, 评估入口返回 501
+	// retrievalPreview 检索测试台(迭代一 · 批次 4); nil = 未接 AI 引擎, 预览入口返回 501。
+	retrievalPreview RetrievalPreviewer
+	// knowledgeSearch 用户级知识搜索(面向普通用户的查询入口); nil = 未接 AI 引擎, 端点返回 501。
+	knowledgeSearch KnowledgeSearcher
+	// categoryResolver 按 Agent 解析知识范围(与 AI 引擎的知识库绑定同源), 供评估复现线上检索范围。
+	categoryResolver func(agentID string) []string
+	// cacheInvalidator 知识内容/可见性变更后失效 AI 检索缓存的回调(由 cmd/core 注入)。
+	// 检索结果有 5 分钟 TTL 缓存, 不清则下架/收紧可见性的文章仍会在窗口内被召回。
+	cacheInvalidator func()
 }
 
 func NewService(db *sql.DB) *Service {
@@ -249,8 +270,24 @@ func NewService(db *sql.DB) *Service {
 	if db != nil {
 		st = newPGStore(db)
 	}
-	return &Service{store: st}
+	return &Service{store: st, logs: NewSearchLogStore(db)}
 }
+
+// SetCacheInvalidator 注册 AI 检索缓存失效回调。
+// 由装配层把 agentic 侧的两条缓存(MCPToolSet.searchCache 与引擎级 toolCache)清空动作接进来;
+// knowledge 包不反向依赖 agentic, 故用函数回调解耦。
+func (s *Service) SetCacheInvalidator(fn func()) { s.cacheInvalidator = fn }
+
+// invalidateSearchCache 在知识库写操作后通知上游清缓存。回调未注入时静默跳过。
+func (s *Service) invalidateSearchCache() {
+	if s.cacheInvalidator != nil {
+		s.cacheInvalidator()
+	}
+}
+
+// SearchLogs 返回检索留痕存储(供 AI 检索链路注入写入, 见 agentic.MCPToolSet.SetSearchLogStore)。
+// 内存模式下为 nil, 调用方需容忍。
+func (s *Service) SearchLogs() *SearchLogStore { return s.logs }
 
 // SetObjectStore 注入对象存储(MinIO/COS/OSS)。注入后附件二进制进对象存储, DB 只存 object_key。
 func (s *Service) SetObjectStore(os *objectstore.Client) { s.objStore = os }
@@ -318,7 +355,12 @@ func (s *Service) CreateArticle(ctx context.Context, a *Article) error {
 	if a.EditPermission == "" {
 		a.EditPermission = "owner"
 	}
-	return s.store.Create(ctx, a)
+	if err := s.store.Create(ctx, a); err != nil {
+		return err
+	}
+	// 新知识立即可被检索: 清掉 AI 侧缓存, 否则同一提问 5 分钟内仍拿旧结果(看不到新文章)。
+	s.invalidateSearchCache()
+	return nil
 }
 
 // EnsureCategory 确保分类存在: 不存在则创建, 返回分类 ID(供外部模块如主动进化路由使用)。
@@ -378,7 +420,25 @@ func (s *Service) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/v1/knowledge/import-url", s.handleImportURL)
 	// 引用溯源: 按块 ID 取原文片段(挂在文章下, 同时校验归属; 放在 /knowledge/{id}/... 下
 	// 避免与 /knowledge/{id}/versions 等既有路由在 Go 1.22 ServeMux 下冲突)
+	mux.HandleFunc("GET /api/v1/knowledge/{id}/chunks", s.handleListArticleChunks)
 	mux.HandleFunc("GET /api/v1/knowledge/{id}/chunks/{chunk}", s.handleGetChunk)
+	// 用户级知识搜索: 与 AI 同一条检索路径(可见性谓词按请求者身份生成), 零结果也进留痕。
+	// 字面量段优先于 /knowledge/{id} 通配, 不会被当成文章 ID。
+	mux.HandleFunc("GET /api/v1/knowledge/search", s.handleKnowledgeSearch)
+	// —— 检索可观测(P1-2/P1-4) ——
+	// 字面量段优先于 /knowledge/{id} 通配, 故 search-logs / search-stats 不会被当成文章 ID。
+	mux.HandleFunc("GET /api/v1/knowledge/search-logs", s.handleSearchLogs)
+	mux.HandleFunc("GET /api/v1/knowledge/search-stats", s.handleSearchStats)
+	// —— 生命周期(P3-1/P3-3) ——
+	mux.HandleFunc("POST /api/v1/knowledge/{id}/transition", s.handleTransition)
+	mux.HandleFunc("GET /api/v1/knowledge/{id}/reviews", s.handleListReviews)
+	mux.HandleFunc("GET /api/v1/knowledge/duplicates", s.handleCheckDuplicates)
+	mux.HandleFunc("POST /api/v1/knowledge/duplicates", s.handleCheckDuplicates)
+	// —— RAG 效果评估(P1-1) ——
+	mux.HandleFunc("POST /api/v1/knowledge/rag-eval", s.handleRAGEval)
+	// —— 检索测试台(迭代一 · 批次 4) ——
+	// 与 /knowledge/duplicates 同形(字面段), Go 1.22 ServeMux 下字面段优先于 {id} 通配, 无歧义。
+	mux.HandleFunc("POST /api/v1/knowledge/retrieval-preview", s.handleRetrievalPreview)
 }
 
 // SetEmbedder 注入向量生成器,使新建/更新文章自动写入 embedding 以支持语义检索。
@@ -401,7 +461,7 @@ func (s *Service) SetSocialStore(soc *SocialStore) {
 	s.social = soc
 }
 
-// ReindexAll 为存量文章补算 embedding(语义检索开启后的幂等回填, 仅处理 embedding IS NULL 的行)。
+// ReindexAll 为存量文章补算 embedding(语义检索开启后的幂等回填, 仅处理还没有块的文档)。
 func (s *Service) ReindexAll(ctx context.Context) (int, error) {
 	ps, ok := s.store.(*pgStore)
 	if !ok {
@@ -410,7 +470,7 @@ func (s *Service) ReindexAll(ctx context.Context) (int, error) {
 	if !ps.VectorEnabled() {
 		return 0, fmt.Errorf("vector search not enabled (pgvector unavailable)")
 	}
-	return ps.ReindexAll(ctx)
+	return ps.ReindexAll(ctx, false)
 }
 
 // StartReindexLoop 启动知识库增量索引自愈后台循环(embedding 失败文章带退避重试 + 未索引指标)。
@@ -419,9 +479,17 @@ func (s *Service) StartReindexLoop(ctx context.Context, interval time.Duration) 
 	if ps, ok := s.store.(*pgStore); ok {
 		ps.StartReindexLoop(ctx, interval)
 	}
+	// 检索留痕清理与索引自愈同生命周期启动(留痕是运行态数据, 保留 30 天)。
+	s.StartSearchLogPruneLoop(ctx, 6*time.Hour)
+	// 到期自动下架(P3-3): 有效期已过的文章从 published 归档, 不再被 AI 引用。
+	s.StartExpiryLoop(ctx, archiveExpiredInterval)
 }
 
-// handleReindex 为存量文章补算 embedding(开启语义检索后的一次性回填)。
+// handleReindex 重建知识库分块索引。
+//   - 默认(幂等): 只为还没有块的文档补建;
+//   - ?force=1: 全部文章重建 —— 更换 embedding 模型后必须走这个, 否则旧维度块被检索过滤后
+//     这些文章会静默失去语义检索能力;
+//   - ?attachments=1: 连同附件抽取的块一起重建。
 func (s *Service) handleReindex(w http.ResponseWriter, r *http.Request) {
 	ps, ok := s.store.(*pgStore)
 	if !ok {
@@ -432,21 +500,140 @@ func (s *Service) handleReindex(w http.ResponseWriter, r *http.Request) {
 		httputil.WriteError(w, http.StatusBadRequest, "vector search not enabled (pgvector unavailable)")
 		return
 	}
-	n, err := ps.ReindexAll(r.Context())
+	force := r.URL.Query().Get("force") == "1" || r.URL.Query().Get("force") == "true"
+	n, err := ps.ReindexAll(r.Context(), force)
 	if err != nil {
 		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	httputil.WriteJSON(w, http.StatusOK, map[string]any{"status": "ok", "reindexed": n})
+	attN := 0
+	if r.URL.Query().Get("attachments") == "1" {
+		attN = s.reindexAllAttachments(r.Context())
+	}
+	// 重建索引会改变块与向量, 缓存里的旧召回结果必须作废。
+	s.invalidateSearchCache()
+	httputil.WriteJSON(w, http.StatusOK, map[string]any{
+		"status": "ok", "reindexed": n, "force": force, "attachments": attN,
+	})
+}
+
+// reindexAllAttachments 重建全部附件的知识块(换解析器/换 embedding 模型后使用)。
+// 逐个抽取需要读二进制(对象存储或 DB), 成本较高, 故设上限避免一次请求打满。
+func (s *Service) reindexAllAttachments(ctx context.Context) int {
+	atts, err := psListAttachments(ctx, s.store)
+	if err != nil {
+		slog.Warn("knowledge: list attachments for reindex failed", "err", err)
+		return 0
+	}
+	n := 0
+	for _, att := range atts {
+		if n >= reindexAttachmentMax {
+			break
+		}
+		data, err := s.loadAttachmentBytes(ctx, att)
+		if err != nil {
+			slog.Warn("knowledge: reindex attachment load failed", "att", att.ID, "err", err)
+			continue
+		}
+		s.indexAttachment(ctx, att, data)
+		n++
+	}
+	return n
+}
+
+// reindexAttachmentMax 单次全量重建的附件数量上限。
+const reindexAttachmentMax = 200
+
+// psListAttachments 列出全部文章下的附件(全量重建用)。
+// 附件按文章组织, 故先取文章清单再逐个列附件; 仅在管理员触发的全量重建路径调用, 不做性能优化。
+func psListAttachments(ctx context.Context, st Store) ([]*ArticleAttachment, error) {
+	ps, ok := st.(*pgStore)
+	if !ok {
+		return nil, fmt.Errorf("attachments only supported with postgres store")
+	}
+	rows, err := ps.db.QueryContext(ctx, `SELECT id, tenant_id FROM knowledge_articles`)
+	if err != nil {
+		return nil, err
+	}
+	var ids []struct{ id, tenant string }
+	for rows.Next() {
+		var id, tenant string
+		if err := rows.Scan(&id, &tenant); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		ids = append(ids, struct{ id, tenant string }{id, tenant})
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	var out []*ArticleAttachment
+	for _, p := range ids {
+		list, lerr := ps.ListAttachments(ctx, p.id, p.tenant)
+		if lerr != nil {
+			slog.Warn("knowledge: list attachments failed", "article", p.id, "err", lerr)
+			continue
+		}
+		out = append(out, list...)
+		if len(out) >= reindexAttachmentMax {
+			break
+		}
+	}
+	return out, nil
+}
+
+// validateOwnership 校验归属信息与可见范围是否自洽。
+//
+// team 可见却没有归属团队时, 该文章对**任何**提问者都不成立(数组重叠匹配 '{}' && anything = false),
+// 即静默地对所有人不可见。与其让作者以为"发给团队了"实际谁也没看到, 不如在写入时直接报错。
+// 注意调用时机: 必须在 normalizeVisibility 之后 —— 留空的 view_permission 语义是 all,
+// 若先校验会把空串当成 team 之外的合法值而漏掉 team 场景。
+func validateOwnership(a *Article) error {
+	if a.ViewPermission == ViewPermissionTeam && len(a.OwnerGroupIDs) == 0 {
+		return errors.New("团队可见必须至少指定一个归属团队")
+	}
+	return nil
 }
 
 func (s *Service) handleCreate(w http.ResponseWriter, r *http.Request) {
-	var a Article
-	if err := httputil.BindJSON(r, &a); err != nil {
+	// 内嵌 Article + force_duplicate: 一次解包拿到正文与「已知重复仍要创建」的显式确认。
+	var req struct {
+		Article
+		ForceDuplicate bool `json:"force_duplicate"`
+	}
+	if err := httputil.BindJSON(r, &req); err != nil {
 		httputil.WriteError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
+	a := req.Article
+	// 状态白名单(P3-3): 此前状态是自由字符串, 前端传什么就存什么。
+	if a.Status != "" && !validArticleStatus(a.Status) {
+		httputil.WriteError(w, http.StatusBadRequest,
+			fmt.Sprintf("unknown status %q, allowed: %s", a.Status, strings.Join(ArticleStatuses, "|")))
+		return
+	}
 	a.TenantID = auth.TenantFromContext(r.Context())
+	// 归属: 作者 = 当前登录用户(owner 可见性的唯一判定依据, 库中为空则该分支永不成立)。
+	a.AuthorID = auth.UserIDFromContext(r.Context())
+	// 归属归一 + 校验必须在写库前完成: store 层也会归一, 但那已经在 INSERT 时机上,
+	// 报错不如在 handler 直接拒绝(前端表单同样把归属团队标为必填)。
+	a.normalizeVisibility()
+	if err := validateOwnership(&a); err != nil {
+		httputil.WriteError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	// 创建去重(P3-1): 命中相似文章时返回 409 + 候选清单, 由调用方决定是否强制创建。
+	force := r.URL.Query().Get("force") == "1" || r.URL.Query().Get("force") == "true"
+	if !force && !req.ForceDuplicate {
+		dups, derr := s.CheckDuplicate(r.Context(), a.TenantID, a.Title, a.Content, "")
+		if derr != nil {
+			slog.Warn("knowledge create duplicate check failed", "err", derr)
+		} else if len(dups) > 0 {
+			httputil.WriteJSON(w, http.StatusConflict, duplicateConflictBody(dups))
+			return
+		}
+	}
 	// 分类路由闭环: 目标分类不存在时自动创建(与主动进化沉淀一致)
 	if a.Category != "" {
 		if _, err := s.EnsureCategory(r.Context(), a.TenantID, a.Category); err != nil {
@@ -457,6 +644,8 @@ func (s *Service) handleCreate(w http.ResponseWriter, r *http.Request) {
 		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	// 创建即可能被检索(状态为 published 时), 必须让 AI 侧缓存失效。
+	s.invalidateSearchCache()
 	httputil.WriteJSON(w, http.StatusCreated, a)
 }
 
@@ -500,6 +689,23 @@ func (s *Service) handleUpdate(w http.ResponseWriter, r *http.Request) {
 	a.Version = existing.Version // 版本递增由 store 内部处理
 	if a.Status == "" {
 		a.Status = existing.Status // 未显式传状态时不降级(如 published → draft)
+	} else if a.Status != existing.Status {
+		// 状态机(P3-3): 编辑态改状态同样要过白名单与合法迁移校验,
+		// 否则 POST /transition 只是"建议", 前端一处 PUT 就能把状态改成任意值。
+		if !validArticleStatus(a.Status) {
+			httputil.WriteError(w, http.StatusBadRequest,
+				fmt.Sprintf("unknown status %q, allowed: %s", a.Status, strings.Join(ArticleStatuses, "|")))
+			return
+		}
+		if !canTransition(existing.Status, a.Status) {
+			httputil.WriteError(w, http.StatusConflict,
+				fmt.Sprintf("illegal status transition: %s -> %s", existing.Status, a.Status))
+			return
+		}
+		// 状态流转同时留一条评审轨迹, 保证「谁改的状态」可追溯。
+		if _, err := s.TransitionArticle(r.Context(), id, existing.TenantID, a.Status, "编辑保存时变更状态", reviewActor(r.Context())); err != nil {
+			slog.Warn("knowledge update transition failed", "article", id, "to", a.Status, "err", err)
+		}
 	}
 	// 权限字段: 未显式传时保留原值
 	if a.ViewPermission == "" {
@@ -508,12 +714,27 @@ func (s *Service) handleUpdate(w http.ResponseWriter, r *http.Request) {
 	if a.EditPermission == "" {
 		a.EditPermission = existing.EditPermission
 	}
+	// 作者不可通过编辑接口改写(否则可把他人 owner 文章改到自己名下)。未传则保留。
+	if strings.TrimSpace(a.AuthorID) == "" {
+		a.AuthorID = existing.AuthorID
+	}
+	// 归属团队: nil = 请求体未带该字段 → 保留原值; 显式 [] = 清空。
+	if a.OwnerGroupIDs == nil {
+		a.OwnerGroupIDs = existing.OwnerGroupIDs
+	}
+	a.normalizeVisibility()
+	if err := validateOwnership(&a); err != nil {
+		httputil.WriteError(w, http.StatusBadRequest, err.Error())
+		return
+	}
 	// ExpiresAt: 前端传 null/undefined 表示清除有效期; 传 existing 值表示保留
 	if a.ExpiresAt == nil && r.Body != nil {
 		// 如果请求体中没有 expires_at 字段, 保留原值
 		a.ExpiresAt = existing.ExpiresAt
 	}
 	s.store.Update(r.Context(), &a)
+	// 正文/状态/可见性任一变化都会改变召回结果, 清 AI 侧缓存避免 TTL 内继续返回旧内容。
+	s.invalidateSearchCache()
 	// 文章更新后, 通知关注者(关注更新)
 	if s.social != nil {
 		s.social.NotifyFollowersOnUpdate(r.Context(), id)
@@ -524,6 +745,8 @@ func (s *Service) handleUpdate(w http.ResponseWriter, r *http.Request) {
 func (s *Service) handleDelete(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	s.store.Delete(r.Context(), id, auth.TenantFromContext(r.Context()))
+	// 删除后必须立即失效: 否则被删文章的内容仍会从缓存里进入模型上下文。
+	s.invalidateSearchCache()
 	httputil.WriteJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
 }
 
@@ -877,5 +1100,7 @@ func (s *Service) handleDeleteAttachment(w http.ResponseWriter, r *http.Request)
 		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	// 附件块已被删除, 缓存里可能还留着它的召回结果 → 立即失效。
+	s.invalidateSearchCache()
 	httputil.WriteJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
 }

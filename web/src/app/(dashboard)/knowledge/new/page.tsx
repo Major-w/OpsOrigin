@@ -10,13 +10,42 @@ import dynamic from '@/lib/dynamic'
 
 const RichTextEditor = dynamic(() => import('@/components/rich-text-editor').then(m => ({ default: m.RichTextEditor })), { ssr: false, loading: () => <div className="h-64 bg-muted animate-pulse rounded" /> })
 import { fileToCompressedDataUrl } from '@/lib/image-utils'
-import { cn } from '@/lib/utils'
+import { apiFetch, cn } from '@/lib/utils'
+import { ConfirmDialog } from '@/components/ui/confirm-dialog'
+import { OwnerGroupSelect } from '@/components/knowledge/owner-group-select'
 import {
   ArrowLeft, Save, Loader2, Sparkles, Eye, EyeOff,
   PenLine, AlignLeft, MoveHorizontal, MoveVertical,
-  Image as ImageIcon, Link2, CheckCircle2, Upload as UploadIcon,
+  Image as ImageIcon, Link2, CheckCircle2, Upload as UploadIcon, UserCheck,
 } from 'lucide-react'
 import { getMessage } from '@/lib/message'
+
+/** 创建去重的候选项(P3-1): 与后端 internal/knowledge.DuplicateCandidate 字段对齐。 */
+interface DuplicateCandidate {
+  id: string
+  title: string
+  status: string
+  category?: string
+  updated_at: string
+  similarity: number
+  reason: string
+}
+
+const DUP_REASON_LABEL: Record<string, string> = {
+  title_same: '标题完全相同',
+  content_same: '正文完全相同',
+  title_similar: '标题高度相似',
+}
+
+/** 状态中文名(与详情页标签保持一致语义)。 */
+function statusLabel(status: string): string {
+  switch (status) {
+    case 'published': return '已发布'
+    case 'in_review': return '待评审'
+    case 'archived': return '已归档'
+    default: return '草稿'
+  }
+}
 
 const getKBUser = () => useAuthStore.getState().user?.username || 'anonymous'
 
@@ -28,13 +57,17 @@ export default function KnowledgeNewPage() {
   const navigate = useNavigate()
   const { categories, fetchCategories, create } = useKnowledgeStore()
 
-  const [form, setForm] = useState({ title: '', content: '', category: '', tags: '', status: 'draft', expires_at: '', view_permission: 'all', edit_permission: 'owner' })
+  const [form, setForm] = useState({ title: '', content: '', category: '', tags: '', status: 'draft', expires_at: '', view_permission: 'all', edit_permission: 'owner', owner_group_ids: [] as string[] })
   const [inputMode, setInputMode] = useState<'markdown' | 'rich'>('markdown')
   const [previewOn, setPreviewOn] = useState(true)
   const [direction, setDirection] = useState<'row' | 'col'>('row')
   const [ratio, setRatio] = useState(0.42) // 预览区占比(宽/高)
   const [saving, setSaving] = useState(false)
   const [formError, setFormError] = useState('')
+  // 创建去重(P3-1): 命中相似文章时挂起保存, 等作者确认
+  const [dupCandidates, setDupCandidates] = useState<DuplicateCandidate[]>([])
+  const [dupOpen, setDupOpen] = useState(false)
+  const [pendingStatus, setPendingStatus] = useState<'draft' | 'in_review' | 'published'>('draft')
 
   const splitRef = useRef<HTMLDivElement>(null)
   const [dragging, setDragging] = useState(false)
@@ -111,12 +144,40 @@ export default function KnowledgeNewPage() {
     if (url) insertMdAtCursor(`![图片](${url})`)
   }
 
-  const handleSave = async (status: 'draft' | 'published' = 'draft') => {
+  const handleSave = async (status: 'draft' | 'in_review' | 'published' = 'draft') => {
     if (!form.title.trim()) {
       setFormError('标题不能为空')
       getMessage().error('标题不能为空')
       return
     }
+    // 归属校验：team 可见但没有归属团队时，该文章对任何人都不可见（后端也会 400），
+    // 与其让作者以为「发给团队了」实际谁都没看到，不如在提交前拦住。
+    if (form.view_permission === 'team' && form.owner_group_ids.length === 0) {
+      setFormError('「仅团队」可见必须至少选择一个归属团队')
+      getMessage().error('请选择归属团队：否则该文章对任何人都不可见')
+      return
+    }
+    // 创建去重(P3-1): 提交前先查同租户内的相似文章(同名/同正文/标题高度相似),
+    // 命中则先弹确认框, 由作者决定是去改已有文章还是仍然新建一篇。
+    // 放在这里而不是等 409: 后端 409 会把候选清单塞进错误信息, 体验差且拿不到结构化数据。
+    try {
+      const res = await apiFetch<{ duplicates: DuplicateCandidate[] }>('/knowledge/duplicates', {
+        method: 'POST',
+        body: JSON.stringify({ title: form.title, content: form.content }),
+      })
+      if (res.duplicates?.length) {
+        setDupCandidates(res.duplicates)
+        setPendingStatus(status)
+        setDupOpen(true)
+        return
+      }
+    } catch {
+      // 预检失败不阻塞创建: 后端 handleCreate 仍会做一次同样的检查(409 兜底)。
+    }
+    await doSave(status, false)
+  }
+
+  const doSave = async (status: 'draft' | 'in_review' | 'published', force: boolean) => {
     setSaving(true)
     const data = {
       ...form,
@@ -125,6 +186,7 @@ export default function KnowledgeNewPage() {
       tags: form.tags.split(',').map(t => t.trim()).filter(Boolean),
       author: getKBUser(),
       expires_at: form.expires_at ? new Date(form.expires_at).toISOString() : null,
+      ...(force ? { force_duplicate: true } : {}),
     }
     const ok = await create(data)
     setSaving(false)
@@ -155,6 +217,11 @@ export default function KnowledgeNewPage() {
           <Button size="middle" onClick={() => handleSave('draft')} disabled={saving}>
             {saving ? <Loader2 className="h-4 w-4 mr-1 animate-spin" /> : <Save className="h-4 w-4 mr-1" />}
             保存草稿
+          </Button>
+          {/* 评审流程(P3-3): 需要他人复核的知识先提交评审, 而不是直接发布 */}
+          <Button size="middle" onClick={() => handleSave('in_review')} disabled={saving}>
+            <UserCheck className="h-4 w-4 mr-1" />
+            提交评审
           </Button>
           <Button type="primary" size="middle" onClick={() => handleSave('published')} disabled={saving}>
             {saving ? <Loader2 className="h-4 w-4 mr-1 animate-spin" /> : <CheckCircle2 className="h-4 w-4 mr-1" />}
@@ -190,13 +257,25 @@ export default function KnowledgeNewPage() {
         <select
           className="flex h-10 rounded-md border border-input bg-background px-3 py-2 text-sm"
           value={form.view_permission}
-          onChange={e => setForm({ ...form, view_permission: e.target.value })}
+          onChange={e => {
+            const v = e.target.value
+            // 切离「仅团队」时清空归属：残留的团队选择会在下次切回 team 时静默生效，造成越权可见。
+            setForm(f => ({ ...f, view_permission: v, owner_group_ids: v === 'team' ? f.owner_group_ids : [] }))
+          }}
           title="查看权限"
         >
           <option value="all">所有人可看</option>
           <option value="team">仅团队</option>
           <option value="owner">仅自己</option>
         </select>
+        {/* 归属团队：仅在「仅团队」可见时出现。选了谁，谁就能在 AI 检索里命中这篇文章。 */}
+        {form.view_permission === 'team' && (
+          <OwnerGroupSelect
+            value={form.owner_group_ids}
+            onChange={ids => setForm(f => ({ ...f, owner_group_ids: ids }))}
+            invalid={form.owner_group_ids.length === 0}
+          />
+        )}
         <select
           className="flex h-10 rounded-md border border-input bg-background px-3 py-2 text-sm"
           value={form.edit_permission}
@@ -238,7 +317,7 @@ export default function KnowledgeNewPage() {
             <input ref={mdImgInputRef} type="file" accept="image/*" className="hidden" onChange={onPickMdImage} />
           </div>
         )}
-        <Button size="middle" type="default" onClick={aiWrite.openModal} title="空行输入 / 也可唤起"><Sparkles className="h-3.5 w-3.5 mr-1" />AI 编写</Button>
+        <Button size="middle" type="default" onClick={aiWrite.openModal} title="空行输入 / 打开命令清单"><Sparkles className="h-3.5 w-3.5 mr-1" />AI 编写</Button>
       </div>
 
       {/* 编辑区 + 预览区 (可拖拽调整比例) */}
@@ -285,8 +364,29 @@ export default function KnowledgeNewPage() {
         )}
       </div>
 
-      {/* AI 辅助编写弹窗(工具栏按钮 / 编辑器空行输入 / 唤起), 生成结果回填正文光标处 */}
+      {/* AI 辅助编写弹窗(工具栏按钮 / 编辑器空行输入 / 命令清单选中「AI 编写」), 生成结果回填正文光标处 */}
       <AIWriteModal {...aiWrite.modalProps} />
+      {aiWrite.slashMenu}
+
+      {/* 创建去重确认(P3-1): 列出相似文章, 由作者决定是否仍然创建 */}
+      <ConfirmDialog
+        open={dupOpen}
+        onClose={() => { setDupOpen(false); setDupCandidates([]) }}
+        onConfirm={async () => {
+          setDupOpen(false)
+          const status = pendingStatus
+          setDupCandidates([])
+          await doSave(status, true)
+        }}
+        title="发现相似的知识文章"
+        description={[
+          `同一知识域内已存在 ${dupCandidates.length} 篇相似文章：`,
+          dupCandidates.map(d => `${d.title}（${DUP_REASON_LABEL[d.reason] || '相似'}，当前${statusLabel(d.status)}）`).join('、'),
+          '重复录入会让 AI 检索时同一主题互相抢排名，建议先打开已有文章补充内容；确认仍要创建吗？',
+        ].join(' ')}
+        confirmLabel="仍然创建"
+        loading={saving}
+      />
     </div>
   )
 }

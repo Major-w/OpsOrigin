@@ -12,6 +12,8 @@ export interface Article {
   expires_at?: string          // ISO timestamp, undefined=永不过期
   view_permission: string     // all(默认) | team | owner
   edit_permission: string     // owner(默认) | team | all
+  author_id?: string          // 创建人用户 ID，owner 可见性的判定依据
+  owner_group_ids?: string[]  // 归属团队（iam 用户组 ID），team 可见性的判定依据；属于任一团队即可见
   created_at: string; updated_at: string
 }
 
