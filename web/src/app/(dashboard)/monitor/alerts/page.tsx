@@ -1,9 +1,10 @@
 
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { useNavigate } from 'react-router-dom'
-import { useMonitorStore, type AlertEvent, type RCAEntry } from '@/stores/monitor'
+import { useNavigate, useSearchParams } from 'react-router-dom'
+import { useMonitorStore, type AlertEvent, type RCAEntry, type MaintenanceWindow } from '@/stores/monitor'
 import { useAIStore } from '@/stores/ai'
 import { renderMarkdown } from '@/lib/ai-render'
+import { getMessage } from '@/lib/message'
 import { apiFetch } from '@/lib/utils'
 
 interface RootCausePath {
@@ -20,7 +21,7 @@ import { Button, Input, Modal, Select, Tag, Space } from 'antd'
 import { formatTime, cn } from '@/lib/utils'
 import { useWebSocket } from '@/lib/useWebSocket'
 import { useCan } from '@/stores/permissions'
-import { AlertTriangle, CheckCircle, XCircle, Eye, Search, Loader2, History, Sparkles, Bot, Radar, Layers } from 'lucide-react'
+import { AlertTriangle, CheckCircle, XCircle, Eye, Search, Loader2, History, Sparkles, Bot, Radar, Layers, Bell } from 'lucide-react'
 
 const severityColor: Record<string, string> = { critical: 'red', high: 'red', warning: 'orange', info: 'default' }
 const severityLabel: Record<string, string> = { critical: '严重', high: '严重', warning: '警告', info: '提示' }
@@ -34,6 +35,9 @@ export default function MonitorAlertsPage() {
   const [view, setView] = useState<'active' | 'history'>('active')
   const [severity, setSeverity] = useState('')
   const [keyword, setKeyword] = useState('')
+  // 从 CMDB 拓扑跳转时携带 ci_id, 仅展示该 CI 的告警(告警 × CMDB 联动下钻)
+  const [searchParams, setSearchParams] = useSearchParams()
+  const ciFilter = searchParams.get('ci_id') || ''
   const [detail, setDetail] = useState<AlertEvent | null>(null)
   const [dialog, setDialog] = useState(false)
   const [rcaOpen, setRcaOpen] = useState(false)
@@ -44,13 +48,51 @@ export default function MonitorAlertsPage() {
   const [analysisOpen, setAnalysisOpen] = useState(false)
   const [analysisText, setAnalysisText] = useState('')
   const [analysisLoading, setAnalysisLoading] = useState(false)
+  const [maintOpen, setMaintOpen] = useState(false)
+  const [maintForm, setMaintForm] = useState<{ name: string; start: string; end: string; instances: string; ci_ids: string; sources: string; severities: string }>({ name: '', start: '', end: '', instances: '', ci_ids: '', sources: '', severities: '' })
+  const [webhookUrl, setWebhookUrl] = useState('')
+  const [emailForm, setEmailForm] = useState<{ host: string; port: number; user: string; pass: string; from: string; to: string; tls: boolean }>({ host: '', port: 25, user: '', pass: '', from: '', to: '', tls: false })
+
+  const toISO = (v: string) => (v ? new Date(v).toISOString() : '')
+  const maintStatus = (w: MaintenanceWindow) => {
+    if (!w.enabled) return { text: '已禁用', color: 'default' as const }
+    const s = new Date(w.start_at).getTime()
+    const e = new Date(w.end_at).getTime()
+    const now = Date.now()
+    if (now < s) return { text: '未开始', color: 'default' as const }
+    if (now > e) return { text: '已结束', color: 'default' as const }
+    return { text: '生效中', color: 'green' as const }
+  }
 
   const refresh = useCallback(() => {
     store.fetchAlerts()
     store.fetchAlertHistory()
     store.fetchAlertStats()
     store.fetchRCA()
+    store.fetchWebhook()
+    store.fetchEmail()
+    store.fetchMaintenances()
   }, [])
+
+  const submitMaint = async () => {
+    if (!maintForm.name || !maintForm.start || !maintForm.end) {
+      getMessage().error('请填写名称、开始与结束时间')
+      return
+    }
+    const match: Record<string, string[]> = {}
+    const push = (k: string, v: string) => { const arr = v.split(',').map(s => s.trim()).filter(Boolean); if (arr.length) match[k] = arr }
+    push('instances', maintForm.instances)
+    push('ci_ids', maintForm.ci_ids)
+    push('sources', maintForm.sources)
+    push('severities', maintForm.severities)
+    const ok = await store.createMaintenance({
+      name: maintForm.name,
+      start_at: toISO(maintForm.start),
+      end_at: toISO(maintForm.end),
+      match: Object.keys(match).length ? match : undefined,
+    })
+    if (ok) setMaintOpen(false)
+  }
 
   const openRCA = async () => {
     setRcaOpen(true)
@@ -73,6 +115,7 @@ export default function MonitorAlertsPage() {
   const filtered = useMemo(() => {
     const list = view === 'active' ? alerts : alertHistory
     return list.filter(a => {
+      if (ciFilter && a.source_ci_id !== ciFilter) return false
       if (severity && a.severity !== severity) return false
       if (keyword) {
         const k = keyword.toLowerCase()
@@ -80,7 +123,7 @@ export default function MonitorAlertsPage() {
       }
       return true
     })
-  }, [view, alerts, alertHistory, severity, keyword])
+  }, [view, alerts, alertHistory, severity, keyword, ciFilter])
 
   const handleAck = async (a: AlertEvent) => {
     await store.ackAlert(a.id)
@@ -154,6 +197,11 @@ export default function MonitorAlertsPage() {
           <Input placeholder="搜索标题 / 规则 / CI..." value={keyword} onChange={e => setKeyword(e.target.value)} className="pl-8" />
         </div>
         <Select value={severity || undefined} onChange={v => setSeverity(v || '')} allowClear placeholder="全部严重度" className="max-w-[120px]" options={SEVERITIES.map(s => ({ label: severityLabel[s] || s, value: s }))} />
+        {ciFilter && (
+          <Tag closable color="red" className="text-xs" onClose={() => { const p = new URLSearchParams(searchParams); p.delete('ci_id'); setSearchParams(p) }}>
+            仅看 CI: {ciFilter}
+          </Tag>
+        )}
         <Button className="gap-1 text-blue-600 dark:text-blue-400 border-blue-500/30 hover:bg-blue-500/10" onClick={openRCA}>
           <Radar className="h-3.5 w-3.5" />根因分析
         </Button>
@@ -209,6 +257,89 @@ export default function MonitorAlertsPage() {
                 </tbody>
               </table>
             </div>
+          )}
+        </CardContent>
+      </Card>
+
+      {/* 通知渠道：新告警触发时异步投递到外部（Webhook / 邮件）。与 WS 实时广播并存。 */}
+      <Card>
+        <CardHeader className="pb-2">
+          <CardTitle className="text-base flex items-center gap-2"><Bell className="h-4 w-4 text-amber-500" />通知渠道</CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          {/* Webhook 投递 */}
+          <div className="rounded-lg border border-border p-3 space-y-2">
+            <div className="flex items-center justify-between">
+              <span className="text-sm font-medium">Webhook 推送</span>
+              <Tag color={store.webhook.configured ? 'green' : 'default'} className="text-[10px]">{store.webhook.configured ? (store.webhook.format === 'wecom' ? '企业微信' : store.webhook.format === 'dingtalk' ? '钉钉' : '已启用') : '未配置'}</Tag>
+            </div>
+            <div className="flex gap-2">
+              <Input size="small" placeholder="机器人地址(支持企微/钉钉自动识别)" value={webhookUrl || store.webhook.url} onChange={e => setWebhookUrl(e.target.value)} />
+              <Button size="small" onClick={() => store.setWebhook(webhookUrl)} disabled={!canWrite}>保存</Button>
+              <Button size="small" onClick={() => store.testWebhook()} disabled={!store.webhook.configured}>测试</Button>
+            </div>
+          </div>
+          {/* 邮件(SMTP)投递 */}
+          <div className="rounded-lg border border-border p-3 space-y-2">
+            <div className="flex items-center justify-between">
+              <span className="text-sm font-medium">邮件(SMTP)推送</span>
+              <Tag color={store.email.configured ? 'green' : 'default'} className="text-[10px]">{store.email.configured ? '已启用' : '未配置'}</Tag>
+            </div>
+            <div className="grid grid-cols-2 gap-2">
+              <Input size="small" placeholder="SMTP 主机" value={emailForm.host || store.email.host} onChange={e => setEmailForm(f => ({ ...f, host: e.target.value }))} />
+              <Input size="small" type="number" placeholder="端口" value={emailForm.port || store.email.port} onChange={e => setEmailForm(f => ({ ...f, port: Number(e.target.value) }))} />
+              <Input size="small" placeholder="发件人" value={emailForm.from || store.email.from} onChange={e => setEmailForm(f => ({ ...f, from: e.target.value }))} />
+              <Input size="small" placeholder="收件人(逗号分隔)" value={emailForm.to || store.email.to} onChange={e => setEmailForm(f => ({ ...f, to: e.target.value }))} />
+              <Input size="small" placeholder="用户名(可选)" value={emailForm.user || store.email.user} onChange={e => setEmailForm(f => ({ ...f, user: e.target.value }))} />
+              <Input size="small" type="password" placeholder={store.email.pass_set ? '留空不改' : '密码(可选)'} value={emailForm.pass} onChange={e => setEmailForm(f => ({ ...f, pass: e.target.value }))} />
+            </div>
+            <div className="flex items-center gap-3">
+              <label className="flex items-center gap-1 text-xs text-muted-foreground"><input type="checkbox" checked={emailForm.tls || store.email.tls} onChange={e => setEmailForm(f => ({ ...f, tls: e.target.checked }))} /> 使用 TLS/SSL</label>
+              <Button size="small" onClick={() => store.setEmail(emailForm)} disabled={!canWrite}>保存</Button>
+              <Button size="small" onClick={() => store.testEmail()} disabled={!store.email.configured}>测试</Button>
+            </div>
+          </div>
+        </CardContent>
+      </Card>
+
+      {/* 维护期静默：变更窗口内抑制误报告警（不投递通知，仍保留记录） */}
+      <Card>
+        <CardHeader className="pb-2 flex flex-row items-center justify-between">
+          <CardTitle className="text-base flex items-center gap-2"><Bell className="h-4 w-4 text-amber-500" />维护期静默</CardTitle>
+          <Button size="middle" className="text-xs h-7 text-blue-600 dark:text-blue-400 border-blue-500/30 hover:bg-blue-500/10" onClick={() => { setMaintForm({ name: '', start: '', end: '', instances: '', ci_ids: '', sources: '', severities: '' }); setMaintOpen(true) }}>
+            <Bell className="h-3 w-3 mr-0.5" />新建
+          </Button>
+        </CardHeader>
+        <CardContent className="space-y-2">
+          <p className="text-xs text-muted-foreground">变更窗口内抑制误报告警（不投递通知，仍保留活跃与历史记录）。可指定匹配维度（instance / CI / source / severity），留空表示全部匹配。</p>
+          {store.maintenances.length === 0 ? (
+            <p className="py-6 text-sm text-muted-foreground text-center">暂无维护期</p>
+          ) : (
+            store.maintenances.map(w => {
+              const st = maintStatus(w)
+              const chips: string[] = []
+              ;(w.match?.instances || []).forEach(v => chips.push('instance=' + v))
+              ;(w.match?.ci_ids || []).forEach(v => chips.push('ci=' + v))
+              ;(w.match?.sources || []).forEach(v => chips.push('source=' + v))
+              ;(w.match?.severities || []).forEach(v => chips.push('severity=' + v))
+              return (
+                <div key={w.id} className="flex items-center gap-3 rounded-lg border border-border p-2.5">
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <span className="text-sm font-medium">{w.name}</span>
+                      <Tag color={st.color} className="text-[10px]">{st.text}</Tag>
+                    </div>
+                    <div className="text-[11px] text-muted-foreground mt-0.5">{formatTime(w.start_at)} ~ {formatTime(w.end_at)}</div>
+                    {chips.length > 0 && (
+                      <div className="flex flex-wrap gap-1 mt-1">
+                        {chips.map((c, i) => <Tag key={i} className="text-[10px]">{c}</Tag>)}
+                      </div>
+                    )}
+                  </div>
+                  <Button size="middle" className="text-xs h-7" onClick={() => store.deleteMaintenance(w.id)} disabled={!canWrite}><XCircle className="h-3 w-3 mr-0.5" />删除</Button>
+                </div>
+              )
+            })
           )}
         </CardContent>
       </Card>
@@ -336,6 +467,34 @@ export default function MonitorAlertsPage() {
           <Button size="middle" className="text-blue-600 dark:text-blue-400 border-blue-500/30 hover:bg-blue-500/10" onClick={() => { setAnalysisOpen(false); navigate('/ai') }}>
             <Bot className="h-3 w-3 mr-1" />转到 AI 助手处置
           </Button>
+        </div>
+      </Modal>
+
+      <Modal title="新建维护期" open={maintOpen} onCancel={() => setMaintOpen(false)} onOk={submitMaint} okText="创建">
+        <div className="space-y-3">
+          <div>
+            <label className="text-xs text-muted-foreground">名称</label>
+            <Input value={maintForm.name} onChange={e => setMaintForm({ ...maintForm, name: e.target.value })} placeholder="如：周末变更窗口" />
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="text-xs text-muted-foreground">开始时间</label>
+              <Input type="datetime-local" value={maintForm.start} onChange={e => setMaintForm({ ...maintForm, start: e.target.value })} />
+            </div>
+            <div>
+              <label className="text-xs text-muted-foreground">结束时间</label>
+              <Input type="datetime-local" value={maintForm.end} onChange={e => setMaintForm({ ...maintForm, end: e.target.value })} />
+            </div>
+          </div>
+          <div>
+            <label className="text-xs text-muted-foreground">匹配条件（可选，逗号分隔；留空=全部匹配）</label>
+            <div className="grid grid-cols-2 gap-2 mt-1">
+              <Input size="small" value={maintForm.instances} onChange={e => setMaintForm({ ...maintForm, instances: e.target.value })} placeholder="instance: host-a,host-b" />
+              <Input size="small" value={maintForm.ci_ids} onChange={e => setMaintForm({ ...maintForm, ci_ids: e.target.value })} placeholder="ci_id: ci-1,ci-2" />
+              <Input size="small" value={maintForm.sources} onChange={e => setMaintForm({ ...maintForm, sources: e.target.value })} placeholder="source: zabbix" />
+              <Input size="small" value={maintForm.severities} onChange={e => setMaintForm({ ...maintForm, severities: e.target.value })} placeholder="severity: warning,info" />
+            </div>
+          </div>
         </div>
       </Modal>
     </div>

@@ -33,6 +33,8 @@ const MonitorTargetsPage = React.lazy(() => import('./app/(dashboard)/monitor/ta
 const MonitorAlertsPage = React.lazy(() => import('./app/(dashboard)/monitor/alerts/page'))
 const MonitorCollectionPage = React.lazy(() => import('./app/(dashboard)/monitor/collection/page'))
 const MonitorPluginsPage = React.lazy(() => import('./app/(dashboard)/monitor/plugins/page'))
+const MonitorSourcesPage = React.lazy(() => import('./app/(dashboard)/monitor/sources/page'))
+const MonitorIngestPage = React.lazy(() => import('./app/(dashboard)/monitor/ingest/page'))
 const AIPage = React.lazy(() => import('./app/(dashboard)/ai/page'))
 const AITasksPage = React.lazy(() => import('./app/(dashboard)/ai/tasks/page'))
 const AIAnalyticsPage = React.lazy(() => import('./app/(dashboard)/ai/analytics/page'))
@@ -178,6 +180,8 @@ function App() {
                 <Route path="/monitor/alerts" element={<MonitorAlertsPage />} />
                 <Route path="/monitor/collection" element={<MonitorCollectionPage />} />
                 <Route path="/monitor/plugins" element={<MonitorPluginsPage />} />
+                <Route path="/monitor/sources" element={<MonitorSourcesPage />} />
+                <Route path="/monitor/ingest" element={<MonitorIngestPage />} />
                 <Route path="/ai" element={<AIPage />} />
                 <Route path="/ai/tasks" element={<AITasksPage />} />
                 <Route path="/ai/analytics" element={<AIAnalyticsPage />} />

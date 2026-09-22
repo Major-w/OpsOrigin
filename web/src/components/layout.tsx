@@ -258,6 +258,8 @@ export function Layout({ children }: { children: React.ReactNode }) {
         { to: '/monitor/collection', icon: Radio, label: t('monitor.collection') },
         { to: '/monitor/plugins', label: t('monitor.plugins'), icon: Blocks },
         { to: '/monitor/targets', label: t('monitor.configuration'), icon: Settings },
+        { to: '/monitor/sources', label: t('monitor.sources'), icon: Database },
+        { to: '/monitor/ingest', label: t('monitor.ingest'), icon: Webhook },
         { to: '/monitor/predict', label: t('monitor.predict'), icon: TrendingUp },
         { to: '/monitor/panorama', label: t('monitor.panorama'), icon: Activity },
       ]

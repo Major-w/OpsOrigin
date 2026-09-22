@@ -328,6 +328,8 @@ const zhCN: Record<string, string> = {
   'monitor.predict': '趋势预测',
   'monitor.configuration': '监控配置',
   'monitor.center': '告警中心',
+  'monitor.sources': '数据源',
+  'monitor.ingest': '告警接入',
 
   // System
   'system.title': '系统管理',
@@ -967,6 +969,8 @@ const enUS: Record<string, string> = {
   'monitor.predict': 'Prediction',
   'monitor.configuration': 'Configuration',
   'monitor.center': 'Alert Center',
+  'monitor.sources': 'Data Sources',
+  'monitor.ingest': 'Alert Ingestion',
 
   // System
   'system.title': 'System',
