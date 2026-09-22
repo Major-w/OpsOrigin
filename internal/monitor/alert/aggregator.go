@@ -27,6 +27,7 @@ type Aggregator struct {
 	window          time.Duration
 	topology        TopologyChecker
 	onNotify        AlertNotifyFunc
+	silenceFunc     func(*model.AlertEvent) bool // 维护期静默判定(由 Service 注入)
 	alertHistory    []*model.AlertEvent
 }
 
@@ -44,6 +45,12 @@ func (a *Aggregator) OnNotify(fn AlertNotifyFunc) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	a.onNotify = fn
+}
+
+// SetSilenceFunc 注入维护期静默判定(由 Service 基于 monitor_maintenance 表实现)。
+// 返回 true 时该告警被标记 IsSuppressed, 抑制通知投递(仍保留活跃与历史记录)。
+func (a *Aggregator) SetSilenceFunc(fn func(*model.AlertEvent) bool) {
+	a.silenceFunc = fn
 }
 
 func (a *Aggregator) AddRule(rule *model.AlertRule) {
@@ -70,53 +77,6 @@ func (a *Aggregator) GetRules() []*model.AlertRule {
 	result := make([]*model.AlertRule, len(a.rules))
 	copy(result, a.rules)
 	return result
-}
-
-func (a *Aggregator) EvaluateMetric(sample MetricSample) {
-	a.mu.RLock()
-	rules := make([]*model.AlertRule, len(a.rules))
-	copy(rules, a.rules)
-	a.mu.RUnlock()
-
-	for _, rule := range rules {
-		if !rule.Enabled || rule.MetricName != sample.Name {
-			continue
-		}
-
-		triggered := false
-		switch rule.Operator {
-		case ">":
-			triggered = sample.Value > rule.Threshold
-		case "<":
-			triggered = sample.Value < rule.Threshold
-		case ">=":
-			triggered = sample.Value >= rule.Threshold
-		case "<=":
-			triggered = sample.Value <= rule.Threshold
-		case "==":
-			triggered = sample.Value == rule.Threshold
-		}
-
-		if triggered {
-			alert := &model.AlertEvent{
-				TenantID:    "default",
-				SourceCIID:  sample.Host,
-				RuleName:    rule.Name,
-				Severity:    rule.Severity,
-				Title:       fmt.Sprintf("%s: %.1f (threshold %s %.1f)", rule.Name, sample.Value, rule.Operator, rule.Threshold),
-				Description: fmt.Sprintf("Metric %s value %.2f%s exceeded threshold %s %.1f", rule.MetricName, sample.Value, sample.Unit, rule.Operator, rule.Threshold),
-			}
-			a.Ingest(context.Background(), alert)
-		}
-	}
-}
-
-type MetricSample struct {
-	Name      string
-	Value     float64
-	Host      string
-	Unit      string
-	Timestamp time.Time
 }
 
 func (a *Aggregator) Run(ctx context.Context) error {
@@ -147,6 +107,12 @@ func (a *Aggregator) Ingest(ctx context.Context, alert *model.AlertEvent) (*mode
 		}
 		alert.IsSuppressed = suppressed
 		alert.RootCauseCI = rootCause
+	}
+
+	// 维护期静默: 变更窗口内抑制误报。在拓扑抑制之后叠加, 不覆盖拓扑结果。
+	// silenceFunc 由 Service 注入(基于 monitor_maintenance 表), 命中后标记 IsSuppressed 并抑制通知投递。
+	if a.silenceFunc != nil && a.silenceFunc(alert) {
+		alert.IsSuppressed = true
 	}
 
 	// 告警聚类降噪: 相似告警归簇, 命中已有簇时标记为簇成员(抑制重复通知, 由簇首代表)。
@@ -208,6 +174,21 @@ func (a *Aggregator) Resolve(alertID string) error {
 		}
 	}
 	return fmt.Errorf("alert %s not found", alertID)
+}
+
+// ResolveExternal 按指纹解析外部接入的活跃告警(第三方告警统一接入用)。
+// 指纹算法与 Ingest 一致(TenantID+SourceCIID+RuleName+Severity), 用于 Alertmanager/Zabbix 的 resolved 事件。
+func (a *Aggregator) ResolveExternal(tenantID, sourceCIID, ruleName string, severity model.AlertSeverity) error {
+	fp := a.fingerprint(&model.AlertEvent{TenantID: tenantID, SourceCIID: sourceCIID, RuleName: ruleName, Severity: severity})
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if alert, ok := a.activeAlerts[fp]; ok {
+		alert.ResolvedAt = timePtr(time.Now())
+		delete(a.activeAlerts, fp)
+		a.recordHistoryLocked(alert)
+		return nil
+	}
+	return fmt.Errorf("active external alert not found")
 }
 
 // maxAlertHistory 保留的处理历史告警条数(环形上限)。

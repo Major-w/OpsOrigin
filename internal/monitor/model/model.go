@@ -109,3 +109,24 @@ type AlertRule struct {
 	// EvalIntervalSec 评估周期(秒, 默认 60)。PromQL 规则按此周期查询 VM。
 	EvalIntervalSec int `json:"eval_interval_sec,omitempty"`
 }
+
+// MaintenanceWindow 维护期静默(变更窗口): 在 [StartAt, EndAt] 内且命中可选匹配条件的告警被抑制通知(仍保留活跃/历史记录)。
+type MaintenanceWindow struct {
+	ID        string           `json:"id"`
+	TenantID  string           `json:"tenant_id"`
+	Name      string           `json:"name"`
+	StartAt   time.Time        `json:"start_at"`
+	EndAt     time.Time        `json:"end_at"`
+	Enabled   bool             `json:"enabled"`
+	Match     MaintenanceMatch `json:"match,omitempty"`
+	CreatedAt time.Time        `json:"created_at"`
+}
+
+// MaintenanceMatch 维护期匹配条件。任一维度为空(零值)表示该维度全部匹配;
+// 告警需被所有非空维度包含才进入静默。
+type MaintenanceMatch struct {
+	Instances  []string `json:"instances,omitempty"` // 匹配 labels["instance"]
+	CIIDs      []string `json:"ci_ids,omitempty"`    // 匹配 alert.SourceCIID
+	Sources    []string `json:"sources,omitempty"`   // 匹配 labels["source"]
+	Severities []string `json:"severities,omitempty"` // 匹配 alert.Severity
+}

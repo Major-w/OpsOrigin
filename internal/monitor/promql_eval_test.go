@@ -64,7 +64,7 @@ func TestEvaluateOncePromQL(t *testing.T) {
 		{Name: "cpu-high", Type: "promql", Expr: "avg(cpu.usage) > 0.8", Severity: model.AlertWarning, Enabled: true},
 		{Name: "no-data", Type: "promql", Expr: "absent(cpu.usage)", Severity: model.AlertCritical, Enabled: true},
 		{Name: "not-hit", Type: "promql", Expr: "avg(mem.percent) > 99", Severity: model.AlertWarning, Enabled: true},
-		{Name: "threshold-old", MetricName: "cpu", Operator: ">", Threshold: 90, Enabled: true}, // 非 promql 跳过
+		{Name: "threshold-old", MetricName: "cpu", Operator: ">", Threshold: 90, Enabled: true}, // 阈值规则走 VM 查询评估, 此表达式不在 mock 命中集 → 不触发
 		{Name: "disabled", Type: "promql", Expr: "absent(mem.used)", Enabled: false},
 	}
 
@@ -110,5 +110,71 @@ func TestEvaluateOnceVMError(t *testing.T) {
 	})
 	if len(alerts) != 0 {
 		t.Fatalf("expected 0 alerts on vm error, got %d", len(alerts))
+	}
+}
+
+func TestEvaluateOnceThreshold(t *testing.T) {
+	// 阈值规则经 VM 查询评估: cpu.usage{source="prometheus",instance="10.0.0.1"} > 90 命中。
+	vm := mockVM(t, map[string]bool{
+		`cpu.usage{source="prometheus",instance="10.0.0.1"} > 90`: true,
+	})
+	e := newPromqlRuleEvaluator(vm)
+	rules := []*model.AlertRule{
+		{
+			Name:       "cpu-threshold",
+			Type:       "threshold",
+			MetricName: "cpu.usage",
+			Operator:   ">",
+			Threshold:  90,
+			Labels:     map[string]string{"source": "prometheus", "instance": "10.0.0.1", "ci_id": "ci-1"},
+			Severity:   model.AlertCritical,
+			Enabled:    true,
+		},
+		{
+			Name:       "not-hit",
+			Type:       "threshold",
+			MetricName: "mem.usage",
+			Operator:   "<",
+			Threshold:  10,
+			Labels:     map[string]string{"source": "prometheus", "instance": "10.0.0.1"},
+			Enabled:    true,
+		},
+	}
+	alerts := e.evaluateOnce(context.Background(), rules)
+	if len(alerts) != 1 {
+		t.Fatalf("expected 1 alert (cpu-threshold), got %d: %+v", len(alerts), alerts)
+	}
+	a := alerts[0]
+	if a.RuleName != "cpu-threshold" {
+		t.Fatalf("unexpected rule: %s", a.RuleName)
+	}
+	if a.SourceCIID != "ci-1" {
+		t.Fatalf("SourceCIID should come from labels ci_id, got %q", a.SourceCIID)
+	}
+	if a.Severity != model.AlertCritical {
+		t.Fatalf("severity wrong: %v", a.Severity)
+	}
+}
+
+func TestThresholdExpr(t *testing.T) {
+	cases := []struct {
+		r    *model.AlertRule
+		want string
+	}{
+		{
+			&model.AlertRule{MetricName: "cpu", Operator: ">", Threshold: 90, Labels: map[string]string{"source": "prom", "instance": "1.1.1.1"}},
+			`cpu{source="prom",instance="1.1.1.1"} > 90`,
+		},
+		{&model.AlertRule{MetricName: "cpu", Operator: ">", Threshold: 90}, `cpu > 90`},
+		{
+			// ci_id 不参与 matcher(非 series 标签), 避免查询为空
+			&model.AlertRule{MetricName: "cpu", Operator: ">=", Threshold: 1.5, Labels: map[string]string{"ci_id": "x"}},
+			`cpu >= 1.5`,
+		},
+	}
+	for _, c := range cases {
+		if got := thresholdExpr(c.r); got != c.want {
+			t.Fatalf("thresholdExpr=%q want %q", got, c.want)
+		}
 	}
 }

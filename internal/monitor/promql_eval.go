@@ -57,7 +57,11 @@ func (e *promqlRuleEvaluator) vmInstantQuery(ctx context.Context, expr string) (
 	return out.Status == "success" && len(out.Data.Result) > 0, nil
 }
 
-// evaluateOnce 评估一轮 promql 规则, 返回应触发的告警事件(尚未 Ingest, 由调用方落库)。
+// evaluateOnce 评估一轮告警规则(threshold / promql 两类), 返回应触发的告警事件(尚未 Ingest, 由调用方落库)。
+//   - promql: 直接查 VM, 表达式命中(非空)即告警(含 no_data 检测 absent(...))。
+//   - threshold: 由 MetricName+Operator+Threshold 构造 PromQL 表达式查 VM, 对齐采集 baseLabels(source/instance)。
+//
+// 两类统一走 VM 查询, 避免阈值评估死路(原 EvaluateMetric 从未被调用)。
 // 抽取为纯函数便于单测。
 func (e *promqlRuleEvaluator) evaluateOnce(ctx context.Context, rules []*model.AlertRule) []*model.AlertEvent {
 	if e == nil || e.vmBase == "" {
@@ -65,12 +69,29 @@ func (e *promqlRuleEvaluator) evaluateOnce(ctx context.Context, rules []*model.A
 	}
 	var alerts []*model.AlertEvent
 	for _, r := range rules {
-		if r == nil || !r.Enabled || r.Type != "promql" || r.Expr == "" {
+		if r == nil || !r.Enabled {
 			continue
 		}
-		hit, err := e.vmInstantQuery(ctx, r.Expr)
+		var (
+			hit bool
+			err error
+		)
+		switch r.Type {
+		case "promql":
+			if r.Expr == "" {
+				continue
+			}
+			hit, err = e.vmInstantQuery(ctx, r.Expr)
+		case "threshold", "":
+			if r.MetricName == "" || r.Operator == "" {
+				continue
+			}
+			hit, err = e.vmInstantQuery(ctx, thresholdExpr(r))
+		default:
+			continue
+		}
 		if err != nil {
-			slog.Warn("promql rule eval failed", "rule", r.Name, "expr", r.Expr, "err", err)
+			slog.Warn("alert rule eval failed", "rule", r.Name, "type", r.Type, "err", err)
 			continue
 		}
 		if !hit {
@@ -78,15 +99,39 @@ func (e *promqlRuleEvaluator) evaluateOnce(ctx context.Context, rules []*model.A
 		}
 		alerts = append(alerts, &model.AlertEvent{
 			TenantID:    r.TenantID,
+			SourceCIID:  r.Labels["ci_id"],
 			RuleName:    r.Name,
 			Severity:    r.Severity,
 			Title:       r.Name,
-			Description: "PromQL 表达式命中: " + r.Expr,
+			Description: ruleDescription(r),
 			Labels:      r.Labels,
 			TriggeredAt: time.Now(),
 		})
 	}
 	return alerts
+}
+
+// thresholdExpr 由阈值规则构造 PromQL 表达式, 仅带采集 baseLabels 中存在的 series 标签(source/instance),
+// 避免匹配不存在的 label 导致查询为空。
+func thresholdExpr(r *model.AlertRule) string {
+	matchers := ""
+	for _, k := range []string{"source", "instance"} {
+		if v := r.Labels[k]; v != "" {
+			matchers += fmt.Sprintf(`%s=%q,`, k, v)
+		}
+	}
+	if matchers != "" {
+		matchers = "{" + matchers[:len(matchers)-1] + "}"
+	}
+	return fmt.Sprintf("%s%s %s %v", r.MetricName, matchers, r.Operator, r.Threshold)
+}
+
+// ruleDescription 人类可读的触发原因。
+func ruleDescription(r *model.AlertRule) string {
+	if r.Type == "promql" {
+		return "PromQL 表达式命中: " + r.Expr
+	}
+	return fmt.Sprintf("指标 %s %s %.2f 命中阈值规则", r.MetricName, r.Operator, r.Threshold)
 }
 
 // promqlEvalLoop 周期评估 PromQL 规则(按各自 EvalIntervalSec, 默认 60s)。
