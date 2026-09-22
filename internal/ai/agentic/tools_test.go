@@ -82,6 +82,9 @@ func TestScriptRunDryRunNoExecute(t *testing.T) {
 	}
 }
 
+// chunkHitCols 是块级检索 SQL 的返回列(8 列: 含完整 content、块序号与向量距离)。
+var chunkHitCols = []string{"article_id", "title", "heading", "content", "chunk_id", "source", "chunk_index", "distance"}
+
 // TestSearchKnowledgeCacheHit 验证知识库检索结果被缓存: 第二次相同 (tenant,query,分页) 的调用
 // 直接命中 searchCache, 不再查询数据库(用 go-sqlmock 断言)。
 func TestSearchKnowledgeCacheHit(t *testing.T) {
@@ -94,11 +97,17 @@ func TestSearchKnowledgeCacheHit(t *testing.T) {
 	ts := &MCPToolSet{db: db, embedCache: newTTLCache(embedCacheTTL, 8), searchCache: newTTLCache(searchCacheTTL, 8)}
 	ctx := context.Background()
 
-	// 第一次: embedder=nil -> 仅关键词路(块级), 数据库返回一行。
+	// 第一次: embedder=nil -> 仅关键词路(tsvector + ILIKE), 数据库返回一行。
 	mock.ExpectQuery("SELECT c.article_id, a.title, c.heading").
-		WithArgs("%disk full%", 500, 15, "default").
-		WillReturnRows(sqlmock.NewRows([]string{"article_id", "title", "heading", "snippet", "chunk_id", "source"}).
-			AddRow("a1", "Disk Full", "2 磁盘满", "cleanup steps", "k1", "article"))
+		WithArgs("disk full", 15, "default").
+		WillReturnRows(sqlmock.NewRows(chunkHitCols))
+	mock.ExpectQuery("SELECT c.article_id, a.title, c.heading").
+		WithArgs("%disk full%", 15, "default").
+		WillReturnRows(sqlmock.NewRows(chunkHitCols).
+			AddRow("a1", "Disk Full", "2 磁盘满", "cleanup steps", "k1", "article", 3, 1.0))
+	// 首块相邻块上下文查询(small-to-big), 返回空表示无相邻块。
+	mock.ExpectQuery("SELECT chunk_index, content FROM knowledge_chunks").
+		WillReturnRows(sqlmock.NewRows([]string{"chunk_index", "content"}))
 
 	items1, err := ts.searchKnowledge(ctx, "disk full", 5, 500, nil)
 	if err != nil {
@@ -138,14 +147,19 @@ func TestSearchKnowledgeEmbeddingDedup(t *testing.T) {
 	ts := &MCPToolSet{db: db, embedder: mockEmbed, embedCache: newTTLCache(embedCacheTTL, 8), searchCache: newTTLCache(searchCacheTTL, 8)}
 	ctx := context.Background()
 
-	// 双路召回(块级): 第一次调用走 vector 路(embedder 就绪) + keyword 路; searchCache 命中后第二次不再查 DB。
-	// topN = limit*3 = 15。
+	// 多路召回(块级): 第一次调用走 vector 路(embedder 就绪) + tsvector 路 + ILIKE 路;
+	// searchCache 命中后第二次不再查 DB。topN = limit*3 = 15。
 	mock.ExpectQuery("SELECT c.article_id, a.title, c.heading").
-		WithArgs("[0.1,0.2,0.3]", 500, 15, "default").
-		WillReturnRows(sqlmock.NewRows([]string{"article_id", "title", "heading", "snippet"}).AddRow("v1", "Vec", "", "v"))
+		WithArgs("[0.1,0.2,0.3]", 15, "default", 3). // 末位 3 = 查询向量维度, 用于过滤掉旧维度块
+		WillReturnRows(sqlmock.NewRows(chunkHitCols).AddRow("v1", "Vec", "", "v", "k1", "article", 0, 0.2))
 	mock.ExpectQuery("SELECT c.article_id, a.title, c.heading").
-		WithArgs("%same query%", 500, 15, "default").
-		WillReturnRows(sqlmock.NewRows([]string{"article_id", "title", "heading", "snippet"}).AddRow("v1", "Vec", "", "v"))
+		WithArgs("same query", 15, "default").
+		WillReturnRows(sqlmock.NewRows(chunkHitCols))
+	mock.ExpectQuery("SELECT c.article_id, a.title, c.heading").
+		WithArgs("%same query%", 15, "default").
+		WillReturnRows(sqlmock.NewRows(chunkHitCols).AddRow("v1", "Vec", "", "v", "k1", "article", 0, 1.0))
+	mock.ExpectQuery("SELECT chunk_index, content FROM knowledge_chunks").
+		WillReturnRows(sqlmock.NewRows([]string{"chunk_index", "content"}))
 
 	_, err = ts.searchKnowledge(ctx, "same query", 5, 500, nil)
 	if err != nil {
@@ -170,4 +184,24 @@ type stubEmbedder struct {
 
 func (s *stubEmbedder) Embed(ctx context.Context, text string) ([]float32, error) {
 	return s.fn(ctx, text)
+}
+
+// TestVectorOrderExpr 验证向量排序表达式与 knowledge 侧所建 HNSW 索引表达式逐字一致。
+// 原生 `USING hnsw (embedding vector_cosine_ops)` 有 2000 维硬上限, 而智谱 embedding-3
+// 是 2048 维, 故主路径必须用 halfvec 表达式(上限 4000 维); pgvector < 0.7 无 halfvec 时
+// 降级为原生距离表达式(仍可全表余弦, 只是不走索引)。
+func TestVectorOrderExpr(t *testing.T) {
+	kbHalfvecUnavailable.Store(false)
+	if got, want := vectorOrderExpr(2048), "c.embedding::halfvec(2048) <=> $1::halfvec(2048)"; got != want {
+		t.Fatalf("vectorOrderExpr(2048) = %q, want %q", got, want)
+	}
+	if got, want := vectorOrderExpr(1536), "c.embedding::halfvec(1536) <=> $1::halfvec(1536)"; got != want {
+		t.Fatalf("vectorOrderExpr(1536) = %q, want %q", got, want)
+	}
+	// 降级路径: halfvec 不可用时回退原生表达式
+	kbHalfvecUnavailable.Store(true)
+	defer kbHalfvecUnavailable.Store(false)
+	if got, want := vectorOrderExpr(2048), "c.embedding <=> $1::vector"; got != want {
+		t.Fatalf("fallback vectorOrderExpr = %q, want %q", got, want)
+	}
 }

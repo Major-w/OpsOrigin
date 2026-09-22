@@ -97,6 +97,11 @@ type Engine struct {
 	// 非幂等/有副作用工具(script_run/ticket_create)与内建工具不缓存(见 noCacheTools)。
 	toolCache *ttlCache
 
+	// scopeResolver 可见性范围解析器(权限感知检索)。由 cmd/core 注入与 MCPToolSet 相同的实现。
+	// 仅用于让 knowledge_search 的工具结果缓存按提问者身份隔离 —— 该工具的结果随身份变化,
+	// 只按 tenant+args 缓存会导致跨用户越权复用。nil 时退化为不拼 scope(等同改造前)。
+	scopeResolver ScopeResolver
+
 	// historySummarizer 可选: 用 LLM 将超长历史的较早部分压缩为摘要,显著降低 Token 消耗。
 	// 未设置时 compactHistory 回退到确定性压缩(保留首条 user 原始意图 + 最近窗口)。
 	historySummarizer func(ctx context.Context, msgs []llm.Message) (string, error)
@@ -1673,6 +1678,26 @@ var noCacheTools = map[string]bool{
 	"http_get":      true,
 }
 
+// knowledgeSearchCachePrefix 是引擎级 toolCache 中 knowledge_search 条目的 key 前缀
+// (key 形如 `name\x1ftenant\x1fargs`, 见 execToolChecked)。
+const knowledgeSearchCachePrefix = "knowledge_search\x1f"
+
+// FlushKnowledgeSearchCache 失效引擎级工具结果缓存中的 knowledge_search 条目。
+//
+// knowledge_search 属于被缓存的幂等只读工具, 该缓存与 MCPToolSet 内部的 searchCache
+// 是两条**独立**的 5 分钟缓存路径。知识库发生写操作(下架/改可见性/删除/到期)后必须两条都失效,
+// 否则同一提问在 TTL 内仍会拿到旧结果 —— 已下架或已收紧可见性的内容照样进入模型上下文。
+//
+// 按前缀删除, 不影响 CMDB 等其它只读工具的缓存命中。
+func (e *Engine) FlushKnowledgeSearchCache() {
+	if e == nil || e.toolCache == nil {
+		return
+	}
+	if n := e.toolCache.clearPrefix(knowledgeSearchCachePrefix); n > 0 {
+		slog.Debug("ai: flushed knowledge_search tool cache", "keys", n)
+	}
+}
+
 // buildToolDefs 将 Registry 中的运维工具转换为 LLM Function Calling 所需的 ToolDef。
 // 跳过内建工具与未注册 Handler 的工具。
 //
@@ -2157,7 +2182,7 @@ func (e *Engine) execToolChecked(ctx context.Context, tc llm.ToolCall) (any, boo
 	// 缓存未命中才走真实执行与限流; 命中缓存不消耗限流额度(本就未触达后端)。
 	// key 含租户, 杜绝跨租户串味。
 	if e.toolCache != nil && !noCacheTools[name] {
-		ckey := name + "\x1f" + tenantOf(ctx) + "\x1f" + canonicalArgsKey(args)
+		ckey := e.toolCacheKey(ctx, name, args)
 		if cached, ok := e.toolCache.get(ckey); ok {
 			AIToolCacheHits.Inc()
 			slog.Debug("ai tool result served from cache", "tool", name)
@@ -2179,13 +2204,28 @@ func (e *Engine) execToolChecked(ctx context.Context, tc llm.ToolCall) (any, boo
 	}
 	truncated := e.truncateToolResult(result)
 	if e.toolCache != nil && !noCacheTools[name] {
-		ckey := name + "\x1f" + tenantOf(ctx) + "\x1f" + canonicalArgsKey(args)
-		e.toolCache.set(ckey, truncated)
+		e.toolCache.set(e.toolCacheKey(ctx, name, args), truncated)
 	}
 	if e.hookChain != nil {
 		e.hookChain.RunPostTool(ctx, agentIDFrom(ctx), name, truncated, execErr != nil)
 	}
 	return truncated, false
+}
+
+// toolCacheKey 构造工具结果缓存键。
+//
+// knowledge_search 额外拼入可见范围哈希: 该工具的结果已随提问者身份变化(team/owner 文章的
+// 可见性由调用者决定), 若仍只按 tenant+args 缓存, A 检索到的团队私有内容会被 B 的相同查询
+// 直接复用 —— 越权泄漏, 且走缓存分支不留检索痕迹。
+//
+// scope 段拼在**末尾**, 保证 knowledgeSearchCachePrefix("knowledge_search\x1f") 前缀不变,
+// FlushKnowledgeSearchCache 的按前缀失效能力不受影响。
+func (e *Engine) toolCacheKey(ctx context.Context, name string, args map[string]any) string {
+	k := name + "\x1f" + tenantOf(ctx) + "\x1f" + canonicalArgsKey(args)
+	if name == "knowledge_search" && e.scopeResolver != nil {
+		k += "\x1f" + scopeCacheKey(e.resolveScope(ctx))
+	}
+	return k
 }
 
 // toolFeedbackContent 生成回填给模型的 tool 消息文本。

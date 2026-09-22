@@ -4,14 +4,17 @@ import { useNavigate } from 'react-router-dom'
 import { useAIStore } from '@/stores/ai'
 import { useKnowledgeStore } from '@/stores/knowledge'
 import { useAIChat, ChatMessageList, ChatInputBar, TeamChatView, ApprovalBar, ChatContextBar, ConversationList, estimateContextTokens, SHARED_SESSION_KEY, SHARED_CONV_ID_KEY } from '@/components/ai/chat-kernel'
+import { kbArticleIDsFromCitations } from '@/components/ai/cite'
 import usePathname from '@/lib/use-pathname'
 import { apiFetchRaw } from '@/lib/utils'
 import { getAINavItems } from '@/components/ai-nav'
 import { cn } from '@/lib/utils'
 import { t, useLocale } from '@/lib/i18n'
 import {
-  Bot, X, Trash2, History, BarChart3, Settings, PanelLeftClose, Brain,
+  Bot, X, Trash2, History, BarChart3, Settings, PanelLeftClose, Brain, Download,
 } from 'lucide-react'
+import { exportSessionMarkdown } from '@/lib/export-session'
+import { getMessage } from '@/lib/message'
 
 // ============================================================================
 // 纯净模式（AI 工作界面）
@@ -142,11 +145,19 @@ export default function PureMode({ onExitPure }: { onExitPure: () => void }) {
 
   const submitFb = async (msg: any, rating: 'up' | 'down') => {
     if (!msg.messageId || msg.feedback_rating) return
-    const ok = await submitFeedback({ message_id: msg.messageId, rating })
+    // 引用文章透传(检索反馈闭环): 后端按文章聚合赞踩, 检索 rerank 对净踩文章降权
+    const cited = kbArticleIDsFromCitations(msg.citations)
+    const ok = await submitFeedback({ message_id: msg.messageId, rating, ...(cited.length ? { cited_articles: cited } : {}) })
     if (ok) setMessages(prev => prev.map(m => (m.id === msg.id ? { ...m, feedback_rating: rating } : m)))
   }
 
   const clear = () => { clearSession(); setShowHistory(false) }
+
+  // 会话导出: 与 /ai 全页共用 lib/export-session.ts(三入口行为一致)
+  const exportSession = () => {
+    if (!exportSessionMarkdown(messages)) { getMessage().info(t('ai.floating.exportEmpty')); return }
+    getMessage().success(t('ai.floating.exported'))
+  }
 
   return (
     <div className={cn('flex h-screen overflow-hidden bg-background text-foreground')}>
@@ -236,6 +247,9 @@ export default function PureMode({ onExitPure }: { onExitPure: () => void }) {
             </button>
             <button onClick={() => goto('/ai/settings')} className="p-1.5 rounded-md transition-colors text-muted-foreground hover:text-foreground hover:bg-black/5 dark:hover:bg-white/10" title={t('ai.agentWorkbench')}>
               <Settings className="h-3.5 w-3.5" />
+            </button>
+            <button onClick={exportSession} className="p-1.5 rounded-md transition-colors text-muted-foreground hover:text-foreground hover:bg-black/5 dark:hover:bg-white/10" title={t('ai.floating.export')}>
+              <Download className="h-3.5 w-3.5" />
             </button>
             <button onClick={clear} className="p-1.5 rounded-md transition-colors text-muted-foreground hover:text-foreground hover:bg-black/5 dark:hover:bg-white/10" title={t('ai.floating.clear')}>
               <Trash2 className="h-3.5 w-3.5" />

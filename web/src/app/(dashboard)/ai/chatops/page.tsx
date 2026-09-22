@@ -1,4 +1,4 @@
-// ChatOps 渠道管理(P3-2a 前端): 在飞书/Slack/企微等 IM 内完成运维问答与审批闭环。
+// ChatOps 渠道管理(P3-2 前端): 在飞书/企业微信等 IM 内完成运维问答与审批闭环。
 // 本页负责「渠道接入配置」与「会话绑定查看/解绑」; IM 双向问答与审批卡片交互由后端 internal/chatops 处理。
 //
 // 后端接口:
@@ -25,7 +25,7 @@ import {
 } from 'lucide-react'
 
 // —— 平台元信息(前端表单的字段来源, 与后端 platform.go 口径一致) ——
-// 飞书为 MVP 完整实现; Slack/企微为 P3-2b(后端适配器待接入), 前端置灰提示。
+// 飞书与企微均为完整实现(自建应用); Slack 不做(面向国内客户, 2026-09-19 产品决策)。
 interface FieldMeta { key: string; label: string; secret: boolean; required: boolean; placeholder: string; desc?: string }
 interface PlatformMeta { key: string; label: string; enabled: boolean; desc: string; fields: FieldMeta[] }
 
@@ -43,11 +43,24 @@ const PLATFORM_META: Record<string, PlatformMeta> = {
       { key: 'default_agent_id', label: '默认 Agent ID（可选）', secret: false, required: false, placeholder: '留空使用系统默认 Agent', desc: '该渠道收到消息时默认路由到的 Agent；留空走全局默认' },
     ],
   },
-  slack: { key: 'slack', label: 'Slack', enabled: false, desc: 'P3-2b 接入中：Slack 应用 + Socket Mode / Events API。', fields: [] },
-  wecom: { key: 'wecom', label: '企业微信', enabled: false, desc: 'P3-2b 接入中：企业微信自建应用 + 回调配置。', fields: [] },
+  // Slack 不做(2026-09-19 产品决策: 面向国内客户); 企微为自建应用完整实现。
+  wecom: {
+    key: 'wecom',
+    label: '企业微信',
+    enabled: true,
+    desc: '企业微信自建应用：支持群聊/单聊双向问答、审批卡片按钮交互。',
+    fields: [
+      { key: 'corp_id', label: 'Corp ID', secret: false, required: true, placeholder: 'wwxxxxxxxxxxxxxxxx', desc: '我的企业 → 企业信息 → 企业 ID' },
+      { key: 'corp_secret', label: 'Corp Secret', secret: true, required: true, placeholder: '应用的 Secret', desc: '应用管理 → 自建应用详情 → Secret' },
+      { key: 'agent_id', label: 'Agent ID', secret: false, required: true, placeholder: '1000002', desc: '应用详情页的 AgentId' },
+      { key: 'token', label: 'Token', secret: true, required: true, placeholder: '接收消息配置的 Token', desc: '接收消息 → 设置 API 接收' },
+      { key: 'encoding_aes_key', label: 'Encoding AES Key', secret: true, required: true, placeholder: '43 位字符串', desc: '接收消息 → 设置 API 接收（数据加密）' },
+      { key: 'default_agent_id', label: '默认 Agent ID（可选）', secret: false, required: false, placeholder: '留空使用系统默认 Agent', desc: '该渠道收到消息时默认路由到的 AI Agent；留空走全局默认' },
+    ],
+  },
 }
 
-const PLATFORM_ORDER = ['feishu', 'slack', 'wecom']
+const PLATFORM_ORDER = ['feishu', 'wecom']
 
 interface Channel {
   id: string
@@ -413,7 +426,7 @@ export default function ChatOpsPage() {
             ChatOps 渠道管理
           </h1>
           <p className="text-sm text-muted-foreground mt-1">
-            将飞书/Slack/企微接入 AI 运维助手：在 IM 内直接问答、处理审批，无需切换到控制台。
+            将飞书/企业微信接入 AI 运维助手：在 IM 内直接问答、处理审批，无需切换到控制台。
           </p>
         </div>
       </div>

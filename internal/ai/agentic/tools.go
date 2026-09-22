@@ -12,12 +12,18 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/google/uuid"
 	"github.com/opsorigin/core/internal/ai/mcp"
 	"github.com/opsorigin/core/internal/command"
+	"github.com/opsorigin/core/internal/knowledge"
 	"github.com/opsorigin/core/internal/objectstore"
+	"github.com/opsorigin/core/pkg/auth"
 	"github.com/opsorigin/core/pkg/config"
 )
 
@@ -81,13 +87,28 @@ type MCPToolSet struct {
 	// codingApproval 代码编写工具(写/执行类)的交互式人工审批器; 未注入时写/执行类一律拒绝(fail-closed)。
 	// 由 engine.CodingApprovalChecker 注入, 复用同一套 SSE ask 事件 + 超时 fail-closed 机制。
 	codingApproval func(ctx context.Context, tool, agentID string, args map[string]any, summary string) (approved bool, reason string)
+
+	// searchLogs 知识库检索留痕(P1-2/P1-4): 每次召回后写一条 knowledge_search_logs。
+	// 由 main.go 注入知识库 Service 的留痕存储; nil(未注入/内存模式)时只统计指标不落库。
+	searchLogs *knowledge.SearchLogStore
+
+	// scopeResolver 可见性范围解析器(权限感知检索)。由 main.go 注入 iam 适配器。
+	// nil 时 resolveScope 返回零值 scope → 谓词退化为「仅公开」, 即改造前的行为(fail-closed)。
+	scopeResolver ScopeResolver
+
+	// 反馈闭环(检索降权): penaltyProvider 提供「租户→文章净踩数」映射。
+	// nil(未注入)时检索不做反馈降权。缓存与取数逻辑见 retrieval_feedback.go。
+	penaltyMu       sync.Mutex
+	penaltyProvider ArticlePenaltyProvider
+	penaltyCache    map[string]penaltyCacheEntry
 }
 
 func NewMCPToolSet(db *sql.DB) *MCPToolSet {
 	return &MCPToolSet{
-		db:          db,
-		embedCache:  newTTLCache(embedCacheTTL, 1024),
-		searchCache: newTTLCache(searchCacheTTL, 1024),
+		db:           db,
+		embedCache:   newTTLCache(embedCacheTTL, 1024),
+		searchCache:  newTTLCache(searchCacheTTL, 1024),
+		penaltyCache: map[string]penaltyCacheEntry{},
 	}
 }
 
@@ -138,6 +159,24 @@ func (ts *MCPToolSet) SetCodingApproval(fn func(ctx context.Context, tool, agent
 // SetObjectStore 注入对象存储(image_generate 生成的图片持久化到 MinIO, 避免 CDN URL 过期)。
 // nil 安全: 未注入时 image_generate 直接返回上游 CDN URL。
 func (ts *MCPToolSet) SetObjectStore(os *objectstore.Client) { ts.objStore = os }
+
+// SetSearchLogStore 注入知识库检索留痕存储(P1-2/P1-4)。
+// 未注入时检索照常工作, 只是不落 knowledge_search_logs(指标仍然统计)。
+func (ts *MCPToolSet) SetSearchLogStore(s *knowledge.SearchLogStore) { ts.searchLogs = s }
+
+// FlushSearchCache 清空知识库检索结果缓存。
+//
+// 必要性(可见性修复的配套): 检索结果按 (租户,查询,参数...) 缓存 5 分钟。文章一旦
+// 转为草稿/归档、到期下架、删除或改动可见性, 同一查询的旧结果仍会被继续返回,
+// 最长 5 分钟内受限内容照样进入模型上下文 —— 相当于把 fail-closed 的可见性过滤
+// 打了个时间窗口。知识库发生写操作时调用本方法即可让缓存立即失效。
+//
+// 只清 searchCache: embedCache 是 query→向量 的映射, 与内容可见性无关, 保留其去重收益。
+func (ts *MCPToolSet) FlushSearchCache() {
+	if ts.searchCache != nil {
+		ts.searchCache.clear()
+	}
+}
 
 // categoriesFor 解析 Agent 绑定的知识库分类(可能为 nil=全部)。
 func (ts *MCPToolSet) categoriesFor(agentID string) []string {
@@ -773,7 +812,8 @@ func (ts *MCPToolSet) knowledgeSearch(ctx context.Context, args map[string]any) 
 	}
 	// 按发起会话的 Agent 绑定分类过滤(PRD 5.2.6); 未绑定/非 Agent 会话时检索全部。
 	categories := ts.categoriesFor(agentIDFrom(ctx))
-	items, err := ts.searchKnowledge(ctx, query, 5, 500, categories)
+	// 回传窗口给足: 块约 600 token, 截到 500 字符会让 LLM 只看到开头三分之一。
+	items, err := ts.searchKnowledge(ctx, query, 5, kbChunkContextRunes, categories)
 	if err != nil {
 		return nil, err
 	}
@@ -790,14 +830,19 @@ func (ts *MCPToolSet) knowledgeSearch(ctx context.Context, args map[string]any) 
 // 结果经 ttlCache 缓存: embedding 去重(query->向量) + 检索结果复用。
 // ValidKnowledgeIDs 批量校验知识库文章 ID 在本租户内是否真实存在。
 // 用于过滤模型在回答里标注的幻觉引用(编造/已删除文章的 [^id]), 避免前端引用来源链接到不存在的文章。
+// 校验口径与检索一致(已发布/未过期/提问者可见), 避免草稿或受限文章被引用后仍被判定为有效来源。
+//
+// ⚠️ 这条路径必须与检索用同一个可见性谓词: 它决定模型回答里的 [^kb:id] 引用是否被判有效。
+// 若这里放宽(例如只判存在), 受限文章的标题与 ID 会通过模型输出泄漏给提问者。
 func (ts *MCPToolSet) ValidKnowledgeIDs(ctx context.Context, tenant string, ids []string) map[string]bool {
 	out := make(map[string]bool, len(ids))
 	if ts.db == nil || tenant == "" || len(ids) == 0 {
 		return out
 	}
+	sa := newScopeArgs(ts.resolveScope(ctx), tenant, ids)
 	rows, err := ts.db.QueryContext(ctx,
-		`SELECT id FROM knowledge_articles WHERE tenant_id=$1 AND id = ANY($2)`,
-		tenant, ids)
+		`SELECT a.id FROM knowledge_articles a WHERE a.tenant_id=$1 AND a.id = ANY($2)`+sa.Predicate(),
+		sa.Args()...)
 	if err != nil {
 		slog.Warn("knowledge: validate citation ids failed", "err", err)
 		return out
@@ -812,149 +857,247 @@ func (ts *MCPToolSet) ValidKnowledgeIDs(ctx context.Context, tenant string, ids 
 	return out
 }
 
+// 知识块回传上下文的容量预算(单位 rune)。
+// 此前 SQL 用 LEFT(content,500) 硬截断: 块本身约 600 token, 只给 LLM 前 1/3 且从头截而非命中处开窗,
+// 答案容易断章取义。现在回传完整块(超长时按命中位置开窗), 相邻块各补一段保证上下文完整。
+const (
+	kbChunkContextRunes       = 1200 // 单块回传上限
+	kbNeighborRunes           = 200  // 相邻块各补充的长度
+	kbRAGMaxMatchesPerArticle = 2    // 注入 prompt 时每篇文章最多取几个命中块
+)
+
+// 可见性谓词已迁到 scope.go: 常量 kbPublicOnlyPredicate(退化分支) + scopeArgs(按身份生成)。
+// 见 scope.go「权限感知检索」段的完整说明。
+
+// searchKnowledge 生产检索入口: searchKnowledgeExplained 的默认参数包装。
+//
+// 实现体见 retrieval_explain.go —— 检索测试台复用同一个函数, 保证「测试台看到的检索」
+// 就是「线上跑的检索」。此处只保留入口, 避免出现第二份检索逻辑。
 func (ts *MCPToolSet) searchKnowledge(ctx context.Context, query string, limit, snippetLen int, categories []string) ([]map[string]any, error) {
-	tenant := tenantOf(ctx)
-	// 分类过滤子句(参数位固定在 $5); 空分类不追加参数。
-	catClause := ""
-	var catArg []string
-	if len(categories) > 0 {
-		catClause = " AND a.category = ANY($5)"
-		catArg = categories
-	}
-
-	cacheKey := ts.searchCacheKey(tenant, query, "rrf", limit, snippetLen, categories)
-	if v, ok := ts.searchCache.get(cacheKey); ok {
-		AIKnowledgeCacheHits.Inc()
-		return v.([]map[string]any), nil
-	}
-
-	topN := limit * 3 // 召回上限: 每路取 3 倍, RRF 融合后截断到 limit
-	var vecHits, kwHits []knowledgeHit
-
-	// —— 路 1: 块级向量检索 ——
-	if ts.embedder != nil {
-		qv, embedErr := ts.cachedEmbed(ctx, query)
-		if embedErr == nil && len(qv) > 0 {
-			lit := vectorLiteral(qv)
-			qArgs := []any{lit, snippetLen, topN, tenant}
-			if catArg != nil {
-				qArgs = append(qArgs, catArg)
-			}
-			if rows, qerr := ts.db.QueryContext(ctx,
-				`SELECT c.article_id, a.title, c.heading, LEFT(c.content, $2) AS snippet,
-			        c.id AS chunk_id, COALESCE(c.source,'article') AS source
-			 FROM knowledge_chunks c
-			 JOIN knowledge_articles a ON a.id = c.article_id AND a.tenant_id = c.tenant_id
-			 WHERE c.tenant_id=$4 AND c.embedding IS NOT NULL`+catClause+`
-			 ORDER BY c.embedding <=> $1::vector LIMIT $3`,
-				qArgs...); qerr == nil {
-				vecHits, _ = scanChunkHits(rows)
-			} else {
-				slog.Warn("knowledge: chunk vector search failed", "err", qerr)
-			}
-		}
-	}
-
-	// —— 路 2: 块级关键词检索(标题命中同样计入) ——
-	iArgs := []any{"%" + query + "%", snippetLen, topN, tenant}
-	if catArg != nil {
-		iArgs = append(iArgs, catArg)
-	}
-	if rows, qerr := ts.db.QueryContext(ctx,
-		`SELECT c.article_id, a.title, c.heading, LEFT(c.content, $2) AS snippet,
-		        c.id AS chunk_id, COALESCE(c.source,'article') AS source
-		 FROM knowledge_chunks c
-		 JOIN knowledge_articles a ON a.id = c.article_id AND a.tenant_id = c.tenant_id
-		 WHERE c.tenant_id=$4 AND (a.title ILIKE $1 OR c.content ILIKE $1)`+catClause+` LIMIT $3`,
-		iArgs...); qerr == nil {
-		kwHits, _ = scanChunkHits(rows)
-	} else {
-		slog.Warn("knowledge: chunk keyword search failed", "err", qerr)
-	}
-
-	// —— 双路全空: 回退文章级 ILIKE(兼容未升级/未 reindex 的存量数据) ——
-	if len(vecHits) == 0 && len(kwHits) == 0 {
-		if items, err := ts.searchKnowledgeFallback(ctx, query, limit, snippetLen, categories); err == nil {
-			ts.searchCache.set(cacheKey, items)
-			return items, nil
-		}
-	}
-
-	items := rrfMergeChunks(vecHits, kwHits, limit)
-	ts.searchCache.set(cacheKey, items)
-	return items, nil
+	items, _, err := ts.searchKnowledgeExplained(ctx, query, limit, snippetLen, RetrieveOptions{Categories: categories})
+	return items, err
 }
 
-// knowledgeHit 是块级检索的单条命中(双路召回的统一中间结构)。
+// searchTrace 一次检索的观测快照(指标 + 留痕共用)。
+type searchTrace struct {
+	mode        string
+	query       string
+	tenant      string
+	categories  []string
+	started     time.Time
+	vecHits     int // 块级向量路命中块数(融合前)
+	kwHits      int // 块级关键词路命中块数(tsvector+ILIKE 合并, 融合前)
+	resultCount int // 融合后返回的文章数
+	topScore    float64
+}
+
+// recordSearch 记录一次检索的指标与留痕(P1-2/P1-4)。
+//
+// 指标永远统计; 留痕落库为 best-effort —— 留痕是观测数据, 写失败只告警,
+// 绝不能因为它让一次知识库检索(乃至整个对话)失败。
+//
+// noLog 为真时整段跳过(含指标): 检索测试台是人工探测, 混进指标会污染「线上零结果率」
+// 这类基线, 也会让留痕里出现一堆并非真实用户提问的查询。
+func (ts *MCPToolSet) recordSearch(ctx context.Context, tr searchTrace, noLog bool) {
+	if noLog {
+		return
+	}
+	elapsed := time.Since(tr.started)
+	mode := tr.mode
+	if mode == "" {
+		mode = "rrf"
+	}
+	AIKnowledgeSearchTotal.WithLabelValues(mode).Inc()
+	AIKnowledgeSearchLatency.WithLabelValues(mode).Observe(elapsed.Seconds())
+	AIKnowledgeSearchHits.Observe(float64(tr.resultCount))
+	if tr.vecHits > 0 {
+		AIKnowledgeSearchRouteHits.WithLabelValues("vector").Inc()
+	}
+	if tr.kwHits > 0 {
+		AIKnowledgeSearchRouteHits.WithLabelValues("keyword").Inc()
+	}
+	if mode == "fallback" {
+		AIKnowledgeSearchRouteHits.WithLabelValues("fallback").Inc()
+	}
+	zero := tr.resultCount == 0
+	if zero {
+		AIKnowledgeSearchZeroResults.WithLabelValues(mode).Inc()
+	}
+	if ts.searchLogs == nil {
+		return
+	}
+	rec := &knowledge.SearchLog{
+		TenantID:   tr.tenant,
+		Query:      tr.query,
+		Mode:       mode,
+		Categories: tr.categories,
+		VecHits:    tr.vecHits,
+		KwHits:     tr.kwHits,
+		HitCount:   tr.resultCount,
+		ZeroResult: zero,
+		LatencyMS:  float64(elapsed.Microseconds()) / 1000,
+		TopScore:   tr.topScore,
+		AgentID:    agentIDFrom(ctx),
+		UserID:     auth.UserIDFromContext(ctx),
+	}
+	if err := ts.searchLogs.Record(ctx, rec); err != nil {
+		slog.Warn("knowledge: record search log failed", "err", err)
+	}
+}
+
+// topScoreOf 取检索结果首条的融合分(无结果返回 0)。
+func topScoreOf(items []map[string]any) float64 {
+	if len(items) == 0 {
+		return 0
+	}
+	switch v := items[0]["score"].(type) {
+	case float64:
+		return v
+	case float32:
+		return float64(v)
+	case int:
+		return float64(v)
+	}
+	return 0
+}
+
+// kbTSVUnavailable / kbTSVWarnOnce 记录 tsvector 检索是否可用(老库缺列时永久降级)。
+var (
+	kbTSVUnavailable atomic.Bool
+	kbTSVWarnOnce    sync.Once
+)
+
+// kbHalfvecUnavailable / kbHalfvecWarnOnce 记录 halfvec 表达式检索是否可用
+// (pgvector < 0.7 无 halfvec 类型时永久降级为原生 vector 距离表达式)。
+var (
+	kbHalfvecUnavailable atomic.Bool
+	kbHalfvecWarnOnce    sync.Once
+)
+
+// vectorOrderExpr 返回向量检索的排序/距离表达式, 必须与 knowledge 侧建的 HNSW 索引表达式一致。
+//
+// 为什么用半精度表达式而非原生:
+//  1. 原生 `USING hnsw (embedding vector_cosine_ops)` 要求列有确定维度, 而 embedding 列是
+//     裸 vector(允许混维度) —— 直接建索引报 "column does not have dimensions";
+//  2. 即便固化维度, 原生 HNSW 硬上限 2000 维, 而智谱 embedding-3 是 2048 维,
+//     报 "column cannot have more than 2000 dimensions for hnsw index"。
+//
+// `embedding::halfvec(D)` 表达式索引上限 4000 维、索引体积减半, 且 <=2000 维也照常命中。
+// 只要本表达式与索引表达式逐字相同(维度取查询向量长度, 与写入时的维度必然一致), 即走索引扫描。
+func vectorOrderExpr(dim int) string {
+	if kbHalfvecUnavailable.Load() {
+		return "c.embedding <=> $1::vector"
+	}
+	return fmt.Sprintf("c.embedding::halfvec(%d) <=> $1::halfvec(%d)", dim, dim)
+}
+
+// knowledgeHit 是块级检索的单条命中(多路召回的统一中间结构)。
 type knowledgeHit struct {
-	articleID string
-	title     string
-	heading   string
-	snippet   string
-	chunkID   string // 命中块 ID: 供引用溯源跳原文并高亮(附件块同样带 ID)
-	source    string // article | attachment: 命中来自正文还是附件抽取
+	articleID  string
+	title      string
+	heading    string
+	content    string  // 完整块内容: 截断改在 Go 侧按命中位置开窗, 不再由 SQL LEFT() 硬截
+	chunkID    string  // 命中块 ID: 供引用溯源跳原文并高亮(附件块同样带 ID)
+	source     string  // article | attachment: 命中来自正文还是附件抽取
+	chunkIndex int     // 块序号: 用于取相邻块补上下文
+	distance   float64 // 余弦距离(0~2, 越小越近); 关键词路无距离为 -1
 }
 
-// scanChunkHits 扫描块级检索结果(article_id/title/heading/snippet/chunk_id/source)。
+// scanChunkHits 扫描块级检索结果(article_id/title/heading/content/chunk_id/source/chunk_index/distance)。
 func scanChunkHits(rows *sql.Rows) ([]knowledgeHit, error) {
 	defer rows.Close()
 	var hits []knowledgeHit
 	for rows.Next() {
 		var h knowledgeHit
 		var heading sql.NullString
-		if err := rows.Scan(&h.articleID, &h.title, &heading, &h.snippet, &h.chunkID, &h.source); err != nil {
+		var dist sql.NullFloat64
+		if err := rows.Scan(&h.articleID, &h.title, &heading, &h.content, &h.chunkID, &h.source, &h.chunkIndex, &dist); err != nil {
 			return nil, err
 		}
 		h.heading = heading.String
+		h.distance = -1
+		if dist.Valid {
+			h.distance = dist.Float64
+		}
 		hits = append(hits, h)
 	}
 	return hits, rows.Err()
 }
 
-// rrfMergeChunks 用 RRF 融合双路召回并按文章聚合, 返回 top-limit 篇文章。
-// 每篇含 id/title/snippet(首命中块)与 matches(全部命中块, 含 heading 供引用溯源)。
-func rrfMergeChunks(vec, kw []knowledgeHit, limit int) []map[string]any {
+// rrfMergeChunksExplained 融合多路召回并按文章聚合, 返回 top-limit 篇文章 + 分数分解明细。
+// 排序不只用 RRF 名次: 叠加向量相似度、关键词命中与标题命中做轻量重排(rerank),
+// 纯名次融合会把"多路都排在末尾但语义最贴合"的块压下去。
+// 每篇含 id/title/snippet(首命中块)与 matches(全部命中块, 含 heading 供引用溯源),
+// 首块额外附带相邻块上下文(context), 避免长流程文档回答残缺。
+//
+// 第二个返回值供检索测试台展示「分数怎么来的」, 生产调用方直接丢弃。
+func (ts *MCPToolSet) rrfMergeChunksExplained(ctx context.Context, vec, kw []knowledgeHit, limit int, query string, snippetLen int, penalties map[string]int) ([]map[string]any, []FusionItem) {
 	const rrfK = 60
 	type articleAgg struct {
-		id      string
-		title   string
-		score   float64
-		matches []map[string]any
-		snippet string
-		chunkID string // 首个命中块的 ID(引用溯源锚点)
+		id           string
+		title        string
+		score        float64
+		matches      []map[string]any
+		snippet      string
+		chunkID      string  // 首个命中块的 ID(引用溯源锚点)
+		anchorSource string  // 首块来源(正文/附件): 取相邻块时需按来源区分, 否则序号会撞车
+		anchorIndex  int     // 首块序号, -1 表示未知
+		bestDist     float64 // 最小余弦距离, -1 表示无向量命中
+		kwHit        bool    // 关键词(tsvector/ILIKE)命中
+		titleHit     bool    // 查询词命中文章标题
 	}
 	agg := map[string]*articleAgg{}
-	seenHeading := map[string]map[string]bool{} // articleID -> heading 去重
+	seen := map[string]map[string]bool{} // articleID -> 去重键
 
-	addRanked := func(list []knowledgeHit) {
+	addRanked := func(list []knowledgeHit, isVec bool) {
 		for i, h := range list {
 			a, ok := agg[h.articleID]
 			if !ok {
-				a = &articleAgg{id: h.articleID, title: h.title}
+				a = &articleAgg{id: h.articleID, title: h.title, anchorIndex: -1, bestDist: -1}
 				agg[h.articleID] = a
-				seenHeading[h.articleID] = map[string]bool{}
+				seen[h.articleID] = map[string]bool{}
 			}
 			a.score += 1.0 / (float64(rrfK) + float64(i+1))
-			if a.snippet == "" {
-				a.snippet = h.snippet
-				a.chunkID = h.chunkID // 首个(最高分)命中块作为溯源锚点
+			if h.distance >= 0 && (a.bestDist < 0 || h.distance < a.bestDist) {
+				a.bestDist = h.distance
 			}
-			// 同一文章内按 heading 去重合并命中块
-			if !seenHeading[h.articleID][h.heading+"|"+h.snippet] {
-				seenHeading[h.articleID][h.heading+"|"+h.snippet] = true
-				a.matches = append(a.matches, map[string]any{
-					"heading": h.heading, "snippet": h.snippet,
-					"chunk_id": h.chunkID, "source": h.source,
-				})
+			if !isVec {
+				a.kwHit = true
+			}
+			if containsFold(h.title, query) {
+				a.titleHit = true
+			}
+			if a.snippet == "" {
+				a.chunkID = h.chunkID // 首个(最高分)命中块作为溯源锚点
+				a.anchorSource = h.source
+				a.anchorIndex = h.chunkIndex
+			}
+			// 同一文章内按 heading+块ID 去重合并命中块
+			key := h.heading + "|" + h.chunkID
+			if seen[h.articleID][key] {
+				continue
+			}
+			seen[h.articleID][key] = true
+			win := kbChunkContextRunes
+			if snippetLen > win {
+				win = snippetLen
+			}
+			a.matches = append(a.matches, map[string]any{
+				"heading": h.heading, "snippet": contextWindow(h.content, query, win),
+				"chunk_id": h.chunkID, "source": h.source, "chunk_index": h.chunkIndex,
+			})
+			if a.snippet == "" {
+				a.snippet = contextWindow(h.content, query, snippetLen)
 			}
 		}
 	}
-	addRanked(vec)
-	addRanked(kw)
+	addRanked(vec, true)
+	addRanked(kw, false)
 
 	// 按 RRF 分数排序, 取 top-limit
 	list := make([]*articleAgg, 0, len(agg))
 	for _, a := range agg {
+		a.score += rerankBonus(a.bestDist, a.kwHit, a.titleHit) - feedbackPenalty(penalties[a.id])
 		list = append(list, a)
 	}
 	sort.SliceStable(list, func(i, j int) bool { return list[i].score > list[j].score })
@@ -963,33 +1106,222 @@ func rrfMergeChunks(vec, kw []knowledgeHit, limit int) []map[string]any {
 	}
 
 	items := make([]map[string]any, 0, len(list))
-	for _, a := range list {
-		items = append(items, map[string]any{
+	fusion := make([]FusionItem, 0, len(list))
+	for i, a := range list {
+		item := map[string]any{
 			"id": a.id, "title": a.title, "snippet": a.snippet,
 			"matches": a.matches, "score": round3(a.score),
 			"chunk_id": a.chunkID, // 引用溯源: 前端可链到 /knowledge/{id}?chunk={chunk_id}
+		}
+		// 首块补相邻块上下文(small-to-big): 单块语义不完整时长流程文档会答残缺。
+		if c := ts.anchorContext(ctx, a.id, a.anchorSource, a.anchorIndex, a.snippet, query); c != "" {
+			item["context"] = c
+		}
+		items = append(items, item)
+
+		// 分数分解: 最终分 = RRF 名次分 + rerankBonus − 反馈降权。把各部分拆开才能回答
+		// 「这篇为什么排第一」—— 是靠双路名次, 还是靠相似度 / 关键词 / 标题的加成。
+		bonus := rerankBonus(a.bestDist, a.kwHit, a.titleHit)
+		fbPart := -feedbackPenalty(penalties[a.id])
+		simPart := 0.0
+		if a.bestDist >= 0 {
+			if sim := 1 - a.bestDist/2; sim > 0 {
+				simPart = 0.6 * sim
+			}
+		}
+		kwPart, titlePart := 0.0, 0.0
+		if a.kwHit {
+			kwPart = 0.25
+		}
+		if a.titleHit {
+			titlePart = 0.2
+		}
+		fusion = append(fusion, FusionItem{
+			Rank: i + 1, ArticleID: a.id, Title: a.title, ChunkID: a.chunkID,
+			RRFScore: round3(a.score - bonus - fbPart), SimPart: round3(simPart),
+			KwPart: kwPart, TitlePart: titlePart, FeedbackPart: round3(fbPart),
+			FinalScore: round3(a.score),
+			BestDist:   round3(a.bestDist), KwHit: a.kwHit, TitleHit: a.titleHit,
+			MatchCount: len(a.matches),
 		})
 	}
-	return items
+	return items, fusion
+}
+
+// rerankBonus 在 RRF 名次分之上叠加质量分: 向量相似度(权重最高) + 关键词命中 + 标题命中。
+func rerankBonus(bestDist float64, kwHit, titleHit bool) float64 {
+	b := 0.0
+	if bestDist >= 0 {
+		// 余弦距离 0~2 → 相似度 0~1
+		sim := 1 - bestDist/2
+		if sim < 0 {
+			sim = 0
+		}
+		b += 0.6 * sim
+	}
+	if kwHit {
+		b += 0.25
+	}
+	if titleHit {
+		b += 0.2
+	}
+	return b
+}
+
+// anchorContext 取首命中块的前后相邻块拼成上下文, 保证回答有完整语境。
+func (ts *MCPToolSet) anchorContext(ctx context.Context, articleID, source string, idx int, main, query string) string {
+	if ts.db == nil || articleID == "" || idx < 0 {
+		return ""
+	}
+	prev, next := ts.fetchNeighborChunks(ctx, tenantOf(ctx), articleID, source, idx)
+	if prev == "" && next == "" {
+		return main
+	}
+	var b strings.Builder
+	if prev != "" {
+		b.WriteString("（上文）…")
+		b.WriteString(prev)
+		b.WriteString("\n")
+	}
+	b.WriteString(main)
+	if next != "" {
+		b.WriteString("\n（下文）")
+		b.WriteString(next)
+		b.WriteString("…")
+	}
+	return b.String()
+}
+
+// fetchNeighborChunks 取目标块的前一块尾部与后一块头部。
+// 必须按 source 过滤: 正文块与附件块的 chunk_index 各自从 0 编号, 混在一起会取错邻居。
+func (ts *MCPToolSet) fetchNeighborChunks(ctx context.Context, tenant, articleID, source string, idx int) (prev, next string) {
+	rows, err := ts.db.QueryContext(ctx,
+		`SELECT chunk_index, content FROM knowledge_chunks
+		 WHERE tenant_id=$1 AND article_id=$2 AND COALESCE(source,'article')=$3
+		   AND chunk_index >= $4 AND chunk_index <= $5
+		 ORDER BY chunk_index`, tenant, articleID, source, idx-1, idx+1)
+	if err != nil {
+		return "", ""
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var ci int
+		var content string
+		if err := rows.Scan(&ci, &content); err != nil {
+			return prev, next
+		}
+		switch {
+		case ci < idx:
+			prev = tailRunes(content, kbNeighborRunes)
+		case ci > idx:
+			next = headRunes(content, kbNeighborRunes)
+		}
+	}
+	return prev, next
+}
+
+// contextWindow 按查询词命中位置开窗截取块内容。
+// 从头硬截会把命中处之后的关键步骤丢掉, 这正是"检索到了却答不准"的主因之一。
+func contextWindow(content, query string, maxRunes int) string {
+	r := []rune(content)
+	if maxRunes <= 0 || len(r) <= maxRunes {
+		return content
+	}
+	at := indexFold(content, query)
+	if at < 0 {
+		return string(r[:maxRunes]) + "…"
+	}
+	// 字节下标换算成 rune 下标, 避免中文按字节切一半
+	ri := utf8.RuneCountInString(content[:at])
+	start := ri - maxRunes/3
+	if start < 0 {
+		start = 0
+	}
+	end := start + maxRunes
+	if end > len(r) {
+		end = len(r)
+		if end-start < maxRunes {
+			start = end - maxRunes
+			if start < 0 {
+				start = 0
+			}
+		}
+	}
+	out := string(r[start:end])
+	if start > 0 {
+		out = "…" + out
+	}
+	if end < len(r) {
+		out += "…"
+	}
+	return out
+}
+
+// indexFold 大小写不敏感的子串定位; 整串找不到时退化为查询中最长的词。
+func indexFold(s, sub string) int {
+	ls := strings.ToLower(s)
+	q := strings.TrimSpace(strings.ToLower(sub))
+	if q == "" {
+		return -1
+	}
+	if i := strings.Index(ls, q); i >= 0 {
+		return i
+	}
+	best, bestLen := -1, 0
+	for _, tok := range strings.FieldsFunc(q, func(r rune) bool {
+		return !unicode.IsLetter(r) && !unicode.IsDigit(r)
+	}) {
+		if len(tok) < 2 {
+			continue
+		}
+		if i := strings.Index(ls, tok); i >= 0 && len(tok) > bestLen {
+			best, bestLen = i, len(tok)
+		}
+	}
+	return best
+}
+
+// containsFold 大小写不敏感的包含判断。
+func containsFold(s, sub string) bool {
+	return indexFold(s, sub) >= 0
+}
+
+func headRunes(s string, n int) string {
+	r := []rune(s)
+	if len(r) <= n {
+		return s
+	}
+	return string(r[:n])
+}
+
+func tailRunes(s string, n int) string {
+	r := []rune(s)
+	if len(r) <= n {
+		return s
+	}
+	return string(r[len(r)-n:])
 }
 
 // searchKnowledgeFallback 文章级 ILIKE 检索(块级双路全空时的保底, 兼容未 reindex 存量)。
+// 同样按可见性谓词过滤, 保证保底路径不会绕过可见性/状态约束。
 func (ts *MCPToolSet) searchKnowledgeFallback(ctx context.Context, query string, limit, snippetLen int, categories []string) ([]map[string]any, error) {
 	tenant := tenantOf(ctx)
 	catClause := ""
 	var catArg []string
 	if len(categories) > 0 {
-		catClause = " AND category = ANY($5)"
+		catClause = " AND a.category = ANY($5)"
 		catArg = categories
 	}
+	// $1 ILIKE, $2 snippet 长度, $3 limit, $4 租户, [$5 分类], 其后为 scope 参数
 	args := []any{"%" + query + "%", snippetLen, limit, tenant}
 	if catArg != nil {
 		args = append(args, catArg)
 	}
+	sa := newScopeArgs(ts.resolveScope(ctx), args...)
 	rows, err := ts.db.QueryContext(ctx,
-		`SELECT id, title, LEFT(content, $2) AS snippet FROM knowledge_articles
-		 WHERE tenant_id=$4 AND (title ILIKE $1 OR content ILIKE $1)`+catClause+` LIMIT $3`,
-		args...)
+		`SELECT a.id, a.title, LEFT(a.content, $2) AS snippet FROM knowledge_articles a
+		 WHERE a.tenant_id=$4 AND (a.title ILIKE $1 OR a.content ILIKE $1)`+catClause+sa.Predicate()+` LIMIT $3`,
+		sa.Args()...)
 	if err != nil {
 		return nil, err
 	}
@@ -1032,9 +1364,13 @@ func (ts *MCPToolSet) cachedEmbed(ctx context.Context, query string) ([]float32,
 	return qv, nil
 }
 
-// searchCacheKey 生成检索结果缓存键, 含租户/查询/检索模式/分页参数/分类绑定, 避免跨租户与跨参数串味。
-func (ts *MCPToolSet) searchCacheKey(tenant, query, mode string, limit, snippetLen int, categories []string) string {
-	k := tenant + "\x1f" + mode + "\x1f" + query + "\x1f" + strconv.Itoa(limit) + "\x1f" + strconv.Itoa(snippetLen)
+// searchCacheKey 生成检索结果缓存键, 含租户/可见范围/查询/检索模式/分页参数/分类绑定,
+// 避免跨租户、**跨用户**与跨参数串味。
+//
+// scopeKey 不可省: 可见性谓词已按提问者身份变化(见 scope.go), 键里不带 scope 会让
+// 「A 检索到的团队私有内容」被 B 的相同查询直接复用 —— 越权泄漏且不留痕迹。
+func (ts *MCPToolSet) searchCacheKey(tenant, query, mode, scopeKey string, limit, snippetLen int, categories []string) string {
+	k := tenant + "\x1f" + scopeKey + "\x1f" + mode + "\x1f" + query + "\x1f" + strconv.Itoa(limit) + "\x1f" + strconv.Itoa(snippetLen)
 	if len(categories) > 0 {
 		k += "\x1f" + strings.Join(categories, ",")
 	}
@@ -1227,6 +1563,13 @@ func effectiveCategories(base, extra []string) []string {
 	return out
 }
 
+// 注入 prompt 的检索参数。抽成常量是因为检索测试台要给出「逐字一致」的 prompt 预览:
+// 两边必须用同一组 limit/snippetLen, 各写一份迟早会漂移。
+const (
+	ragPromptLimit      = 3
+	ragPromptSnippetLen = 600
+)
+
 // RAGContext 检索知识库相关内容, 注入到 system prompt。
 // categories 为前端在对话中显式选择的知识范围(空=不额外限定, 沿用 Agent 绑定分类)。
 func (ts *MCPToolSet) RAGContext(ctx context.Context, query, agentID string, categories []string) string {
@@ -1234,10 +1577,39 @@ func (ts *MCPToolSet) RAGContext(ctx context.Context, query, agentID string, cat
 		return ""
 	}
 	effective := effectiveCategories(ts.categoriesFor(agentID), categories)
-	items, err := ts.searchKnowledge(ctx, query, 3, 300, effective)
+	// 注入 prompt 的窗口比工具回传小(工具侧给 1200), 避免 system prompt 被知识块撑爆。
+	items, err := ts.searchKnowledge(ctx, query, ragPromptLimit, ragPromptSnippetLen, effective)
 	if err != nil || len(items) == 0 {
 		return ""
 	}
+	return ragPromptFromItems(items)
+}
+
+// PreviewRetrievalPrompt 跑一次与 RAGContext **完全同参**的检索, 返回真实注入 system prompt 的文本
+// 以及进 prompt 的那几篇文章 —— 检索测试台的「注入预览」用, 保证预览与线上逐字一致。
+//
+// 强制走 rrf 模式并绕过缓存: 预览要展示的是线上那条路径, 而不是测试台选的诊断路径。
+func (ts *MCPToolSet) PreviewRetrievalPrompt(ctx context.Context, query string, opts RetrieveOptions) (string, []map[string]any) {
+	if ts.db == nil || query == "" {
+		return "", nil
+	}
+	o := opts
+	o.Mode = ""
+	o.ComputeACL = false
+	o.BypassCache = true
+	o.NoLog = true
+	items, _, err := ts.searchKnowledgeExplained(ctx, query, ragPromptLimit, ragPromptSnippetLen, o)
+	if err != nil || len(items) == 0 {
+		return "", nil
+	}
+	return ragPromptFromItems(items), items
+}
+
+// ragPromptFromItems 把检索结果拼装成注入 system prompt 的片段。
+//
+// 独立成函数是为了让「测试台的 prompt 预览」与「线上真实注入」共用同一段拼装代码:
+// 各写一份的话, 预览会随重构慢慢变成一句善意的谎言。
+func ragPromptFromItems(items []map[string]any) string {
 	var parts []string
 	for _, it := range items {
 		id, _ := it["id"].(string)
@@ -1249,9 +1621,18 @@ func (ts *MCPToolSet) RAGContext(ctx context.Context, query, agentID string, cat
 		}
 		// 块级命中(matches)优先: 带标题路径的段落级片段, 引用更精确。
 		if matches, ok := it["matches"].([]map[string]any); ok && len(matches) > 0 {
-			for _, m := range matches {
+			if len(matches) > kbRAGMaxMatchesPerArticle {
+				matches = matches[:kbRAGMaxMatchesPerArticle]
+			}
+			for i, m := range matches {
 				ch, _ := m["heading"].(string)
 				snip, _ := m["snippet"].(string)
+				// 首块用带相邻块上下文的版本, 保证注入的片段语义完整。
+				if i == 0 {
+					if c, ok := it["context"].(string); ok && c != "" {
+						snip = c
+					}
+				}
 				sec := heading
 				if ch != "" {
 					sec = fmt.Sprintf("%s / %s", heading, ch)
@@ -1262,6 +1643,9 @@ func (ts *MCPToolSet) RAGContext(ctx context.Context, query, agentID string, cat
 		}
 		snippet, _ := it["snippet"].(string)
 		parts = append(parts, fmt.Sprintf("## %s\n%s", heading, snippet))
+	}
+	if len(parts) == 0 {
+		return ""
 	}
 	return "\n\n--- 知识库相关文档 ---\n" + strings.Join(parts, "\n\n")
 }

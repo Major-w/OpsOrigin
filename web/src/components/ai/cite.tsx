@@ -190,3 +190,15 @@ export function CitationRow({
 }
 
 export type { ReactNode }
+
+/** kbArticleIDsFromCitations 从引用 ID 列表提取知识文章 ID(剥 kb: 前缀, 非 kb 类型剔除)。
+ *  供反馈提交时透传 cited_articles(检索反馈闭环: 赞踩落到具体文章, 检索侧降权)。 */
+export function kbArticleIDsFromCitations(ids: string[] | undefined): string[] {
+  if (!ids?.length) return []
+  return ids
+    .map(id => {
+      const { type, raw } = parseCite(id)
+      return type === 'kb' ? raw : ''
+    })
+    .filter(Boolean)
+}

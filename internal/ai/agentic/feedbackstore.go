@@ -3,8 +3,10 @@ package agentic
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"log/slog"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -55,11 +57,20 @@ func nullStr(s string) any {
 
 type pgFeedbackStore struct {
 	db *sql.DB
+	// articleCache 文章降权聚合的进程内缓存(按租户)。SaveArticleFeedback 写入时按租户失效,
+	// 避免高频检索路径每次都 GROUP BY 全表; 5 分钟兜底过期防漏失效。
+	articleCacheMu sync.Mutex
+	articleCache   map[string]articlePenaltyEntry
+}
+
+type articlePenaltyEntry struct {
+	pen    map[string]int
+	loaded time.Time
 }
 
 // NewPGFeedbackStore 创建 PG 反馈存储并自动建表/索引。
 func NewPGFeedbackStore(db *sql.DB) *pgFeedbackStore {
-	s := &pgFeedbackStore{db: db}
+	s := &pgFeedbackStore{db: db, articleCache: map[string]articlePenaltyEntry{}}
 	s.init(context.Background())
 	return s
 }
@@ -82,6 +93,21 @@ func (s *pgFeedbackStore) init(ctx context.Context) {
 	}
 	s.db.ExecContext(ctx, `CREATE UNIQUE INDEX IF NOT EXISTS uq_ai_fb_target ON ai_message_feedback(tenant_id, target_key)`)
 	s.db.ExecContext(ctx, `CREATE INDEX IF NOT EXISTS idx_ai_fb_tenant ON ai_message_feedback(tenant_id, created_at DESC)`)
+	// 文章级反馈(检索反馈闭环): 赞踩落到回答引用的具体文章, 供检索 rerank 降权。
+	if _, err := s.db.ExecContext(ctx, `
+		CREATE TABLE IF NOT EXISTS ai_article_feedback (
+			tenant_id TEXT NOT NULL DEFAULT 'default',
+			message_id TEXT NOT NULL DEFAULT '',
+			article_id TEXT NOT NULL,
+			rating TEXT NOT NULL CHECK (rating IN ('up','down')),
+			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			PRIMARY KEY (tenant_id, message_id, article_id)
+		)`); err != nil {
+		slog.Warn("ai article feedback DDL failed", "err", err)
+		return
+	}
+	s.db.ExecContext(ctx, `CREATE INDEX IF NOT EXISTS idx_ai_artfb ON ai_article_feedback(tenant_id, article_id, created_at DESC)`)
 }
 
 func (s *pgFeedbackStore) Save(ctx context.Context, f *Feedback) error {
@@ -150,11 +176,85 @@ func (s *pgFeedbackStore) Stats(ctx context.Context, tenantID string) (up, down 
 	return
 }
 
+// ——— 文章级反馈(检索反馈闭环) ———
+//
+// 消息级反馈(ai_message_feedback)只知道「这条回答好/不好」, 不知道是引用的哪篇知识拖了后腿。
+// 文章级反馈把赞踩落到回答引用的具体文章上: 被反复点踩的文章在检索 rerank 中降权,
+// 让「越用越准」成立。upsert 键为 (tenant, message_id, article) —— 同一条消息对同一篇文章
+// 改判时覆盖, 不产生重复计票。
+
+// SaveArticleFeedback 记录一条「回答引用了文章 X, 用户给了 up/down」。
+func (s *pgFeedbackStore) SaveArticleFeedback(ctx context.Context, tenant, messageID, articleID, rating string) error {
+	if tenant == "" {
+		tenant = "default"
+	}
+	if articleID == "" || (rating != "up" && rating != "down") {
+		return fmt.Errorf("article feedback: invalid article/rating")
+	}
+	if _, err := s.db.ExecContext(ctx, `
+		INSERT INTO ai_article_feedback (tenant_id, message_id, article_id, rating, created_at, updated_at)
+		VALUES ($1,$2,$3,$4,now(),now())
+		ON CONFLICT (tenant_id, message_id, article_id) DO UPDATE SET rating=$4, updated_at=now()`,
+		tenant, messageID, articleID, rating); err != nil {
+		return err
+	}
+	// 反馈进排序前先失效降权缓存, 否则改动要等 TTL 过期才生效
+	s.articleCacheMu.Lock()
+	delete(s.articleCache, tenant)
+	s.articleCacheMu.Unlock()
+	return nil
+}
+
+// ArticlePenalties 返回该租户近 90 天每篇文章的「净踩数」(踩-赞, 下限 0)。
+// 只看净踩: 一篇被点踩 3 次又点赞 2 次的文章说明有争议而非纯粹无用, 不应重罚。
+// 结果按租户缓存(由调用方通过 SaveArticleFeedback 失效), 避免每次检索都聚合全表。
+func (s *pgFeedbackStore) ArticlePenalties(ctx context.Context, tenant string) (map[string]int, error) {
+	if tenant == "" {
+		tenant = "default"
+	}
+	s.articleCacheMu.Lock()
+	if e, ok := s.articleCache[tenant]; ok && time.Since(e.loaded) < 5*time.Minute {
+		s.articleCacheMu.Unlock()
+		return e.pen, nil
+	}
+	s.articleCacheMu.Unlock()
+
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT article_id, GREATEST(
+			SUM(CASE WHEN rating='down' THEN 1 ELSE 0 END) - SUM(CASE WHEN rating='up' THEN 1 ELSE 0 END), 0)
+		FROM ai_article_feedback
+		WHERE tenant_id=$1 AND created_at > now() - interval '90 days'
+		GROUP BY article_id`, tenant)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	pen := map[string]int{}
+	for rows.Next() {
+		var id string
+		var n int
+		if err := rows.Scan(&id, &n); err != nil {
+			return nil, err
+		}
+		if n > 0 {
+			pen[id] = n
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	s.articleCacheMu.Lock()
+	s.articleCache[tenant] = articlePenaltyEntry{pen: pen, loaded: time.Now()}
+	s.articleCacheMu.Unlock()
+	return pen, nil
+}
+
 // ——— 内存实现(无 DB / 测试) ———
 
 type memFeedbackStore struct {
-	mu   sync.Mutex
-	data map[string]*Feedback // key: tenantID + "\x00" + targetKey
+	mu       sync.Mutex
+	data     map[string]*Feedback // key: tenantID + "\x00" + targetKey
+	articles map[string]articleVote
 }
 
 // NewMemFeedbackStore 创建内存反馈存储(无 DB 或测试场景)。
@@ -221,4 +321,63 @@ func (m *memFeedbackStore) Stats(ctx context.Context, tenantID string) (up, down
 		}
 	}
 	return
+}
+
+// ——— 内存实现: 文章级反馈 ———
+
+// SaveArticleFeedback 内存实现: key = tenant\0msg\0article, 同键覆盖(与 PG upsert 语义一致)。
+func (m *memFeedbackStore) SaveArticleFeedback(ctx context.Context, tenant, messageID, articleID, rating string) error {
+	if tenant == "" {
+		tenant = "default"
+	}
+	if articleID == "" || (rating != "up" && rating != "down") {
+		return fmt.Errorf("article feedback: invalid article/rating")
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.articles == nil {
+		m.articles = map[string]articleVote{}
+	}
+	m.articles[tenant+"\x00"+messageID+"\x00"+articleID] = articleVote{articleID: articleID, rating: rating, at: time.Now()}
+	return nil
+}
+
+// ArticlePenalties 内存实现: 聚合近 90 天净踩数(不缓存, 内存路径本就为测试/降级)。
+func (m *memFeedbackStore) ArticlePenalties(ctx context.Context, tenant string) (map[string]int, error) {
+	if tenant == "" {
+		tenant = "default"
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	pen := map[string]int{}
+	cutoff := time.Now().Add(-90 * 24 * time.Hour)
+	prefix := tenant + "\x00"
+	for key, v := range m.articles {
+		// 键格式 tenant\x00msg\x00article: 必须按租户前缀过滤, 否则跨租户泄漏
+		if !strings.HasPrefix(key, prefix) {
+			continue
+		}
+		if v.at.Before(cutoff) {
+			continue
+		}
+		if v.rating == "down" {
+			pen[v.articleID]++
+		} else {
+			if pen[v.articleID] > 0 {
+				pen[v.articleID]--
+			}
+		}
+	}
+	for id, n := range pen {
+		if n <= 0 {
+			delete(pen, id)
+		}
+	}
+	return pen, nil
+}
+
+type articleVote struct {
+	articleID string
+	rating    string
+	at        time.Time
 }

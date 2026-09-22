@@ -37,7 +37,7 @@ interface ChatState {
     onSuggestions?: (items: string[]) => void,
   ) => Promise<void>
   loadConversations: (agentId?: string) => Promise<any[]>
-  submitFeedback: (params: { conversation_id?: string; message_id?: string; rating: 'up' | 'down'; comment?: string }) => Promise<boolean>
+  submitFeedback: (params: { conversation_id?: string; message_id?: string; rating: 'up' | 'down'; comment?: string; cited_articles?: string[] }) => Promise<boolean>
 }
 
 export const useChatStore = create<ChatState>((set) => ({

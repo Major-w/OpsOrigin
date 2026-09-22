@@ -3,7 +3,7 @@ import { useEffect, useState } from 'react'
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card'
 import { Tag, Segmented } from 'antd'
 import { BarChart3, Zap, TrendingUp, Clock, Calendar, Activity } from 'lucide-react'
-import { cn } from '@/lib/utils'
+import { cn, apiFetchRaw } from '@/lib/utils'
 import { useThemeStore } from '@/stores/theme'
 
 interface TokenStats {
@@ -46,7 +46,8 @@ export default function TokenAnalyticsPage() {
   const loadStats = async () => {
     setLoading(true)
     try {
-      const r = await fetch(`/api/v1/ai/token-stats?period=${period}`)
+      // apiFetchRaw 自动带鉴权/租户头; 裸 fetch 会 401(见 lib/utils 的 apiFetch 合并陷阱)
+      const r = await apiFetchRaw(`/ai/token-stats?period=${period}`)
       if (r.ok) setStats(await r.json())
     } catch {}
     setLoading(false)

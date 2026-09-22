@@ -1,9 +1,14 @@
-import { useCallback, useRef, useState, type RefObject } from 'react'
+import { useCallback, useMemo, useRef, useState, type ReactNode, type RefObject } from 'react'
 import { Modal, Button, Input, Select } from 'antd'
-import { Loader2, Sparkles, RefreshCw, CornerDownLeft } from 'lucide-react'
+import { Loader2, Sparkles, RefreshCw, CornerDownLeft, Code2, Table2, Minus, Heading2, ListChecks } from 'lucide-react'
+import type { EditorView } from '@codemirror/view'
 import { apiFetch } from '@/lib/utils'
 import { getMessage } from '@/lib/message'
 import { MarkdownViewer } from '@/components/markdown-viewer'
+import {
+  SlashCommandMenu, useSlashCommands, textareaSlashAdapter, codeMirrorSlashAdapter,
+  type SlashCommand,
+} from '@/components/ui/slash-command'
 
 const { TextArea } = Input
 
@@ -93,7 +98,7 @@ export function AIWriteModal({ open, onClose, onInsert, defaultCategory, categor
       footer={
         <div className="flex items-center justify-between">
           <span className="text-[11px] text-muted-foreground">
-            提示：在编辑器空行输入 <kbd className="rounded border border-border px-1">/</kbd> 也可唤起本弹窗
+            提示：在编辑器空行输入 <kbd className="rounded border border-border px-1">/</kbd> 打开命令清单，选择「AI 编写」
           </span>
           <div className="flex gap-2">
             <Button onClick={handleClose} disabled={loading}>取消</Button>
@@ -199,7 +204,13 @@ export function AIWriteModal({ open, onClose, onInsert, defaultCategory, categor
 }
 
 // ---------------------------------------------------------------------------
-// useAIWrite: 把弹窗开合 + 编辑器「/」触发 + 光标处回填收敛成一个 hook, 两个编辑器页复用。
+// useAIWrite: 把弹窗开合 + 编辑器「/」命令清单 + 光标处回填收敛成一个 hook。
+//
+// 交互约定(修复「输入 / 就无法正常输入斜杠」):
+//   在空行行首输入 `/` → 弹出可用命令清单, 同时 `/` 作为普通字符正常落到编辑器;
+//   选中「AI 编写」→ 删除已输入的 `/过滤词` 并打开弹窗;
+//   若继续输入 / Esc / 点空白 → 清单关闭, 斜杠及其后输入原样保留。
+// 同时支持原生 textarea(onEditorKeyDown) 与 CodeMirror(onCodeEditorKeyDown) 两种编辑器。
 // ---------------------------------------------------------------------------
 export interface UseAIWriteOptions {
   /** 读取当前编辑器内容 */
@@ -210,9 +221,61 @@ export interface UseAIWriteOptions {
   categories?: string[]
   /** 复用调用方已有的 textarea ref(如新建页的 mdTextareaRef); 不传则 hook 内部创建 */
   editorRef?: RefObject<HTMLTextAreaElement>
+  /** 页面自定义的命令(如知识库的「插入图片」), 追加在内置命令之后 */
+  extraCommands?: SlashCommand[]
 }
 
-export function useAIWrite({ getContent, setContent, defaultCategory, categories, editorRef: externalRef }: UseAIWriteOptions) {
+/** buildDefaultCommands 构造知识库/脚本文档通用的 Markdown 快捷命令。 */
+function buildDefaultCommands(openModal: () => void, extra?: SlashCommand[]): SlashCommand[] {
+  const builtin: SlashCommand[] = [
+    {
+      id: 'ai-write',
+      label: 'AI 编写',
+      hint: '开弹窗',
+      keywords: ['ai', '编写', '生成', 'write'],
+      icon: <Sparkles className="h-3.5 w-3.5" />,
+      run: () => openModal(),
+    },
+    {
+      id: 'heading',
+      label: '二级标题',
+      keywords: ['heading', 'h2', 'biaoti', 'title'],
+      icon: <Heading2 className="h-3.5 w-3.5" />,
+      run: ctx => ctx.insert('## '),
+    },
+    {
+      id: 'code',
+      label: '代码块',
+      keywords: ['code', 'daima', '```'],
+      icon: <Code2 className="h-3.5 w-3.5" />,
+      run: ctx => ctx.insert('```bash\n\n```\n'),
+    },
+    {
+      id: 'table',
+      label: '表格',
+      keywords: ['table', 'biaoge', '|'],
+      icon: <Table2 className="h-3.5 w-3.5" />,
+      run: ctx => ctx.insert('| 项目 | 说明 |\n| --- | --- |\n|  |  |\n'),
+    },
+    {
+      id: 'todo',
+      label: '任务列表',
+      keywords: ['todo', 'task', 'renwu'],
+      icon: <ListChecks className="h-3.5 w-3.5" />,
+      run: ctx => ctx.insert('- [ ] '),
+    },
+    {
+      id: 'divider',
+      label: '分隔线',
+      keywords: ['divider', 'hr', 'fenge'],
+      icon: <Minus className="h-3.5 w-3.5" />,
+      run: ctx => ctx.insert('---\n'),
+    },
+  ]
+  return extra && extra.length > 0 ? [...builtin, ...extra] : builtin
+}
+
+export function useAIWrite({ getContent, setContent, defaultCategory, categories, editorRef: externalRef, extraCommands }: UseAIWriteOptions) {
   const [open, setOpen] = useState(false)
   const internalRef = useRef<HTMLTextAreaElement>(null)
   const editorRef: RefObject<HTMLTextAreaElement> = externalRef ?? internalRef
@@ -220,6 +283,13 @@ export function useAIWrite({ getContent, setContent, defaultCategory, categories
   /** 任意入口打开弹窗 */
   const openModal = useCallback(() => setOpen(true), [])
   const closeModal = useCallback(() => setOpen(false), [])
+
+  const commands = useMemo(
+    () => buildDefaultCommands(openModal, extraCommands),
+    // extraCommands 由调用方稳定持有(通常是模块级常量或 useMemo 结果)
+    [openModal, extraCommands],
+  )
+  const slash = useSlashCommands(commands)
 
   /** 在光标处插入 Markdown, 并恢复光标到插入内容之后 */
   const insertAtCursor = useCallback((md: string) => {
@@ -244,18 +314,37 @@ export function useAIWrite({ getContent, setContent, defaultCategory, categories
         ta.setSelectionRange(caret, caret)
       } catch { /* ignore */ }
     })
-  }, [getContent, setContent])
+  }, [getContent, setContent, editorRef])
 
-  /** 编辑器 keydown: 在空行行首输入 `/` 唤起弹窗(不插入字符) */
+  /**
+   * textarea keydown: 空行行首输入 `/` 时弹出命令清单(斜杠正常输入),
+   * 清单打开时接管 ↑/↓/Enter/Esc。
+   */
   const onEditorKeyDown = useCallback((e: React.KeyboardEvent<HTMLTextAreaElement>) => {
-    if (e.key !== '/' || e.nativeEvent.isComposing) return
+    if (e.nativeEvent.isComposing) return
     const ta = e.currentTarget
-    const before = ta.value.slice(0, ta.selectionStart ?? 0)
-    if (before === '' || before.endsWith('\n')) {
-      e.preventDefault()
-      setOpen(true)
-    }
-  }, [])
+    const handled = slash.handleKeyDown(e, textareaSlashAdapter(ta, setContent))
+    if (handled) e.preventDefault()
+  }, [slash, setContent])
+
+  /**
+   * CodeMirror keydown: 语义同上。返回 true 表示已消费按键(调用方需 preventDefault)。
+   */
+  const onCodeEditorKeyDown = useCallback((e: KeyboardEvent, view: EditorView): boolean => {
+    if ((e as unknown as { isComposing?: boolean }).isComposing) return false
+    return slash.handleKeyDown(e, codeMirrorSlashAdapter(view))
+  }, [slash])
+
+  /** 命令清单浮层: 需与 AIWriteModal 一同渲染在页面中 */
+  const slashMenu: ReactNode = (
+    <SlashCommandMenu
+      anchor={slash.anchor}
+      items={slash.items}
+      active={slash.active}
+      onHover={slash.setActive}
+      onSelect={cmd => slash.selectIndex(slash.items.indexOf(cmd))}
+    />
+  )
 
   return {
     open,
@@ -263,7 +352,9 @@ export function useAIWrite({ getContent, setContent, defaultCategory, categories
     closeModal,
     editorRef,
     onEditorKeyDown,
+    onCodeEditorKeyDown,
     insertAtCursor,
+    slashMenu,
     modalProps: {
       open,
       onClose: closeModal,

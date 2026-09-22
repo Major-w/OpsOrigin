@@ -3,6 +3,7 @@ package agentic
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 )
@@ -69,6 +70,29 @@ func (c *ttlCache) set(key string, v any) {
 		}
 	}
 	c.m[key] = ttlEntry{value: v, expire: time.Now().Add(c.ttl)}
+}
+
+// clear 清空全部条目。
+func (c *ttlCache) clear() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.m = make(map[string]ttlEntry, c.maxKeys)
+}
+
+// clearPrefix 删除 key 以 prefix 开头的条目。
+//
+// 用途: 数据变更后按来源失效, 而不是把整个缓存推倒 —— 引擎级 toolCache 混放着
+// CMDB/知识库等各类工具结果, 知识库更新时没必要连带丢掉 CMDB 的命中。
+func (c *ttlCache) clearPrefix(prefix string) (n int) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for k := range c.m {
+		if strings.HasPrefix(k, prefix) {
+			delete(c.m, k)
+			n++
+		}
+	}
+	return n
 }
 
 // canonicalArgsKey 将工具参数规范化为稳定 key: 经 JSON 序列化(map 键天然有序),

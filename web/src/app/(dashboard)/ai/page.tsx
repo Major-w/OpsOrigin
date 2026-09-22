@@ -14,6 +14,8 @@ import {
 } from 'lucide-react'
 import { exportDocFile } from '@/lib/doc-export'
 import { cn, apiFetch, apiFetchRaw } from '@/lib/utils'
+import { exportSessionMarkdown } from '@/lib/export-session'
+import { kbArticleIDsFromCitations } from '@/components/ai/cite'
 import { useThemeStore } from '@/stores/theme'
 import { getMessage } from '@/lib/message'
 import { t, useLocale } from '@/lib/i18n'
@@ -251,24 +253,9 @@ export default function AIPage() {
     return () => window.removeEventListener('keydown', onKey)
   }, [streaming, stopGeneration, setInput, userPrompts])
 
-  // 会话级导出: 当前全部消息落为 Markdown 文件(失败消息标注原因, 附件仅记名)
+  // 会话级导出: 共享导出逻辑(lib/export-session.ts), /ai 与浮窗/纯净模式三入口行为一致
   const exportSessionMd = () => {
-    const body = messages.filter(m => m.id !== '0')
-    if (!body.length) { getMessage().info('当前会话没有可导出的消息'); return }
-    const lines: string[] = ['# AI 会话导出', '', `- 导出时间：${new Date().toLocaleString()}`, `- 消息数：${body.length}`, '']
-    for (const m of body) {
-      const who = m.role === 'user' ? '🙋 用户' : '🤖 AI'
-      const content = m.content || (m.errorText ? `（失败：${m.errorText}）` : '（无内容）')
-      lines.push(`## ${who}`, '', content, '')
-      if (m.attachments?.length) lines.push(`> 附件：${m.attachments.map(a => a.name).join('、')}`, '')
-    }
-    const blob = new Blob([lines.join('\n')], { type: 'text/markdown;charset=utf-8' })
-    const url = URL.createObjectURL(blob)
-    const a = document.createElement('a')
-    a.href = url
-    a.download = `ai-session-${new Date().toISOString().slice(0, 10)}.md`
-    a.click()
-    URL.revokeObjectURL(url)
+    if (!exportSessionMarkdown(messages)) { getMessage().info('当前会话没有可导出的消息'); return }
     getMessage().success('已导出当前会话')
   }
 
@@ -369,7 +356,9 @@ export default function AIPage() {
 
   // ----- 消息操作: 反馈 / 记忆 / 知识库 / 下载 / 归档 -----
   const submitFeedback = async (msg: ChatMessage, rating: 'up' | 'down' = 'up') => {
-    await submitFB({ message_id: msg.messageId || msg.id, rating, conversation_id: convId || undefined })
+    // 引用文章透传(检索反馈闭环): 赞踩落到引用文章, 检索侧据此降权
+    const cited = kbArticleIDsFromCitations(msg.citations)
+    await submitFB({ message_id: msg.messageId || msg.id, rating, conversation_id: convId || undefined, ...(cited.length ? { cited_articles: cited } : {}) })
   }
   const saveMsgToMemory = async (msg: ChatMessage) => {
     if (!msg.content.trim()) return

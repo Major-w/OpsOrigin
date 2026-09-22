@@ -3,9 +3,11 @@ import { useEffect, useRef, useCallback, useMemo } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useAIStore, useChatStore } from '@/stores/ai'
 import { useAIChat, ChatMessageList, ChatInputBar, ApprovalBar, SHARED_SESSION_KEY, SHARED_CONV_ID_KEY, type ChatMessage } from '@/components/ai/chat-kernel'
-import { Bot, X, Trash2, ExternalLink } from 'lucide-react'
+import { kbArticleIDsFromCitations } from '@/components/ai/cite'
+import { Bot, X, Trash2, ExternalLink, Download } from 'lucide-react'
 import { Popconfirm } from 'antd'
 import { getMessage } from '@/lib/message'
+import { exportSessionMarkdown } from '@/lib/export-session'
 import { t, useLocale } from '@/lib/i18n'
 
 // ============================================================================
@@ -49,7 +51,9 @@ export default function AIAssistant() {
 
   const handleFeedback = useCallback(async (msg: ChatMessage, rating: 'up' | 'down') => {
     try {
-      await submitFeedback({ message_id: msg.messageId || msg.id, rating })
+      // 引用文章透传(检索反馈闭环): 赞踩落到引用文章, 检索侧据此降权
+      const cited = kbArticleIDsFromCitations(msg.citations)
+      await submitFeedback({ message_id: msg.messageId || msg.id, rating, ...(cited.length ? { cited_articles: cited } : {}) })
     } catch { /* ignore */ }
   }, [submitFeedback])
 
@@ -102,6 +106,17 @@ export default function AIAssistant() {
           <span className="text-[10px] bg-white/20 rounded px-1.5 py-0.5">{t('ai.floating.anyPage')}</span>
         </div>
         <div className="flex items-center gap-1">
+          <button
+            onClick={() => {
+              if (!exportSessionMarkdown(messages)) { getMessage().info(t('ai.floating.exportEmpty')); return }
+              getMessage().success(t('ai.floating.exported'))
+            }}
+            className="p-1.5 rounded-md hover:bg-white/20 transition-colors"
+            title={t('ai.floating.export')}
+            aria-label={t('ai.floating.export')}
+          >
+            <Download className="h-3.5 w-3.5" />
+          </button>
           <Popconfirm
             title={t('ai.floating.clearConfirm')}
             description={t('ai.floating.clearDescription')}

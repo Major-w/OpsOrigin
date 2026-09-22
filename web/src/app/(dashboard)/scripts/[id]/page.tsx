@@ -14,6 +14,7 @@ import { cn, formatTime, apiFetch, apiList } from '@/lib/utils'
 import { validateName, sanitizeName, NAME_RULE_TEXT } from '@/lib/validate'
 import { getMessage } from '@/lib/message'
 import { AICodeWriteModal } from '@/components/ai/ai-code-write-modal'
+import { SlashCommandMenu, useSlashCommands, codeMirrorSlashAdapter, type SlashCommand } from '@/components/ui/slash-command'
 import type { EditorView } from '@codemirror/view'
 
 const SCRIPT_TYPES = [
@@ -153,8 +154,56 @@ export default function ScriptDetailPage() {
   // 语法检查
   const [checking, setChecking] = useState(false)
   const [checkResult, setCheckResult] = useState<CheckResult | null>(null)
-  // AI 辅助编写弹窗: 编辑器空行行首输入 `/` 或点工具栏按钮唤起, 生成结果插入光标处
+  // AI 辅助编写弹窗开关(工具栏按钮 / 命令清单选中「AI 编写脚本」)
   const [aiWriteOpen, setAiWriteOpen] = useState(false)
+  // 编辑器空行行首输入 `/` 打开命令清单, 选中「AI 编写」才开弹窗(斜杠本身正常输入)
+  const slashCommands = useMemo<SlashCommand[]>(() => [
+    {
+      id: 'ai-write',
+      label: 'AI 编写脚本',
+      hint: '开弹窗',
+      keywords: ['ai', '编写', '生成', 'write'],
+      icon: <Sparkles className="h-3.5 w-3.5" />,
+      run: () => setAiWriteOpen(true),
+    },
+    {
+      id: 'shebang',
+      label: 'Shebang 头 (bash)',
+      keywords: ['shebang', 'bash', 'huanjing'],
+      icon: <Hash className="h-3.5 w-3.5" />,
+      run: ctx => ctx.insert('#!/bin/bash\nset -euo pipefail\n'),
+    },
+    {
+      id: 'strict',
+      label: 'Python 头 (含 main)',
+      keywords: ['python', 'main', '入口'],
+      icon: <Code2 className="h-3.5 w-3.5" />,
+      run: ctx => ctx.insert('#!/usr/bin/env python3\n# -*- coding: utf-8 -*-\n\n\ndef main():\n    pass\n\n\nif __name__ == "__main__":\n    main()\n'),
+    },
+    {
+      id: 'if',
+      label: 'if 条件块',
+      keywords: ['if', 'tiaojian', '条件'],
+      icon: <GitBranch className="h-3.5 w-3.5" />,
+      run: ctx => ctx.insert('if [ -z "${VAR:-}" ]; then\n  echo "VAR 未设置" >&2\n  exit 1\nfi\n'),
+    },
+    {
+      id: 'for',
+      label: 'for 循环',
+      keywords: ['for', 'xunhuan', '循环'],
+      icon: <History className="h-3.5 w-3.5" />,
+      run: ctx => ctx.insert('for item in "${ITEMS[@]}"; do\n  echo "$item"\ndone\n'),
+    },
+    {
+      id: 'try',
+      label: 'try/except (Python)',
+      keywords: ['try', 'except', 'yichang'],
+      icon: <AlertCircle className="h-3.5 w-3.5" />,
+      run: ctx => ctx.insert('try:\n    pass\nexcept Exception as exc:\n    raise RuntimeError(f"执行失败: {exc}") from exc\n'),
+    },
+  ], [])
+
+  const slash = useSlashCommands(slashCommands)
   const codeViewRef = useRef<EditorView | null>(null)
 
   // 执行历史
@@ -315,17 +364,10 @@ export default function ScriptDetailPage() {
     }
   }
 
-  // AI 辅助编写: 编辑器空行行首输入 `/` 唤起弹窗(不落字符), 生成代码后插入光标处
-  const handleEditorKeyDown = (e: KeyboardEvent, view: EditorView): boolean => {
-    if (e.key !== '/' || e.isComposing) return false
-    const sel = view.state.selection.main
-    const line = view.state.doc.lineAt(sel.from)
-    if (view.state.sliceDoc(line.from, sel.from).trim() === '') {
-      setAiWriteOpen(true)
-      return true
-    }
-    return false
-  }
+  // AI 辅助编写: 编辑器空行行首输入 `/` 时打开命令清单并让 `/` 正常落字,
+  // 选中「AI 编写脚本」才开弹窗; 未选中则斜杠保留为普通字符。
+  const handleEditorKeyDown = (e: KeyboardEvent, view: EditorView): boolean =>
+    slash.handleKeyDown(e, codeMirrorSlashAdapter(view))
 
   const insertCodeAtCursor = (code: string) => {
     const view = codeViewRef.current
@@ -1471,7 +1513,7 @@ export default function ScriptDetailPage() {
         </Modal>
       )}
 
-      {/* AI 辅助编写脚本: `/` 斜杠或工具栏按钮唤起, 生成结果插入编辑器光标处 */}
+      {/* AI 辅助编写脚本: 空行 `/` 打开命令清单后选择「AI 编写脚本」, 或直接用工具栏按钮 */}
       <AICodeWriteModal
         open={aiWriteOpen}
         onClose={() => setAiWriteOpen(false)}
@@ -1479,6 +1521,13 @@ export default function ScriptDetailPage() {
         language={form.type}
         scriptName={form.name || form.description}
         currentContent={form.content}
+      />
+      <SlashCommandMenu
+        anchor={slash.anchor}
+        items={slash.items}
+        active={slash.active}
+        onHover={slash.setActive}
+        onSelect={cmd => slash.selectIndex(slash.items.indexOf(cmd))}
       />
     </div>
   )

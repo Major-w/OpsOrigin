@@ -1279,10 +1279,11 @@ func (s *Service) handleSubmitFeedback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req struct {
-		ConversationID string `json:"conversation_id"`
-		MessageID      string `json:"message_id"`
-		Rating         string `json:"rating"` // "up" | "down"
-		Comment        string `json:"comment"`
+		ConversationID string   `json:"conversation_id"`
+		MessageID      string   `json:"message_id"`
+		Rating         string   `json:"rating"` // "up" | "down"
+		Comment        string   `json:"comment"`
+		CitedArticles  []string `json:"cited_articles"` // 该回答引用的知识文章 ID(检索反馈闭环用, 最长 20 条截断)
 	}
 	if err := httputil.BindJSON(r, &req); err != nil {
 		httputil.WriteError(w, http.StatusBadRequest, "invalid request body")
@@ -1310,7 +1311,30 @@ func (s *Service) handleSubmitFeedback(w http.ResponseWriter, r *http.Request) {
 	}
 	// 反馈回流(非阻断): 点赞→正向经验 / 点踩→反例, 沉淀为长期记忆(自动落库)
 	s.reflowFeedback(r.Context(), tenant, f)
+	// 文章级反馈(检索反馈闭环, 非阻断): 把赞踩落到该回答引用的具体知识文章上,
+	// 供检索 rerank 对净踩文章降权。截断 20 条防滥用; 失败只告警不影响反馈主流程。
+	if len(req.CitedArticles) > 0 {
+		if len(req.CitedArticles) > 20 {
+			req.CitedArticles = req.CitedArticles[:20]
+		}
+		if rec, ok := s.feedbackStore.(ArticleFeedbackRecorder); ok {
+			for _, art := range req.CitedArticles {
+				if art == "" {
+					continue
+				}
+				if err := rec.SaveArticleFeedback(r.Context(), tenant, req.MessageID, art, req.Rating); err != nil {
+					slog.Warn("article feedback save failed", "article", art, "err", err)
+				}
+			}
+		}
+	}
 	httputil.WriteJSON(w, http.StatusOK, map[string]any{"id": f.ID, "ok": true})
+}
+
+// ArticleFeedbackRecorder 文章级反馈写入能力。由 FeedbackStore 的实现按需满足;
+// 用小接口断言而非扩 FeedbackStore, 避免逼所有实现(含测试桩)都实现这两个方法。
+type ArticleFeedbackRecorder interface {
+	SaveArticleFeedback(ctx context.Context, tenant, messageID, articleID, rating string) error
 }
 
 // reflowFeedback 把赞踩反馈回流为长期记忆: 取该会话最新一轮问答,
@@ -1381,6 +1405,9 @@ func (s *Service) handleListFeedback(w http.ResponseWriter, r *http.Request) {
 	}
 	httputil.WriteJSON(w, http.StatusOK, map[string]any{"feedbacks": list})
 }
+
+// FeedbackStore 暴露反馈存储(供 main.go 把文章级降权 Provider 注入检索工具集)。
+func (s *Service) FeedbackStore() agentic.FeedbackStore { return s.feedbackStore }
 
 // handleFeedbackStats 返回当前租户的反馈聚合统计(点赞/点踩计数)。
 func (s *Service) handleFeedbackStats(w http.ResponseWriter, r *http.Request) {
