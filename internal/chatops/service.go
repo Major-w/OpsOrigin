@@ -62,6 +62,8 @@ func (s *Service) Init(ctx context.Context) error {
 func (s *Service) RegisterRoutes(mux *http.ServeMux) {
 	// 平台回调: 免 JWT(WithBypassPrefixes 加同前缀), 由平台验签保证来源可信。
 	// channelID 是随机串(不可枚举), 相当于 URL 携带的凭据之一, 再叠加 verification_token 校验。
+	// GET 供企微回调 URL 验证(echostr), POST 为事件推送。
+	mux.HandleFunc("GET /api/v1/chatops/callback/{channelID}", s.handlePlatformCallback)
 	mux.HandleFunc("POST /api/v1/chatops/callback/{channelID}", s.handlePlatformCallback)
 
 	// 渠道管理
@@ -331,10 +333,10 @@ func (s *Service) handleListPlatforms(w http.ResponseWriter, _ *http.Request) {
 		Name   string   `json:"name"`
 		Fields []string `json:"fields"` // settings 所需字段
 	}
+	// 面向国内客户: 飞书(自建应用) + 企业微信(自建应用)。Slack 不做(2026-09-19 产品决策)。
 	httputil.WriteJSON(w, http.StatusOK, []platformInfo{
 		{Name: PlatformFeishu, Fields: []string{"app_id", "app_secret", "verification_token", "encrypt_key", "default_agent_id"}},
-		{Name: PlatformSlack, Fields: []string{"(P3-2b 接入)"}},
-		{Name: PlatformWecom, Fields: []string{"(P3-2b 接入)"}},
+		{Name: PlatformWecom, Fields: []string{"corp_id", "corp_secret", "agent_id", "token", "encoding_aes_key", "default_agent_id"}},
 	})
 }
 
