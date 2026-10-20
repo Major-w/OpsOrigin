@@ -41,12 +41,12 @@ func TestZabbixSource(t *testing.T) {
 	}()
 
 	src := NewZabbixSource(Config{
-		ID:      "t",
+		ID:       "t",
 		TenantID: "default",
-		Type:    TypeZabbix,
-		Address: ln.Addr().String(),
-		Keys:    []string{"system.cpu.load[all,avg1]", "vm.memory.size[used]", "not.exist"},
-		Labels:  map[string]string{"env": "test"},
+		Type:     TypeZabbix,
+		Address:  ln.Addr().String(),
+		Keys:     []string{"system.cpu.load[all,avg1]", "vm.memory.size[used]", "not.exist"},
+		Labels:   map[string]string{"env": "test"},
 	})
 	samples, err := src.Collect(context.Background())
 	if err != nil {

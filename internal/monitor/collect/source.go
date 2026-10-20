@@ -45,10 +45,10 @@ type Config struct {
 	ID       string
 	TenantID string
 	Name     string
-	Type     string // TypeZabbix | TypePrometheus
-	Address  string // host 或 host:port
-	Port     int    // zabbix 默认 10050, prometheus 默认 9100
-	Path     string // prometheus /metrics 路径, 默认 /metrics
+	Type     string   // TypeZabbix | TypePrometheus
+	Address  string   // host 或 host:port
+	Port     int      // zabbix 默认 10050, prometheus 默认 9100
+	Path     string   // prometheus /metrics 路径, 默认 /metrics
 	Keys     []string // zabbix item keys(为空用默认集)
 	Interval time.Duration
 	CIID     string

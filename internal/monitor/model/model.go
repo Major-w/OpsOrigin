@@ -125,8 +125,8 @@ type MaintenanceWindow struct {
 // MaintenanceMatch 维护期匹配条件。任一维度为空(零值)表示该维度全部匹配;
 // 告警需被所有非空维度包含才进入静默。
 type MaintenanceMatch struct {
-	Instances  []string `json:"instances,omitempty"` // 匹配 labels["instance"]
-	CIIDs      []string `json:"ci_ids,omitempty"`    // 匹配 alert.SourceCIID
-	Sources    []string `json:"sources,omitempty"`   // 匹配 labels["source"]
+	Instances  []string `json:"instances,omitempty"`  // 匹配 labels["instance"]
+	CIIDs      []string `json:"ci_ids,omitempty"`     // 匹配 alert.SourceCIID
+	Sources    []string `json:"sources,omitempty"`    // 匹配 labels["source"]
 	Severities []string `json:"severities,omitempty"` // 匹配 alert.Severity
 }

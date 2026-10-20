@@ -32,22 +32,35 @@ func TestIsInMaintenance_WindowAndMatch(t *testing.T) {
 		{"disabled", func() *model.MaintenanceWindow { w := cloneWindow(base); w.Enabled = false; return w }(),
 			&model.AlertEvent{}, false},
 		{"outside before", func() *model.MaintenanceWindow {
-			w := cloneWindow(base); w.StartAt = now.Add(time.Hour); w.EndAt = now.Add(2 * time.Hour); return w
+			w := cloneWindow(base)
+			w.StartAt = now.Add(time.Hour)
+			w.EndAt = now.Add(2 * time.Hour)
+			return w
 		}(), &model.AlertEvent{}, false},
 		{"match instance hit", func() *model.MaintenanceWindow {
-			w := cloneWindow(base); w.Match.Instances = []string{"host-a"}; return w
+			w := cloneWindow(base)
+			w.Match.Instances = []string{"host-a"}
+			return w
 		}(), &model.AlertEvent{Labels: map[string]string{"instance": "host-a"}}, true},
 		{"match instance miss", func() *model.MaintenanceWindow {
-			w := cloneWindow(base); w.Match.Instances = []string{"host-a"}; return w
+			w := cloneWindow(base)
+			w.Match.Instances = []string{"host-a"}
+			return w
 		}(), &model.AlertEvent{Labels: map[string]string{"instance": "host-b"}}, false},
 		{"match severity hit", func() *model.MaintenanceWindow {
-			w := cloneWindow(base); w.Match.Severities = []string{"critical"}; return w
+			w := cloneWindow(base)
+			w.Match.Severities = []string{"critical"}
+			return w
 		}(), &model.AlertEvent{Severity: model.AlertCritical}, true},
 		{"match ci_id hit", func() *model.MaintenanceWindow {
-			w := cloneWindow(base); w.Match.CIIDs = []string{"ci-1"}; return w
+			w := cloneWindow(base)
+			w.Match.CIIDs = []string{"ci-1"}
+			return w
 		}(), &model.AlertEvent{SourceCIID: "ci-1"}, true},
 		{"match source miss", func() *model.MaintenanceWindow {
-			w := cloneWindow(base); w.Match.Sources = []string{"zabbix"}; return w
+			w := cloneWindow(base)
+			w.Match.Sources = []string{"zabbix"}
+			return w
 		}(), &model.AlertEvent{Labels: map[string]string{"source": "prometheus"}}, false},
 	}
 

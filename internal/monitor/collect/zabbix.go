@@ -68,11 +68,11 @@ func (s *ZabbixSource) Collect(ctx context.Context) ([]Sample, error) {
 	out := make([]Sample, 0, len(s.keys))
 	now := time.Now()
 	for _, key := range s.keys {
-	val, err := s.query(ctx, host, strings.TrimSpace(key))
-	if err != nil {
-		slog.Warn("zabbix key skipped", "source", s.cfg.ID, "key", key, "err", err)
-		continue
-	}
+		val, err := s.query(ctx, host, strings.TrimSpace(key))
+		if err != nil {
+			slog.Warn("zabbix key skipped", "source", s.cfg.ID, "key", key, "err", err)
+			continue
+		}
 		out = append(out, Sample{
 			Name:      SanitizeMetricName(key),
 			Value:     val,
