@@ -3,811 +3,1243 @@
     "method": "GET",
     "path": "/api/v1/agent-tasks/{task_id}",
     "file": "internal/agentmgr/service.go",
-    "line": 924
+    "line": 838
   },
   {
     "method": "GET",
     "path": "/api/v1/agents",
     "file": "internal/agentmgr/service.go",
-    "line": 875
+    "line": 787
   },
   {
     "method": "POST",
     "path": "/api/v1/agents",
     "file": "internal/agentmgr/service.go",
-    "line": 874
+    "line": 786
   },
   {
     "method": "POST",
     "path": "/api/v1/agents/batch-execute",
     "file": "internal/agentmgr/service.go",
-    "line": 923
+    "line": 837
   },
   {
     "method": "POST",
     "path": "/api/v1/agents/batch-install",
     "file": "internal/agentmgr/service.go",
-    "line": 880
+    "line": 792
   },
   {
     "method": "POST",
     "path": "/api/v1/agents/batch-upgrade",
     "file": "internal/agentmgr/service.go",
-    "line": 896
+    "line": 810
   },
   {
     "method": "GET",
     "path": "/api/v1/agents/download",
     "file": "internal/agentmgr/service.go",
-    "line": 883
+    "line": 795
   },
   {
     "method": "GET",
     "path": "/api/v1/agents/install-script",
     "file": "internal/agentmgr/service.go",
-    "line": 882
+    "line": 794
   },
   {
     "method": "GET",
     "path": "/api/v1/agents/sandbox",
     "file": "internal/agentmgr/service.go",
-    "line": 917
+    "line": 831
   },
   {
     "method": "POST",
     "path": "/api/v1/agents/ssh-execute",
     "file": "internal/agentmgr/service.go",
-    "line": 925
+    "line": 839
   },
   {
     "method": "POST",
     "path": "/api/v1/agents/test-ssh",
     "file": "internal/agentmgr/service.go",
-    "line": 881
+    "line": 793
   },
   {
     "method": "GET",
     "path": "/api/v1/agents/version-policy",
     "file": "internal/agentmgr/service.go",
-    "line": 894
+    "line": 808
   },
   {
     "method": "PUT",
     "path": "/api/v1/agents/version-policy",
     "file": "internal/agentmgr/service.go",
-    "line": 895
+    "line": 809
   },
   {
     "method": "DELETE",
     "path": "/api/v1/agents/{id}",
     "file": "internal/agentmgr/service.go",
-    "line": 878
+    "line": 790
   },
   {
     "method": "GET",
     "path": "/api/v1/agents/{id}",
     "file": "internal/agentmgr/service.go",
-    "line": 876
+    "line": 788
   },
   {
     "method": "PUT",
     "path": "/api/v1/agents/{id}",
     "file": "internal/agentmgr/service.go",
-    "line": 877
+    "line": 789
   },
   {
     "method": "GET",
     "path": "/api/v1/agents/{id}/circuit-breaker",
     "file": "internal/agentmgr/service.go",
-    "line": 889
+    "line": 801
   },
   {
     "method": "PUT",
     "path": "/api/v1/agents/{id}/circuit-breaker",
     "file": "internal/agentmgr/service.go",
-    "line": 890
+    "line": 802
   },
   {
     "method": "POST",
     "path": "/api/v1/agents/{id}/cmdb",
     "file": "internal/agentmgr/service.go",
-    "line": 898
+    "line": 812
   },
   {
     "method": "GET",
     "path": "/api/v1/agents/{id}/download-tasks",
     "file": "internal/agentmgr/service.go",
-    "line": 906
+    "line": 820
   },
   {
     "method": "POST",
     "path": "/api/v1/agents/{id}/download-tasks",
     "file": "internal/agentmgr/service.go",
-    "line": 908
+    "line": 822
   },
   {
     "method": "POST",
     "path": "/api/v1/agents/{id}/heartbeat",
     "file": "internal/agentmgr/service.go",
-    "line": 879
+    "line": 791
   },
   {
     "method": "POST",
     "path": "/api/v1/agents/{id}/merge",
     "file": "internal/agentmgr/service.go",
-    "line": 921
+    "line": 835
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/agents/{id}/resource-guard",
+    "file": "internal/agentmgr/service.go",
+    "line": 803
+  },
+  {
+    "method": "PUT",
+    "path": "/api/v1/agents/{id}/resource-guard",
+    "file": "internal/agentmgr/service.go",
+    "line": 804
   },
   {
     "method": "POST",
     "path": "/api/v1/agents/{id}/restart",
     "file": "internal/agentmgr/service.go",
-    "line": 891
+    "line": 805
   },
   {
     "method": "PUT",
     "path": "/api/v1/agents/{id}/sandbox",
     "file": "internal/agentmgr/service.go",
-    "line": 918
+    "line": 832
   },
   {
     "method": "GET",
     "path": "/api/v1/agents/{id}/tasks",
     "file": "internal/agentmgr/service.go",
-    "line": 887
+    "line": 799
   },
   {
     "method": "POST",
     "path": "/api/v1/agents/{id}/tasks",
     "file": "internal/agentmgr/service.go",
-    "line": 886
+    "line": 798
   },
   {
     "method": "POST",
     "path": "/api/v1/agents/{id}/tasks/{task_id}",
     "file": "internal/agentmgr/service.go",
-    "line": 888
+    "line": 800
   },
   {
     "method": "POST",
     "path": "/api/v1/agents/{id}/uninstall",
     "file": "internal/agentmgr/service.go",
-    "line": 897
+    "line": 811
   },
   {
     "method": "POST",
     "path": "/api/v1/agents/{id}/upgrade",
     "file": "internal/agentmgr/service.go",
-    "line": 892
+    "line": 806
   },
   {
     "method": "GET",
     "path": "/api/v1/agents/{id}/whitelist",
     "file": "internal/agentmgr/service.go",
-    "line": 915
+    "line": 829
   },
   {
     "method": "GET",
     "path": "/api/v1/ai/agent-templates",
     "file": "internal/ai/service.go",
-    "line": 142
+    "line": 304
   },
   {
     "method": "GET",
     "path": "/api/v1/ai/agent-templates/{id}",
     "file": "internal/ai/service.go",
-    "line": 143
+    "line": 305
   },
   {
     "method": "POST",
     "path": "/api/v1/ai/agent-templates/{id}/instantiate",
     "file": "internal/ai/service.go",
-    "line": 144
+    "line": 306
   },
   {
     "method": "GET",
     "path": "/api/v1/ai/agents",
     "file": "internal/ai/service.go",
-    "line": 108
+    "line": 230
   },
   {
     "method": "POST",
     "path": "/api/v1/ai/agents",
     "file": "internal/ai/service.go",
-    "line": 107
+    "line": 229
   },
   {
     "method": "DELETE",
     "path": "/api/v1/ai/agents/{id}",
     "file": "internal/ai/service.go",
-    "line": 111
+    "line": 233
   },
   {
     "method": "GET",
     "path": "/api/v1/ai/agents/{id}",
     "file": "internal/ai/service.go",
-    "line": 109
+    "line": 231
   },
   {
     "method": "PUT",
     "path": "/api/v1/ai/agents/{id}",
     "file": "internal/ai/service.go",
-    "line": 110
+    "line": 232
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/ai/alerts/triage",
+    "file": "internal/ai/service.go",
+    "line": 354
   },
   {
     "method": "GET",
     "path": "/api/v1/ai/approval-policy",
     "file": "internal/ai/service.go",
-    "line": 223
+    "line": 407
   },
   {
     "method": "PUT",
     "path": "/api/v1/ai/approval-policy",
     "file": "internal/ai/service.go",
-    "line": 224
+    "line": 408
   },
   {
     "method": "GET",
     "path": "/api/v1/ai/approvals/pending",
     "file": "internal/ai/service.go",
-    "line": 225
+    "line": 409
   },
   {
     "method": "POST",
     "path": "/api/v1/ai/approvals/{id}/respond",
     "file": "internal/ai/service.go",
-    "line": 226
+    "line": 410
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/ai/attachments",
+    "file": "internal/ai/service.go",
+    "line": 277
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/ai/attachments/{id}",
+    "file": "internal/ai/service.go",
+    "line": 278
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/ai/autonomy",
+    "file": "internal/ai/service.go",
+    "line": 350
+  },
+  {
+    "method": "PUT",
+    "path": "/api/v1/ai/autonomy",
+    "file": "internal/ai/service.go",
+    "line": 351
   },
   {
     "method": "POST",
     "path": "/api/v1/ai/chat",
     "file": "internal/ai/service.go",
-    "line": 123
+    "line": 246
   },
   {
     "method": "GET",
     "path": "/api/v1/ai/conversations",
     "file": "internal/ai/service.go",
-    "line": 125
+    "line": 249
   },
   {
     "method": "POST",
     "path": "/api/v1/ai/conversations",
     "file": "internal/ai/service.go",
-    "line": 127
+    "line": 251
+  },
+  {
+    "method": "DELETE",
+    "path": "/api/v1/ai/conversations/{id}",
+    "file": "internal/ai/service.go",
+    "line": 252
   },
   {
     "method": "GET",
     "path": "/api/v1/ai/conversations/{id}",
     "file": "internal/ai/service.go",
-    "line": 126
+    "line": 250
+  },
+  {
+    "method": "PATCH",
+    "path": "/api/v1/ai/conversations/{id}",
+    "file": "internal/ai/service.go",
+    "line": 253
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/ai/conversations/{id}/artifacts",
+    "file": "internal/ai/service.go",
+    "line": 269
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/ai/conversations/{id}/artifacts",
+    "file": "internal/ai/service.go",
+    "line": 268
+  },
+  {
+    "method": "DELETE",
+    "path": "/api/v1/ai/conversations/{id}/artifacts/{aid}",
+    "file": "internal/ai/service.go",
+    "line": 271
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/ai/conversations/{id}/artifacts/{aid}",
+    "file": "internal/ai/service.go",
+    "line": 270
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/ai/conversations/{id}/shares",
+    "file": "internal/ai/service.go",
+    "line": 256
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/ai/conversations/{id}/shares",
+    "file": "internal/ai/service.go",
+    "line": 255
+  },
+  {
+    "method": "DELETE",
+    "path": "/api/v1/ai/conversations/{id}/shares/{sid}",
+    "file": "internal/ai/service.go",
+    "line": 257
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/ai/conversations/{id}/workspace",
+    "file": "internal/ai/service.go",
+    "line": 280
+  },
+  {
+    "method": "DELETE",
+    "path": "/api/v1/ai/conversations/{id}/workspace/{fid}",
+    "file": "internal/ai/service.go",
+    "line": 282
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/ai/conversations/{id}/workspace/{fid}",
+    "file": "internal/ai/service.go",
+    "line": 281
   },
   {
     "method": "GET",
     "path": "/api/v1/ai/dataset",
     "file": "internal/ai/service.go",
-    "line": 217
+    "line": 401
   },
   {
     "method": "GET",
     "path": "/api/v1/ai/eval/cases",
     "file": "internal/ai/service.go",
-    "line": 131
+    "line": 290
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/ai/evolution/fetch",
+    "file": "internal/ai/service.go",
+    "line": 266
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/ai/evolution/policy",
+    "file": "internal/ai/service.go",
+    "line": 260
+  },
+  {
+    "method": "PUT",
+    "path": "/api/v1/ai/evolution/policy",
+    "file": "internal/ai/service.go",
+    "line": 261
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/ai/evolution/sources",
+    "file": "internal/ai/service.go",
+    "line": 262
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/ai/evolution/sources",
+    "file": "internal/ai/service.go",
+    "line": 263
+  },
+  {
+    "method": "DELETE",
+    "path": "/api/v1/ai/evolution/sources/{id}",
+    "file": "internal/ai/service.go",
+    "line": 265
+  },
+  {
+    "method": "PUT",
+    "path": "/api/v1/ai/evolution/sources/{id}",
+    "file": "internal/ai/service.go",
+    "line": 264
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/ai/evolution/stats",
+    "file": "internal/ai/service.go",
+    "line": 258
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/ai/export",
+    "file": "internal/ai/service.go",
+    "line": 273
   },
   {
     "method": "GET",
     "path": "/api/v1/ai/faultsim/injections",
     "file": "internal/ai/service.go",
-    "line": 174
+    "line": 336
   },
   {
     "method": "POST",
     "path": "/api/v1/ai/faultsim/injections",
     "file": "internal/ai/service.go",
-    "line": 173
+    "line": 335
   },
   {
     "method": "POST",
     "path": "/api/v1/ai/faultsim/injections/{id}/recover",
     "file": "internal/ai/service.go",
-    "line": 175
+    "line": 337
   },
   {
     "method": "GET",
     "path": "/api/v1/ai/faultsim/scenarios",
     "file": "internal/ai/service.go",
-    "line": 172
+    "line": 334
   },
   {
     "method": "GET",
     "path": "/api/v1/ai/feedback",
     "file": "internal/ai/service.go",
-    "line": 129
+    "line": 288
   },
   {
     "method": "POST",
     "path": "/api/v1/ai/feedback",
     "file": "internal/ai/service.go",
-    "line": 128
+    "line": 287
   },
   {
     "method": "GET",
     "path": "/api/v1/ai/feedback/stats",
     "file": "internal/ai/service.go",
-    "line": 130
+    "line": 289
   },
   {
     "method": "GET",
     "path": "/api/v1/ai/finetune/tasks",
     "file": "internal/ai/service.go",
-    "line": 168
+    "line": 330
   },
   {
     "method": "POST",
     "path": "/api/v1/ai/finetune/tasks",
     "file": "internal/ai/service.go",
-    "line": 167
+    "line": 329
   },
   {
     "method": "GET",
     "path": "/api/v1/ai/finetune/tasks/{id}",
     "file": "internal/ai/service.go",
-    "line": 169
+    "line": 331
   },
   {
     "method": "GET",
     "path": "/api/v1/ai/inspection-templates",
     "file": "internal/ai/service.go",
-    "line": 147
+    "line": 309
   },
   {
     "method": "GET",
     "path": "/api/v1/ai/inspections",
     "file": "internal/ai/service.go",
-    "line": 148
+    "line": 310
   },
   {
     "method": "POST",
     "path": "/api/v1/ai/inspections",
     "file": "internal/ai/service.go",
-    "line": 149
+    "line": 311
   },
   {
     "method": "DELETE",
     "path": "/api/v1/ai/inspections/{id}",
     "file": "internal/ai/service.go",
-    "line": 152
+    "line": 314
   },
   {
     "method": "GET",
     "path": "/api/v1/ai/inspections/{id}",
     "file": "internal/ai/service.go",
-    "line": 150
+    "line": 312
   },
   {
     "method": "PUT",
     "path": "/api/v1/ai/inspections/{id}",
     "file": "internal/ai/service.go",
-    "line": 151
+    "line": 313
   },
   {
     "method": "POST",
     "path": "/api/v1/ai/inspections/{id}/experiment",
     "file": "internal/ai/service.go",
-    "line": 154
+    "line": 316
   },
   {
     "method": "POST",
     "path": "/api/v1/ai/inspections/{id}/run",
     "file": "internal/ai/service.go",
-    "line": 153
+    "line": 315
   },
   {
     "method": "GET",
     "path": "/api/v1/ai/inspections/{id}/runs",
     "file": "internal/ai/service.go",
-    "line": 155
+    "line": 317
   },
   {
     "method": "POST",
     "path": "/api/v1/ai/inspections/{id}/runs/{runID}/escalate",
     "file": "internal/ai/service.go",
-    "line": 156
+    "line": 318
   },
   {
     "method": "GET",
     "path": "/api/v1/ai/inspections/{id}/runs/{runID}/remediate",
     "file": "internal/ai/service.go",
-    "line": 179
+    "line": 341
   },
   {
     "method": "POST",
     "path": "/api/v1/ai/inspections/{id}/runs/{runID}/remediate/generate",
     "file": "internal/ai/service.go",
-    "line": 178
+    "line": 340
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/ai/llm-presets",
+    "file": "internal/ai/service.go",
+    "line": 248
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/ai/mcp/servers",
+    "file": "internal/ai/service.go",
+    "line": 235
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/ai/memories",
+    "file": "internal/ai/service.go",
+    "line": 284
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/ai/memories",
+    "file": "internal/ai/service.go",
+    "line": 285
+  },
+  {
+    "method": "DELETE",
+    "path": "/api/v1/ai/memories/{id}",
+    "file": "internal/ai/service.go",
+    "line": 286
   },
   {
     "method": "GET",
     "path": "/api/v1/ai/memory",
     "file": "internal/ai/service.go",
-    "line": 183
+    "line": 367
   },
   {
     "method": "POST",
     "path": "/api/v1/ai/memory",
     "file": "internal/ai/service.go",
-    "line": 184
+    "line": 368
   },
   {
     "method": "DELETE",
     "path": "/api/v1/ai/memory/{id}",
     "file": "internal/ai/service.go",
-    "line": 185
+    "line": 369
   },
   {
     "method": "GET",
     "path": "/api/v1/ai/models",
     "file": "internal/ai/service.go",
-    "line": 220
+    "line": 404
   },
   {
     "method": "GET",
     "path": "/api/v1/ai/plans",
     "file": "internal/ai/service.go",
-    "line": 120
+    "line": 243
   },
   {
     "method": "POST",
     "path": "/api/v1/ai/plans",
     "file": "internal/ai/service.go",
-    "line": 119
+    "line": 242
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/ai/postmortems",
+    "file": "internal/ai/service.go",
+    "line": 363
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/ai/postmortems",
+    "file": "internal/ai/service.go",
+    "line": 362
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/ai/postmortems/{id}/publish",
+    "file": "internal/ai/service.go",
+    "line": 364
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/ai/presentation",
+    "file": "internal/ai/service.go",
+    "line": 275
   },
   {
     "method": "GET",
     "path": "/api/v1/ai/prompts",
     "file": "internal/ai/service.go",
-    "line": 204
+    "line": 388
   },
   {
     "method": "POST",
     "path": "/api/v1/ai/prompts",
     "file": "internal/ai/service.go",
-    "line": 205
+    "line": 389
   },
   {
     "method": "DELETE",
     "path": "/api/v1/ai/prompts/{id}",
     "file": "internal/ai/service.go",
-    "line": 208
+    "line": 392
   },
   {
     "method": "GET",
     "path": "/api/v1/ai/prompts/{id}",
     "file": "internal/ai/service.go",
-    "line": 206
+    "line": 390
   },
   {
     "method": "PUT",
     "path": "/api/v1/ai/prompts/{id}",
     "file": "internal/ai/service.go",
-    "line": 207
+    "line": 391
   },
   {
     "method": "POST",
     "path": "/api/v1/ai/prompts/{id}/render",
     "file": "internal/ai/service.go",
-    "line": 209
+    "line": 393
   },
   {
     "method": "GET",
     "path": "/api/v1/ai/rate-limit/{agent_id}",
     "file": "internal/ai/service.go",
-    "line": 121
+    "line": 244
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/ai/rca-records",
+    "file": "internal/ai/service.go",
+    "line": 358
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/ai/rca-records",
+    "file": "internal/ai/service.go",
+    "line": 357
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/ai/rca-records/{id}/label",
+    "file": "internal/ai/service.go",
+    "line": 359
   },
   {
     "method": "POST",
     "path": "/api/v1/ai/remediate/{actionID}/execute",
     "file": "internal/ai/service.go",
-    "line": 180
+    "line": 342
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/ai/runbooks",
+    "file": "internal/ai/service.go",
+    "line": 345
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/ai/runbooks/{id}",
+    "file": "internal/ai/service.go",
+    "line": 346
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/ai/runbooks/{id}/execute",
+    "file": "internal/ai/service.go",
+    "line": 347
   },
   {
     "method": "GET",
     "path": "/api/v1/ai/scene-templates",
     "file": "internal/ai/service.go",
-    "line": 159
+    "line": 321
   },
   {
     "method": "GET",
     "path": "/api/v1/ai/scene-templates/{id}",
     "file": "internal/ai/service.go",
-    "line": 160
+    "line": 322
   },
   {
     "method": "POST",
     "path": "/api/v1/ai/scene-templates/{id}/instantiate",
     "file": "internal/ai/service.go",
-    "line": 161
+    "line": 323
   },
   {
     "method": "POST",
     "path": "/api/v1/ai/settings",
     "file": "internal/ai/service.go",
-    "line": 124
+    "line": 247
   },
   {
     "method": "GET",
     "path": "/api/v1/ai/skills",
     "file": "internal/ai/service.go",
-    "line": 189
+    "line": 373
   },
   {
     "method": "GET",
     "path": "/api/v1/ai/skills/favorites",
     "file": "internal/ai/service.go",
-    "line": 200
+    "line": 384
   },
   {
     "method": "POST",
     "path": "/api/v1/ai/skills/import",
     "file": "internal/ai/service.go",
-    "line": 194
+    "line": 378
   },
   {
     "method": "POST",
     "path": "/api/v1/ai/skills/publish",
     "file": "internal/ai/service.go",
-    "line": 188
+    "line": 372
   },
   {
     "method": "DELETE",
     "path": "/api/v1/ai/skills/{id}",
     "file": "internal/ai/service.go",
-    "line": 191
+    "line": 375
   },
   {
     "method": "GET",
     "path": "/api/v1/ai/skills/{id}",
     "file": "internal/ai/service.go",
-    "line": 190
+    "line": 374
   },
   {
     "method": "GET",
     "path": "/api/v1/ai/skills/{id}/export",
     "file": "internal/ai/service.go",
-    "line": 193
+    "line": 377
   },
   {
     "method": "GET",
     "path": "/api/v1/ai/skills/{id}/favorite",
     "file": "internal/ai/service.go",
-    "line": 199
+    "line": 383
   },
   {
     "method": "POST",
     "path": "/api/v1/ai/skills/{id}/favorite",
     "file": "internal/ai/service.go",
-    "line": 198
+    "line": 382
   },
   {
     "method": "POST",
     "path": "/api/v1/ai/skills/{id}/install",
     "file": "internal/ai/service.go",
-    "line": 192
+    "line": 376
   },
   {
     "method": "POST",
     "path": "/api/v1/ai/skills/{id}/rate",
     "file": "internal/ai/service.go",
-    "line": 196
+    "line": 380
   },
   {
     "method": "GET",
     "path": "/api/v1/ai/skills/{id}/rating",
     "file": "internal/ai/service.go",
-    "line": 197
+    "line": 381
   },
   {
     "method": "GET",
     "path": "/api/v1/ai/skills/{id}/versions",
     "file": "internal/ai/service.go",
-    "line": 201
+    "line": 385
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/ai/tasks",
+    "file": "internal/ai/tasks.go",
+    "line": 895
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/ai/tasks",
+    "file": "internal/ai/tasks.go",
+    "line": 894
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/ai/tasks/queue",
+    "file": "internal/ai/tasks.go",
+    "line": 912
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/ai/tasks/{id}",
+    "file": "internal/ai/tasks.go",
+    "line": 896
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/ai/tasks/{id}/approvals",
+    "file": "internal/ai/tasks.go",
+    "line": 905
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/ai/tasks/{id}/approvals/{call_id}",
+    "file": "internal/ai/tasks.go",
+    "line": 906
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/ai/tasks/{id}/artifacts",
+    "file": "internal/ai/tasks.go",
+    "line": 901
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/ai/tasks/{id}/cancel",
+    "file": "internal/ai/tasks.go",
+    "line": 898
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/ai/tasks/{id}/events",
+    "file": "internal/ai/tasks.go",
+    "line": 899
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/ai/tasks/{id}/pause",
+    "file": "internal/ai/tasks.go",
+    "line": 909
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/ai/tasks/{id}/plan",
+    "file": "internal/ai/tasks.go",
+    "line": 903
+  },
+  {
+    "method": "PUT",
+    "path": "/api/v1/ai/tasks/{id}/plan",
+    "file": "internal/ai/tasks.go",
+    "line": 904
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/ai/tasks/{id}/priority",
+    "file": "internal/ai/tasks.go",
+    "line": 913
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/ai/tasks/{id}/resume",
+    "file": "internal/ai/tasks.go",
+    "line": 910
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/ai/tasks/{id}/start",
+    "file": "internal/ai/tasks.go",
+    "line": 897
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/ai/tasks/{id}/steer",
+    "file": "internal/ai/tasks.go",
+    "line": 908
   },
   {
     "method": "GET",
     "path": "/api/v1/ai/teams",
     "file": "internal/ai/service.go",
-    "line": 135
+    "line": 294
   },
   {
     "method": "POST",
     "path": "/api/v1/ai/teams",
     "file": "internal/ai/service.go",
-    "line": 134
+    "line": 293
   },
   {
     "method": "DELETE",
     "path": "/api/v1/ai/teams/{id}",
     "file": "internal/ai/service.go",
-    "line": 138
+    "line": 297
   },
   {
     "method": "GET",
     "path": "/api/v1/ai/teams/{id}",
     "file": "internal/ai/service.go",
-    "line": 136
+    "line": 295
   },
   {
     "method": "PUT",
     "path": "/api/v1/ai/teams/{id}",
     "file": "internal/ai/service.go",
-    "line": 137
+    "line": 296
   },
   {
     "method": "POST",
     "path": "/api/v1/ai/teams/{id}/chat",
     "file": "internal/ai/service.go",
-    "line": 139
+    "line": 298
   },
   {
     "method": "GET",
     "path": "/api/v1/ai/token-stats",
     "file": "internal/ai/service.go",
-    "line": 122
+    "line": 245
   },
   {
     "method": "GET",
     "path": "/api/v1/ai/tools",
     "file": "internal/ai/service.go",
-    "line": 112
+    "line": 234
   },
   {
     "method": "GET",
     "path": "/api/v1/ai/tools/custom",
     "file": "internal/ai/service.go",
-    "line": 116
+    "line": 239
   },
   {
     "method": "POST",
     "path": "/api/v1/ai/tools/custom",
     "file": "internal/ai/service.go",
-    "line": 115
+    "line": 238
   },
   {
     "method": "DELETE",
     "path": "/api/v1/ai/tools/custom/{id}",
     "file": "internal/ai/service.go",
-    "line": 118
+    "line": 241
   },
   {
     "method": "PUT",
     "path": "/api/v1/ai/tools/custom/{id}",
     "file": "internal/ai/service.go",
-    "line": 117
+    "line": 240
   },
   {
     "method": "POST",
     "path": "/api/v1/ai/tools/{name}/execute",
     "file": "internal/ai/service.go",
-    "line": 113
+    "line": 236
   },
   {
     "method": "GET",
     "path": "/api/v1/ai/workforce-metrics",
     "file": "internal/ai/service.go",
-    "line": 164
+    "line": 326
   },
   {
     "method": "POST",
     "path": "/api/v1/ai/workspace/generate",
     "file": "internal/ai/service.go",
-    "line": 213
+    "line": 397
   },
   {
     "method": "GET",
     "path": "/api/v1/ai/workspace/suggestions",
     "file": "internal/ai/service.go",
-    "line": 214
+    "line": 398
   },
   {
     "method": "GET",
-    "path": "/api/v1/audit/events",
-    "file": "internal/audit/service.go",
-    "line": 54
+    "path": "/api/v1/api-keys",
+    "file": "internal/apikey/service.go",
+    "line": 127
   },
   {
     "method": "POST",
+    "path": "/api/v1/api-keys",
+    "file": "internal/apikey/service.go",
+    "line": 128
+  },
+  {
+    "method": "DELETE",
+    "path": "/api/v1/api-keys/{id}",
+    "file": "internal/apikey/service.go",
+    "line": 130
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/api-keys/{id}/rotate",
+    "file": "internal/apikey/service.go",
+    "line": 129
+  },
+  {
+    "method": "GET",
     "path": "/api/v1/audit/events",
     "file": "internal/audit/service.go",
     "line": 53
   },
   {
     "method": "POST",
+    "path": "/api/v1/audit/events",
+    "file": "internal/audit/service.go",
+    "line": 52
+  },
+  {
+    "method": "POST",
     "path": "/api/v1/audit/validate-query",
     "file": "internal/audit/service.go",
-    "line": 55
+    "line": 54
   },
   {
     "method": "POST",
     "path": "/api/v1/auth/login",
     "file": "internal/user/service.go",
-    "line": 31
+    "line": 46
   },
   {
     "method": "POST",
     "path": "/api/v1/auth/logout",
     "file": "internal/user/service.go",
-    "line": 32
+    "line": 47
   },
   {
     "method": "POST",
     "path": "/api/v1/auth/refresh",
     "file": "internal/user/service.go",
-    "line": 33
+    "line": 48
   },
   {
     "method": "GET",
+    "path": "/api/v1/automation/inbound/channels",
+    "file": "internal/automation/inboundconfig/store.go",
+    "line": 153
+  },
+  {
+    "method": "POST",
     "path": "/api/v1/automation/inbound/channels",
     "file": "internal/automation/inboundconfig/store.go",
     "line": 154
   },
   {
-    "method": "POST",
-    "path": "/api/v1/automation/inbound/channels",
-    "file": "internal/automation/inboundconfig/store.go",
-    "line": 155
-  },
-  {
     "method": "DELETE",
-    "path": "/api/v1/automation/inbound/channels/{id}",
-    "file": "internal/automation/inboundconfig/store.go",
-    "line": 157
-  },
-  {
-    "method": "PUT",
     "path": "/api/v1/automation/inbound/channels/{id}",
     "file": "internal/automation/inboundconfig/store.go",
     "line": 156
   },
   {
+    "method": "PUT",
+    "path": "/api/v1/automation/inbound/channels/{id}",
+    "file": "internal/automation/inboundconfig/store.go",
+    "line": 155
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/chatops/bindings",
+    "file": "internal/chatops/service.go",
+    "line": 75
+  },
+  {
+    "method": "DELETE",
+    "path": "/api/v1/chatops/bindings/{platform}/{chatID}",
+    "file": "internal/chatops/service.go",
+    "line": 76
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/chatops/callback/{channelID}",
+    "file": "internal/chatops/service.go",
+    "line": 65
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/chatops/channels",
+    "file": "internal/chatops/service.go",
+    "line": 68
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/chatops/channels",
+    "file": "internal/chatops/service.go",
+    "line": 69
+  },
+  {
+    "method": "DELETE",
+    "path": "/api/v1/chatops/channels/{id}",
+    "file": "internal/chatops/service.go",
+    "line": 71
+  },
+  {
+    "method": "PUT",
+    "path": "/api/v1/chatops/channels/{id}",
+    "file": "internal/chatops/service.go",
+    "line": 70
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/chatops/channels/{id}/test",
+    "file": "internal/chatops/service.go",
+    "line": 72
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/chatops/platforms",
+    "file": "internal/chatops/service.go",
+    "line": 79
+  },
+  {
     "method": "GET",
     "path": "/api/v1/cloud/credentials",
     "file": "internal/cloud/service.go",
-    "line": 91
+    "line": 87
   },
   {
     "method": "POST",
     "path": "/api/v1/cloud/credentials",
     "file": "internal/cloud/service.go",
-    "line": 92
+    "line": 88
   },
   {
     "method": "DELETE",
     "path": "/api/v1/cloud/credentials/{id}",
     "file": "internal/cloud/service.go",
-    "line": 93
+    "line": 89
   },
   {
     "method": "GET",
     "path": "/api/v1/cloud/providers",
     "file": "internal/cloud/service.go",
-    "line": 90
+    "line": 86
   },
   {
     "method": "POST",
     "path": "/api/v1/cloud/resources/list",
     "file": "internal/cloud/service.go",
-    "line": 94
+    "line": 90
   },
   {
     "method": "POST",
     "path": "/api/v1/cloud/resources/sync",
     "file": "internal/cloud/service.go",
-    "line": 95
+    "line": 91
   },
   {
     "method": "GET",
     "path": "/api/v1/cmdb/app-topology",
     "file": "internal/cmdb/service.go",
-    "line": 153
+    "line": 215
   },
   {
     "method": "GET",
@@ -837,601 +1269,799 @@
     "method": "GET",
     "path": "/api/v1/cmdb/ci",
     "file": "internal/cmdb/service.go",
-    "line": 94
+    "line": 113
   },
   {
     "method": "POST",
     "path": "/api/v1/cmdb/ci",
     "file": "internal/cmdb/service.go",
-    "line": 97
+    "line": 116
   },
   {
     "method": "POST",
     "path": "/api/v1/cmdb/ci/batch",
     "file": "internal/cmdb/service.go",
-    "line": 98
+    "line": 117
   },
   {
     "method": "POST",
     "path": "/api/v1/cmdb/ci/batch-delete",
     "file": "internal/cmdb/service.go",
-    "line": 100
+    "line": 119
   },
   {
     "method": "POST",
     "path": "/api/v1/cmdb/ci/batch-update",
     "file": "internal/cmdb/service.go",
-    "line": 99
+    "line": 118
   },
   {
     "method": "GET",
     "path": "/api/v1/cmdb/ci/export",
     "file": "internal/cmdb/service.go",
-    "line": 95
+    "line": 114
   },
   {
     "method": "POST",
     "path": "/api/v1/cmdb/ci/import",
     "file": "internal/cmdb/service.go",
-    "line": 96
+    "line": 115
   },
   {
     "method": "DELETE",
     "path": "/api/v1/cmdb/ci/{id}",
-    "file": "internal/cmdb/service.go",
-    "line": 103
-  },
-  {
-    "method": "GET",
-    "path": "/api/v1/cmdb/ci/{id}",
-    "file": "internal/cmdb/service.go",
-    "line": 101
-  },
-  {
-    "method": "PUT",
-    "path": "/api/v1/cmdb/ci/{id}",
-    "file": "internal/cmdb/service.go",
-    "line": 102
-  },
-  {
-    "method": "POST",
-    "path": "/api/v1/cmdb/ci/{id}/archive",
-    "file": "internal/cmdb/service.go",
-    "line": 104
-  },
-  {
-    "method": "GET",
-    "path": "/api/v1/cmdb/ci/{id}/audit",
-    "file": "internal/cmdb/service.go",
-    "line": 106
-  },
-  {
-    "method": "POST",
-    "path": "/api/v1/cmdb/ci/{id}/restore",
-    "file": "internal/cmdb/service.go",
-    "line": 105
-  },
-  {
-    "method": "GET",
-    "path": "/api/v1/cmdb/collection-policy",
-    "file": "internal/cmdb/service.go",
-    "line": 185
-  },
-  {
-    "method": "PUT",
-    "path": "/api/v1/cmdb/collection-policy",
-    "file": "internal/cmdb/service.go",
-    "line": 186
-  },
-  {
-    "method": "GET",
-    "path": "/api/v1/cmdb/collection-tasks",
-    "file": "internal/cmdb/service.go",
-    "line": 187
-  },
-  {
-    "method": "POST",
-    "path": "/api/v1/cmdb/collection-tasks",
-    "file": "internal/cmdb/service.go",
-    "line": 188
-  },
-  {
-    "method": "DELETE",
-    "path": "/api/v1/cmdb/collection-tasks/{id}",
-    "file": "internal/cmdb/service.go",
-    "line": 190
-  },
-  {
-    "method": "PUT",
-    "path": "/api/v1/cmdb/collection-tasks/{id}",
-    "file": "internal/cmdb/service.go",
-    "line": 189
-  },
-  {
-    "method": "POST",
-    "path": "/api/v1/cmdb/collection-tasks/{id}/run",
-    "file": "internal/cmdb/service.go",
-    "line": 191
-  },
-  {
-    "method": "GET",
-    "path": "/api/v1/cmdb/collectors",
     "file": "internal/cmdb/service.go",
     "line": 124
   },
   {
     "method": "GET",
-    "path": "/api/v1/cmdb/discovery",
+    "path": "/api/v1/cmdb/ci/{id}",
     "file": "internal/cmdb/service.go",
-    "line": 174
-  },
-  {
-    "method": "POST",
-    "path": "/api/v1/cmdb/discovery",
-    "file": "internal/cmdb/service.go",
-    "line": 175
-  },
-  {
-    "method": "GET",
-    "path": "/api/v1/cmdb/discovery/types",
-    "file": "internal/cmdb/service.go",
-    "line": 178
-  },
-  {
-    "method": "DELETE",
-    "path": "/api/v1/cmdb/discovery/{id}",
-    "file": "internal/cmdb/service.go",
-    "line": 177
+    "line": 122
   },
   {
     "method": "PUT",
-    "path": "/api/v1/cmdb/discovery/{id}",
+    "path": "/api/v1/cmdb/ci/{id}",
     "file": "internal/cmdb/service.go",
-    "line": 176
-  },
-  {
-    "method": "GET",
-    "path": "/api/v1/cmdb/discovery/{id}/results",
-    "file": "internal/cmdb/service.go",
-    "line": 180
+    "line": 123
   },
   {
     "method": "POST",
-    "path": "/api/v1/cmdb/discovery/{id}/run",
+    "path": "/api/v1/cmdb/ci/{id}/archive",
     "file": "internal/cmdb/service.go",
-    "line": 179
-  },
-  {
-    "method": "POST",
-    "path": "/api/v1/cmdb/discovery/{resultId}/sync",
-    "file": "internal/cmdb/service.go",
-    "line": 181
-  },
-  {
-    "method": "POST",
-    "path": "/api/v1/cmdb/discovery/{taskId}/sync-all",
-    "file": "internal/cmdb/service.go",
-    "line": 182
+    "line": 125
   },
   {
     "method": "GET",
-    "path": "/api/v1/cmdb/field-rules",
-    "file": "internal/cmdb/service.go",
-    "line": 156
-  },
-  {
-    "method": "POST",
-    "path": "/api/v1/cmdb/field-rules",
-    "file": "internal/cmdb/service.go",
-    "line": 157
-  },
-  {
-    "method": "DELETE",
-    "path": "/api/v1/cmdb/field-rules/{id}",
-    "file": "internal/cmdb/service.go",
-    "line": 158
-  },
-  {
-    "method": "GET",
-    "path": "/api/v1/cmdb/history",
-    "file": "internal/cmdb/service.go",
-    "line": 169
-  },
-  {
-    "method": "GET",
-    "path": "/api/v1/cmdb/history/detail/{id}",
-    "file": "internal/cmdb/service.go",
-    "line": 171
-  },
-  {
-    "method": "GET",
-    "path": "/api/v1/cmdb/history/{ciId}",
-    "file": "internal/cmdb/service.go",
-    "line": 170
-  },
-  {
-    "method": "GET",
-    "path": "/api/v1/cmdb/idc",
-    "file": "internal/cmdb/service.go",
-    "line": 143
-  },
-  {
-    "method": "POST",
-    "path": "/api/v1/cmdb/idc",
-    "file": "internal/cmdb/service.go",
-    "line": 144
-  },
-  {
-    "method": "GET",
-    "path": "/api/v1/cmdb/idc/{idcId}/racks",
-    "file": "internal/cmdb/service.go",
-    "line": 146
-  },
-  {
-    "method": "POST",
-    "path": "/api/v1/cmdb/idc/{idcId}/racks",
-    "file": "internal/cmdb/service.go",
-    "line": 147
-  },
-  {
-    "method": "DELETE",
-    "path": "/api/v1/cmdb/idc/{id}",
-    "file": "internal/cmdb/service.go",
-    "line": 145
-  },
-  {
-    "method": "GET",
-    "path": "/api/v1/cmdb/impact/{id}",
-    "file": "internal/cmdb/service.go",
-    "line": 117
-  },
-  {
-    "method": "GET",
-    "path": "/api/v1/cmdb/model-categories",
-    "file": "internal/cmdb/service.go",
-    "line": 135
-  },
-  {
-    "method": "POST",
-    "path": "/api/v1/cmdb/model-categories",
-    "file": "internal/cmdb/service.go",
-    "line": 136
-  },
-  {
-    "method": "DELETE",
-    "path": "/api/v1/cmdb/model-categories/{id}",
-    "file": "internal/cmdb/service.go",
-    "line": 137
-  },
-  {
-    "method": "GET",
-    "path": "/api/v1/cmdb/model-type",
+    "path": "/api/v1/cmdb/ci/{id}/audit",
     "file": "internal/cmdb/service.go",
     "line": 127
   },
   {
     "method": "POST",
-    "path": "/api/v1/cmdb/model-type",
+    "path": "/api/v1/cmdb/ci/{id}/restore",
     "file": "internal/cmdb/service.go",
     "line": 126
   },
   {
-    "method": "GET",
-    "path": "/api/v1/cmdb/model-type/export",
-    "file": "internal/cmdb/service.go",
-    "line": 131
-  },
-  {
     "method": "POST",
-    "path": "/api/v1/cmdb/model-type/import",
-    "file": "internal/cmdb/service.go",
-    "line": 132
-  },
-  {
-    "method": "DELETE",
-    "path": "/api/v1/cmdb/model-type/{id}",
-    "file": "internal/cmdb/service.go",
-    "line": 130
-  },
-  {
-    "method": "GET",
-    "path": "/api/v1/cmdb/model-type/{id}",
-    "file": "internal/cmdb/service.go",
-    "line": 128
-  },
-  {
-    "method": "PUT",
-    "path": "/api/v1/cmdb/model-type/{id}",
-    "file": "internal/cmdb/service.go",
-    "line": 129
-  },
-  {
-    "method": "POST",
-    "path": "/api/v1/cmdb/onboard",
-    "file": "internal/cmdb/service.go",
-    "line": 192
-  },
-  {
-    "method": "GET",
-    "path": "/api/v1/cmdb/quality",
-    "file": "internal/cmdb/service.go",
-    "line": 195
-  },
-  {
-    "method": "DELETE",
-    "path": "/api/v1/cmdb/racks/{id}",
-    "file": "internal/cmdb/service.go",
-    "line": 148
-  },
-  {
-    "method": "GET",
-    "path": "/api/v1/cmdb/racks/{id}/units",
-    "file": "internal/cmdb/service.go",
-    "line": 149
-  },
-  {
-    "method": "POST",
-    "path": "/api/v1/cmdb/racks/{id}/units",
-    "file": "internal/cmdb/service.go",
-    "line": 150
-  },
-  {
-    "method": "GET",
-    "path": "/api/v1/cmdb/relation",
-    "file": "internal/cmdb/service.go",
-    "line": 119
-  },
-  {
-    "method": "POST",
-    "path": "/api/v1/cmdb/relation",
-    "file": "internal/cmdb/service.go",
-    "line": 120
-  },
-  {
-    "method": "POST",
-    "path": "/api/v1/cmdb/relation/batch",
-    "file": "internal/cmdb/service.go",
-    "line": 108
-  },
-  {
-    "method": "DELETE",
-    "path": "/api/v1/cmdb/relation/{id}",
+    "path": "/api/v1/cmdb/collect/report",
     "file": "internal/cmdb/service.go",
     "line": 121
   },
   {
     "method": "GET",
+    "path": "/api/v1/cmdb/collection-policy",
+    "file": "internal/cmdb/service.go",
+    "line": 247
+  },
+  {
+    "method": "PUT",
+    "path": "/api/v1/cmdb/collection-policy",
+    "file": "internal/cmdb/service.go",
+    "line": 248
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/cmdb/collection-tasks",
+    "file": "internal/cmdb/service.go",
+    "line": 249
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/cmdb/collection-tasks",
+    "file": "internal/cmdb/service.go",
+    "line": 250
+  },
+  {
+    "method": "DELETE",
+    "path": "/api/v1/cmdb/collection-tasks/{id}",
+    "file": "internal/cmdb/service.go",
+    "line": 252
+  },
+  {
+    "method": "PUT",
+    "path": "/api/v1/cmdb/collection-tasks/{id}",
+    "file": "internal/cmdb/service.go",
+    "line": 251
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/cmdb/collection-tasks/{id}/run",
+    "file": "internal/cmdb/service.go",
+    "line": 253
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/cmdb/collectors",
+    "file": "internal/cmdb/service.go",
+    "line": 179
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/cmdb/dashboard",
+    "file": "internal/cmdb/service.go",
+    "line": 200
+  },
+  {
+    "method": "PUT",
+    "path": "/api/v1/cmdb/dashboard",
+    "file": "internal/cmdb/service.go",
+    "line": 201
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/cmdb/dashboard/insights",
+    "file": "internal/cmdb/service.go",
+    "line": 202
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/cmdb/data-policies",
+    "file": "internal/cmdb/service.go",
+    "line": 136
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/cmdb/data-policies",
+    "file": "internal/cmdb/service.go",
+    "line": 137
+  },
+  {
+    "method": "DELETE",
+    "path": "/api/v1/cmdb/data-policies/{id}",
+    "file": "internal/cmdb/service.go",
+    "line": 138
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/cmdb/discovery",
+    "file": "internal/cmdb/service.go",
+    "line": 236
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/cmdb/discovery",
+    "file": "internal/cmdb/service.go",
+    "line": 237
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/cmdb/discovery/types",
+    "file": "internal/cmdb/service.go",
+    "line": 240
+  },
+  {
+    "method": "DELETE",
+    "path": "/api/v1/cmdb/discovery/{id}",
+    "file": "internal/cmdb/service.go",
+    "line": 239
+  },
+  {
+    "method": "PUT",
+    "path": "/api/v1/cmdb/discovery/{id}",
+    "file": "internal/cmdb/service.go",
+    "line": 238
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/cmdb/discovery/{id}/results",
+    "file": "internal/cmdb/service.go",
+    "line": 242
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/cmdb/discovery/{id}/run",
+    "file": "internal/cmdb/service.go",
+    "line": 241
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/cmdb/discovery/{resultId}/sync",
+    "file": "internal/cmdb/service.go",
+    "line": 243
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/cmdb/discovery/{taskId}/sync-all",
+    "file": "internal/cmdb/service.go",
+    "line": 244
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/cmdb/drift",
+    "file": "internal/cmdb/service.go",
+    "line": 140
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/cmdb/drift/{id}/resolve",
+    "file": "internal/cmdb/service.go",
+    "line": 142
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/cmdb/field-rules",
+    "file": "internal/cmdb/service.go",
+    "line": 218
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/cmdb/field-rules",
+    "file": "internal/cmdb/service.go",
+    "line": 219
+  },
+  {
+    "method": "DELETE",
+    "path": "/api/v1/cmdb/field-rules/{id}",
+    "file": "internal/cmdb/service.go",
+    "line": 220
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/cmdb/history",
+    "file": "internal/cmdb/service.go",
+    "line": 231
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/cmdb/history/detail/{id}",
+    "file": "internal/cmdb/service.go",
+    "line": 233
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/cmdb/history/{ciId}",
+    "file": "internal/cmdb/service.go",
+    "line": 232
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/cmdb/idc",
+    "file": "internal/cmdb/service.go",
+    "line": 205
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/cmdb/idc",
+    "file": "internal/cmdb/service.go",
+    "line": 206
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/cmdb/idc/panorama",
+    "file": "internal/cmdb/service.go",
+    "line": 141
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/cmdb/idc/{idcId}/racks",
+    "file": "internal/cmdb/service.go",
+    "line": 208
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/cmdb/idc/{idcId}/racks",
+    "file": "internal/cmdb/service.go",
+    "line": 209
+  },
+  {
+    "method": "DELETE",
+    "path": "/api/v1/cmdb/idc/{id}",
+    "file": "internal/cmdb/service.go",
+    "line": 207
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/cmdb/impact/{id}",
+    "file": "internal/cmdb/service.go",
+    "line": 167
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/cmdb/model-categories",
+    "file": "internal/cmdb/service.go",
+    "line": 194
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/cmdb/model-categories",
+    "file": "internal/cmdb/service.go",
+    "line": 195
+  },
+  {
+    "method": "DELETE",
+    "path": "/api/v1/cmdb/model-categories/{id}",
+    "file": "internal/cmdb/service.go",
+    "line": 196
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/cmdb/model-type",
+    "file": "internal/cmdb/service.go",
+    "line": 182
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/cmdb/model-type",
+    "file": "internal/cmdb/service.go",
+    "line": 181
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/cmdb/model-type/export",
+    "file": "internal/cmdb/service.go",
+    "line": 190
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/cmdb/model-type/import",
+    "file": "internal/cmdb/service.go",
+    "line": 191
+  },
+  {
+    "method": "DELETE",
+    "path": "/api/v1/cmdb/model-type/{id}",
+    "file": "internal/cmdb/service.go",
+    "line": 187
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/cmdb/model-type/{id}",
+    "file": "internal/cmdb/service.go",
+    "line": 183
+  },
+  {
+    "method": "PUT",
+    "path": "/api/v1/cmdb/model-type/{id}",
+    "file": "internal/cmdb/service.go",
+    "line": 186
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/cmdb/model-type/{id}/ci-field-usage",
+    "file": "internal/cmdb/service.go",
+    "line": 185
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/cmdb/model-type/{id}/field-usage",
+    "file": "internal/cmdb/service.go",
+    "line": 184
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/cmdb/model-type/{id}/rollback/{version}",
+    "file": "internal/cmdb/service.go",
+    "line": 189
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/cmdb/model-type/{id}/versions",
+    "file": "internal/cmdb/service.go",
+    "line": 188
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/cmdb/onboard",
+    "file": "internal/cmdb/service.go",
+    "line": 254
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/cmdb/path",
+    "file": "internal/cmdb/service.go",
+    "line": 169
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/cmdb/quality",
+    "file": "internal/cmdb/service.go",
+    "line": 257
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/cmdb/quality/fix",
+    "file": "internal/cmdb/service.go",
+    "line": 258
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/cmdb/query/chain",
+    "file": "internal/cmdb/service.go",
+    "line": 130
+  },
+  {
+    "method": "DELETE",
+    "path": "/api/v1/cmdb/racks/{id}",
+    "file": "internal/cmdb/service.go",
+    "line": 210
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/cmdb/racks/{id}/units",
+    "file": "internal/cmdb/service.go",
+    "line": 211
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/cmdb/racks/{id}/units",
+    "file": "internal/cmdb/service.go",
+    "line": 212
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/cmdb/reconcile/candidates",
+    "file": "internal/cmdb/service.go",
+    "line": 133
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/cmdb/reconcile/merge",
+    "file": "internal/cmdb/service.go",
+    "line": 134
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/cmdb/registry/promote",
+    "file": "internal/cmdb/service.go",
+    "line": 263
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/cmdb/registry/propose",
+    "file": "internal/cmdb/service.go",
+    "line": 262
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/cmdb/registry/resolve",
+    "file": "internal/cmdb/service.go",
+    "line": 261
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/cmdb/relation",
+    "file": "internal/cmdb/service.go",
+    "line": 174
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/cmdb/relation",
+    "file": "internal/cmdb/service.go",
+    "line": 175
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/cmdb/relation/batch",
+    "file": "internal/cmdb/service.go",
+    "line": 131
+  },
+  {
+    "method": "DELETE",
+    "path": "/api/v1/cmdb/relation/{id}",
+    "file": "internal/cmdb/service.go",
+    "line": 176
+  },
+  {
+    "method": "GET",
     "path": "/api/v1/cmdb/saved-queries",
     "file": "internal/cmdb/service.go",
-    "line": 111
+    "line": 159
   },
   {
     "method": "POST",
     "path": "/api/v1/cmdb/saved-queries",
     "file": "internal/cmdb/service.go",
-    "line": 112
+    "line": 160
   },
   {
     "method": "DELETE",
     "path": "/api/v1/cmdb/saved-queries/{id}",
     "file": "internal/cmdb/service.go",
-    "line": 114
+    "line": 162
   },
   {
     "method": "GET",
     "path": "/api/v1/cmdb/saved-queries/{id}/resolve",
     "file": "internal/cmdb/service.go",
-    "line": 113
+    "line": 161
   },
   {
     "method": "GET",
     "path": "/api/v1/cmdb/search",
     "file": "internal/cmdb/service.go",
-    "line": 107
+    "line": 128
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/cmdb/snapshots",
+    "file": "internal/cmdb/service.go",
+    "line": 146
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/cmdb/snapshots",
+    "file": "internal/cmdb/service.go",
+    "line": 145
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/cmdb/snapshots/compare",
+    "file": "internal/cmdb/service.go",
+    "line": 147
+  },
+  {
+    "method": "DELETE",
+    "path": "/api/v1/cmdb/snapshots/{id}",
+    "file": "internal/cmdb/service.go",
+    "line": 149
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/cmdb/snapshots/{id}",
+    "file": "internal/cmdb/service.go",
+    "line": 148
   },
   {
     "method": "GET",
     "path": "/api/v1/cmdb/stats",
     "file": "internal/cmdb/service.go",
-    "line": 140
+    "line": 199
   },
   {
     "method": "GET",
-    "path": "/api/v1/cmdb/subscription-deliveries",
+    "path": "/api/v1/cmdb/subgraph",
     "file": "internal/cmdb/service.go",
     "line": 166
   },
   {
     "method": "GET",
+    "path": "/api/v1/cmdb/subscription-deliveries",
+    "file": "internal/cmdb/service.go",
+    "line": 228
+  },
+  {
+    "method": "GET",
     "path": "/api/v1/cmdb/subscriptions",
     "file": "internal/cmdb/service.go",
-    "line": 161
+    "line": 223
   },
   {
     "method": "POST",
     "path": "/api/v1/cmdb/subscriptions",
     "file": "internal/cmdb/service.go",
-    "line": 162
+    "line": 224
   },
   {
     "method": "DELETE",
     "path": "/api/v1/cmdb/subscriptions/{id}",
     "file": "internal/cmdb/service.go",
-    "line": 164
+    "line": 226
   },
   {
     "method": "PUT",
     "path": "/api/v1/cmdb/subscriptions/{id}",
     "file": "internal/cmdb/service.go",
-    "line": 163
+    "line": 225
   },
   {
     "method": "POST",
     "path": "/api/v1/cmdb/subscriptions/{id}/test",
     "file": "internal/cmdb/service.go",
-    "line": 165
+    "line": 227
   },
   {
     "method": "GET",
     "path": "/api/v1/cmdb/topology/{id}",
     "file": "internal/cmdb/service.go",
-    "line": 116
+    "line": 164
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/cmdb/usage/errors",
+    "file": "internal/cmdb/service.go",
+    "line": 155
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/cmdb/usage/hotspots",
+    "file": "internal/cmdb/service.go",
+    "line": 154
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/cmdb/usage/status",
+    "file": "internal/cmdb/service.go",
+    "line": 156
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/cmdb/usage/summary",
+    "file": "internal/cmdb/service.go",
+    "line": 153
   },
   {
     "method": "GET",
     "path": "/api/v1/collect-metrics",
     "file": "internal/agentmgr/service.go",
-    "line": 903
+    "line": 817
   },
   {
     "method": "GET",
     "path": "/api/v1/collect-tasks",
     "file": "internal/agentmgr/service.go",
-    "line": 901
+    "line": 815
   },
   {
     "method": "POST",
     "path": "/api/v1/collect-tasks",
     "file": "internal/agentmgr/service.go",
-    "line": 900
+    "line": 814
   },
   {
     "method": "DELETE",
     "path": "/api/v1/collect-tasks/{id}",
     "file": "internal/agentmgr/service.go",
-    "line": 905
+    "line": 819
   },
   {
     "method": "PUT",
     "path": "/api/v1/collect-tasks/{id}",
     "file": "internal/agentmgr/service.go",
-    "line": 904
+    "line": 818
   },
   {
     "method": "GET",
     "path": "/api/v1/collect-tasks/{id}/runs",
     "file": "internal/agentmgr/service.go",
-    "line": 902
+    "line": 816
   },
   {
     "method": "GET",
+    "path": "/api/v1/deploy/apps",
+    "file": "internal/deploy/service.go",
+    "line": 35
+  },
+  {
+    "method": "POST",
     "path": "/api/v1/deploy/apps",
     "file": "internal/deploy/service.go",
     "line": 36
   },
   {
-    "method": "POST",
-    "path": "/api/v1/deploy/apps",
-    "file": "internal/deploy/service.go",
-    "line": 37
-  },
-  {
     "method": "DELETE",
-    "path": "/api/v1/deploy/apps/{id}",
-    "file": "internal/deploy/service.go",
-    "line": 39
-  },
-  {
-    "method": "PUT",
     "path": "/api/v1/deploy/apps/{id}",
     "file": "internal/deploy/service.go",
     "line": 38
   },
   {
+    "method": "PUT",
+    "path": "/api/v1/deploy/apps/{id}",
+    "file": "internal/deploy/service.go",
+    "line": 37
+  },
+  {
     "method": "GET",
+    "path": "/api/v1/deploy/environments",
+    "file": "internal/deploy/service.go",
+    "line": 49
+  },
+  {
+    "method": "POST",
     "path": "/api/v1/deploy/environments",
     "file": "internal/deploy/service.go",
     "line": 50
   },
   {
-    "method": "POST",
-    "path": "/api/v1/deploy/environments",
-    "file": "internal/deploy/service.go",
-    "line": 51
-  },
-  {
     "method": "DELETE",
-    "path": "/api/v1/deploy/environments/{id}",
-    "file": "internal/deploy/service.go",
-    "line": 53
-  },
-  {
-    "method": "PUT",
     "path": "/api/v1/deploy/environments/{id}",
     "file": "internal/deploy/service.go",
     "line": 52
   },
   {
-    "method": "GET",
-    "path": "/api/v1/deploy/history",
+    "method": "PUT",
+    "path": "/api/v1/deploy/environments/{id}",
     "file": "internal/deploy/service.go",
-    "line": 55
+    "line": 51
   },
   {
     "method": "GET",
+    "path": "/api/v1/deploy/history",
+    "file": "internal/deploy/service.go",
+    "line": 54
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/deploy/releases",
+    "file": "internal/deploy/service.go",
+    "line": 40
+  },
+  {
+    "method": "POST",
     "path": "/api/v1/deploy/releases",
     "file": "internal/deploy/service.go",
     "line": 41
   },
   {
-    "method": "POST",
-    "path": "/api/v1/deploy/releases",
-    "file": "internal/deploy/service.go",
-    "line": 42
-  },
-  {
     "method": "DELETE",
-    "path": "/api/v1/deploy/releases/{id}",
-    "file": "internal/deploy/service.go",
-    "line": 44
-  },
-  {
-    "method": "PUT",
     "path": "/api/v1/deploy/releases/{id}",
     "file": "internal/deploy/service.go",
     "line": 43
   },
   {
+    "method": "PUT",
+    "path": "/api/v1/deploy/releases/{id}",
+    "file": "internal/deploy/service.go",
+    "line": 42
+  },
+  {
     "method": "POST",
     "path": "/api/v1/deploy/releases/{id}/approve",
     "file": "internal/deploy/service.go",
-    "line": 45
+    "line": 44
   },
   {
     "method": "POST",
     "path": "/api/v1/deploy/releases/{id}/deploy",
     "file": "internal/deploy/service.go",
-    "line": 47
+    "line": 46
   },
   {
     "method": "POST",
     "path": "/api/v1/deploy/releases/{id}/reject",
     "file": "internal/deploy/service.go",
-    "line": 46
+    "line": 45
   },
   {
     "method": "POST",
     "path": "/api/v1/deploy/releases/{id}/rollback",
     "file": "internal/deploy/service.go",
-    "line": 48
+    "line": 47
   },
   {
     "method": "GET",
     "path": "/api/v1/files",
     "file": "internal/agentmgr/service.go",
-    "line": 911
+    "line": 825
   },
   {
     "method": "POST",
     "path": "/api/v1/files/upload",
     "file": "internal/agentmgr/service.go",
-    "line": 910
+    "line": 824
   },
   {
     "method": "DELETE",
     "path": "/api/v1/files/{file_id}",
     "file": "internal/agentmgr/service.go",
-    "line": 912
+    "line": 826
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/files/{file_id}",
+    "file": "internal/agentmgr/service.go",
+    "line": 797
   },
   {
     "method": "GET",
@@ -1441,99 +2071,93 @@
   },
   {
     "method": "GET",
-    "path": "/api/v1/files/{file_id}",
-    "file": "internal/agentmgr/service.go",
-    "line": 885
-  },
-  {
-    "method": "GET",
     "path": "/api/v1/files/{file_id}/meta",
     "file": "internal/agentmgr/service.go",
-    "line": 913
+    "line": 827
   },
   {
     "method": "GET",
     "path": "/api/v1/iam/groups",
     "file": "internal/iam/service.go",
-    "line": 406
+    "line": 490
   },
   {
     "method": "POST",
     "path": "/api/v1/iam/groups",
     "file": "internal/iam/service.go",
-    "line": 407
+    "line": 491
   },
   {
     "method": "DELETE",
     "path": "/api/v1/iam/groups/{id}",
     "file": "internal/iam/service.go",
-    "line": 410
+    "line": 494
   },
   {
     "method": "GET",
     "path": "/api/v1/iam/groups/{id}",
     "file": "internal/iam/service.go",
-    "line": 408
+    "line": 492
   },
   {
     "method": "PUT",
     "path": "/api/v1/iam/groups/{id}",
     "file": "internal/iam/service.go",
-    "line": 409
+    "line": 493
   },
   {
     "method": "GET",
     "path": "/api/v1/iam/me/permissions",
     "file": "internal/iam/service.go",
-    "line": 415
+    "line": 499
   },
   {
     "method": "GET",
     "path": "/api/v1/iam/permissions",
     "file": "internal/iam/service.go",
-    "line": 398
+    "line": 482
   },
   {
     "method": "GET",
     "path": "/api/v1/iam/roles",
     "file": "internal/iam/service.go",
-    "line": 400
+    "line": 484
   },
   {
     "method": "POST",
     "path": "/api/v1/iam/roles",
     "file": "internal/iam/service.go",
-    "line": 401
+    "line": 485
   },
   {
     "method": "DELETE",
     "path": "/api/v1/iam/roles/{id}",
     "file": "internal/iam/service.go",
-    "line": 404
+    "line": 488
   },
   {
     "method": "GET",
     "path": "/api/v1/iam/roles/{id}",
     "file": "internal/iam/service.go",
-    "line": 402
+    "line": 486
   },
   {
     "method": "PUT",
     "path": "/api/v1/iam/roles/{id}",
     "file": "internal/iam/service.go",
-    "line": 403
+    "line": 487
   },
   {
     "method": "GET",
     "path": "/api/v1/iam/users/{user_id}/roles",
     "file": "internal/iam/service.go",
-    "line": 412
+    "line": 496
   },
   {
     "method": "PUT",
     "path": "/api/v1/iam/users/{user_id}/roles",
     "file": "internal/iam/service.go",
-    "line": 413
+    "line": 497
   },
   {
     "method": "GET",
@@ -1617,157 +2241,157 @@
     "method": "POST",
     "path": "/api/v1/itsm/catalog/{id}/fulfill",
     "file": "internal/itsm/service.go",
-    "line": 309
+    "line": 237
   },
   {
     "method": "GET",
     "path": "/api/v1/itsm/changes",
     "file": "internal/itsm/service.go",
-    "line": 343
+    "line": 271
   },
   {
     "method": "POST",
     "path": "/api/v1/itsm/changes",
     "file": "internal/itsm/service.go",
-    "line": 342
+    "line": 270
   },
   {
     "method": "GET",
     "path": "/api/v1/itsm/changes/{id}",
     "file": "internal/itsm/service.go",
-    "line": 344
+    "line": 272
   },
   {
     "method": "POST",
     "path": "/api/v1/itsm/changes/{id}/execute",
     "file": "internal/itsm/service.go",
-    "line": 346
+    "line": 274
   },
   {
     "method": "POST",
     "path": "/api/v1/itsm/changes/{id}/vote",
     "file": "internal/itsm/service.go",
-    "line": 345
+    "line": 273
   },
   {
     "method": "GET",
     "path": "/api/v1/itsm/form-dicts",
     "file": "internal/itsm/service.go",
-    "line": 336
+    "line": 264
   },
   {
     "method": "POST",
     "path": "/api/v1/itsm/form-dicts",
     "file": "internal/itsm/service.go",
-    "line": 337
+    "line": 265
   },
   {
     "method": "DELETE",
     "path": "/api/v1/itsm/form-dicts/{id}",
     "file": "internal/itsm/service.go",
-    "line": 338
+    "line": 266
   },
   {
     "method": "GET",
     "path": "/api/v1/itsm/form-options",
     "file": "internal/itsm/service.go",
-    "line": 339
+    "line": 267
   },
   {
     "method": "GET",
     "path": "/api/v1/itsm/forms",
     "file": "internal/itsm/service.go",
-    "line": 333
+    "line": 261
   },
   {
     "method": "PUT",
     "path": "/api/v1/itsm/forms",
     "file": "internal/itsm/service.go",
-    "line": 334
+    "line": 262
   },
   {
     "method": "GET",
     "path": "/api/v1/itsm/ola/policies",
     "file": "internal/itsm/ola/ola.go",
-    "line": 121
+    "line": 120
   },
   {
     "method": "POST",
     "path": "/api/v1/itsm/ola/policies",
     "file": "internal/itsm/ola/ola.go",
-    "line": 122
+    "line": 121
   },
   {
     "method": "DELETE",
     "path": "/api/v1/itsm/ola/policies/{id}",
     "file": "internal/itsm/ola/ola.go",
-    "line": 124
+    "line": 123
   },
   {
     "method": "PUT",
     "path": "/api/v1/itsm/ola/policies/{id}",
     "file": "internal/itsm/ola/ola.go",
-    "line": 123
+    "line": 122
   },
   {
     "method": "GET",
+    "path": "/api/v1/itsm/processes",
+    "file": "internal/itsm/process/service.go",
+    "line": 149
+  },
+  {
+    "method": "POST",
     "path": "/api/v1/itsm/processes",
     "file": "internal/itsm/process/service.go",
     "line": 150
   },
   {
     "method": "POST",
-    "path": "/api/v1/itsm/processes",
-    "file": "internal/itsm/process/service.go",
-    "line": 151
-  },
-  {
-    "method": "POST",
     "path": "/api/v1/itsm/processes/import-bpmn",
     "file": "internal/itsm/process/service.go",
-    "line": 156
+    "line": 155
   },
   {
     "method": "DELETE",
-    "path": "/api/v1/itsm/processes/{id}",
-    "file": "internal/itsm/process/service.go",
-    "line": 154
-  },
-  {
-    "method": "GET",
-    "path": "/api/v1/itsm/processes/{id}",
-    "file": "internal/itsm/process/service.go",
-    "line": 152
-  },
-  {
-    "method": "PUT",
     "path": "/api/v1/itsm/processes/{id}",
     "file": "internal/itsm/process/service.go",
     "line": 153
   },
   {
     "method": "GET",
+    "path": "/api/v1/itsm/processes/{id}",
+    "file": "internal/itsm/process/service.go",
+    "line": 151
+  },
+  {
+    "method": "PUT",
+    "path": "/api/v1/itsm/processes/{id}",
+    "file": "internal/itsm/process/service.go",
+    "line": 152
+  },
+  {
+    "method": "GET",
     "path": "/api/v1/itsm/processes/{id}/bpmn",
     "file": "internal/itsm/process/service.go",
-    "line": 155
+    "line": 154
   },
   {
     "method": "GET",
     "path": "/api/v1/itsm/processes/{id}/versions",
     "file": "internal/itsm/process/service.go",
-    "line": 157
+    "line": 156
   },
   {
     "method": "GET",
     "path": "/api/v1/itsm/processes/{id}/versions/{version}",
     "file": "internal/itsm/process/service.go",
-    "line": 158
+    "line": 157
   },
   {
     "method": "GET",
     "path": "/api/v1/itsm/sla/breached",
     "file": "internal/itsm/service.go",
-    "line": 330
+    "line": 258
   },
   {
     "method": "GET",
@@ -1797,355 +2421,367 @@
     "method": "GET",
     "path": "/api/v1/itsm/sla/stats",
     "file": "internal/itsm/service.go",
-    "line": 329
+    "line": 257
   },
   {
     "method": "GET",
     "path": "/api/v1/itsm/stats",
     "file": "internal/itsm/service.go",
-    "line": 311
+    "line": 239
   },
   {
     "method": "GET",
     "path": "/api/v1/itsm/stats/export/csv",
     "file": "internal/itsm/service.go",
-    "line": 350
+    "line": 278
   },
   {
     "method": "GET",
     "path": "/api/v1/itsm/tickets",
     "file": "internal/itsm/service.go",
-    "line": 289
+    "line": 217
   },
   {
     "method": "POST",
     "path": "/api/v1/itsm/tickets",
     "file": "internal/itsm/service.go",
-    "line": 287
+    "line": 215
   },
   {
     "method": "GET",
     "path": "/api/v1/itsm/tickets/export/csv",
     "file": "internal/itsm/service.go",
-    "line": 349
+    "line": 277
   },
   {
     "method": "POST",
     "path": "/api/v1/itsm/tickets/import",
     "file": "internal/itsm/service.go",
-    "line": 348
+    "line": 276
   },
   {
     "method": "GET",
     "path": "/api/v1/itsm/tickets/{id}",
     "file": "internal/itsm/service.go",
-    "line": 288
+    "line": 216
   },
   {
     "method": "PUT",
     "path": "/api/v1/itsm/tickets/{id}",
     "file": "internal/itsm/service.go",
-    "line": 307
+    "line": 235
   },
   {
     "method": "POST",
     "path": "/api/v1/itsm/tickets/{id}/approve",
     "file": "internal/itsm/service.go",
-    "line": 291
+    "line": 219
   },
   {
     "method": "POST",
     "path": "/api/v1/itsm/tickets/{id}/assign",
     "file": "internal/itsm/service.go",
-    "line": 296
+    "line": 224
   },
   {
     "method": "GET",
     "path": "/api/v1/itsm/tickets/{id}/attachments",
     "file": "internal/itsm/service.go",
-    "line": 325
+    "line": 253
   },
   {
     "method": "POST",
     "path": "/api/v1/itsm/tickets/{id}/attachments",
     "file": "internal/itsm/service.go",
-    "line": 324
+    "line": 252
   },
   {
     "method": "DELETE",
     "path": "/api/v1/itsm/tickets/{id}/attachments/{aid}",
     "file": "internal/itsm/service.go",
-    "line": 327
+    "line": 255
   },
   {
     "method": "GET",
     "path": "/api/v1/itsm/tickets/{id}/attachments/{aid}",
     "file": "internal/itsm/service.go",
-    "line": 326
+    "line": 254
   },
   {
     "method": "POST",
     "path": "/api/v1/itsm/tickets/{id}/close",
     "file": "internal/itsm/service.go",
-    "line": 297
+    "line": 225
   },
   {
     "method": "GET",
     "path": "/api/v1/itsm/tickets/{id}/comments",
     "file": "internal/itsm/service.go",
-    "line": 314
+    "line": 242
   },
   {
     "method": "POST",
     "path": "/api/v1/itsm/tickets/{id}/comments",
     "file": "internal/itsm/service.go",
-    "line": 313
+    "line": 241
   },
   {
     "method": "DELETE",
     "path": "/api/v1/itsm/tickets/{id}/comments/{cid}",
     "file": "internal/itsm/service.go",
-    "line": 316
+    "line": 244
   },
   {
     "method": "PUT",
     "path": "/api/v1/itsm/tickets/{id}/comments/{cid}",
     "file": "internal/itsm/service.go",
-    "line": 315
+    "line": 243
   },
   {
     "method": "POST",
     "path": "/api/v1/itsm/tickets/{id}/complete",
     "file": "internal/itsm/service.go",
-    "line": 294
+    "line": 222
   },
   {
     "method": "PATCH",
     "path": "/api/v1/itsm/tickets/{id}/custom-fields",
     "file": "internal/itsm/service.go",
-    "line": 340
+    "line": 268
   },
   {
     "method": "GET",
     "path": "/api/v1/itsm/tickets/{id}/events",
     "file": "internal/itsm/service.go",
-    "line": 310
+    "line": 238
   },
   {
     "method": "POST",
     "path": "/api/v1/itsm/tickets/{id}/execute",
     "file": "internal/itsm/service.go",
-    "line": 293
+    "line": 221
   },
   {
     "method": "POST",
     "path": "/api/v1/itsm/tickets/{id}/hold",
     "file": "internal/itsm/service.go",
-    "line": 303
+    "line": 231
   },
   {
     "method": "GET",
     "path": "/api/v1/itsm/tickets/{id}/process",
     "file": "internal/itsm/service.go",
-    "line": 290
+    "line": 218
   },
   {
     "method": "POST",
     "path": "/api/v1/itsm/tickets/{id}/reject",
     "file": "internal/itsm/service.go",
-    "line": 292
+    "line": 220
   },
   {
     "method": "POST",
     "path": "/api/v1/itsm/tickets/{id}/relate",
     "file": "internal/itsm/service.go",
-    "line": 306
+    "line": 234
   },
   {
     "method": "POST",
     "path": "/api/v1/itsm/tickets/{id}/remind",
     "file": "internal/itsm/service.go",
-    "line": 305
+    "line": 233
   },
   {
     "method": "POST",
     "path": "/api/v1/itsm/tickets/{id}/reopen",
     "file": "internal/itsm/service.go",
-    "line": 301
+    "line": 229
   },
   {
     "method": "POST",
     "path": "/api/v1/itsm/tickets/{id}/resubmit",
     "file": "internal/itsm/service.go",
-    "line": 302
+    "line": 230
   },
   {
     "method": "POST",
     "path": "/api/v1/itsm/tickets/{id}/resume",
     "file": "internal/itsm/service.go",
-    "line": 304
+    "line": 232
   },
   {
     "method": "POST",
     "path": "/api/v1/itsm/tickets/{id}/rollback",
     "file": "internal/itsm/service.go",
-    "line": 298
+    "line": 226
   },
   {
     "method": "GET",
     "path": "/api/v1/itsm/tickets/{id}/sla",
     "file": "internal/itsm/service.go",
-    "line": 331
+    "line": 259
   },
   {
     "method": "POST",
     "path": "/api/v1/itsm/tickets/{id}/submit",
     "file": "internal/itsm/service.go",
-    "line": 295
+    "line": 223
   },
   {
     "method": "GET",
     "path": "/api/v1/itsm/tickets/{id}/subtasks",
     "file": "internal/itsm/service.go",
-    "line": 319
+    "line": 247
   },
   {
     "method": "POST",
     "path": "/api/v1/itsm/tickets/{id}/subtasks",
     "file": "internal/itsm/service.go",
-    "line": 318
+    "line": 246
   },
   {
     "method": "DELETE",
     "path": "/api/v1/itsm/tickets/{id}/subtasks/{sid}",
     "file": "internal/itsm/service.go",
-    "line": 322
+    "line": 250
   },
   {
     "method": "GET",
     "path": "/api/v1/itsm/tickets/{id}/subtasks/{sid}",
     "file": "internal/itsm/service.go",
-    "line": 320
+    "line": 248
   },
   {
     "method": "PUT",
     "path": "/api/v1/itsm/tickets/{id}/subtasks/{sid}",
     "file": "internal/itsm/service.go",
-    "line": 321
+    "line": 249
   },
   {
     "method": "POST",
     "path": "/api/v1/itsm/tickets/{id}/withdraw",
     "file": "internal/itsm/service.go",
-    "line": 300
+    "line": 228
   },
   {
     "method": "DELETE",
     "path": "/api/v1/keys",
     "file": "internal/keystore/service.go",
-    "line": 147
+    "line": 140
   },
   {
     "method": "GET",
     "path": "/api/v1/keys",
     "file": "internal/keystore/service.go",
-    "line": 143
+    "line": 136
   },
   {
     "method": "POST",
     "path": "/api/v1/keys",
     "file": "internal/keystore/service.go",
-    "line": 142
+    "line": 135
   },
   {
     "method": "DELETE",
     "path": "/api/v1/keys/{id}",
     "file": "internal/keystore/service.go",
-    "line": 146
+    "line": 139
   },
   {
     "method": "GET",
     "path": "/api/v1/keys/{id}",
     "file": "internal/keystore/service.go",
-    "line": 144
+    "line": 137
   },
   {
     "method": "PUT",
     "path": "/api/v1/keys/{id}",
     "file": "internal/keystore/service.go",
-    "line": 145
+    "line": 138
   },
   {
     "method": "GET",
     "path": "/api/v1/knowledge",
     "file": "internal/knowledge/service.go",
-    "line": 248
+    "line": 356
   },
   {
     "method": "POST",
     "path": "/api/v1/knowledge",
     "file": "internal/knowledge/service.go",
-    "line": 247
+    "line": 355
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/knowledge/ai-write",
+    "file": "internal/knowledge/service.go",
+    "line": 372
   },
   {
     "method": "GET",
     "path": "/api/v1/knowledge/bookmarks",
     "file": "internal/knowledge/social.go",
-    "line": 136
+    "line": 155
   },
   {
     "method": "GET",
     "path": "/api/v1/knowledge/categories",
     "file": "internal/knowledge/service.go",
-    "line": 254
+    "line": 362
   },
   {
     "method": "POST",
     "path": "/api/v1/knowledge/categories",
     "file": "internal/knowledge/service.go",
-    "line": 255
+    "line": 363
   },
   {
     "method": "DELETE",
     "path": "/api/v1/knowledge/categories/{id}",
     "file": "internal/knowledge/service.go",
-    "line": 257
+    "line": 365
   },
   {
     "method": "PUT",
     "path": "/api/v1/knowledge/categories/{id}",
     "file": "internal/knowledge/service.go",
-    "line": 256
+    "line": 364
   },
   {
     "method": "GET",
     "path": "/api/v1/knowledge/follow-updates",
     "file": "internal/knowledge/social.go",
-    "line": 137
+    "line": 156
   },
   {
     "method": "POST",
     "path": "/api/v1/knowledge/follow-updates/read",
     "file": "internal/knowledge/social.go",
-    "line": 138
+    "line": 157
   },
   {
     "method": "GET",
     "path": "/api/v1/knowledge/follows",
     "file": "internal/knowledge/social.go",
-    "line": 135
+    "line": 154
   },
   {
     "method": "POST",
     "path": "/api/v1/knowledge/import",
     "file": "internal/knowledge/service.go",
-    "line": 260
+    "line": 368
   },
   {
     "method": "POST",
     "path": "/api/v1/knowledge/import-file",
     "file": "internal/knowledge/service.go",
-    "line": 262
+    "line": 370
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/knowledge/import-url",
+    "file": "internal/knowledge/service.go",
+    "line": 383
   },
   {
     "method": "GET",
@@ -2181,139 +2817,199 @@
     "method": "POST",
     "path": "/api/v1/knowledge/reindex",
     "file": "internal/knowledge/service.go",
-    "line": 252
+    "line": 360
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/knowledge/search-logs",
+    "file": "internal/knowledge/service.go",
+    "line": 389
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/knowledge/search-stats",
+    "file": "internal/knowledge/service.go",
+    "line": 390
   },
   {
     "method": "DELETE",
     "path": "/api/v1/knowledge/{id}",
     "file": "internal/knowledge/service.go",
-    "line": 251
+    "line": 359
   },
   {
     "method": "GET",
     "path": "/api/v1/knowledge/{id}",
     "file": "internal/knowledge/service.go",
-    "line": 249
+    "line": 357
   },
   {
     "method": "PUT",
     "path": "/api/v1/knowledge/{id}",
     "file": "internal/knowledge/service.go",
-    "line": 250
+    "line": 358
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/knowledge/{id}/attachments",
+    "file": "internal/knowledge/service.go",
+    "line": 375
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/knowledge/{id}/attachments",
+    "file": "internal/knowledge/service.go",
+    "line": 374
+  },
+  {
+    "method": "DELETE",
+    "path": "/api/v1/knowledge/{id}/attachments/{aid}",
+    "file": "internal/knowledge/service.go",
+    "line": 377
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/knowledge/{id}/attachments/{aid}",
+    "file": "internal/knowledge/service.go",
+    "line": 376
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/knowledge/{id}/attachments/{aid}/chunks",
+    "file": "internal/knowledge/service.go",
+    "line": 381
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/knowledge/{id}/attachments/{aid}/reindex",
+    "file": "internal/knowledge/service.go",
+    "line": 379
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/knowledge/{id}/attachments/{aid}/text",
+    "file": "internal/knowledge/service.go",
+    "line": 380
   },
   {
     "method": "POST",
     "path": "/api/v1/knowledge/{id}/bookmark",
     "file": "internal/knowledge/social.go",
-    "line": 133
+    "line": 152
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/knowledge/{id}/chunks/{chunk}",
+    "file": "internal/knowledge/service.go",
+    "line": 386
   },
   {
     "method": "GET",
     "path": "/api/v1/knowledge/{id}/comments",
     "file": "internal/knowledge/social.go",
-    "line": 141
+    "line": 160
   },
   {
     "method": "POST",
     "path": "/api/v1/knowledge/{id}/comments",
     "file": "internal/knowledge/social.go",
-    "line": 140
+    "line": 159
   },
   {
     "method": "POST",
     "path": "/api/v1/knowledge/{id}/follow",
     "file": "internal/knowledge/social.go",
-    "line": 134
+    "line": 153
   },
   {
     "method": "POST",
     "path": "/api/v1/knowledge/{id}/like",
     "file": "internal/knowledge/social.go",
-    "line": 132
+    "line": 151
   },
   {
     "method": "POST",
     "path": "/api/v1/knowledge/{id}/rate",
     "file": "internal/knowledge/social.go",
-    "line": 139
+    "line": 158
   },
   {
     "method": "GET",
     "path": "/api/v1/knowledge/{id}/stats",
     "file": "internal/knowledge/social.go",
-    "line": 131
+    "line": 150
   },
   {
     "method": "GET",
     "path": "/api/v1/knowledge/{id}/versions",
     "file": "internal/knowledge/service.go",
-    "line": 258
+    "line": 366
   },
   {
     "method": "POST",
     "path": "/api/v1/knowledge/{id}/versions/{version}/rollback",
     "file": "internal/knowledge/service.go",
-    "line": 259
+    "line": 367
   },
   {
     "method": "GET",
-    "path": "/api/v1/lowcode/instances",
-    "file": "internal/lowcode/service/handler.go",
-    "line": 34
-  },
-  {
-    "method": "POST",
     "path": "/api/v1/lowcode/instances",
     "file": "internal/lowcode/service/handler.go",
     "line": 33
   },
   {
+    "method": "POST",
+    "path": "/api/v1/lowcode/instances",
+    "file": "internal/lowcode/service/handler.go",
+    "line": 32
+  },
+  {
     "method": "DELETE",
-    "path": "/api/v1/lowcode/instances/{id}",
-    "file": "internal/lowcode/service/handler.go",
-    "line": 37
-  },
-  {
-    "method": "GET",
-    "path": "/api/v1/lowcode/instances/{id}",
-    "file": "internal/lowcode/service/handler.go",
-    "line": 35
-  },
-  {
-    "method": "PUT",
     "path": "/api/v1/lowcode/instances/{id}",
     "file": "internal/lowcode/service/handler.go",
     "line": 36
   },
   {
     "method": "GET",
-    "path": "/api/v1/lowcode/models",
+    "path": "/api/v1/lowcode/instances/{id}",
     "file": "internal/lowcode/service/handler.go",
-    "line": 27
+    "line": 34
   },
   {
-    "method": "POST",
+    "method": "PUT",
+    "path": "/api/v1/lowcode/instances/{id}",
+    "file": "internal/lowcode/service/handler.go",
+    "line": 35
+  },
+  {
+    "method": "GET",
     "path": "/api/v1/lowcode/models",
     "file": "internal/lowcode/service/handler.go",
     "line": 26
   },
   {
+    "method": "POST",
+    "path": "/api/v1/lowcode/models",
+    "file": "internal/lowcode/service/handler.go",
+    "line": 25
+  },
+  {
     "method": "DELETE",
     "path": "/api/v1/lowcode/models/{id}",
     "file": "internal/lowcode/service/handler.go",
-    "line": 30
+    "line": 29
   },
   {
     "method": "GET",
     "path": "/api/v1/lowcode/models/{id}",
     "file": "internal/lowcode/service/handler.go",
-    "line": 28
+    "line": 27
   },
   {
     "method": "PUT",
     "path": "/api/v1/lowcode/models/{id}",
     "file": "internal/lowcode/service/handler.go",
-    "line": 29
+    "line": 28
   },
   {
     "method": "GET",
@@ -2343,31 +3039,31 @@
     "method": "GET",
     "path": "/api/v1/lowcode/pages",
     "file": "internal/lowcode/service/handler.go",
-    "line": 41
+    "line": 40
   },
   {
     "method": "POST",
     "path": "/api/v1/lowcode/pages",
     "file": "internal/lowcode/service/handler.go",
-    "line": 40
+    "line": 39
   },
   {
     "method": "DELETE",
     "path": "/api/v1/lowcode/pages/{id}",
     "file": "internal/lowcode/service/handler.go",
-    "line": 44
+    "line": 43
   },
   {
     "method": "GET",
     "path": "/api/v1/lowcode/pages/{id}",
     "file": "internal/lowcode/service/handler.go",
-    "line": 42
+    "line": 41
   },
   {
     "method": "PUT",
     "path": "/api/v1/lowcode/pages/{id}",
     "file": "internal/lowcode/service/handler.go",
-    "line": 43
+    "line": 42
   },
   {
     "method": "GET",
@@ -2397,13 +3093,13 @@
     "method": "GET",
     "path": "/api/v1/lowcode/sql/{model_id}",
     "file": "internal/lowcode/service/handler.go",
-    "line": 50
+    "line": 49
   },
   {
     "method": "POST",
     "path": "/api/v1/lowcode/validate",
     "file": "internal/lowcode/service/handler.go",
-    "line": 47
+    "line": 46
   },
   {
     "method": "GET",
@@ -2439,109 +3135,109 @@
     "method": "GET",
     "path": "/api/v1/monitor/alert-stats",
     "file": "internal/monitor/service.go",
-    "line": 86
+    "line": 139
   },
   {
     "method": "GET",
     "path": "/api/v1/monitor/alerts",
     "file": "internal/monitor/service.go",
-    "line": 85
+    "line": 138
   },
   {
     "method": "GET",
     "path": "/api/v1/monitor/alerts/rca",
     "file": "internal/monitor/service.go",
-    "line": 87
+    "line": 140
   },
   {
     "method": "GET",
     "path": "/api/v1/monitor/alerts/rca/paths",
     "file": "internal/monitor/service.go",
-    "line": 88
+    "line": 141
   },
   {
     "method": "POST",
     "path": "/api/v1/monitor/alerts/{id}/ack",
     "file": "internal/monitor/service.go",
-    "line": 90
+    "line": 143
   },
   {
     "method": "POST",
     "path": "/api/v1/monitor/alerts/{id}/resolve",
     "file": "internal/monitor/service.go",
-    "line": 91
+    "line": 144
   },
   {
     "method": "GET",
     "path": "/api/v1/monitor/metrics",
     "file": "internal/monitor/service.go",
-    "line": 95
+    "line": 148
   },
   {
     "method": "GET",
     "path": "/api/v1/monitor/plugins",
     "file": "internal/monitor/service.go",
-    "line": 96
+    "line": 149
   },
   {
     "method": "POST",
     "path": "/api/v1/monitor/predict",
     "file": "internal/monitor/service.go",
-    "line": 89
+    "line": 142
   },
   {
     "method": "POST",
     "path": "/api/v1/monitor/probe",
     "file": "internal/monitor/service.go",
-    "line": 84
+    "line": 137
   },
   {
     "method": "GET",
     "path": "/api/v1/monitor/rules",
     "file": "internal/monitor/service.go",
-    "line": 92
+    "line": 145
   },
   {
     "method": "POST",
     "path": "/api/v1/monitor/rules",
     "file": "internal/monitor/service.go",
-    "line": 93
+    "line": 146
   },
   {
     "method": "DELETE",
     "path": "/api/v1/monitor/rules/{id}",
     "file": "internal/monitor/service.go",
-    "line": 94
+    "line": 147
   },
   {
     "method": "GET",
     "path": "/api/v1/monitor/targets",
     "file": "internal/monitor/service.go",
-    "line": 80
+    "line": 133
   },
   {
     "method": "POST",
     "path": "/api/v1/monitor/targets",
     "file": "internal/monitor/service.go",
-    "line": 82
+    "line": 135
   },
   {
     "method": "DELETE",
     "path": "/api/v1/monitor/targets/{id}",
     "file": "internal/monitor/service.go",
-    "line": 83
+    "line": 136
   },
   {
     "method": "GET",
     "path": "/api/v1/monitor/targets/{id}",
     "file": "internal/monitor/service.go",
-    "line": 81
+    "line": 134
   },
   {
     "method": "POST",
     "path": "/api/v1/monitor/topology/parent",
     "file": "internal/monitor/service.go",
-    "line": 97
+    "line": 150
   },
   {
     "method": "GET",
@@ -2637,91 +3333,97 @@
     "method": "GET",
     "path": "/api/v1/oncall",
     "file": "internal/itsm/oncall/service.go",
-    "line": 182
+    "line": 175
   },
   {
     "method": "POST",
     "path": "/api/v1/oncall",
     "file": "internal/itsm/oncall/service.go",
-    "line": 183
+    "line": 176
   },
   {
     "method": "GET",
     "path": "/api/v1/oncall/rotations",
     "file": "internal/itsm/oncall/service.go",
-    "line": 184
+    "line": 177
   },
   {
     "method": "POST",
     "path": "/api/v1/oncall/rotations",
     "file": "internal/itsm/oncall/service.go",
-    "line": 185
+    "line": 178
   },
   {
     "method": "DELETE",
     "path": "/api/v1/oncall/rotations/{id}",
     "file": "internal/itsm/oncall/service.go",
-    "line": 186
+    "line": 179
   },
   {
     "method": "GET",
     "path": "/api/v1/oncall/rotations/{id}/oncall",
     "file": "internal/itsm/oncall/service.go",
-    "line": 187
+    "line": 180
   },
   {
     "method": "GET",
     "path": "/api/v1/ops/health",
     "file": "internal/ops/service.go",
-    "line": 60
+    "line": 59
   },
   {
     "method": "POST",
     "path": "/api/v1/ops/restart",
     "file": "internal/ops/service.go",
-    "line": 63
+    "line": 62
   },
   {
     "method": "GET",
     "path": "/api/v1/ops/status",
     "file": "internal/ops/service.go",
-    "line": 61
+    "line": 60
   },
   {
     "method": "POST",
     "path": "/api/v1/ops/stop",
     "file": "internal/ops/service.go",
-    "line": 62
+    "line": 61
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/panorama",
+    "file": "internal/cmdb/service.go",
+    "line": 172
   },
   {
     "method": "GET",
     "path": "/api/v1/proxies",
     "file": "internal/agentmgr/service.go",
-    "line": 927
+    "line": 841
   },
   {
     "method": "POST",
     "path": "/api/v1/proxies",
     "file": "internal/agentmgr/service.go",
-    "line": 928
+    "line": 842
   },
   {
     "method": "DELETE",
     "path": "/api/v1/proxies/{id}",
     "file": "internal/agentmgr/service.go",
-    "line": 931
+    "line": 845
   },
   {
     "method": "GET",
     "path": "/api/v1/proxies/{id}",
     "file": "internal/agentmgr/service.go",
-    "line": 929
+    "line": 843
   },
   {
     "method": "PUT",
     "path": "/api/v1/proxies/{id}",
     "file": "internal/agentmgr/service.go",
-    "line": 930
+    "line": 844
   },
   {
     "method": "GET",
@@ -2775,295 +3477,325 @@
     "method": "POST",
     "path": "/api/v1/sandbox/exec",
     "file": "internal/agentmgr/service.go",
-    "line": 919
+    "line": 833
   },
   {
     "method": "GET",
     "path": "/api/v1/schedules",
     "file": "internal/automation/scheduler/service.go",
-    "line": 133
+    "line": 126
   },
   {
     "method": "POST",
     "path": "/api/v1/schedules",
     "file": "internal/automation/scheduler/service.go",
-    "line": 132
+    "line": 125
   },
   {
     "method": "DELETE",
     "path": "/api/v1/schedules/{id}",
     "file": "internal/automation/scheduler/service.go",
-    "line": 136
+    "line": 129
   },
   {
     "method": "GET",
     "path": "/api/v1/schedules/{id}",
     "file": "internal/automation/scheduler/service.go",
-    "line": 134
+    "line": 127
   },
   {
     "method": "PUT",
     "path": "/api/v1/schedules/{id}",
     "file": "internal/automation/scheduler/service.go",
-    "line": 135
+    "line": 128
   },
   {
     "method": "GET",
     "path": "/api/v1/scripts",
     "file": "internal/automation/script/service.go",
-    "line": 286
+    "line": 290
   },
   {
     "method": "POST",
     "path": "/api/v1/scripts",
     "file": "internal/automation/script/service.go",
-    "line": 285
+    "line": 289
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/scripts/ai-write",
+    "file": "internal/automation/script/service.go",
+    "line": 300
   },
   {
     "method": "POST",
     "path": "/api/v1/scripts/check",
     "file": "internal/automation/script/service.go",
-    "line": 295
+    "line": 299
   },
   {
     "method": "DELETE",
     "path": "/api/v1/scripts/{id}",
-    "file": "internal/automation/script/service.go",
-    "line": 289
-  },
-  {
-    "method": "GET",
-    "path": "/api/v1/scripts/{id}",
-    "file": "internal/automation/script/service.go",
-    "line": 287
-  },
-  {
-    "method": "PUT",
-    "path": "/api/v1/scripts/{id}",
-    "file": "internal/automation/script/service.go",
-    "line": 288
-  },
-  {
-    "method": "POST",
-    "path": "/api/v1/scripts/{id}/approve",
-    "file": "internal/automation/script/service.go",
-    "line": 297
-  },
-  {
-    "method": "GET",
-    "path": "/api/v1/scripts/{id}/diff",
-    "file": "internal/automation/script/service.go",
-    "line": 294
-  },
-  {
-    "method": "POST",
-    "path": "/api/v1/scripts/{id}/execute",
-    "file": "internal/automation/script/service.go",
-    "line": 290
-  },
-  {
-    "method": "GET",
-    "path": "/api/v1/scripts/{id}/executions",
-    "file": "internal/automation/script/service.go",
-    "line": 291
-  },
-  {
-    "method": "POST",
-    "path": "/api/v1/scripts/{id}/publish",
-    "file": "internal/automation/script/service.go",
-    "line": 296
-  },
-  {
-    "method": "POST",
-    "path": "/api/v1/scripts/{id}/reject",
-    "file": "internal/automation/script/service.go",
-    "line": 298
-  },
-  {
-    "method": "GET",
-    "path": "/api/v1/scripts/{id}/versions",
-    "file": "internal/automation/script/service.go",
-    "line": 292
-  },
-  {
-    "method": "GET",
-    "path": "/api/v1/scripts/{id}/versions/{version}",
     "file": "internal/automation/script/service.go",
     "line": 293
   },
   {
     "method": "GET",
+    "path": "/api/v1/scripts/{id}",
+    "file": "internal/automation/script/service.go",
+    "line": 291
+  },
+  {
+    "method": "PUT",
+    "path": "/api/v1/scripts/{id}",
+    "file": "internal/automation/script/service.go",
+    "line": 292
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/scripts/{id}/approve",
+    "file": "internal/automation/script/service.go",
+    "line": 302
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/scripts/{id}/diff",
+    "file": "internal/automation/script/service.go",
+    "line": 298
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/scripts/{id}/execute",
+    "file": "internal/automation/script/service.go",
+    "line": 294
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/scripts/{id}/executions",
+    "file": "internal/automation/script/service.go",
+    "line": 295
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/scripts/{id}/publish",
+    "file": "internal/automation/script/service.go",
+    "line": 301
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/scripts/{id}/reject",
+    "file": "internal/automation/script/service.go",
+    "line": 303
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/scripts/{id}/versions",
+    "file": "internal/automation/script/service.go",
+    "line": 296
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/scripts/{id}/versions/{version}",
+    "file": "internal/automation/script/service.go",
+    "line": 297
+  },
+  {
+    "method": "GET",
     "path": "/api/v1/system/config",
     "file": "internal/sysconfig/service.go",
-    "line": 63
+    "line": 144
   },
   {
     "method": "PUT",
     "path": "/api/v1/system/config",
     "file": "internal/sysconfig/service.go",
-    "line": 64
+    "line": 145
   },
   {
     "method": "GET",
     "path": "/api/v1/system/config/categories",
     "file": "internal/sysconfig/service.go",
-    "line": 65
+    "line": 146
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/system/logs",
+    "file": "internal/systemmon/service.go",
+    "line": 78
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/system/status",
+    "file": "internal/systemmon/service.go",
+    "line": 77
   },
   {
     "method": "GET",
     "path": "/api/v1/users",
     "file": "internal/user/service.go",
-    "line": 34
+    "line": 49
   },
   {
     "method": "POST",
     "path": "/api/v1/users",
     "file": "internal/user/service.go",
-    "line": 35
+    "line": 50
   },
   {
     "method": "GET",
     "path": "/api/v1/users/me",
     "file": "internal/user/service.go",
-    "line": 40
+    "line": 55
   },
   {
     "method": "DELETE",
     "path": "/api/v1/users/{id}",
     "file": "internal/user/service.go",
-    "line": 38
+    "line": 53
   },
   {
     "method": "GET",
     "path": "/api/v1/users/{id}",
     "file": "internal/user/service.go",
-    "line": 36
+    "line": 51
   },
   {
     "method": "PUT",
     "path": "/api/v1/users/{id}",
     "file": "internal/user/service.go",
-    "line": 37
+    "line": 52
   },
   {
     "method": "PUT",
     "path": "/api/v1/users/{id}/password",
     "file": "internal/user/service.go",
-    "line": 39
+    "line": 54
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/vuln/findings",
+    "file": "internal/vuln/service.go",
+    "line": 92
+  },
+  {
+    "method": "PATCH",
+    "path": "/api/v1/vuln/findings/{id}",
+    "file": "internal/vuln/service.go",
+    "line": 93
   },
   {
     "method": "GET",
     "path": "/api/v1/vuln/scans",
     "file": "internal/vuln/service.go",
-    "line": 71
+    "line": 86
   },
   {
     "method": "POST",
     "path": "/api/v1/vuln/scans",
     "file": "internal/vuln/service.go",
-    "line": 70
+    "line": 85
   },
   {
     "method": "GET",
     "path": "/api/v1/vuln/scans/export/csv",
     "file": "internal/vuln/service.go",
-    "line": 76
+    "line": 87
   },
   {
     "method": "DELETE",
     "path": "/api/v1/vuln/scans/{id}",
     "file": "internal/vuln/service.go",
-    "line": 73
+    "line": 89
   },
   {
     "method": "GET",
     "path": "/api/v1/vuln/scans/{id}",
     "file": "internal/vuln/service.go",
-    "line": 72
+    "line": 88
   },
   {
     "method": "GET",
     "path": "/api/v1/vuln/scans/{id}/findings",
     "file": "internal/vuln/service.go",
-    "line": 74
+    "line": 90
   },
   {
     "method": "GET",
     "path": "/api/v1/vuln/stats",
     "file": "internal/vuln/service.go",
-    "line": 75
+    "line": 94
   },
   {
     "method": "GET",
     "path": "/api/v1/workflows",
     "file": "internal/automation/workflow/service.go",
-    "line": 247
+    "line": 241
   },
   {
     "method": "POST",
     "path": "/api/v1/workflows",
     "file": "internal/automation/workflow/service.go",
-    "line": 246
+    "line": 240
   },
   {
     "method": "GET",
     "path": "/api/v1/workflows/approvals",
     "file": "internal/automation/workflow/service.go",
-    "line": 254
+    "line": 248
   },
   {
     "method": "POST",
     "path": "/api/v1/workflows/approvals/{id}/approve",
     "file": "internal/automation/workflow/service.go",
-    "line": 255
+    "line": 249
   },
   {
     "method": "POST",
     "path": "/api/v1/workflows/approvals/{id}/reject",
     "file": "internal/automation/workflow/service.go",
-    "line": 256
+    "line": 250
   },
   {
     "method": "POST",
     "path": "/api/v1/workflows/executions/{exec_id}/cancel",
     "file": "internal/automation/workflow/service.go",
-    "line": 257
+    "line": 251
   },
   {
     "method": "GET",
     "path": "/api/v1/workflows/templates/list",
     "file": "internal/automation/workflow/service.go",
-    "line": 259
+    "line": 253
   },
   {
     "method": "DELETE",
     "path": "/api/v1/workflows/{id}",
     "file": "internal/automation/workflow/service.go",
-    "line": 250
+    "line": 244
   },
   {
     "method": "GET",
     "path": "/api/v1/workflows/{id}",
     "file": "internal/automation/workflow/service.go",
-    "line": 248
+    "line": 242
   },
   {
     "method": "PUT",
     "path": "/api/v1/workflows/{id}",
     "file": "internal/automation/workflow/service.go",
-    "line": 249
+    "line": 243
   },
   {
     "method": "POST",
     "path": "/api/v1/workflows/{id}/execute",
     "file": "internal/automation/workflow/service.go",
-    "line": 251
+    "line": 245
   },
   {
     "method": "GET",
     "path": "/api/v1/workflows/{id}/executions",
     "file": "internal/automation/workflow/service.go",
-    "line": 252
+    "line": 246
   },
   {
     "method": "GET",

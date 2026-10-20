@@ -268,7 +268,9 @@ func main() {
 	server.WithMiddleware(auditSvc.Middleware)
 
 	// T03: 注册 bypass 前缀 — /metrics /healthz /readyz /api/v1/health /swagger 跳过认证/审计/RBAC 中间件
-	server.WithBypassPrefixes("/metrics", "/healthz", "/readyz", "/api/v1/health", "/api/v1/ws", "/swagger/", "/api/v1/chatops/callback/")
+	// /api/v1/chatops/callback/ 与 /api/v1/inbound/ 是第三方平台(企微/钉钉/飞书)的 webhook 回调,
+	// 携带的是平台签名而非平台 JWT, 必须在 handler 内自行校验签名, 故跳过统一中间件。
+	server.WithBypassPrefixes("/metrics", "/healthz", "/readyz", "/api/v1/health", "/api/v1/ws", "/swagger/", "/api/v1/chatops/callback/", "/api/v1/inbound/")
 
 	// Swagger UI 路由
 	server.RegisterService(&swaggerRegistrar{})
@@ -1217,25 +1219,16 @@ func main() {
 		}
 		return true, fmt.Sprintf("已验证: 修复工单 %s 已派发并处于 %s 状态", tid, ticket.Status), nil
 	})
-	// 会话共享按组匹配: 注入用户组查询(iam 组模型 UserIDs 成员列表)
+	// 权限感知检索的可见范围解析器: iam 用户组 → 提问者所属组(带 30s 缓存, 见 scope_adapter.go)。
+	// 同一实例同时注入工具集与引擎 —— 两者必须共用口径, 否则会出现
+	// 「谓词按身份过滤、工具结果缓存却跨用户复用」的错配(越权泄漏)。
+	scopeResolver := newIAMScopeResolver(iamSvc)
+	// 会话共享按组匹配: 复用同一解析器(iam 组模型 UserIDs 成员列表)。
 	aiSvc.SetUserGroupsProvider(func(ctx context.Context, userID string) []string {
 		if iamSvc == nil || userID == "" {
 			return nil
 		}
-		groups, err := iamSvc.ListGroups(ctx, "default")
-		if err != nil {
-			return nil
-		}
-		var out []string
-		for _, g := range groups {
-			for _, uid := range g.UserIDs {
-				if uid == userID {
-					out = append(out, g.ID)
-					break
-				}
-			}
-		}
-		return out
+		return scopeResolver.groupsOf(ctx, "default", userID)
 	})
 	if db != nil {
 		if err := aiSvc.Engine.LoadMemories(ctx, "default", aiSvc.LoadMemoriesFromDB); err != nil {
@@ -1274,6 +1267,35 @@ func main() {
 	toolSet.SetCodingApproval(aiSvc.Engine.CodingApprovalChecker)
 	// 知识库-AI 绑定: 按 Agent 解析其绑定的知识库分类, RAG 检索与 knowledge_search 工具据此过滤。
 	toolSet.SetKnowledgeCategoriesResolver(aiSvc.Engine.AgentKnowledgeCategories)
+	// 权限感知检索: 可见性谓词按提问者身份生成(公开 / 团队私有 / 个人)。未注入时退化为「仅公开」。
+	toolSet.SetScopeResolver(scopeResolver)
+	aiSvc.Engine.SetScopeResolver(scopeResolver)
+	// 检索反馈闭环: 文章级赞踩(来自 /ai/feedback 的 cited_articles)作为检索降权来源注入。
+	// 内存/降级实现同样满足接口; 失败路径在工具集内部兜底(不降权、不阻断检索)。
+	if fp, ok := aiSvc.FeedbackStore().(agentic.ArticlePenaltyProvider); ok {
+		toolSet.SetArticlePenaltyProvider(fp)
+	}
+	// 检索可观测(P1-2/P1-4): 每次召回写 knowledge_search_logs(延迟/各路贡献/零结果查询)。
+	// 与知识库模块共用同一个 SearchLogStore, 保证「写」与「管理端读取」口径一致。
+	if knowledgeSvc != nil {
+		toolSet.SetSearchLogStore(knowledgeSvc.SearchLogs())
+		// RAG 效果评估(P1-1): 评估必须跑在真实检索路径上, 故由工具集实现评估器接口注入知识库模块;
+		// 同时把「按 Agent 解析知识范围」也接过去, 保证评估范围与线上检索一致。
+		knowledgeSvc.SetRAGEvaluator(toolSet)
+		// 检索测试台(批次 4): 可解释检索跑在同一条生产路径上, 由工具集实现该接口。
+		knowledgeSvc.SetRetrievalPreviewer(toolSet)
+		// 用户级知识搜索: 列表页搜索框升级为真检索, 与 AI 同一条召回路径(留痕/缓存/scope 全部生效)。
+		knowledgeSvc.SetKnowledgeSearcher(toolSet)
+		knowledgeSvc.SetKnowledgeCategoryResolver(aiSvc.Engine.AgentKnowledgeCategories)
+		// 可见性/内容变更 → 立即失效 AI 侧的检索缓存。
+		// 检索结果存在两条独立的 5 分钟 TTL 缓存(MCPToolSet.searchCache 与引擎级 toolCache),
+		// 不失效则「下架/收紧可见性/删除」的文章仍会在窗口内被召回并进入模型上下文,
+		// 相当于给 fail-closed 的可见性过滤留了个时间窗。
+		knowledgeSvc.SetCacheInvalidator(func() {
+			toolSet.FlushSearchCache()
+			aiSvc.Engine.FlushKnowledgeSearchCache()
+		})
+	}
 	// P0-2: AI 可直接执行的脚本白名单(免人工审批); 缺省全部须经审批。格式: 逗号分隔的 script_id 或 script_name。
 	if s := os.Getenv("OPSORIGIN_AI_APPROVED_SCRIPTS"); s != "" {
 		var ids []string
