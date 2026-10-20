@@ -3,6 +3,7 @@ package iam
 import (
 	"context"
 	"database/sql"
+	"log/slog"
 	"net/http"
 	"sync"
 	"time"
@@ -310,6 +311,29 @@ func seedPermissions() []Permission {
 		{Name: "apikey:self", Description: "管理自己的 API Key(继承本人权限)", Category: "用户权限"},
 		{Name: "vuln:read", Description: "查看漏洞扫描与漏洞明细", Category: "漏洞扫描"},
 		{Name: "vuln:write", Description: "发起/删除扫描,处置漏洞(修复/忽略/误报)", Category: "漏洞扫描"},
+		{Name: "knowledge:read", Description: "查看知识库文章/分类/版本/附件", Category: "知识库"},
+		{Name: "knowledge:write", Description: "新建/编辑知识库文章与分类、上传附件", Category: "知识库"},
+		{Name: "knowledge:manage", Description: "删除文章/分类、导入、重建向量索引(高危)", Category: "知识库"},
+		{Name: "ai:read", Description: "查看 AI 会话/智能体/提示词/技能", Category: "AI 助手"},
+		{Name: "ai:write", Description: "管理 AI 会话/智能体/提示词/技能, 发起对话与巡检", Category: "AI 助手"},
+		{Name: "script:read", Description: "查看脚本与执行历史", Category: "自动化"},
+		{Name: "script:write", Description: "新建/编辑/审核脚本", Category: "自动化"},
+		{Name: "script:exec", Description: "在受管主机执行脚本(高危)", Category: "自动化"},
+		{Name: "workflow:read", Description: "查看工作流与执行历史", Category: "自动化"},
+		{Name: "workflow:write", Description: "编辑工作流、审批执行单", Category: "自动化"},
+		{Name: "workflow:exec", Description: "执行/取消工作流编排(高危)", Category: "自动化"},
+		{Name: "schedule:read", Description: "查看定时任务", Category: "自动化"},
+		{Name: "schedule:write", Description: "编辑定时任务", Category: "自动化"},
+		{Name: "automation:read", Description: "查看入站渠道(企微/钉钉/飞书/邮件)配置", Category: "自动化"},
+		{Name: "automation:write", Description: "修改入站渠道配置与凭据", Category: "自动化"},
+		{Name: "report:read", Description: "查看报表数据集与仪表盘", Category: "报表"},
+		{Name: "report:write", Description: "编辑仪表盘、执行自定义数据集查询", Category: "报表"},
+		{Name: "lowcode:read", Description: "查看低代码模型/页面/实例", Category: "低代码"},
+		{Name: "lowcode:write", Description: "编辑低代码模型/页面/实例", Category: "低代码"},
+		{Name: "deploy:read", Description: "查看发布应用/环境/发布单", Category: "发布管理"},
+		{Name: "deploy:write", Description: "编辑应用与环境、审批/执行/回滚发布", Category: "发布管理"},
+		{Name: "credential:read", Description: "查看凭据库条目", Category: "凭据管理"},
+		{Name: "credential:write", Description: "新增/修改/删除凭据(SSH 私钥、云 AK/SK)", Category: "凭据管理"},
 	}
 }
 
@@ -331,6 +355,16 @@ func (s *Service) seedBuiltinRoles() {
 			"agent:read", "agent:write",
 			"audit:read", "system:admin", "ai:tool:exec",
 			"vuln:read", "vuln:write",
+			"knowledge:read", "knowledge:write", "knowledge:manage",
+			"ai:read", "ai:write",
+			"script:read", "script:write", "script:exec",
+			"workflow:read", "workflow:write", "workflow:exec",
+			"schedule:read", "schedule:write",
+			"automation:read", "automation:write",
+			"report:read", "report:write",
+			"lowcode:read", "lowcode:write",
+			"deploy:read", "deploy:write",
+			"credential:read", "credential:write",
 		}},
 		{"operator", "操作员", "日常运维操作,无系统级权限", []string{
 			"cmdb:read", "cmdb:write",
@@ -340,6 +374,16 @@ func (s *Service) seedBuiltinRoles() {
 			"agent:read", "agent:write",
 			"audit:read", "ai:tool:exec",
 			"vuln:read", "vuln:write",
+			"knowledge:read", "knowledge:write",
+			"ai:read", "ai:write",
+			"script:read", "script:write", "script:exec",
+			"workflow:read", "workflow:write", "workflow:exec",
+			"schedule:read", "schedule:write",
+			"automation:read", "automation:write",
+			"report:read", "report:write",
+			"lowcode:read", "lowcode:write",
+			"deploy:read", "deploy:write",
+			"credential:read", "credential:write",
 		}},
 		{"viewer", "只读用户", "仅可查看,不可修改", []string{
 			"cmdb:read",
@@ -349,6 +393,15 @@ func (s *Service) seedBuiltinRoles() {
 			"agent:read",
 			"audit:read",
 			"vuln:read",
+			"knowledge:read",
+			"ai:read",
+			"script:read",
+			"workflow:read",
+			"schedule:read",
+			"automation:read",
+			"report:read",
+			"lowcode:read",
+			"deploy:read",
 		}},
 	}
 	for _, b := range builtins {
@@ -372,6 +425,39 @@ func (s *Service) seedBuiltinRoles() {
 			updated.Permissions = merged
 			s.store.UpdateRole(ctx, &updated)
 		}
+	}
+	s.backfillModulePermissions(ctx)
+}
+
+// backfillModulePermissions 为「存量自定义角色」补齐新引入模块的权限点。
+//
+// 知识库/AI/脚本/工作流/定时任务/报表/低代码/发布/凭据等模块此前未登记路径权限映射,
+// 中间件未命中映射时只认证不鉴权,等价于所有已登录用户都能读写。补登记映射后这些接口
+// 开始真正鉴权,存量自定义角色若不带新权限点会被静默降权,故按 pkg/auth.ModuleGrantRules
+// 的「等价能力」规则补齐(具备写权限→补读写,只读角色→补只读)。
+//
+// 幂等:仅当补齐后权限集合发生变化才落库。
+func (s *Service) backfillModulePermissions(ctx context.Context) {
+	roles, err := s.store.ListRoles(ctx, "default")
+	if err != nil {
+		slog.Warn("iam: 列出角色失败, 跳过存量角色权限补齐", "error", err)
+		return
+	}
+	for _, role := range roles {
+		if role == nil || role.IsBuiltIn {
+			continue
+		}
+		merged, changed := auth.BackfillModulePermissions(role.Permissions)
+		if !changed {
+			continue
+		}
+		updated := *role
+		updated.Permissions = merged
+		if err := s.store.UpdateRole(ctx, &updated); err != nil {
+			slog.Warn("iam: 存量角色权限补齐失败", "role", role.Name, "error", err)
+			continue
+		}
+		slog.Info("iam: 已为存量角色补齐新模块权限点", "role", role.Name, "added", len(merged)-len(role.Permissions))
 	}
 }
 
