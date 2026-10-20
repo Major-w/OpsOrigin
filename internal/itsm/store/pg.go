@@ -1177,30 +1177,48 @@ func (s *PGStore) ListActiveTicketsWithDeadline(ctx context.Context, tenantID st
 	for rows.Next() {
 		t := &model.Ticket{}
 		var ciIDsJSON, labelsJSON, customFieldsJSON []byte
-		var processID, assignee, changePlan, rollbackPlan sql.NullString
+		// itsm_tickets 的 description/approved_by/reject_reason/completed_by/rolled_back_by/
+		// rollback_reason/webhook_url 都是「可空且无默认值」的文本列——库里历史行大量为 NULL，
+		// 直扫裸 string 会让【整条查询】以 converting NULL to string 失败，
+		// 而这两个查询只服务后台巡检（SLA/OLA），失败只体现为一行 ERROR 日志，
+		// 表现为 SLA 预警/违约与 OLA 超时升级整体静默失效，接口侧看不出任何异常。
+		var desc, approvedBy, rejectReason, completedBy, rolledBackBy, rollbackReason, webhookURL sql.NullString
+		var processID, assignee, changePlan, rollbackPlan, catalogID, holdReason, relatedJSON sql.NullString
 		var scheduledAt, deadlineAt, approvedAt, executedAt, completedAt, rolledBackAt, slaBreachedAt sql.NullTime
-		var holdAt sql.NullTime
-		var holdSeconds sql.NullInt64
-		var catalogID sql.NullString
+		var holdAt, holdUntilAt, assignedAt sql.NullTime
+		var holdSeconds, slaEscalationLevel sql.NullInt64
 		var approvalChainJSON, approvalStatusJSON sql.NullString
-		var holdReason, relatedJSON sql.NullString
-		var holdUntilAt, assignedAt sql.NullTime
+		var slaWarningNotified, slaBreached, onHold sql.NullBool
 		var satisfaction sql.NullInt32
 		err := rows.Scan(
-			&t.ID, &t.TenantID, &t.Title, &t.Description, &t.RiskLevel, &t.Status,
+			&t.ID, &t.TenantID, &t.Title, &desc, &t.RiskLevel, &t.Status,
 			&changePlan, &rollbackPlan, &t.CreatedBy, &t.CreatedByType,
-			&t.ApprovedBy, &t.RejectReason, &t.CompletedBy, &t.RolledBackBy,
-			&t.RollbackReason, &ciIDsJSON, &t.WebhookURL, &labelsJSON, &t.TraceID,
+			&approvedBy, &rejectReason, &completedBy, &rolledBackBy, &rollbackReason,
+			&ciIDsJSON, &webhookURL, &labelsJSON, &t.TraceID,
 			&scheduledAt, &deadlineAt, &t.CreatedAt, &t.UpdatedAt,
 			&approvedAt, &executedAt, &completedAt, &rolledBackAt,
-			&t.SLAWarningNotified, &t.SLABreached, &slaBreachedAt, &t.SLAEscalationLevel,
+			&slaWarningNotified, &slaBreached, &slaBreachedAt, &slaEscalationLevel,
 			&customFieldsJSON, &processID, &assignee,
 			&holdAt, &holdSeconds,
 			&catalogID, &approvalChainJSON, &approvalStatusJSON,
-			&t.OnHold, &holdReason, &holdUntilAt, &assignedAt, &satisfaction, &relatedJSON,
+			&onHold, &holdReason, &holdUntilAt, &assignedAt, &satisfaction, &relatedJSON,
 		)
 		if err != nil {
 			return nil, err
+		}
+		t.Description = nullableStr(desc)
+		t.ApprovedBy = nullableStr(approvedBy)
+		t.RejectReason = nullableStr(rejectReason)
+		t.CompletedBy = nullableStr(completedBy)
+		t.RolledBackBy = nullableStr(rolledBackBy)
+		t.RollbackReason = nullableStr(rollbackReason)
+		t.WebhookURL = nullableStr(webhookURL)
+		// 可空布尔/整数：NULL 一律按「否/未升级」处理，与 SQL 里的 COALESCE(on_hold, false) 口径一致。
+		t.SLAWarningNotified = slaWarningNotified.Valid && slaWarningNotified.Bool
+		t.SLABreached = slaBreached.Valid && slaBreached.Bool
+		t.OnHold = onHold.Valid && onHold.Bool
+		if slaEscalationLevel.Valid {
+			t.SLAEscalationLevel = int(slaEscalationLevel.Int64)
 		}
 		setTimePtr(&t.HoldAt, holdAt)
 		if holdSeconds.Valid {
@@ -1283,36 +1301,49 @@ func (s *PGStore) ListOnHoldTicketsPastDue(ctx context.Context, tenantID string)
 	for rows.Next() {
 		t := &model.Ticket{}
 		var ciIDsJSON, labelsJSON, customFieldsJSON []byte
-		var slaWarningNotified, slaBreached bool
+		// 与 ListActiveTicketsWithDeadline 同因：可空文本列必须走 sql.NullString，
+		// 否则任一行是 NULL 就让整个「挂起到期自动恢复」巡检失败。
+		var desc, approvedBy, rejectReason, completedBy, rolledBackBy, rollbackReason, webhookURL sql.NullString
+		var processID, assignee, changePlan, rollbackPlan, catalogID, holdReason, relatedJSON sql.NullString
 		var slaBreachedAt, deadlineAt, holdUntilAt sql.NullTime
 		var slaEscalationLevel sql.NullInt64
-		var processID, assignee, changePlan, rollbackPlan sql.NullString
 		var holdAt sql.NullTime
 		var holdSeconds sql.NullInt64
-		var catalogID sql.NullString
 		var approvalChainJSON, approvalStatusJSON sql.NullString
 		var assignedAt sql.NullTime
 		var satisfaction sql.NullInt32
-		var relatedJSON sql.NullString
+		var slaWarningNotified, slaBreached, onHold sql.NullBool
 		if err := rows.Scan(
-			&t.ID, &t.TenantID, &t.Title, &t.Description, &t.RiskLevel, &t.Status,
-			&changePlan, &rollbackPlan, &t.CreatedBy, &t.CreatedByType, &t.ApprovedBy,
-			&t.RejectReason, &t.CompletedBy, &t.RolledBackBy, &t.RollbackReason,
-			&ciIDsJSON, &t.WebhookURL, &labelsJSON, &t.TraceID,
+			&t.ID, &t.TenantID, &t.Title, &desc, &t.RiskLevel, &t.Status,
+			&changePlan, &rollbackPlan, &t.CreatedBy, &t.CreatedByType, &approvedBy,
+			&rejectReason, &completedBy, &rolledBackBy, &rollbackReason,
+			&ciIDsJSON, &webhookURL, &labelsJSON, &t.TraceID,
 			&t.ScheduledAt, &deadlineAt, &t.CreatedAt, &t.UpdatedAt, &t.ApprovedAt,
 			&t.ExecutedAt, &t.CompletedAt, &t.RolledBackAt,
 			&slaWarningNotified, &slaBreached, &slaBreachedAt, &slaEscalationLevel,
-			&customFieldsJSON, &processID, &assignee, &t.OnHold, &t.HoldReason, &holdUntilAt,
+			&customFieldsJSON, &processID, &assignee, &onHold, &holdReason, &holdUntilAt,
 			&holdAt, &holdSeconds,
 			&catalogID, &approvalChainJSON, &approvalStatusJSON,
 			&assignedAt, &satisfaction, &relatedJSON,
 		); err != nil {
 			return nil, err
 		}
+		t.Description = nullableStr(desc)
+		t.ApprovedBy = nullableStr(approvedBy)
+		t.RejectReason = nullableStr(rejectReason)
+		t.CompletedBy = nullableStr(completedBy)
+		t.RolledBackBy = nullableStr(rolledBackBy)
+		t.RollbackReason = nullableStr(rollbackReason)
+		t.WebhookURL = nullableStr(webhookURL)
 		t.ChangePlan = nullableStr(changePlan)
 		t.RollbackPlan = nullableStr(rollbackPlan)
-		t.SLAWarningNotified = slaWarningNotified
-		t.SLABreached = slaBreached
+		t.HoldReason = nullableStr(holdReason)
+		t.SLAWarningNotified = slaWarningNotified.Valid && slaWarningNotified.Bool
+		t.SLABreached = slaBreached.Valid && slaBreached.Bool
+		t.OnHold = onHold.Valid && onHold.Bool
+		if slaEscalationLevel.Valid {
+			t.SLAEscalationLevel = int(slaEscalationLevel.Int64)
+		}
 		if slaBreachedAt.Valid {
 			t.SLABreachedAt = &slaBreachedAt.Time
 		}
