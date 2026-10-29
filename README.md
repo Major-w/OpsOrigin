@@ -1,6 +1,6 @@
 # OpsOrigin
 
-> 下一代 AI 原生全自动运维控制面（AIOps Control Plane）
+> AI 原生一体化运维平台（AIOps）
 
 [![Go](https://img.shields.io/badge/Go-1.25+-00ADD8?logo=go&logoColor=white)](https://go.dev)
 [![Vite](https://img.shields.io/badge/Vite-6-646CFF?logo=vite&logoColor=white)](https://vitejs.dev)
