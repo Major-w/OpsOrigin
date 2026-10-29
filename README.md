@@ -5,7 +5,6 @@
 [![Go](https://img.shields.io/badge/Go-1.25+-00ADD8?logo=go&logoColor=white)](https://go.dev)
 [![Vite](https://img.shields.io/badge/Vite-6-646CFF?logo=vite&logoColor=white)](https://vitejs.dev)
 [![License](https://img.shields.io/badge/License-GPL--3.0-blue.svg)](LICENSE)
-[![CI](https://img.shields.io/github/actions/workflow/status/Major-w/OpsOrigin/ci.yml?branch=dev&label=CI)](https://github.com/Major-w/OpsOrigin/actions)
 
 OpsOrigin 是一个 **AI 一体化运维平台**：CMDB、ITSM、监控告警、自动化运维、应用发布和 AI 助手不再各自为战，而是集成在同一个平台里——数据互通、流程串联。AI Agent 能查资产、看告警、起草变更方案，但每一次真实操作都必须经过人工审批（HITL）才会执行。Go 后端 + React 前端，docker-compose 一键启动。
 
