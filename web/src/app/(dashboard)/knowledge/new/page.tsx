@@ -204,7 +204,7 @@ export default function KnowledgeNewPage() {
     : undefined
 
   return (
-    <div className="p-6 flex flex-col gap-3 overflow-hidden" style={{ height: 'calc(100vh - 56px)' }}>
+    <div className="p-6 flex flex-col gap-3 overflow-hidden h-[calc(100vh-56px)]">
       {/* 顶栏: 返回 + 标题 + 保存 */}
       <div className="flex items-center justify-between gap-3 shrink-0">
         <div className="flex items-center gap-3">

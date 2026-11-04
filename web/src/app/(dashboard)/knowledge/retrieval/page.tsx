@@ -341,7 +341,7 @@ export default function KnowledgeRetrievalPage() {
             <Input
               allowClear
               size="middle"
-              style={{ minWidth: 260, flex: 1 }}
+              className="min-w-[260px] flex-1"
               placeholder="例如：磁盘满了怎么处理 / 数据库连接数超限"
               prefix={<Search className="h-3.5 w-3.5 text-muted-foreground" />}
               value={query}
@@ -367,7 +367,7 @@ export default function KnowledgeRetrievalPage() {
                 mode="multiple"
                 allowClear
                 size="small"
-                style={{ minWidth: 200, maxWidth: 320 }}
+                className="min-w-[200px] max-w-[320px]"
                 placeholder="不限"
                 value={categories}
                 onChange={v => setCategories(v || [])}
@@ -382,7 +382,7 @@ export default function KnowledgeRetrievalPage() {
               </span>
               <AutoComplete
                 size="small"
-                style={{ minWidth: 240 }}
+                className="min-w-[240px]"
                 placeholder="留空 = 以本人身份"
                 value={scopeUser}
                 onChange={v => setScopeUser(v || '')}

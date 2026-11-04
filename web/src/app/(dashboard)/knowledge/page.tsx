@@ -5,6 +5,7 @@ import { useKnowledgeStore, type PrecipitationRule, type Article } from '@/store
 import { Card, CardContent } from '@/components/ui/card'
 import { Button, Select, Tag, Input, Popconfirm, Modal } from 'antd'
 import { formatTime, apiFetch, cn } from '@/lib/utils'
+import { PageContainer } from '@/components/page-container'
 import { Plus, Trash2, BookOpen, Pencil, FolderPlus, Upload, Loader2, CheckCircle2, Bookmark, Bell, Settings2, ThumbsUp, MessageSquare, CalendarOff, Eye, Sparkles, Search } from 'lucide-react'
 import { useAuthStore } from '@/stores/auth'
 import { useIAMStore } from '@/stores/iam'
@@ -273,11 +274,11 @@ export default function KnowledgeListPage() {
     return (b.updated_at || b.created_at || '').localeCompare(a.updated_at || a.created_at || '')
   })
 
-  return <div className="p-6 space-y-4">
-    <input ref={importRef} type="file" accept=".md,.markdown,.txt,.json,.pdf,.docx" className="hidden" onChange={handleImportFile} />
-
-    <div className="flex items-center justify-between">
-      <div><h1 className="text-2xl font-bold">知识库</h1><p className="text-xs text-muted-foreground">运维文档、故障处理、最佳实践，AI自动检索辅助问答</p></div>
+  return <PageContainer
+    className="space-y-4"
+    title="知识库"
+    subtitle="运维文档、故障处理、最佳实践，AI自动检索辅助问答"
+    extra={
       <div className="flex gap-2">
         <Button size="middle" type="default" onClick={() => importRef.current?.click()} disabled={importing}>
           {importing ? <Loader2 className="h-4 w-4 mr-1 animate-spin" /> : <Upload className="h-4 w-4 mr-1" />}导入
@@ -286,7 +287,9 @@ export default function KnowledgeListPage() {
         <Button size="middle" type="default" onClick={() => setPrecipOpen(true)}><Settings2 className="h-4 w-4 mr-1" />沉淀策略</Button>
         <Button size="middle" onClick={() => navigate('/knowledge/new')}><Plus className="h-4 w-4 mr-1" />新建文章</Button>
       </div>
-    </div>
+    }
+  >
+    <input ref={importRef} type="file" accept=".md,.markdown,.txt,.json,.pdf,.docx" className="hidden" onChange={handleImportFile} />
 
     <div className="flex gap-2 flex-wrap items-center">
       {/* 视图过滤: 全部 / 我的收藏 / 我关注的 */}
@@ -515,5 +518,5 @@ export default function KnowledgeListPage() {
             </div>
           )}
     </Modal>
-  </div>
+  </PageContainer>
 }

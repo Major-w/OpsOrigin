@@ -488,7 +488,7 @@ export default function KnowledgeInsightsPage() {
                 <Input.Search
                   allowClear
                   size="small"
-                  style={{ width: 220 }}
+                  className="w-[220px]"
                   placeholder="按提问内容过滤"
                   value={logQ}
                   onChange={e => { setLogQ(e.target.value); setPage(1) }}

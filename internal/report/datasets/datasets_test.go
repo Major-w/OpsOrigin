@@ -18,8 +18,8 @@ func TestBuiltinDatasetsValidate(t *testing.T) {
 			t.Fatalf("dataset %q invalid: %v", ds.Name, err)
 		}
 	}
-	if got := len(reg.Names()); got != 5 {
-		t.Fatalf("expected 5 builtin datasets, got %d", got)
+	if got := len(reg.Names()); got != 7 {
+		t.Fatalf("expected 7 builtin datasets, got %d", got)
 	}
 }
 

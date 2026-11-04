@@ -25,7 +25,7 @@ export function MarkdownViewer({ content, className }: MarkdownViewerProps) {
         remarkPlugins={[remarkGfm]}
         rehypePlugins={[rehypeHighlight]}
         components={{
-          code({ className, children, ...props }: any) {
+          code({ node: _node, className, children, ...props }: any) {
             const match = /language-(\w+)/.exec(className || '')
             if (match && match[1] === 'mermaid') {
               return <MermaidBlock chart={String(children).replace(/\n$/, '')} />

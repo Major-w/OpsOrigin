@@ -37,6 +37,8 @@ func builtin(db *sql.DB) []*report.Dataset {
 		agentHosts(db),
 		auditEvents(db),
 		cmdbCI(db),
+		knowledgeArticles(db),
+		knowledgeSearchLogs(db),
 	}
 }
 
@@ -195,5 +197,72 @@ func cmdbCI(db *sql.DB) *report.Dataset {
 	return report.NewSQLDataset(db, ds, report.SQLSpec{
 		Table:        "cmdb_ci",
 		TenantColumn: "tenant_id",
+	})
+}
+
+// —— 知识库文章 ——
+
+func knowledgeArticles(db *sql.DB) *report.Dataset {
+	ds := &report.Dataset{
+		Name:        "knowledge.articles",
+		Label:       "知识库文章",
+		Module:      "knowledge",
+		Description: "知识文章按状态/分类/查看权限的分布与浏览量",
+		TimeField:   "created_at",
+		Dimensions: []report.Dimension{
+			{Name: "status", Label: "状态", Type: report.FieldString, Filterable: true, Groupable: true,
+				Enum: []string{"draft", "published"}},
+			{Name: "category", Label: "分类", Type: report.FieldString, Filterable: true, Groupable: true},
+			{Name: "view_permission", Label: "查看权限", Type: report.FieldString, Filterable: true, Groupable: true,
+				Enum: []string{"all", "team", "owner"}},
+			{Name: "author_id", Label: "作者", Type: report.FieldString, Filterable: true, Groupable: true},
+			{Name: "created_at", Label: "创建时间", Type: report.FieldTime, Filterable: true, Groupable: true},
+			{Name: "updated_at", Label: "更新时间", Type: report.FieldTime, Filterable: true, Groupable: true},
+		},
+		Metrics: []report.Metric{
+			{Name: "cnt", Label: "文章数", Agg: report.AggCount, Unit: "篇"},
+			{Name: "views_sum", Label: "总浏览量", Agg: report.AggSum, Unit: "次"},
+		},
+	}
+	return report.NewSQLDataset(db, ds, report.SQLSpec{
+		Table:        "knowledge_articles",
+		TenantColumn: "tenant_id",
+		MetricExprs: map[string]string{
+			"views_sum": "views",
+		},
+	})
+}
+
+// —— 知识检索留痕 ——
+
+func knowledgeSearchLogs(db *sql.DB) *report.Dataset {
+	ds := &report.Dataset{
+		Name:        "knowledge.search_logs",
+		Label:       "知识检索记录",
+		Module:      "knowledge",
+		Description: "AI 检索留痕按路径/成败/智能体分布，零结果率反映知识盲区",
+		TimeField:   "created_at",
+		Dimensions: []report.Dimension{
+			{Name: "mode", Label: "检索路径", Type: report.FieldString, Filterable: true, Groupable: true},
+			{Name: "zero_result", Label: "零结果", Type: report.FieldBool, Filterable: true, Groupable: true},
+			{Name: "agent_id", Label: "智能体", Type: report.FieldString, Filterable: true, Groupable: true},
+			{Name: "query", Label: "查询词", Type: report.FieldString, Filterable: true, Groupable: false},
+			{Name: "created_at", Label: "检索时间", Type: report.FieldTime, Filterable: true, Groupable: true},
+		},
+		Metrics: []report.Metric{
+			{Name: "cnt", Label: "检索次数", Agg: report.AggCount, Unit: "次"},
+			{Name: "zero_cnt", Label: "零结果次数", Agg: report.AggCount, Unit: "次"},
+			{Name: "avg_latency", Label: "平均延迟", Agg: report.AggAvg, Decimals: 1, Unit: "ms"},
+			{Name: "avg_top_score", Label: "平均最高分", Agg: report.AggAvg, Decimals: 3},
+		},
+	}
+	return report.NewSQLDataset(db, ds, report.SQLSpec{
+		Table:        "knowledge_search_logs",
+		TenantColumn: "tenant_id",
+		MetricExprs: map[string]string{
+			"zero_cnt":      "CASE WHEN zero_result THEN 1 END",
+			"avg_latency":   "latency_ms",
+			"avg_top_score": "top_score",
+		},
 	})
 }
