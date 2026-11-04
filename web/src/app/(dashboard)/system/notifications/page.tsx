@@ -171,7 +171,7 @@ function ChannelsTab() {
               onChange={(value) => changeType(value as ChannelType)}
               options={Object.entries(CHANNEL_TYPE_LABELS).map(([value, label]) => ({ value, label }))}
               disabled={!!editId}
-              style={{ width: '100%' }}
+              className="w-full"
             />
             {editId && <p className="text-[10px] text-muted-foreground mt-0.5">类型创建后不可修改</p>}
           </div>
@@ -215,7 +215,7 @@ function ChannelsTab() {
                 { value: 'enabled', label: '启用' },
                 { value: 'disabled', label: '禁用' },
               ]}
-              style={{ width: '100%' }}
+              className="w-full"
             />
           </div>
         </div>
@@ -415,7 +415,7 @@ function PoliciesTab() {
                 ? events.map(ev => ({ value: ev, label: `${EVENT_LABELS[ev]} (${ev})` }))
                 : Object.entries(EVENT_LABELS).map(([value, label]) => ({ value, label: `${label} (${value})` }))
               }
-              style={{ width: '100%' }}
+              className="w-full"
             />
           </div>
 
@@ -476,7 +476,7 @@ function PoliciesTab() {
                 { value: 'enabled', label: '启用' },
                 { value: 'disabled', label: '禁用' },
               ]}
-              style={{ width: '100%' }}
+              className="w-full"
             />
           </div>
         </div>

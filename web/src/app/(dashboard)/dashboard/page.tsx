@@ -102,8 +102,8 @@ function BarChart({ data }: { data: { label: string; value: number; color?: stri
         <div key={i} className="flex-1 flex flex-col items-center gap-1">
           <span className="text-[10px] text-muted-foreground font-mono">{d.value}</span>
           <div
-            className={`w-full rounded-t transition-all duration-500 ${d.color || 'bg-blue-400 dark:bg-blue-500'}`}
-            style={{ height: `${(d.value / max) * 100}%`, minHeight: '4px' }}
+            className={`w-full rounded-t transition-all duration-500 min-h-1 ${d.color || 'bg-blue-400 dark:bg-blue-500'}`}
+            style={{ height: `${(d.value / max) * 100}%` }}
           />
           <span className="text-[10px] text-muted-foreground/60 truncate w-full text-center">{d.label}</span>
         </div>

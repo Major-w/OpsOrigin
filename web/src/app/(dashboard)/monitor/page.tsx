@@ -5,6 +5,7 @@ import { useMonitorStore } from '@/stores/monitor'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button, Tag } from 'antd'
 import { formatTime } from '@/lib/utils'
+import { PageContainer } from '@/components/page-container'
 import { useWebSocket } from '@/lib/useWebSocket'
 import { Activity, AlertTriangle, BellRing, Settings2, Cable, ArrowRight, Loader2 } from 'lucide-react'
 
@@ -51,16 +52,16 @@ export default function MonitorOverviewPage() {
   ]
 
   return (
-    <div className="p-6 space-y-4">
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-2xl font-bold flex items-center gap-2"><Activity className="h-6 w-6 text-blue-500" />监控总览</h1>
-          <p className="text-sm text-muted-foreground">主动探测与智能告警 — 值班第一眼</p>
-        </div>
+    <PageContainer
+      className="space-y-4"
+      title={<span className="flex items-center gap-2"><Activity className="h-6 w-6 text-blue-500" />监控总览</span>}
+      subtitle="主动探测与智能告警 — 值班第一眼"
+      extra={
         <Button onClick={refresh} disabled={loading}>
           {loading ? <Loader2 className="h-3.5 w-3.5 animate-spin mr-1" /> : <Activity className="h-3.5 w-3.5 mr-1" />}刷新
         </Button>
-      </div>
+      }
+    >
 
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
         <Card>
@@ -153,6 +154,6 @@ export default function MonitorOverviewPage() {
           采集插件库、多步骤服务拨测、第三方告警接入、告警转义、告警收敛/压缩、通知升级策略 — 将在告警中心与监控配置页逐步开放。
         </div>
       </div>
-    </div>
+    </PageContainer>
   )
 }

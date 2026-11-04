@@ -1050,7 +1050,7 @@ export default function ScriptDetailPage() {
                           </div>
                         </div>
                         {diffViewMode === 'side' && (
-                          <div className="flex border rounded-md divide-x overflow-hidden" style={{ maxHeight: '500px' }}>
+                          <div className="flex border rounded-md divide-x overflow-hidden max-h-[500px]">
                             <div className="flex-1 min-w-0 overflow-auto">
                               <div className="px-3 py-1.5 bg-red-50 dark:bg-red-950/30 text-xs font-medium border-b">v{diffFrom} (旧)</div>
                               <pre className="text-[11px] font-mono p-2 leading-relaxed whitespace-pre-wrap">{diffFromContent || '(空)'}</pre>

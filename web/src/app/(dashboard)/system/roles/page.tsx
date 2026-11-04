@@ -102,7 +102,7 @@ export default function SystemRolesPage() {
         <CardContent>
           <div className="flex flex-wrap gap-1.5">
             {permissions.map(p => (
-              <Tag key={p.name} style={{ fontSize: 10 }} title={p.description}>
+              <Tag key={p.name} className="text-[10px]" title={p.description}>
                 <span className="text-muted-foreground">{p.category}</span>
                 <span className="font-mono">{p.name}</span>
               </Tag>
@@ -121,7 +121,7 @@ export default function SystemRolesPage() {
                   <SafetyCertificateOutlined className={role.is_built_in ? 'text-amber-500' : 'text-blue-500'} />
                   <span className="text-sm font-medium truncate">{role.display_name || role.name}</span>
                   {role.is_built_in && (
-                    <Tag style={{ fontSize: 10 }} className="shrink-0">
+                    <Tag className="text-[10px] shrink-0">
                       <LockOutlined />内置
                     </Tag>
                   )}
@@ -149,13 +149,13 @@ export default function SystemRolesPage() {
                   {(role.permissions || []).slice(0, 5).map(p => {
                     const meta = permNameMap[p]
                     return (
-                      <Tag key={p} color="default" style={{ fontSize: 10 }} title={meta?.description || p}>
+                      <Tag key={p} color="default" className="text-[10px]" title={meta?.description || p}>
                         {p}
                       </Tag>
                     )
                   })}
                   {(role.permissions || []).length > 5 && (
-                    <Tag color="default" style={{ fontSize: 10 }}>+{(role.permissions || []).length - 5}</Tag>
+                    <Tag color="default" className="text-[10px]">+{(role.permissions || []).length - 5}</Tag>
                   )}
                 </div>
               </div>

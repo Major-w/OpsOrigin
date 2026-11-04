@@ -97,7 +97,7 @@ export default function SystemUsersPage() {
       title: '用户名',
       dataIndex: 'username',
       key: 'username',
-      render: (text: string) => <span style={{ fontWeight: 500 }}>{text}</span>,
+      render: (text: string) => <span className="font-medium">{text}</span>,
     },
     {
       title: '邮箱',

@@ -37,7 +37,9 @@ fi
 
 echo "== [3/7] 前端 Vitest（web/ npm test）=="
 if [ -x web/node_modules/.bin/vitest ]; then
-  if (cd web && ./node_modules/.bin/vitest run >/tmp/contract-vitest.txt 2>&1); then
+  # 与 tsc 同因：沙箱/受限环境下默认 4GB 堆不足会导致 vitest worker 启动超时
+  # （Failed to start worker / Timeout waiting for worker to respond），放大堆上限。
+  if (cd web && NODE_OPTIONS=--max-old-space-size=6144 ./node_modules/.bin/vitest run >/tmp/contract-vitest.txt 2>&1); then
     pass "vitest 通过"
   else
     fail "vitest 失败（末 20 行）:"; tail -20 /tmp/contract-vitest.txt | sed 's/^/    /'

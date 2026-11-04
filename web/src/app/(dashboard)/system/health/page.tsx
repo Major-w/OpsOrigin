@@ -131,14 +131,14 @@ export default function SystemHealthPage() {
               value={source}
               onChange={v => setSource(v)}
               options={SOURCES}
-              style={{ width: 160 }}
+              className="w-40"
               size="middle"
             />
             <Select
               value={String(lines)}
               onChange={v => setLines(parseInt(v) || 200)}
               options={[100, 200, 500, 1000].map(n => ({ value: String(n), label: `${n} 行` }))}
-              style={{ width: 160 }}
+              className="w-40"
               size="middle"
             />
             <Button size="middle" type="default" onClick={loadLogs} loading={logLoading} icon={logLoading ? <LoadingOutlined /> : <ReloadOutlined />}>加载日志</Button>

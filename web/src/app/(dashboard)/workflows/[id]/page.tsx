@@ -138,10 +138,10 @@ function BaseNode({ color, icon: Icon, label, children, showSource, showTarget }
 }) {
   return (
     <div className={BASE_NODE} style={{ borderColor: color }}>
-      {showTarget !== false && <Handle type="target" position={Position.Top} style={{ background: color, width: 10, height: 10 }} />}
+      {showTarget !== false && <Handle type="target" position={Position.Top} className="!h-2.5 !w-2.5" style={{ background: color }} />}
       <div className={HEADER} style={{ backgroundColor: color }}><Icon className="h-3.5 w-3.5" />{label}</div>
       <div className="px-3 py-2 text-[11px] text-muted-foreground">{children}</div>
-      {showSource !== false && <Handle type="source" position={Position.Bottom} style={{ background: color, width: 10, height: 10 }} />}
+      {showSource !== false && <Handle type="source" position={Position.Bottom} className="!h-2.5 !w-2.5" style={{ background: color }} />}
     </div>
   )
 }
@@ -162,7 +162,7 @@ function EndNode({ data }: FlowNodeProps) {
     <div className="shadow-md rounded-full border-2 bg-white dark:bg-gray-800 min-w-[120px] w-[120px] h-[60px] flex items-center justify-center" style={{ borderColor: statusColor }}>
       <StopCircle className="h-5 w-5 mr-1.5" style={{ color: statusColor }} />
       <span className="text-xs font-semibold">{data.label}</span>
-      <Handle type="target" position={Position.Top} style={{ background: statusColor, width: 10, height: 10 }} />
+      <Handle type="target" position={Position.Top} className="!h-2.5 !w-2.5" style={{ background: statusColor }} />
     </div>
   )
 }
@@ -171,7 +171,7 @@ function ScriptNode({ data }: FlowNodeProps) {
   const color = NODE_META.script.color
   return (
     <div className={BASE_NODE} style={{ borderColor: color }}>
-      <Handle type="target" position={Position.Top} style={{ background: color, width: 10, height: 10 }} />
+      <Handle type="target" position={Position.Top} className="!h-2.5 !w-2.5" style={{ background: color }} />
       <div className={HEADER} style={{ backgroundColor: color }}><Code className="h-3.5 w-3.5" />{data.label}</div>
       <div className="px-3 py-2 text-[11px] text-muted-foreground space-y-0.5">
         {data.scriptName && <p className="truncate">📜 {data.scriptName}</p>}
@@ -187,7 +187,7 @@ function ScriptNode({ data }: FlowNodeProps) {
           ))}
         </div>
       ) : (
-        <Handle type="source" position={Position.Bottom} style={{ background: color, width: 10, height: 10 }} />
+        <Handle type="source" position={Position.Bottom} className="!h-2.5 !w-2.5" style={{ background: color }} />
       )}
     </div>
   )
@@ -197,7 +197,7 @@ function ConditionNode({ data }: FlowNodeProps) {
   const color = NODE_META.condition.color
   return (
     <div className={BASE_NODE} style={{ borderColor: color }}>
-      <Handle type="target" position={Position.Top} style={{ background: color, width: 10, height: 10 }} />
+      <Handle type="target" position={Position.Top} className="!h-2.5 !w-2.5" style={{ background: color }} />
       <div className={HEADER} style={{ backgroundColor: color }}><GitBranch className="h-3.5 w-3.5" />{data.label}</div>
       <div className="px-3 py-2 text-[11px] font-mono text-muted-foreground truncate">{data.condition || '未设置条件'}</div>
       <div className="flex border-t" style={{ borderColor: color }}>
@@ -474,7 +474,7 @@ function CanvasEditor({ workflow, scripts, channels, workflows, files, agents, o
   }
 
   return (
-    <div className="flex gap-3" style={{ height: 700 }}>
+    <div className="flex gap-3 h-[700px]">
       <div className="w-32 shrink-0 space-y-1">
         <p className="text-xs text-muted-foreground mb-2">点击添加</p>
         {(Object.keys(NODE_META) as StepType[]).filter(t => t !== 'start' && t !== 'end').map(type => {

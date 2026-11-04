@@ -231,18 +231,18 @@ export default function MonitorSourcesPage() {
         <Space wrap className="mb-3" size={8}>
           <Select
             placeholder="选择数据源"
-            style={{ width: 240 }}
+            className="w-[240px]"
             value={selectedId || undefined}
             onChange={handleSelectSource}
             options={sources.map(s => ({ label: `${s.name} (${TYPE_LABEL[s.type]})`, value: s.id }))}
           />
           <Input
-            style={{ width: 420 }}
+            className="w-[420px]"
             value={query}
             onChange={e => setQuery(e.target.value)}
             placeholder='PromQL，例如 {source="zabbix", instance="10.0.1.10"}'
           />
-          <Select value={range} onChange={setRange} options={RANGE_OPTIONS} style={{ width: 130 }} />
+          <Select value={range} onChange={setRange} options={RANGE_OPTIONS} className="w-[130px]" />
           <Button type="primary" onClick={handleQuery} disabled={!query.trim()} loading={chartLoading}>
             <RefreshCw className="h-3 w-3 mr-1" />查询
           </Button>

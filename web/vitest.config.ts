@@ -15,6 +15,9 @@ export default defineConfig({
   },
   test: {
     environment: 'jsdom',
+    // 用进程内 worker_threads 而非 fork 子进程：沙箱/CI 受限环境下 fork 池启动易超时，
+    // threads 池对 jsdom 单测等价且更稳。
+    pool: 'threads',
     globals: true,
     setupFiles: ['./vitest.setup.ts'],
     css: false,

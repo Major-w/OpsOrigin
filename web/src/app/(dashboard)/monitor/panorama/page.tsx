@@ -150,12 +150,12 @@ export default function PanoramaPage() {
             <CardContent className="space-y-2">
               <label className="flex items-center gap-2 text-xs cursor-pointer">
                 <input type="checkbox" checked={layers.cmdb} onChange={e => setLayers(l => ({ ...l, cmdb: e.target.checked }))} />
-                <span className="w-3 h-0.5 rounded" style={{ background: 'rgba(99,102,241,0.6)' }} />
+                <span className="w-3 h-0.5 rounded bg-indigo-500/60" />
                 CMDB 拓扑（纵向骨架/依赖）
               </label>
               <label className="flex items-center gap-2 text-xs cursor-pointer">
                 <input type="checkbox" checked={layers.callchain} onChange={e => setLayers(l => ({ ...l, callchain: e.target.checked }))} />
-                <span className="w-3 h-0.5 rounded" style={{ background: 'rgba(6,182,212,0.75)' }} />
+                <span className="w-3 h-0.5 rounded bg-cyan-500/75" />
                 横向调用链（callchain）
               </label>
             </CardContent>
@@ -172,15 +172,15 @@ export default function PanoramaPage() {
                     <div className="text-lg font-bold">{data.summary.total}</div>
                     <div className="text-[10px] text-muted-foreground">节点</div>
                   </div>
-                  <div className="rounded-md py-2" style={{ background: 'rgba(239,68,68,0.1)' }}>
+                  <div className="rounded-md py-2 bg-red-500/10">
                     <div className="text-lg font-bold text-red-500">{data.summary.critical}</div>
                     <div className="text-[10px] text-muted-foreground">critical</div>
                   </div>
-                  <div className="rounded-md py-2" style={{ background: 'rgba(245,158,11,0.1)' }}>
+                  <div className="rounded-md py-2 bg-amber-500/10">
                     <div className="text-lg font-bold text-amber-500">{data.summary.warning}</div>
                     <div className="text-[10px] text-muted-foreground">warning</div>
                   </div>
-                  <div className="rounded-md py-2" style={{ background: 'rgba(59,130,246,0.1)' }}>
+                  <div className="rounded-md py-2 bg-blue-500/10">
                     <div className="text-lg font-bold text-blue-500">{data.summary.healthy}</div>
                     <div className="text-[10px] text-muted-foreground">healthy</div>
                   </div>
