@@ -216,7 +216,7 @@ func (s *Service) handleApprove(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := model.CanTransition(ticket.Status, model.StatusApproved); err != nil {
+	if err := s.canTransition(r.Context(), ticket, model.StatusApproved, req.Comment); err != nil {
 		httputil.WriteError(w, http.StatusConflict, err.Error())
 		return
 	}
@@ -340,13 +340,96 @@ func (s *Service) handleApprove(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.recordEvent(r.Context(), ticket, previousStatus, ticket.Status, req.ApprovedBy, req.Comment)
-	s.fireWebhook(r.Context(), "ticket.approved", ticket, req.ApprovedBy)
+	s.fireEvent(r.Context(), "ticket.approved", ticket, req.ApprovedBy)
 	s.notifyTicket(r.Context(), tenantID, evTicketApproved, "工单已审批通过: "+ticket.Title, fmt.Sprintf("审批人: %s", req.ApprovedBy))
 	s.notifyTicketInbox(r.Context(), ticket, msgCategoryApproval, msgLevelInfo,
 		"工单审批通过: "+ticket.Title,
 		fmt.Sprintf("审批人: %s%s", req.ApprovedBy, optionalComment(req.Comment)),
 		req.ApprovedBy, assigneeAndOwner(ticket)...)
 	s.advanceProcess(r.Context(), ticket, "success")
+	s.broadcastTicketUpdate(ticket)
+	httputil.WriteJSON(w, http.StatusOK, ticket)
+}
+
+// handleAddApprover 审批中动态加签：在现有审批链中追加一名审批人。
+// position=before 前加签(插在当前审批人之前, 成为新的当前审批人)；
+// position=after  后加签(插在当前审批人之后)。
+// 仅操作既有 approval_chain / approval_status 两个 JSON 列, 不新增数据库列。
+func (s *Service) handleAddApprover(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	tenantID := auth.TenantFromContext(r.Context())
+
+	var req struct {
+		Approver string `json:"approver"`
+		Position string `json:"position"` // before | after, 默认 after
+		Comment  string `json:"comment,omitempty"`
+	}
+	if err := httputil.BindJSON(r, &req); err != nil || req.Approver == "" {
+		httputil.WriteError(w, http.StatusBadRequest, "approver required")
+		return
+	}
+	if req.Position != "before" {
+		req.Position = "after"
+	}
+
+	ticket, err := s.store.Get(r.Context(), id, tenantID)
+	if err != nil {
+		if err == store.ErrNotFound {
+			httputil.WriteError(w, http.StatusNotFound, "ticket not found")
+			return
+		}
+		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	// 必须处于审批进行中
+	inReview := ticket.Status == model.StatusPendingReview ||
+		(ticket.ApprovalStatus != nil && ticket.ApprovalStatus.FinalResult == "pending")
+	if !inReview {
+		httputil.WriteError(w, http.StatusConflict, "工单不在审批中, 无法加签")
+		return
+	}
+	if ticket.ApprovalChain == nil {
+		ticket.ApprovalChain = &model.ApprovalChain{Mode: "sequential", Approvers: []string{}}
+	}
+	if ticket.ApprovalStatus == nil {
+		ticket.ApprovalStatus = &model.ApprovalStatus{CurrentIndex: 0, Votes: []model.ApprovalVote{}, FinalResult: "pending"}
+	}
+	// 去重: 已在链中或已投过票的不重复追加
+	for _, a := range ticket.ApprovalChain.Approvers {
+		if a == req.Approver {
+			httputil.WriteError(w, http.StatusConflict, "审批人已在审批链中")
+			return
+		}
+	}
+
+	idx := len(ticket.ApprovalChain.Approvers)
+	if ticket.ApprovalChain.Mode == "sequential" {
+		if req.Position == "before" {
+			idx = ticket.ApprovalStatus.CurrentIndex
+		} else {
+			idx = ticket.ApprovalStatus.CurrentIndex + 1
+		}
+		if idx > len(ticket.ApprovalChain.Approvers) {
+			idx = len(ticket.ApprovalChain.Approvers)
+		}
+	}
+	// 切片插入: Approvers[idx] = req.Approver, 其余右移
+	ticket.ApprovalChain.Approvers = append(ticket.ApprovalChain.Approvers, "")
+	copy(ticket.ApprovalChain.Approvers[idx+1:], ticket.ApprovalChain.Approvers[idx:])
+	ticket.ApprovalChain.Approvers[idx] = req.Approver
+
+	if err := s.store.Update(r.Context(), ticket); err != nil {
+		httputil.WriteError(w, http.StatusInternalServerError, "failed to update ticket")
+		return
+	}
+	posLabel := "后"
+	if req.Position == "before" {
+		posLabel = "前"
+	}
+	operator := getUserID(r, "")
+	s.recordEvent(r.Context(), ticket, ticket.Status, ticket.Status, operator,
+		fmt.Sprintf("加签: 追加审批人 %s (%s加签)%s", req.Approver, posLabel, optionalComment(req.Comment)))
 	s.broadcastTicketUpdate(ticket)
 	httputil.WriteJSON(w, http.StatusOK, ticket)
 }
@@ -371,7 +454,7 @@ func (s *Service) handleReject(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := model.CanTransition(ticket.Status, model.StatusRejected); err != nil {
+	if err := s.canTransition(r.Context(), ticket, model.StatusRejected, req.Reason); err != nil {
 		httputil.WriteError(w, http.StatusConflict, err.Error())
 		return
 	}
@@ -386,7 +469,7 @@ func (s *Service) handleReject(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.recordEvent(r.Context(), ticket, previousStatus, model.StatusRejected, req.RejectedBy, req.Reason)
-	s.fireWebhook(r.Context(), "ticket.rejected", ticket, req.RejectedBy)
+	s.fireEvent(r.Context(), "ticket.rejected", ticket, req.RejectedBy)
 	s.notifyTicketInbox(r.Context(), ticket, msgCategoryApproval, msgLevelWarning,
 		"工单被驳回: "+ticket.Title,
 		fmt.Sprintf("审批人: %s / 原因: %s", req.RejectedBy, truncate(req.Reason, 120)),
@@ -421,7 +504,7 @@ func (s *Service) handleExecute(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := model.CanTransition(ticket.Status, model.StatusExecuting); err != nil {
+	if err := s.canTransition(r.Context(), ticket, model.StatusExecuting, req.Result); err != nil {
 		httputil.WriteError(w, http.StatusConflict, err.Error())
 		return
 	}
@@ -437,7 +520,7 @@ func (s *Service) handleExecute(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.recordEvent(r.Context(), ticket, previousStatus, model.StatusExecuting, req.ExecutedBy, req.Result)
-	s.fireWebhook(r.Context(), "ticket.executing", ticket, req.ExecutedBy)
+	s.fireEvent(r.Context(), "ticket.executing", ticket, req.ExecutedBy)
 	s.broadcastTicketUpdate(ticket)
 	httputil.WriteJSON(w, http.StatusOK, ticket)
 }
@@ -462,7 +545,7 @@ func (s *Service) handleComplete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := model.CanTransition(ticket.Status, model.StatusSucceeded); err != nil {
+	if err := s.canTransition(r.Context(), ticket, model.StatusSucceeded, req.Comment); err != nil {
 		httputil.WriteError(w, http.StatusConflict, err.Error())
 		return
 	}
@@ -487,7 +570,7 @@ func (s *Service) handleComplete(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.recordEvent(r.Context(), ticket, previousStatus, model.StatusSucceeded, req.CompletedBy, req.Comment)
-	s.fireWebhook(r.Context(), "ticket.completed", ticket, req.CompletedBy)
+	s.fireEvent(r.Context(), "ticket.completed", ticket, req.CompletedBy)
 	s.advanceProcess(r.Context(), ticket, "success")
 	s.broadcastTicketUpdate(ticket)
 	s.archiveTicketToKnowledge(r.Context(), ticket, req.Comment)
@@ -514,7 +597,7 @@ func (s *Service) handleRollback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := model.CanTransition(ticket.Status, model.StatusRolledBack); err != nil {
+	if err := s.canTransition(r.Context(), ticket, model.StatusRolledBack, req.Comment); err != nil {
 		httputil.WriteError(w, http.StatusConflict, err.Error())
 		return
 	}
@@ -532,7 +615,7 @@ func (s *Service) handleRollback(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.recordEvent(r.Context(), ticket, previousStatus, model.StatusRolledBack, req.RolledBackBy, req.Comment)
-	s.fireWebhook(r.Context(), "ticket.rolled_back", ticket, req.RolledBackBy)
+	s.fireEvent(r.Context(), "ticket.rolled_back", ticket, req.RolledBackBy)
 	s.advanceProcess(r.Context(), ticket, "failure")
 	s.broadcastTicketUpdate(ticket)
 	httputil.WriteJSON(w, http.StatusOK, ticket)
@@ -569,7 +652,7 @@ func (s *Service) handleSubmit(w http.ResponseWriter, r *http.Request) {
 	if !ticket.RiskLevel.RequiresApproval() {
 		target = model.StatusExecuting
 	}
-	if err := model.CanTransition(ticket.Status, target); err != nil {
+	if err := s.canTransition(r.Context(), ticket, target, req.Comment); err != nil {
 		httputil.WriteError(w, http.StatusConflict, err.Error())
 		return
 	}
@@ -583,7 +666,7 @@ func (s *Service) handleSubmit(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.recordEvent(r.Context(), ticket, previousStatus, target, req.SubmittedBy, "提交工单")
-	s.fireWebhook(r.Context(), "ticket.submitted", ticket, req.SubmittedBy)
+	s.fireEvent(r.Context(), "ticket.submitted", ticket, req.SubmittedBy)
 	s.advanceProcess(r.Context(), ticket, "success")
 	s.broadcastTicketUpdate(ticket)
 	httputil.WriteJSON(w, http.StatusOK, ticket)
@@ -638,8 +721,56 @@ func (s *Service) handleAssign(w http.ResponseWriter, r *http.Request) {
 		"工单指派给你: "+ticket.Title,
 		fmt.Sprintf("指派人: %s / 风险: %s", req.AssignedBy, ticket.RiskLevel),
 		req.AssignedBy, req.Assignee)
+	// 流程派单节点(manual 模式): 指派动作即派单完成 → 通知流程引擎续跑。
+	// 非派单等待点时静默跳过(普通指派零感知)。
+	if dc, ok := s.processStore.(interface {
+		CompleteDispatch(ctx context.Context, tenantID, ticketID, assignee, dispatchedBy string) (*process.ProcessInstance, *process.Step, error)
+	}); ok {
+		_, next, err := dc.CompleteDispatch(r.Context(), tenantID, ticket.ID, req.Assignee, req.AssignedBy)
+		if err != nil {
+			slog.Warn("itsm: complete dispatch after assign failed", "ticket_id", ticket.ID, "error", err)
+		} else if next != nil {
+			// 续跑落点状态映射回工单(与 advanceProcess 同口径): 派单后停在人工节点 → pending_review。
+			if mapped := process.StepTypeToTicketStatus(next); mapped != "" && model.TicketStatus(mapped) != ticket.Status {
+				prev := ticket.Status
+				ticket.Status = model.TicketStatus(mapped)
+				if err := s.store.Update(r.Context(), ticket); err != nil {
+					slog.Error("itsm: persist post-dispatch status failed", "ticket_id", ticket.ID, "error", err)
+				} else {
+					s.recordEvent(r.Context(), ticket, prev, ticket.Status, req.AssignedBy, "派单完成: "+string(next.Type))
+				}
+			}
+		}
+	}
 	s.broadcastTicketUpdate(ticket)
 	httputil.WriteJSON(w, http.StatusOK, ticket)
+}
+
+// AssignTicketAssignee 流程引擎派单节点(auto 模式)的落库通道（实现 process.TicketAssigner）。
+// 与 handleAssign 的差异: 无 HTTP 语义、无状态迁移(派单不改变工单状态), 只更新受派人并留痕通知。
+func (s *Service) AssignTicketAssignee(ctx context.Context, tenantID, ticketID, assignee, assignedBy string) error {
+	ticket, err := s.store.Get(ctx, ticketID, tenantID)
+	if err != nil {
+		return fmt.Errorf("load ticket: %w", err)
+	}
+	if ticket == nil {
+		return fmt.Errorf("ticket %s not found", ticketID)
+	}
+	previousStatus := ticket.Status
+	ticket.Assignee = assignee
+	now := time.Now()
+	ticket.AssignedAt = &now
+	if err := s.store.Update(ctx, ticket); err != nil {
+		return fmt.Errorf("update ticket assignee: %w", err)
+	}
+	s.recordEvent(ctx, ticket, previousStatus, ticket.Status, assignedBy, "流程派单: "+assignee)
+	s.notifyTicket(ctx, tenantID, evTicketAssigned, "工单已派单: "+ticket.Title, fmt.Sprintf("负责人: %s", assignee))
+	s.notifyTicketInbox(ctx, ticket, msgCategoryTicket, msgLevelInfo,
+		"流程派单给你: "+ticket.Title,
+		fmt.Sprintf("派单节点: %s / 风险: %s", assignedBy, ticket.RiskLevel),
+		assignedBy, assignee)
+	s.broadcastTicketUpdate(ticket)
+	return nil
 }
 
 func (s *Service) handleClose(w http.ResponseWriter, r *http.Request) {
@@ -661,7 +792,7 @@ func (s *Service) handleClose(w http.ResponseWriter, r *http.Request) {
 		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	if err := model.CanTransition(ticket.Status, model.StatusClosed); err != nil {
+	if err := s.canTransition(r.Context(), ticket, model.StatusClosed, req.Comment); err != nil {
 		httputil.WriteError(w, http.StatusConflict, err.Error())
 		return
 	}
@@ -696,7 +827,7 @@ func (s *Service) handleClose(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.recordEvent(r.Context(), ticket, previousStatus, model.StatusClosed, req.ClosedBy, req.Comment)
-	s.fireWebhook(r.Context(), "ticket.closed", ticket, req.ClosedBy)
+	s.fireEvent(r.Context(), "ticket.closed", ticket, req.ClosedBy)
 	s.notifyTicket(r.Context(), tenantID, evTicketClosed, "工单已关闭: "+ticket.Title, req.Comment)
 	s.notifyTicketInbox(r.Context(), ticket, msgCategoryTicket, msgLevelInfo,
 		"工单已关闭: "+ticket.Title,
@@ -719,7 +850,7 @@ func (s *Service) handleWithdraw(w http.ResponseWriter, r *http.Request) {
 		httputil.WriteError(w, http.StatusNotFound, "ticket not found")
 		return
 	}
-	if err := model.CanTransition(ticket.Status, model.StatusWithdrawn); err != nil {
+	if err := s.canTransition(r.Context(), ticket, model.StatusWithdrawn, req.Reason); err != nil {
 		httputil.WriteError(w, http.StatusConflict, err.Error())
 		return
 	}
@@ -730,7 +861,7 @@ func (s *Service) handleWithdraw(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.recordEvent(r.Context(), ticket, prev, model.StatusWithdrawn, req.WithdrawnBy, req.Reason)
-	s.fireWebhook(r.Context(), "ticket.withdrawn", ticket, req.WithdrawnBy)
+	s.fireEvent(r.Context(), "ticket.withdrawn", ticket, req.WithdrawnBy)
 	s.broadcastTicketUpdate(ticket)
 	httputil.WriteJSON(w, http.StatusOK, ticket)
 }
@@ -748,7 +879,7 @@ func (s *Service) handleReopen(w http.ResponseWriter, r *http.Request) {
 		httputil.WriteError(w, http.StatusNotFound, "ticket not found")
 		return
 	}
-	if err := model.CanTransition(ticket.Status, model.StatusReopened); err != nil {
+	if err := s.canTransition(r.Context(), ticket, model.StatusReopened, req.Reason); err != nil {
 		httputil.WriteError(w, http.StatusConflict, err.Error())
 		return
 	}
@@ -759,7 +890,7 @@ func (s *Service) handleReopen(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.recordEvent(r.Context(), ticket, prev, model.StatusReopened, req.ReopenedBy, req.Reason)
-	s.fireWebhook(r.Context(), "ticket.reopened", ticket, req.ReopenedBy)
+	s.fireEvent(r.Context(), "ticket.reopened", ticket, req.ReopenedBy)
 	s.notifyTicket(r.Context(), tenantID, evTicketReopened, "工单重开: "+ticket.Title, req.Reason)
 	s.notifyTicketInbox(r.Context(), ticket, msgCategoryTicket, msgLevelWarning,
 		"工单被重开: "+ticket.Title,
@@ -786,7 +917,7 @@ func (s *Service) handleResubmit(w http.ResponseWriter, r *http.Request) {
 		httputil.WriteError(w, http.StatusNotFound, "ticket not found")
 		return
 	}
-	if err := model.CanTransition(ticket.Status, model.StatusPendingReview); err != nil {
+	if err := s.canTransition(r.Context(), ticket, model.StatusPendingReview, req.Reason); err != nil {
 		httputil.WriteError(w, http.StatusConflict, err.Error())
 		return
 	}
@@ -797,7 +928,7 @@ func (s *Service) handleResubmit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.recordEvent(r.Context(), ticket, prev, model.StatusPendingReview, req.ResubmittedBy, "重新提交: "+req.Reason)
-	s.fireWebhook(r.Context(), "ticket.resubmitted", ticket, req.ResubmittedBy)
+	s.fireEvent(r.Context(), "ticket.resubmitted", ticket, req.ResubmittedBy)
 	s.broadcastTicketUpdate(ticket)
 	httputil.WriteJSON(w, http.StatusOK, ticket)
 }
@@ -999,11 +1130,139 @@ func (s *Service) handleUpdateTicket(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Service) transition(ctx context.Context, ticket *model.Ticket, to model.TicketStatus, changedBy string) error {
-	if err := model.CanTransition(ticket.Status, to); err != nil {
+	if err := s.canTransition(ctx, ticket, to, ""); err != nil {
 		return err
 	}
 	ticket.Status = to
 	return s.store.Update(ctx, ticket)
+}
+
+// TicketVars 实现 process.TicketVarProvider: 返回工单级变量上下文，供流程引擎
+// 自动节点变量链路使用（${ticket.*} / ${custom_fields.*}）。
+// 查询失败返回空 map —— 变量缺失渲染为空串，不阻断流程推进。
+func (s *Service) TicketVars(ctx context.Context, tenantID, ticketID string) map[string]any {
+	ticket, err := s.store.Get(ctx, ticketID, tenantID)
+	if err != nil || ticket == nil {
+		return map[string]any{}
+	}
+	return map[string]any{
+		"ticket": map[string]any{
+			"id":          ticket.ID,
+			"title":       ticket.Title,
+			"description": ticket.Description,
+			"risk_level":  string(ticket.RiskLevel),
+			"status":      string(ticket.Status),
+			"created_by":  ticket.CreatedBy,
+			"assignee":    ticket.Assignee,
+		},
+		"custom_fields": ticket.CustomFields,
+	}
+}
+
+// AutoTransitionApproval 人工审批节点超时自动处置(由 process.StartTimerChecker 回调):
+// action=auto_approve 复刻人工审批通过的服务端语义(状态迁移/事件/通知/流程推进),
+// action=auto_reject 复刻驳回语义。与 HTTP 处理器共享状态机与副作用, 仅操作者记为 system。
+func (s *Service) AutoTransitionApproval(ctx context.Context, tenantID, ticketID, stepID, action string) error {
+	ticket, err := s.store.Get(ctx, ticketID, tenantID)
+	if err != nil {
+		return fmt.Errorf("load ticket: %w", err)
+	}
+	operator := "system(审批超时自动" + map[string]string{"auto_approve": "通过", "auto_reject": "驳回"}[action] + ")"
+	now := time.Now()
+	previousStatus := ticket.Status
+	if action == "auto_approve" {
+		if err := s.canTransition(ctx, ticket, model.StatusApproved, "审批超时自动通过"); err != nil {
+			return fmt.Errorf("transition: %w", err)
+		}
+		ticket.ApprovedBy = operator
+		ticket.ApprovedAt = &now
+		// 与 handleApprove 一致: 无流程绑定直接进入执行态, 有流程走 approved 由引擎映射。
+		if ticket.ProcessID == "" {
+			ticket.Status = model.StatusExecuting
+			ticket.ExecutedAt = &now
+		} else {
+			ticket.Status = model.StatusApproved
+		}
+		if err := s.store.Update(ctx, ticket); err != nil {
+			return fmt.Errorf("update ticket: %w", err)
+		}
+		s.recordEvent(ctx, ticket, previousStatus, ticket.Status, operator, "审批超时, 系统自动通过")
+		s.fireEvent(ctx, "ticket.approved", ticket, operator)
+		s.notifyTicket(ctx, tenantID, evTicketApproved, "工单审批超时自动通过: "+ticket.Title,
+			fmt.Sprintf("审批节点超时, 系统自动通过 (操作者: %s)", operator))
+		s.notifyTicketInbox(ctx, ticket, msgCategoryApproval, msgLevelWarning,
+			"工单审批超时自动通过: "+ticket.Title,
+			fmt.Sprintf("审批时限已到, 系统按节点策略自动通过 (操作者: %s)", operator),
+			operator, assigneeAndOwner(ticket)...)
+		s.advanceProcess(ctx, ticket, "success")
+		s.broadcastTicketUpdate(ticket)
+		return nil
+	}
+	// auto_reject
+	if err := s.canTransition(ctx, ticket, model.StatusRejected, "审批超时自动驳回"); err != nil {
+		return fmt.Errorf("transition: %w", err)
+	}
+	ticket.Status = model.StatusRejected
+	ticket.RejectReason = "审批超时, 系统按节点策略自动驳回"
+	if err := s.store.Update(ctx, ticket); err != nil {
+		return fmt.Errorf("update ticket: %w", err)
+	}
+	s.recordEvent(ctx, ticket, previousStatus, model.StatusRejected, operator, ticket.RejectReason)
+	s.fireEvent(ctx, "ticket.rejected", ticket, operator)
+	s.notifyTicketInbox(ctx, ticket, msgCategoryApproval, msgLevelWarning,
+		"工单审批超时自动驳回: "+ticket.Title,
+		fmt.Sprintf("审批时限已到, 系统按节点策略自动驳回 (操作者: %s)", operator),
+		operator, assigneeAndOwner(ticket)...)
+	s.advanceProcess(ctx, ticket, "failure")
+	s.broadcastTicketUpdate(ticket)
+	return nil
+}
+
+// SyncTicketStatusWithProcess 引擎自主推进(timer 到期 / wait 条件成立 / 审批超时处置)后,
+// 把流程实例落点步骤类型映射回工单状态: 实例结束 → succeeded, 否则按 StepTypeToTicketStatus。
+// 由 process.Service 经 SetProcessAdvancedSyncer 回调, 与 ITSM 侧 advanceProcess 共用同一套映射。
+func (s *Service) SyncTicketStatusWithProcess(ctx context.Context, tenantID, ticketID string) error {
+	if s.processStore == nil {
+		return nil
+	}
+	inst, err := s.processStore.GetInstance(ctx, ticketID, tenantID)
+	if err != nil {
+		return fmt.Errorf("load instance: %w", err)
+	}
+	if inst == nil {
+		return nil
+	}
+	ticket, err := s.store.Get(ctx, ticketID, tenantID)
+	if err != nil {
+		return fmt.Errorf("load ticket: %w", err)
+	}
+	var mapped string
+	if inst.Status != "running" || inst.CurrentStep == "" {
+		mapped = "succeeded"
+	} else if proc, perr := s.processStore.Get(ctx, inst.ProcessID, tenantID); perr == nil && proc != nil {
+		if st := proc.StepByID(inst.CurrentStep); st != nil {
+			mapped = process.StepTypeToTicketStatus(st)
+		}
+	}
+	if mapped == "" || model.TicketStatus(mapped) == ticket.Status {
+		return nil
+	}
+	// 终态工单不被引擎回写(驳回/关闭后的流程残留推进不改变工单)
+	if model.IsTerminal(ticket.Status) {
+		return nil
+	}
+	prev := ticket.Status
+	ticket.Status = model.TicketStatus(mapped)
+	if mapped == "succeeded" {
+		now := time.Now()
+		ticket.CompletedAt = &now
+	}
+	if err := s.store.Update(ctx, ticket); err != nil {
+		return fmt.Errorf("update ticket: %w", err)
+	}
+	s.recordEvent(ctx, ticket, prev, ticket.Status, "process", "流程引擎自动推进(timer/等待条件)")
+	s.broadcastTicketUpdate(ticket)
+	return nil
 }
 
 // advanceProcess 若工单绑定了流程实例，则按 condition(success/failure) 推进流程引擎——
@@ -1069,7 +1328,16 @@ func (s *Service) handleGetProcessInstance(w http.ResponseWriter, r *http.Reques
 		httputil.WriteError(w, http.StatusNotFound, "no process instance for ticket")
 		return
 	}
-	httputil.WriteJSON(w, http.StatusOK, inst)
+	// 阶段进度视图：由流程定义（节点 Stage 归属）与实例运行态推导，平铺注入响应
+	// （匿名嵌入保持既有 current_step/step_results 顶层字段不变，仅新增 stages）。
+	var stages []process.StageView
+	if proc, perr := s.processStore.Get(r.Context(), inst.ProcessID, tenantID); perr == nil {
+		stages = process.StageProgress(proc, inst)
+	}
+	httputil.WriteJSON(w, http.StatusOK, struct {
+		*process.ProcessInstance
+		Stages []process.StageView `json:"stages,omitempty"`
+	}{inst, stages})
 }
 
 func (s *Service) handleGetEvents(w http.ResponseWriter, r *http.Request) {
@@ -1249,7 +1517,7 @@ func (s *Service) handleExportTicketsCSV(w http.ResponseWriter, r *http.Request)
 	writer := csv.NewWriter(&buf)
 
 	writer.Write([]string{
-		"id", "title", "description", "risk_level", "status", "change_plan", "rollback_plan",
+		"id", "number", "title", "description", "risk_level", "status", "change_plan", "rollback_plan",
 		"created_by", "created_by_type", "approved_by", "reject_reason",
 		"completed_by", "rolled_back_by", "rollback_reason",
 		"created_at", "updated_at", "approved_at", "executed_at", "completed_at", "rolled_back_at",
@@ -1283,7 +1551,7 @@ func (s *Service) handleExportTicketsCSV(w http.ResponseWriter, r *http.Request)
 		}
 
 		writer.Write([]string{
-			t.ID, t.Title, t.Description, string(t.RiskLevel), string(t.Status),
+			t.ID, t.Number, t.Title, t.Description, string(t.RiskLevel), string(t.Status),
 			t.ChangePlan, t.RollbackPlan, t.CreatedBy, t.CreatedByType,
 			t.ApprovedBy, t.RejectReason, t.CompletedBy, t.RolledBackBy, t.RollbackReason,
 			t.CreatedAt.Format(time.RFC3339), t.UpdatedAt.Format(time.RFC3339),

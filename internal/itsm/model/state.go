@@ -26,6 +26,9 @@ var validTransitions = map[TicketStatus][]TicketStatus{
 	StatusPendingReview: {
 		StatusApproved,
 		StatusRejected,
+		// 免审批直达处理：低/中风险工单允许在待审核态直接开始处理；
+		// 高风险工单由 handleExecute 的 RiskLevel 门禁拦截，此处不区分。
+		StatusExecuting,
 	},
 	StatusApproved: {
 		StatusExecuting,
@@ -37,6 +40,8 @@ var validTransitions = map[TicketStatus][]TicketStatus{
 	StatusExecuting: {
 		StatusSucceeded,
 		StatusFailed,
+		// 处理中直接关闭：用户取消 / 重复单 / 无需继续处理，不必先走"完成"。
+		StatusClosed,
 	},
 	StatusSucceeded: {
 		StatusRolledBack,

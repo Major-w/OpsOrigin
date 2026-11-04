@@ -12,6 +12,7 @@ import (
 type fakeCI struct {
 	nodes     []cmdb.CITypeNode
 	treeCalls int
+	lastAttrs map[string]string
 }
 
 func (f *fakeCI) ListCIsByTypeName(_ context.Context, _, typeName, _ string, _ int) ([]cmdb.CIRef, error) {
@@ -29,6 +30,11 @@ func (f *fakeCI) ListCITypeNames(_ context.Context, _ string) ([]string, error) 
 func (f *fakeCI) ListCITypeTree(_ context.Context, _ string) ([]cmdb.CITypeNode, error) {
 	f.treeCalls++
 	return f.nodes, nil
+}
+
+func (f *fakeCI) ListCIsByAttrs(_ context.Context, _, typeName string, attrs map[string]string, _ int) ([]cmdb.CIRef, error) {
+	f.lastAttrs = attrs
+	return []cmdb.CIRef{{ID: "ci-1", Name: "web-01", Type: typeName}}, nil
 }
 
 func findOpt(opts []form.FieldOption, value string) *form.FieldOption {
@@ -169,5 +175,44 @@ func TestSourceCatalogIncludesTypeTree(t *testing.T) {
 	}
 	if !hasTypes || !hasHost {
 		t.Fatalf("目录应同时含层级来源与具体类型（types=%v host=%v）", hasTypes, hasHost)
+	}
+}
+
+// --- 参数化级联（source 占位符 + attr 过滤） ---
+
+func TestExpandSourceParams(t *testing.T) {
+	expanded, missing := ExpandSourceParams("cmdb:机柜?room=${room}&zone=${zone}", map[string]string{"room": "RM-01"})
+	if expanded != "cmdb:机柜?room=RM-01&zone=" {
+		t.Fatalf("unexpected expanded: %q", expanded)
+	}
+	if len(missing) != 1 || missing[0] != "zone" {
+		t.Fatalf("expected missing [zone], got %v", missing)
+	}
+	if keys := SourcePlaceholderKeys("a=${x} b=${y}"); len(keys) != 2 || keys[0] != "x" || keys[1] != "y" {
+		t.Fatalf("placeholder keys: %v", keys)
+	}
+}
+
+func TestResolveWithParamsCascade(t *testing.T) {
+	ci := &fakeCI{}
+	r := NewCMDBIAMResolver(ci, nil, nil).(parameterizedResolver)
+	ctx := context.Background()
+
+	// 前置字段未选 → 空选项(不报错)
+	opts, err := r.ResolveWithParams(ctx, "t1", "cmdb:机柜?room=${room}", map[string]string{})
+	if err != nil || len(opts) != 0 {
+		t.Fatalf("missing param should return empty options, got %v err=%v", opts, err)
+	}
+	// 前置已选 → 走 ListCIsByAttrs 且过滤参数正确传递
+	opts, err = r.ResolveWithParams(ctx, "t1", "cmdb:机柜?room=${room}", map[string]string{"room": "RM-01"})
+	if err != nil || len(opts) != 1 || opts[0].Value != "ci-1" {
+		t.Fatalf("cascade options: %+v err=%v", opts, err)
+	}
+	if ci.lastAttrs["room"] != "RM-01" {
+		t.Fatalf("attr filter should reach provider, got %v", ci.lastAttrs)
+	}
+	// 无占位符 → 普通 TTL 缓存路径(不触过滤)
+	if _, err := NewCMDBIAMResolver(ci, nil, nil).Resolve(ctx, "t1", "cmdb:机柜"); err != nil {
+		t.Fatal(err)
 	}
 }

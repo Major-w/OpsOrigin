@@ -34,6 +34,6 @@ describe('ticket store', () => {
     })
 
     const result = await useTicketStore.getState().create({ title: 'New Ticket', risk_level: 'low' })
-    expect(result).toBe(true)
+    expect(result).toBe('new-1')
   })
 })

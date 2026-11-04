@@ -26,6 +26,7 @@ interface ServiceItem {
   kind?: string // folder=纯目录 / service=服务项
   process_id?: string
   form_scope?: string
+  service_window_id?: string
   enabled: boolean
   audience?: Audience
 }
@@ -48,14 +49,17 @@ const emptyFolder = (parent?: ServiceItem): Partial<ServiceItem> => ({
 const emptyService = (parent?: ServiceItem): Partial<ServiceItem> => ({
   id: '', name: '', description: '', kind: 'service',
   parent_id: parent?.id || '', level: (parent?.level || 0) + 1,
-  category: parent?.category || 'change', process_id: '', enabled: false, audience: { user_ids: [], group_ids: [] },
+  category: parent?.category || 'change', process_id: '', service_window_id: '', enabled: false, audience: { user_ids: [], group_ids: [] },
 })
 const isFolder = (it?: ServiceItem) => (it?.kind || 'service') === 'folder'
+
+interface WinOpt { id: string; name: string }
 
 export default function ITSMCatalogPage() {
   const { processes, fetchProcesses } = useProcessStore()
   const { groups, fetchGroups } = useIAMStore()
   const { users, fetch: fetchUsers } = useUserStore()
+  const [windows, setWindows] = useState<WinOpt[]>([])
 
   const [items, setItems] = useState<ServiceItem[]>([])
   const [keyword, setKeyword] = useState('')
@@ -77,7 +81,7 @@ export default function ITSMCatalogPage() {
       setUsageMap(m)
     }).catch(() => {})
   }
-  useEffect(() => { load(); fetchProcesses(); fetchGroups(); fetchUsers() }, [])
+  useEffect(() => { load(); fetchProcesses(); fetchGroups(); fetchUsers(); apiList<WinOpt>('/itsm/service-windows').then(setWindows).catch(() => {}) }, [])
 
   const folders = useMemo(() => items.filter(i => isFolder(i)), [items])
   const services = useMemo(() => items.filter(i => !isFolder(i)), [items])
@@ -175,6 +179,7 @@ export default function ITSMCatalogPage() {
         sort_order: draft.sort_order || 0,
         kind: draftKind,
         process_id: folderMode ? '' : (draft.process_id || ''),
+        service_window_id: folderMode ? '' : (draft.service_window_id || ''),
         form_scope: folderMode ? '' : (draft.form_scope || ''),
         enabled: draft.enabled && !folderMode, // 目录本身无上线语义
         audience: folderMode ? { user_ids: [], group_ids: [] } : { user_ids: draft.audience?.user_ids || [], group_ids: draft.audience?.group_ids || [] },
@@ -463,6 +468,12 @@ export default function ITSMCatalogPage() {
                 })}
               </select>
               <p className="text-[10px] text-muted-foreground">服务目录必须绑定流程模板；未关联流程无法上线。</p>
+              <label className="text-xs font-medium mt-2 block">服务时间（可选）</label>
+              <select className="flex h-9 w-full rounded-md border border-input bg-background px-2 text-xs" value={draft.service_window_id || ''} onChange={e => setDraft({ ...draft, service_window_id: e.target.value })}>
+                <option value="">7x24 全天候</option>
+                {windows.map(w => <option key={w.id} value={w.id}>{w.name}</option>)}
+              </select>
+              <p className="text-[10px] text-muted-foreground">该目录项的服务承诺窗口；绑定 SLA 的工单将按窗口内业务时间计时。窗口在「ITSM · 服务时间」维护。</p>
               {draft.process_id && (() => {
                 const refs = (refsByProcess.get(draft.process_id) || []).filter(r => r.id !== draft.id)
                 return <p className="text-[10px] text-muted-foreground mt-1">该流程已被以下服务目录引用：{refs.length ? refs.map(r => r.name).join('、') : '（当前编辑项，暂无其他目录）'}</p>

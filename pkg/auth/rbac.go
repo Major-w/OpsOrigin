@@ -566,6 +566,25 @@ var PathPermissionMapping = map[string]string{
 	"PUT /api/v1/oncall":    PermissionITSMWrite,
 	"DELETE /api/v1/oncall": PermissionITSMWrite,
 
+	// 提单模板(ITSM 域)：查看(itsm:read) / 新建·编辑·删除(itsm:write)。
+	"GET /api/v1/itsm/ticket-templates":           PermissionITSMRead,
+	"POST /api/v1/itsm/ticket-templates":          PermissionITSMWrite,
+	"PUT /api/v1/itsm/ticket-templates":           PermissionITSMWrite,
+	"DELETE /api/v1/itsm/ticket-templates":        PermissionITSMWrite,
+	"GET /api/v1/itsm/automation-rules":           PermissionITSMRead,
+	"POST /api/v1/itsm/automation-rules":          PermissionITSMWrite,
+	"PUT /api/v1/itsm/automation-rules":           PermissionITSMWrite,
+	"DELETE /api/v1/itsm/automation-rules":        PermissionITSMWrite,
+	"GET /api/v1/itsm/ticket-buttons":             PermissionITSMRead,
+	"POST /api/v1/itsm/ticket-buttons":            PermissionITSMWrite,
+	"PUT /api/v1/itsm/ticket-buttons":             PermissionITSMWrite,
+	"DELETE /api/v1/itsm/ticket-buttons":          PermissionITSMWrite,
+	"POST /api/v1/itsm/tickets/{id}/add-approver": PermissionITSMWrite,
+	// 状态流转规则(P2-⑯)
+	"GET /api/v1/itsm/status-flows":    PermissionITSMRead,
+	"PUT /api/v1/itsm/status-flows":    PermissionITSMWrite,
+	"DELETE /api/v1/itsm/status-flows": PermissionITSMWrite,
+
 	// 系统配置(含 LLM 凭据、采集策略等)按系统级管理;
 	// 运行状态/日志是监控只读视图,与 monitor:read 同级。
 	"GET /api/v1/system/config": PermissionSystemAdmin,

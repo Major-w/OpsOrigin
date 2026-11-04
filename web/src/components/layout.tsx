@@ -4,7 +4,7 @@ import { Link } from 'react-router-dom'
 import { useNavigate } from 'react-router-dom'
 import usePathname from '@/lib/use-pathname'
 import { cn } from '@/lib/utils'
-import { Server, TicketCheck, Activity, FlaskConical, Bot, Shield, LayoutDashboard, Hexagon, LogOut, User, Terminal, Workflow, Clock, Search, BookOpen, Calendar, GitBranch, Package, Bell, Key, Blocks, Users, Settings, Sun, Moon, Scan, Bug, Download, PackagePlus, Network, AlertTriangle, History, FileText, Rocket, AppWindow, FileCheck2, Cloud, Play, Sparkles, Database, Radio, BarChart3, Building2, Camera, TrendingUp, Store, Cpu, Webhook, Mail, MessageSquare, FolderOpen, ShieldAlert, ShieldCheck, PanelLeftClose, PanelLeftOpen, type LucideIcon } from 'lucide-react'
+import { Server, TicketCheck, Activity, FlaskConical, Bot, Shield, LayoutDashboard, Hexagon, LogOut, User, Terminal, Workflow, Clock, Search, BookOpen, Calendar, GitBranch, Package, Bell, Key, Blocks, Users, Settings, Sun, Moon, Scan, Bug, Download, PackagePlus, Network, AlertTriangle, History, FileText, Rocket, AppWindow, FileCheck2, Cloud, Play, Sparkles, Database, Radio, BarChart3, Building2, Camera, TrendingUp, Store, Cpu, Webhook, Mail, MessageSquare, FolderOpen, ShieldAlert, ShieldCheck, PanelLeftClose, PanelLeftOpen, CalendarClock, ArrowRightLeft, UserCheck, type LucideIcon } from 'lucide-react'
 import { useAuthStore } from '@/stores/auth'
 import { useAccess } from '@/access'
 import { MessageBell } from '@/components/message-bell'
@@ -202,8 +202,11 @@ export function Layout({ children }: { children: React.ReactNode }) {
             { to: '/itsm/process', label: t('itsm.process'), icon: GitBranch },
             { to: '/itsm/catalog', label: t('itsm.catalog'), icon: Package },
             { to: '/itsm/sla-ola', label: t('itsm.slaOla'), icon: Clock },
+            { to: '/itsm/service-hours', label: t('itsm.serviceHours'), icon: CalendarClock },
             { to: '/itsm/sla-breached', label: t('itsm.slaBreached'), icon: AlertTriangle },
             { to: '/itsm/form-dicts', label: t('itsm.formDicts'), icon: Database },
+            { to: '/itsm/status-flow', label: '状态流转规则', icon: ArrowRightLeft },
+            { to: '/itsm/delegates', label: '审批委托', icon: UserCheck },
           ]
         },
         { to: '/itsm/oncall', label: t('itsm.oncall'), icon: Calendar },
@@ -215,6 +218,7 @@ export function Layout({ children }: { children: React.ReactNode }) {
       label: t('knowledge.title'), icon: BookOpen, items: [
         { to: '/knowledge', label: t('knowledge.articleList'), icon: BookOpen },
         { to: '/knowledge/categories', label: t('knowledge.categories'), icon: FolderOpen },
+        { to: '/knowledge/reports', label: t('knowledge.reports'), icon: BarChart3 },
         // 检索可观测(P1-2/P1-4): 零结果查询 = 知识盲区清单, 收敛到 knowledge:manage
         ...(canKnowledgeManage
           ? [

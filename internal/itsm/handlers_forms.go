@@ -131,7 +131,33 @@ func (s *Service) handleListFieldDicts(w http.ResponseWriter, r *http.Request) {
 	if dicts == nil {
 		dicts = []*form.FieldDict{}
 	}
-	httputil.WriteJSON(w, http.StatusOK, dicts)
+	// used_by：扫描全部表单 schema，统计每个字典被哪些 scope 引用。
+	// 让用户在删除/改动字典前能看到影响面（N 为表单 scope 数，量级小，逐个查可接受）。
+	usage := map[string][]string{}
+	if scopes, err := s.store.ListFormScopes(r.Context(), tenantID); err == nil {
+		for _, scope := range scopes {
+			schema, err := s.store.GetFormSchema(r.Context(), tenantID, scope)
+			if err != nil || schema == nil {
+				continue
+			}
+			for _, f := range schema.Fields {
+				if f.DictRef != "" {
+					usage[f.DictRef] = append(usage[f.DictRef], scope)
+				}
+			}
+		}
+	}
+	out := make([]dictWithUsage, 0, len(dicts))
+	for _, d := range dicts {
+		out = append(out, dictWithUsage{FieldDict: d, UsedBy: usage[d.ID]})
+	}
+	httputil.WriteJSON(w, http.StatusOK, out)
+}
+
+// dictWithUsage 字典 + 引用它的表单 scope 列表（GET /itsm/form-dicts 响应）。
+type dictWithUsage struct {
+	*form.FieldDict
+	UsedBy []string `json:"used_by,omitempty"`
 }
 
 func (s *Service) handleUpsertFieldDict(w http.ResponseWriter, r *http.Request) {
@@ -143,6 +169,27 @@ func (s *Service) handleUpsertFieldDict(w http.ResponseWriter, r *http.Request) 
 	if dict.Name == "" {
 		httputil.WriteError(w, http.StatusBadRequest, "name is required")
 		return
+	}
+	// 字段白名单校验：key 必填且不重复；选择类字段必须带选项。
+	seenKeys := map[string]bool{}
+	for i, f := range dict.Fields {
+		if f.Key == "" {
+			httputil.WriteError(w, http.StatusBadRequest, fmt.Sprintf("fields[%d]: key is required", i))
+			return
+		}
+		if seenKeys[f.Key] {
+			httputil.WriteError(w, http.StatusBadRequest, fmt.Sprintf("fields[%d]: duplicate key %q", i, f.Key))
+			return
+		}
+		seenKeys[f.Key] = true
+		switch f.Type {
+		case form.TypeSelect, form.TypeMultiSelect, form.TypeCascader:
+			if len(f.Options) == 0 {
+				httputil.WriteError(w, http.StatusBadRequest,
+					fmt.Sprintf("fields[%d] (%s): type %s requires options", i, f.Key, f.Type))
+				return
+			}
+		}
 	}
 	tenantID := auth.TenantFromContext(r.Context())
 	if err := s.store.UpsertFieldDict(r.Context(), tenantID, &dict); err != nil {
@@ -170,6 +217,8 @@ func (s *Service) handleDeleteFieldDict(w http.ResponseWriter, r *http.Request) 
 // 不带 source 参数时返回本租户可用的 source 清单，供表单配置界面下拉选择。
 // keyword 用于前端下拉搜索时做服务端过滤，limit 限制返回条数（默认 200）。
 // 带 parent 参数（可为空串）时进入层级模式：返回该父节点下的子选项，供 cascader 级联逐级展开。
+// 参数化级联: source 串支持 ${field_key} 占位符（如 cmdb:机柜?room=${room}），
+// 前端把当前表单值以 p_<key>=<value> 查询参数传入，此处展开后过滤。
 func (s *Service) handleFormOptions(w http.ResponseWriter, r *http.Request) {
 	tenantID := auth.TenantFromContext(r.Context())
 	if s.formEngine == nil || s.formEngine.SourceResolver() == nil {
@@ -184,6 +233,25 @@ func (s *Service) handleFormOptions(w http.ResponseWriter, r *http.Request) {
 			sources = c.SourceCatalog(r.Context(), tenantID)
 		}
 		httputil.WriteJSON(w, http.StatusOK, map[string]any{"sources": sources})
+		return
+	}
+	// 参数化级联: 收集 p_<key> 查询参数; source 含占位符或带了 p_ 参数即走参数化解析。
+	params := map[string]string{}
+	for k, vs := range r.URL.Query() {
+		if strings.HasPrefix(k, "p_") && len(vs) > 0 {
+			params[strings.TrimPrefix(k, "p_")] = vs[0]
+		}
+	}
+	if len(params) > 0 || SourcePlaceholderKeys(source) != nil {
+		opts, missing, err := resolveWithOptions(r.Context(), resolver, tenantID, source, params)
+		if err != nil {
+			httputil.WriteError(w, http.StatusBadGateway, fmt.Sprintf("解析选项来源失败: %v", err))
+			return
+		}
+		if opts == nil {
+			opts = []form.FieldOption{}
+		}
+		httputil.WriteJSON(w, http.StatusOK, map[string]any{"source": source, "options": opts, "missing_params": missing})
 		return
 	}
 	// 层级模式：parent 参数存在即按树取子节点（parent 为空取根层级）
@@ -232,6 +300,23 @@ func (s *Service) handleFormOptions(w http.ResponseWriter, r *http.Request) {
 	httputil.WriteJSON(w, http.StatusOK, map[string]any{"source": source, "options": opts})
 }
 
+// parameterizedResolver 支持表单值参数化解析的选项来源（表单级联, 由 cmdbIAMResolver 实现）。
+type parameterizedResolver interface {
+	ResolveWithParams(ctx context.Context, tenantID, source string, params map[string]string) ([]form.FieldOption, error)
+}
+
+// resolveWithOptions 统一入口: 解析器支持参数化则走参数化路径, 否则退化为普通解析。
+// 返回 missing(级联前置字段未就绪的键列表, 供前端提示)。
+func resolveWithOptions(ctx context.Context, r form.SourceResolver, tenantID, source string, params map[string]string) ([]form.FieldOption, []string, error) {
+	if pr, ok := r.(parameterizedResolver); ok {
+		opts, err := pr.ResolveWithParams(ctx, tenantID, source, params)
+		_, missing := ExpandSourceParams(source, params)
+		return opts, missing, err
+	}
+	opts, err := r.Resolve(ctx, tenantID, source)
+	return opts, nil, err
+}
+
 // handleUpdateCustomFields 按作用域更新工单自定义字段（流程步骤级表单回写）。
 // 若给定 scope 存在 schema，则先注入默认值并校验，再合并进 ticket.custom_fields；无 schema 直接合并（向后兼容）。
 func (s *Service) handleUpdateCustomFields(w http.ResponseWriter, r *http.Request) {
@@ -258,10 +343,15 @@ func (s *Service) handleUpdateCustomFields(w http.ResponseWriter, r *http.Reques
 	}
 	if req.Scope != "" && s.formEngine != nil {
 		if schema, serr := s.formEngine.ResolveSchema(r.Context(), tenantID, req.Scope); serr == nil && schema != nil {
-			form.MergeDefaults(schema, req.Fields)
-			if verr := s.formEngine.ValidateValues(r.Context(), tenantID, schema, req.Fields); verr != nil {
+			form.MergeDefaultsAs(schema, req.Fields, auth.UserIDFromContext(r.Context()))
+			_, computed, verr := s.formEngine.ValidateValuesFull(r.Context(), tenantID, schema, req.Fields)
+			if verr != nil {
 				httputil.WriteError(w, http.StatusBadRequest, fmt.Sprintf("表单校验失败: %v", verr))
 				return
+			}
+			// 计算字段/联动派生值合并回写（服务端落定, 与前端展示一致）
+			for k, v := range computed {
+				req.Fields[k] = v
 			}
 		}
 	}

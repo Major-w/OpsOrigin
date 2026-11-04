@@ -2,7 +2,7 @@
 import { create } from 'zustand'
 import { apiFetch, apiList } from '@/lib/utils'
 import { useAuthStore } from '@/stores/auth'
-import type { Ticket, TicketEvent, ITSMStats } from './types'
+import type { Ticket, TicketEvent, ITSMStats, TicketTemplate, AutomationRule, TicketButton } from './types'
 import { getMessage } from '@/lib/message'
 
 const getCurrentUser = () => useAuthStore.getState().user?.username || 'anonymous'
@@ -15,7 +15,7 @@ interface TicketState {
   fetch: () => Promise<void>
   getTicket: (id: string) => Promise<Ticket>
   getEvents: (id: string) => Promise<TicketEvent[]>
-  create: (data: Partial<Ticket>) => Promise<boolean>
+  create: (data: Partial<Ticket>) => Promise<string | null>
   approve: (id: string, comment?: string) => Promise<boolean>
   reject: (id: string, reason: string) => Promise<boolean>
   execute: (id: string) => Promise<boolean>
@@ -30,8 +30,23 @@ interface TicketState {
   hold: (id: string, reason?: string) => Promise<boolean>
   resume: (id: string) => Promise<boolean>
   remind: (id: string, message?: string) => Promise<boolean>
-  relate: (id: string, relatedId: string) => Promise<boolean>
+  relate: (id: string, relatedId: string, relation?: string, reason?: string) => Promise<boolean>
+  addApprover: (id: string, approver: string, position?: 'before' | 'after', comment?: string) => Promise<boolean>
   fetchStats: () => Promise<void>
+  // 提单模板
+  templates: TicketTemplate[]
+  fetchTemplates: () => Promise<void>
+  saveTemplate: (t: TicketTemplate) => Promise<boolean>
+  deleteTemplate: (id: string) => Promise<boolean>
+  // 自动化: 触发器 + 自定义按钮
+  rules: AutomationRule[]
+  fetchRules: () => Promise<void>
+  saveRule: (r: AutomationRule) => Promise<boolean>
+  deleteRule: (id: string) => Promise<boolean>
+  buttons: TicketButton[]
+  fetchButtons: () => Promise<void>
+  saveButton: (b: TicketButton) => Promise<boolean>
+  deleteButton: (id: string) => Promise<boolean>
 }
 
 export const useTicketStore = create<TicketState>((set, get) => ({
@@ -67,13 +82,13 @@ export const useTicketStore = create<TicketState>((set, get) => ({
   },
   create: async (data) => {
     try {
-      await apiFetch('/itsm/tickets', { method: 'POST', body: JSON.stringify(data) })
+      const created = await apiFetch<Ticket>('/itsm/tickets', { method: 'POST', body: JSON.stringify(data) })
       getMessage().success('创建工单成功')
       await get().fetch()
-      return true
+      return created?.id || null
     } catch (e: any) {
       getMessage().error(`创建工单失败: ${e.message}`)
-      return false
+      return null
     }
   },
   approve: async (id, comment?) => {
@@ -207,13 +222,24 @@ export const useTicketStore = create<TicketState>((set, get) => ({
       return false
     }
   },
-  relate: async (id, relatedId) => {
+  relate: async (id, relatedId, relation?, reason?) => {
     try {
-      await apiFetch(`/itsm/tickets/${id}/relate`, { method: 'POST', body: JSON.stringify({ related_ticket_id: relatedId }) })
+      await apiFetch(`/itsm/tickets/${id}/relate`, { method: 'POST', body: JSON.stringify({ related_id: relatedId, relation: relation || '', reason: reason || '' }) })
       getMessage().success('已关联')
       return true
     } catch (e: any) {
       getMessage().error(`关联失败: ${e.message}`)
+      return false
+    }
+  },
+  addApprover: async (id, approver, position?, comment?) => {
+    try {
+      await apiFetch(`/itsm/tickets/${id}/add-approver`, { method: 'POST', body: JSON.stringify({ approver, position: position || 'after', comment: comment || '' }) })
+      getMessage().success('加签成功')
+      await get().fetch()
+      return true
+    } catch (e: any) {
+      getMessage().error(`加签失败: ${e.message}`)
       return false
     }
   },
@@ -245,6 +271,111 @@ export const useTicketStore = create<TicketState>((set, get) => ({
       set({ stats })
     } catch (e: any) {
       getMessage().error(`加载统计失败: ${e.message}`)
+    }
+  },
+  templates: [],
+  fetchTemplates: async () => {
+    try {
+      const list = await apiList<TicketTemplate>('/itsm/ticket-templates')
+      set({ templates: list || [] })
+    } catch (e: any) {
+      getMessage().error(`加载提单模板失败: ${e.message}`)
+    }
+  },
+  saveTemplate: async (t) => {
+    try {
+      if (t.id) {
+        await apiFetch(`/itsm/ticket-templates/${t.id}`, { method: 'PUT', body: JSON.stringify(t) })
+      } else {
+        await apiFetch('/itsm/ticket-templates', { method: 'POST', body: JSON.stringify(t) })
+      }
+      getMessage().success('模板已保存')
+      await get().fetchTemplates()
+      return true
+    } catch (e: any) {
+      getMessage().error(`保存模板失败: ${e.message}`)
+      return false
+    }
+  },
+  deleteTemplate: async (id) => {
+    try {
+      await apiFetch(`/itsm/ticket-templates/${id}`, { method: 'DELETE' })
+      getMessage().success('模板已删除')
+      await get().fetchTemplates()
+      return true
+    } catch (e: any) {
+      getMessage().error(`删除模板失败: ${e.message}`)
+      return false
+    }
+  },
+  rules: [],
+  fetchRules: async () => {
+    try {
+      const list = await apiList<AutomationRule>('/itsm/automation-rules')
+      set({ rules: list || [] })
+    } catch (e: any) {
+      getMessage().error(`加载自动化规则失败: ${e.message}`)
+    }
+  },
+  saveRule: async (r) => {
+    try {
+      if (r.id) {
+        await apiFetch(`/itsm/automation-rules/${r.id}`, { method: 'PUT', body: JSON.stringify(r) })
+      } else {
+        await apiFetch('/itsm/automation-rules', { method: 'POST', body: JSON.stringify(r) })
+      }
+      getMessage().success('规则已保存')
+      await get().fetchRules()
+      return true
+    } catch (e: any) {
+      getMessage().error(`保存规则失败: ${e.message}`)
+      return false
+    }
+  },
+  deleteRule: async (id) => {
+    try {
+      await apiFetch(`/itsm/automation-rules/${id}`, { method: 'DELETE' })
+      getMessage().success('规则已删除')
+      await get().fetchRules()
+      return true
+    } catch (e: any) {
+      getMessage().error(`删除规则失败: ${e.message}`)
+      return false
+    }
+  },
+  buttons: [],
+  fetchButtons: async () => {
+    try {
+      const list = await apiList<TicketButton>('/itsm/ticket-buttons')
+      set({ buttons: (list || []).filter(b => b.enabled) })
+    } catch (e: any) {
+      getMessage().error(`加载自定义按钮失败: ${e.message}`)
+    }
+  },
+  saveButton: async (b) => {
+    try {
+      if (b.id) {
+        await apiFetch(`/itsm/ticket-buttons/${b.id}`, { method: 'PUT', body: JSON.stringify(b) })
+      } else {
+        await apiFetch('/itsm/ticket-buttons', { method: 'POST', body: JSON.stringify(b) })
+      }
+      getMessage().success('按钮已保存')
+      await get().fetchButtons()
+      return true
+    } catch (e: any) {
+      getMessage().error(`保存按钮失败: ${e.message}`)
+      return false
+    }
+  },
+  deleteButton: async (id) => {
+    try {
+      await apiFetch(`/itsm/ticket-buttons/${id}`, { method: 'DELETE' })
+      getMessage().success('按钮已删除')
+      await get().fetchButtons()
+      return true
+    } catch (e: any) {
+      getMessage().error(`删除按钮失败: ${e.message}`)
+      return false
     }
   },
 }))

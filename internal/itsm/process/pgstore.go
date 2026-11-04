@@ -36,6 +36,7 @@ func NewPGStore(db *sql.DB) *PGStore {
 		s.migrate()
 		s.migrateInstances()
 		s.migrateVersions()
+		s.migrateDelegates()
 	}
 	return s
 }
@@ -58,6 +59,8 @@ func (s *PGStore) migrate() {
 	s.db.Exec(`ALTER TABLE itsm_processes ADD COLUMN IF NOT EXISTS form JSONB DEFAULT '{}'::jsonb`)
 	s.db.Exec(`ALTER TABLE itsm_processes ADD COLUMN IF NOT EXISTS sla_policy_id TEXT DEFAULT ''`)
 	s.db.Exec(`ALTER TABLE itsm_processes ADD COLUMN IF NOT EXISTS notify_config JSONB DEFAULT '{}'::jsonb`)
+	// 工单编号组成规则（流程设计"高级设置"自定义；为空走全局默认 TK-YYYY-NNNN）
+	s.db.Exec(`ALTER TABLE itsm_processes ADD COLUMN IF NOT EXISTS number_rule JSONB DEFAULT '{}'::jsonb`)
 }
 
 func (s *PGStore) Create(ctx context.Context, p *Process) error {
@@ -83,10 +86,14 @@ func (s *PGStore) Create(ctx context.Context, p *Process) error {
 	if len(notifyJSON) == 0 {
 		notifyJSON = []byte("{}")
 	}
+	numberJSON, _ := json.Marshal(p.NumberRule)
+	if len(numberJSON) == 0 || string(numberJSON) == "null" {
+		numberJSON = []byte("{}")
+	}
 	_, err := s.db.ExecContext(ctx,
-		`INSERT INTO itsm_processes(id,tenant_id,name,description,category,steps,labels,enabled,version,form,sla_policy_id,notify_config,created_at,updated_at)
-		 VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`,
-		p.ID, p.TenantID, p.Name, p.Description, p.Category, stepsJSON, labelsJSON, p.Enabled, p.Version, formJSON, p.SlaPolicyID, notifyJSON, p.CreatedAt, p.UpdatedAt)
+		`INSERT INTO itsm_processes(id,tenant_id,name,description,category,steps,labels,enabled,version,form,sla_policy_id,notify_config,number_rule,created_at,updated_at)
+		 VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)`,
+		p.ID, p.TenantID, p.Name, p.Description, p.Category, stepsJSON, labelsJSON, p.Enabled, p.Version, formJSON, p.SlaPolicyID, notifyJSON, numberJSON, p.CreatedAt, p.UpdatedAt)
 	return err
 }
 
@@ -94,12 +101,12 @@ func (s *PGStore) Get(ctx context.Context, id, tenantID string) (*Process, error
 	if s.db == nil {
 		return nil, nil
 	}
-	var stepsJSON, labelsJSON, formJSON, notifyJSON []byte
+	var stepsJSON, labelsJSON, formJSON, notifyJSON, numberJSON []byte
 	p := &Process{}
 	err := s.db.QueryRowContext(ctx,
-		`SELECT id,tenant_id,name,description,category,steps,labels,enabled,version,form,sla_policy_id,notify_config,created_at,updated_at
+		`SELECT id,tenant_id,name,description,category,steps,labels,enabled,version,form,sla_policy_id,notify_config,number_rule,created_at,updated_at
 		 FROM itsm_processes WHERE id=$1 AND tenant_id=$2`, id, tenantID).
-		Scan(&p.ID, &p.TenantID, &p.Name, &p.Description, &p.Category, &stepsJSON, &labelsJSON, &p.Enabled, &p.Version, &formJSON, &p.SlaPolicyID, &notifyJSON, &p.CreatedAt, &p.UpdatedAt)
+		Scan(&p.ID, &p.TenantID, &p.Name, &p.Description, &p.Category, &stepsJSON, &labelsJSON, &p.Enabled, &p.Version, &formJSON, &p.SlaPolicyID, &notifyJSON, &numberJSON, &p.CreatedAt, &p.UpdatedAt)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -114,6 +121,12 @@ func (s *PGStore) Get(ctx context.Context, id, tenantID string) (*Process, error
 	if len(notifyJSON) > 0 && string(notifyJSON) != "null" {
 		p.NotifyConfig = notifyJSON
 	}
+	if len(numberJSON) > 0 && string(numberJSON) != "null" && string(numberJSON) != "{}" {
+		var r TicketNumberRule
+		if json.Unmarshal(numberJSON, &r) == nil {
+			p.NumberRule = &r
+		}
+	}
 	return p, nil
 }
 
@@ -122,7 +135,7 @@ func (s *PGStore) List(ctx context.Context, tenantID string) ([]*Process, error)
 		return nil, nil
 	}
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT id,tenant_id,name,description,category,steps,labels,enabled,version,form,sla_policy_id,notify_config,created_at,updated_at
+		`SELECT id,tenant_id,name,description,category,steps,labels,enabled,version,form,sla_policy_id,notify_config,number_rule,created_at,updated_at
 		 FROM itsm_processes WHERE tenant_id=$1 ORDER BY updated_at DESC`, tenantID)
 	if err != nil {
 		return nil, err
@@ -130,9 +143,9 @@ func (s *PGStore) List(ctx context.Context, tenantID string) ([]*Process, error)
 	defer rows.Close()
 	var out []*Process
 	for rows.Next() {
-		var stepsJSON, labelsJSON, formJSON, notifyJSON []byte
+		var stepsJSON, labelsJSON, formJSON, notifyJSON, numberJSON []byte
 		p := &Process{}
-		if err := rows.Scan(&p.ID, &p.TenantID, &p.Name, &p.Description, &p.Category, &stepsJSON, &labelsJSON, &p.Enabled, &p.Version, &formJSON, &p.SlaPolicyID, &notifyJSON, &p.CreatedAt, &p.UpdatedAt); err != nil {
+		if err := rows.Scan(&p.ID, &p.TenantID, &p.Name, &p.Description, &p.Category, &stepsJSON, &labelsJSON, &p.Enabled, &p.Version, &formJSON, &p.SlaPolicyID, &notifyJSON, &numberJSON, &p.CreatedAt, &p.UpdatedAt); err != nil {
 			return nil, err
 		}
 		json.Unmarshal(stepsJSON, &p.Steps)
@@ -142,6 +155,12 @@ func (s *PGStore) List(ctx context.Context, tenantID string) ([]*Process, error)
 		}
 		if len(notifyJSON) > 0 && string(notifyJSON) != "null" {
 			p.NotifyConfig = notifyJSON
+		}
+		if len(numberJSON) > 0 && string(numberJSON) != "null" && string(numberJSON) != "{}" {
+			var r TicketNumberRule
+			if json.Unmarshal(numberJSON, &r) == nil {
+				p.NumberRule = &r
+			}
 		}
 		out = append(out, p)
 	}
@@ -163,10 +182,14 @@ func (s *PGStore) Update(ctx context.Context, p *Process) error {
 	if len(notifyJSON) == 0 {
 		notifyJSON = []byte("{}")
 	}
+	numberJSON, _ := json.Marshal(p.NumberRule)
+	if len(numberJSON) == 0 || string(numberJSON) == "null" {
+		numberJSON = []byte("{}")
+	}
 	res, err := s.db.ExecContext(ctx,
-		`UPDATE itsm_processes SET name=$1,description=$2,category=$3,steps=$4,labels=$5,enabled=$6,version=$7,form=$8,sla_policy_id=$9,notify_config=$10,updated_at=$11
-		 WHERE id=$12 AND tenant_id=$13`,
-		p.Name, p.Description, p.Category, stepsJSON, labelsJSON, p.Enabled, p.Version, formJSON, p.SlaPolicyID, notifyJSON, p.UpdatedAt, p.ID, p.TenantID)
+		`UPDATE itsm_processes SET name=$1,description=$2,category=$3,steps=$4,labels=$5,enabled=$6,version=$7,form=$8,sla_policy_id=$9,notify_config=$10,number_rule=$11,updated_at=$12
+		 WHERE id=$13 AND tenant_id=$14`,
+		p.Name, p.Description, p.Category, stepsJSON, labelsJSON, p.Enabled, p.Version, formJSON, p.SlaPolicyID, notifyJSON, numberJSON, p.UpdatedAt, p.ID, p.TenantID)
 	if err != nil {
 		return err
 	}

@@ -1,8 +1,10 @@
 
-import { useEffect, useState, useCallback } from 'react'
+import { useEffect, useState, useCallback, useRef } from 'react'
+import { useSearchParams } from 'react-router-dom'
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card'
 import { Button, Tag, Input, Modal } from 'antd'
 import { formatTime, apiFetch, apiList } from '@/lib/utils'
+import { getMessage } from '@/lib/message'
 import { useAuthStore } from '@/stores/auth'
 import { Plus, Check, X, Play, ChevronRight, Shield, ChevronLeft, CalendarDays } from 'lucide-react'
 
@@ -76,6 +78,30 @@ export default function ChangeManagementPage() {
   }, [])
 
   useEffect(() => { fetchChanges() }, [fetchChanges])
+
+  // 转建预填（P1-⑩）：工单页「转建 → 转为变更单」携带 ?ticket=<源单ID> 进入，
+  // 加载源工单并自动填入标题/描述/风险等级/关联工单字段。
+  const [searchParams] = useSearchParams()
+  const prefillDoneRef = useRef(false)
+  useEffect(() => {
+    const srcId = searchParams.get('ticket')
+    if (!srcId || prefillDoneRef.current) return
+    prefillDoneRef.current = true
+    ;(async () => {
+      try {
+        const src = await apiFetch<{ id: string; title: string; description?: string; risk_level?: string; ci_ids?: string[] }>(`/itsm/tickets/${srcId}`)
+        setForm(f => ({
+          ...f,
+          title: `[转建] ${src.title}`,
+          description: `${src.description || ''}${src.description ? '\n\n' : ''}—— 由工单「${src.title}」(${src.id.slice(0, 8)}) 转建`,
+          risk_level: src.risk_level || 'medium',
+          ticket_id: src.id,
+        }))
+        setCreateOpen(true)
+        getMessage().success('已从源工单预填变更单字段')
+      } catch { /* 源单加载失败则正常打开空白表单 */ }
+    })()
+  }, [searchParams])
 
   const handleCreate = async () => {
     const cabMembers = form.cab_members.split(',').map(s => s.trim()).filter(Boolean)

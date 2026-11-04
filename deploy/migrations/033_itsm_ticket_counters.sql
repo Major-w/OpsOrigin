@@ -1,0 +1,14 @@
+-- 033: 工单号计数器表重构，支持「按流程 + 年/月/全局」维度独立计序。
+-- 旧形态 (tenant_id, year, seq) → 新形态 (tenant_id, scope_key, seq)。
+-- 与 internal/itsm/store/pg.go 的 migrate() 自愈 DO 块双写（仅当 year 列存在时执行，幂等）。
+--
+-- 升级逻辑（自愈 DDL 已内联实现，以下为等价记录）：
+--   ALTER TABLE itsm_ticket_counters ADD COLUMN IF NOT EXISTS scope_key TEXT;
+--   UPDATE itsm_ticket_counters SET scope_key = '__global__|year:' || year WHERE scope_key IS NULL;
+--   ALTER TABLE itsm_ticket_counters ALTER COLUMN scope_key SET NOT NULL;
+--   ALTER TABLE itsm_ticket_counters DROP CONSTRAINT IF EXISTS itsm_ticket_counters_pkey;
+--   DROP INDEX IF EXISTS idx_itsm_ticket_counters_ty;
+--   ALTER TABLE itsm_ticket_counters ADD PRIMARY KEY (tenant_id, scope_key);
+--   ALTER TABLE itsm_ticket_counters DROP COLUMN IF EXISTS year;
+--
+-- scope_key 编码格式： <processID|__global__>|<year:YYYY|month:YYYY-MM|global:default>

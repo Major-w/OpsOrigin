@@ -2,6 +2,7 @@ package process
 
 import (
 	"encoding/json"
+	"fmt"
 	"strings"
 	"time"
 )
@@ -17,15 +18,43 @@ const (
 	StepGateway  StepType = "gateway"  // 排他网关（条件分支）
 	StepTimer    StepType = "timer"    // 定时器（SLA超时触发）
 	StepNotify   StepType = "notify"   // 通知任务
-	StepParallel StepType = "parallel" // 并行网关
+	StepParallel StepType = "parallel" // 并行网关（发散）
+	StepJoin     StepType = "join"     // 汇聚网关（多入一出, 与 parallel 配对: 等待上游分支汇合后继续）
+	StepDispatch StepType = "dispatch" // 派单节点（先派单再处理: 解析受派人 → 写工单 assignee → 继续流转）
 	StepSubflow  StepType = "subflow"  // 子流程
+	StepWait     StepType = "wait"     // 等待条件（Wait for Condition: 挂起轮询, 条件成立自动继续）
 )
 
-// 人工任务表决方式。
+// 人工任务表决方式（对齐 ServiceNow Ask for Approval 的 5 种表决语义）。
 const (
-	ApprovalCountersign = "countersign" // 会签：全部审批人通过才继续（缺省）
-	ApprovalOrSign      = "orsign"      // 或签：任一审批人通过即可继续
+	ApprovalCountersign  = "countersign"   // 会签：全部审批人通过才继续（缺省，等价 all）
+	ApprovalOrSign       = "orsign"        // 或签：任一审批人通过即可继续（等价 anyone）
+	ApprovalRespondedAny = "responded_any" // 全员表态后任一通过：所有名册成员都投过票且至少一人通过
+	ApprovalPercent      = "percent"       // 按比例：通过人数 ≥ 名册的 threshold%（默认 50）
+	ApprovalCount        = "count"         // 按数量：通过人数 ≥ threshold 人（默认 1）
 )
+
+// voteLabel 表决语义的人类可读描述（dry-run 报告与画布标签共用）。
+func voteLabel(t string, threshold float64) string {
+	switch t {
+	case ApprovalOrSign:
+		return "或签（任一通过即继续）"
+	case ApprovalRespondedAny:
+		return "全员表态后任一通过即继续"
+	case ApprovalPercent:
+		if threshold <= 0 {
+			threshold = 50
+		}
+		return fmt.Sprintf("比例表决（通过 ≥ %.0f%%）", threshold)
+	case ApprovalCount:
+		if threshold <= 0 {
+			threshold = 1
+		}
+		return fmt.Sprintf("数量表决（通过 ≥ %.0f 人）", threshold)
+	default:
+		return "会签（全部通过才继续）"
+	}
+}
 
 // DAGDependency  — 上游依赖
 type Dependency struct {
@@ -44,19 +73,60 @@ type Step struct {
 	ApprovalMsg string   `json:"approval_msg,omitempty"`
 	// ApprovalType 多审批人时的表决方式：
 	//   countersign(会签, 缺省) — 全部审批人通过才继续；
-	//   orsign(或签)           — 任一审批人通过即可继续。
+	//   orsign(或签)           — 任一审批人通过即可继续；
+	//   responded_any          — 全员表态后任一通过即继续；
+	//   percent                — 通过人数 ≥ 名册的 ApprovalThreshold%（默认 50）；
+	//   count                  — 通过人数 ≥ ApprovalThreshold 人（默认 1）。
 	ApprovalType string `json:"approval_type,omitempty"`
+	// ApprovalThreshold percent/count 表决的阈值（percent: 0-100 的百分比；count: 人数）。
+	// 对其他表决方式无意义；<=0 时按默认值（percent=50 / count=1）。
+	ApprovalThreshold float64 `json:"approval_threshold,omitempty"`
 	// ApproverField 从表单字段动态取审批人：非空时取工单自定义字段 <key> 的值追加到审批人集合，
 	// 支持字符串(单人/逗号分隔)与字符串数组两种取值形态，便于「谁提单谁的主管审批」这类场景。
 	ApproverField string `json:"approver_field,omitempty"`
+	// 人工任务审批时间语义（对齐 ServiceNow Ask for Approval 的 due-date 语义）:
+	//   TimeoutDuration  审批时限(如 24h / 3d, 复用 parseStepDuration 解析), 非空时启用超时策略;
+	//   TimeoutAction    到期处置: auto_approve(自动通过) / auto_reject(自动驳回) / notify_only(仅催办);
+	//   ReminderInterval 催办间隔(如 24h): 停留期间每过一个间隔向审批人催办一次, 空=不周期催办。
+	// 超时处置由 StartTimerChecker 扫描循环驱动(见 timer.go checkUserStepTimeout),
+	// auto_* 动作经 ApprovalTimeoutHandler 回调由 itsm 侧完成工单状态迁移与流程推进。
+	TimeoutDuration  string `json:"timeout_duration,omitempty"`
+	TimeoutAction    string `json:"timeout_action,omitempty"`
+	ReminderInterval string `json:"reminder_interval,omitempty"`
+	// 工作日历（P3-2）: 配置服务时间窗口名称/ID（servicehours.Window）后,
+	// 催办间隔与超时时限按业务时间计算（跳过非工作时段与节假日, 如 8x5 日历下
+	// "24h" 实际为 3 个工作日）; 留空=自然时间（向后兼容）。由 main 装配解析器。
+	Calendar string `json:"calendar,omitempty"`
 	// 服务任务
 	ScriptID string         `json:"script_id,omitempty"`
 	Inputs   map[string]any `json:"inputs,omitempty"`
 	// 动作库: 非空时 service 步骤优先执行预置动作(action_params 为动作参数, 复用 Inputs 亦可)。
 	// 支持动作: http(请求外发) / notify(通知分发) / create_ticket(创建 ITSM 工单) / script(脚本, 等价 ScriptID)。
 	ActionType string `json:"action_type,omitempty"`
+	// 服务任务失败重试策略（对齐 SN REST Step 内置重试）:
+	//   RetryCount    失败后最多重试次数（0=不重试, 上限 5）；
+	//   RetryInterval 重试间隔(如 10s / 1m), 空则立即重试。仅对动作/脚本执行失败生效,
+	//                 全部重试耗尽仍失败才走 failure 分支。
+	RetryCount    int    `json:"retry_count,omitempty"`
+	RetryInterval string `json:"retry_interval,omitempty"`
 	// 网关
 	Condition string `json:"condition,omitempty"`
+	// wait 节点复用 Condition 字段承载等待条件表达式（与网关同一套 EvaluateCondition 求值）:
+	// 变量上下文含 ticket.* / custom_fields.* / steps.*，如 `ticket.status == "resolved"`。
+	// 引擎每轮扫描重评条件, 成立后沿 success 自动推进; 留空的条件永不满足(视为配置错误, 仅记录)。
+	// 汇聚网关(join)模式:
+	//   all(缺省) — 全部上游分支到达(或终结)后才放行;
+	//   any       — 任一上游分支到达即放行(其余分支的到达记录保留仅作审计)。
+	JoinMode string `json:"join_mode,omitempty"`
+	// 派单节点(dispatch):
+	//   Assignee   静态受派人, 支持 ${...} 变量占位(如 "${custom_fields.owner}")与逗号分隔多候选(取首个非空);
+	//   AssigneeVar 受派人变量点路径(如 custom_fields.owner / steps.s1.output.assignee / ticket.created_by),
+	//              非空时优先于 Assignee;
+	//   DispatchMode auto(缺省)=引擎自动派单后沿 success 继续; manual=停在派单点等待人工指派
+	//              (工单既有「指派」操作完成后由引擎续跑)。
+	Assignee     string `json:"assignee,omitempty"`
+	AssigneeVar  string `json:"assignee_var,omitempty"`
+	DispatchMode string `json:"dispatch_mode,omitempty"`
 	// 定时器
 	Duration string `json:"duration,omitempty"` // 1h / 30m / 3d
 	Deadline string `json:"deadline,omitempty"` // SLA 截止描述
@@ -68,6 +138,17 @@ type Step struct {
 	NotifyBody    string `json:"notify_body,omitempty"`
 	// 子流程
 	SubflowID string `json:"subflow_id,omitempty"`
+	// SubflowParams 子流程显式传参（对标 SN Activity 的 input variables）:
+	// key=参数名(子流程内以 params.<key> 引用, 如脚本 inputs 写 "${params.host}"),
+	// value=变量表达式(如 "${custom_fields.owner}", 经父流程变量上下文 ${...} 替换)。
+	// 注入为子流程执行上下文的 params 命名空间(叠加式, 父上下文其余变量仍可用, 向后兼容);
+	// 求值发生在子流程每次启动/恢复时。未配置时保持旧行为(全量继承父上下文)。
+	SubflowParams map[string]string `json:"subflow_params,omitempty"`
+	// ForEach For Each 循环(对标 SN For Each Activity): 非空时对表达式求值结果逐项执行
+	// 本子流程, 每项向子流程上下文注入 item(当前元素)与 item_index(下标)。
+	// 表达式如 "${steps.query.output.items}" 或 "${custom_fields.hosts}"(逗号分隔串也归一化为列表);
+	// 仅支持全自动子流程——子流程含人工/定时等待点时报错, 不做跨迭代暂停恢复。
+	ForEach string `json:"for_each,omitempty"`
 	// DAG 依赖（替代旧的 on_success/on_failure）
 	DependsOn []Dependency `json:"depends_on,omitempty"`
 	// 画布位置
@@ -79,6 +160,9 @@ type Step struct {
 	// Actions 本节点允许展示的操作按钮 key（如 submit/approve/execute/complete/close...）。
 	// 非空时工单在该节点只显示这些按钮；空/缺省表示沿用默认（全部显示），保持向后兼容。
 	Actions []string `json:"actions,omitempty"`
+	// Stage 阶段归属（阶段管理）：同一阶段名的节点聚合为一个阶段，运行期按
+	// 定义中首次出现顺序推导阶段进度（见 stage.go StageProgress）；空表示不参与阶段视图。
+	Stage string `json:"stage,omitempty"`
 }
 
 // ApproverRoster 返回本步骤最终生效的审批人名册：静态配置的 Approvers 与
@@ -151,8 +235,47 @@ type Process struct {
 	SlaPolicyID string `json:"sla_policy_id,omitempty"`
 	// NotifyConfig 流程级通知策略(JSON): { channels:[...], on_create:bool, on_complete:bool, template:string }。
 	NotifyConfig json.RawMessage `json:"notify_config,omitempty"`
-	CreatedAt    time.Time       `json:"created_at"`
-	UpdatedAt    time.Time       `json:"updated_at"`
+	// NumberRule 工单编号组成规则：流程创建的工单按此规则生成人类可读工单号。
+	// 为空或未启用时回退全局默认 TK-YYYY-NNNN。
+	NumberRule *TicketNumberRule `json:"number_rule,omitempty"`
+	CreatedAt  time.Time         `json:"created_at"`
+	UpdatedAt  time.Time         `json:"updated_at"`
+}
+
+// TicketNumberRule — 工单编号组成规则（流程设计"高级设置"可自定义）。
+//
+// 组成结构： [Prefix][Separator][DateSegment][Separator][Sequence]
+//   - Prefix     固定前缀（业务标识），如变更="CHG"、事件="INC"、请求="REQ"
+//   - DateFormat 日期片段：""(无) / "YYYY" / "YYYYMM" / "YYYYMMDD"
+//   - Separator  分隔符，默认 "-"
+//   - SeqWidth   序列最小宽度（不足左侧补零），默认 4
+//   - SeqScope   序号重置粒度："year"(按年,默认) / "month"(按月) / "global"(全局)
+//
+// 序号统一走全局自增计数器（按租户 + 重置粒度维度），保证租户内唯一连续；
+// 不同流程共享同一序号池（如 CHG-2026-0045、INC-2026-0046 交替）属正常行为。
+type TicketNumberRule struct {
+	Enabled    bool   `json:"enabled"`
+	Prefix     string `json:"prefix"`
+	DateFormat string `json:"date_format"`
+	Separator  string `json:"separator"`
+	SeqWidth   int    `json:"seq_width"`
+	SeqScope   string `json:"seq_scope"`
+}
+
+// EffectiveSeparator 返回有效分隔符（空则默认 "-"）。
+func (r *TicketNumberRule) EffectiveSeparator() string {
+	if r == nil || r.Separator == "" {
+		return "-"
+	}
+	return r.Separator
+}
+
+// EffectiveSeqWidth 返回有效序列宽度（<=0 则默认 4）。
+func (r *TicketNumberRule) EffectiveSeqWidth() int {
+	if r == nil || r.SeqWidth <= 0 {
+		return 4
+	}
+	return r.SeqWidth
 }
 
 // ProcessInstance — 工作流运行实例（工单关联流程后自动创建）

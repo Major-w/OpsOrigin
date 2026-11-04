@@ -1,16 +1,19 @@
 package store
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"encoding/json"
 	"fmt"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/opsorigin/core/internal/itsm/form"
 	"github.com/opsorigin/core/internal/itsm/model"
+	"github.com/opsorigin/core/internal/itsm/process"
 )
 
 type PGStore struct {
@@ -25,6 +28,7 @@ func (s *PGStore) Init(ctx context.Context) error {
 	_, err := s.db.ExecContext(ctx, `
 		CREATE TABLE IF NOT EXISTS itsm_tickets (
 			id              TEXT PRIMARY KEY,
+			number          TEXT,
 			tenant_id       TEXT NOT NULL,
 			title           TEXT NOT NULL,
 			description     TEXT,
@@ -66,10 +70,50 @@ func (s *PGStore) Init(ctx context.Context) error {
 	}
 	s.migrate(ctx)
 	s.initDictTable(ctx)
+	s.initTicketTemplateTable(ctx)
+	s.initAutomationRuleTable(ctx)
+	s.initTicketButtonTable(ctx)
+	s.initStatusFlowTable(ctx)
 	_, err = s.db.ExecContext(ctx, `
 		CREATE INDEX IF NOT EXISTS idx_itsm_tickets_tenant ON itsm_tickets(tenant_id, status)`)
 	if err != nil {
 		return fmt.Errorf("init itsm_tickets index: %w", err)
+	}
+	// 工单号计数器: 按 (租户, scope_key) 原子自增。scope_key 编码「流程 + 年/月/全局」维度，
+	// 支撑 TK-YYYY-NNNN 及流程自定义编号规则，保证租户内唯一连续。
+	_, err = s.db.ExecContext(ctx, `
+		CREATE TABLE IF NOT EXISTS itsm_ticket_counters (
+			tenant_id TEXT    NOT NULL,
+			scope_key TEXT    NOT NULL,
+			seq       INTEGER NOT NULL DEFAULT 0,
+			PRIMARY KEY (tenant_id, scope_key)
+		)`)
+	if err != nil {
+		return fmt.Errorf("init itsm_ticket_counters table: %w", err)
+	}
+	// 历史工单回填 TK-YYYY-NNNN（仅对未分配号的，按创建时间稳定排序），
+	// 并同步计数器到历史最大值，避免新工单号与回填号冲突。幂等可重复执行。
+	if _, err = s.db.ExecContext(ctx, `
+		WITH ranked AS (
+			SELECT id,
+			       ROW_NUMBER() OVER (PARTITION BY tenant_id ORDER BY created_at ASC, id ASC) AS rn
+			FROM itsm_tickets
+			WHERE number IS NULL OR number = ''
+		)
+		UPDATE itsm_tickets t
+		SET number = 'TK-' || EXTRACT(YEAR FROM t.created_at)::int || '-' || LPAD(r.rn::text, 4, '0')
+		FROM ranked r
+		WHERE t.id = r.id`); err != nil {
+		return fmt.Errorf("backfill ticket numbers: %w", err)
+	}
+	if _, err = s.db.ExecContext(ctx, `
+		INSERT INTO itsm_ticket_counters (tenant_id, scope_key, seq)
+		SELECT tenant_id, '__global__|year:' || EXTRACT(YEAR FROM created_at)::int AS sk, COUNT(*) AS c
+		FROM itsm_tickets
+		WHERE number IS NOT NULL AND number <> ''
+		GROUP BY tenant_id, sk
+		ON CONFLICT (tenant_id, scope_key) DO UPDATE SET seq = GREATEST(itsm_ticket_counters.seq, EXCLUDED.seq)`); err != nil {
+		return fmt.Errorf("sync ticket counter: %w", err)
 	}
 
 	_, err = s.db.ExecContext(ctx, `
@@ -251,14 +295,104 @@ func (s *PGStore) migrate(ctx context.Context) {
 		`ALTER TABLE itsm_tickets ADD COLUMN IF NOT EXISTS approval_status TEXT`,
 		`ALTER TABLE itsm_tickets ADD COLUMN IF NOT EXISTS related_ticket_ids TEXT DEFAULT '[]'`,
 		`ALTER TABLE itsm_tickets ADD COLUMN IF NOT EXISTS catalog_id TEXT DEFAULT ''`,
+		`ALTER TABLE itsm_tickets ADD COLUMN IF NOT EXISTS number TEXT`,
+		// 计数器表升级：旧形态 (tenant_id, year, seq) → 新形态 (tenant_id, scope_key, seq)。
+		// 仅当 year 列存在时执行；把旧行映射为 scope_key='__global__|year:<year>' 以保留历史计数。
+		// 幂等：全新安装（已是新形态，无 year 列）直接跳过。
+		`DO $$ BEGIN
+			IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='itsm_ticket_counters' AND column_name='year') THEN
+				ALTER TABLE itsm_ticket_counters ADD COLUMN IF NOT EXISTS scope_key TEXT;
+				UPDATE itsm_ticket_counters SET scope_key = '__global__|year:' || year WHERE scope_key IS NULL;
+				ALTER TABLE itsm_ticket_counters ALTER COLUMN scope_key SET NOT NULL;
+				ALTER TABLE itsm_ticket_counters DROP CONSTRAINT IF EXISTS itsm_ticket_counters_pkey;
+				DROP INDEX IF EXISTS idx_itsm_ticket_counters_ty;
+				ALTER TABLE itsm_ticket_counters ADD PRIMARY KEY (tenant_id, scope_key);
+				ALTER TABLE itsm_ticket_counters DROP COLUMN IF EXISTS year;
+			END IF;
+		END $$`,
 	}
 	for _, m := range migrations {
 		s.db.ExecContext(ctx, m)
 	}
 }
 
+// ticketCounterScopeKey 生成计数器维度键：编码「流程 + 年/月/全局」维度，保证各维度序号独立且连续。
+// processID 为空（或无规则）时以 __global__ 标记，与流程自定义编号共享/隔离互不干扰。
+func ticketCounterScopeKey(tenantID, processID string, rule *process.TicketNumberRule) string {
+	proc := processID
+	if proc == "" {
+		proc = "__global__"
+	}
+	scope := "year"
+	if rule != nil && rule.Enabled && rule.SeqScope != "" {
+		scope = rule.SeqScope
+	}
+	now := time.Now()
+	switch scope {
+	case "month":
+		return proc + "|month:" + fmt.Sprintf("%d-%02d", now.Year(), int(now.Month()))
+	case "global":
+		return proc + "|global:default"
+	default: // year
+		return proc + "|year:" + fmt.Sprintf("%d", now.Year())
+	}
+}
+
+// formatNumberDate 把日期片段格式解析为字面量："" → ""；YYYY → 2026；YYYYMM → 202611；YYYYMMDD → 20261102。
+func formatNumberDate(layout string) string {
+	if layout == "" {
+		return ""
+	}
+	now := time.Now()
+	switch layout {
+	case "YYYY":
+		return fmt.Sprintf("%d", now.Year())
+	case "YYYYMM":
+		return fmt.Sprintf("%d%02d", now.Year(), int(now.Month()))
+	case "YYYYMMDD":
+		return fmt.Sprintf("%d%02d%02d", now.Year(), int(now.Month()), now.Day())
+	default:
+		return ""
+	}
+}
+
+// NextTicketNumber 生成并持久化人类可读工单号。
+// rule 为 nil 或未启用时回退全局默认 TK-YYYY-NNNN；否则按规则组成 [前缀][分隔符][日期][分隔符][序列]。
+// 序号统一走全局自增计数器（按 租户+scope_key 维度），单条 INSERT...ON CONFLICT 原子自增，保证唯一连续。
+func (s *PGStore) NextTicketNumber(ctx context.Context, tenantID, processID string, rule *process.TicketNumberRule) (string, error) {
+	key := ticketCounterScopeKey(tenantID, processID, rule)
+	var seq int
+	err := s.db.QueryRowContext(ctx, `
+		INSERT INTO itsm_ticket_counters (tenant_id, scope_key, seq) VALUES ($1, $2, 1)
+		ON CONFLICT (tenant_id, scope_key) DO UPDATE SET seq = itsm_ticket_counters.seq + 1
+		RETURNING seq`, tenantID, key).Scan(&seq)
+	if err != nil {
+		return "", fmt.Errorf("next ticket number: %w", err)
+	}
+	if rule == nil || !rule.Enabled {
+		return fmt.Sprintf("TK-%d-%04d", time.Now().Year(), seq), nil
+	}
+	sep := rule.EffectiveSeparator()
+	parts := []string{}
+	if rule.Prefix != "" {
+		parts = append(parts, rule.Prefix)
+	}
+	if ds := formatNumberDate(rule.DateFormat); ds != "" {
+		parts = append(parts, ds)
+	}
+	parts = append(parts, fmt.Sprintf("%0*d", rule.EffectiveSeqWidth(), seq))
+	return strings.Join(parts, sep), nil
+}
+
 func (s *PGStore) Create(ctx context.Context, ticket *model.Ticket) error {
 	ticket.ID = uuid.New().String()
+	if ticket.Number == "" {
+		num, err := s.NextTicketNumber(ctx, ticket.TenantID, ticket.ProcessID, nil)
+		if err != nil {
+			return err
+		}
+		ticket.Number = num
+	}
 	now := time.Now()
 	ticket.CreatedAt = now
 	ticket.UpdatedAt = now
@@ -281,8 +415,9 @@ func (s *PGStore) Create(ctx context.Context, ticket *model.Ticket) error {
 			 on_hold, hold_reason, hold_until_at, related_ticket_ids, catalog_id,
 			 hold_at, hold_seconds,
 			 approval_chain, approval_status,
-			 sla_warning_notified, sla_breached, sla_breached_at, sla_escalation_level)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35,$36,$37,$38,$39,$40,$41,$42,$43,$44,$45)`,
+			 sla_warning_notified, sla_breached, sla_breached_at, sla_escalation_level,
+			 number)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35,$36,$37,$38,$39,$40,$41,$42,$43,$44,$45,$46)`,
 		ticket.ID, ticket.TenantID, ticket.Title, nullable(ticket.Description),
 		string(ticket.RiskLevel), string(ticket.Status), nullable(ticket.ChangePlan),
 		nullable(ticket.RollbackPlan), ticket.CreatedBy, ticket.CreatedByType,
@@ -299,7 +434,8 @@ func (s *PGStore) Create(ctx context.Context, ticket *model.Ticket) error {
 		ticket.OnHold, nullable(ticket.HoldReason), nullableTime(ticket.HoldUntilAt), string(relatedJSON), nullable(ticket.CatalogID),
 		nullableTime(ticket.HoldAt), ticket.HoldSeconds,
 		string(approvalChainJSON), string(approvalStatusJSON),
-		ticket.SLAWarningNotified, ticket.SLABreached, nullableTime(ticket.SLABreachedAt), ticket.SLAEscalationLevel)
+		ticket.SLAWarningNotified, ticket.SLABreached, nullableTime(ticket.SLABreachedAt), ticket.SLAEscalationLevel,
+		ticket.Number)
 	if err != nil {
 		return fmt.Errorf("insert ticket: %w", err)
 	}
@@ -330,7 +466,7 @@ func (s *PGStore) Get(ctx context.Context, id, tenantID string) (*model.Ticket, 
 	var approvalChainJSON, approvalStatusJSON sql.NullString
 
 	err := s.db.QueryRowContext(ctx, `
-		SELECT id, tenant_id, title, description, risk_level, status, change_plan,
+		SELECT id, number, tenant_id, title, description, risk_level, status, change_plan,
 		       rollback_plan, created_by, created_by_type, approved_by, reject_reason,
 		       completed_by, rolled_back_by, rollback_reason, ci_ids, webhook_url,
 		       labels, trace_id, scheduled_at, deadline_at, created_at, updated_at,
@@ -341,7 +477,7 @@ func (s *PGStore) Get(ctx context.Context, id, tenantID string) (*model.Ticket, 
 		       sla_warning_notified, sla_breached, sla_breached_at, sla_escalation_level,
 		       approval_chain, approval_status
 		FROM itsm_tickets WHERE id = $1 AND tenant_id = $2`, id, tenantID).Scan(
-		&t.ID, &t.TenantID, &t.Title, &desc, &t.RiskLevel, &t.Status,
+		&t.ID, &t.Number, &t.TenantID, &t.Title, &desc, &t.RiskLevel, &t.Status,
 		&changePlan, &rollbackPlan, &t.CreatedBy, &t.CreatedByType,
 		&approvedBy, &rejectReason, &completedBy, &rolledBackBy, &rollbackReason,
 		&ciIDsJSON, &webhookURL, &labelsJSON, &t.TraceID,
@@ -446,8 +582,8 @@ func (s *PGStore) Update(ctx context.Context, ticket *model.Ticket) error {
 			on_hold=$30, hold_reason=$31, hold_until_at=$32, related_ticket_ids=$33,
 			hold_at=$34, hold_seconds=$35,
 			sla_warning_notified=$36, sla_breached=$37, sla_breached_at=$38, sla_escalation_level=$39,
-			catalog_id=$40, approval_chain=$41, approval_status=$42
-		WHERE id=$43 AND tenant_id=$44`,
+			catalog_id=$40, approval_chain=$41, approval_status=$42, number=$43
+		WHERE id=$44 AND tenant_id=$45`,
 		ticket.Title, nullable(ticket.Description), string(ticket.RiskLevel),
 		string(ticket.Status), nullable(ticket.ChangePlan),
 		nullable(ticket.RollbackPlan), ticket.CreatedBy, ticket.CreatedByType,
@@ -464,6 +600,7 @@ func (s *PGStore) Update(ctx context.Context, ticket *model.Ticket) error {
 		nullableTime(ticket.HoldAt), ticket.HoldSeconds,
 		ticket.SLAWarningNotified, ticket.SLABreached, nullableTime(ticket.SLABreachedAt), ticket.SLAEscalationLevel,
 		nullable(ticket.CatalogID), string(approvalChainJSON), string(approvalStatusJSON),
+		ticket.Number,
 		ticket.ID, ticket.TenantID)
 	if err != nil {
 		return fmt.Errorf("update ticket: %w", err)
@@ -476,7 +613,7 @@ func (s *PGStore) Update(ctx context.Context, ticket *model.Ticket) error {
 }
 
 func (s *PGStore) List(ctx context.Context, tenantID string, status model.TicketStatus) ([]*model.Ticket, error) {
-	query := `SELECT id, tenant_id, title, description, risk_level, status, change_plan,
+	query := `SELECT id, number, tenant_id, title, description, risk_level, status, change_plan,
 	                  rollback_plan, created_by, created_by_type, approved_by, reject_reason,
 	                  completed_by, rolled_back_by, rollback_reason, ci_ids, webhook_url,
 	                  labels, trace_id, scheduled_at, deadline_at, created_at, updated_at,
@@ -526,7 +663,7 @@ func (s *PGStore) List(ctx context.Context, tenantID string, status model.Ticket
 		var approvalChainJSON, approvalStatusJSON sql.NullString
 
 		if err := rows.Scan(
-			&t.ID, &t.TenantID, &t.Title, &desc, &t.RiskLevel, &t.Status,
+			&t.ID, &t.Number, &t.TenantID, &t.Title, &desc, &t.RiskLevel, &t.Status,
 			&changePlan, &rollbackPlan, &t.CreatedBy, &t.CreatedByType,
 			&approvedBy, &rejectReason, &completedBy, &rolledBackBy, &rollbackReason,
 			&ciIDsJSON, &webhookURL, &labelsJSON, &t.TraceID,
@@ -602,7 +739,7 @@ func (s *PGStore) List(ctx context.Context, tenantID string, status model.Ticket
 }
 
 func (s *PGStore) ListPaged(ctx context.Context, tenantID string, status model.TicketStatus, p PageParams) (*PageResult[*model.Ticket], error) {
-	const cols = `id, tenant_id, title, description, risk_level, status, change_plan,
+	const cols = `id, number, tenant_id, title, description, risk_level, status, change_plan,
 	                  rollback_plan, created_by, created_by_type, approved_by, reject_reason,
 	                  completed_by, rolled_back_by, rollback_reason, ci_ids, webhook_url,
 	                  labels, trace_id, scheduled_at, deadline_at, created_at, updated_at,
@@ -659,7 +796,7 @@ func (s *PGStore) ListPaged(ctx context.Context, tenantID string, status model.T
 		var approvalChainJSON, approvalStatusJSON sql.NullString
 
 		if err := rows.Scan(
-			&t.ID, &t.TenantID, &t.Title, &desc, &t.RiskLevel, &t.Status,
+			&t.ID, &t.Number, &t.TenantID, &t.Title, &desc, &t.RiskLevel, &t.Status,
 			&changePlan, &rollbackPlan, &t.CreatedBy, &t.CreatedByType,
 			&approvedBy, &rejectReason, &completedBy, &rolledBackBy, &rollbackReason,
 			&ciIDsJSON, &webhookURL, &labelsJSON, &t.TraceID,
@@ -1157,7 +1294,7 @@ func (s *PGStore) DeleteAttachment(ctx context.Context, id int64, ticketID, tena
 
 func (s *PGStore) ListActiveTicketsWithDeadline(ctx context.Context, tenantID string) ([]*model.Ticket, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT id, tenant_id, title, description, risk_level, status, change_plan, rollback_plan,
+		SELECT id, number, tenant_id, title, description, risk_level, status, change_plan, rollback_plan,
 			created_by, created_by_type, approved_by, reject_reason, completed_by, rolled_back_by,
 			rollback_reason, ci_ids, webhook_url, labels, trace_id, scheduled_at, deadline_at,
 			created_at, updated_at, approved_at, executed_at, completed_at, rolled_back_at,
@@ -1191,7 +1328,7 @@ func (s *PGStore) ListActiveTicketsWithDeadline(ctx context.Context, tenantID st
 		var slaWarningNotified, slaBreached, onHold sql.NullBool
 		var satisfaction sql.NullInt32
 		err := rows.Scan(
-			&t.ID, &t.TenantID, &t.Title, &desc, &t.RiskLevel, &t.Status,
+			&t.ID, &t.Number, &t.TenantID, &t.Title, &desc, &t.RiskLevel, &t.Status,
 			&changePlan, &rollbackPlan, &t.CreatedBy, &t.CreatedByType,
 			&approvedBy, &rejectReason, &completedBy, &rolledBackBy, &rollbackReason,
 			&ciIDsJSON, &webhookURL, &labelsJSON, &t.TraceID,
@@ -1281,7 +1418,7 @@ func (s *PGStore) ListActiveTicketsWithDeadline(ctx context.Context, tenantID st
 
 func (s *PGStore) ListOnHoldTicketsPastDue(ctx context.Context, tenantID string) ([]*model.Ticket, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT id, tenant_id, title, description, risk_level, status, change_plan, rollback_plan,
+		SELECT id, number, tenant_id, title, description, risk_level, status, change_plan, rollback_plan,
 			created_by, created_by_type, approved_by, reject_reason, completed_by, rolled_back_by,
 			rollback_reason, ci_ids, webhook_url, labels, trace_id, scheduled_at, deadline_at,
 			created_at, updated_at, approved_at, executed_at, completed_at, rolled_back_at,
@@ -1314,7 +1451,7 @@ func (s *PGStore) ListOnHoldTicketsPastDue(ctx context.Context, tenantID string)
 		var satisfaction sql.NullInt32
 		var slaWarningNotified, slaBreached, onHold sql.NullBool
 		if err := rows.Scan(
-			&t.ID, &t.TenantID, &t.Title, &desc, &t.RiskLevel, &t.Status,
+			&t.ID, &t.Number, &t.TenantID, &t.Title, &desc, &t.RiskLevel, &t.Status,
 			&changePlan, &rollbackPlan, &t.CreatedBy, &t.CreatedByType, &approvedBy,
 			&rejectReason, &completedBy, &rolledBackBy, &rollbackReason,
 			&ciIDsJSON, &webhookURL, &labelsJSON, &t.TraceID,
@@ -1656,13 +1793,17 @@ func (s *PGStore) UpdateChange(ctx context.Context, change *model.ChangeRequest)
 }
 
 // --- Form schema methods (postgres) ---
+//
+// itsm_form_schemas.fields 列存「FormSchema 全量 JSON」（含 fields/behavior_rules/
+// combo_rules/data_links/decision_tables）。历史数据该列只存过 []FieldDef 数组，
+// 读取时按首字符区分：'[' 走旧格式（只回填 Fields），'{' 走全量格式。
 
 func (s *PGStore) GetFormSchema(ctx context.Context, tenantID, scope string) (*form.FormSchema, error) {
-	var fieldsJSON []byte
+	var raw []byte
 	var version int
 	err := s.db.QueryRowContext(ctx, `
 		SELECT version, fields FROM itsm_form_schemas WHERE tenant_id = $1 AND scope = $2`,
-		tenantID, scope).Scan(&version, &fieldsJSON)
+		tenantID, scope).Scan(&version, &raw)
 	if err != nil {
 		if err == sql.ErrNoRows {
 			return nil, nil
@@ -1670,25 +1811,42 @@ func (s *PGStore) GetFormSchema(ctx context.Context, tenantID, scope string) (*f
 		return nil, fmt.Errorf("query form schema: %w", err)
 	}
 	schema := &form.FormSchema{Scope: scope, Version: version}
-	if len(fieldsJSON) > 0 {
-		if err := json.Unmarshal(fieldsJSON, &schema.Fields); err != nil {
-			return nil, fmt.Errorf("unmarshal form schema fields: %w", err)
+	trimmed := bytes.TrimSpace(raw)
+	if len(trimmed) > 0 {
+		if trimmed[0] == '[' {
+			// 旧格式：列里只存了 fields 数组
+			if err := json.Unmarshal(trimmed, &schema.Fields); err != nil {
+				return nil, fmt.Errorf("unmarshal form schema fields: %w", err)
+			}
+		} else {
+			if err := json.Unmarshal(trimmed, schema); err != nil {
+				return nil, fmt.Errorf("unmarshal form schema: %w", err)
+			}
+			// scope/version 以查询与列值为准（防手改库造成漂移）
+			schema.Scope = scope
+			if version > 0 {
+				schema.Version = version
+			}
 		}
 	}
 	return schema, nil
 }
 
 func (s *PGStore) UpsertFormSchema(ctx context.Context, tenantID, scope string, schema form.FormSchema) error {
-	fieldsJSON, err := json.Marshal(schema.Fields)
+	schema.Scope = scope
+	if schema.Version < 1 {
+		schema.Version = 1
+	}
+	blob, err := json.Marshal(schema)
 	if err != nil {
-		return fmt.Errorf("marshal form schema fields: %w", err)
+		return fmt.Errorf("marshal form schema: %w", err)
 	}
 	_, err = s.db.ExecContext(ctx, `
 		INSERT INTO itsm_form_schemas (tenant_id, scope, version, fields, updated_at)
 		VALUES ($1, $2, $3, $4, NOW())
 		ON CONFLICT (tenant_id, scope)
 		DO UPDATE SET version = EXCLUDED.version, fields = EXCLUDED.fields, updated_at = NOW()`,
-		tenantID, scope, schema.Version, string(fieldsJSON))
+		tenantID, scope, schema.Version, string(blob))
 	if err != nil {
 		return fmt.Errorf("upsert form schema: %w", err)
 	}
@@ -1782,6 +1940,432 @@ func (s *PGStore) UpsertFieldDict(ctx context.Context, tenantID string, dict *fo
 
 func (s *PGStore) DeleteFieldDict(ctx context.Context, tenantID, id string) error {
 	res, err := s.db.ExecContext(ctx, `DELETE FROM itsm_form_dicts WHERE id = $1 AND tenant_id = $2`, id, tenantID)
+	if err != nil {
+		return err
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// --- 提单模板(PG) ---
+
+func (s *PGStore) initTicketTemplateTable(ctx context.Context) error {
+	_, err := s.db.ExecContext(ctx, `
+		CREATE TABLE IF NOT EXISTS itsm_ticket_templates (
+			id          TEXT PRIMARY KEY,
+			tenant_id   TEXT NOT NULL DEFAULT 'default',
+			name        TEXT NOT NULL,
+			remark      TEXT DEFAULT '',
+			category    TEXT DEFAULT '',
+			form_scope  TEXT DEFAULT '',
+			process_id  TEXT DEFAULT '',
+			catalog_id  TEXT DEFAULT '',
+			content     TEXT DEFAULT '{}',
+			created_by  TEXT DEFAULT '',
+			created_at  TIMESTAMPTZ DEFAULT NOW(),
+			updated_at  TIMESTAMPTZ DEFAULT NOW()
+		)`)
+	return err
+}
+
+func (s *PGStore) GetTicketTemplate(ctx context.Context, tenantID, id string) (*model.TicketTemplate, error) {
+	var tmpl model.TicketTemplate
+	var contentJSON string
+	err := s.db.QueryRowContext(ctx, `
+		SELECT id, tenant_id, name, remark, category, form_scope, process_id, catalog_id, content, created_by, created_at, updated_at
+		FROM itsm_ticket_templates WHERE id = $1 AND tenant_id = $2`, id, tenantID).
+		Scan(&tmpl.ID, &tmpl.TenantID, &tmpl.Name, &tmpl.Remark, &tmpl.Category, &tmpl.FormScope, &tmpl.ProcessID, &tmpl.CatalogID, &contentJSON, &tmpl.CreatedBy, &tmpl.CreatedAt, &tmpl.UpdatedAt)
+	if err == sql.ErrNoRows {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+	if contentJSON == "" {
+		contentJSON = "{}"
+	}
+	_ = json.Unmarshal([]byte(contentJSON), &tmpl.Content)
+	return &tmpl, nil
+}
+
+func (s *PGStore) ListTicketTemplates(ctx context.Context, tenantID string) ([]*model.TicketTemplate, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT id, tenant_id, name, remark, category, form_scope, process_id, catalog_id, content, created_by, created_at, updated_at
+		FROM itsm_ticket_templates WHERE tenant_id = $1 ORDER BY name`, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []*model.TicketTemplate
+	for rows.Next() {
+		var tmpl model.TicketTemplate
+		var contentJSON string
+		if err := rows.Scan(&tmpl.ID, &tmpl.TenantID, &tmpl.Name, &tmpl.Remark, &tmpl.Category, &tmpl.FormScope, &tmpl.ProcessID, &tmpl.CatalogID, &contentJSON, &tmpl.CreatedBy, &tmpl.CreatedAt, &tmpl.UpdatedAt); err != nil {
+			return nil, err
+		}
+		if contentJSON == "" {
+			contentJSON = "{}"
+		}
+		_ = json.Unmarshal([]byte(contentJSON), &tmpl.Content)
+		out = append(out, &tmpl)
+	}
+	if out == nil {
+		out = []*model.TicketTemplate{}
+	}
+	return out, rows.Err()
+}
+
+func (s *PGStore) UpsertTicketTemplate(ctx context.Context, tenantID string, tmpl *model.TicketTemplate) error {
+	if tmpl.ID == "" {
+		tmpl.ID = uuid.New().String()
+	}
+	tmpl.TenantID = tenantID
+	contentJSON, _ := json.Marshal(tmpl.Content)
+	_, err := s.db.ExecContext(ctx, `
+		INSERT INTO itsm_ticket_templates (id, tenant_id, name, remark, category, form_scope, process_id, catalog_id, content, created_by, updated_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, NOW())
+		ON CONFLICT (id) DO UPDATE SET
+			name = EXCLUDED.name, remark = EXCLUDED.remark, category = EXCLUDED.category,
+			form_scope = EXCLUDED.form_scope, process_id = EXCLUDED.process_id, catalog_id = EXCLUDED.catalog_id,
+			content = EXCLUDED.content, updated_at = NOW()`,
+		tmpl.ID, tenantID, tmpl.Name, tmpl.Remark, tmpl.Category, tmpl.FormScope, tmpl.ProcessID, tmpl.CatalogID, string(contentJSON), tmpl.CreatedBy)
+	return err
+}
+
+func (s *PGStore) DeleteTicketTemplate(ctx context.Context, tenantID, id string) error {
+	res, err := s.db.ExecContext(ctx, `DELETE FROM itsm_ticket_templates WHERE id = $1 AND tenant_id = $2`, id, tenantID)
+	if err != nil {
+		return err
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// --- 自动化触发器(PG) ---
+
+func (s *PGStore) initAutomationRuleTable(ctx context.Context) error {
+	_, err := s.db.ExecContext(ctx, `
+		CREATE TABLE IF NOT EXISTS itsm_automation_rules (
+			id          TEXT PRIMARY KEY,
+			tenant_id   TEXT NOT NULL DEFAULT 'default',
+			name        TEXT NOT NULL,
+			event       TEXT NOT NULL DEFAULT 'ticket.created',
+			enabled     BOOLEAN NOT NULL DEFAULT TRUE,
+			conditions  TEXT NOT NULL DEFAULT '[]',
+			actions     TEXT NOT NULL DEFAULT '[]',
+			schedule    TEXT NOT NULL DEFAULT '',
+			created_by  TEXT DEFAULT '',
+			created_at  TIMESTAMPTZ DEFAULT NOW(),
+			updated_at  TIMESTAMPTZ DEFAULT NOW()
+		)`)
+	if err != nil {
+		return err
+	}
+	// 自愈 DDL: 早期建表无 schedule 列（定时触发器 P3-1），补齐。
+	_, err = s.db.ExecContext(ctx, `ALTER TABLE itsm_automation_rules ADD COLUMN IF NOT EXISTS schedule TEXT NOT NULL DEFAULT ''`)
+	return err
+}
+
+func (s *PGStore) initTicketButtonTable(ctx context.Context) error {
+	_, err := s.db.ExecContext(ctx, `
+		CREATE TABLE IF NOT EXISTS itsm_ticket_buttons (
+			id                TEXT PRIMARY KEY,
+			tenant_id         TEXT NOT NULL DEFAULT 'default',
+			name              TEXT NOT NULL,
+			action_type       TEXT NOT NULL DEFAULT '',
+			action_params     TEXT NOT NULL DEFAULT '{}',
+			visible_statuses  TEXT NOT NULL DEFAULT '[]',
+			roles             TEXT NOT NULL DEFAULT '[]',
+			confirm_text      TEXT DEFAULT '',
+			sort_order        INTEGER NOT NULL DEFAULT 0,
+			enabled           BOOLEAN NOT NULL DEFAULT TRUE,
+			created_by        TEXT DEFAULT '',
+			created_at        TIMESTAMPTZ DEFAULT NOW(),
+			updated_at        TIMESTAMPTZ DEFAULT NOW()
+		)`)
+	return err
+}
+
+const automationRuleCols = `id, tenant_id, name, event, enabled, conditions, actions, schedule, created_by, created_at, updated_at`
+
+func scanAutomationRule(scanner interface{ Scan(dest ...any) error }) (*model.AutomationRule, error) {
+	var r model.AutomationRule
+	var condJSON, actJSON, schedJSON string
+	if err := scanner.Scan(&r.ID, &r.TenantID, &r.Name, &r.Event, &r.Enabled, &condJSON, &actJSON, &schedJSON, &r.CreatedBy, &r.CreatedAt, &r.UpdatedAt); err != nil {
+		return nil, err
+	}
+	if condJSON == "" {
+		condJSON = "[]"
+	}
+	if actJSON == "" {
+		actJSON = "[]"
+	}
+	_ = json.Unmarshal([]byte(condJSON), &r.Conditions)
+	_ = json.Unmarshal([]byte(actJSON), &r.Actions)
+	if schedJSON != "" {
+		var rs model.RuleSchedule
+		if err := json.Unmarshal([]byte(schedJSON), &rs); err == nil && (rs.Cron != "" || rs.IntervalMinutes > 0) {
+			r.Schedule = &rs
+		}
+	}
+	return &r, nil
+}
+
+func (s *PGStore) GetAutomationRule(ctx context.Context, tenantID, id string) (*model.AutomationRule, error) {
+	r, err := scanAutomationRule(s.db.QueryRowContext(ctx, `
+		SELECT `+automationRuleCols+` FROM itsm_automation_rules WHERE id = $1 AND tenant_id = $2`, id, tenantID))
+	if err == sql.ErrNoRows {
+		return nil, ErrNotFound
+	}
+	return r, err
+}
+
+func (s *PGStore) ListAutomationRules(ctx context.Context, tenantID string) ([]*model.AutomationRule, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT `+automationRuleCols+` FROM itsm_automation_rules WHERE tenant_id = $1 ORDER BY name`, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []*model.AutomationRule
+	for rows.Next() {
+		r, err := scanAutomationRule(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, r)
+	}
+	if out == nil {
+		out = []*model.AutomationRule{}
+	}
+	return out, rows.Err()
+}
+
+func (s *PGStore) UpsertAutomationRule(ctx context.Context, tenantID string, r *model.AutomationRule) error {
+	if r.ID == "" {
+		r.ID = uuid.New().String()
+	}
+	r.TenantID = tenantID
+	condJSON, _ := json.Marshal(normalizeJSONArr(r.Conditions))
+	actJSON, _ := json.Marshal(normalizeJSONArr(r.Actions))
+	schedJSON := ""
+	if r.Schedule != nil {
+		if b, err := json.Marshal(r.Schedule); err == nil {
+			schedJSON = string(b)
+		}
+	}
+	_, err := s.db.ExecContext(ctx, `
+		INSERT INTO itsm_automation_rules (id, tenant_id, name, event, enabled, conditions, actions, schedule, created_by, updated_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, NOW())
+		ON CONFLICT (id) DO UPDATE SET
+			name = EXCLUDED.name, event = EXCLUDED.event, enabled = EXCLUDED.enabled,
+			conditions = EXCLUDED.conditions, actions = EXCLUDED.actions, schedule = EXCLUDED.schedule, updated_at = NOW()`,
+		r.ID, tenantID, r.Name, r.Event, r.Enabled, string(condJSON), string(actJSON), schedJSON, r.CreatedBy)
+	return err
+}
+
+func (s *PGStore) DeleteAutomationRule(ctx context.Context, tenantID, id string) error {
+	res, err := s.db.ExecContext(ctx, `DELETE FROM itsm_automation_rules WHERE id = $1 AND tenant_id = $2`, id, tenantID)
+	if err != nil {
+		return err
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// --- 自定义按钮(PG) ---
+
+const ticketButtonCols = `id, tenant_id, name, action_type, action_params, visible_statuses, roles, confirm_text, sort_order, enabled, created_by, created_at, updated_at`
+
+func scanTicketButton(scanner interface{ Scan(dest ...any) error }) (*model.TicketButton, error) {
+	var b model.TicketButton
+	var paramsJSON, visJSON, rolesJSON string
+	if err := scanner.Scan(&b.ID, &b.TenantID, &b.Name, &b.ActionType, &paramsJSON, &visJSON, &rolesJSON, &b.ConfirmText, &b.SortOrder, &b.Enabled, &b.CreatedBy, &b.CreatedAt, &b.UpdatedAt); err != nil {
+		return nil, err
+	}
+	if paramsJSON == "" {
+		paramsJSON = "{}"
+	}
+	if visJSON == "" {
+		visJSON = "[]"
+	}
+	if rolesJSON == "" {
+		rolesJSON = "[]"
+	}
+	_ = json.Unmarshal([]byte(paramsJSON), &b.ActionParams)
+	_ = json.Unmarshal([]byte(visJSON), &b.VisibleStatuses)
+	_ = json.Unmarshal([]byte(rolesJSON), &b.Roles)
+	return &b, nil
+}
+
+func (s *PGStore) GetTicketButton(ctx context.Context, tenantID, id string) (*model.TicketButton, error) {
+	b, err := scanTicketButton(s.db.QueryRowContext(ctx, `
+		SELECT `+ticketButtonCols+` FROM itsm_ticket_buttons WHERE id = $1 AND tenant_id = $2`, id, tenantID))
+	if err == sql.ErrNoRows {
+		return nil, ErrNotFound
+	}
+	return b, err
+}
+
+func (s *PGStore) ListTicketButtons(ctx context.Context, tenantID string) ([]*model.TicketButton, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT `+ticketButtonCols+` FROM itsm_ticket_buttons WHERE tenant_id = $1 ORDER BY sort_order, name`, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []*model.TicketButton
+	for rows.Next() {
+		b, err := scanTicketButton(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, b)
+	}
+	if out == nil {
+		out = []*model.TicketButton{}
+	}
+	return out, rows.Err()
+}
+
+func (s *PGStore) UpsertTicketButton(ctx context.Context, tenantID string, b *model.TicketButton) error {
+	if b.ID == "" {
+		b.ID = uuid.New().String()
+	}
+	b.TenantID = tenantID
+	paramsJSON, _ := json.Marshal(b.ActionParams)
+	if b.ActionParams == nil {
+		paramsJSON = []byte("{}")
+	}
+	visJSON, _ := json.Marshal(normalizeJSONArr(b.VisibleStatuses))
+	rolesJSON, _ := json.Marshal(normalizeJSONArr(b.Roles))
+	_, err := s.db.ExecContext(ctx, `
+		INSERT INTO itsm_ticket_buttons (id, tenant_id, name, action_type, action_params, visible_statuses, roles, confirm_text, sort_order, enabled, created_by, updated_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, NOW())
+		ON CONFLICT (id) DO UPDATE SET
+			name = EXCLUDED.name, action_type = EXCLUDED.action_type, action_params = EXCLUDED.action_params,
+			visible_statuses = EXCLUDED.visible_statuses, roles = EXCLUDED.roles, confirm_text = EXCLUDED.confirm_text,
+			sort_order = EXCLUDED.sort_order, enabled = EXCLUDED.enabled, updated_at = NOW()`,
+		b.ID, tenantID, b.Name, b.ActionType, string(paramsJSON), string(visJSON), string(rolesJSON), b.ConfirmText, b.SortOrder, b.Enabled, b.CreatedBy)
+	return err
+}
+
+func (s *PGStore) DeleteTicketButton(ctx context.Context, tenantID, id string) error {
+	res, err := s.db.ExecContext(ctx, `DELETE FROM itsm_ticket_buttons WHERE id = $1 AND tenant_id = $2`, id, tenantID)
+	if err != nil {
+		return err
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// normalizeJSONArr 保证切片 marshal 后为 [] 而非 null(nil 切片)。
+func normalizeJSONArr[T any](in []T) []T {
+	if in == nil {
+		return []T{}
+	}
+	return in
+}
+
+// ---- 状态流转规则(P2-⑯) ----
+// 全列 NOT NULL DEFAULT, 读侧无裸 NULL 风险; JSON 列沿用 TEXT 范式。
+
+func (s *PGStore) initStatusFlowTable(ctx context.Context) error {
+	_, err := s.db.ExecContext(ctx, `
+		CREATE TABLE IF NOT EXISTS itsm_status_flows (
+			id TEXT PRIMARY KEY,
+			tenant_id TEXT NOT NULL,
+			catalog_id TEXT NOT NULL DEFAULT '',
+			transitions TEXT NOT NULL DEFAULT '[]',
+			status_labels TEXT NOT NULL DEFAULT '{}',
+			enabled BOOLEAN NOT NULL DEFAULT TRUE,
+			created_by TEXT NOT NULL DEFAULT '',
+			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			UNIQUE (tenant_id, catalog_id)
+		)`)
+	return err
+}
+
+const statusFlowCols = `id, tenant_id, catalog_id, transitions, status_labels, enabled, created_by, updated_at`
+
+func scanStatusFlow(scanner interface{ Scan(dest ...any) error }) (*model.StatusFlow, error) {
+	var f model.StatusFlow
+	var transJSON, labelsJSON string
+	var updated sql.NullString
+	if err := scanner.Scan(&f.ID, &f.TenantID, &f.CatalogID, &transJSON, &labelsJSON, &f.Enabled, &f.CreatedBy, &updated); err != nil {
+		return nil, err
+	}
+	if transJSON == "" {
+		transJSON = "[]"
+	}
+	if labelsJSON == "" {
+		labelsJSON = "{}"
+	}
+	_ = json.Unmarshal([]byte(transJSON), &f.Transitions)
+	_ = json.Unmarshal([]byte(labelsJSON), &f.StatusLabels)
+	if f.Transitions == nil {
+		f.Transitions = []model.TransitionRule{}
+	}
+	f.UpdatedAt = updated.String
+	return &f, nil
+}
+
+// GetStatusFlow 按「目录精确 → 全局缺省(空)」回退取配置；均无则 ErrNotFound。
+func (s *PGStore) GetStatusFlow(ctx context.Context, tenantID, catalogID string) (*model.StatusFlow, error) {
+	if catalogID != "" {
+		f, err := scanStatusFlow(s.db.QueryRowContext(ctx,
+			`SELECT `+statusFlowCols+` FROM itsm_status_flows WHERE tenant_id = $1 AND catalog_id = $2`, tenantID, catalogID))
+		if err == nil {
+			return f, nil
+		}
+		if err != sql.ErrNoRows {
+			return nil, err
+		}
+		// 目录级无配置, 回退全局
+	}
+	f, err := scanStatusFlow(s.db.QueryRowContext(ctx,
+		`SELECT `+statusFlowCols+` FROM itsm_status_flows WHERE tenant_id = $1 AND catalog_id = ''`, tenantID))
+	if err == sql.ErrNoRows {
+		return nil, ErrNotFound
+	}
+	return f, err
+}
+
+func (s *PGStore) UpsertStatusFlow(ctx context.Context, tenantID string, f *model.StatusFlow) error {
+	if f.ID == "" {
+		f.ID = uuid.New().String()
+	}
+	f.TenantID = tenantID
+	transJSON, _ := json.Marshal(normalizeJSONArr(f.Transitions))
+	labelsJSON, _ := json.Marshal(f.StatusLabels)
+	if f.StatusLabels == nil {
+		labelsJSON = []byte("{}")
+	}
+	_, err := s.db.ExecContext(ctx, `
+		INSERT INTO itsm_status_flows (id, tenant_id, catalog_id, transitions, status_labels, enabled, created_by, updated_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, NOW())
+		ON CONFLICT (tenant_id, catalog_id) DO UPDATE SET
+			transitions = EXCLUDED.transitions, status_labels = EXCLUDED.status_labels,
+			enabled = EXCLUDED.enabled, updated_at = NOW()`,
+		f.ID, tenantID, f.CatalogID, string(transJSON), string(labelsJSON), f.Enabled, f.CreatedBy)
+	return err
+}
+
+func (s *PGStore) DeleteStatusFlow(ctx context.Context, tenantID, catalogID string) error {
+	res, err := s.db.ExecContext(ctx, `DELETE FROM itsm_status_flows WHERE tenant_id = $1 AND catalog_id = $2`, tenantID, catalogID)
 	if err != nil {
 		return err
 	}

@@ -67,6 +67,9 @@ func bpmnNodeXML(st *Step) string {
 	if st.FormScope != "" {
 		ext = append(ext, fmt.Sprintf(`      <ops:form_scope>%s</ops:form_scope>`, xmlEscape(st.FormScope)))
 	}
+	if st.Assignee != "" || st.AssigneeVar != "" {
+		ext = append(ext, fmt.Sprintf(`      <ops:assignee>%s</ops:assignee>`, xmlEscape(st.AssigneeVar+"|"+st.Assignee)))
+	}
 	extXML := ""
 	if len(ext) > 0 {
 		extXML = "\n    <bpmn:extensionElements>\n" + strings.Join(ext, "\n") + "\n    </bpmn:extensionElements>"

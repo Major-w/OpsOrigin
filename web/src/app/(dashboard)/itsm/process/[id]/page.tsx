@@ -14,7 +14,7 @@ import {
 } from '@xyflow/react'
 import type { Node, NodeProps, EdgeProps, Connection, Edge } from '@xyflow/react'
 import { useProcessStore } from '@/stores/itsm/processes'
-import type { Process, ProcessStep } from '@/stores/itsm/types'
+import type { Process, ProcessStep, TicketNumberRule, DryRunResult } from '@/stores/itsm/types'
 import { useAgentStore } from '@/stores/agent'
 import { useScriptStore } from '@/stores/script'
 import { useNotificationStore } from '@/stores/notification'
@@ -25,16 +25,17 @@ import { formatTime } from '@/lib/utils'
 import { apiList, apiFetch } from '@/lib/utils'
 import { NOTIFY_CHANNEL_LABELS } from '@/lib/itsm-constants'
 import { FormDesigner } from '@/components/itsm/FormDesigner'
+import { FormRulesEditor } from '@/components/itsm/FormRulesEditor'
 import { type FormSchema } from '@/components/itsm/DynamicForm'
-import { parseFormSchema, type StepFieldPerm } from '@/lib/itsm-constants'
+import { parseFormSchema, normalizeStepFieldPerm, type StepFieldPerm } from '@/lib/itsm-constants'
 import { getMessage } from '@/lib/message'
 import {
   Plus, Trash2, Save, X, Pencil, ChevronLeft, Loader2,
-  PlayCircle, StopCircle, UserCheck, GitBranch,
+  PlayCircle, StopCircle, UserCheck, GitBranch, Hourglass, Hash,
   Clock, Bell, Server, FolderTree, FileText, Settings2, ChevronRight, ChevronLeft as CL,
-  Grid3x3, Undo2, Redo2, Users, Search, Route, AlertTriangle, Wand2,
+  Grid3x3, Undo2, Redo2, Users, Search, Route, AlertTriangle, Wand2, GitMerge, UserPlus, Variable, FlaskConical,
 } from 'lucide-react'
-import { App, Button, Form, Input, Modal, Tag } from 'antd'
+import { App, Button, Form, Input, Modal, Popover, Tag } from 'antd'
 
 // ---- types & meta ----
 type ItStepType = ProcessStep['type']
@@ -50,7 +51,10 @@ const META: Record<ItStepType, { label: string; icon: any; color: string }> = {
   notify:   { label: '通知',     icon: Bell,      color: '#ef4444' },
   service:  { label: '服务任务', icon: Server,    color: '#14b8a6' },
   parallel: { label: '并行网关', icon: FolderTree, color: '#06b6d4' },
+  join:     { label: '汇聚网关', icon: GitMerge,  color: '#0ea5e9' },
+  dispatch: { label: '派单节点', icon: UserPlus,  color: '#d946ef' },
   subflow:  { label: '子流程',   icon: FolderTree, color: '#8b5cf6' },
+  wait:     { label: '等待条件', icon: Hourglass, color: '#eab308' },
 }
 
 // 工单可操作按钮全集（key → 中文标签）。流程设计时在「人工任务」节点勾选本节点允许展示的按钮。
@@ -271,12 +275,26 @@ function validateFlow(steps: ProcessStep[]): string | null {
     }
   }
 
+  // 汇聚网关语义（BPMN 汇合：多进一出，与并行网关配对）
+  for (const j of steps.filter(s => s.type === 'join')) {
+    const inbound = (j.depends_on || []).filter(d => idSet.has(d.nodeId))
+    const outbound = steps.flatMap(s => (s.depends_on || []).filter(d => d.nodeId === j.id))
+    if (inbound.length < 2) return `汇聚网关「${j.name}」至少需要 2 条入口连线（当前 ${inbound.length} 条）：汇聚是多进一出`
+    if (outbound.length !== 1) return `汇聚网关「${j.name}」应当只有 1 条出口连线（当前 ${outbound.length} 条）：汇聚后沿单线继续`
+  }
+
   return null
 }
 
 // 画布节点 data 为展示用途,字段松散;用宽松类型规避 @xyflow/react v12 严格的 NodeProps 默认类型
 type FlowNodeData = Record<string, any>
 type FlowNodeProps = NodeProps<Node<FlowNodeData>>
+
+// 表决方式的画布短标签（与后端 voteLabel 语义一致）
+const APPROVAL_SHORT: Record<string, string> = {
+  countersign: '会签', orsign: '或签', responded_any: '全员表态',
+  percent: '比例表决', count: '数量表决',
+}
 
 // ---- custom nodes ----
 // BPMN 规范：连线一律「左进右出」——target 句柄统一在左侧，source 句柄统一在右侧，
@@ -311,13 +329,15 @@ function BPMNUser({ data }: FlowNodeProps) {
   return <BPMNBox color={META.user.color} icon={<UserCheck className="h-3.5 w-3.5"/>} data={data}>
     {data.approverCount > 0 && <p className="text-[10px]">👥 {data.approverCount} 审批人 · {data.approvalTypeLabel}</p>}
     {data.approverField && <p className="text-[10px] truncate">🔗 取自字段 {data.approverField}</p>}
+    {data.timeoutDuration && <p className="text-[10px]">⏱ {data.timeoutDuration} · {data.timeoutActionLabel}</p>}
+    {data.reminderInterval && <p className="text-[10px]">🔔 每 {data.reminderInterval} 催办</p>}
   </BPMNBox>
 }
 
 /** 分支网关（排他 / 并行）：一进多出——左侧单入口，右侧单出口句柄可连出任意多条分支连线 */
 function GatewayDiamond({ data, color, mark }: { data: any; color: string; mark: string }) {
   const out = data.outCount || 0
-  return <div className="relative flex items-center justify-center" style={{ width: 96, height: 72 }}>
+  return <div className="relative flex items-center justify-center w-24 h-18">
     <InHandle color={color} size={9}/>
     <div className="w-[52px] h-[52px] rotate-45 border-2 flex items-center justify-center bg-white dark:bg-gray-800 shadow-sm" style={{ borderColor: color }}>
       <span className="-rotate-45 text-base font-bold leading-none" style={{ color }}>{mark}</span>
@@ -334,6 +354,22 @@ function BPMNGateway({ data }: FlowNodeProps) {
 }
 function BPMNParallel({ data }: FlowNodeProps) {
   return <GatewayDiamond data={data} color={META.parallel.color} mark="+"/>
+}
+
+/** 汇聚网关（join）：多进一出 —— 左侧单句柄可接收多条分支连线，右侧单出口 */
+function BPMNJoin({ data }: FlowNodeProps) {
+  const inc = data.inCount || 0
+  return <div className="relative flex items-center justify-center w-24 h-18">
+    <InHandle color={META.join.color} size={9}/>
+    <div className="w-[52px] h-[52px] rotate-45 border-2 flex items-center justify-center bg-white dark:bg-gray-800 shadow-sm" style={{ borderColor: META.join.color }}>
+      <span className="-rotate-45 text-base font-bold leading-none" style={{ color: META.join.color }}>∩</span>
+    </div>
+    <div className="absolute -bottom-4 left-1/2 -translate-x-1/2 whitespace-nowrap text-[10px] font-medium">
+      {data.label}
+      <span className="ml-1 text-muted-foreground">({inc} 入口)</span>
+    </div>
+    <OutHandle color={META.join.color} size={9}/>
+  </div>
 }
 
 function BPMNTimer({ data }: FlowNodeProps) {
@@ -372,10 +408,34 @@ function BPMNSubflow({ data }: FlowNodeProps) {
   </BPMNBox>
 }
 
+/** 派单节点（dispatch）：先派单再处理 —— auto 自动派给解析出的受派人 / manual 等人工指派 */
+function BPMNDispatch({ data }: FlowNodeProps) {
+  return <BPMNBox color={META.dispatch.color} icon={<UserPlus className="h-3.5 w-3.5"/>} data={data}>
+    <p className="text-[10px] truncate">
+      {data.dispatchMode === 'manual' ? '✋ 手动派单' : '⚡ 自动派单'}
+      {(data.assigneeVar || data.assignee) && <span className="ml-1">→ {data.assigneeVar || data.assignee}</span>}
+    </p>
+  </BPMNBox>
+}
+
 const nodeTypes: Record<string, any> = {
   start: BPMNStart, end: BPMNEnd, user: BPMNUser,
   gateway: BPMNGateway, timer: BPMNTimer, notify: BPMNNotify,
-  service: BPMNService, parallel: BPMNParallel, subflow: BPMNSubflow,
+  service: BPMNService, parallel: BPMNParallel, subflow: BPMNSubflow, join: BPMNJoin,
+  dispatch: BPMNDispatch, wait: BPMNWait,
+}
+
+/** 等待条件节点（Wait for Condition）：BPMN 中间捕获事件样式（双圆 + 沙漏），条件成立自动继续 */
+function BPMNWait({ data }: FlowNodeProps) {
+  return <div className="relative">
+    <InHandle color={META.wait.color}/>
+    <div className="w-[104px] h-[52px] rounded-full border-2 border-dashed flex items-center justify-center bg-white dark:bg-gray-800 shadow-sm gap-2" style={{ borderColor: META.wait.color }}>
+      <Hourglass className="h-5 w-5" style={{ color: META.wait.color }}/>
+      <span className="text-[10px] font-medium">{data.label}</span>
+    </div>
+    <OutHandle color={META.wait.color}/>
+    {data.waitCondition && <p className="text-[10px] text-center mt-0.5 truncate max-w-[140px] mx-auto" title={data.waitCondition}>⏳ {data.waitCondition}</p>}
+  </div>
 }
 
 // ---- 可删除连线（悬停出现「×」，选中高亮；Delete 键同样可删）----
@@ -530,6 +590,109 @@ function ApproverPicker({ value, users, groups, onChange }: {
   </div>
 }
 
+// ---- 自动节点变量链路提示：列出节点配置里可用的 ${} 占位符 ----
+function VariablesHint({ steps, mainFields }: { steps: ProcessStep[]; mainFields: { key: string }[] }) {
+  const svcIds = steps.filter(s => s.type === 'service').slice(0, 2).map(s => s.id).join(' / ') || '<脚本节点ID>'
+  const fieldKey = mainFields[0]?.key || '<字段key>'
+  return (
+    <details className="text-[10px] text-muted-foreground border border-input rounded p-2">
+      <summary className="cursor-pointer select-none font-medium">可用变量（自动节点变量链路）</summary>
+      <div className="mt-1 space-y-0.5">
+        <p><code>{'${ticket.title}'}</code> 等 — 工单字段（title / risk_level / status / created_by / assignee）</p>
+        <p><code>{`\${custom_fields.${fieldKey}}`}</code> — 工单自定义表单字段</p>
+        <p><code>{`\${steps.${svcIds}.output}`}</code> — 上游脚本/动作节点的输出</p>
+        <p><code>{`$\{steps.<节点ID>.status}`}</code> — 上游节点结果（success / failure）</p>
+        <p><code>{'${output.*}'}</code> — 上一次工单操作产出（status / risk_level 等）</p>
+        <p className="pt-0.5">变量缺失时替换为空串，不阻断流程推进。</p>
+      </div>
+    </details>
+  )
+}
+
+// ---- 数据 pill 式变量插入器（对齐 SN Data Pill 交互）----
+// 把手写 ${} 升级为「点选插入」：按命名空间分组列出可用变量 pill，
+// 点击即把 ${token} 追加进目标输入框。steps 里的节点输出按「本节点上游」过滤，
+// 保证不会插入流程中尚未产出的变量（数据血缘在 UI 层可见）。
+function VarPillPicker({ steps, mainFields, currentStepId, onInsert }: {
+  steps: ProcessStep[]
+  mainFields: { key: string; label?: string }[]
+  currentStepId?: string
+  onInsert: (token: string) => void
+}) {
+  const [open, setOpen] = useState(false)
+  // 上游节点 = 依赖闭包（从 currentStepId 沿 depends_on 反向可达的全部节点）
+  const upstream = useMemo(() => {
+    if (!currentStepId) return new Set(steps.map(s => s.id))
+    const pred = new Map<string, string[]>()
+    for (const s of steps) for (const d of s.depends_on || []) {
+      if (!pred.has(s.id)) pred.set(s.id, [])
+      pred.get(s.id)!.push(d.nodeId)
+    }
+    const seen = new Set<string>()
+    const q = [currentStepId]
+    while (q.length) {
+      const u = q.shift()!
+      for (const v of pred.get(u) || []) if (!seen.has(v)) { seen.add(v); q.push(v) }
+    }
+    return seen
+  }, [steps, currentStepId])
+
+  const groups: { label: string; items: { token: string; desc?: string }[] }[] = [
+    {
+      label: '工单字段',
+      items: ['title', 'status', 'risk_level', 'priority', 'created_by', 'assignee']
+        .map(k => ({ token: `ticket.${k}`, desc: k })),
+    },
+    {
+      label: '表单字段',
+      items: (mainFields || []).map(f => ({ token: `custom_fields.${f.key}`, desc: f.label || f.key })),
+    },
+    {
+      label: '上游节点输出',
+      items: steps
+        .filter(s => s.type !== 'start' && upstream.has(s.id))
+        .flatMap(s => [
+          { token: `steps.${s.id}.output`, desc: `${s.name} 的输出` },
+          { token: `steps.${s.id}.status`, desc: `${s.name} 的结果(success/failure)` },
+        ]),
+    },
+  ].filter(g => g.items.length > 0)
+
+  const pick = (token: string) => { onInsert(token); setOpen(false) }
+
+  return (
+    <Popover
+      open={open}
+      onOpenChange={setOpen}
+      trigger="click"
+      content={
+        <div className="w-72 max-h-72 overflow-y-auto space-y-2 text-xs">
+          {groups.length === 0 && <p className="text-muted-foreground p-1">没有可用的变量</p>}
+          {groups.map(g => (
+            <div key={g.label}>
+              <p className="text-[10px] font-semibold text-muted-foreground mb-1">{g.label}</p>
+              <div className="flex flex-wrap gap-1">
+                {g.items.map(it => (
+                  <button key={it.token} type="button" title={it.desc} onClick={() => pick(it.token)}
+                    className="rounded-full border border-sky-500/40 bg-sky-500/10 px-2 py-0.5 text-[10px] font-mono text-sky-600 dark:text-sky-400 hover:bg-sky-500/25 transition-colors">
+                    {it.token}
+                  </button>
+                ))}
+              </div>
+            </div>
+          ))}
+          <p className="text-[10px] text-muted-foreground">点击 pill 追加 <code>{'${变量}'}</code> 到输入框末尾。</p>
+        </div>
+      }
+    >
+      <button type="button"
+        className="inline-flex items-center gap-1 h-6 px-2 rounded border border-input text-[10px] text-muted-foreground hover:bg-accent hover:text-foreground">
+        <Variable className="h-3 w-3" />插入变量
+      </button>
+    </Popover>
+  )
+}
+
 // ---- 分支网关属性：一进多出，条件挂在出口连线上（节点自身不再持有条件）----
 function GatewayPanel({ step, steps, onPickEdge }: {
   step: ProcessStep; steps: ProcessStep[]
@@ -575,12 +738,12 @@ function StepPanel({ step, steps, scripts, channels, mainForm, users, groups, on
   onChange: (p: Partial<ProcessStep>) => void
 }) {
   // 节点不再单独设计表单：流程只有一张主表单（向导第一步产出），
-  // 节点只声明主表单字段在本节点的「可见 / 可编辑」权限。
+  // 节点只声明主表单字段在本节点的状态（可编辑/必填/只读/禁用/隐藏）。
   const [permOpen, setPermOpen] = useState(false)
   const mainFields = mainForm?.fields || []
   const permOf = useCallback((key: string): StepFieldPerm => {
     const hit = (step.form_fields || []).find(p => p.key === key)
-    return hit || { key, visible: true, editable: true }   // 未声明 = 可见可编辑
+    return normalizeStepFieldPerm(hit || { key, mode: 'editable' })  // 未声明 = 可编辑
   }, [step.form_fields])
 
   // 写回时始终落全量（对齐当前主表单字段集），避免主表单增删字段后残留脏 key
@@ -590,16 +753,17 @@ function StepPanel({ step, steps, scripts, channels, mainForm, users, groups, on
   const setPerm = (key: string, patch: Partial<StepFieldPerm>) => {
     writePerms(p => {
       if (p.key !== key) return p
-      const next = { ...p, ...patch }
-      if (!next.visible) next.editable = false   // 不可见必然不可编辑
-      if (next.editable) next.visible = true     // 可编辑必然可见
+      const next = { ...p, ...patch } as StepFieldPerm
+      if (next.mode === 'hidden') next.required = false   // 隐藏谈不上必填
+      if (next.required && next.mode !== 'editable') next.mode = 'editable' // 必填必然可编辑
       return next
     })
   }
-  const bulk = (visible: boolean, editable: boolean) => writePerms(p => ({ ...p, visible, editable }))
+  const bulk = (mode: StepFieldPerm['mode']) => writePerms(p => ({ ...p, mode, required: mode === 'editable' ? p.required : false }))
 
-  const visibleCount = mainFields.filter(f => permOf(f.key).visible).length
-  const editableCount = mainFields.filter(f => permOf(f.key).editable).length
+  const visibleCount = mainFields.filter(f => permOf(f.key).mode !== 'hidden').length
+  const editableCount = mainFields.filter(f => permOf(f.key).mode === 'editable').length
+  const requiredCount = mainFields.filter(f => permOf(f.key).mode === 'editable' && permOf(f.key).required).length
 
   const removeDep = (nodeId: string) => {
     onChange({ depends_on: (step.depends_on || []).filter(d => d.nodeId !== nodeId) })
@@ -610,16 +774,26 @@ function StepPanel({ step, steps, scripts, channels, mainForm, users, groups, on
     <CardHeader className="py-3"><CardTitle className="text-sm">{META[step.type]?.label || step.type}</CardTitle></CardHeader>
     <CardContent className="space-y-2 text-sm">
       <div><label className="text-xs font-medium">名称</label><Input value={step.name} onChange={e=>onChange({name:e.target.value})} className="h-8 mt-1"/></div>
+      <div><label className="text-xs font-medium">所属阶段</label><Input value={step.stage||''} onChange={e=>onChange({stage:e.target.value||undefined})} className="h-8 mt-1" placeholder="如：受理 / 处理 / 关闭（留空不参与阶段进度）"/></div>
       {step.type === 'user' && <>
         <ApproverPicker value={step.approvers || []} users={users} groups={groups} onChange={v => onChange({ approvers: v })}/>
         <div>
-          <label className="text-xs font-medium">审批类型</label>
+          <label className="text-xs font-medium">表决方式</label>
           <select className="flex h-8 w-full rounded-md border border-input bg-background px-2 text-xs mt-1"
-            value={step.approval_type || 'countersign'} onChange={e => onChange({ approval_type: e.target.value as 'countersign' | 'orsign' })}>
-            <option value="countersign">会签（全部审批人通过才继续）</option>
-            <option value="orsign">或签（任一审批人通过即继续）</option>
+            value={step.approval_type || 'countersign'} onChange={e => onChange({ approval_type: e.target.value as ProcessStep['approval_type'] })}>
+            <option value="countersign">会签 — 全部审批人通过才继续</option>
+            <option value="orsign">或签 — 任一审批人通过即继续</option>
+            <option value="responded_any">全员表态 — 所有人投完且任一通过</option>
+            <option value="percent">比例表决 — 通过人数达到名册的百分比</option>
+            <option value="count">数量表决 — 通过人数达到指定数量</option>
           </select>
-          <p className="text-[10px] text-muted-foreground mt-1">单审批人时两者等价；多人时决定表决口径。</p>
+          {(step.approval_type === 'percent' || step.approval_type === 'count') && (
+            <Input type="number" min={1} className="h-8 mt-1"
+              value={step.approval_threshold ?? (step.approval_type === 'percent' ? 50 : 1)}
+              onChange={e => onChange({ approval_threshold: Number(e.target.value) || 0 })}
+              placeholder={step.approval_type === 'percent' ? '百分比（默认 50）' : '人数（默认 1）'}/>
+          )}
+          <p className="text-[10px] text-muted-foreground mt-1">单审批人时各方式等价；多人时决定表决口径（对齐 ServiceNow 5 种语义）。</p>
         </div>
         <div>
           <label className="text-xs font-medium">从表单字段取审批人</label>
@@ -633,6 +807,35 @@ function StepPanel({ step, steps, scripts, channels, mainForm, users, groups, on
           </p>
         </div>
         <div><label className="text-xs font-medium">审批消息</label><Input value={step.approval_msg||''} onChange={e=>onChange({approval_msg:e.target.value})} className="h-8 mt-1" placeholder="请审批此变更"/></div>
+        <div className="rounded-md border border-border/60 p-2 space-y-2 bg-muted/20">
+          <p className="text-[10px] font-semibold text-muted-foreground">审批时间策略（对齐 SLA 超时语义）</p>
+          <div className="grid grid-cols-2 gap-2">
+            <div>
+              <label className="text-xs font-medium">审批时限</label>
+              <Input value={step.timeout_duration||''} onChange={e=>onChange({timeout_duration:e.target.value||undefined})} className="h-8 mt-1" placeholder="如 24h / 3d"/>
+            </div>
+            <div>
+              <label className="text-xs font-medium">超时处置</label>
+              <select className="flex h-8 w-full rounded-md border border-input bg-background px-2 text-xs mt-1"
+                value={step.timeout_action || 'notify_only'} onChange={e => onChange({ timeout_action: e.target.value as 'auto_approve' | 'auto_reject' | 'notify_only' })}>
+                <option value="notify_only">仅催办通知（继续等待）</option>
+                <option value="auto_approve">自动通过</option>
+                <option value="auto_reject">自动驳回</option>
+              </select>
+            </div>
+          </div>
+          <div>
+            <label className="text-xs font-medium">周期催办间隔</label>
+            <Input value={step.reminder_interval||''} onChange={e=>onChange({reminder_interval:e.target.value||undefined})} className="h-8 mt-1" placeholder="如 24h（停留期间每 24h 催一次，留空不催办）"/>
+          </div>
+          <div>
+            <label className="text-xs font-medium">工作日历（可选）</label>
+            <Input value={step.calendar||''} onChange={e=>onChange({calendar:e.target.value||undefined})} className="h-8 mt-1" placeholder="服务时间窗口名称，如 8x5（时限按业务时间计算，跳过节假日）"/>
+          </div>
+          <p className="text-[10px] text-muted-foreground">
+            超过时限后按处置策略执行：自动通过/驳回会完成工单状态迁移并推进流程（操作者记为 system）；仅催办则继续等待人工。时限留空表示不启用超时策略。配置工作日历后，时限与催办按业务时间累计（如 8x5 日历下 24h ≈ 3 个工作日）。
+          </p>
+        </div>
         <div className="space-y-1">
           <label className="text-xs font-medium">本节点可操作按钮</label>
           <div className="flex flex-wrap gap-1">
@@ -668,22 +871,123 @@ function StepPanel({ step, steps, scripts, channels, mainForm, users, groups, on
             <p className="text-[10px] text-muted-foreground">流程主表单还没有字段，请先回到「表单设计」步骤定义字段。</p>
           ) : (
             <p className="text-[10px] text-muted-foreground">
-              主表单共 {mainFields.length} 个字段，本节点可见 <b className="text-foreground">{visibleCount}</b> 个、可编辑 <b className="text-foreground">{editableCount}</b> 个。
-              节点不单独设计表单，只决定主表单字段在此处的可见与可编辑范围。
+              主表单共 {mainFields.length} 个字段，本节点可见 <b className="text-foreground">{visibleCount}</b> 个、可编辑 <b className="text-foreground">{editableCount}</b> 个、必填 <b className="text-foreground">{requiredCount}</b> 个。
+              节点不单独设计表单，只决定主表单字段在此处的状态。
             </p>
           )}
         </div>
       </>}
       {(step.type === 'gateway' || step.type === 'parallel') && <GatewayPanel step={step} steps={steps} onPickEdge={onPickEdge}/>}
+      {step.type === 'join' && <div>
+        <label className="text-xs font-medium">汇聚模式</label>
+        <select className="flex h-8 w-full rounded-md border border-input bg-background px-2 text-xs mt-1" value={step.join_mode||'all'} onChange={e=>onChange({join_mode:e.target.value as 'all'|'any'})}>
+          <option value="all">全部到达（all）— 等待所有上游分支汇合</option>
+          <option value="any">任一到达（any）— 首个上游到达即放行</option>
+        </select>
+        <p className="text-[10px] text-muted-foreground mt-1">与并行网关配对：把各分支的出线连到本节点，全部分支汇合后沿出线继续。</p>
+        <VariablesHint steps={steps} mainFields={mainFields} />
+      </div>}
+      {step.type === 'dispatch' && <>
+        <div>
+          <label className="text-xs font-medium">派单方式</label>
+          <select className="flex h-8 w-full rounded-md border border-input bg-background px-2 text-xs mt-1" value={step.dispatch_mode||'auto'} onChange={e=>onChange({dispatch_mode:e.target.value as 'auto'|'manual'})}>
+            <option value="auto">自动派单 — 引擎解析受派人后自动指派并继续流转</option>
+            <option value="manual">手动派单 — 停在本节点，人工在工单上执行「指派」后续跑</option>
+          </select>
+        </div>
+        <div>
+          <div className="flex items-center justify-between gap-2">
+            <label className="text-xs font-medium">受派人（变量优先）</label>
+            <VarPillPicker steps={steps} mainFields={mainFields} currentStepId={step.id}
+              onInsert={t => onChange({ assignee: (step.assignee || '') + '${' + t + '}' })}/>
+          </div>
+          <Input value={step.assignee_var||''} onChange={e=>onChange({assignee_var:e.target.value})} className="h-8 mt-1" placeholder="custom_fields.owner"/>
+          <Input value={step.assignee||''} onChange={e=>onChange({assignee:e.target.value})} className="h-8 mt-1" placeholder="静态账号，或 ${custom_fields.owner}"/>
+          <p className="text-[10px] text-muted-foreground mt-1">
+            上栏填变量点路径（custom_fields.owner / steps.xxx.output.assignee / ticket.created_by），优先解析；
+            下栏填静态账号，支持 {'${'}变量{'}'} 占位与逗号多候选（取首个非空）。两者都为空时自动派单按失败分支走。
+          </p>
+        </div>
+        <VariablesHint steps={steps} mainFields={mainFields} />
+      </>}
       {step.type === 'timer' && <div><label className="text-xs font-medium">超时时长</label><Input value={step.duration||''} onChange={e=>onChange({duration:e.target.value})} className="h-8 mt-1" placeholder="4h / 30m / 1d"/></div>}
+      {step.type === 'wait' && <>
+        <div>
+          <div className="flex items-center justify-between gap-2">
+            <label className="text-xs font-medium">等待条件（成立后自动继续）*</label>
+            <VarPillPicker steps={steps} mainFields={mainFields} currentStepId={step.id}
+              onInsert={t => onChange({ condition: (step.condition || '') + '${' + t + '}' })}/>
+          </div>
+          <Input.TextArea rows={3} value={step.condition||''} onChange={e=>onChange({condition:e.target.value})} className="mt-1 font-mono text-xs" placeholder={`如 ticket.status == "resolved"`}/>
+          <p className="text-[10px] text-muted-foreground mt-1">
+            流程在此节点挂起，引擎每 30 秒重新求值条件，成立后沿「成功」分支自动继续。变量与网关同一套：ticket.* / custom_fields.* / steps.*。
+          </p>
+        </div>
+        <VariablesHint steps={steps} mainFields={mainFields} />
+      </>}
       {step.type === 'notify' && <>
         <div><label className="text-xs font-medium">通知渠道</label><select className="flex h-8 w-full rounded-md border border-input bg-background px-2 text-xs mt-1" value={step.notify_channel||''} onChange={e=>onChange({notify_channel:e.target.value})}><option value="">选择渠道</option>{channels.filter((c:any)=>c.enabled).map((c:any)=><option key={c.id} value={c.id}>{c.name}</option>)}</select></div>
-        <div><label className="text-xs font-medium">标题</label><Input value={step.notify_title||''} onChange={e=>onChange({notify_title:e.target.value})} className="h-8 mt-1"/></div>
-        <div><label className="text-xs font-medium">内容</label><Input.TextArea rows={3} value={step.notify_body||''} onChange={e=>onChange({notify_body:e.target.value})} className="mt-1"/></div>
+        <div><div className="flex items-center justify-between gap-2">
+          <label className="text-xs font-medium">标题</label>
+          <VarPillPicker steps={steps} mainFields={mainFields} currentStepId={step.id}
+            onInsert={t => onChange({ notify_title: (step.notify_title || '') + '${' + t + '}' })}/>
+        </div><Input value={step.notify_title||''} onChange={e=>onChange({notify_title:e.target.value})} className="h-8 mt-1"/></div>
+        <div><div className="flex items-center justify-between gap-2">
+          <label className="text-xs font-medium">内容</label>
+          <VarPillPicker steps={steps} mainFields={mainFields} currentStepId={step.id}
+            onInsert={t => onChange({ notify_body: (step.notify_body || '') + '${' + t + '}' })}/>
+        </div><Input.TextArea rows={3} value={step.notify_body||''} onChange={e=>onChange({notify_body:e.target.value})} className="mt-1"/></div>
       </>}
-      {step.type === 'service' && <div><label className="text-xs font-medium">关联脚本</label><select className="flex h-8 w-full rounded-md border border-input bg-background px-2 text-xs mt-1" value={step.script_id||''} onChange={e=>onChange({script_id:e.target.value})}><option value="">选择脚本</option>{scripts.map((s:any)=><option key={s.id} value={s.id}>{s.name}</option>)}</select></div>}
-      {step.type === 'subflow' && <div><label className="text-xs font-medium">子流程ID</label><Input value={step.subflow_id||''} onChange={e=>onChange({subflow_id:e.target.value})} className="h-8 mt-1"/></div>}
-      {(step.type === 'start' || step.type === 'end') && <div className="text-xs text-muted-foreground bg-muted/30 rounded p-2">无需额外配置</div>}
+      {step.type === 'service' && <>
+        <div><label className="text-xs font-medium">关联脚本</label><select className="flex h-8 w-full rounded-md border border-input bg-background px-2 text-xs mt-1" value={step.script_id||''} onChange={e=>onChange({script_id:e.target.value})}><option value="">选择脚本</option>{scripts.map((s:any)=><option key={s.id} value={s.id}>{s.name}</option>)}</select></div>
+        <div className="rounded-md border border-border/60 p-2 space-y-2 bg-muted/20">
+          <p className="text-[10px] font-semibold text-muted-foreground">失败重试策略</p>
+          <div className="grid grid-cols-2 gap-2">
+            <div>
+              <label className="text-xs font-medium">重试次数</label>
+              <Input type="number" min={0} max={5} className="h-8 mt-1" value={step.retry_count ?? 0}
+                onChange={e=>onChange({ retry_count: Math.max(0, Math.min(5, Number(e.target.value) || 0)) })} placeholder="0 = 不重试"/>
+            </div>
+            <div>
+              <label className="text-xs font-medium">重试间隔</label>
+              <Input className="h-8 mt-1" value={step.retry_interval||''} onChange={e=>onChange({ retry_interval: e.target.value || undefined })}
+                placeholder="如 10s / 1m（空=立即）" disabled={!step.retry_count}/>
+            </div>
+          </div>
+          <p className="text-[10px] text-muted-foreground">执行失败按间隔自动重试，全部耗尽仍失败才走「失败」分支（对齐 SN REST Step 内置重试）。</p>
+        </div>
+      </>}
+      {step.type === 'subflow' && <>
+        <div><label className="text-xs font-medium">子流程ID</label><Input value={step.subflow_id||''} onChange={e=>onChange({subflow_id:e.target.value})} className="h-8 mt-1"/></div>
+        <div className="rounded-md border border-border/60 p-2 space-y-2 bg-muted/20">
+          <p className="text-[10px] font-semibold text-muted-foreground">显式传参（子流程内以 {'${params.参数名}'} 引用）</p>
+          {(step.subflow_params&&Object.keys(step.subflow_params).length>0?Object.entries(step.subflow_params):[]).map(([k,v],i)=>(
+            <div key={i} className="flex items-center gap-1.5">
+              <Input className="h-7 w-24 font-mono text-[11px]" value={k} placeholder="参数名"
+                onChange={e=>{
+                  const next={...(step.subflow_params||{})}; delete next[k]
+                  const nk=e.target.value.trim(); if(nk) next[nk]=v
+                  onChange({subflow_params:next})
+                }}/>
+              <Input className="h-7 flex-1 text-[11px]" value={String(v??'')} placeholder="${custom_fields.owner}"
+                onChange={e=>onChange({subflow_params:{...(step.subflow_params||{}),[k]:e.target.value}})}/>
+              <button type="button" className="text-red-400 hover:text-red-600 text-xs" title="删除参数"
+                onClick={()=>{const next={...(step.subflow_params||{})}; delete next[k]; onChange({subflow_params:next})}}>×</button>
+            </div>
+          ))}
+          <button type="button" className="text-[11px] text-blue-500 hover:underline"
+            onClick={()=>onChange({subflow_params:{...(step.subflow_params||{}),[`p${Object.keys(step.subflow_params||{}).length+1}`]:''}})}>+ 添加参数</button>
+          <p className="text-[10px] text-muted-foreground">参数值支持 {'${...}'} 变量（如 {'${custom_fields.owner}'}）；纯引用保留原始形态。未配置时子流程全量继承父上下文。</p>
+        </div>
+        <div>
+          <label className="text-xs font-medium">For Each 循环（可选）</label>
+          <Input className="h-8 mt-1" value={step.for_each||''} onChange={e=>onChange({for_each:e.target.value||undefined})}
+            placeholder="${steps.query.output.items}（留空=只执行一次）"/>
+          <p className="text-[10px] text-muted-foreground mt-1">对表达式求值出的列表逐项执行子流程，子流程内用 {'${item}'} / {'${item_index}'} 引用当前项；仅支持全自动子流程。</p>
+        </div>
+      </>}
+      {step.type === 'start' || step.type === 'end' ? <div className="text-xs text-muted-foreground bg-muted/30 rounded p-2">无需额外配置</div>
+        : (step.type === 'service' || step.type === 'notify' || step.type === 'gateway' || step.type === 'dispatch') && <VariablesHint steps={steps} mainFields={mainFields} />}
 
       {step.type !== 'start' && <div className="pt-2 border-t space-y-1">
         <p className="text-[10px] font-medium text-muted-foreground">入口连线（上游）</p>
@@ -705,13 +1009,14 @@ function StepPanel({ step, steps, scripts, channels, mainForm, users, groups, on
       <Modal open={permOpen} onCancel={() => setPermOpen(false)} title={`表单字段权限 · ${step.name}`} footer={null}>
         <div className="space-y-3">
           <p className="text-xs text-muted-foreground">
-            勾选主表单字段在本节点的权限：<b>可见</b>决定字段是否渲染给处理人，<b>可编辑</b>决定能否修改（不可编辑时以只读形式展示）。
-            未做任何勾选变更的字段默认可见可编辑。
+            每个字段在本节点有四种状态：<b>可编辑</b>（可配合「必填」）、<b>只读</b>、<b>禁用</b>、<b>隐藏</b>（不渲染给处理人）。
+            未调整的字段默认可编辑。
           </p>
           <div className="flex items-center gap-2">
-            <Button size="middle" className="h-7 text-[11px]" onClick={() => bulk(true, true)}>全部可编辑</Button>
-            <Button size="middle" className="h-7 text-[11px]" onClick={() => bulk(true, false)}>全部只读</Button>
-            <Button size="middle" className="h-7 text-[11px]" onClick={() => bulk(false, false)}>全部隐藏</Button>
+            <Button size="middle" className="h-7 text-[11px]" onClick={() => bulk('editable')}>全部可编辑</Button>
+            <Button size="middle" className="h-7 text-[11px]" onClick={() => bulk('readonly')}>全部只读</Button>
+            <Button size="middle" className="h-7 text-[11px]" onClick={() => bulk('disabled')}>全部禁用</Button>
+            <Button size="middle" className="h-7 text-[11px]" onClick={() => bulk('hidden')}>全部隐藏</Button>
           </div>
           <div className="border rounded-md max-h-[50vh] overflow-y-auto">
             <table className="w-full text-xs">
@@ -719,8 +1024,8 @@ function StepPanel({ step, steps, scripts, channels, mainForm, users, groups, on
                 <tr>
                   <th className="text-left px-3 py-2 font-medium">字段</th>
                   <th className="text-left px-3 py-2 font-medium w-24">类型</th>
-                  <th className="text-center px-3 py-2 font-medium w-20">可见</th>
-                  <th className="text-center px-3 py-2 font-medium w-20">可编辑</th>
+                  <th className="text-center px-3 py-2 font-medium w-28">状态</th>
+                  <th className="text-center px-3 py-2 font-medium w-16">必填</th>
                 </tr>
               </thead>
               <tbody>
@@ -735,12 +1040,21 @@ function StepPanel({ step, steps, scripts, channels, mainForm, users, groups, on
                       </td>
                       <td className="px-3 py-1.5 text-muted-foreground">{f.type}</td>
                       <td className="px-3 py-1.5 text-center">
-                        <input type="checkbox" className="h-3.5 w-3.5 accent-primary" checked={p.visible}
-                          onChange={e => setPerm(f.key, { visible: e.target.checked })} aria-label={`${f.label} 可见`} />
+                        <select className="h-7 w-full rounded border border-input bg-background px-1 text-[11px]"
+                          value={p.mode} onChange={e => setPerm(f.key, { mode: e.target.value as StepFieldPerm['mode'] })}
+                          aria-label={`${f.label} 节点状态`}>
+                          <option value="editable">可编辑</option>
+                          <option value="readonly">只读</option>
+                          <option value="disabled">禁用</option>
+                          <option value="hidden">隐藏</option>
+                        </select>
                       </td>
                       <td className="px-3 py-1.5 text-center">
-                        <input type="checkbox" className="h-3.5 w-3.5 accent-primary" checked={p.editable}
-                          onChange={e => setPerm(f.key, { editable: e.target.checked })} aria-label={`${f.label} 可编辑`} />
+                        <input type="checkbox" className="h-3.5 w-3.5 accent-primary disabled:opacity-30"
+                          checked={p.mode === 'editable' && !!p.required}
+                          disabled={p.mode !== 'editable'}
+                          onChange={e => setPerm(f.key, { required: e.target.checked })}
+                          aria-label={`${f.label} 本节点必填`} />
                       </td>
                     </tr>
                   )
@@ -799,6 +1113,11 @@ function EdgePanel({ source, target, cond, steps, mainForm, onChangeCond, onDele
           {opt && <p className="text-[10px] text-muted-foreground mt-1">{opt.hint}</p>}
         </div>
         {kind === 'expr' && <div>
+          <div className="flex items-center justify-between gap-2">
+            <label className="text-xs font-medium">条件表达式</label>
+            <VarPillPicker steps={steps} mainFields={mainForm?.fields || []} currentStepId={target.id}
+              onInsert={t => onChangeCond(cond + '${' + t + '}')}/>
+          </div>
           <Input value={cond} onChange={e => onChangeCond(e.target.value)} className="h-8 text-xs font-mono" placeholder='risk_level == "high"'/>
           {fieldKeys.length > 0 && <p className="text-[10px] text-muted-foreground mt-1">
             可用字段：{fieldKeys.slice(0, 8).join('、')}{fieldKeys.length > 8 ? ' …' : ''}
@@ -844,14 +1163,20 @@ function BPMNCanvas({ steps, scripts, channels, mainForm, users, groups, selId, 
       data: {
         label: s.name,
         approverCount: (s.approvers || []).length,
-        approvalTypeLabel: s.approval_type === 'orsign' ? '或签' : '会签',
+        approvalTypeLabel: APPROVAL_SHORT[s.approval_type || 'countersign'] || '会签',
         approverField: s.approver_field,
+        timeoutDuration: s.timeout_duration,
+        timeoutActionLabel: s.timeout_action === 'auto_approve' ? '超时自动通过' : s.timeout_action === 'auto_reject' ? '超时自动驳回' : '超时催办',
+        reminderInterval: s.reminder_interval,
         script_id: s.script_id, scriptName: scripts.find(sc=>sc.id===s.script_id)?.name,
         duration: s.duration,
         outCount: outCount.get(s.id) || 0,
+        inCount: (s.depends_on || []).length,
         notifyChannel: channels.find((c:any)=>c.id===s.notify_channel)?.name || s.notify_channel,
         notify_title: s.notify_title, notify_body: s.notify_body,
         subflowName: s.subflow_id,
+        assignee: s.assignee, assigneeVar: s.assignee_var, dispatchMode: s.dispatch_mode,
+        waitCondition: s.type === 'wait' ? s.condition : undefined,
       },
     }))
     const es: Edge[] = []
@@ -929,7 +1254,7 @@ function BPMNCanvas({ steps, scripts, channels, mainForm, users, groups, selId, 
 }
 
 // ---- 高级设置：SLA/OLA/通知 ----
-function AdvancedSettings({ proc, slaPolicies, olaPolicies, slaPolicyId, setSlaPolicyId, olaPolicyId, setOlaPolicyId, notifyConfig, setNotifyConfig }: {
+function AdvancedSettings({ proc, slaPolicies, olaPolicies, slaPolicyId, setSlaPolicyId, olaPolicyId, setOlaPolicyId, notifyConfig, setNotifyConfig, numberRule, setNumberRule }: {
   proc: Process
   slaPolicies: { id: string; name: string; risk_level: string }[]
   olaPolicies: { id: string; name: string }[]
@@ -939,6 +1264,8 @@ function AdvancedSettings({ proc, slaPolicies, olaPolicies, slaPolicyId, setSlaP
   setOlaPolicyId: (v: string) => void
   notifyConfig: { channels: string[]; on_create: boolean; on_complete: boolean; template: string }
   setNotifyConfig: (v: { channels: string[]; on_create: boolean; on_complete: boolean; template: string }) => void
+  numberRule: TicketNumberRule
+  setNumberRule: (v: TicketNumberRule) => void
 }) {
   const chLabels = NOTIFY_CHANNEL_LABELS
   const toggleChannel = (c: string) => {
@@ -978,13 +1305,144 @@ function AdvancedSettings({ proc, slaPolicies, olaPolicies, slaPolicyId, setSlaP
         </div>
         <div><label className="text-xs font-medium">通知模板</label><Input.TextArea rows={3} value={notifyConfig.template} onChange={e=>setNotifyConfig({...notifyConfig,template:e.target.value})} placeholder="流程「{{process_name}}」新工单已创建"/></div>
       </CardContent></Card>
+
+      <Card><CardContent className="p-4 space-y-3">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-2 text-sm font-semibold"><Hash className="h-4 w-4"/>工单编号规则</div>
+          <label className="flex items-center gap-1.5 cursor-pointer text-xs"><input type="checkbox" className="h-3.5 w-3.5" checked={!!numberRule.enabled} onChange={e=>setNumberRule({ ...numberRule, enabled: e.target.checked })}/><span>启用自定义</span></label>
+        </div>
+        <p className="text-[11px] text-muted-foreground">定义本流程创建的工单号组成结构：<code>前缀 + 日期 + 序号</code>。关闭则回退全局默认 <code>TK-YYYY-NNNN</code>。序号按「流程 + 年/月/全局」独立计序，保证唯一连续。</p>
+        <div className="grid grid-cols-2 gap-3">
+          <div><label className="text-xs font-medium">前缀（业务标识）</label><Input className="h-8 mt-1" value={numberRule.prefix || ''} disabled={!numberRule.enabled} onChange={e=>setNumberRule({ ...numberRule, prefix: e.target.value.toUpperCase() })} placeholder="如 CHG / INC / REQ"/></div>
+          <div><label className="text-xs font-medium">分隔符</label><Input className="h-8 mt-1" value={numberRule.separator || ''} disabled={!numberRule.enabled} onChange={e=>setNumberRule({ ...numberRule, separator: e.target.value })} placeholder="默认 -"/></div>
+          <div><label className="text-xs font-medium">日期片段</label><select className="flex h-8 w-full rounded-md border border-input bg-background px-2 text-xs mt-1" value={numberRule.date_format || ''} disabled={!numberRule.enabled} onChange={e=>setNumberRule({ ...numberRule, date_format: e.target.value as TicketNumberRule['date_format'] })}>
+            <option value="">无</option><option value="YYYY">年 (2026)</option><option value="YYYYMM">年月 (202611)</option><option value="YYYYMMDD">年月日 (20261102)</option>
+          </select></div>
+          <div><label className="text-xs font-medium">序号重置粒度</label><select className="flex h-8 w-full rounded-md border border-input bg-background px-2 text-xs mt-1" value={numberRule.seq_scope || 'year'} disabled={!numberRule.enabled} onChange={e=>setNumberRule({ ...numberRule, seq_scope: e.target.value as TicketNumberRule['seq_scope'] })}>
+            <option value="year">按年</option><option value="month">按月</option><option value="global">全局</option>
+          </select></div>
+          <div><label className="text-xs font-medium">序号最小宽度</label><Input type="number" min={1} max={10} className="h-8 mt-1" value={numberRule.seq_width || 4} disabled={!numberRule.enabled} onChange={e=>setNumberRule({ ...numberRule, seq_width: Number(e.target.value) || 4 })} placeholder="4"/></div>
+        </div>
+        <div className="flex items-center gap-2 rounded-md bg-muted/50 px-3 py-2 text-xs">
+          <span className="text-muted-foreground">预览：</span>
+          <code className="font-mono text-foreground">{previewTicketNumber(proc.name, numberRule)}</code>
+        </div>
+      </CardContent></Card>
     </div>
+  )
+}
+
+// ---- 流程测试运行（dry-run，对齐 SN「Test」）----
+// 纯模拟：不建实例、不执行动作、不改工单。逐节点展示「会做什么/停在哪里」。
+const DRYRUN_STATUS_META: Record<string, { label: string; cls: string }> = {
+  would_run:   { label: '将执行', cls: 'bg-emerald-500/15 text-emerald-600 dark:text-emerald-400' },
+  would_pause: { label: '将停留', cls: 'bg-amber-500/15 text-amber-600 dark:text-amber-400' },
+  branch_end:  { label: '路径点', cls: 'bg-blue-500/15 text-blue-600 dark:text-blue-400' },
+  skipped:     { label: '未经过', cls: 'bg-muted text-muted-foreground' },
+}
+
+function DryRunDialog({ open, onClose, processId, dirty }: {
+  open: boolean
+  onClose: () => void
+  processId: string
+  dirty: boolean
+}) {
+  const { dryRunProcess } = useProcessStore()
+  const [varsText, setVarsText] = useState('')
+  const [running, setRunning] = useState(false)
+  const [result, setResult] = useState<DryRunResult | null>(null)
+
+  useEffect(() => {
+    if (open) { setResult(null); setVarsText('') }
+  }, [open])
+
+  const run = async () => {
+    let vars: Record<string, any> | undefined
+    if (varsText.trim()) {
+      try { vars = JSON.parse(varsText) } catch {
+        getMessage().error('示例变量不是合法 JSON'); return
+      }
+    }
+    setRunning(true)
+    const res = await dryRunProcess(processId, vars)
+    setRunning(false)
+    if (res) setResult(res)
+  }
+
+  return (
+    <Modal open={open} onCancel={onClose} title="流程测试运行（dry-run）" footer={null} width={680}>
+      <div className="space-y-3 text-sm">
+        {dirty && (
+          <p className="rounded-md bg-amber-500/10 border border-amber-500/40 px-3 py-2 text-xs text-amber-600 dark:text-amber-400">
+            当前有未保存的修改，测试按「最后一次保存」的定义运行；请先到高级设置保存后再测。
+          </p>
+        )}
+        <div>
+          <label className="text-xs font-medium">示例变量（可选，用于网关条件求值演示）</label>
+          <Input.TextArea rows={3} className="mt-1 font-mono text-xs" value={varsText} onChange={e => setVarsText(e.target.value)}
+            placeholder={'{\n  "risk_level": "high",\n  "custom_fields": { "env": "prod" }\n}'}/>
+          <p className="text-[10px] text-muted-foreground mt-1">顶层为工单系统字段；custom_fields 子对象为表单字段。留空时网关按默认分支模拟并给出告警。</p>
+        </div>
+        <div className="flex justify-end">
+          <Button type="primary" onClick={run} disabled={running}>
+            {running ? <><Loader2 className="h-3.5 w-3.5 mr-1 animate-spin"/>模拟中...</> : <><PlayCircle className="h-3.5 w-3.5 mr-1"/>开始模拟</>}
+          </Button>
+        </div>
+        {result && (
+          <div className="space-y-2">
+            <p className="text-xs font-medium">{result.summary}</p>
+            {(result.warnings || []).length > 0 && (
+              <div className="rounded-md border border-amber-500/40 bg-amber-500/5 px-3 py-2 space-y-0.5">
+                {result.warnings!.map((wn, i) => <p key={i} className="text-[11px] text-amber-600 dark:text-amber-400">⚠ {wn}</p>)}
+              </div>
+            )}
+            <div className="border rounded-md divide-y max-h-[46vh] overflow-y-auto">
+              {result.steps.map((st, i) => {
+                const m = DRYRUN_STATUS_META[st.status] || DRYRUN_STATUS_META.skipped
+                const meta = META[st.type as ItStepType]
+                const Icon = meta?.icon || PlayCircle
+                return (
+                  <div key={`${st.step_id}-${i}`} className="flex gap-2 px-3 py-2">
+                    <Icon className="h-3.5 w-3.5 mt-0.5 shrink-0" style={{ color: meta?.color || '#94a3b8' }}/>
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-center gap-1.5">
+                        <span className="text-xs font-medium truncate">{st.name}</span>
+                        <span className="text-[10px] text-muted-foreground">{meta?.label || st.type}</span>
+                        <span className={`ml-auto rounded px-1.5 py-0.5 text-[10px] font-medium shrink-0 ${m.cls}`}>{m.label}</span>
+                      </div>
+                      <p className="text-[11px] text-muted-foreground whitespace-pre-wrap">{st.detail}</p>
+                      {st.branches && <p className="text-[10px] font-mono text-muted-foreground whitespace-pre-wrap">{st.branches}</p>}
+                    </div>
+                  </div>
+                )
+              })}
+            </div>
+          </div>
+        )}
+      </div>
+    </Modal>
   )
 }
 
 // ---- page ----
 // 主表单解析统一走 lib/itsm-constants，工单页运行期渲染用的是同一份实现
 const parseForm = parseFormSchema
+// previewTicketNumber — 按编号规则生成示例预览（与后端 formatNumberDate/序号位宽逻辑对齐，仅展示用）
+function previewTicketNumber(_procName: string, rule: TicketNumberRule): string {
+  if (!rule.enabled) return 'TK-2026-0001'
+  const sep = rule.separator || '-'
+  const parts: string[] = []
+  if (rule.prefix) parts.push(rule.prefix)
+  const now = new Date()
+  const y = String(now.getFullYear())
+  const m = String(now.getMonth() + 1).padStart(2, '0')
+  const d = String(now.getDate()).padStart(2, '0')
+  if (rule.date_format === 'YYYY') parts.push(y)
+  else if (rule.date_format === 'YYYYMM') parts.push(`${y}${m}`)
+  else if (rule.date_format === 'YYYYMMDD') parts.push(`${y}${m}${d}`)
+  parts.push('1'.padStart(rule.seq_width || 4, '0'))
+  return parts.join(sep)
+}
 function parseNotify(raw: any): { channels: string[]; on_create: boolean; on_complete: boolean; template: string } {
   const d = (typeof raw === 'string' && raw) ? (() => { try { return JSON.parse(raw) } catch { return {} } })() : (raw || {})
   return { channels: d.channels || [], on_create: d.on_create ?? true, on_complete: d.on_complete ?? true, template: d.template || '' }
@@ -1011,6 +1469,8 @@ export default function ITSMProcessDetailPage() {
   const [selId, setSelId] = useState<string | null>(null)
   const [selEdge, setSelEdge] = useState<{ source: string; target: string } | null>(null)
   const [step, setStep] = useState<0 | 1 | 2>(0)
+  // 流程测试运行（dry-run）弹窗
+  const [dryRunOpen, setDryRunOpen] = useState(false)
 
   // —— 撤销/重做历史栈（仅作用于画布 steps）——
   const stepsRef = useRef(steps)
@@ -1063,6 +1523,8 @@ export default function ITSMProcessDetailPage() {
   const [slaPolicyId, setSlaPolicyId] = useState('')
   const [olaPolicyId, setOlaPolicyId] = useState('')
   const [notifyConfig, setNotifyConfig] = useState<{ channels: string[]; on_create: boolean; on_complete: boolean; template: string }>({ channels: [], on_create: true, on_complete: true, template: '' })
+  // 工单编号规则（流程级自定义；关闭则回退全局默认 TK-YYYY-NNNN）
+  const [numberRule, setNumberRule] = useState<TicketNumberRule>({ enabled: false, prefix: '', date_format: 'YYYY', separator: '-', seq_scope: 'year', seq_width: 4 })
   const [slaPolicies, setSlaPolicies] = useState<{ id: string; name: string; risk_level: string }[]>([])
   const [olaPolicies, setOlaPolicies] = useState<{ id: string; name: string }[]>([])
 
@@ -1095,6 +1557,7 @@ export default function ITSMProcessDetailPage() {
     setSlaPolicyId(proc.sla_policy_id || '')
     setOlaPolicyId('')
     setNotifyConfig(parseNotify(proc.notify_config))
+    setNumberRule(proc.number_rule || { enabled: false, prefix: '', date_format: 'YYYY', separator: '-', seq_scope: 'year', seq_width: 4 })
     setDirty(false)
     setSelId(null)
     setSelEdge(null)
@@ -1215,16 +1678,32 @@ export default function ITSMProcessDetailPage() {
     if (!proc) return
     const err = validateFlow(steps)
     if (err) { getMessage().error(err); return }
+    // 编号格式唯一性预校验：与全局默认/其他启用规则的流程撞型会生成相同工单号（后端 409 兜底）
+    if (numberRule.enabled) {
+      const fmtKey = `${numberRule.prefix || ''}|${numberRule.separator || '-'}|${numberRule.date_format || ''}|${numberRule.seq_width || 4}`
+      if (fmtKey === 'TK|-|YYYY|4') {
+        getMessage().error('工单编号格式与全局默认 TK-YYYY-NNNN 相同，请修改前缀或日期/位宽组合'); return
+      }
+      const dup = processes.find(x => {
+        if (x.id === proc.id || !x.number_rule?.enabled) return false
+        const r = x.number_rule
+        return `${r.prefix || ''}|${r.separator || '-'}|${r.date_format || ''}|${r.seq_width || 4}` === fmtKey
+      })
+      if (dup) {
+        getMessage().error(`工单编号格式与流程「${dup.name}」重复（同格式会生成相同工单号），请调整前缀或日期/位宽组合`); return
+      }
+    }
     const payload = {
       ...proc,
       steps,
       form: processForm,
       sla_policy_id: slaPolicyId,
       notify_config: notifyConfig,
+      number_rule: numberRule,
       version: (proc.version || 1) + 1,
     }
     const ok = await updateProcess(proc.id, payload)
-    if (ok) { setProc({ ...proc, steps, form: processForm as any, sla_policy_id: slaPolicyId, notify_config: notifyConfig as any }); setDirty(false); }
+    if (ok) { setProc({ ...proc, steps, form: processForm as any, sla_policy_id: slaPolicyId, notify_config: notifyConfig as any, number_rule: numberRule }); setDirty(false); }
   }
 
   const discard = () => {
@@ -1233,6 +1712,7 @@ export default function ITSMProcessDetailPage() {
     setProcessForm(parseForm(proc.form))
     setSlaPolicyId(proc.sla_policy_id || '')
     setNotifyConfig(parseNotify(proc.notify_config))
+    setNumberRule(proc.number_rule || { enabled: false, prefix: '', date_format: 'YYYY', separator: '-', seq_scope: 'year', seq_width: 4 })
     setDirty(false)
   }
 
@@ -1272,9 +1752,11 @@ export default function ITSMProcessDetailPage() {
       <div className="space-y-3">
         <p className="text-xs text-muted-foreground">
           先设计整个流程唯一的<b>主表单</b>：从左侧把控件拖到中间画布，点击字段在右侧定义属性。每张工单都套用此表单；
-          各流程节点不再单独建表单，只在「流程编排」里为本节点设置这些字段的<b>可见 / 可编辑</b>范围。
+          各流程节点不再单独建表单，只在「流程编排」里为本节点设置这些字段的状态（可编辑/必填/只读/禁用/隐藏）。
         </p>
         <FormDesigner schema={processForm} onChange={s => { setProcessForm(s); markFormDirty() }} systemFields={['risk_level','status','created_by','process_id']} />
+        {/* 表单级联动规则（显隐/必填/只读/可编辑）与跨字段组合校验（阻断/提示） */}
+        <FormRulesEditor schema={processForm} onChange={s => { setProcessForm(s); markFormDirty() }} />
         <div className="flex justify-end"><Button onClick={() => setStep(1)}>下一步：流程编排 <ChevronRight className="h-4 w-4 ml-1"/></Button></div>
       </div>
     )}
@@ -1292,9 +1774,13 @@ export default function ITSMProcessDetailPage() {
             <Button onClick={() => setStep(0)}><CL className="h-4 w-4 mr-1"/>上一步</Button>
             <Button onClick={undo} disabled={history.length === 0} title="撤销 (Ctrl/Cmd+Z)"><Undo2 className="h-3.5 w-3.5 mr-1"/>撤销</Button>
             <Button onClick={redo} disabled={future.length === 0} title="重做 (Ctrl/Cmd+Shift+Z)"><Redo2 className="h-3.5 w-3.5 mr-1"/>重做</Button>
+            <Button onClick={() => setDryRunOpen(true)} title="模拟运行整条流程（不建实例不执行动作）">
+              <FlaskConical className="h-3.5 w-3.5 mr-1"/>测试运行
+            </Button>
           </div>
           <Button type="primary" onClick={() => setStep(2)}>下一步：高级设置 <ChevronRight className="h-4 w-4 ml-1"/></Button>
         </div>
+        <DryRunDialog open={dryRunOpen} onClose={() => setDryRunOpen(false)} processId={proc.id} dirty={dirty}/>
       </ReactFlowProvider>
     )}
 
@@ -1310,6 +1796,8 @@ export default function ITSMProcessDetailPage() {
           setOlaPolicyId={v => { setOlaPolicyId(v); markFormDirty() }}
           notifyConfig={notifyConfig}
           setNotifyConfig={v => { setNotifyConfig(v); markFormDirty() }}
+          numberRule={numberRule}
+          setNumberRule={v => { setNumberRule(v); markFormDirty() }}
         />
         <div className="flex justify-between">
           <Button onClick={() => setStep(1)}><CL className="h-4 w-4 mr-1"/>上一步</Button>

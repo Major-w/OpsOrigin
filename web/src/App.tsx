@@ -78,6 +78,7 @@ const KnowledgePage = React.lazy(() => import('./app/(dashboard)/knowledge/page'
 const KnowledgeCategoriesPage = React.lazy(() => import('./app/(dashboard)/knowledge/categories/page'))
 const KnowledgeInsightsPage = React.lazy(() => import('./app/(dashboard)/knowledge/insights/page'))
 const KnowledgeRetrievalPage = React.lazy(() => import('./app/(dashboard)/knowledge/retrieval/page'))
+const KnowledgeReportsPage = React.lazy(() => import('./app/(dashboard)/knowledge/reports/page'))
 const KnowledgeNewPage = React.lazy(() => import('./app/(dashboard)/knowledge/new/page'))
 const KnowledgeDetailPage = React.lazy(() => import('./app/(dashboard)/knowledge/[id]/page'))
 const SystemNotificationsPage = React.lazy(() => import('./app/(dashboard)/system/notifications/page'))
@@ -103,6 +104,7 @@ const ITSMOverviewPage = React.lazy(() => import('./app/(dashboard)/itsm/overvie
 const ITSMChangeAssessPage = React.lazy(() => import('./app/(dashboard)/itsm/change-assess/page'))
 const ITSMSlaPage = React.lazy(() => import('./app/(dashboard)/itsm/sla/page'))
 const ITSMFormDictsPage = React.lazy(() => import('./app/(dashboard)/itsm/form-dicts/page'))
+const ITSMServiceHoursPage = React.lazy(() => import('./app/(dashboard)/itsm/service-hours/page'))
 const ITSMInboundPage = React.lazy(() => import('./app/(dashboard)/itsm/inbound/page'))
 const ITSMKnowledgePage = React.lazy(() => import('./app/(dashboard)/itsm/knowledge/page'))
 const ITSMSlaBreachedPage = React.lazy(() => import('./app/(dashboard)/itsm/sla-breached/page'))
@@ -110,7 +112,11 @@ const ITSMCatalogPage = React.lazy(() => import('./app/(dashboard)/itsm/catalog/
 const ITSMSlaOlaPage = React.lazy(() => import('./app/(dashboard)/itsm/sla-ola/page'))
 const ISMTPortalPage = React.lazy(() => import('./app/(dashboard)/itsm/portal/page'))
 const ITSMChangePage = React.lazy(() => import('./app/(dashboard)/itsm/change/page'))
+const ITSMStatusFlowPage = React.lazy(() => import('./app/(dashboard)/itsm/status-flow/page'))
+const ITSMDelegatesPage = React.lazy(() => import('./app/(dashboard)/itsm/delegates/page'))
 const ITSMTicketsPage = React.lazy(() => import('./app/(dashboard)/itsm/tickets/page'))
+// 工单详情页：与列表共用 ITSMTicketsPage 组件，按 :id 参数切换详情模式（全宽）
+const ITSMTicketDetailPage = ITSMTicketsPage
 const ITSMTicketSlaPage = React.lazy(() => import('./app/(dashboard)/itsm/tickets/[id]/sla/page'))
 const ITSMTicketSlaLogPage = React.lazy(() => import('./app/(dashboard)/itsm/tickets/[id]/sla-log/page'))
 
@@ -229,6 +235,7 @@ function App() {
                 <Route path="/knowledge/categories" element={<KnowledgeCategoriesPage />} />
                 <Route path="/knowledge/insights" element={<KnowledgeInsightsPage />} />
                 <Route path="/knowledge/retrieval" element={<KnowledgeRetrievalPage />} />
+                <Route path="/knowledge/reports" element={<KnowledgeReportsPage />} />
                 <Route path="/knowledge/new" element={<KnowledgeNewPage />} />
                 <Route path="/knowledge/:id" element={<KnowledgeDetailPage />} />
                 <Route path="/system/notifications" element={<SystemNotificationsPage />} />
@@ -259,9 +266,13 @@ function App() {
                 <Route path="/itsm/sla-breached" element={<ITSMSlaBreachedPage />} />
                 <Route path="/itsm/catalog" element={<ITSMCatalogPage />} />
                 <Route path="/itsm/sla-ola" element={<ITSMSlaOlaPage />} />
+                <Route path="/itsm/service-hours" element={<ITSMServiceHoursPage />} />
                 <Route path="/itsm/portal" element={<ISMTPortalPage />} />
                 <Route path="/itsm/change" element={<ITSMChangePage />} />
+                <Route path="/itsm/status-flow" element={<ITSMStatusFlowPage />} />
+                <Route path="/itsm/delegates" element={<ITSMDelegatesPage />} />
                 <Route path="/itsm/tickets" element={<ITSMTicketsPage />} />
+                <Route path="/itsm/tickets/:id" element={<ITSMTicketDetailPage />} />
                 <Route path="/itsm/tickets/:id/sla" element={<ITSMTicketSlaPage />} />
                 <Route path="/itsm/tickets/:id/sla-log" element={<ITSMTicketSlaLogPage />} />
               </Route>

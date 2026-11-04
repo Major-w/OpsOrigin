@@ -48,30 +48,63 @@ func (e *Engine) Validate(ctx context.Context, tenantID, scope string, values ma
 
 // ValidateValues 带 resolver 的校验入口：带 source 的 select/multiselect 会实时拉取选项后校验。
 // resolver 缺失或解析失败时按"宽松"处理（不阻断工单流转），与"无 schema 放行"策略一致。
+// 校验基于 EffectiveStates（字段自身规则 + BehaviorRules 联动叠加）：
+// 隐藏字段跳过校验，只读/禁用字段不做取值范围校验（保留必填判定——只读但必填且为空仍拦截）。
 func (e *Engine) ValidateValues(ctx context.Context, tenantID string, schema *FormSchema, values map[string]any) error {
 	if schema == nil {
 		return nil
 	}
-	for _, f := range schema.Fields {
-		if !FieldVisible(f, values) {
+	states := EffectiveStates(schema, values)
+	for _, f := range FlattenFields(schema.Fields) {
+		st, hasState := states[f.Key]
+		if hasState && !st.Visible {
 			continue
 		}
-		v, ok := values[f.Key]
+		if !hasState && !FieldVisible(f, values) {
+			continue
+		}
+		v, present := values[f.Key]
 		// 空判定统一走 isEmptyValue：多选 / 级联提交的空数组同样算"未填"
-		if !ok || isEmptyValue(v) {
-			if f.Required {
+		if !present || isEmptyValue(v) {
+			required := f.Required
+			if hasState {
+				required = st.Required
+			}
+			if required {
 				return fmt.Errorf("字段 %s(%s) 为必填", f.Label, f.Key)
 			}
 			continue
 		}
-		if f.ReadOnly {
-			continue // 只读字段不校验用户输入
+		if hasState && (st.ReadOnly || st.Disabled) {
+			continue // 只读/禁用字段不校验用户输入
+		}
+		if !hasState && f.ReadOnly {
+			continue
 		}
 		if err := validateFieldWith(f, v, e.effectiveOptions(ctx, tenantID, f)); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+// ValidateValuesFull 完整校验：数据联动/决策表推导 + 计算字段求值 + 字段级校验 + 跨字段组合校验。
+// 先用 ApplyDataRules 推导出派生值（"选 A 自动带出 B"），再对 expression 字段求值落定，
+// 字段校验与组合校验均基于推导后的完整值进行——前端未回传派生字段时（如 API 直调），
+// 后端也能按联动结果放行必填判定。
+// 返回 computed = 推导+计算后的完整值（调用方应合并落库，保证服务端计算结果与前端展示一致）。
+// block 级组合规则命中时返回 error；warn 级命中以 warnings 返回（不阻断）。
+func (e *Engine) ValidateValuesFull(ctx context.Context, tenantID string, schema *FormSchema, values map[string]any) (warnings []string, computed map[string]any, err error) {
+	if schema == nil {
+		return nil, nil, nil
+	}
+	vals, _ := ApplyDataRules(schema, values)
+	ComputeExpressionFields(schema, vals) // 计算字段: 就地写入求值结果, 失败字段跳过不阻断
+	if err = e.ValidateValues(ctx, tenantID, schema, vals); err != nil {
+		return nil, nil, err
+	}
+	cr := ValidateComboRules(schema, vals)
+	return cr.Warnings, vals, cr.Err
 }
 
 // effectiveOptions 计算字段的有效选项集合：优先静态 Options，其次按 Source 实时解析。
@@ -91,20 +124,34 @@ func (e *Engine) effectiveOptions(ctx context.Context, tenantID string, f FieldD
 }
 
 // ValidateSchema 纯函数校验（静态 options），便于单测，返回首个错误。
+// 与 ValidateValues 同样走 EffectiveStates（含 BehaviorRules 联动）。
 func ValidateSchema(schema *FormSchema, values map[string]any) error {
-	for _, f := range schema.Fields {
-		if !FieldVisible(f, values) {
+	states := EffectiveStates(schema, values)
+	for _, f := range FlattenFields(schema.Fields) {
+		st, hasState := states[f.Key]
+		if hasState && !st.Visible {
 			continue
 		}
-		v, ok := values[f.Key]
-		if !ok || isEmptyValue(v) {
-			if f.Required {
+		if !hasState && !FieldVisible(f, values) {
+			continue
+		}
+		v, present := values[f.Key]
+		// 空判定统一走 isEmptyValue：多选 / 级联提交的空数组同样算"未填"
+		if !present || isEmptyValue(v) {
+			required := f.Required
+			if hasState {
+				required = st.Required
+			}
+			if required {
 				return fmt.Errorf("字段 %s(%s) 为必填", f.Label, f.Key)
 			}
 			continue
 		}
-		if f.ReadOnly {
-			continue // 只读字段不校验用户输入
+		if hasState && (st.ReadOnly || st.Disabled) {
+			continue // 只读/禁用字段不校验用户输入
+		}
+		if !hasState && f.ReadOnly {
+			continue
 		}
 		if err := validateFieldWith(f, v, f.Options); err != nil {
 			return err
@@ -229,6 +276,9 @@ func validateFieldWith(f FieldDef, v any, opts []FieldOption) error {
 		if !ok {
 			return fmt.Errorf("字段 %s(%s) 应为表格(二维数组)", f.Label, f.Key)
 		}
+		if len(f.Columns) > 0 {
+			return validateStructuredTable(f, rows)
+		}
 		for i, row := range rows {
 			cols, ok := row.([]any)
 			if !ok {
@@ -255,6 +305,45 @@ func validateFieldWith(f FieldDef, v any, opts []FieldOption) error {
 		if err := checkRegex(f, s); err != nil {
 			return err
 		}
+	case TypeRating:
+		// 评分：1~5 的数值（对标 SN 5-point scale）；min/max 可用 Validation 覆盖默认范围。
+		n, err := toFloat(v)
+		if err != nil {
+			return fmt.Errorf("字段 %s(%s) 应为评分数字", f.Label, f.Key)
+		}
+		lo, hi := 1.0, 5.0
+		if f.Validation != nil {
+			if f.Validation.Min != nil {
+				lo = *f.Validation.Min
+			}
+			if f.Validation.Max != nil {
+				hi = *f.Validation.Max
+			}
+		}
+		if n < lo || n > hi {
+			return fmt.Errorf("字段 %s(%s) 评分须在 %v~%v 之间", f.Label, f.Key, lo, hi)
+		}
+	case TypeDateRange:
+		// 日期区间：值为 "开始~结束"（与 timerange 同构），两端须为合法日期且开始不晚于结束。
+		s, ok := v.(string)
+		if !ok {
+			return fmt.Errorf("字段 %s(%s) 应为日期区间文本", f.Label, f.Key)
+		}
+		parts := strings.Split(s, "~")
+		if len(parts) != 2 {
+			return fmt.Errorf("字段 %s(%s) 应为 \"开始~结束\" 格式", f.Label, f.Key)
+		}
+		start, err1 := parseDatetime(strings.TrimSpace(parts[0]))
+		end, err2 := parseDatetime(strings.TrimSpace(parts[1]))
+		if err1 != nil || err2 != nil {
+			return fmt.Errorf("字段 %s(%s) 含非法日期", f.Label, f.Key)
+		}
+		if start.After(end) {
+			return fmt.Errorf("字段 %s(%s) 开始日期不能晚于结束日期", f.Label, f.Key)
+		}
+	case TypeNote:
+		// 说明区块：纯展示不产生值（前端不提交），即使误传也放行不校验。
+		return nil
 	case TypeTimeRange:
 		// 时间段：值为 "开始~结束"（HH:mm~HH:mm）的纯文本，宽松按字符串校验。
 		s, ok := v.(string)
@@ -266,6 +355,37 @@ func validateFieldWith(f FieldDef, v any, opts []FieldOption) error {
 		}
 	default:
 		return fmt.Errorf("字段 %s(%s) 类型 %s 不支持", f.Label, f.Key, f.Type)
+	}
+	return nil
+}
+
+// validateStructuredTable 结构化表格（MRVS）校验：每行必须是对象（列 key → 单元格文本），
+// 必填列逐行核对非空；未知列忽略（向前兼容列定义变更），单元格允许数字（统一转文本语义）。
+func validateStructuredTable(f FieldDef, rows []any) error {
+	for i, row := range rows {
+		obj, ok := row.(map[string]any)
+		if !ok {
+			return fmt.Errorf("字段 %s(%s) 第 %d 行应为对象(列 key → 值)", f.Label, f.Key, i+1)
+		}
+		for _, col := range f.Columns {
+			raw, _ := obj[col.Key] // key 缺失同样按空值处理（必填报错）
+			if isEmptyValue(raw) {
+				if col.Required {
+					return fmt.Errorf("字段 %s(%s) 第 %d 行的列 %s(%s) 为必填", f.Label, f.Key, i+1, col.Label, col.Key)
+				}
+				continue
+			}
+			s, isStr := raw.(string)
+			if !isStr {
+				if _, err := toFloat(raw); err != nil {
+					return fmt.Errorf("字段 %s(%s) 第 %d 行的列 %s(%s) 应为文本或数字", f.Label, f.Key, i+1, col.Label, col.Key)
+				}
+				s = fmt.Sprintf("%v", raw)
+			}
+			if col.Required && strings.TrimSpace(s) == "" {
+				return fmt.Errorf("字段 %s(%s) 第 %d 行的列 %s(%s) 为必填", f.Label, f.Key, i+1, col.Label, col.Key)
+			}
+		}
 	}
 	return nil
 }
@@ -615,12 +735,50 @@ func truthy(v any) bool {
 
 // MergeDefaults 将 schema 中声明的默认值注入到未填写的字段（原地修改 values）。
 func MergeDefaults(schema *FormSchema, values map[string]any) {
-	for _, f := range schema.Fields {
+	MergeDefaultsAs(schema, values, "")
+}
+
+// MergeDefaultsAs 同 MergeDefaults，并解析动态默认值 token（对标 SN g_user/日期默认值）：
+//   - {{current_user}}     当前用户名（user 为空时跳过注入，避免落脏数据）
+//   - {{current_date}}     当前日期 YYYY-MM-DD
+//   - {{current_datetime}} 当前时间 2006-01-02 15:04
+//
+// token 可出现在字符串默认值的任意位置（整串或混排）；非字符串默认值不受影响。
+func MergeDefaultsAs(schema *FormSchema, values map[string]any, currentUser string) {
+	now := time.Now()
+	for _, f := range FlattenFields(schema.Fields) {
 		if _, ok := values[f.Key]; ok {
 			continue
 		}
-		if f.Default != nil {
-			values[f.Key] = f.Default
+		if f.Default == nil {
+			continue
 		}
+		if s, ok := f.Default.(string); ok && strings.Contains(s, "{{") {
+			v := ResolveDefaultTokens(s, currentUser, now)
+			if v == nil {
+				continue
+			}
+			values[f.Key] = v
+			continue
+		}
+		values[f.Key] = f.Default
 	}
+}
+
+// ResolveDefaultTokens 把默认值字符串里的动态 token 解析成实际值。
+// 解析后为空串（如 {{current_user}} 且无用户上下文）返回 nil，调用方跳过注入。
+func ResolveDefaultTokens(s, currentUser string, now time.Time) any {
+	if !strings.Contains(s, "{{") {
+		return s
+	}
+	r := strings.NewReplacer(
+		"{{current_user}}", currentUser,
+		"{{current_date}}", now.Format("2006-01-02"),
+		"{{current_datetime}}", now.Format("2006-01-02 15:04"),
+	)
+	out := r.Replace(s)
+	if strings.TrimSpace(out) == "" {
+		return nil
+	}
+	return out
 }

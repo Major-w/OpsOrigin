@@ -16,6 +16,7 @@ import (
 	"github.com/opsorigin/core/internal/itsm/ola"
 	"github.com/opsorigin/core/internal/itsm/process"
 	"github.com/opsorigin/core/internal/itsm/risk"
+	"github.com/opsorigin/core/internal/itsm/servicehours"
 	"github.com/opsorigin/core/internal/itsm/sla"
 	"github.com/opsorigin/core/internal/itsm/store"
 	"github.com/opsorigin/core/internal/itsm/webhook"
@@ -72,6 +73,7 @@ type Service struct {
 	processStore ProcessEngine
 	slaStore     *sla.Store
 	olaStore     *ola.Store
+	svcWindows   *servicehours.Store
 	formEngine   *form.Engine
 	wsHub        interface{ BroadcastToTenant(interface{}, string) }
 	stopCh       chan struct{}
@@ -162,8 +164,27 @@ func (s *Service) SetSLAStore(st *sla.Store) {
 	s.slaStore = st
 }
 
+// slaDeadline 按策略解析截止时刻：策略绑定了服务时间窗口且窗口存在时，
+// 用业务时间推进（跳过非工作时段/周末/节假日）；否则按墙钟（7x24，向后兼容）。
+func (s *Service) slaDeadline(ctx context.Context, tenantID string, pol *sla.Policy, now time.Time) time.Time {
+	d := time.Duration(pol.ResolutionHours) * time.Hour
+	if pol.ServiceWindowID == "" || s.svcWindows == nil {
+		return now.Add(d)
+	}
+	w, err := s.svcWindows.Get(ctx, pol.ServiceWindowID, tenantID)
+	if err != nil || w == nil {
+		return now.Add(d) // 窗口缺失容错：退回墙钟，不阻断建单
+	}
+	return w.AddBusinessTime(now, d)
+}
+
 func (s *Service) SetOLAStore(st *ola.Store) {
 	s.olaStore = st
+}
+
+// SetServiceWindows 注入服务时间窗口存储(SLA 业务时间计时依赖, nil=全部按墙钟)。
+func (s *Service) SetServiceWindows(st *servicehours.Store) {
+	s.svcWindows = st
 }
 
 // SetNotifier 注入通知中心, 使工单关键事件能经 Policy 分发到各渠道(nil=关闭通知)。
@@ -232,6 +253,7 @@ func (s *Service) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/v1/itsm/tickets/{id}/resume", s.handleResume)
 	mux.HandleFunc("POST /api/v1/itsm/tickets/{id}/remind", s.handleRemind)
 	mux.HandleFunc("POST /api/v1/itsm/tickets/{id}/relate", s.handleRelate)
+	mux.HandleFunc("POST /api/v1/itsm/tickets/{id}/add-approver", s.handleAddApprover)
 	mux.HandleFunc("PUT /api/v1/itsm/tickets/{id}", s.handleUpdateTicket)
 	// 服务目录: 从目录发起申请(自动套用目录项配置的流程/表单)
 	mux.HandleFunc("POST /api/v1/itsm/catalog/{id}/fulfill", s.handleFulfillCatalog)
@@ -264,6 +286,23 @@ func (s *Service) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/v1/itsm/form-dicts", s.handleListFieldDicts)
 	mux.HandleFunc("POST /api/v1/itsm/form-dicts", s.handleUpsertFieldDict)
 	mux.HandleFunc("DELETE /api/v1/itsm/form-dicts/{id}", s.handleDeleteFieldDict)
+	// 提单模板（预填工单字段，快速建单）
+	mux.HandleFunc("GET /api/v1/itsm/ticket-templates", s.handleListTicketTemplates)
+	mux.HandleFunc("POST /api/v1/itsm/ticket-templates", s.handleCreateTicketTemplate)
+	mux.HandleFunc("PUT /api/v1/itsm/ticket-templates/{id}", s.handleUpdateTicketTemplate)
+	mux.HandleFunc("DELETE /api/v1/itsm/ticket-templates/{id}", s.handleDeleteTicketTemplate)
+	mux.HandleFunc("GET /api/v1/itsm/automation-rules", s.handleListAutomationRules)
+	mux.HandleFunc("POST /api/v1/itsm/automation-rules", s.handleCreateAutomationRule)
+	mux.HandleFunc("PUT /api/v1/itsm/automation-rules/{id}", s.handleUpdateAutomationRule)
+	mux.HandleFunc("DELETE /api/v1/itsm/automation-rules/{id}", s.handleDeleteAutomationRule)
+	mux.HandleFunc("GET /api/v1/itsm/ticket-buttons", s.handleListTicketButtons)
+	mux.HandleFunc("POST /api/v1/itsm/ticket-buttons", s.handleCreateTicketButton)
+	mux.HandleFunc("PUT /api/v1/itsm/ticket-buttons/{id}", s.handleUpdateTicketButton)
+	mux.HandleFunc("DELETE /api/v1/itsm/ticket-buttons/{id}", s.handleDeleteTicketButton)
+	// 状态流转规则(P2-⑯: 自定义状态+流转规则, 只收紧不放大)
+	mux.HandleFunc("GET /api/v1/itsm/status-flows", s.handleGetStatusFlow)
+	mux.HandleFunc("PUT /api/v1/itsm/status-flows", s.handlePutStatusFlow)
+	mux.HandleFunc("DELETE /api/v1/itsm/status-flows", s.handleDeleteStatusFlow)
 	mux.HandleFunc("GET /api/v1/itsm/form-options", s.handleFormOptions)
 	mux.HandleFunc("PATCH /api/v1/itsm/tickets/{id}/custom-fields", s.handleUpdateCustomFields)
 	// Change Management
@@ -300,8 +339,15 @@ func (s *Service) CreateTicket(ctx context.Context, req model.CreateTicketReques
 	}
 	if s.formEngine != nil {
 		if schema, serr := s.formEngine.ResolveSchema(ctx, tenantID, scope); serr == nil && schema != nil {
-			form.MergeDefaults(schema, req.CustomFields)
-			if verr := s.formEngine.ValidateValues(ctx, tenantID, schema, req.CustomFields); verr != nil {
+			form.MergeDefaultsAs(schema, req.CustomFields, auth.UserIDFromContext(ctx))
+			// 完整校验（含数据联动/决策表/计算字段推导）：推导后的完整值合并进 custom_fields 一并落库，
+			// 与前端运行期联动/计算结果保持一致；校验同样基于推导后的完整值。
+			warnings, computed, verr := s.formEngine.ValidateValuesFull(ctx, tenantID, schema, req.CustomFields)
+			for k, v := range computed {
+				req.CustomFields[k] = v
+			}
+			_ = warnings // warn 级组合校验仅前端提示，创建不阻断
+			if verr != nil {
 				return nil, fmt.Errorf("表单校验失败: %w", verr)
 			}
 		}
@@ -327,6 +373,7 @@ func (s *Service) CreateTicket(ctx context.Context, req model.CreateTicketReques
 		TraceID:       traceIDFromCtx(ctx),
 		ScheduledAt:   req.ScheduledAt,
 		DeadlineAt:    req.DeadlineAt,
+		ProcessID:     req.ProcessID,
 	}
 	// 流程门禁(数据质量): 关联 CI 质量分低于阈值的, 记录警告并通知(不阻断创建)。
 	if len(ticket.CIIDs) > 0 && s.ciQualityChecker != nil {
@@ -350,7 +397,7 @@ func (s *Service) CreateTicket(ctx context.Context, req model.CreateTicketReques
 				pol, _ = s.slaStore.GetByRisk(ctx, tenantID, string(req.RiskLevel))
 			}
 			if pol != nil && pol.ResolutionHours > 0 {
-				deadline := now.Add(time.Duration(pol.ResolutionHours) * time.Hour)
+				deadline := s.slaDeadline(ctx, tenantID, pol, now)
 				ticket.DeadlineAt = &deadline
 			} else if d := s.slaForRisk(req.RiskLevel); d > 0 {
 				deadline := now.Add(d)
@@ -362,11 +409,21 @@ func (s *Service) CreateTicket(ctx context.Context, req model.CreateTicketReques
 		}
 	}
 
+	// 工单编号：若绑定了流程且流程定义了编号规则，按规则预生成（组成结构可自定义）；
+	// 否则 store.Create 内回退全局默认 TK-YYYY-NNNN。Service 层先生成可保证"流程级规则"优先于全局默认。
+	if req.ProcessID != "" && s.processStore != nil {
+		if proc, perr := s.processStore.Get(ctx, req.ProcessID, tenantID); perr == nil && proc != nil {
+			if num, nerr := s.store.NextTicketNumber(ctx, tenantID, req.ProcessID, proc.NumberRule); nerr == nil {
+				ticket.Number = num
+			}
+		}
+	}
+
 	if err := s.store.Create(ctx, ticket); err != nil {
 		return nil, err
 	}
 
-	s.fireWebhook(ctx, "ticket.created", ticket, req.CreatedBy)
+	s.fireEvent(ctx, "ticket.created", ticket, req.CreatedBy)
 	s.notifyTicket(ctx, tenantID, evTicketCreated, "新工单: "+ticket.Title, fmt.Sprintf("风险: %s / 状态: %s", ticket.RiskLevel, ticket.Status))
 	// 建单时已指定负责人的(目录申请/自动派单)直接进对方收件箱; 未指派的等 assign 再发。
 	if ticket.Assignee != "" {
@@ -390,6 +447,14 @@ func (s *Service) CreateTicket(ctx context.Context, req model.CreateTicketReques
 			if landing != nil {
 				if mapped := process.StepTypeToTicketStatus(landing); mapped != "" {
 					ticket.Status = model.TicketStatus(mapped)
+				}
+			}
+			// 引擎在 StartInstance 内可能已自动派单(dispatch 节点经 AssignTicketAssignee 写 assignee 落库):
+			// 重读补齐后再 Update, 避免本函数的旧内存副本把引擎写入的受派人覆盖为空。
+			if fresh, ferr := s.store.Get(ctx, ticket.ID, tenantID); ferr == nil && fresh != nil {
+				if ticket.Assignee == "" && fresh.Assignee != "" {
+					ticket.Assignee = fresh.Assignee
+					ticket.AssignedAt = fresh.AssignedAt
 				}
 			}
 			if err := s.store.Update(ctx, ticket); err != nil {

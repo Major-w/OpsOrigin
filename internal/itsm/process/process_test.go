@@ -801,3 +801,175 @@ func TestEvaluateConditionTimeCompare(t *testing.T) {
 		}
 	}
 }
+
+// --- 审批超时策略（checkUserStepTimeout） ---
+
+func TestCheckUserStepTimeoutAutoApprove(t *testing.T) {
+	m := &memStore{procs: map[string]*Process{
+		"p1": {ID: "p1", Steps: []Step{{ID: "approve", Type: StepUser, Approvers: []string{"alice", "bob"},
+			TimeoutDuration: "1h", TimeoutAction: "auto_approve"}}},
+	}, insts: map[string]*ProcessInstance{}}
+	s := &Service{store: m}
+	ctx := context.Background()
+	started := time.Now().Add(-2 * time.Hour)
+	m.CreateInstance(ctx, &ProcessInstance{ID: "i1", ProcessID: "p1", TicketID: "t1", TenantID: "default", Status: "running",
+		CurrentStep: "approve", StepResults: map[string]any{
+			"approve": map[string]any{"started_at": started.Format(time.RFC3339)},
+		}})
+
+	called := ""
+	s.SetApprovalTimeoutHandler(func(ctx context.Context, tenantID, ticketID, stepID, action string) error {
+		called = action
+		return nil
+	})
+
+	inst := m.insts["t1"]
+	step := m.procs["p1"].StepByID("approve")
+	s.checkUserStepTimeout(ctx, inst, step, time.Now())
+
+	if called != "auto_approve" {
+		t.Fatalf("timeout handler should be called with auto_approve, got %q", called)
+	}
+	rec := m.insts["t1"].StepResults["approve"].(map[string]any)
+	if v, _ := rec["timeout_handled"].(bool); !v {
+		t.Fatal("timeout_handled should be marked")
+	}
+	// 会签名册补票: alice/bob 均补为通过
+	approvals, _ := rec["approvals"].(map[string]any)
+	if approvals["alice"] != true || approvals["bob"] != true {
+		t.Fatalf("roster votes should be filled true, got %v", approvals)
+	}
+	// 幂等: 再次扫描不重复回调
+	called = ""
+	s.checkUserStepTimeout(ctx, m.insts["t1"], step, time.Now())
+	if called != "" {
+		t.Fatal("timeout should be idempotent, handler called again")
+	}
+}
+
+func TestCheckUserStepTimeoutReminder(t *testing.T) {
+	var reminders int
+	m := &memStore{procs: map[string]*Process{
+		"p1": {ID: "p1", Steps: []Step{{ID: "approve", Type: StepUser, Approvers: []string{"alice"},
+			ReminderInterval: "1h"}}},
+	}, insts: map[string]*ProcessInstance{}}
+	s := &Service{store: m}
+	s.SetNotifier(func(ctx context.Context, tenantID, event, title, content string) error {
+		if event == "workflow.approval_reminder" {
+			reminders++
+		}
+		return nil
+	})
+	ctx := context.Background()
+	started := time.Now().Add(-3 * time.Hour)
+	m.CreateInstance(ctx, &ProcessInstance{ID: "i1", ProcessID: "p1", TicketID: "t1", TenantID: "default", Status: "running",
+		CurrentStep: "approve", StepResults: map[string]any{
+			"approve": map[string]any{"started_at": started.Format(time.RFC3339)},
+		}})
+
+	inst := m.insts["t1"]
+	step := m.procs["p1"].StepByID("approve")
+	// 首次扫描(已停 3h): 跨过多个间隔也只补发一次催办(扫描周期 30s, 实际运行每个间隔各催一次)
+	s.checkUserStepTimeout(ctx, inst, step, time.Now())
+	if reminders != 1 {
+		t.Fatalf("expected 1 catch-up reminder on first scan, got %d", reminders)
+	}
+	// 半小时后再扫: 未到下一个间隔(仍处第 3 个区间), 不催
+	s.checkUserStepTimeout(ctx, m.insts["t1"], step, time.Now().Add(30*time.Minute))
+	if reminders != 1 {
+		t.Fatalf("reminder should be throttled per interval, got %d", reminders)
+	}
+	// 再过 1h(共停 4h, 跨入第 4 个间隔): 再催一次
+	s.checkUserStepTimeout(ctx, m.insts["t1"], step, time.Now().Add(90*time.Minute))
+	if reminders != 2 {
+		t.Fatalf("expected second reminder after crossing next interval, got %d", reminders)
+	}
+}
+
+func TestCheckUserStepTimeoutNotDue(t *testing.T) {
+	m := &memStore{procs: map[string]*Process{
+		"p1": {ID: "p1", Steps: []Step{{ID: "approve", Type: StepUser, Approvers: []string{"alice"},
+			TimeoutDuration: "24h", TimeoutAction: "auto_approve"}}},
+	}, insts: map[string]*ProcessInstance{}}
+	s := &Service{store: m}
+	ctx := context.Background()
+	started := time.Now().Add(-1 * time.Hour)
+	m.CreateInstance(ctx, &ProcessInstance{ID: "i1", ProcessID: "p1", TicketID: "t1", TenantID: "default", Status: "running",
+		CurrentStep: "approve", StepResults: map[string]any{
+			"approve": map[string]any{"started_at": started.Format(time.RFC3339)},
+		}})
+	called := ""
+	s.SetApprovalTimeoutHandler(func(ctx context.Context, tenantID, ticketID, stepID, action string) error {
+		called = action
+		return nil
+	})
+	s.checkUserStepTimeout(ctx, m.insts["t1"], m.procs["p1"].StepByID("approve"), time.Now())
+	if called != "" {
+		t.Fatal("handler should not fire before due")
+	}
+}
+
+// --- 等待条件节点（checkWaitStep） ---
+
+func TestCheckWaitStep(t *testing.T) {
+	m := &memStore{procs: map[string]*Process{
+		"p1": {ID: "p1", Steps: []Step{
+			{ID: "wait1", Type: StepWait, Condition: `ticket.status == "resolved"`},
+		}},
+	}, insts: map[string]*ProcessInstance{}}
+	s := &Service{store: m}
+	ctx := context.Background()
+	m.CreateInstance(ctx, &ProcessInstance{ID: "i1", ProcessID: "p1", TicketID: "t1", TenantID: "default", Status: "running",
+		CurrentStep: "wait1", StepResults: map[string]any{
+			"wait1": map[string]any{"started_at": time.Now().Format(time.RFC3339)},
+		}})
+
+	// 未注入 ticketVars: 条件引用 ticket.* 求值为 false → 不推进
+	step := m.procs["p1"].StepByID("wait1")
+	s.checkWaitStep(ctx, m.insts["t1"], step)
+	if m.insts["t1"].CurrentStep != "wait1" {
+		t.Fatal("condition unmet should not advance")
+	}
+
+	// 空条件: 永不推进
+	m.insts["t1"].CurrentStep = "wait1"
+	empty := &Step{ID: "wait1", Type: StepWait, Condition: ""}
+	s.checkWaitStep(ctx, m.insts["t1"], empty)
+	if m.insts["t1"].CurrentStep != "wait1" {
+		t.Fatal("empty condition should never advance")
+	}
+}
+
+func TestCheckWaitStepConditionMet(t *testing.T) {
+	m := &memStore{procs: map[string]*Process{
+		"p1": {ID: "p1", Steps: []Step{
+			{ID: "wait1", Type: StepWait, Condition: `custom_fields.ready == "yes"`},
+			{ID: "end", Type: StepEnd, DependsOn: []Dependency{{NodeID: "wait1", Condition: "success"}}},
+		}},
+	}, insts: map[string]*ProcessInstance{}}
+	s := &Service{store: m}
+	ctx := context.Background()
+	m.CreateInstance(ctx, &ProcessInstance{ID: "i1", ProcessID: "p1", TicketID: "t1", TenantID: "default", Status: "running",
+		CurrentStep: "wait1", StepResults: map[string]any{
+			"wait1": map[string]any{"started_at": time.Now().Format(time.RFC3339)},
+		}})
+
+	step := m.procs["p1"].StepByID("wait1")
+	// 条件未满足
+	s.checkWaitStep(ctx, m.insts["t1"], step)
+	if m.insts["t1"].CurrentStep != "wait1" {
+		t.Fatal("unmet condition should stay")
+	}
+	// 变量就绪后条件满足 → 无下游 user/service, 自动链一路推到 end
+	m.insts["t1"].CurrentStep = "wait1"
+	s.SetTicketVarProvider(fakeVarProvider{"custom_fields": map[string]any{"ready": "yes"}})
+	s.checkWaitStep(ctx, m.insts["t1"], step)
+	if m.insts["t1"].CurrentStep != "end" {
+		t.Fatalf("met condition should advance to end, got %q", m.insts["t1"].CurrentStep)
+	}
+}
+
+// fakeVarProvider 实现 TicketVarProvider（测试用固定变量上下文）。
+type fakeVarProvider map[string]any
+
+func (f fakeVarProvider) TicketVars(_ context.Context, _, _ string) map[string]any { return f }

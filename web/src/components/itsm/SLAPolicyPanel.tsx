@@ -13,19 +13,22 @@ export interface SLAPolicy {
   id: string; name: string; risk_level: string
   response_hours: number; resolution_hours: number; escalation_hours: number
   escalation_to: string; enabled: boolean; process_id?: string
+  service_window_id?: string
 }
 interface ProcOpt { id: string; name: string }
+interface WinOpt { id: string; name: string }
 
 const riskLabels: Record<string, string> = { critical: '紧急', high: '高', medium: '中', low: '低', custom: '自定义' }
 const riskColors: Record<string, any> = { critical: 'destructive', high: 'default', medium: 'warning', low: 'success', custom: 'secondary' }
 
 const emptyForm = (): Partial<SLAPolicy> => ({
-  risk_level: 'custom', enabled: true, response_hours: 24, resolution_hours: 48, escalation_hours: 36, process_id: '',
+  risk_level: 'custom', enabled: true, response_hours: 24, resolution_hours: 48, escalation_hours: 36, process_id: '', service_window_id: '',
 })
 
 export function SLAPolicyPanel() {
   const [policies, setPolicies] = useState<SLAPolicy[]>([])
   const [processes, setProcesses] = useState<ProcOpt[]>([])
+  const [windows, setWindows] = useState<WinOpt[]>([])
   const [dialogOpen, setDialogOpen] = useState(false)
   const [editingId, setEditingId] = useState<string | null>(null)
   const [form, setForm] = useState<Partial<SLAPolicy>>(emptyForm())
@@ -33,9 +36,11 @@ export function SLAPolicyPanel() {
   useEffect(() => {
     apiList<SLAPolicy>('/itsm/sla/policies').then(setPolicies).catch(() => getMessage().error('加载SLA失败'))
     apiList<ProcOpt>('/itsm/processes').then(setProcesses).catch(() => {})
+    apiList<WinOpt>('/itsm/service-windows').then(setWindows).catch(() => {})
   }, [])
 
   const processName = (id?: string) => processes.find(p => p.id === id)?.name || ''
+  const windowName = (id?: string) => windows.find(w => w.id === id)?.name || ''
 
   const openCreate = () => { setEditingId(null); setForm(emptyForm()); setDialogOpen(true) }
   const openEdit = (p: SLAPolicy) => { setEditingId(p.id); setForm({ ...p }); setDialogOpen(true) }
@@ -83,6 +88,7 @@ export function SLAPolicyPanel() {
           <span>响应 {p.response_hours}h</span>
           <span>解决 {p.resolution_hours}h</span>
           <span>升级 {p.escalation_hours}h</span>
+          <span className="text-[10px] border rounded px-1 py-0.5">{p.service_window_id ? `⏰ ${windowName(p.service_window_id) || '已绑窗口'}` : '7x24'}</span>
         </div>
         <div className="shrink-0 flex gap-1">
           <Button size="sm" variant="ghost" onClick={()=>openEdit(p)}><Clock className="h-3 w-3"/></Button>
@@ -105,6 +111,13 @@ export function SLAPolicyPanel() {
             {processes.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
           </select>
           <p className="text-[11px] text-muted-foreground mt-1">关联流程后，该流程的工单将优先匹配此 SLA，而非风险级默认策略。</p>
+        </div>
+        <div><label className="text-sm font-medium">服务时间（可选）</label>
+          <select className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm mt-1" value={form.service_window_id||''} onChange={e=>setForm({...form,service_window_id:e.target.value})}>
+            <option value="">7x24 全天候（墙钟计时）</option>
+            {windows.map(w => <option key={w.id} value={w.id}>{w.name}</option>)}
+          </select>
+          <p className="text-[11px] text-muted-foreground mt-1">绑定后，解决时限按所选服务窗口内的业务时间推进（自动跳过夜间/周末/节假日）。窗口在「ITSM · 服务时间」维护。</p>
         </div>
         <div className="grid grid-cols-3 gap-2">
           <div><label className="text-sm font-medium">响应(h)</label><Input type="number" value={form.response_hours||0} onChange={e=>setForm({...form,response_hours:+e.target.value})} /></div>

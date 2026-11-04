@@ -6,7 +6,8 @@
 // 该组件只渲染「业务自定义字段」，系统字段(title/risk/...)仍由页面负责。
 
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { Upload, X, Plus, FileText, AlertCircle } from 'lucide-react'
+import { Upload, X, Plus, FileText, AlertCircle, Star } from 'lucide-react'
+import { Tabs } from 'antd'
 import { RichTextEditor } from '@/components/rich-text-editor'
 
 export type FormFieldType =
@@ -30,12 +31,18 @@ export type FormFieldType =
   | 'timerange'
   | 'link'
   | 'expression'
+  | 'group'
+  | 'rating'
+  | 'daterange'
+  | 'note'
 
 export interface FormFieldOption {
   value: string
   label: string
   /** 级联子项：cascader 逐级展开用；扁平控件忽略 */
   children?: FormFieldOption[]
+  /** 选项价格（变量价格）：>0 时计入费用合计 */
+  price?: number
 }
 
 export interface FormFieldValidation {
@@ -97,6 +104,8 @@ export interface FormFieldDef {
   order?: number
   validation?: FormFieldValidation
   readonly?: boolean
+  /** 禁用：控件不可交互（与 readonly 渲染一致，语义上表示"联动/节点权限禁用"） */
+  disabled?: boolean
   /** 内置字段标记：工单一等列(title/description/risk_level)以锁定卡片呈现在表单设计器中，
    *  标识与类型不可改，但标签/必填/宽度/分区可配置。渲染时由页面通过 withBuiltinFields 并入。 */
   builtin?: boolean
@@ -110,6 +119,10 @@ export interface FormFieldDef {
   source?: string
   /** 引用数据字典 ID：非空时字段定义从字典展开 */
   dict_ref?: string
+  /** 配合 dict_ref 的字段级引用：非空时只展开字典内 key 匹配的单个字段（空=展开全部） */
+  dict_key?: string
+  /** 分组容器(group)的内嵌字段：值仍平铺存 custom_fields，与顶层字段同层 */
+  children?: FormFieldDef[]
   /** 可编辑角色白名单：非空时仅这些角色的用户可编辑（空=所有人） */
   roles?: string[]
   /** 12 栅格中占用的列数(1~12)，缺省=12(整行)。由表单设计器画布拖拽调节 */
@@ -125,6 +138,25 @@ export interface FormFieldDef {
   max_count?: number
   /** 附件：是否允许多文件。undefined=未配置(不限)，false=单文件 */
   multiple?: boolean
+  /** 所属页签 key：schema.tabs 非空时生效，空=归入第一个页签 */
+  tab?: string
+  /** 表格列定义（MRVS 结构化模式）：非空时值为按列 key 组织的对象数组；空=旧自由二维数组 */
+  table_columns?: TableColumnDef[]
+  /** 字段单价（变量价格，对标 SN Variable Pricing）：bool 勾选计价 / number 数量×单价；select 类走选项级 price */
+  price?: number
+}
+
+/** 结构化表格列定义（与后端 form.TableColumn 对齐） */
+export interface TableColumnDef {
+  key: string
+  label: string
+  required?: boolean
+}
+
+/** 表单页签定义（与后端 form.FormTab 对齐）：长表单分步布局 */
+export interface FormTabDef {
+  key: string
+  label: string
 }
 
 /** 栅格列数归一化：非法/缺省一律回落整行 */
@@ -138,6 +170,217 @@ export interface FormSchema {
   version: number
   scope: string
   fields: FormFieldDef[]
+  /** 页签定义：非空时按 field.tab 分页签展示（长表单分步），未归入页签的字段落入第一个页签 */
+  tabs?: FormTabDef[]
+  /** UI 联动规则（schema 级）：条件命中时对目标字段施加显隐/必填/只读/可编辑动作 */
+  behavior_rules?: BehaviorRule[]
+  /** 跨字段组合校验：条件命中时按 severity 阻断(block)或提示(warn) */
+  combo_rules?: ComboRule[]
+  /** 数据联动规则（"选 A 自动带出 B"）：条件命中时把固定值或其它字段值写入目标字段 */
+  data_links?: DataLinkRule[]
+  /** 决策表：条件列 × 输出列的规则矩阵，首个命中行生效 */
+  decision_tables?: DecisionTable[]
+}
+
+/** 联动动作：show/hide/required/optional/readonly/editable（与后端 form 包语义一致） */
+export type BehaviorAction = 'show' | 'hide' | 'required' | 'optional' | 'readonly' | 'editable'
+
+export interface BehaviorRule {
+  id?: string
+  name?: string
+  conditions: FormCondition[]
+  /** and(默认) | or */
+  logic?: 'and' | 'or'
+  action: BehaviorAction
+  targets: string[]
+  /** Reverse if false：条件不满足时自动恢复目标字段初始态（对齐 SN UI Policy） */
+  revert?: boolean
+}
+
+export interface ComboRule {
+  id?: string
+  name?: string
+  conditions: FormCondition[]
+  logic?: 'and' | 'or'
+  /** 命中时的提示文案 */
+  message: string
+  /** block(默认，拒绝提交) | warn(仅提示) */
+  severity?: 'block' | 'warn'
+}
+
+/** 赋值模式：fixed=固定值(默认) / copy_from=复制其它字段当前值（与后端 form 包语义一致） */
+export type DataSetMode = 'fixed' | 'copy_from'
+
+/** 单个赋值动作：条件命中后把值写入 target 字段 */
+export interface DataSet {
+  target: string
+  /** fixed(默认) / copy_from */
+  mode?: DataSetMode
+  /** fixed=写入的值；copy_from=来源字段 key */
+  value?: string
+}
+
+/** 数据联动规则："选 A 自动带出 B"。规则按声明顺序执行，后者覆盖前者 */
+export interface DataLinkRule {
+  id?: string
+  name?: string
+  conditions: FormCondition[]
+  logic?: 'and' | 'or'
+  sets: DataSet[]
+}
+
+/** 决策表行：cells 空串=通配，"a,b"=任一命中；outputs 为该行命中后写入的值 */
+export interface DecisionRow {
+  id?: string
+  cells?: Record<string, string>
+  outputs?: Record<string, string>
+  /** 缺省启用 */
+  enabled?: boolean
+}
+
+/** 决策表：条件列 × 输出列的规则矩阵，自上而下首个命中且启用的行生效 */
+export interface DecisionTable {
+  id?: string
+  name?: string
+  condition_keys: string[]
+  output_keys: string[]
+  rows: DecisionRow[]
+}
+
+export interface FieldState {
+  visible: boolean
+  required: boolean
+  readonly: boolean
+  disabled: boolean
+}
+
+/**
+ * 有效字段状态（与后端 form.EffectiveStates 语义一致）：
+ * 初始取字段自身规则（visible_when/required/readonly），再按 behavior_rules 声明顺序叠加命中动作。
+ * 隐藏字段必填自动失效。
+ */
+export function effectiveFieldStates(schema: FormSchema | null | undefined, ctx: Record<string, unknown>): Record<string, FieldState> {
+  const out: Record<string, FieldState> = {}
+  if (!schema?.fields) return out
+  for (const f of schema.fields) {
+    out[f.key] = {
+      visible: fieldVisible(f, ctx),
+      required: !!f.required,
+      readonly: !!f.readonly,
+      disabled: !!f.disabled,
+    }
+  }
+  // Revert（Reverse if false）反向动作映射：与后端 form.inverseAction 一致
+  const REVERSE: Record<string, BehaviorAction> = {
+    show: 'hide', hide: 'show', required: 'optional', optional: 'required', readonly: 'editable', editable: 'readonly',
+  }
+  for (const r of schema.behavior_rules || []) {
+    if (!r.targets?.length || !r.action) continue
+    let action: string = r.action
+    if (!evalConditions(r.conditions, r.logic, ctx)) {
+      if (!r.revert) continue
+      // Reverse if false：施加反向动作（不清掉其他规则已产生的效果）
+      action = REVERSE[action] || action
+    }
+    for (const t of r.targets) {
+      const st = out[t]
+      if (!st) continue
+      switch (action) {
+        case 'show': st.visible = true; break
+        case 'hide': st.visible = false; st.required = false; break
+        case 'required': if (st.visible) st.required = true; break
+        case 'optional': st.required = false; break
+        case 'readonly': st.readonly = true; break
+        case 'editable': st.readonly = false; st.disabled = false; break
+      }
+    }
+  }
+  return out
+}
+
+/**
+ * 跨字段组合校验（与后端 form.ValidateComboRules 语义一致）。
+ * 返回 block 级命中文案（应阻断提交）；warn 级文案放 warnings 由调用方提示。
+ */
+export function validateComboRules(
+  schema: FormSchema | null | undefined,
+  ctx: Record<string, unknown>,
+): { blocks: string[]; warnings: string[] } {
+  const blocks: string[] = []
+  const warnings: string[] = []
+  for (const r of schema?.combo_rules || []) {
+    if (!r.conditions?.length || !evalConditions(r.conditions, r.logic, ctx)) continue
+    const msg = r.message?.trim() || '组合校验未通过'
+    if ((r.severity || 'block') === 'warn') warnings.push(msg)
+    else blocks.push(msg)
+  }
+  return { blocks, warnings }
+}
+
+/**
+ * 决策表单元格匹配：空=通配；"a,b" 任一命中（逗号分隔，与 OpIn 同语义）。
+ */
+function decisionCellHits(cell: string | undefined, raw: unknown): boolean {
+  const c = (cell || '').trim()
+  if (!c) return true
+  const set = c.split(',').map(s => s.trim()).filter(Boolean)
+  const vals = Array.isArray(raw) ? raw.map(v => String(v)) : [String(raw)]
+  return vals.some(v => set.includes(v))
+}
+
+/**
+ * 应用数据联动与决策表推导（与后端 form.ApplyDataRules 语义一致）。
+ * 求值顺序：先 data_links（声明顺序），再 decision_tables（声明顺序，各自取首个命中行）。
+ * 返回推导后的值副本与触发的规则说明（可转 toast 提示用户"已自动带出"）。
+ */
+export function applyDataRules(
+  schema: FormSchema | null | undefined,
+  ctx: Record<string, unknown>,
+): { values: Record<string, unknown>; fired: string[] } {
+  const out = { ...ctx }
+  const fired: string[] = []
+  if (!schema) return { values: out, fired }
+  const declared = new Set((schema.fields || []).map(f => f.key))
+
+  for (const r of schema.data_links || []) {
+    if (!r.sets?.length || !evalConditions(r.conditions, r.logic, out)) continue
+    let applied = 0
+    for (const s of r.sets) {
+      const target = (s.target || '').trim()
+      if (!target || !declared.has(target)) continue
+      if ((s.mode || 'fixed') === 'copy_from') {
+        const src = (s.value || '').trim()
+        if (!src || src === target) continue
+        if (out[src] !== undefined && out[src] !== null) {
+          out[target] = out[src]
+          applied++
+        }
+      } else {
+        out[target] = s.value ?? ''
+        applied++
+      }
+    }
+    if (applied === 0) continue
+    fired.push(`联动:${r.name || r.id || '未命名规则'}`)
+  }
+
+  for (const dt of schema.decision_tables || []) {
+    for (const row of dt.rows || []) {
+      if (row.enabled === false) continue
+      let hit = true
+      for (const k of dt.condition_keys || []) {
+        if (!decisionCellHits(row.cells?.[k], out[k])) { hit = false; break }
+      }
+      if (!hit) continue
+      for (const k of dt.output_keys || []) {
+        if (!declared.has(k)) continue
+        if (row.outputs && k in row.outputs) out[k] = row.outputs[k]
+      }
+      fired.push(`决策表:${dt.name || dt.id || '未命名表'}`)
+      break
+    }
+  }
+  return { values: out, fired }
 }
 
 /** 内置字段：工单的一等列(title/description/risk_level)，在表单设计器中以锁定卡片呈现。
@@ -163,6 +406,24 @@ export const BUILTIN_FIELDS: FormFieldDef[] = [
 ]
 
 export const BUILTIN_KEYS: string[] = BUILTIN_FIELDS.map(f => f.key)
+
+/**
+ * 动态默认值 token 解析（与后端 form.ResolveDefaultTokens 同语义，对标 SN g_user/日期）：
+ *   {{current_user}} 当前用户名 · {{current_date}} YYYY-MM-DD · {{current_datetime}} YYYY-MM-DD HH:mm
+ * token 可整串或混排；current_user 缺失（未登录/无上下文）时置空串。
+ * 用于表单渲染/预填前把 schema 默认值落成实际值。
+ */
+export function resolveDefaultValue(field: FormFieldDef, username?: string): unknown {
+  const d = field.default
+  if (typeof d !== 'string' || !d.includes('{{')) return d
+  const now = new Date()
+  const pad = (n: number) => String(n).padStart(2, '0')
+  const date = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`
+  return d
+    .replaceAll('{{current_user}}', username || '')
+    .replaceAll('{{current_date}}', date)
+    .replaceAll('{{current_datetime}}', `${date} ${pad(now.getHours())}:${pad(now.getMinutes())}`)
+}
 
 /** 把内置字段并入 schema 用于渲染：内置字段排在最前；若 schema 已含同名 key 则以其配置为准(并补 builtin 标记)。 */
 export function withBuiltinFields(schema: FormSchema | null | undefined): FormSchema {
@@ -319,16 +580,235 @@ export function fieldVisible(field: FormFieldDef, context: Record<string, unknow
   return evalConditions(rules, 'and', context)
 }
 
+// ---- 计算字段求值器（与后端 internal/itsm/form/expression.go 同语义）----
+// 语法: {key} 字段引用 | 数字 | '字符串' | "字符串" | + - * / % | 括号 | 函数 abs/round/floor/ceil/min/max。
+// + 对任一侧为字符串时做拼接（数字自动转展示串），否则数值相加。
+
+function exprToNumber(v: unknown): number | null {
+  if (typeof v === 'number') return Number.isFinite(v) ? v : null
+  if (typeof v === 'string' && v.trim() !== '') {
+    const n = Number(v)
+    return Number.isFinite(n) ? n : null
+  }
+  return null
+}
+
+function exprFormatNumber(v: unknown): string {
+  if (typeof v === 'string') return v
+  const n = exprToNumber(v)
+  if (n === null) return String(v ?? '')
+  if (Number.isInteger(n) && Math.abs(n) < 1e15) return String(n)
+  return String(parseFloat(n.toPrecision(12)))
+}
+
+export class ExpressionError extends Error {}
+
+/** evalExpression 求值计算字段表达式；失败抛 ExpressionError（调用方回落展示原文）。 */
+export function evalExpression(expr: string, values: Record<string, unknown>): unknown {
+  const p = { src: expr, pos: 0, values }
+
+  const skipWS = () => {
+    while (p.pos < p.src.length && /\s/.test(p.src[p.pos])) p.pos++
+  }
+  const peek = () => p.src[p.pos] ?? ''
+
+  const primary = (): unknown => {
+    skipWS()
+    const c = peek()
+    if (c === '(') {
+      p.pos++
+      const v = parseExpr()
+      skipWS()
+      if (peek() !== ')') throw new ExpressionError('缺少右括号')
+      p.pos++
+      return v
+    }
+    if (c === '{') {
+      const end = p.src.indexOf('}', p.pos)
+      if (end < 0) throw new ExpressionError('字段引用缺少右花括号')
+      const key = p.src.slice(p.pos + 1, end)
+      p.pos = end + 1
+      if (!key) throw new ExpressionError('字段引用为空')
+      if (!(key in p.values)) throw new ExpressionError(`引用字段 "${key}" 不存在`)
+      return p.values[key]
+    }
+    if (c === "'" || c === '"') {
+      p.pos++
+      let out = ''
+      while (p.pos < p.src.length) {
+        const ch = p.src[p.pos]
+        if (ch === '\\' && p.pos + 1 < p.src.length) {
+          out += p.src[p.pos + 1]
+          p.pos += 2
+          continue
+        }
+        if (ch === c) {
+          p.pos++
+          return out
+        }
+        out += ch
+        p.pos++
+      }
+      throw new ExpressionError('字符串未闭合')
+    }
+    if (/[0-9.]/.test(c)) {
+      const m = /^[0-9]*\.?[0-9]+/.exec(p.src.slice(p.pos))
+      if (!m) throw new ExpressionError('非法数字')
+      p.pos += m[0].length
+      return Number(m[0])
+    }
+    if (/[a-zA-Z_]/.test(c)) {
+      const m = /^[a-zA-Z_][a-zA-Z0-9_]*/.exec(p.src.slice(p.pos))!
+      p.pos += m[0].length
+      skipWS()
+      if (peek() !== '(') throw new ExpressionError(`未知标识符 "${m[0]}"（字段引用请写 {key}）`)
+      p.pos++
+      const args: unknown[] = []
+      if (peek() === ')') {
+        p.pos++
+      } else {
+        for (;;) {
+          args.push(parseExpr())
+          skipWS()
+          if (peek() === ',') {
+            p.pos++
+            continue
+          }
+          if (peek() === ')') {
+            p.pos++
+            break
+          }
+          throw new ExpressionError('函数参数缺少右括号')
+        }
+      }
+      return applyFunc(m[0], args)
+    }
+    throw new ExpressionError(`非法字符 "${c}"`)
+  }
+
+  const unary = (): unknown => {
+    skipWS()
+    if (peek() === '-') {
+      p.pos++
+      const n = exprToNumber(unary())
+      if (n === null) throw new ExpressionError('负号操作数需为数值')
+      return -n
+    }
+    return primary()
+  }
+
+  const term = (): unknown => {
+    let left = unary()
+    for (;;) {
+      skipWS()
+      const op = peek()
+      if (op !== '*' && op !== '/' && op !== '%') return left
+      p.pos++
+      const right = unary()
+      const l = exprToNumber(left)
+      const r = exprToNumber(right)
+      if (l === null || r === null) throw new ExpressionError('乘除模操作数需为数值')
+      if (op === '*') left = l * r
+      else if (op === '/') {
+        if (r === 0) throw new ExpressionError('除数为零')
+        left = l / r
+      } else {
+        if (Math.trunc(r) === 0) throw new ExpressionError('取模除数为零')
+        left = Math.trunc(l) % Math.trunc(r)
+      }
+    }
+  }
+
+  function parseExpr(): unknown {
+    let left = term()
+    for (;;) {
+      skipWS()
+      const op = peek()
+      if (op !== '+' && op !== '-') return left
+      p.pos++
+      const right = term()
+      if (op === '+') {
+        if (typeof left === 'string' || typeof right === 'string') {
+          left =
+            (typeof left === 'string' ? left : exprFormatNumber(left)) +
+            (typeof right === 'string' ? right : exprFormatNumber(right))
+          continue
+        }
+      }
+      const l = exprToNumber(left)
+      const r = exprToNumber(right)
+      if (l === null || r === null) throw new ExpressionError('加减操作数需为数值')
+      left = op === '+' ? l + r : l - r
+    }
+  }
+
+  const result = parseExpr()
+  skipWS()
+  if (p.pos < p.src.length) throw new ExpressionError('表达式存在多余字符')
+  return result
+
+  function applyFunc(name: string, args: unknown[]): unknown {
+    const nums = args.map(a => {
+      const n = exprToNumber(a)
+      if (n === null) throw new ExpressionError(`函数 ${name} 参数需为数值`)
+      return n
+    })
+    switch (name) {
+      case 'abs':
+        return Math.abs(nums[0])
+      case 'round':
+        if (nums.length === 1) return Math.round(nums[0])
+        {
+          const shift = Math.pow(10, nums[1])
+          return Math.round(nums[0] * shift) / shift
+        }
+      case 'floor':
+        return Math.floor(nums[0])
+      case 'ceil':
+        return Math.ceil(nums[0])
+      case 'min':
+        return Math.min(...nums)
+      case 'max':
+        return Math.max(...nums)
+      default:
+        throw new ExpressionError(`未知函数 "${name}"`)
+    }
+  }
+}
+
+/** 计算字段展示值：求值成功返回格式化结果，失败回落展示表达式原文（与旧版只读展示兼容）。 */
+export function expressionDisplay(field: FormFieldDef, context: Record<string, unknown>): string {
+  const expr = typeof field.default === 'string' ? field.default : ''
+  if (!expr.trim()) return ''
+  try {
+    const v = evalExpression(expr, context)
+    return typeof v === 'number' ? exprFormatNumber(v) : String(v ?? '')
+  } catch {
+    return expr
+  }
+}
+
 /**
  * 动态选项加载器：由页面注入，通常打 GET /itsm/form-options?source=
  * parent 传字符串（含空串）时进入层级模式，返回该父节点下的子选项，供 cascader 逐级展开；
  * 不传 parent 即平铺模式。
+ * params: 参数化级联 —— source 里的 ${key} 占位符用当前表单值替换（如 机柜?room=${room}）。
  */
 export type LoadOptionsFn = (
   source: string,
   keyword?: string,
   parent?: string,
+  params?: Record<string, string>,
 ) => Promise<FormFieldOption[]>
+
+/** 提取 source 串中的 ${key} 占位符键列表（前端判断级联依赖与就绪态） */
+function sourcePlaceholderKeys(source: string): string[] {
+  const out: string[] = []
+  const re = /\$\{([^}]+)\}/g
+  let m: RegExpExecArray | null
+  while ((m = re.exec(source)) !== null) out.push(m[1].trim())
+  return out
+}
 
 interface DynamicFormProps {
   schema?: FormSchema | null
@@ -368,24 +848,109 @@ export function DynamicForm({ schema, values, context, onChange, readOnly, loadO
   }
 
   const ctx = { ...context, ...values }
-  const fields = [...schema.fields].sort((a, b) => (a.order || 0) - (b.order || 0))
-  const visibleFields = fields.filter(f => fieldVisible(f, ctx))
-
-  // 按 section 分组
-  const sections = new Map<string, FormFieldDef[]>()
-  for (const f of visibleFields) {
-    const sec = f.section || ''
-    if (!sections.has(sec)) sections.set(sec, [])
-    sections.get(sec)!.push(f)
+  // 展平字段里引用了 ${key} 级联占位符的映射: key -> 依赖它的字段列表（用于清空过期选择）
+  const cascadeDependents = (() => {
+    const deps = new Map<string, FormFieldDef[]>()
+    for (const f of schema?.fields || []) {
+      if (f.type === 'group') continue
+      for (const k of sourcePlaceholderKeys(f.source || '')) {
+        if (!deps.has(k)) deps.set(k, [])
+        deps.get(k)!.push(f)
+      }
+    }
+    return deps
+  })()
+  // 字段变更时：先回传新值，再基于合并后的完整值应用数据联动/决策表推导，
+  // 把派生覆盖的键逐个回传给父级（引用比较，仅真正被改写的键才触发）。
+  const handleFieldChange = (key: string, v: unknown) => {
+    onChange(key, v)
+    // 级联清理: 上级字段值变化后, 引用它的下级字段原选择大概率失效, 清空让其重选
+    if (cascadeDependents.has(key)) {
+      for (const dep of cascadeDependents.get(key)!) {
+        if (dep.key !== key && values[dep.key] !== undefined && values[dep.key] !== '' && values[dep.key] !== null) {
+          onChange(dep.key, '')
+        }
+      }
+    }
+    const { values: derived } = applyDataRules(schema, { ...context, ...values, [key]: v })
+    for (const [k, val] of Object.entries(derived)) {
+      if (k === key) continue
+      if (values[k] !== val) onChange(k, val)
+    }
   }
+  const fields = [...schema.fields].sort((a, b) => (a.order || 0) - (b.order || 0))
+  // 有效状态 = 字段自身规则 + behavior_rules 联动叠加（与后端校验口径一致）
+  const states = effectiveFieldStates(schema, ctx)
+  const visibleFields = fields.filter(f => states[f.key]?.visible !== false)
 
   if (visibleFields.length === 0) {
     return <p className="text-xs text-muted-foreground italic">当前条件下无可填写的自定义字段。</p>
   }
 
-  return (
+  // ---- 变量价格（对标 SN Variable Pricing）：纯前端汇总，提交值不受影响 ----
+  // 计价口径：bool 勾选后计单价；number 数量×单价；select/multiselect 按选项级 price 累加。
+  const pricingLines: { label: string; amount: number }[] = []
+  const round2 = (n: number) => Math.round(n * 100) / 100
+  for (const f of visibleFields) {
+    if (f.type === 'bool' && (f.price || 0) > 0 && truthy(values[f.key])) {
+      pricingLines.push({ label: f.label, amount: round2(f.price!) })
+    } else if (f.type === 'number' && (f.price || 0) > 0) {
+      const qty = toNumber(values[f.key])
+      if (qty !== null && qty > 0) pricingLines.push({ label: `${f.label} × ${qty}`, amount: round2(qty * f.price!) })
+    } else if (f.type === 'select' && typeof values[f.key] === 'string') {
+      const opt = (f.options || []).find(o => o.value === values[f.key])
+      if (opt && (opt.price || 0) > 0) pricingLines.push({ label: `${f.label}（${opt.label}）`, amount: round2(opt.price!) })
+    } else if (f.type === 'multiselect' && Array.isArray(values[f.key])) {
+      let sum = 0
+      const picked: string[] = []
+      for (const o of f.options || []) {
+        if ((values[f.key] as unknown[]).includes(o.value) && (o.price || 0) > 0) {
+          sum += o.price!
+          picked.push(o.label)
+        }
+      }
+      if (sum > 0) pricingLines.push({ label: `${f.label}（${picked.join('、')}）`, amount: round2(sum) })
+    }
+  }
+  const pricingTotal = round2(pricingLines.reduce((s, l) => s + l.amount, 0))
+  // 仅当 schema 里存在可计价配置时才渲染合计条（避免无价格表单常驻空条）
+  const hasPricing = [...schema.fields].some(
+    f => (f.price || 0) > 0 || (f.options || []).some(o => (o.price || 0) > 0),
+  )
+  const renderPricing = () =>
+    hasPricing ? (
+      <div className="mt-4 rounded-lg border border-dashed border-input bg-muted/30 px-4 py-3">
+        <div className="flex items-center justify-between">
+          <span className="text-sm font-medium">费用合计</span>
+          <span className="text-lg font-semibold text-blue-600 dark:text-blue-400">¥{pricingTotal.toFixed(2)}</span>
+        </div>
+        {pricingLines.length > 0 && (
+          <div className="mt-2 space-y-1">
+            {pricingLines.map((l, i) => (
+              <div key={i} className="flex items-center justify-between text-xs text-muted-foreground">
+                <span>{l.label}</span>
+                <span>¥{l.amount.toFixed(2)}</span>
+              </div>
+            ))}
+          </div>
+        )}
+        {pricingLines.length === 0 && (
+          <p className="mt-1 text-xs text-muted-foreground">按当前选择暂无计费项。</p>
+        )}
+      </div>
+    ) : null
+
+  // 把一段可见字段按 section 分组渲染成 12 栅格（页签模式下每个页签复用同一渲染路径）
+  const renderSections = (list: FormFieldDef[]) => {
+    const secMap = new Map<string, FormFieldDef[]>()
+    for (const f of list) {
+      const sec = f.section || ''
+      if (!secMap.has(sec)) secMap.set(sec, [])
+      secMap.get(sec)!.push(f)
+    }
+    return (
     <div className="space-y-4">
-      {Array.from(sections.entries()).map(([sec, fs]) => (
+      {Array.from(secMap.entries()).map(([sec, fs]) => (
         <div key={sec || '__root'} className="space-y-3">
           {sec && <h4 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">{sec}</h4>}
           {/* 12 栅格：字段按 col_span 占列，缺省整行；窄屏统一降为单列避免挤压 */}
@@ -393,20 +958,75 @@ export function DynamicForm({ schema, values, context, onChange, readOnly, loadO
             {fs.map(f => {
               const span = normalizeColSpan(f.col_span)
               const explicit = desktop && f.col_start ? { gridColumn: `${f.col_start} / span ${span}` } : undefined
+              const st = states[f.key] || { visible: true, required: !!f.required, readonly: !!f.readonly, disabled: !!f.disabled }
+              // 分组容器(group)：整行卡片, 内嵌字段递归渲染(值仍平铺 custom_fields);
+              // 组内字段显隐按各自 visible_when 判定, 读写状态随容器。
+              if (f.type === 'group') {
+                const children = (f.children || []).filter(c => fieldVisible(c, ctx))
+                return (
+                  <div key={f.key} className="col-span-12 rounded-lg border border-dashed border-input bg-muted/20 p-3" style={explicit}>
+                    <div className="mb-2 flex items-center gap-1.5">
+                      <span className="text-sm font-medium">{f.label}</span>
+                      {f.help && <span className="text-xs text-muted-foreground">{f.help}</span>}
+                    </div>
+                    {children.length === 0 ? (
+                      <p className="text-xs text-muted-foreground italic">空分组（在表单设计器中为本分组添加子字段）</p>
+                    ) : (
+                      <div className="grid grid-cols-1 gap-x-4 gap-y-3 sm:grid-cols-12">
+                        {children.map(c => {
+                          const cspan = normalizeColSpan(c.col_span)
+                          return (
+                            <div key={c.key} className={COL_SPAN_CLS[cspan]}>
+                              <label className="text-sm font-medium flex items-center gap-1">
+                                {c.label}
+                                {(c.required || st.required) && c.required && <span className="text-destructive">*</span>}
+                              </label>
+                              <div className="mt-1">
+                                <FieldControl
+                                  field={c}
+                                  value={values[c.key]}
+                                  disabled={readOnly || st.readonly || st.disabled || c.readonly || !!c.disabled}
+                                  onChange={v => handleFieldChange(c.key, v)}
+                                  loadOptions={loadOptions}
+                                  ticketId={ticketId}
+                                  evalContext={ctx}
+                                  values={values}
+                                />
+                              </div>
+                              {c.help && <p className="text-xs text-muted-foreground mt-1">{c.help}</p>}
+                            </div>
+                          )
+                        })}
+                      </div>
+                    )}
+                  </div>
+                )
+              }
+              // 说明区块(note)：纯展示整行卡片，不渲染 label/控件结构（FieldControl 对 note 返回 null）
+              if (f.type === 'note') {
+                return (
+                  <div key={f.key} className="col-span-12 rounded-md border border-input bg-muted/30 px-3 py-2.5" style={explicit}>
+                    <p className="text-sm font-medium">{f.label}</p>
+                    {f.help && <p className="mt-1 text-xs leading-relaxed text-muted-foreground whitespace-pre-wrap">{f.help}</p>}
+                  </div>
+                )
+              }
               return (
               <div key={f.key} className={COL_SPAN_CLS[span]} style={explicit}>
                 <label className="text-sm font-medium flex items-center gap-1">
                   {f.label}
-                  {f.required && <span className="text-destructive">*</span>}
+                  {st.required && <span className="text-destructive">*</span>}
                 </label>
                 <div className="mt-1">
                   <FieldControl
                     field={f}
                     value={values[f.key]}
-                    disabled={readOnly || !!f.readonly}
-                    onChange={v => onChange(f.key, v)}
+                    disabled={readOnly || st.readonly || st.disabled}
+                    onChange={v => handleFieldChange(f.key, v)}
                     loadOptions={loadOptions}
                     ticketId={ticketId}
+                    evalContext={ctx}
+                    values={values}
                   />
                 </div>
                 {f.help && <p className="text-xs text-muted-foreground mt-1">{f.help}</p>}
@@ -416,6 +1036,41 @@ export function DynamicForm({ schema, values, context, onChange, readOnly, loadO
           </div>
         </div>
       ))}
+    </div>
+    )
+  }
+
+  // 页签分步布局：schema.tabs 非空（≥2）时按 field.tab 分页签渲染（长表单分步，
+  // 与后端 form.FormTabs 对齐）；未归入页签或归入了不存在页签的字段落入第一个页签。
+  const tabs = (schema.tabs || []).filter(t => (t.key || '').trim())
+  if (tabs.length >= 2) {
+    const firstKey = tabs[0].key
+    const groups = new Map<string, FormFieldDef[]>()
+    for (const f of visibleFields) {
+      const k = f.tab && tabs.some(t => t.key === f.tab) ? f.tab : firstKey
+      if (!groups.has(k)) groups.set(k, [])
+      groups.get(k)!.push(f)
+    }
+    const items = tabs.map(t => {
+      const fs = groups.get(t.key) || []
+      return {
+        key: t.key,
+        label: t.label || t.key,
+        children: fs.length === 0 ? <p className="text-xs text-muted-foreground italic">本页签暂无字段。</p> : renderSections(fs),
+      }
+    })
+    return (
+      <div>
+        <Tabs defaultActiveKey={firstKey} items={items} size="small" />
+        {renderPricing()}
+      </div>
+    )
+  }
+
+  return (
+    <div>
+      {renderSections(visibleFields)}
+      {renderPricing()}
     </div>
   )
 }
@@ -446,12 +1101,27 @@ function effectiveSource(field: FormFieldDef): string {
   return ''
 }
 
-/** useFieldOptions —— 静态 options 优先；否则按 source 异步拉取（带 loading / error 态） */
-function useFieldOptions(field: FormFieldDef, loadOptions?: LoadOptionsFn) {
+/** useFieldOptions —— 静态 options 优先；否则按 source 异步拉取（带 loading / error 态）。
+ *  source 含 ${key} 占位符时为级联字段：从 values 取参数，前置未就绪则不请求并返回 pending 态。 */
+function useFieldOptions(field: FormFieldDef, loadOptions?: LoadOptionsFn, values?: Record<string, unknown>) {
   const staticOpts = field.options || []
   const source = effectiveSource(field)
   // 级联字段自己按层级拉取（见 Cascader），这里不重复打平铺请求
   const needRemote = staticOpts.length === 0 && !!source && !!loadOptions && field.type !== 'cascader'
+
+  // 参数化级联: 计算 source 占位符对应的表单当前值
+  const placeholderKeys = useMemo(() => (needRemote ? sourcePlaceholderKeys(source) : []), [needRemote, source])
+  const cascadeParams = useMemo(() => {
+    if (placeholderKeys.length === 0 || !values) return null
+    const p: Record<string, string> = {}
+    for (const k of placeholderKeys) {
+      const v = values[k]
+      if (v === undefined || v === null || v === '') return null // 前置字段未选
+      p[k] = typeof v === 'object' ? JSON.stringify(v) : String(v)
+    }
+    return p
+  }, [placeholderKeys, values])
+  const cascadeKey = cascadeParams ? JSON.stringify(cascadeParams) : ''
 
   const [remote, setRemote] = useState<FormFieldOption[]>([])
   const [loading, setLoading] = useState(false)
@@ -460,10 +1130,14 @@ function useFieldOptions(field: FormFieldDef, loadOptions?: LoadOptionsFn) {
 
   useEffect(() => {
     if (!needRemote) return
+    if (placeholderKeys.length > 0 && !cascadeParams) {
+      setRemote([]) // 级联前置未就绪: 清空候选, 由 UI 提示先选上级
+      return
+    }
     const seq = ++reqRef.current
     setLoading(true)
     setError('')
-    loadOptions!(source)
+    loadOptions!(source, undefined, undefined, cascadeParams || undefined)
       .then(opts => {
         if (reqRef.current !== seq) return
         setRemote(opts || [])
@@ -475,13 +1149,15 @@ function useFieldOptions(field: FormFieldDef, loadOptions?: LoadOptionsFn) {
       .finally(() => {
         if (reqRef.current === seq) setLoading(false)
       })
-  }, [needRemote, source, loadOptions])
+    // cascadeKey 汇总参数变化（引用稳定）, 避免每次 render 重复请求
+  }, [needRemote, source, loadOptions, cascadeKey])
 
   return {
     options: staticOpts.length > 0 ? staticOpts : remote,
     loading,
     error,
     remote: needRemote,
+    cascadePending: needRemote && placeholderKeys.length > 0 && !cascadeParams,
   }
 }
 
@@ -492,6 +1168,8 @@ function FieldControl({
   onChange,
   loadOptions,
   ticketId,
+  evalContext,
+  values,
 }: {
   field: FormFieldDef
   value: unknown
@@ -499,8 +1177,12 @@ function FieldControl({
   onChange: (v: unknown) => void
   loadOptions?: LoadOptionsFn
   ticketId?: string
+  /** 计算字段(expression)求值上下文：当前表单全部字段值+系统字段 */
+  evalContext?: Record<string, unknown>
+  /** 全表单当前值：参数化级联(${key} 占位符)取参数用 */
+  values?: Record<string, unknown>
 }) {
-  const { options, loading, error, remote } = useFieldOptions(field, loadOptions)
+  const { options, loading, error, remote, cascadePending } = useFieldOptions(field, loadOptions, values)
 
   switch (field.type) {
     case 'textarea':
@@ -514,6 +1196,7 @@ function FieldControl({
         />
       )
     case 'select':
+      if (cascadePending) return <OptionsHint text="请先选择上级字段" />
       return (
         <SearchableSelect
           options={options}
@@ -625,6 +1308,7 @@ function FieldControl({
     case 'table':
       return (
         <TableControl
+          field={field}
           value={value}
           disabled={disabled}
           onChange={onChange}
@@ -753,16 +1437,75 @@ function FieldControl({
         </div>
       )
     case 'expression':
-      // 计算/表达式字段：只读展示，内容取自默认表达式（field.default）。
+      // 计算/表达式字段：引用 {其它字段} 实时求值只读展示（求值失败回落显示表达式原文）。
       return (
         <input
           type="text"
           className={`${fieldBaseCls} font-mono bg-muted/40 text-muted-foreground`}
-          value={(field.default as string) ?? ''}
+          value={expressionDisplay(field, evalContext || {})}
           disabled
-          placeholder="表达式（只读展示）"
+          placeholder="计算字段（自动求值）"
         />
       )
+    case 'rating': {
+      // 评分（1~5 星，对标 SN 5-point scale）：值为数字；范围可用 validation.min/max 覆盖
+      const lo = toNumber(field.validation?.min) ?? 1
+      const hi = toNumber(field.validation?.max) ?? 5
+      const cur = toNumber(value)
+      const stars: number[] = []
+      for (let n = Math.max(1, lo); n <= Math.min(5, hi); n++) stars.push(n)
+      const setRating = (n: number) => onChange(cur === n ? undefined : n) // 再点一次取消
+      return (
+        <div className="flex items-center gap-0.5">
+          {stars.map(n => (
+            <button
+              type="button"
+              key={n}
+              disabled={disabled}
+              onClick={() => setRating(n)}
+              title={`${n} 分`}
+              className={`p-0.5 transition-colors ${disabled ? 'cursor-not-allowed opacity-60' : 'cursor-pointer'}`}
+            >
+              <Star
+                className={`h-6 w-6 ${cur !== null && n <= cur ? 'fill-amber-400 text-amber-400' : 'text-muted-foreground/40'}`}
+              />
+            </button>
+          ))}
+          {cur !== null && <span className="ml-1.5 text-xs text-muted-foreground">{cur} 分</span>}
+        </div>
+      )
+    }
+    case 'daterange': {
+      // 日期区间：值形如 "YYYY-MM-DD~YYYY-MM-DD"（与 timerange 同构），拆成起止两个 date 输入
+      const parts = typeof value === 'string' && value.includes('~') ? value.split('~') : ['', '']
+      const setRange = (i: number, v: string) => {
+        const next = [parts[0] || '', parts[1] || '']
+        next[i] = v
+        onChange(next[0] && next[1] ? `${next[0]}~${next[1]}` : '')
+      }
+      return (
+        <div className="flex items-center gap-2">
+          <input
+            type="date"
+            className={fieldBaseCls}
+            value={parts[0]}
+            disabled={disabled}
+            onChange={e => setRange(0, e.target.value)}
+          />
+          <span className="text-muted-foreground text-sm">~</span>
+          <input
+            type="date"
+            className={fieldBaseCls}
+            value={parts[1]}
+            disabled={disabled}
+            onChange={e => setRange(1, e.target.value)}
+          />
+        </div>
+      )
+    }
+    case 'note':
+      // 说明区块：纯展示不产生值（后端不校验），在 renderSections 中整行渲染
+      return null
     case 'text':
     default:
       return (
@@ -1346,8 +2089,116 @@ function AttachmentControl({
   )
 }
 
-// TableControl —— table 字段控件: 二维网格编辑, 值 = string[][]。
+// TableControl —— table 字段控件。
+// 结构化模式（field.table_columns 非空，对标 SN MRVS）：值 = 对象数组 [{列key: 单元格文本}]，
+// 表头由列定义驱动，逐列输入；旧自由模式：值 = string[][]，可自由加行加列。
+// 旧数据（二维数组）遇到列定义时按列顺序自动迁移显示。
 function TableControl({
+  field,
+  value,
+  disabled,
+  onChange,
+}: {
+  field: FormFieldDef
+  value: unknown
+  disabled: boolean
+  onChange: (v: unknown) => void
+}) {
+  const columns = (field.table_columns || []).filter(c => (c.key || '').trim())
+  if (columns.length > 0) {
+    return <StructuredTableControl columns={columns} value={value} disabled={disabled} onChange={onChange} />
+  }
+  return <FreeTableControl value={value} disabled={disabled} onChange={onChange} />
+}
+
+function StructuredTableControl({
+  columns,
+  value,
+  disabled,
+  onChange,
+}: {
+  columns: TableColumnDef[]
+  value: unknown
+  disabled: boolean
+  onChange: (v: unknown) => void
+}) {
+  // 归一化：对象行直接用；旧二维数组按列顺序迁移（row[i] → columns[i].key）
+  const rows: Record<string, string>[] = Array.isArray(value)
+    ? (value as unknown[]).map(r => {
+        if (r && typeof r === 'object' && !Array.isArray(r)) {
+          const obj = r as Record<string, unknown>
+          const out: Record<string, string> = {}
+          for (const c of columns) out[c.key] = obj[c.key] === undefined || obj[c.key] === null ? '' : String(obj[c.key])
+          return out
+        }
+        const legacy = Array.isArray(r) ? (r as unknown[]) : []
+        const out: Record<string, string> = {}
+        columns.forEach((c, i) => { out[c.key] = legacy[i] === undefined || legacy[i] === null ? '' : String(legacy[i]) })
+        return out
+      })
+    : []
+
+  const emptyRow = () => Object.fromEntries(columns.map(c => [c.key, '']))
+  const setCell = (r: number, key: string, v: string) =>
+    onChange(rows.map((row, ri) => (ri === r ? { ...row, [key]: v } : row)))
+
+  return (
+    <div className="space-y-2">
+      <div className="overflow-x-auto rounded-md border">
+        <table className="w-full text-sm">
+          <thead>
+            <tr className="border-b bg-muted/40">
+              {columns.map(c => (
+                <th key={c.key} className="whitespace-nowrap px-2 py-1.5 text-left text-xs font-medium text-muted-foreground">
+                  {c.label || c.key}
+                  {c.required && <span className="text-destructive">*</span>}
+                </th>
+              ))}
+              {!disabled && <th className="w-8" />}
+            </tr>
+          </thead>
+          <tbody>
+            {rows.length === 0 && (
+              <tr>
+                <td colSpan={columns.length + (disabled ? 0 : 1)} className="px-2 py-2 text-center text-xs text-muted-foreground italic">
+                  暂无数据行
+                </td>
+              </tr>
+            )}
+            {rows.map((row, ri) => (
+              <tr key={ri} className="border-b last:border-b-0">
+                {columns.map(c => (
+                  <td key={c.key} className="border-r last:border-r-0 p-0">
+                    <input
+                      className="w-full min-w-[80px] bg-transparent px-2 py-1.5 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                      value={row[c.key] ?? ''}
+                      disabled={disabled}
+                      onChange={e => setCell(ri, c.key, e.target.value)}
+                    />
+                  </td>
+                ))}
+                {!disabled && (
+                  <td className="w-8 p-0">
+                    <button type="button" className="h-full w-full text-muted-foreground hover:text-destructive" onClick={() => onChange(rows.filter((_, i) => i !== ri))}>
+                      <X className="h-3 w-3 mx-auto" />
+                    </button>
+                  </td>
+                )}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      {!disabled && (
+        <button type="button" onClick={() => onChange([...rows, emptyRow()])} className="inline-flex items-center gap-1 h-7 px-2.5 rounded-md border border-input text-xs hover:bg-accent">
+          <Plus className="h-3 w-3" />加一行
+        </button>
+      )}
+    </div>
+  )
+}
+
+function FreeTableControl({
   value,
   disabled,
   onChange,

@@ -52,6 +52,7 @@ import (
 	"github.com/opsorigin/core/internal/itsm/ola"
 	"github.com/opsorigin/core/internal/itsm/oncall"
 	"github.com/opsorigin/core/internal/itsm/process"
+	"github.com/opsorigin/core/internal/itsm/servicehours"
 	"github.com/opsorigin/core/internal/itsm/sla"
 	"github.com/opsorigin/core/internal/keystore"
 	"github.com/opsorigin/core/internal/knowledge"
@@ -436,6 +437,7 @@ func main() {
 	})
 	itsmSvc.StartSLAChecker(ctx)
 	itsmSvc.StartOLAChecker(ctx)
+	itsmSvc.StartScheduleRunner(ctx) // P3-1: Event="schedule" 定时触发器
 
 	// 站内消息:独立收件箱服务。PG 建表失败会自动回落内存实现,
 	// 不会因 DDL 问题拖垮主流程。实时推送走 wsHub(由下方 SetAuthenticator 鉴权)。
@@ -450,6 +452,10 @@ func main() {
 		server.RegisterService(processSvc)
 		processSvc.StartTimerChecker(ctx)
 		itsmSvc.SetProcessStore(processSvc)
+		processSvc.SetTicketVarProvider(itsmSvc)                                 // 自动节点变量链路: 工单字段注入流程变量上下文
+		processSvc.SetTicketAssigner(itsmSvc)                                    // 派单节点 auto 模式: 受派人落库走 itsm
+		processSvc.SetApprovalTimeoutHandler(itsmSvc.AutoTransitionApproval)     // 审批节点超时自动通过/驳回
+		processSvc.SetProcessAdvancedSyncer(itsmSvc.SyncTicketStatusWithProcess) // 引擎自主推进(timer/wait)后回写工单状态
 
 		slaStore := sla.NewStore(db)
 		server.RegisterService(slaStore)
@@ -457,6 +463,25 @@ func main() {
 		server.RegisterService(olaStore) // OLA 独立管理
 		itsmSvc.SetSLAStore(slaStore)
 		itsmSvc.SetOLAStore(olaStore)
+
+		// 服务时间窗口: SLA 业务时间计时 + 服务目录服务承诺展示
+		svcWindows := servicehours.NewStore(db)
+		server.RegisterService(svcWindows)
+		itsmSvc.SetServiceWindows(svcWindows)
+		// P3-2 审批工作日历: user 节点配置 Calendar 后, 催办/超时按业务时间计算
+		processSvc.SetCalendarResolver(func(ctx context.Context, tenantID, nameOrID string) (process.WorkCalendar, bool) {
+			if w, err := svcWindows.Get(ctx, nameOrID, tenantID); err == nil && w != nil {
+				return w, true
+			}
+			if ws, lerr := svcWindows.List(ctx, tenantID); lerr == nil {
+				for _, w := range ws {
+					if w != nil && w.Name == nameOrID {
+						return w, true
+					}
+				}
+			}
+			return nil, false
+		})
 
 		catalogStore = catalog.NewStore(db)
 		server.RegisterService(catalogStore)
@@ -737,6 +762,8 @@ func main() {
 		processSvc = process.NewService(nil)
 		server.RegisterService(processSvc)
 		itsmSvc.SetProcessStore(processSvc)
+		processSvc.SetTicketVarProvider(itsmSvc) // 自动节点变量链路: 工单字段注入流程变量上下文
+		processSvc.SetTicketAssigner(itsmSvc)    // 派单节点 auto 模式: 受派人落库走 itsm
 	}
 	if catalogStore == nil {
 		catalogStore = catalog.NewStore(nil)

@@ -3,6 +3,7 @@ package itsm
 import (
 	"context"
 	"fmt"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -36,6 +37,8 @@ type CIProvider interface {
 	ListCIsByTypeName(ctx context.Context, tenantID, typeName, keyword string, limit int) ([]cmdb.CIRef, error)
 	ListCITypeNames(ctx context.Context, tenantID string) ([]string, error)
 	ListCITypeTree(ctx context.Context, tenantID string) ([]cmdb.CITypeNode, error)
+	// ListCIsByAttrs 按类型+属性等值过滤（表单级联: 机房→机柜 场景）。缺省实现见 cmdb.Service。
+	ListCIsByAttrs(ctx context.Context, tenantID, typeName string, attrs map[string]string, limit int) ([]cmdb.CIRef, error)
 }
 
 // UserProvider 用户中心只读能力（由 *user.Service 实现）。
@@ -78,10 +81,89 @@ func NewCMDBIAMResolver(ci CIProvider, users UserProvider, iamSvc IAMProvider) f
 
 // Resolve 实现 form.SourceResolver。
 func (r *cmdbIAMResolver) Resolve(ctx context.Context, tenantID, source string) ([]form.FieldOption, error) {
+	return r.ResolveWithParams(ctx, tenantID, source, nil)
+}
+
+// sourcePlaceholderRe 匹配 source 串里的 ${field_key} 占位符。
+var sourcePlaceholderRe = regexp.MustCompile(`\$\{([^}]+)\}`)
+
+// SourcePlaceholderKeys 返回 source 串引用的全部参数键（前端据此判断级联依赖与是否就绪）。
+// 无占位符时返回 nil（注意: 不能返回空切片, 调用方以 != nil 判断是否参数化来源）。
+func SourcePlaceholderKeys(source string) []string {
+	m := sourcePlaceholderRe.FindAllStringSubmatch(source, -1)
+	if len(m) == 0 {
+		return nil
+	}
+	keys := make([]string, 0, len(m))
+	for _, mm := range m {
+		keys = append(keys, strings.TrimSpace(mm[1]))
+	}
+	return keys
+}
+
+// ExpandSourceParams 把 source 串中的 ${key} 占位符替换为 params[key]。
+// 返回展开后的串与缺失(参数未提供或为空)的键列表。
+func ExpandSourceParams(source string, params map[string]string) (string, []string) {
+	missing := []string{}
+	expanded := sourcePlaceholderRe.ReplaceAllStringFunc(source, func(m string) string {
+		key := strings.TrimSpace(m[2 : len(m)-1])
+		v, ok := params[key]
+		if !ok || strings.TrimSpace(v) == "" {
+			missing = append(missing, key)
+			return ""
+		}
+		return v
+	})
+	return expanded, missing
+}
+
+// ResolveWithParams 参数化解析：source 串支持 ${field_key} 占位符（表单级联，如
+// "cmdb:机柜?room=${room}" —— 机房字段的值作为机柜下拉的过滤参数）。
+// 语法: <base_source>[?<attr>=${field}[&<attr2>=<static>...]]，attr 过滤仅对 cmdb:<type> 生效。
+// 任一占位符缺失时返回空选项（级联上级未选, 下级不给候选），并携带 missing 参数提示。
+func (r *cmdbIAMResolver) ResolveWithParams(ctx context.Context, tenantID, source string, params map[string]string) ([]form.FieldOption, error) {
 	source = strings.TrimSpace(source)
 	if source == "" || source == "static" {
 		return nil, nil
 	}
+	if len(SourcePlaceholderKeys(source)) == 0 && len(params) == 0 {
+		return r.resolveCached(ctx, tenantID, source)
+	}
+	expanded, missing := ExpandSourceParams(source, params)
+	if len(missing) > 0 {
+		// 级联前置字段未选: 返回空选项, 由前端提示"先选择上级字段"。
+		return []form.FieldOption{}, nil
+	}
+	// 带 attr 过滤的 cmdb 源: cmdb:<type>?k=v&k2=v2
+	if base, filters, ok := splitSourceFilters(expanded); ok {
+		if !strings.HasPrefix(base, SourcePrefixCMDB) || strings.HasPrefix(base, SourcePrefixCMDB+"types") {
+			// 过滤语法仅对 CI 类型源有意义; 其他来源忽略过滤段退化平铺
+			return r.resolveCached(ctx, tenantID, base)
+		}
+		typeName := strings.TrimSpace(strings.TrimPrefix(base, SourcePrefixCMDB))
+		if r.ci == nil {
+			return nil, fmt.Errorf("CMDB 未接入，无法解析选项来源 %q", source)
+		}
+		refs, err := r.ci.ListCIsByAttrs(ctx, tenantID, typeName, filters, 0)
+		if err != nil {
+			return nil, err
+		}
+		opts := make([]form.FieldOption, 0, len(refs))
+		for _, c := range refs {
+			label := c.Name
+			if label == "" {
+				label = c.ID
+			}
+			opts = append(opts, form.FieldOption{Value: c.ID, Label: label})
+		}
+		return opts, nil
+	}
+	// 无过滤段但 source 本身含占位符（如 iam:user@${team}）: 不走 TTL 缓存, 直接解析。
+	return r.resolveUncached(ctx, tenantID, expanded)
+}
+
+// resolveCached 带 TTL 缓存的解析（原 Resolve 主体）。
+func (r *cmdbIAMResolver) resolveCached(ctx context.Context, tenantID, source string) ([]form.FieldOption, error) {
 	key := tenantID + "|" + source
 	if opts, ok := r.get(key); ok {
 		return opts, nil
@@ -92,6 +174,28 @@ func (r *cmdbIAMResolver) Resolve(ctx context.Context, tenantID, source string) 
 	}
 	r.put(key, opts)
 	return opts, nil
+}
+
+// splitSourceFilters 拆出 source 的 "?k=v&k2=v2" 过滤段（? 后按 & 分割）。
+// 无 ? 段返回 ok=false。
+func splitSourceFilters(source string) (base string, filters map[string]string, ok bool) {
+	at := strings.Index(source, "?")
+	if at < 0 {
+		return source, nil, false
+	}
+	base = strings.TrimSpace(source[:at])
+	filters = map[string]string{}
+	for _, pair := range strings.Split(source[at+1:], "&") {
+		if pair == "" {
+			continue
+		}
+		kv := strings.SplitN(pair, "=", 2)
+		if len(kv) != 2 || strings.TrimSpace(kv[0]) == "" {
+			continue
+		}
+		filters[strings.TrimSpace(kv[0])] = kv[1]
+	}
+	return base, filters, true
 }
 
 // ResolveTree 实现 form.TreeSourceResolver：按层级取选项。

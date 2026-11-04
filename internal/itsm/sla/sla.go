@@ -23,6 +23,9 @@ type Policy struct {
 	ResolutionHours int    `json:"resolution_hours"`
 	EscalationHours int    `json:"escalation_hours"`
 	EscalationTo    string `json:"escalation_to,omitempty"` // 升级通知角色/负责人
+	// ServiceWindowID 绑定服务时间窗口: 非空时工单截止时间按业务时间推进
+	// (跳过非工作时段/周末/节假日, 见 internal/itsm/servicehours); 空 = 7x24 墙钟(默认, 向后兼容)。
+	ServiceWindowID string `json:"service_window_id,omitempty"`
 	// 多级升级策略: 按时间阈值逐级升级
 	EscalationLevels []EscalationLevel `json:"escalation_levels,omitempty"`
 	Enabled          bool              `json:"enabled"`
@@ -60,6 +63,7 @@ func (s *Store) migrate() {
 	)`)
 	s.db.Exec(`ALTER TABLE itsm_sla_policies ADD COLUMN IF NOT EXISTS process_id TEXT DEFAULT ''`)
 	s.db.Exec(`ALTER TABLE itsm_sla_policies ADD COLUMN IF NOT EXISTS escalation_levels JSONB DEFAULT '[]'::jsonb`)
+	s.db.Exec(`ALTER TABLE itsm_sla_policies ADD COLUMN IF NOT EXISTS service_window_id TEXT DEFAULT ''`)
 }
 
 func (s *Store) seed() {
@@ -80,12 +84,12 @@ func (s *Store) seed() {
 		p.Enabled = true
 		p.CreatedAt = time.Now()
 		p.UpdatedAt = p.CreatedAt
-		s.db.Exec(`INSERT INTO itsm_sla_policies(id,tenant_id,name,risk_level,process_id,response_hours,resolution_hours,escalation_hours,escalation_to,enabled,created_at,updated_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`,
-			p.ID, p.TenantID, p.Name, p.RiskLevel, p.ProcessID, p.ResponseHours, p.ResolutionHours, p.EscalationHours, p.EscalationTo, p.Enabled, p.CreatedAt, p.UpdatedAt)
+		s.db.Exec(`INSERT INTO itsm_sla_policies(id,tenant_id,name,risk_level,process_id,response_hours,resolution_hours,escalation_hours,escalation_to,service_window_id,enabled,created_at,updated_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)`,
+			p.ID, p.TenantID, p.Name, p.RiskLevel, p.ProcessID, p.ResponseHours, p.ResolutionHours, p.EscalationHours, p.EscalationTo, p.ServiceWindowID, p.Enabled, p.CreatedAt, p.UpdatedAt)
 	}
 }
 
-const slaCols = `id,tenant_id,name,risk_level,process_id,response_hours,resolution_hours,escalation_hours,escalation_to,escalation_levels,enabled,created_at,updated_at`
+const slaCols = `id,tenant_id,name,risk_level,process_id,response_hours,resolution_hours,escalation_hours,escalation_to,escalation_levels,service_window_id,enabled,created_at,updated_at`
 
 func (s *Store) List(ctx context.Context, tenantID string) ([]Policy, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT `+slaCols+` FROM itsm_sla_policies WHERE tenant_id=$1 ORDER BY risk_level, process_id`, tenantID)
@@ -97,7 +101,7 @@ func (s *Store) List(ctx context.Context, tenantID string) ([]Policy, error) {
 	for rows.Next() {
 		var p Policy
 		var escalationJSON []byte
-		if err := rows.Scan(&p.ID, &p.TenantID, &p.Name, &p.RiskLevel, &p.ProcessID, &p.ResponseHours, &p.ResolutionHours, &p.EscalationHours, &p.EscalationTo, &escalationJSON, &p.Enabled, &p.CreatedAt, &p.UpdatedAt); err != nil {
+		if err := rows.Scan(&p.ID, &p.TenantID, &p.Name, &p.RiskLevel, &p.ProcessID, &p.ResponseHours, &p.ResolutionHours, &p.EscalationHours, &p.EscalationTo, &escalationJSON, &p.ServiceWindowID, &p.Enabled, &p.CreatedAt, &p.UpdatedAt); err != nil {
 			return nil, err
 		}
 		if len(escalationJSON) > 0 {
@@ -111,8 +115,8 @@ func (s *Store) List(ctx context.Context, tenantID string) ([]Policy, error) {
 func (s *Store) Update(ctx context.Context, p *Policy) error {
 	p.UpdatedAt = time.Now()
 	escalationJSON, _ := json.Marshal(p.EscalationLevels)
-	_, err := s.db.ExecContext(ctx, `UPDATE itsm_sla_policies SET name=$1,process_id=$2,response_hours=$3,resolution_hours=$4,escalation_hours=$5,escalation_to=$6,escalation_levels=$7,enabled=$8,updated_at=$9 WHERE id=$10 AND tenant_id=$11`,
-		p.Name, p.ProcessID, p.ResponseHours, p.ResolutionHours, p.EscalationHours, p.EscalationTo, escalationJSON, p.Enabled, p.UpdatedAt, p.ID, p.TenantID)
+	_, err := s.db.ExecContext(ctx, `UPDATE itsm_sla_policies SET name=$1,process_id=$2,response_hours=$3,resolution_hours=$4,escalation_hours=$5,escalation_to=$6,escalation_levels=$7,service_window_id=$8,enabled=$9,updated_at=$10 WHERE id=$11 AND tenant_id=$12`,
+		p.Name, p.ProcessID, p.ResponseHours, p.ResolutionHours, p.EscalationHours, p.EscalationTo, escalationJSON, p.ServiceWindowID, p.Enabled, p.UpdatedAt, p.ID, p.TenantID)
 	return err
 }
 
@@ -131,8 +135,8 @@ func (s *Store) Create(ctx context.Context, p *Policy) error {
 	p.CreatedAt = now
 	p.UpdatedAt = now
 	escalationJSON, _ := json.Marshal(p.EscalationLevels)
-	_, err := s.db.ExecContext(ctx, `INSERT INTO itsm_sla_policies(id,tenant_id,name,risk_level,process_id,response_hours,resolution_hours,escalation_hours,escalation_to,escalation_levels,enabled,created_at,updated_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)`,
-		p.ID, p.TenantID, p.Name, p.RiskLevel, p.ProcessID, p.ResponseHours, p.ResolutionHours, p.EscalationHours, p.EscalationTo, escalationJSON, p.Enabled, p.CreatedAt, p.UpdatedAt)
+	_, err := s.db.ExecContext(ctx, `INSERT INTO itsm_sla_policies(id,tenant_id,name,risk_level,process_id,response_hours,resolution_hours,escalation_hours,escalation_to,escalation_levels,service_window_id,enabled,created_at,updated_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`,
+		p.ID, p.TenantID, p.Name, p.RiskLevel, p.ProcessID, p.ResponseHours, p.ResolutionHours, p.EscalationHours, p.EscalationTo, escalationJSON, p.ServiceWindowID, p.Enabled, p.CreatedAt, p.UpdatedAt)
 	return err
 }
 
@@ -146,7 +150,7 @@ func (s *Store) GetByRisk(ctx context.Context, tenantID, riskLevel string) (*Pol
 	var p Policy
 	var escalationJSON []byte
 	err := s.db.QueryRowContext(ctx, `SELECT `+slaCols+` FROM itsm_sla_policies WHERE tenant_id=$1 AND risk_level=$2 AND enabled=true AND process_id=''`, tenantID, riskLevel).
-		Scan(&p.ID, &p.TenantID, &p.Name, &p.RiskLevel, &p.ProcessID, &p.ResponseHours, &p.ResolutionHours, &p.EscalationHours, &p.EscalationTo, &escalationJSON, &p.Enabled, &p.CreatedAt, &p.UpdatedAt)
+		Scan(&p.ID, &p.TenantID, &p.Name, &p.RiskLevel, &p.ProcessID, &p.ResponseHours, &p.ResolutionHours, &p.EscalationHours, &p.EscalationTo, &escalationJSON, &p.ServiceWindowID, &p.Enabled, &p.CreatedAt, &p.UpdatedAt)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -164,7 +168,7 @@ func (s *Store) GetByProcessID(ctx context.Context, tenantID, processID string) 
 	var p Policy
 	var escalationJSON []byte
 	err := s.db.QueryRowContext(ctx, `SELECT `+slaCols+` FROM itsm_sla_policies WHERE tenant_id=$1 AND process_id=$2 AND enabled=true LIMIT 1`, tenantID, processID).
-		Scan(&p.ID, &p.TenantID, &p.Name, &p.RiskLevel, &p.ProcessID, &p.ResponseHours, &p.ResolutionHours, &p.EscalationHours, &p.EscalationTo, &escalationJSON, &p.Enabled, &p.CreatedAt, &p.UpdatedAt)
+		Scan(&p.ID, &p.TenantID, &p.Name, &p.RiskLevel, &p.ProcessID, &p.ResponseHours, &p.ResolutionHours, &p.EscalationHours, &p.EscalationTo, &escalationJSON, &p.ServiceWindowID, &p.Enabled, &p.CreatedAt, &p.UpdatedAt)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}

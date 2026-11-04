@@ -14,7 +14,7 @@ import { useEffect, useMemo, useRef, useState, type DragEvent, type PointerEvent
 import {
   ArrowDown, ArrowUp, ChevronDown, ChevronRight, Eye, GripVertical, Plus, SquareStack, Trash2,
 } from 'lucide-react'
-import { FIELD_TYPES, createField, defaultColSpan, FieldPropertyPanel } from './FormBuilder'
+import { FIELD_TYPES, createField, defaultColSpan, FieldPropertyPanel, TabsManager } from './FormBuilder'
 import {
   DynamicForm,
   normalizeColSpan,
@@ -396,6 +396,7 @@ export function FormDesigner({
 
       {/* 中: 12 栅格画布 + 实时预览 */}
       <div className="space-y-3">
+        <TabsManager tabs={schema.tabs} disabled={disabled} onChange={tabs => onChange({ ...schema, tabs })} />
         <div
           onDragOver={e => {
             if (allowDrop(e, [MIME_TYPE, MIME_FIELD, MIME_SECTION])) setDragOver(true)
@@ -529,9 +530,18 @@ export function FormDesigner({
                                     内置
                                   </span>
                                 )}
+                                {f.dict_ref && (
+                                  <span
+                                    className="ml-1 rounded bg-violet-500/15 px-1 align-middle text-[9px] font-normal text-violet-600 dark:text-violet-400"
+                                    title={`字典引用（${f.dict_ref}${f.dict_key ? ` · ${f.dict_key}` : ''}）：定义以数据字典为准，字典更新后此处自动同步`}
+                                  >
+                                    字典
+                                  </span>
+                                )}
                               </div>
                               <div className="truncate text-[10px] text-muted-foreground">
                                 {f.key} · {FIELD_TYPES.find(t => t.value === f.type)?.label || f.type}
+                                {f.type === 'group' && ` · ${(f.children || []).length} 子字段（属性面板编辑）`}
                               </div>
                             </div>
                             <span
@@ -596,6 +606,7 @@ export function FormDesigner({
             field={active}
             sources={sources}
             referableFields={referableFields}
+            tabs={schema.tabs}
             disabled={disabled}
             onChange={updateActive}
           />

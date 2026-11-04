@@ -95,6 +95,16 @@ func (p *Process) StartStep() *Step {
 	return nil
 }
 
+// EndStep 返回流程的结束步骤（dry-run 完整性检查用）。
+func (p *Process) EndStep() *Step {
+	for i := range p.Steps {
+		if p.Steps[i].Type == StepEnd {
+			return &p.Steps[i]
+		}
+	}
+	return nil
+}
+
 // FanOut 返回所有直接依赖 currentStepID 的步骤(并行网关的分支端点)。
 func (p *Process) FanOut(currentStepID string) []*Step {
 	var out []*Step
@@ -104,6 +114,22 @@ func (p *Process) FanOut(currentStepID string) []*Step {
 				out = append(out, &p.Steps[i])
 				break
 			}
+		}
+	}
+	return out
+}
+
+// FanIn 返回 targetID 的上游步骤(汇聚网关 join 的上游分支):
+// 即 join 自身 DependsOn 中引用的节点 —— DependsOn 语义为「本步骤依赖这些上游」。
+func (p *Process) FanIn(targetID string) []*Step {
+	j := p.StepByID(targetID)
+	if j == nil {
+		return nil
+	}
+	var out []*Step
+	for _, dep := range j.DependsOn {
+		if s := p.StepByID(dep.NodeID); s != nil {
+			out = append(out, s)
 		}
 	}
 	return out
@@ -132,6 +158,12 @@ func StepTypeToTicketStatus(st *Step) string {
 		return "pending_review" // 定时器超时前也是等审批
 	case StepNotify:
 		return "" // 不改变状态,只是触发通知
+	case StepJoin:
+		return "executing" // 汇聚等待中: 视为执行中(等上游分支汇合, 无需人工操作)
+	case StepDispatch:
+		return "executing" // 派单中: auto 已落库待处理 / manual 等待调度员指派(工单「指派」操作后续跑)
+	case StepWait:
+		return "on_hold" // 等待条件: 工单挂起(条件成立自动恢复), 与人工 hold 语义一致
 	default:
 		return ""
 	}

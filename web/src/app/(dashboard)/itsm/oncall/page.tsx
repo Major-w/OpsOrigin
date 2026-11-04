@@ -36,7 +36,7 @@ export default function OnCallPage() {
   return (
     <div className="p-6 space-y-4">
       <div className="flex items-center justify-between">
-        <div><h1 className="text-2xl font-bold">值班管理</h1><p className="text-sm text-muted-foreground">排班与轮值</p></div>
+        <div><h1 className="text-2xl font-bold">值班管理</h1><p className="text-sm text-muted-foreground">排班与轮值 · 值班时段可在「服务时间」页一键导入为服务窗口，用于 SLA 时限计算</p></div>
         <div className="flex gap-2">
           <Button type="default" size="middle" onClick={() => setShiftDialog(true)}><Plus className="h-4 w-4" />添加值班</Button>
           <Button type="primary" size="middle" onClick={() => setRotDialog(true)}><Plus className="h-4 w-4" />创建轮值组</Button>

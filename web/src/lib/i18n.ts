@@ -358,6 +358,7 @@ const zhCN: Record<string, string> = {
   'itsm.slaOla': 'SLA/OLA',
   'itsm.slaBreached': 'SLA 违规',
   'itsm.formDicts': '数据字典',
+  'itsm.serviceHours': '服务时间',
   'itsm.oncallCalendar': '值班日历',
   'itsm.inbound': '入站配置',
   'itsm.knowledge': '知识库',
@@ -367,6 +368,7 @@ const zhCN: Record<string, string> = {
   'knowledge.categories': '分类管理',
   'knowledge.new': '新建文档',
   'knowledge.articleList': '文章列表',
+  'knowledge.reports': '知识库报表',
   'knowledge.insights': '检索可观测',
   'knowledge.retrievalLab': '检索测试台',
 
@@ -1004,6 +1006,7 @@ const enUS: Record<string, string> = {
   'itsm.slaOla': 'SLA/OLA',
   'itsm.slaBreached': 'SLA Breached',
   'itsm.formDicts': 'Form Dictionaries',
+  'itsm.serviceHours': 'Service Hours',
   'itsm.oncallCalendar': 'On-Call Calendar',
   'itsm.inbound': 'Inbound Config',
   'itsm.knowledge': 'Knowledge',
@@ -1013,6 +1016,7 @@ const enUS: Record<string, string> = {
   'knowledge.categories': 'Categories',
   'knowledge.new': 'New Document',
   'knowledge.articleList': 'Article List',
+  'knowledge.reports': 'Knowledge Reports',
   'knowledge.insights': 'Retrieval Insights',
   'knowledge.retrievalLab': 'Retrieval Lab',
 

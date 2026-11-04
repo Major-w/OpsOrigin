@@ -94,7 +94,9 @@ func TestPGTicketColumnsMatchModel(t *testing.T) {
 	mustContain(t, "UPDATE", m[0], cols, map[string]bool{"created_at": true, "tenant_id": true})
 
 	// 3) 四个 SELECT（Get/List/ListActive/ListOnHold）：全字段必读。
-	selRe := regexp.MustCompile(`SELECT id, tenant_id, title(?s:.*?)FROM itsm_tickets`)
+	// 注意：工单号 number 紧跟在 id 之后（id, number, tenant_id, title ...），
+	// 因此正则从 "SELECT id, number, tenant_id, title" 起锚。
+	selRe := regexp.MustCompile(`SELECT id, number, tenant_id, title(?s:.*?)FROM itsm_tickets`)
 	blocks := selRe.FindAllString(src, -1)
 	if len(blocks) != 4 {
 		t.Fatalf("期望 4 个工单 SELECT（Get/List/ListActive/ListOnHold），实际 %d 个", len(blocks))

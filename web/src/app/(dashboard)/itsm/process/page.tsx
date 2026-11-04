@@ -2,11 +2,12 @@
 import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
-import { Button, Tag, Input, Popconfirm } from 'antd'
+import { Button, Tag, Input, Popconfirm, Modal } from 'antd'
 import { useProcessStore } from '@/stores/itsm/processes'
 import type { Process } from '@/stores/itsm/types'
 import { ProcessVersionHistory } from '@/components/itsm/ProcessVersionHistory'
-import { Plus, Pencil, Trash2, GitBranch, ChevronLeft, History } from 'lucide-react'
+import ProcessFlowView from '@/components/itsm/ProcessFlowView'
+import { Plus, Pencil, Trash2, GitBranch, ChevronLeft, History, Eye } from 'lucide-react'
 
 export default function ITSMProcessPage() {
   const navigate = useNavigate()
@@ -16,6 +17,9 @@ export default function ITSMProcessPage() {
   const [desc, setDesc] = useState('')
   const [creating, setCreating] = useState(false)
   const [histId, setHistId] = useState<string | null>(null)
+  // 流程图预览：不进设计器直接查看流程 DAG 只读图
+  const [previewId, setPreviewId] = useState<string | null>(null)
+  const preview = previewId ? processes.find(p => p.id === previewId) : null
 
   useEffect(() => { fetchProcesses() }, [])
 
@@ -48,6 +52,7 @@ export default function ITSMProcessPage() {
         </div>
         <div className="flex items-center gap-2 shrink-0">
           <Tag color={p.enabled?'success':'default'} className="text-xs">{p.enabled?'启用':'禁用'}</Tag>
+          <Button type="text" size="middle" className="text-gray-500 hover:text-gray-900 dark:text-gray-400 dark:hover:text-white" title="预览流程图" onClick={e=>{e.stopPropagation();setPreviewId(p.id)}}><Eye className="h-3.5 w-3.5"/></Button>
           <Button type="text" size="middle" className="text-gray-500 hover:text-gray-900 dark:text-gray-400 dark:hover:text-white" title="历史版本" onClick={e=>{e.stopPropagation();setHistId(p.id)}}><History className="h-3.5 w-3.5"/></Button>
           <Button type="text" size="middle" className="text-gray-500 hover:text-gray-900 dark:text-gray-400 dark:hover:text-white" onClick={e=>{e.stopPropagation();navigate(`/itsm/process/${p.id}`)}}><Pencil className="h-3.5 w-3.5"/></Button>
           <Popconfirm title="确认删除" description={`确定删除流程「${p.name}」？`} onConfirm={() => { deleteProcess(p.id) }} okText="确认" cancelText="取消">
@@ -58,5 +63,11 @@ export default function ITSMProcessPage() {
     </div>
 
     <ProcessVersionHistory processId={histId || ''} open={histId !== null} onClose={() => setHistId(null)} />
+
+    <Modal open={!!preview} onCancel={() => setPreviewId(null)} title={`流程图 · ${preview?.name || ''}`} footer={null} width={820} destroyOnHidden>
+      {preview ? (
+        <ProcessFlowView steps={preview.steps || []} processName={preview.description || preview.name} />
+      ) : null}
+    </Modal>
   </div>
 }

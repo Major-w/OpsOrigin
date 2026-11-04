@@ -3,18 +3,23 @@ package store
 import (
 	"context"
 	"errors"
+	"fmt"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/opsorigin/core/internal/itsm/form"
 	"github.com/opsorigin/core/internal/itsm/model"
+	"github.com/opsorigin/core/internal/itsm/process"
 )
 
 var ErrNotFound = errors.New("ticket not found")
 
 type Store interface {
 	Create(ctx context.Context, ticket *model.Ticket) error
+	// NextTicketNumber 按规则生成唯一可读工单号（rule 为 nil 或未启用则全局默认 TK-YYYY-NNNN）。
+	NextTicketNumber(ctx context.Context, tenantID, processID string, rule *process.TicketNumberRule) (string, error)
 	Get(ctx context.Context, id, tenantID string) (*model.Ticket, error)
 	Update(ctx context.Context, ticket *model.Ticket) error
 	List(ctx context.Context, tenantID string, status model.TicketStatus) ([]*model.Ticket, error)
@@ -59,6 +64,28 @@ type Store interface {
 	ListFieldDicts(ctx context.Context, tenantID string) ([]*form.FieldDict, error)
 	UpsertFieldDict(ctx context.Context, tenantID string, dict *form.FieldDict) error
 	DeleteFieldDict(ctx context.Context, tenantID, id string) error
+	// Ticket templates (prefilled ticket creation)
+	GetTicketTemplate(ctx context.Context, tenantID, id string) (*model.TicketTemplate, error)
+	ListTicketTemplates(ctx context.Context, tenantID string) ([]*model.TicketTemplate, error)
+	UpsertTicketTemplate(ctx context.Context, tenantID string, t *model.TicketTemplate) error
+	DeleteTicketTemplate(ctx context.Context, tenantID, id string) error
+
+	// 自动化触发器(P1: 工单事件 -> 条件 -> 动作)
+	GetAutomationRule(ctx context.Context, tenantID, id string) (*model.AutomationRule, error)
+	ListAutomationRules(ctx context.Context, tenantID string) ([]*model.AutomationRule, error)
+	UpsertAutomationRule(ctx context.Context, tenantID string, r *model.AutomationRule) error
+	DeleteAutomationRule(ctx context.Context, tenantID, id string) error
+
+	// 自定义按钮(工单详情页快捷操作, 执行由前端映射既有工单端点)
+	GetTicketButton(ctx context.Context, tenantID, id string) (*model.TicketButton, error)
+	ListTicketButtons(ctx context.Context, tenantID string) ([]*model.TicketButton, error)
+	UpsertTicketButton(ctx context.Context, tenantID string, b *model.TicketButton) error
+	DeleteTicketButton(ctx context.Context, tenantID, id string) error
+
+	// 状态流转规则(P2-⑯: 自定义状态+流转规则, 只收紧不放大)
+	GetStatusFlow(ctx context.Context, tenantID, catalogID string) (*model.StatusFlow, error)
+	UpsertStatusFlow(ctx context.Context, tenantID string, f *model.StatusFlow) error
+	DeleteStatusFlow(ctx context.Context, tenantID, catalogID string) error
 }
 
 type MemoryStore struct {
@@ -69,18 +96,28 @@ type MemoryStore struct {
 	subtasks    []*model.Subtask
 	attachments []*model.Attachment
 	changes     map[string]*model.ChangeRequest
-	schemas     map[string]map[string]*form.FormSchema // tenantID -> scope -> schema
-	dicts       map[string]map[string]*form.FieldDict  // tenantID -> dictID -> dict
+	schemas     map[string]map[string]*form.FormSchema      // tenantID -> scope -> schema
+	dicts       map[string]map[string]*form.FieldDict       // tenantID -> dictID -> dict
+	templates   map[string]map[string]*model.TicketTemplate // tenantID -> templateID -> template
+	autoRules   map[string]map[string]*model.AutomationRule // tenantID -> ruleID -> rule
+	tktButtons  map[string]map[string]*model.TicketButton   // tenantID -> buttonID -> button
+	statusFlows map[string]map[string]*model.StatusFlow     // tenantID -> catalogID(""=全局) -> flow
 	nextID      int64
+	ticketSeq   map[string]int // 工单号计数器: key = tenantID + "-" + year
 }
 
 func NewMemoryStore() *MemoryStore {
 	return &MemoryStore{
-		tickets: make(map[string]*model.Ticket),
-		events:  make(map[string][]*model.TicketEvent),
-		changes: make(map[string]*model.ChangeRequest),
-		schemas: make(map[string]map[string]*form.FormSchema),
-		dicts:   make(map[string]map[string]*form.FieldDict),
+		tickets:     make(map[string]*model.Ticket),
+		events:      make(map[string][]*model.TicketEvent),
+		changes:     make(map[string]*model.ChangeRequest),
+		schemas:     make(map[string]map[string]*form.FormSchema),
+		dicts:       make(map[string]map[string]*form.FieldDict),
+		templates:   make(map[string]map[string]*model.TicketTemplate),
+		autoRules:   make(map[string]map[string]*model.AutomationRule),
+		tktButtons:  make(map[string]map[string]*model.TicketButton),
+		statusFlows: make(map[string]map[string]*model.StatusFlow),
+		ticketSeq:   make(map[string]int),
 	}
 }
 
@@ -91,12 +128,42 @@ func (s *MemoryStore) Create(ctx context.Context, ticket *model.Ticket) error {
 	defer s.mu.Unlock()
 
 	ticket.ID = uuid.New().String()
+	if ticket.Number == "" {
+		ticket.Number = s.nextTicketNumber(ticket.TenantID, ticket.ProcessID, nil)
+	}
 	now := time.Now()
 	ticket.CreatedAt = now
 	ticket.UpdatedAt = now
 
 	s.tickets[ticket.ID] = ticket
 	return nil
+}
+
+// nextTicketNumber 内存实现：按 (租户, scope_key) 自增，与 PG 规则一致（含流程自定义编号组成）。
+func (s *MemoryStore) nextTicketNumber(tenantID, processID string, rule *process.TicketNumberRule) string {
+	key := ticketCounterScopeKey(tenantID, processID, rule)
+	s.ticketSeq[key]++
+	seq := s.ticketSeq[key]
+	if rule == nil || !rule.Enabled {
+		return fmt.Sprintf("TK-%d-%04d", time.Now().Year(), seq)
+	}
+	sep := rule.EffectiveSeparator()
+	parts := []string{}
+	if rule.Prefix != "" {
+		parts = append(parts, rule.Prefix)
+	}
+	if ds := formatNumberDate(rule.DateFormat); ds != "" {
+		parts = append(parts, ds)
+	}
+	parts = append(parts, fmt.Sprintf("%0*d", rule.EffectiveSeqWidth(), seq))
+	return strings.Join(parts, sep)
+}
+
+// NextTicketNumber 实现 Store 接口（供 Service 在建单前按规则预生成编号）。
+func (s *MemoryStore) NextTicketNumber(ctx context.Context, tenantID, processID string, rule *process.TicketNumberRule) (string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.nextTicketNumber(tenantID, processID, rule), nil
 }
 
 func (s *MemoryStore) Get(ctx context.Context, id, tenantID string) (*model.Ticket, error) {
@@ -732,6 +799,242 @@ func (s *MemoryStore) DeleteFieldDict(ctx context.Context, tenantID, id string) 
 	if m, ok := s.dicts[tenantID]; ok {
 		if _, ok := m[id]; ok {
 			delete(m, id)
+			return nil
+		}
+	}
+	return ErrNotFound
+}
+
+// --- 提单模板(Memory) ---
+
+func (s *MemoryStore) GetTicketTemplate(ctx context.Context, tenantID, id string) (*model.TicketTemplate, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if m, ok := s.templates[tenantID]; ok {
+		if t, ok := m[id]; ok {
+			cp := *t
+			return &cp, nil
+		}
+	}
+	return nil, ErrNotFound
+}
+
+func (s *MemoryStore) ListTicketTemplates(ctx context.Context, tenantID string) ([]*model.TicketTemplate, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	var out []*model.TicketTemplate
+	for _, t := range s.templates[tenantID] {
+		cp := *t
+		out = append(out, &cp)
+	}
+	if out == nil {
+		out = []*model.TicketTemplate{}
+	}
+	return out, nil
+}
+
+func (s *MemoryStore) UpsertTicketTemplate(ctx context.Context, tenantID string, t *model.TicketTemplate) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if t.ID == "" {
+		t.ID = uuid.New().String()
+	}
+	t.TenantID = tenantID
+	now := time.Now()
+	if t.CreatedAt.IsZero() {
+		t.CreatedAt = now
+	}
+	t.UpdatedAt = now
+	if s.templates[tenantID] == nil {
+		s.templates[tenantID] = map[string]*model.TicketTemplate{}
+	}
+	cp := *t
+	s.templates[tenantID][t.ID] = &cp
+	return nil
+}
+
+func (s *MemoryStore) DeleteTicketTemplate(ctx context.Context, tenantID, id string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if m, ok := s.templates[tenantID]; ok {
+		if _, ok := m[id]; ok {
+			delete(m, id)
+			return nil
+		}
+	}
+	return ErrNotFound
+}
+
+// --- 自动化触发器(Memory) ---
+
+func (s *MemoryStore) GetAutomationRule(ctx context.Context, tenantID, id string) (*model.AutomationRule, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if m, ok := s.autoRules[tenantID]; ok {
+		if r, ok := m[id]; ok {
+			cp := *r
+			return &cp, nil
+		}
+	}
+	return nil, ErrNotFound
+}
+
+func (s *MemoryStore) ListAutomationRules(ctx context.Context, tenantID string) ([]*model.AutomationRule, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	var out []*model.AutomationRule
+	for _, r := range s.autoRules[tenantID] {
+		cp := *r
+		out = append(out, &cp)
+	}
+	if out == nil {
+		out = []*model.AutomationRule{}
+	}
+	return out, nil
+}
+
+func (s *MemoryStore) UpsertAutomationRule(ctx context.Context, tenantID string, r *model.AutomationRule) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if r.ID == "" {
+		r.ID = uuid.New().String()
+	}
+	r.TenantID = tenantID
+	now := time.Now()
+	if r.CreatedAt.IsZero() {
+		r.CreatedAt = now
+	}
+	r.UpdatedAt = now
+	if s.autoRules[tenantID] == nil {
+		s.autoRules[tenantID] = map[string]*model.AutomationRule{}
+	}
+	cp := *r
+	s.autoRules[tenantID][r.ID] = &cp
+	return nil
+}
+
+func (s *MemoryStore) DeleteAutomationRule(ctx context.Context, tenantID, id string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if m, ok := s.autoRules[tenantID]; ok {
+		if _, ok := m[id]; ok {
+			delete(m, id)
+			return nil
+		}
+	}
+	return ErrNotFound
+}
+
+// --- 自定义按钮(Memory) ---
+
+func (s *MemoryStore) GetTicketButton(ctx context.Context, tenantID, id string) (*model.TicketButton, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if m, ok := s.tktButtons[tenantID]; ok {
+		if b, ok := m[id]; ok {
+			cp := *b
+			return &cp, nil
+		}
+	}
+	return nil, ErrNotFound
+}
+
+func (s *MemoryStore) ListTicketButtons(ctx context.Context, tenantID string) ([]*model.TicketButton, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	var out []*model.TicketButton
+	for _, b := range s.tktButtons[tenantID] {
+		cp := *b
+		out = append(out, &cp)
+	}
+	// sort_order 升序稳定输出
+	for i := 1; i < len(out); i++ {
+		for j := i; j > 0 && out[j].SortOrder < out[j-1].SortOrder; j-- {
+			out[j], out[j-1] = out[j-1], out[j]
+		}
+	}
+	if out == nil {
+		out = []*model.TicketButton{}
+	}
+	return out, nil
+}
+
+func (s *MemoryStore) UpsertTicketButton(ctx context.Context, tenantID string, b *model.TicketButton) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if b.ID == "" {
+		b.ID = uuid.New().String()
+	}
+	b.TenantID = tenantID
+	now := time.Now()
+	if b.CreatedAt.IsZero() {
+		b.CreatedAt = now
+	}
+	b.UpdatedAt = now
+	if s.tktButtons[tenantID] == nil {
+		s.tktButtons[tenantID] = map[string]*model.TicketButton{}
+	}
+	cp := *b
+	s.tktButtons[tenantID][b.ID] = &cp
+	return nil
+}
+
+func (s *MemoryStore) DeleteTicketButton(ctx context.Context, tenantID, id string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if m, ok := s.tktButtons[tenantID]; ok {
+		if _, ok := m[id]; ok {
+			delete(m, id)
+			return nil
+		}
+	}
+	return ErrNotFound
+}
+
+// --- 状态流转规则(Memory): key = catalogID(""=全局) ---
+
+func (s *MemoryStore) GetStatusFlow(ctx context.Context, tenantID, catalogID string) (*model.StatusFlow, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if m, ok := s.statusFlows[tenantID]; ok {
+		if catalogID != "" {
+			if f, ok := m[catalogID]; ok {
+				cp := *f
+				return &cp, nil
+			}
+		}
+		if f, ok := m[""]; ok {
+			cp := *f
+			return &cp, nil
+		}
+	}
+	return nil, ErrNotFound
+}
+
+func (s *MemoryStore) UpsertStatusFlow(ctx context.Context, tenantID string, f *model.StatusFlow) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if f.ID == "" {
+		f.ID = uuid.New().String()
+	}
+	f.TenantID = tenantID
+	if f.Transitions == nil {
+		f.Transitions = []model.TransitionRule{}
+	}
+	if s.statusFlows[tenantID] == nil {
+		s.statusFlows[tenantID] = map[string]*model.StatusFlow{}
+	}
+	cp := *f
+	s.statusFlows[tenantID][f.CatalogID] = &cp
+	return nil
+}
+
+func (s *MemoryStore) DeleteStatusFlow(ctx context.Context, tenantID, catalogID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if m, ok := s.statusFlows[tenantID]; ok {
+		if _, ok := m[catalogID]; ok {
+			delete(m, catalogID)
 			return nil
 		}
 	}

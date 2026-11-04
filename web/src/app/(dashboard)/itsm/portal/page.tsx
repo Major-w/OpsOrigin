@@ -15,7 +15,7 @@ import { buildTree, parseFormSchema, type TreeNode } from '@/lib/itsm-constants'
 import { useProcessStore } from '@/stores/itsm/processes'
 import type { Process } from '@/stores/itsm/types'
 import { useAuthStore } from '@/stores/auth'
-import { DynamicForm, withBuiltinFields, splitBuiltinValues, type FormSchema } from '@/components/itsm/DynamicForm'
+import { DynamicForm, withBuiltinFields, splitBuiltinValues, resolveDefaultValue, type FormSchema } from '@/components/itsm/DynamicForm'
 import ProcessFlowView from '@/components/itsm/ProcessFlowView'
 import { getMessage } from '@/lib/message'
 import { Button, Drawer, Form, Input, Tabs, Tag } from 'antd'
@@ -191,10 +191,13 @@ export default function ITSMPortalPage() {
       setProc(p)
       if (!s) s = await getFormSchema(item.form_scope || `catalog:${item.id}`)
       setSchema(s)
-      // 预填默认值：内置字段(title=申请：服务名, risk_level=low) + 自定义字段默认
+      // 预填默认值：内置字段(title=申请：服务名, risk_level=low) + 自定义字段默认（含 {{current_user}} 等动态 token）
       const merged = withBuiltinFields(s)
       const defaults: Record<string, unknown> = { risk_level: 'low' }
-      for (const f of merged.fields || []) if (f.default !== undefined) defaults[f.key] = f.default
+      for (const f of merged.fields || []) {
+        const dv = resolveDefaultValue(f, me?.username)
+        if (dv !== undefined) defaults[f.key] = dv
+      }
       if (!('title' in defaults) || !defaults.title) defaults.title = `申请：${item.name}`
       setFormValues(defaults)
     } catch { setSchema(null); setFormValues({}) }
@@ -399,7 +402,7 @@ export default function ITSMPortalPage() {
                   </div>
                   <div className="flex gap-2 pt-2">
                     <Button type="default" size="middle" onClick={closeApply}>继续浏览</Button>
-                    {createdId && <Button type="primary" size="middle" onClick={() => navigate(`/itsm/tickets?id=${createdId}`)}>查看工单</Button>}
+                    {createdId && <Button type="primary" size="middle" onClick={() => navigate(`/itsm/tickets/${createdId}`)}>查看工单</Button>}
                   </div>
                 </div>
               ) : (

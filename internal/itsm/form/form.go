@@ -31,6 +31,10 @@ const (
 	TypeTimeRange   FieldType = "timerange"  // 时间段（HH:mm~HH:mm）
 	TypeLink        FieldType = "link"       // 链接（URL）
 	TypeExpression  FieldType = "expression" // 计算/表达式（只读展示，值为表达式文本）
+	TypeGroup       FieldType = "group"      // 分组容器（子表单轻量版：Children 内嵌字段，值仍平铺 custom_fields）
+	TypeRating      FieldType = "rating"     // 评分（1~5 星，值为数字；对标 SN 5-point scale）
+	TypeDateRange   FieldType = "daterange"  // 日期区间（值为 "开始~结束"，两端日期）
+	TypeNote        FieldType = "note"       // 说明区块（纯展示 Help/Label 富说明，不产生值；对标 SN UI Macro/说明变量）
 )
 
 // 条件运算符
@@ -71,6 +75,9 @@ type FieldOption struct {
 	Value    string        `json:"value"`
 	Label    string        `json:"label"`
 	Children []FieldOption `json:"children,omitempty"`
+	// Price 选项价格（变量价格，对标 SN Variable Pricing）：>0 时前端费用合计计入。
+	// 纯展示/汇总语义，后端不做校验与计价，仅透传保存。
+	Price float64 `json:"price,omitempty"`
 }
 
 // FieldValidation 字段级校验
@@ -114,6 +121,12 @@ type FieldDef struct {
 
 	// DictRef 引用数据字典 ID: 非空时本字段定义从字典展开(见 ExpandDictRefs)。
 	DictRef string `json:"dict_ref,omitempty"`
+	// DictKey 配合 DictRef 做字段级引用: 非空时只展开字典内 key 匹配的那一个字段
+	// (空=展开字典全部字段, 保持旧行为)。
+	DictKey string `json:"dict_key,omitempty"`
+	// Children 分组容器(TypeGroup)的内嵌字段: 值仍平铺存 custom_fields(与顶层字段同层),
+	// 校验/渲染/字典展开统一经 FlattenFields 展平处理, 存储结构与旧 schema 完全兼容。
+	Children []FieldDef `json:"children,omitempty"`
 	// Roles 可编辑角色白名单: 非空表示仅这些角色的用户可编辑, 空=所有人可编辑。
 	Roles []string `json:"roles,omitempty"`
 
@@ -129,6 +142,34 @@ type FieldDef struct {
 	Accept   string `json:"accept,omitempty"`
 	MaxCount int    `json:"max_count,omitempty"`
 	Multiple *bool  `json:"multiple,omitempty"`
+
+	// Tab 字段所属页签的 key：FormSchema.Tabs 非空时生效，空=归入第一个页签。
+	// 页签是纯渲染层分组（长表单分步），不影响存储与校验（值仍平铺 custom_fields）。
+	Tab string `json:"tab,omitempty"`
+
+	// Columns 表格字段(TypeTable)的列定义：非空时进入结构化模式（对标 SN MRVS），
+	// 值从自由二维数组 [][]string 升级为「按列 key 组织的对象数组」[]map[string]string；
+	// 空=旧行为（自由二维表格）。列定义在设计器配置，校验/渲染双端按列驱动。
+	Columns []TableColumn `json:"table_columns,omitempty"`
+
+	// Price 字段单价（变量价格，对标 SN Variable Pricing）：仅对可计价类型生效——
+	// bool(勾选后计入单价)、number(值×单价)、select/multiselect(走选项级 Price)。
+	// 纯前端汇总展示，后端不校验不参与服务端计价。
+	Price float64 `json:"price,omitempty"`
+}
+
+// TableColumn 结构化表格的列定义（MRVS：变量即列）。
+type TableColumn struct {
+	Key      string `json:"key"`      // 列标识，行对象里的 key
+	Label    string `json:"label"`    // 列头显示名
+	Required bool   `json:"required"` // 该列必填（行级校验）
+}
+
+// FormTab 表单页签定义：长表单分步布局（对标 SN Form Designer 的 Tab 页）。
+// Key 是 FieldDef.Tab 的取值；Label 为页签显示名。纯渲染层概念。
+type FormTab struct {
+	Key   string `json:"key"`
+	Label string `json:"label"`
 }
 
 // FormSchema 一张可配置表单，按作用域定位
@@ -136,6 +177,19 @@ type FormSchema struct {
 	Version int        `json:"version"`
 	Scope   string     `json:"scope"` // 如 ticket:default / catalog:<id> / process:<id>:step:<step_id>
 	Fields  []FieldDef `json:"fields"`
+
+	// BehaviorRules UI 联动规则（schema 级）：条件命中时对目标字段施加显隐/必填/只读/可编辑动作。
+	// 与字段级 VisibleWhenRules 互补：后者只描述"字段自己何时显示"，前者支持四类动作且可多目标。
+	BehaviorRules []BehaviorRule `json:"behavior_rules,omitempty"`
+	// ComboRules 跨字段组合校验：条件命中时按 severity 阻断(block)或提示(warn)。
+	ComboRules []ComboRule `json:"combo_rules,omitempty"`
+	// DataLinks 数据联动规则（"选 A 自动带出 B"）：条件命中时把固定值或其它字段值写入目标字段。
+	DataLinks []DataLinkRule `json:"data_links,omitempty"`
+	// DecisionTables 决策表：条件列 × 输出列的规则矩阵，首个命中行生效。
+	DecisionTables []DecisionTable `json:"decision_tables,omitempty"`
+	// Tabs 页签定义：非空时渲染端按 FieldDef.Tab 分页签展示（长表单分步）；
+	// 未归入任何页签的字段落入第一个页签。存储/校验不受影响。
+	Tabs []FormTab `json:"tabs,omitempty"`
 }
 
 // SchemaStore 表单 schema 持久化能力（由 internal/itsm/store 的 PGStore / MemoryStore 实现）。
@@ -178,17 +232,64 @@ type DictStore interface {
 	DeleteFieldDict(ctx context.Context, tenantID, id string) error
 }
 
+// maxGroupDepth 分组嵌套深度上限（防环/防异常 schema 递归爆栈）。
+const maxGroupDepth = 8
+
+// FlattenFields 把字段列表递归展平为叶子字段：分组容器(TypeGroup)本身不产生值,
+// 其 Children 与顶层字段同层平铺; 嵌套分组继续下钻(受 maxGroupDepth 保护)。
+// 校验/默认值/计算字段/字典展开统一基于展平结果, 存储仍是平铺 custom_fields。
+func FlattenFields(fields []FieldDef) []FieldDef {
+	return flattenFieldsDepth(fields, 0)
+}
+
+func flattenFieldsDepth(fields []FieldDef, depth int) []FieldDef {
+	if depth > maxGroupDepth {
+		return nil
+	}
+	var out []FieldDef
+	for _, f := range fields {
+		if f.Type == TypeGroup {
+			out = append(out, flattenFieldsDepth(f.Children, depth+1)...)
+			continue
+		}
+		out = append(out, f)
+	}
+	return out
+}
+
 // ExpandDictRefs 将 schema 中带 DictRef 的字段展开为字典里的字段定义。
-// 找不到字典或字段 key 时保留原字段(容错, 不阻断表单)。
+// DictKey 非空时只展开字典内 key 匹配的单个字段(字段级引用); 空则展开字典全部字段(旧行为)。
+// 找不到字典或字段 key 时保留原字段(容错, 不阻断表单)。分组容器的 Children 同样递归展开。
+//
+// 引用式展开（对标 SN Variable Set）：展开产物保留 DictRef/DictKey 标记——schema 落库的
+// 始终是引用而非副本，每次渲染（GET schema/校验）都从字典实时解析。这样设计器加载
+// 展开结果再保存也不会断开关联，字典改一处全部引用它的表单全局生效，且展开幂等。
 func ExpandDictRefs(schema *FormSchema, dicts map[string]*FieldDict) {
 	if schema == nil {
 		return
 	}
+	schema.Fields = expandDictFields(schema.Fields, dicts, 0)
+}
+
+func expandDictFields(fields []FieldDef, dicts map[string]*FieldDict, depth int) []FieldDef {
+	if depth > maxGroupDepth {
+		return fields
+	}
 	var expanded []FieldDef
-	for _, f := range schema.Fields {
+	for _, f := range fields {
+		if f.Type == TypeGroup {
+			f.Children = expandDictFields(f.Children, dicts, depth+1)
+			expanded = append(expanded, f)
+			continue
+		}
 		if f.DictRef != "" {
 			if d, ok := dicts[f.DictRef]; ok {
+				var matched bool
 				for _, df := range d.Fields {
+					if f.DictKey != "" && df.Key != f.DictKey {
+						continue // 字段级引用: 只取字典内匹配的单个字段
+					}
+					matched = true
 					// 保留原字段的分组/排序/必填覆盖, 其余以字典定义为准
 					df.Section = f.Section
 					if df.Order == 0 {
@@ -197,12 +298,21 @@ func ExpandDictRefs(schema *FormSchema, dicts map[string]*FieldDict) {
 					if !f.Required {
 						df.Required = f.Required
 					}
+					// 引用式展开关键：保留引用标记，设计器保存后关联不断开，
+					// 下次渲染仍以字典为准重新展开（幂等）。
+					df.DictRef = f.DictRef
+					df.DictKey = f.DictKey
 					expanded = append(expanded, df)
+					if f.DictKey != "" {
+						break // 单字段引用只取一个
+					}
 				}
-				continue
+				if matched {
+					continue
+				}
 			}
 		}
 		expanded = append(expanded, f)
 	}
-	schema.Fields = expanded
+	return expanded
 }

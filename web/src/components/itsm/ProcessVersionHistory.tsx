@@ -10,8 +10,10 @@ import type { ProcessStep, ProcessVersion } from '@/stores/itsm/types'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { Dialog } from '@/components/ui/dialog'
+import { ConfirmDialog } from '@/components/ui/confirm-dialog'
 import { formatTime } from '@/lib/utils'
-import { History, GitCompare, Loader2, ArrowRight } from 'lucide-react'
+import { getMessage } from '@/lib/message'
+import { History, GitCompare, Loader2, ArrowRight, Undo2 } from 'lucide-react'
 
 const TYPE_LABEL: Record<string, string> = {
   start: '开始', end: '结束', user: '人工', gateway: '网关',
@@ -64,11 +66,30 @@ export function ProcessVersionHistory({ processId, open, onClose }: {
   open: boolean
   onClose: () => void
 }) {
-  const { listProcessVersions } = useProcessStore()
+  const { listProcessVersions, restoreProcessVersion } = useProcessStore()
   const [versions, setVersions] = useState<ProcessVersion[]>([])
   const [loading, setLoading] = useState(false)
   const [aId, setAId] = useState('current')
   const [bId, setBId] = useState<string | null>(null)
+  // 回滚二次确认（契约：破坏性操作走 ConfirmDialog）
+  const [restoreTarget, setRestoreTarget] = useState<ProcessVersion | null>(null)
+  const [restoring, setRestoring] = useState(false)
+
+  const reload = async () => {
+    const v = await listProcessVersions(processId)
+    setVersions(v)
+  }
+
+  const doRestore = async () => {
+    if (!restoreTarget) return
+    setRestoring(true)
+    const ok = await restoreProcessVersion(processId, restoreTarget.version)
+    setRestoring(false)
+    if (ok) {
+      setRestoreTarget(null)
+      await reload()
+    }
+  }
 
   useEffect(() => {
     if (!open) return
@@ -137,6 +158,13 @@ export function ProcessVersionHistory({ processId, open, onClose }: {
                         onClick={() => setBId(v.id)}
                         className={`flex-1 rounded px-1 py-0.5 text-[10px] ${isB ? 'bg-sky-500 text-white' : 'bg-muted text-muted-foreground hover:bg-sky-500/15'}`}
                       >对比</button>
+                      {v.id !== 'current' && (
+                        <button
+                          onClick={() => setRestoreTarget(v)}
+                          title="把该版本内容恢复为当前定义（产生新版本）"
+                          className="flex-1 rounded px-1 py-0.5 text-[10px] bg-muted text-muted-foreground hover:bg-amber-500/20 hover:text-amber-600 dark:hover:text-amber-400 inline-flex items-center justify-center gap-0.5"
+                        ><Undo2 className="h-2.5 w-2.5" />回滚</button>
+                      )}
                     </div>
                   </div>
                 )
@@ -207,6 +235,16 @@ export function ProcessVersionHistory({ processId, open, onClose }: {
           </div>
         </div>
       </div>
+
+      <ConfirmDialog
+        open={!!restoreTarget}
+        onClose={() => setRestoreTarget(null)}
+        onConfirm={doRestore}
+        title={`回滚到 v${restoreTarget?.version ?? ''}`}
+        description={`将把 v${restoreTarget?.version ?? ''} 的流程内容恢复为当前定义（以新版本保存，当前定义会先归档为快照，可再次回滚找回）。在途实例不受影响（按启动时定义推进）。`}
+        confirmLabel="确认回滚"
+        loading={restoring}
+      />
     </Dialog>
   )
 }

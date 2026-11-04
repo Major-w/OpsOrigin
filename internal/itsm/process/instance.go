@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -171,9 +172,24 @@ func (s *Service) StartInstance(ctx context.Context, tenantID, processID, ticket
 	}
 	// 首个落点若是 service 步骤, 自动执行脚本并继续推进, 直到停在人工/定时步骤或流程结束。
 	if landing != nil {
-		landing, err = s.runAutomated(ctx, proc, inst, landing, nil)
+		varCtx := s.buildVarCtx(ctx, inst, nil)
+		landing, err = s.runAutomated(ctx, proc, inst, landing, varCtx)
 		if err != nil {
 			slog.Warn("itsm process auto-run on start failed", "process_id", processID, "error", err)
+		}
+		// start 直连 join 的防御场景: 登记到达并判定(start 视为第一个到达者)。
+		if landing != nil && landing.Type == StepJoin {
+			arrived := markJoinArrival(inst, landing.ID, "start")
+			if joinPass(proc, inst, landing, arrived) {
+				if nxt := passJoin(proc, inst, landing, varCtx); nxt != nil {
+					landing, err = s.runAutomated(ctx, proc, inst, nxt, varCtx)
+					if err != nil {
+						slog.Warn("itsm process auto-run on start failed", "process_id", processID, "error", err)
+					}
+				} else {
+					landing = nil
+				}
+			}
 		}
 	}
 	if landing != nil {
@@ -233,16 +249,33 @@ func (s *Service) Advance(ctx context.Context, tenantID, ticketID, condition str
 		}
 	}
 	inst.StepResults[inst.CurrentStep] = stepRec
-	exprCtx := exprCtxFromOutput(output)
-	next := proc.AdvancerExpr(inst.CurrentStep, condition, exprCtx)
+	// 变量上下文: 在记录完当前步骤结果后构建, 使 steps.<step_id> 已包含本次 output ——
+	// 网关条件与下游动作/脚本均可引用 ${steps.<id>.output} / ${ticket.*} / ${custom_fields.*}。
+	varCtx := s.buildVarCtx(ctx, inst, output)
+	next := proc.AdvancerExpr(inst.CurrentStep, condition, varCtx)
 	if next == nil {
 		inst.Status = "completed"
 		now := time.Now()
 		inst.FinishedAt = &now
 	} else {
-		landing, rerr := s.runAutomated(ctx, proc, inst, next, exprCtx)
+		landing, rerr := s.runAutomated(ctx, proc, inst, next, varCtx)
 		if rerr != nil {
 			slog.Warn("itsm process auto-run failed", "ticket_id", ticketID, "error", rerr)
+		}
+		// 汇聚网关: 分支推进到达 join —— 登记到达(以刚完成的步骤为到达者)并判定放行。
+		if landing != nil && landing.Type == StepJoin {
+			arrived := markJoinArrival(inst, landing.ID, inst.CurrentStep)
+			if joinPass(proc, inst, landing, arrived) {
+				if nxt := passJoin(proc, inst, landing, varCtx); nxt != nil {
+					landing, rerr = s.runAutomated(ctx, proc, inst, nxt, varCtx)
+					if rerr != nil {
+						slog.Warn("itsm process auto-run failed", "ticket_id", ticketID, "error", rerr)
+					}
+				} else {
+					landing = nil // join 后无下游, 流程结束
+				}
+			}
+			// 未放行: 工单停在 join(状态映射 executing), 等最后一个上游分支汇入时放行。
 		}
 		next = landing
 		if next == nil {
@@ -272,15 +305,6 @@ func resolveInstanceProcess(ctx context.Context, store Store, inst *ProcessInsta
 	return store.Get(ctx, inst.ProcessID, tenantID)
 }
 
-// exprCtxFromOutput 从 itsm 侧传入的 output(map) 中提取表达式求值上下文。
-// 兼容旧调用(output 为 string): 返回 nil, 表达式分支退化为不命中。
-func exprCtxFromOutput(output any) map[string]any {
-	if m, ok := output.(map[string]any); ok {
-		return m
-	}
-	return nil
-}
-
 // maxAutoSteps 防止异常流程定义导致自动执行死循环。
 const maxAutoSteps = 20
 
@@ -297,6 +321,14 @@ func (s *Service) runAutomatedDepth(ctx context.Context, proc *Process, inst *Pr
 	if depth > maxSubflowDepth {
 		return nil, fmt.Errorf("process %s: subflow nesting exceeds %d", proc.ID, maxSubflowDepth)
 	}
+	// 变量上下文惰性兜底: 直接调用(如测试/StartInstance 未构建时)也能在同轮自动链内
+	// 形成「上游输出 → 下游参数」的变量链路。
+	if exprCtx == nil {
+		exprCtx = map[string]any{}
+	}
+	if _, ok := exprCtx["steps"]; !ok {
+		exprCtx["steps"] = map[string]any{}
+	}
 	cur := first
 	for i := 0; i < maxAutoSteps; i++ {
 		if cur == nil || cur.Type == StepEnd {
@@ -306,18 +338,45 @@ func (s *Service) runAutomatedDepth(ctx context.Context, proc *Process, inst *Pr
 			recordStepEntered(inst, cur, time.Now())
 			return cur, nil // 等待人工审批
 		}
+		if cur.Type == StepDispatch {
+			// 派单节点: auto 模式解析受派人→落库→继续; manual 模式停等人工指派(assign 后续跑)。
+			return s.runDispatchStep(ctx, proc, inst, cur, exprCtx)
+		}
 		if cur.Type == StepTimer {
 			recordStepEntered(inst, cur, time.Now())
 			return cur, nil // 等待定时器到期(由 StartTimerChecker 推进)
 		}
+		if cur.Type == StepWait {
+			// 等待条件节点: 挂起轮询(StartTimerChecker 每轮重评条件, 成立后自动推进)。
+			recordStepEntered(inst, cur, time.Now())
+			return cur, nil
+		}
 		if cur.Type == StepService && cur.ActionType != "" && s.actionExec != nil {
 			// 动作库: 执行预置动作(http/notify/create_ticket 等), 结果写 StepResults, 失败走 failure 分支。
-			params := cur.Inputs
+			// 参数先在引擎侧按变量上下文替换(支持 steps.<id>.output 等点路径), 再交动作执行器
+			// (执行器内部 tpl 仍兼容 custom_fields.xxx, 已替换的占位符不会二次展开)。
+			params := substMap(cur.Inputs, exprCtx)
 			if params == nil {
 				params = map[string]any{}
 			}
-			result, execErr := s.actionExec.ExecuteAction(ctx, cur.ActionType, params, inst.TenantID, inst.TicketID, exprCtx)
-			rec := map[string]any{"action": cur.ActionType, "at": time.Now()}
+			// 失败重试（对齐 SN REST Step 内置重试）: 按策略重试后仍失败才走 failure 分支。
+			attempts := serviceRetryAttempts(cur)
+			retryDelay := serviceRetryDelay(cur)
+			var result map[string]any
+			var execErr error
+			used := 0
+			for i := 0; i < attempts; i++ {
+				used = i + 1
+				if i > 0 {
+					slog.Warn("itsm process action retry", "action", cur.ActionType, "ticket_id", inst.TicketID, "attempt", i+1, "of", attempts)
+					sleepRetryInterval(ctx, retryDelay)
+				}
+				result, execErr = s.actionExec.ExecuteAction(ctx, cur.ActionType, params, inst.TenantID, inst.TicketID, exprCtx)
+				if execErr == nil {
+					break
+				}
+			}
+			rec := map[string]any{"action": cur.ActionType, "at": time.Now(), "attempts": used}
 			if execErr != nil {
 				rec["error"] = execErr.Error()
 				slog.Warn("itsm process action failed", "action", cur.ActionType, "ticket_id", inst.TicketID, "error", execErr)
@@ -329,6 +388,7 @@ func (s *Service) runAutomatedDepth(ctx context.Context, proc *Process, inst *Pr
 			if execErr != nil {
 				cond = "failure"
 			}
+			injectStepResult(exprCtx, cur.ID, rec, cond)
 			nxt := proc.AdvancerExpr(cur.ID, cond, exprCtx)
 			if nxt == nil {
 				return cur, nil
@@ -337,12 +397,31 @@ func (s *Service) runAutomatedDepth(ctx context.Context, proc *Process, inst *Pr
 			continue
 		}
 		if cur.Type == StepService && cur.ScriptID != "" && s.scriptExec != nil {
-			params := condStringMap(cur.Inputs)
+			// 自动节点变量链路: Inputs 中的 ${ticket.*} / ${custom_fields.*} / ${steps.<id>.output}
+			// 在下发前按变量上下文替换, 使脚本参数能引用工单字段与上游节点产出。
+			params := condStringMap(substMap(cur.Inputs, exprCtx))
 			runAs, _ := cur.Inputs["run_as"].(string)
-			output, exitCode, execErr := s.scriptExec.Execute(cur.ScriptID, params, 0, runAs, "", inst.TenantID)
+			attempts := serviceRetryAttempts(cur)
+			retryDelay := serviceRetryDelay(cur)
+			var output string
+			var exitCode int
+			var execErr error
+			used := 0
+			for i := 0; i < attempts; i++ {
+				used = i + 1
+				if i > 0 {
+					slog.Warn("itsm process script retry", "script_id", cur.ScriptID, "ticket_id", inst.TicketID, "attempt", i+1, "of", attempts)
+					sleepRetryInterval(ctx, retryDelay)
+				}
+				output, exitCode, execErr = s.scriptExec.Execute(cur.ScriptID, params, 0, runAs, "", inst.TenantID)
+				if execErr == nil && exitCode == 0 {
+					break
+				}
+			}
 			inst.StepResults[cur.ID] = map[string]any{
 				"output":    output,
 				"exit_code": exitCode,
+				"attempts":  used,
 				"at":        time.Now(),
 			}
 			cond := "success"
@@ -350,6 +429,7 @@ func (s *Service) runAutomatedDepth(ctx context.Context, proc *Process, inst *Pr
 				cond = "failure"
 				slog.Warn("itsm process script failed", "script_id", cur.ScriptID, "exit_code", exitCode, "error", execErr)
 			}
+			injectStepResult(exprCtx, cur.ID, inst.StepResults[cur.ID].(map[string]any), cond)
 			nxt := proc.AdvancerExpr(cur.ID, cond, exprCtx)
 			if nxt == nil {
 				return cur, nil
@@ -368,6 +448,10 @@ func (s *Service) runAutomatedDepth(ctx context.Context, proc *Process, inst *Pr
 			cur = landing
 			continue
 		}
+		// 汇聚网关: 不可自动执行, 停在此处由上层(parallel 分支/Advance)登记到达并判定放行。
+		if cur.Type == StepJoin {
+			return cur, nil
+		}
 		if cur.Type == StepSubflow && cur.SubflowID != "" {
 			landing, err := s.runSubflow(ctx, proc, inst, cur, exprCtx, depth)
 			if err != nil {
@@ -385,6 +469,29 @@ func (s *Service) runAutomatedDepth(ctx context.Context, proc *Process, inst *Pr
 			// 子流程暂停(停在人工/定时等待点): 返回父流程 subflow 步骤本身, 由下次 Advance 恢复
 			return cur, nil
 		}
+		// 通知节点: 标题/正文经变量上下文替换后真实下发(此前为直通空转)。
+		// 通知失败不阻断业务流转 —— 记录错误后仍按 success 继续(与 OLA 升级通知同策略)。
+		if cur.Type == StepNotify && s.notifier != nil {
+			event := cur.NotifyChannel
+			if event == "" {
+				event = "workflow.notify"
+			}
+			rec := map[string]any{"notify": event, "at": time.Now()}
+			if err := s.notifier(ctx, inst.TenantID, event,
+				subst(cur.NotifyTitle, exprCtx), subst(cur.NotifyBody, exprCtx)); err != nil {
+				rec["error"] = err.Error()
+				slog.Warn("itsm process notify step failed", "ticket_id", inst.TicketID, "step", cur.ID, "error", err)
+			} else {
+				rec["sent"] = true
+			}
+			inst.StepResults[cur.ID] = rec
+			nxt := proc.AdvancerExpr(cur.ID, "success", exprCtx)
+			if nxt == nil {
+				return cur, nil
+			}
+			cur = nxt
+			continue
+		}
 		// 无脚本的 service / notify / gateway / start 等: 按 success 直通
 		// (gateway 的下游若为表达式条件, AdvancerExpr 会基于表单字段上下文求值选路)
 		nxt := proc.AdvancerExpr(cur.ID, "success", exprCtx)
@@ -399,6 +506,8 @@ func (s *Service) runAutomatedDepth(ctx context.Context, proc *Process, inst *Pr
 // runParallel 执行并行网关: 枚举其所有下游分支端点, 顺序执行每个分支的自动步骤链。
 // 务实语义(文档标注): 自动分支按顺序执行; 分支内遇人工/定时等待点时整个并行暂停于该等待点,
 // 工单状态映射为等待点; 全部分支自动执行完(无等待点)则流程结束。
+// 分支链终止于汇聚网关(join)或直接终结(end/无下游)时, 以分支端点 ID 登记到达;
+// 全部分支走完后对 join 做 all/any 判定, 放行则从 join 下游继续。
 // 返回 nil 表示并行完成, 否则返回等待点步骤。
 func (s *Service) runParallel(ctx context.Context, proc *Process, inst *ProcessInstance, par *Step, exprCtx map[string]any, depth int) (*Step, error) {
 	endpoints := proc.FanOut(par.ID)
@@ -410,10 +519,18 @@ func (s *Service) runParallel(ctx context.Context, proc *Process, inst *ProcessI
 		return nxt, nil
 	}
 	var firstWait *Step
+	var joinHit *Step
 	for _, ep := range endpoints {
 		landing, err := s.runAutomatedDepth(ctx, proc, inst, ep, exprCtx, depth+1)
 		if err != nil {
 			return nil, err
+		}
+		if landing != nil && landing.Type == StepJoin {
+			markJoinArrival(inst, landing.ID, ep.ID)
+			if joinHit == nil {
+				joinHit = landing
+			}
+			continue
 		}
 		if landing == nil {
 			continue // 分支到 end / 无下游
@@ -421,6 +538,19 @@ func (s *Service) runParallel(ctx context.Context, proc *Process, inst *ProcessI
 		if firstWait == nil && (landing.Type == StepUser || landing.Type == StepTimer) {
 			firstWait = landing
 		}
+	}
+	// 分支全部走完: 对已到达的 join 判定放行(all/any)。
+	if joinHit != nil {
+		arrived, _ := toStringSlice(inst.StepResults[joinHit.ID].(map[string]any)["arrived_by"])
+		if joinPass(proc, inst, joinHit, arrived) {
+			nxt := passJoin(proc, inst, joinHit, exprCtx)
+			if nxt == nil {
+				return nil, nil // join 后无下游, 流程结束
+			}
+			return s.runAutomatedDepth(ctx, proc, inst, nxt, exprCtx, depth+1)
+		}
+		// all 模式下仍有上游未汇入(停在其他等待点): 保持既有暂停语义, join 登记保留,
+		// 待该分支 Advance 推进到 join 时补登记并放行。
 	}
 	if firstWait != nil {
 		return firstWait, nil
@@ -432,6 +562,8 @@ func (s *Service) runParallel(ctx context.Context, proc *Process, inst *ProcessI
 // runSubflow 执行子流程步骤: 加载子流程定义并从其 start(或上次暂停点)开始自动执行。
 // 子流程停在人工/定时等待点时, 记录 subflow_next 到父流程该步骤的 StepResults 并返回暂停步骤;
 // 子流程完成(到 end)时返回 nil, 父流程继续。
+// 显式传参(Step.SubflowParams): 启动/恢复时基于父上下文求值并注入子流程上下文 params 命名空间;
+// For Each(Step.ForEach): 非空时对列表逐项执行子流程(仅自动子流程, 见 runSubflowForEach)。
 func (s *Service) runSubflow(ctx context.Context, proc *Process, inst *ProcessInstance, sf *Step, exprCtx map[string]any, depth int) (*Step, error) {
 	subID := sf.SubflowID
 	rec, _ := inst.StepResults[sf.ID].(map[string]any)
@@ -446,7 +578,7 @@ func (s *Service) runSubflow(ctx context.Context, proc *Process, inst *ProcessIn
 			}
 			if sub != nil {
 				if startFrom := sub.StepByID(nid); startFrom != nil {
-					return s.resumeSubflow(ctx, sub, inst, sf, startFrom, exprCtx, depth)
+					return s.resumeSubflow(ctx, sub, inst, sf, startFrom, s.subflowContext(sf, exprCtx), depth)
 				}
 			}
 		}
@@ -463,7 +595,116 @@ func (s *Service) runSubflow(ctx context.Context, proc *Process, inst *ProcessIn
 	if start == nil {
 		return nil, fmt.Errorf("subflow %s has no start step", subID)
 	}
-	return s.resumeSubflow(ctx, sub, inst, sf, start, exprCtx, depth)
+	// For Each 循环: 对列表逐项执行子流程(恢复场景不会走到这里——暂停分支已提前 return)
+	if sf.ForEach != "" {
+		return s.runSubflowForEach(ctx, sub, inst, sf, exprCtx, depth)
+	}
+	return s.resumeSubflow(ctx, sub, inst, sf, start, s.subflowContext(sf, exprCtx), depth)
+}
+
+// resolveRefValue 求值子流程传参/For Each 表达式: 纯 "${path}" 引用形式按点路径取**原始值**
+// (保留数组/对象形态, 供 For Each 逐项遍历与结构化传参); 混排或其它形态回退 ${} 字符串替换。
+func resolveRefValue(expr string, exprCtx map[string]any) any {
+	expr = strings.TrimSpace(expr)
+	if strings.HasPrefix(expr, "${") && strings.HasSuffix(expr, "}") {
+		inner := expr[2 : len(expr)-1]
+		if !strings.Contains(inner, "${") && !strings.Contains(inner, "}") {
+			return lookupVar(exprCtx, inner)
+		}
+	}
+	return substValue(expr, exprCtx)
+}
+
+// subflowParams 求值子流程传参表: 每个值经父上下文变量求值(纯引用保留原始形态);
+// 未配置返回 nil。
+func (s *Service) subflowParams(sf *Step, exprCtx map[string]any) map[string]any {
+	if len(sf.SubflowParams) == 0 {
+		return nil
+	}
+	out := make(map[string]any, len(sf.SubflowParams))
+	for k, v := range sf.SubflowParams {
+		out[k] = resolveRefValue(v, exprCtx)
+	}
+	return out
+}
+
+// subflowContext 构建子流程执行上下文: 复制父上下文(未配置传参=全量继承, 旧行为),
+// 配置了显式传参时叠加 params 命名空间(父变量仍可引用, 叠加式兼容)。
+func (s *Service) subflowContext(sf *Step, exprCtx map[string]any) map[string]any {
+	params := s.subflowParams(sf, exprCtx)
+	if len(params) == 0 {
+		return exprCtx // 未配置: 直接沿用父上下文, 与旧行为完全一致
+	}
+	sub := make(map[string]any, len(exprCtx)+1)
+	for k, v := range exprCtx {
+		sub[k] = v
+	}
+	sub["params"] = params
+	return sub
+}
+
+// runSubflowForEach For Each 循环: 对 ForEach 表达式求值出的列表逐项执行子流程,
+// 每项注入 item / item_index 到子流程上下文(在显式传参构建的上下文之上)。
+// 仅支持全自动子流程: 任一迭代停在人工/定时等待点即报错(已完成迭代的结果保留在
+// StepResults[sf.ID].for_each 中供审计), 不做跨迭代暂停恢复(务实取舍)。
+// 空列表视为循环零次, 直接完成并放行父流程。
+func (s *Service) runSubflowForEach(ctx context.Context, sub *Process, inst *ProcessInstance, sf *Step, exprCtx map[string]any, depth int) (*Step, error) {
+	raw := resolveRefValue(sf.ForEach, exprCtx)
+	items := forEachItems(raw)
+	results := make([]any, 0, len(items))
+	for i, item := range items {
+		subCtx := s.subflowContext(sf, exprCtx)
+		subCtx["item"] = item
+		subCtx["item_index"] = i
+		start := sub.StartStep()
+		if start == nil {
+			return nil, fmt.Errorf("subflow %s has no start step", sf.SubflowID)
+		}
+		landing, err := s.resumeSubflow(ctx, sub, inst, sf, start, subCtx, depth+1)
+		if err != nil {
+			return nil, err
+		}
+		if landing != nil {
+			return nil, fmt.Errorf("子流程 %s 含人工/定时等待点, 不支持 For Each 循环(仅支持全自动子流程)", sf.SubflowID)
+		}
+		results = append(results, map[string]any{"item": item, "item_index": i, "status": "done"})
+	}
+	rec, _ := inst.StepResults[sf.ID].(map[string]any)
+	if rec == nil {
+		rec = map[string]any{}
+	}
+	rec["for_each"] = results
+	rec["items_total"] = len(items)
+	rec["at"] = time.Now().Format(time.RFC3339)
+	inst.StepResults[sf.ID] = rec
+	return nil, nil
+}
+
+// forEachItems 把 ForEach 求值结果归一化为列表:
+// 数组直接用; 逗号分隔字符串拆分为列表; 标量包成单元素列表(防御)。
+func forEachItems(raw any) []any {
+	switch t := raw.(type) {
+	case nil:
+		return nil
+	case string:
+		var out []any
+		for _, p := range strings.Split(t, ",") {
+			if s := strings.TrimSpace(p); s != "" {
+				out = append(out, s)
+			}
+		}
+		return out
+	case []any:
+		return t
+	case []string:
+		out := make([]any, 0, len(t))
+		for _, s := range t {
+			out = append(out, s)
+		}
+		return out
+	default:
+		return []any{raw}
+	}
 }
 
 // resumeSubflow 从子流程的指定步骤开始执行其自动链, 处理暂停/完成标记。
@@ -515,6 +756,41 @@ func condStringMap(inputs map[string]any) map[string]string {
 		out[k] = fmt.Sprint(v)
 	}
 	return out
+}
+
+// serviceRetryAttempts 归一化 service 步骤的执行次数（1=不重试, 上限 6=1 次执行+5 次重试）。
+func serviceRetryAttempts(st *Step) int {
+	if st == nil || st.RetryCount <= 0 {
+		return 1
+	}
+	if st.RetryCount > 5 {
+		return 6
+	}
+	return st.RetryCount + 1
+}
+
+// serviceRetryDelay 返回重试间隔（配置为空或无法解析时立即重试）。
+func serviceRetryDelay(st *Step) time.Duration {
+	if st == nil || st.RetryInterval == "" {
+		return 0
+	}
+	if d, ok := parseStepDuration(st.RetryInterval); ok && d > 0 {
+		return d
+	}
+	return 0
+}
+
+// sleepRetryInterval 在重试之间等待, ctx 取消时提前返回。
+func sleepRetryInterval(ctx context.Context, d time.Duration) {
+	if d <= 0 {
+		return
+	}
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-ctx.Done():
+	case <-t.C:
+	}
 }
 
 // GetInstance 返回工单当前流程实例（供前端/AI 观察流程进度）。

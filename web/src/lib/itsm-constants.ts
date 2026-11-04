@@ -1,6 +1,8 @@
 /** ITSM 共享常量 — 避免各页面重复定义 */
 
 import type { FormSchema, FormFieldDef } from '@/components/itsm/DynamicForm'
+// 组合校验 / 有效状态求值实现位于 DynamicForm（与后端 form 包同语义），这里转出口供各页面统一引用
+export { validateComboRules, effectiveFieldStates } from '@/components/itsm/DynamicForm'
 
 export const STATUS_LABELS: Record<string, string> = {
   draft: '草稿',
@@ -17,6 +19,27 @@ export const STATUS_LABELS: Record<string, string> = {
   rolled_back: '已回滚',
   open: '待处理',
   on_hold: '已挂起',
+}
+
+// ---- 状态显示名覆盖(P2-⑯ 状态管理自定义) ----
+// 模块级可变覆盖: 配置页/工单页加载时拉取租户 status-flow 配置后应用,
+// 后续所有用 STATUS_LABELS 的展示点自动生效; 未配置时保持内置名。
+
+export function applyStatusLabelOverrides(overrides?: Record<string, string> | null) {
+  if (!overrides) return
+  for (const [k, v] of Object.entries(overrides)) {
+    if (v) STATUS_LABELS[k] = v
+  }
+}
+
+/** 拉取全局(或指定目录)状态流转配置并应用显示名覆盖; 失败静默回退内置名。 */
+export async function initStatusLabelOverrides(catalogId = '') {
+  try {
+    const { apiFetch } = await import('@/lib/utils')
+    const d = await apiFetch<{ status_labels?: Record<string, string> }>(
+      `/itsm/status-flows${catalogId ? `?catalog_id=${encodeURIComponent(catalogId)}` : ''}`)
+    applyStatusLabelOverrides(d?.status_labels)
+  } catch { /* 无配置/接口不可用: 保持内置名 */ }
 }
 
 export const STATUS_COLORS: Record<string, string> = {
@@ -193,31 +216,55 @@ export function parseFormSchema(raw: any): FormSchema {
 }
 
 /**
- * 节点字段权限：流程节点不再各自设计表单，只声明「流程主表单的某字段在本节点可见/可编辑」。
- * key 为主表单字段 key；未声明的字段按 defaultVisible/defaultEditable 处理。
+ * 节点字段权限：流程节点不再各自设计表单，只声明「流程主表单的某字段在本节点的状态」。
+ * mode 四态（对标竞品节点字段五态中的四个渲染态）+ required 组合出第五态「必填」：
+ * - editable：可编辑（required=true 时为本节点必填）
+ * - readonly：只读展示
+ * - disabled：禁用（渲染同只读，语义为"联动/权限禁用"）
+ * - hidden：不渲染、不下发
+ * 未声明的字段按可编辑处理。旧数据（visible/editable 布尔）读取时自动映射。
  */
 export interface StepFieldPerm {
   key: string
-  visible: boolean
-  editable: boolean
+  mode: 'hidden' | 'readonly' | 'disabled' | 'editable'
+  /** 本节点必填（仅 editable 态有意义） */
+  required?: boolean
+  /** @deprecated 旧版布尔字段，读取兼容；写入不再产出 */
+  visible?: boolean
+  /** @deprecated 旧版布尔字段，读取兼容；写入不再产出 */
+  editable?: boolean
+}
+
+/** 旧版 perm（visible/editable 布尔）→ 新版 mode 归一 */
+export function normalizeStepFieldPerm(p: Partial<StepFieldPerm> & { key: string }): StepFieldPerm {
+  if (p.mode) return { ...p, mode: p.mode } as StepFieldPerm
+  const visible = p.visible !== false
+  const editable = !!p.editable && visible
+  return { key: p.key, mode: !visible ? 'hidden' : editable ? 'editable' : 'readonly', required: false }
 }
 
 /**
  * 把节点字段权限投影到主表单上：
- * - 不可见字段直接剔除（不下发到前端渲染，也就不会被填写）
- * - 不可编辑字段标 readonly（DynamicForm 会 disabled 掉控件）
+ * - hidden 字段直接剔除（不下发到前端渲染，也就不会被填写）
+ * - readonly/disabled 字段标记（DynamicForm 会禁用控件）
+ * - editable 且 required 的字段标记必填（本节点动态必填）
  * 未配置权限（perms 为空）时视为「全部可见可编辑」，保证老流程零改造仍能跑。
  */
 export function applyStepFieldPerms(schema: FormSchema | null | undefined, perms?: StepFieldPerm[]): FormSchema | null {
   if (!schema) return null
   if (!perms || perms.length === 0) return schema
-  const byKey = new Map(perms.map(p => [p.key, p]))
+  const byKey = new Map(perms.map(p => [normalizeStepFieldPerm(p).key, normalizeStepFieldPerm(p)]))
   const fields: FormFieldDef[] = []
   for (const f of schema.fields || []) {
     const p = byKey.get(f.key)
     if (!p) { fields.push(f); continue }       // 未声明 = 沿用字段自身定义
-    if (!p.visible) continue                    // 本节点不可见 → 剔除
-    fields.push(p.editable ? f : { ...f, readonly: true })
+    if (p.mode === 'hidden') continue          // 本节点不可见 → 剔除
+    if (p.mode === 'editable') {
+      fields.push(p.required && !f.required ? { ...f, required: true } : f)
+      continue
+    }
+    // readonly / disabled：控件禁用
+    fields.push({ ...f, readonly: true, disabled: p.mode === 'disabled' })
   }
   return { ...schema, fields }
 }

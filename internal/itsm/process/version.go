@@ -4,12 +4,14 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
-	"github.com/opsorigin/core/pkg/httputil"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"time"
 
 	"github.com/google/uuid"
+
+	"github.com/opsorigin/core/pkg/httputil"
 )
 
 // ProcessVersion 流程定义历史版本快照。
@@ -28,9 +30,10 @@ type ProcessVersion struct {
 	Labels      map[string]string `json:"labels,omitempty"`
 	Enabled     bool              `json:"enabled"`
 
-	Form         json.RawMessage `json:"form,omitempty"`
-	SlaPolicyID  string          `json:"sla_policy_id,omitempty"`
-	NotifyConfig json.RawMessage `json:"notify_config,omitempty"`
+	Form         json.RawMessage   `json:"form,omitempty"`
+	SlaPolicyID  string            `json:"sla_policy_id,omitempty"`
+	NotifyConfig json.RawMessage   `json:"notify_config,omitempty"`
+	NumberRule   *TicketNumberRule `json:"number_rule,omitempty"`
 
 	// CreatedBy 归档时的操作人(取自 X-User-ID / X-Principal-ID 可信头), 空表示未知。
 	CreatedBy string    `json:"created_by,omitempty"`
@@ -55,6 +58,7 @@ func SnapshotOf(p *Process, actor string) *ProcessVersion {
 		Form:         p.Form,
 		SlaPolicyID:  p.SlaPolicyID,
 		NotifyConfig: p.NotifyConfig,
+		NumberRule:   p.NumberRule,
 		CreatedBy:    actor,
 	}
 }
@@ -74,15 +78,17 @@ func (s *PGStore) migrateVersions() {
 		form JSONB DEFAULT '{}'::jsonb,
 		sla_policy_id TEXT DEFAULT '',
 		notify_config JSONB DEFAULT '{}'::jsonb,
+		number_rule JSONB,
 		created_by TEXT DEFAULT '',
 		created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 	)`)
+	s.db.Exec(`ALTER TABLE itsm_process_versions ADD COLUMN IF NOT EXISTS number_rule JSONB`)
 	// 同一流程同一版本只保留一份快照(重复归档幂等覆盖)
 	s.db.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_itsm_pv_unique ON itsm_process_versions(tenant_id, process_id, version)`)
 	s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_itsm_pv_process ON itsm_process_versions(tenant_id, process_id, version DESC)`)
 }
 
-const versionCols = `id,process_id,tenant_id,version,name,description,category,steps,labels,enabled,form,sla_policy_id,notify_config,created_by,created_at`
+const versionCols = `id,process_id,tenant_id,version,name,description,category,steps,labels,enabled,form,sla_policy_id,notify_config,number_rule,created_by,created_at`
 
 // SaveVersion 归档一份版本快照; 同 (tenant, process, version) 已存在则覆盖。
 func (s *PGStore) SaveVersion(ctx context.Context, v *ProcessVersion) error {
@@ -111,24 +117,29 @@ func (s *PGStore) SaveVersion(ctx context.Context, v *ProcessVersion) error {
 	if len(notifyJSON) == 0 {
 		notifyJSON = []byte("{}")
 	}
+	var nrJSON []byte
+	if v.NumberRule != nil {
+		nrJSON, _ = json.Marshal(v.NumberRule)
+	}
 	_, err := s.db.ExecContext(ctx,
 		`INSERT INTO itsm_process_versions(`+versionCols+`)
-		 VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
+		 VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)
 		 ON CONFLICT (tenant_id, process_id, version) DO UPDATE SET
 		   name=EXCLUDED.name, description=EXCLUDED.description, category=EXCLUDED.category,
 		   steps=EXCLUDED.steps, labels=EXCLUDED.labels, enabled=EXCLUDED.enabled,
 		   form=EXCLUDED.form, sla_policy_id=EXCLUDED.sla_policy_id, notify_config=EXCLUDED.notify_config,
+		   number_rule=EXCLUDED.number_rule,
 		   created_by=EXCLUDED.created_by, created_at=EXCLUDED.created_at`,
 		v.ID, v.ProcessID, v.TenantID, v.Version, v.Name, v.Description, v.Category,
-		stepsJSON, labelsJSON, v.Enabled, formJSON, v.SlaPolicyID, notifyJSON, v.CreatedBy, v.CreatedAt)
+		stepsJSON, labelsJSON, v.Enabled, formJSON, v.SlaPolicyID, notifyJSON, nrJSON, v.CreatedBy, v.CreatedAt)
 	return err
 }
 
 func scanVersion(sc interface{ Scan(...any) error }) (*ProcessVersion, error) {
-	var stepsJSON, labelsJSON, formJSON, notifyJSON []byte
+	var stepsJSON, labelsJSON, formJSON, notifyJSON, nrJSON []byte
 	v := &ProcessVersion{}
 	if err := sc.Scan(&v.ID, &v.ProcessID, &v.TenantID, &v.Version, &v.Name, &v.Description, &v.Category,
-		&stepsJSON, &labelsJSON, &v.Enabled, &formJSON, &v.SlaPolicyID, &notifyJSON, &v.CreatedBy, &v.CreatedAt); err != nil {
+		&stepsJSON, &labelsJSON, &v.Enabled, &formJSON, &v.SlaPolicyID, &notifyJSON, &nrJSON, &v.CreatedBy, &v.CreatedAt); err != nil {
 		return nil, err
 	}
 	json.Unmarshal(stepsJSON, &v.Steps)
@@ -138,6 +149,12 @@ func scanVersion(sc interface{ Scan(...any) error }) (*ProcessVersion, error) {
 	}
 	if len(notifyJSON) > 0 && string(notifyJSON) != "null" {
 		v.NotifyConfig = notifyJSON
+	}
+	if len(nrJSON) > 0 && string(nrJSON) != "null" {
+		nr := &TicketNumberRule{}
+		if json.Unmarshal(nrJSON, nr) == nil {
+			v.NumberRule = nr
+		}
 	}
 	return v, nil
 }
@@ -238,6 +255,70 @@ func (s *Service) handleGetVersion(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	httputil.WriteJSON(w, 200, v)
+}
+
+// handleRestoreVersion POST /api/v1/itsm/processes/{id}/versions/{version}/restore
+// 把历史版本快照恢复为当前定义（SN 语义：产生一个新版本，而非把版本号拨回去，
+// 从而保留完整审计轨迹）。恢复前先把当前定义归档为快照，防止误恢复丢失最新编辑。
+func (s *Service) handleRestoreVersion(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	tenant := tenantOf(r)
+	num, err := strconv.Atoi(r.PathValue("version"))
+	if err != nil {
+		httputil.WriteError(w, 400, "invalid version")
+		return
+	}
+	cur, err := s.store.Get(r.Context(), id, tenant)
+	if err != nil {
+		httputil.WriteError(w, 500, err.Error())
+		return
+	}
+	if cur == nil {
+		httputil.WriteError(w, 404, "not found")
+		return
+	}
+	if cur.Version == num {
+		httputil.WriteError(w, 400, "该版本已是当前生效版本，无需回滚")
+		return
+	}
+	v, err := s.store.GetVersion(r.Context(), id, tenant, num)
+	if err != nil {
+		httputil.WriteError(w, 500, err.Error())
+		return
+	}
+	if v == nil {
+		httputil.WriteError(w, 404, "version not found")
+		return
+	}
+	// 先归档当前定义（幂等覆盖），再以快照内容覆盖当前定义并版本号 +1
+	if snap := SnapshotOf(cur, actorOf(r)); snap != nil {
+		if err := s.store.SaveVersion(r.Context(), snap); err != nil {
+			slog.Warn("itsm process restore: archive current failed", "id", id, "version", cur.Version, "err", err)
+		}
+	}
+	next := *cur
+	next.Name = v.Name
+	next.Description = v.Description
+	next.Category = v.Category
+	next.Steps = v.Steps
+	next.Labels = v.Labels
+	next.Enabled = v.Enabled
+	next.Form = v.Form
+	next.SlaPolicyID = v.SlaPolicyID
+	next.NotifyConfig = v.NotifyConfig
+	next.NumberRule = v.NumberRule
+	next.Version = cur.Version + 1
+	// 回滚后的编号规则同样要过格式唯一性校验（历史版本可能与新流程撞型）
+	if err := s.checkNumberRuleConflict(&next); err != nil {
+		httputil.WriteError(w, 409, "回滚被拒绝："+err.Error())
+		return
+	}
+	if err := s.store.Update(r.Context(), &next); err != nil {
+		httputil.WriteError(w, 500, err.Error())
+		return
+	}
+	slog.Info("itsm process version restored", "id", id, "from_version", num, "to_version", next.Version, "actor", actorOf(r))
+	httputil.WriteJSON(w, 200, &next)
 }
 
 func tenantOf(r *http.Request) string {

@@ -51,6 +51,7 @@ func (s TicketStatus) Valid() bool {
 
 type Ticket struct {
 	ID             string            `json:"id"`
+	Number         string            `json:"number"` // 人类可读工单号 TK-YYYY-NNNN，按租户+年原子自增
 	TenantID       string            `json:"tenant_id"`
 	Title          string            `json:"title"`
 	Description    string            `json:"description,omitempty"`

@@ -17,6 +17,7 @@ import {
   type FormFieldOption,
   type FormFieldType,
   type FormSchema,
+  type FormTabDef,
   type LoadOptionsFn,
   normalizeColSpan,
   parseVisibleWhen,
@@ -43,6 +44,10 @@ export const FIELD_TYPES: { value: FormFieldType; label: string }[] = [
   { value: 'timerange', label: '时间段' },
   { value: 'link', label: '链接' },
   { value: 'expression', label: '计算/表达式' },
+  { value: 'group', label: '分组容器' },
+  { value: 'rating', label: '评分' },
+  { value: 'daterange', label: '日期区间' },
+  { value: 'note', label: '说明区块' },
 ]
 
 export const OPTION_TYPES: FormFieldType[] = ['select', 'multiselect', 'user', 'ci', 'cascader']
@@ -67,7 +72,7 @@ const ATTACHMENT_PRESETS: { label: string; patch: Partial<FormFieldDef> }[] = [
  * 这样从调色板拖出两个普通控件时，会自然落在同一行，满足「一行放多个控件」。
  */
 export function defaultColSpan(type: FormFieldType): number {
-  const wide = new Set<FormFieldType>(['textarea', 'richtext', 'attachment', 'table', 'expression'])
+  const wide = new Set<FormFieldType>(['textarea', 'richtext', 'attachment', 'table', 'expression', 'group', 'note'])
   return wide.has(type) ? 12 : 6
 }
 
@@ -127,6 +132,8 @@ export function createField(type: FormFieldType, n: number): FormFieldDef {
   }
   // 选人控件默认可选全部用户，免去每次手填来源
   if (type === 'user') field.source = USER_SOURCE_ALL
+  // 分组容器: 初始化空子字段列表, 在属性面板中增删
+  if (type === 'group') field.children = []
   return field
 }
 
@@ -135,6 +142,8 @@ const inputCls =
 
 interface DictRef {
   id: string
+  /** 后端 FieldDict.name（字典名），旧字段 key/label 兼容保留 */
+  name?: string
   key?: string
   label?: string
 }
@@ -268,6 +277,7 @@ export function FormBuilder({
 
   return (
     <div className="space-y-3">
+      <TabsManager tabs={schema.tabs} disabled={disabled} onChange={tabs => onChange({ ...schema, tabs })} />
       <div className="grid grid-cols-1 lg:grid-cols-[220px_1fr] gap-3">
         {/* 字段列表 */}
         <div className="rounded-md border border-input">
@@ -331,6 +341,7 @@ export function FormBuilder({
               field={active}
               sources={sources}
               referableFields={referableFields}
+              tabs={schema.tabs}
               disabled={disabled}
               onChange={changes => updateField(activeIdx, changes)}
             />
@@ -384,23 +395,80 @@ function IconBtn({
   )
 }
 
+/**
+ * TabsManager —— 表单页签管理（schema 级）：长表单分步布局（对标 SN Form Designer 的 Tab 页）。
+ * 页签纯渲染层分组：≥2 个页签时 DynamicForm 按 field.tab 分页签展示，
+ * 未指定页签的字段归入第一个页签；存储/校验不受影响。
+ * 供 FormBuilder 与 FormDesigner 共用。
+ */
+export function TabsManager({
+  tabs,
+  disabled,
+  onChange,
+}: {
+  tabs?: FormTabDef[]
+  disabled?: boolean
+  onChange: (tabs: FormTabDef[]) => void
+}) {
+  const list = tabs || []
+  return (
+    <div className="flex flex-wrap items-center gap-1.5 rounded-md border border-input bg-muted/20 px-2 py-1.5">
+      <span className="shrink-0 text-xs font-semibold">页签</span>
+      {list.map((t, i) => (
+        <span key={t.key} className="inline-flex items-center gap-0.5 rounded-full border border-input bg-background py-0.5 pl-2 pr-1 text-xs">
+          <input
+            className="w-20 bg-transparent text-xs focus:outline-none"
+            value={t.label || ''}
+            placeholder={t.key}
+            disabled={disabled}
+            onChange={e => onChange(list.map((x, j) => (j === i ? { ...x, label: e.target.value } : x)))}
+          />
+          <button
+            type="button"
+            title="删除页签（字段不受影响，会归入第一个页签）"
+            disabled={disabled}
+            onClick={() => onChange(list.filter((_, j) => j !== i))}
+            className="rounded px-0.5 text-muted-foreground hover:text-destructive disabled:opacity-30"
+          >
+            ×
+          </button>
+        </span>
+      ))}
+      <button
+        type="button"
+        disabled={disabled}
+        onClick={() => onChange([...list, { key: `tab_${Date.now().toString(36)}`, label: `页签 ${list.length + 1}` }])}
+        className="inline-flex h-6 items-center gap-0.5 rounded-full border border-dashed border-input px-2 text-[11px] text-muted-foreground hover:border-solid hover:bg-accent disabled:opacity-50"
+      >
+        <Plus className="h-3 w-3" />新增页签
+      </button>
+      <span className="text-[10px] text-muted-foreground">
+        {list.length >= 2 ? '字段属性面板中可选择所属页签；未指定的归入第一个页签' : '添加 2 个及以上页签后启用分步布局'}
+      </span>
+    </div>
+  )
+}
+
 export function FieldPropertyPanel({
   field,
   sources,
   referableFields,
+  tabs,
   disabled,
   onChange,
 }: {
   field: FormFieldDef
   sources: string[]
   referableFields: string[]
+  /** 表单页签定义：非空（≥2）时展示「所属页签」选择 */
+  tabs?: FormTabDef[]
   disabled?: boolean
   onChange: (changes: Partial<FormFieldDef>) => void
 }) {
   const isUser = field.type === 'user'
   // 选人控件有专属的候选范围配置，不再暴露通用的 source/静态选项编辑
   const supportsOptions = OPTION_TYPES.includes(field.type) && !isUser
-  const isTextual = ['text', 'textarea', 'password', 'time', 'timerange', 'link', 'expression'].includes(field.type)
+  const isTextual = ['text', 'textarea', 'password', 'time', 'timerange', 'daterange', 'link', 'expression'].includes(field.type)
   const isCascader = field.type === 'cascader'
   const typeLabel = FIELD_TYPES.find(t => t.value === field.type)?.label || field.type
 
@@ -457,6 +525,23 @@ export function FieldPropertyPanel({
           />
         </Labeled>
       </Row>
+      {(tabs || []).length >= 2 && (
+        <Labeled label="所属页签（未指定归入第一个页签）">
+          <select
+            className={inputCls}
+            value={field.tab || ''}
+            disabled={disabled}
+            onChange={e => onChange({ tab: e.target.value || undefined })}
+          >
+            <option value="">（第一个页签）</option>
+            {tabs!.map(t => (
+              <option key={t.key} value={t.key}>
+                {t.label || t.key}
+              </option>
+            ))}
+          </select>
+        </Labeled>
+      )}
       <p className="-mt-1 text-[11px] text-muted-foreground">
         标识与类型创建后锁定。需要换控件类型时，删除本字段后从左侧重新拖入。
       </p>
@@ -502,6 +587,13 @@ export function FieldPropertyPanel({
         </Labeled>
       </Row>
 
+      {/* 说明区块：纯展示，无必填/只读/默认值概念 */}
+      {field.type === 'note' && (
+        <p className="-mt-1 rounded-md border border-input bg-muted/30 px-2.5 py-1.5 text-[11px] text-muted-foreground">
+          说明区块为纯展示控件：显示名作为标题、帮助说明作为正文，不采集数据、不参与校验，常用于表单内的分步引导或免责声明。
+        </p>
+      )}
+      {field.type !== 'note' && (
       <div className="flex items-center gap-4 text-xs">
         <label className="flex items-center gap-1.5 cursor-pointer">
           <input type="checkbox" className="h-3.5 w-3.5" checked={!!field.required} disabled={disabled} onChange={e => onChange({ required: e.target.checked })} />
@@ -511,7 +603,7 @@ export function FieldPropertyPanel({
           <input type="checkbox" className="h-3.5 w-3.5" checked={!!field.readonly} disabled={disabled} onChange={e => onChange({ readonly: e.target.checked })} />
           只读
         </label>
-        <Labeled label={field.type === 'expression' ? '表达式内容（对终端用户只读展示）' : '默认值'} inline>
+        <Labeled label={field.type === 'expression' ? '表达式（如 {price} * {qty}，支持 + - * / %、括号、abs/round/floor/ceil/min/max）' : '默认值'} inline>
           <input
             className={`${inputCls} w-40`}
             value={field.default === undefined || field.default === null ? '' : String(field.default)}
@@ -520,6 +612,176 @@ export function FieldPropertyPanel({
           />
         </Labeled>
       </div>
+      )}
+      {field.type !== 'expression' && field.type !== 'note' && (
+        <p className="-mt-1 text-[11px] text-muted-foreground">
+          动态默认值：<code className="rounded bg-muted px-1">{'{{current_user}}'}</code> 当前用户 ·{' '}
+          <code className="rounded bg-muted px-1">{'{{current_date}}'}</code> 当前日期 ·{' '}
+          <code className="rounded bg-muted px-1">{'{{current_datetime}}'}</code> 当前时间
+        </p>
+      )}
+
+      {/* 变量价格：bool 勾选计价 / number 数量×单价（select 类走选项级价格，见选项编辑器） */}
+      {(field.type === 'bool' || field.type === 'number') && (
+        <Labeled label={field.type === 'bool' ? '单价（元，勾选后计入费用合计）' : '单价（元，值 × 单价 计入费用合计）'}>
+          <input
+            type="number"
+            step="0.01"
+            min={0}
+            className={inputCls}
+            value={field.price ?? ''}
+            disabled={disabled}
+            placeholder="留空 = 不计价"
+            onChange={e => onChange({ price: e.target.value === '' ? undefined : Math.max(0, Number(e.target.value) || 0) })}
+          />
+        </Labeled>
+      )}
+
+      {/* 结构化表格（MRVS）：列定义驱动，值为对象数组；未定义列保持旧自由二维表格 */}
+      {field.type === 'table' && (
+        <Section title={`表格列（${(field.table_columns || []).length}）—— 定义后进入结构化模式`}>
+          <p className="text-[11px] text-muted-foreground">
+            定义列后值按「列 key → 单元格」组织（类似多行变量集：每行一条记录、逐列输入），必填列逐行校验；
+            全部留空则保持自由二维表格（可随意加行加列）。
+          </p>
+          <div className="space-y-1.5">
+            {(field.table_columns || []).map((c, i) => (
+              <div key={i} className="flex items-center gap-1.5">
+                <input
+                  className={`${inputCls} w-28`}
+                  value={c.label || ''}
+                  placeholder="列名"
+                  disabled={disabled}
+                  onChange={e => {
+                    const next = [...(field.table_columns || [])]
+                    next[i] = { ...c, label: e.target.value }
+                    onChange({ table_columns: next })
+                  }}
+                />
+                <input
+                  className={`${inputCls} w-28 font-mono`}
+                  value={c.key || ''}
+                  placeholder="key"
+                  disabled={disabled}
+                  onChange={e => {
+                    const next = [...(field.table_columns || [])]
+                    next[i] = { ...c, key: e.target.value.trim() }
+                    onChange({ table_columns: next })
+                  }}
+                />
+                <label className="flex shrink-0 cursor-pointer items-center gap-1 text-[11px]">
+                  <input
+                    type="checkbox"
+                    className="h-3.5 w-3.5"
+                    checked={!!c.required}
+                    disabled={disabled}
+                    onChange={e => {
+                      const next = [...(field.table_columns || [])]
+                      next[i] = { ...c, required: e.target.checked }
+                      onChange({ table_columns: next })
+                    }}
+                  />
+                  必填
+                </label>
+                <IconBtn title="删除列" danger disabled={disabled} onClick={() => onChange({ table_columns: (field.table_columns || []).filter((_, j) => j !== i) })}>
+                  <Trash2 className="h-3.5 w-3.5" />
+                </IconBtn>
+              </div>
+            ))}
+          </div>
+          <Button
+            size="sm"
+            variant="outline"
+            disabled={disabled}
+            className="h-7 text-xs"
+            onClick={() =>
+              onChange({
+                table_columns: [...(field.table_columns || []), { key: `col_${Math.random().toString(36).slice(2, 6)}`, label: `列 ${(field.table_columns || []).length + 1}` }],
+              })
+            }
+          >
+            <Plus className="h-3 w-3" />
+            添加列
+          </Button>
+        </Section>
+      )}
+
+      {/* 分组容器: 子字段编辑（key/label/type），值仍平铺 custom_fields */}
+      {field.type === 'group' && (
+        <Section title={`分组子字段（${(field.children || []).length}）`}>
+          <p className="text-[11px] text-muted-foreground">
+            子字段值与顶层字段同层平铺存 custom_fields，可被联动规则、计算字段与流程变量引用。
+          </p>
+          <div className="space-y-1.5">
+            {(field.children || []).map((c, i) => (
+              <div key={i} className="flex items-center gap-1.5">
+                <input
+                  className={`${inputCls} w-28`}
+                  value={c.label || ''}
+                  placeholder="显示名"
+                  disabled={disabled}
+                  onChange={e => {
+                    const next = [...(field.children || [])]
+                    next[i] = { ...c, label: e.target.value }
+                    onChange({ children: next })
+                  }}
+                />
+                <input
+                  className={`${inputCls} w-28 font-mono`}
+                  value={c.key || ''}
+                  placeholder="key"
+                  disabled={disabled}
+                  onChange={e => {
+                    const next = [...(field.children || [])]
+                    next[i] = { ...c, key: e.target.value.trim() }
+                    onChange({ children: next })
+                  }}
+                />
+                <select
+                  className={inputCls}
+                  value={c.type}
+                  disabled={disabled}
+                  onChange={e => {
+                    const next = [...(field.children || [])]
+                    next[i] = { ...c, type: e.target.value as FormFieldType }
+                    onChange({ children: next })
+                  }}
+                >
+                  {FIELD_TYPES.filter(t => t.value !== 'group').map(t => (
+                    <option key={t.value} value={t.value}>
+                      {t.label}
+                    </option>
+                  ))}
+                </select>
+                <button
+                  type="button"
+                  disabled={disabled}
+                  onClick={() => onChange({ children: (field.children || []).filter((_, j) => j !== i) })}
+                  className="shrink-0 rounded border border-input px-1.5 py-1 text-[11px] text-muted-foreground hover:border-destructive hover:text-destructive"
+                  title="删除子字段"
+                >
+                  ×
+                </button>
+              </div>
+            ))}
+          </div>
+          <button
+            type="button"
+            disabled={disabled}
+            onClick={() =>
+              onChange({
+                children: [
+                  ...(field.children || []),
+                  { key: fieldKey('text'), label: `子字段 ${(field.children || []).length + 1}`, type: 'text' },
+                ],
+              })
+            }
+            className="rounded-md border border-dashed border-input px-2 py-1 text-[11px] text-muted-foreground hover:border-solid hover:bg-accent disabled:opacity-50"
+          >
+            + 添加子字段
+          </button>
+        </Section>
+      )}
 
       {supportsOptions && !field.builtin && (
         <Section title="选项来源">
@@ -552,7 +814,18 @@ export function FieldPropertyPanel({
               />
             </div>
           </Labeled>
-          <DictRefPicker value={field.dict_ref} disabled={disabled} onChange={v => onChange({ dict_ref: v })} />
+          <DictRefPicker value={field.dict_ref} disabled={disabled} onChange={v => onChange({ dict_ref: v, dict_key: v ? field.dict_key : undefined })} />
+          {!!field.dict_ref && (
+            <Labeled label="字段级引用（只展开字典内该 key 的单个字段，留空=展开字典全部字段）">
+              <input
+                className={inputCls}
+                value={field.dict_key || ''}
+                disabled={disabled}
+                onChange={e => onChange({ dict_key: e.target.value.trim() || undefined })}
+                placeholder="字典内字段 key，如 owner"
+              />
+            </Labeled>
+          )}
           <Labeled label="可编辑角色（逗号分隔的角色名白名单，留空=所有人可编辑）">
             <input
               className="flex h-8 w-full rounded-md border border-input bg-background px-2.5 text-xs"
@@ -581,6 +854,8 @@ export function FieldPropertyPanel({
           {field.source && (
             <p className="text-[11px] text-muted-foreground">
               选项将在渲染时实时从 <code className="px-1 rounded bg-muted">{field.source}</code> 拉取；后端校验同样按该来源核对取值。
+              支持参数化级联：<code className="px-1 rounded bg-muted">cmdb:机柜?room=${'{'}room{'}'}</code>
+              （本表单 room 字段的值作为机柜下拉的过滤参数；上级未选时下级无候选）。
               {isCascader && (
                 <>
                   {' '}
@@ -604,12 +879,12 @@ export function FieldPropertyPanel({
         </Section>
       )}
 
-      {(isTextual || field.type === 'number') && (
+      {(isTextual || field.type === 'number' || field.type === 'rating') && (
         <Section title="校验规则">
           <Row>
-            {field.type === 'number' ? (
+            {field.type === 'number' || field.type === 'rating' ? (
               <>
-                <Labeled label="最小值">
+                <Labeled label={field.type === 'rating' ? '最低分（默认 1）' : '最小值'}>
                   <input
                     type="number"
                     className={inputCls}
@@ -618,7 +893,7 @@ export function FieldPropertyPanel({
                     onChange={e => onChange({ validation: { ...field.validation, min: e.target.value === '' ? undefined : Number(e.target.value) } })}
                   />
                 </Labeled>
-                <Labeled label="最大值">
+                <Labeled label={field.type === 'rating' ? '最高分（默认 5）' : '最大值'}>
                   <input
                     type="number"
                     className={inputCls}
@@ -771,8 +1046,8 @@ function DictRefPicker({
         <option value="">不引用</option>
         {dicts.map(d => (
           <option key={d.id} value={d.id}>
-            {d.label || d.key || d.id}
-            {d.key ? `（${d.key}）` : ''}
+            {d.name || d.label || d.key || d.id}
+            {d.name && d.key ? `（${d.key}）` : ''}
           </option>
         ))}
         {dangling && <option value={current}>已失效：{current}</option>}
@@ -936,6 +1211,8 @@ function StaticOptionsEditor({
 }) {
   const opts = field.options || []
   const setOpts = (next: FormFieldOption[]) => onChange({ options: next })
+  // 变量价格：仅 select/multiselect 暴露选项级定价（对标 SN Variable Pricing 的选项计价）
+  const priceable = field.type === 'select' || field.type === 'multiselect'
   return (
     <div className="space-y-1.5">
       {opts.map((o, i) => (
@@ -954,6 +1231,18 @@ function StaticOptionsEditor({
             placeholder="显示文本"
             onChange={e => setOpts(opts.map((x, j) => (j === i ? { ...x, label: e.target.value } : x)))}
           />
+          {priceable && (
+            <input
+              type="number"
+              step="0.01"
+              className={`${inputCls} w-20`}
+              value={o.price ?? ''}
+              disabled={disabled}
+              placeholder="价格"
+              title="选项价格（元）：选中后计入表单费用合计"
+              onChange={e => setOpts(opts.map((x, j) => (j === i ? { ...x, price: e.target.value === '' ? undefined : Number(e.target.value) } : x)))}
+            />
+          )}
           <IconBtn title="删除选项" danger disabled={disabled} onClick={() => setOpts(opts.filter((_, j) => j !== i))}>
             <Trash2 className="h-3.5 w-3.5" />
           </IconBtn>
