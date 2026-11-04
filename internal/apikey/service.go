@@ -22,13 +22,28 @@ import (
 //	         → 主体权限 = 绑定用户当前的“角色 + 用户组”聚合权限
 //
 // 因此用户角色变更后，其名下 Key 的权限自动跟随，无需重建 Key。
+
+// KeyStore 是 Service 依赖的持久化接口，便于测试时替换为内存 fake，
+// 同时将鉴权路径（ResolveAPIKey）与具体 PG 实现解耦。*Store 天然满足该接口。
+type KeyStore interface {
+	Available() bool
+	EnsureSchema(ctx context.Context) error
+	GetByHash(ctx context.Context, raw string) (*Key, error)
+	GetByID(ctx context.Context, tenantID, id, userID string) (*Key, error)
+	ListByUser(ctx context.Context, tenantID, userID string, limit int) ([]*Key, error)
+	ListByTenant(ctx context.Context, tenantID string, limit int) ([]*Key, error)
+	Revoke(ctx context.Context, tenantID, id, userID string) (bool, error)
+	TouchUsage(ctx context.Context, ids []string) error
+	Create(ctx context.Context, k *Key, raw string) error
+}
+
 type Service struct {
-	store    *Store
+	store    KeyStore
 	identity userRefResolver
 	usageCh  chan string
 }
 
-func NewService(store *Store) *Service {
+func NewService(store KeyStore) *Service {
 	return &Service{
 		store:   store,
 		usageCh: make(chan string, 1024),
