@@ -404,8 +404,8 @@ function CMDBNode({ data }: NodeProps<CMDBRFNode>) {
       title={data.isRoot ? `${data.name}（当前根节点，双击可换根）` : `${data.name}（双击以该节点为根重绘）`}
     >
       {/* 连线端点：上下两向；连线模式下显形供拖拽 */}
-      <Handle type="target" position={Position.Top} style={{ opacity: data.connectable ? 0.9 : 0, width: 8, height: 8 }} />
-      <Handle type="source" position={Position.Bottom} style={{ opacity: data.connectable ? 0.9 : 0, width: 8, height: 8 }} />
+      <Handle type="target" position={Position.Top} className="!h-2 !w-2" style={{ opacity: data.connectable ? 0.9 : 0 }} />
+      <Handle type="source" position={Position.Bottom} className="!h-2 !w-2" style={{ opacity: data.connectable ? 0.9 : 0 }} />
 
       <div
         className={cn(
@@ -488,8 +488,8 @@ function CMDBGroupCard({ data }: NodeProps<CMDBGroupNode>) {
           <div className="mt-0.5 text-[11px] text-muted-foreground">{data.count} 个 · 点击展开</div>
         </div>
       </div>
-      <Handle type="target" position={Position.Top} style={{ opacity: 0, width: 8, height: 8 }} />
-      <Handle type="source" position={Position.Bottom} style={{ opacity: 0, width: 8, height: 8 }} />
+      <Handle type="target" position={Position.Top} className="!h-2 !w-2 !opacity-0" />
+      <Handle type="source" position={Position.Bottom} className="!h-2 !w-2 !opacity-0" />
     </div>
   )
 }

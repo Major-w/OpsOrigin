@@ -18,6 +18,7 @@ import { useNavigate } from 'react-router-dom'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button, Input, Tag } from 'antd'
 import { apiFetch, apiList, cn, formatTime } from '@/lib/utils'
+import { PageContainer } from '@/components/page-container'
 import {
   Search, Boxes, Database, Share2, Server, BarChart3, Network, Building2,
   ArrowRight, RefreshCw, Layers, Radio, Package,
@@ -95,16 +96,15 @@ export default function CMDBOverviewPage() {
   const activeCount = (stats?.by_status || []).find(s => s.status === 'active')?.count ?? 0
 
   return (
-    <div className="p-6 space-y-6">
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-2xl font-bold">CMDB 配置管理</h1>
-          <p className="text-sm text-muted-foreground">从搜索定位到关系穿透，再到物理位置，一站式查清任意资产</p>
-        </div>
+    <PageContainer
+      title="CMDB 配置管理"
+      subtitle="从搜索定位到关系穿透，再到物理位置，一站式查清任意资产"
+      extra={
         <button onClick={load} className="inline-flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground">
           <RefreshCw className={cn('h-4 w-4', loading && 'animate-spin')} />刷新
         </button>
-      </div>
+      }
+    >
 
       {/* 0. 快速操作：让概览从只读看板变成配置库入口 */}
       <div className="flex flex-wrap gap-3">
@@ -360,6 +360,6 @@ export default function CMDBOverviewPage() {
           </CardContent>
         </Card>
       </section>
-    </div>
+    </PageContainer>
   )
 }

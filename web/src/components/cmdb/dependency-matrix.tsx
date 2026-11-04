@@ -109,26 +109,23 @@ export function DependencyMatrix({ nodes, edges, onCellClick, className }: Props
         </div>
       </div>
 
-      <div className="overflow-auto rounded-md border" style={{ maxHeight: 620 }}>
-        <table className="border-collapse text-[11px]" style={{ tableLayout: 'fixed' }}>
+      <div className="overflow-auto rounded-md border max-h-[620px]">
+        <table className="border-collapse text-[11px] table-fixed">
           <thead>
             <tr>
               <th
-                className="sticky left-0 top-0 z-20 border bg-card px-2 py-1 text-left font-medium"
-                style={{ width: 128, minWidth: 128 }}
+                className="sticky left-0 top-0 z-20 border bg-card px-2 py-1 text-left font-medium w-32 min-w-[128px]"
               >
                 <span className="text-muted-foreground">被依赖 → / 依赖 ↓</span>
               </th>
               {shown.list.map(n => (
                 <th
                   key={n.id}
-                  className="sticky top-0 z-10 border bg-card p-0 align-bottom"
-                  style={{ width: 30, height: 108, minWidth: 30 }}
+                  className="sticky top-0 z-10 border bg-card p-0 align-bottom w-[30px] h-[108px] min-w-[30px]"
                 >
                   <Tooltip title={n.name}>
                     <div
-                      className="mx-auto truncate text-muted-foreground"
-                      style={{ writingMode: 'vertical-rl', height: 96, maxWidth: 22 }}
+                      className="mx-auto truncate text-muted-foreground [writing-mode:vertical-rl] h-24 max-w-[22px]"
                     >{n.name}</div>
                   </Tooltip>
                 </th>

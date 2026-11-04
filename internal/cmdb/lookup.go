@@ -127,6 +127,76 @@ func (s *Service) ListCIsByTypeName(ctx context.Context, tenantID, typeName, key
 	return toCIRefs(cis, typeNameByID, keyword, limit), nil
 }
 
+// ListCIsByAttrs 按模型类型名 + 属性等值过滤列出 CI（已排除归档/删除）。
+// attrs 为空等价于 ListCIsByTypeName(无 keyword)；任一属性不匹配即排除。
+// 实现取该类型前 attrScanLimit 条(按名称排序)在内存逐条比对 attributes ——
+// 表单级联(机房→机柜)候选量级远低于此, 不值得为它加 SQL attributes 包含索引。
+const attrScanLimit = 1000
+
+func (s *Service) ListCIsByAttrs(ctx context.Context, tenantID, typeName string, attrs map[string]string, limit int) ([]CIRef, error) {
+	if len(attrs) == 0 {
+		return s.ListCIsByTypeName(ctx, tenantID, typeName, "", limit)
+	}
+	if limit <= 0 {
+		limit = defaultLookupLimit
+	}
+	cis, err := s.ListCIsByTypeName(ctx, tenantID, typeName, "", attrScanLimit)
+	if err != nil {
+		return nil, err
+	}
+	// 需要逐属性比对, 仅靠 CIRef(ID/Name/Type) 不够, 回查完整模型。
+	var full []*model.CIModel
+	if s.pg == nil {
+		full = s.mem.listCIs(tenantID, typeName)
+	} else {
+		typeID := ""
+		types, terr := s.pg.ListCIModelTypes(ctx, tenantID, 0, 0)
+		if terr != nil {
+			return nil, terr
+		}
+		for _, t := range types {
+			if strings.EqualFold(t.Name, typeName) {
+				typeID = t.ID
+				break
+			}
+		}
+		if typeID == "" {
+			return nil, fmt.Errorf("CI 模型类型 %q 不存在", typeName)
+		}
+		if full, err = s.pg.ListCIFiltered(ctx, tenantID, typeID, "", "name", "asc", attrScanLimit, 0); err != nil {
+			return nil, err
+		}
+	}
+	byID := make(map[string]*model.CIModel, len(full))
+	for _, c := range full {
+		if c != nil {
+			byID[c.ID] = c
+		}
+	}
+	out := make([]CIRef, 0, len(cis))
+	for _, ref := range cis {
+		ci := byID[ref.ID]
+		if ci == nil {
+			continue
+		}
+		match := true
+		for k, want := range attrs {
+			if fmt.Sprintf("%v", ci.Attributes[k]) != want {
+				match = false
+				break
+			}
+		}
+		if !match {
+			continue
+		}
+		out = append(out, ref)
+		if len(out) >= limit {
+			break
+		}
+	}
+	return out, nil
+}
+
 func toCIRefs(cis []*model.CIModel, typeNameByID map[string]string, keyword string, limit int) []CIRef {
 	kw := strings.ToLower(strings.TrimSpace(keyword))
 	out := make([]CIRef, 0, len(cis))

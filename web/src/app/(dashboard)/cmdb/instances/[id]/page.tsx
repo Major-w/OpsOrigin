@@ -468,7 +468,7 @@ export default function CIInstanceDetailPage() {
             { key: 'topo', label: '拓扑', children: (
               <div className="mt-4">
                 {topoLoading ? <p className="text-sm text-muted-foreground">加载中...</p> : topology.nodes.length === 0 ? <p className="text-sm text-muted-foreground">无拓扑数据。</p> : (
-                  <div className="border rounded-lg bg-muted/20" style={{ minHeight: 300 }}>
+                  <div className="border rounded-lg bg-muted/20 min-h-[300px]">
                     <TopologyGraph data={topology} width={700} height={320} />
                   </div>
                 )}

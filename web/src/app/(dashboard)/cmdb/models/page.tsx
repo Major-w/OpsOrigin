@@ -783,7 +783,7 @@ export default function CMDBModelsPage() {
           )}
 
           {/* 字段列表 / 关系定义：两个子页签 */}
-          <Tabs activeKey={modelTab} onChange={(v) => setModelTab(v as 'attrs' | 'rels')} style={{ marginTop: 12 }} items={[
+          <Tabs activeKey={modelTab} onChange={(v) => setModelTab(v as 'attrs' | 'rels')} className="mt-3" items={[
             {
               key: 'attrs',
               label: `属性字段 (${fields.length})`,
