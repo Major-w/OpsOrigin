@@ -351,11 +351,15 @@ func (s *Service) runAutomatedDepth(ctx context.Context, proc *Process, inst *Pr
 			recordStepEntered(inst, cur, time.Now())
 			return cur, nil
 		}
-		if cur.Type == StepService && cur.ActionType != "" && s.actionExec != nil {
+		// 动作库分支。条件中的 (s.actionExec != nil || cur.TemplateRef != nil) 是刻意的：
+		// 存量流程有 action_type 但部署未装配动作执行器时，保持历史「直通」行为不回归；
+		// 而引用了动作模板的步骤必须进入本分支，解析失败/执行器缺失一律 fail-closed 走 failure。
+		if cur.Type == StepService && (cur.ActionType != "" || cur.TemplateRef != nil) && (s.actionExec != nil || cur.TemplateRef != nil) {
 			// 动作库: 执行预置动作(http/notify/create_ticket 等), 结果写 StepResults, 失败走 failure 分支。
-			// 参数先在引擎侧按变量上下文替换(支持 steps.<id>.output 等点路径), 再交动作执行器
-			// (执行器内部 tpl 仍兼容 custom_fields.xxx, 已替换的占位符不会二次展开)。
-			params := substMap(cur.Inputs, exprCtx)
+			// 参数先在引擎侧按变量上下文替换(支持 steps.<id>.output 等点路径), 再交动作执行器。
+			// 引用动作模板时模板为权威来源，本步骤 Inputs 只做同名覆盖。
+			actionType, rawInputs, resolveErr := s.resolveStepAction(ctx, inst.TenantID, cur)
+			params := substMap(rawInputs, exprCtx)
 			if params == nil {
 				params = map[string]any{}
 			}
@@ -365,21 +369,33 @@ func (s *Service) runAutomatedDepth(ctx context.Context, proc *Process, inst *Pr
 			var result map[string]any
 			var execErr error
 			used := 0
-			for i := 0; i < attempts; i++ {
-				used = i + 1
-				if i > 0 {
-					slog.Warn("itsm process action retry", "action", cur.ActionType, "ticket_id", inst.TicketID, "attempt", i+1, "of", attempts)
-					sleepRetryInterval(ctx, retryDelay)
-				}
-				result, execErr = s.actionExec.ExecuteAction(ctx, cur.ActionType, params, inst.TenantID, inst.TicketID, exprCtx)
-				if execErr == nil {
-					break
+			switch {
+			case resolveErr != nil:
+				execErr = resolveErr
+			case actionType == "":
+				execErr = fmt.Errorf("service 步骤 %s 的动作类型为空", cur.ID)
+			case s.actionExec == nil:
+				execErr = fmt.Errorf("动作执行器未装配")
+			default:
+				for i := 0; i < attempts; i++ {
+					used = i + 1
+					if i > 0 {
+						slog.Warn("itsm process action retry", "action", actionType, "ticket_id", inst.TicketID, "attempt", i+1, "of", attempts)
+						sleepRetryInterval(ctx, retryDelay)
+					}
+					result, execErr = s.actionExec.ExecuteAction(ctx, actionType, params, inst.TenantID, inst.TicketID, exprCtx)
+					if execErr == nil {
+						break
+					}
 				}
 			}
-			rec := map[string]any{"action": cur.ActionType, "at": time.Now(), "attempts": used}
+			rec := map[string]any{"action": actionType, "at": time.Now(), "attempts": used}
+			if cur.TemplateRef != nil {
+				rec["template_ref"] = map[string]any{"template_id": cur.TemplateRef.TemplateID, "version": cur.TemplateRef.Version}
+			}
 			if execErr != nil {
 				rec["error"] = execErr.Error()
-				slog.Warn("itsm process action failed", "action", cur.ActionType, "ticket_id", inst.TicketID, "error", execErr)
+				slog.Warn("itsm process action failed", "action", actionType, "ticket_id", inst.TicketID, "error", execErr)
 			} else {
 				rec["result"] = result
 			}

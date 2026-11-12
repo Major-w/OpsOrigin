@@ -93,6 +93,8 @@ export interface RuleAction {
   type: 'notify' | 'assign' | 'webhook' | 'start_process'
   target: string
   message?: string
+  /** 仅 notify：显式指定通知渠道 ID（留空=按通知策略 Policy 分发） */
+  channels?: string[]
 }
 
 export interface AutomationRule {
@@ -161,6 +163,12 @@ export interface ProcessStep {
   /** 工作日历（服务时间窗口名称/ID）：配置后催办/超时按业务时间计算，空=自然时间 */
   calendar?: string
   script_id?: string; inputs?: Record<string,any>
+  /** 流程引擎动作库类型：非空时 service 步骤执行预置动作(http/notify/create_ticket/script/cmdb_update)，
+   *  参数复用 inputs；留空=走 script_id 脚本旧路径。对齐 internal/itsm/process Step.ActionType。 */
+  action_type?: string
+  /** 动作模板运行期引用：非空时模板为权威来源(按已发布版本解析)，inputs 中同名键覆盖模板参数。
+   *  version=0/省略=跟随最新已发布版本；与「复制为快照」二选一。对齐 process.ActionTemplateRef。 */
+  template_ref?: { template_id: string; version?: number }
   /** 服务任务失败重试策略：次数(0=不重试,后端上限5) + 间隔(如 10s/1m，空=立即重试) */
   retry_count?: number; retry_interval?: string
   condition?: string
@@ -212,11 +220,20 @@ export interface DryRunResult {
   steps: DryRunStep[]
 }
 
+/** 流程级决策表资产绑定：运行期按已发布版本求值，输出注入 decision.<alias> 变量命名空间 */
+export interface DecisionBinding {
+  asset_id: string
+  version?: number              // 0/省略 = 跟随最新已发布版本
+  alias: string                 // decision.<alias>.<输出列>
+  inputs?: Record<string,string> // 条件列 key -> ${...} 变量表达式；未映射按同名字段取值
+}
+
 export interface Process {
   id: string; name: string; description?: string; category?: string
   steps: ProcessStep[]; labels?: Record<string,string>
   enabled: boolean; version: number
   form?: any
+  decision_bindings?: DecisionBinding[]
   sla_policy_id?: string
   notify_config?: any
   number_rule?: TicketNumberRule

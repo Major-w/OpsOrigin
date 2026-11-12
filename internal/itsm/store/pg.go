@@ -450,6 +450,7 @@ func (s *PGStore) Get(ctx context.Context, id, tenantID string) (*model.Ticket, 
 	var customFieldsJSON sql.NullString
 	var processID sql.NullString
 	var catalogID sql.NullString
+	var number sql.NullString
 	var assignee sql.NullString
 	var assignedAt sql.NullTime
 	var satisfaction sql.NullInt32
@@ -477,7 +478,7 @@ func (s *PGStore) Get(ctx context.Context, id, tenantID string) (*model.Ticket, 
 		       sla_warning_notified, sla_breached, sla_breached_at, sla_escalation_level,
 		       approval_chain, approval_status
 		FROM itsm_tickets WHERE id = $1 AND tenant_id = $2`, id, tenantID).Scan(
-		&t.ID, &t.Number, &t.TenantID, &t.Title, &desc, &t.RiskLevel, &t.Status,
+		&t.ID, &number, &t.TenantID, &t.Title, &desc, &t.RiskLevel, &t.Status,
 		&changePlan, &rollbackPlan, &t.CreatedBy, &t.CreatedByType,
 		&approvedBy, &rejectReason, &completedBy, &rolledBackBy, &rollbackReason,
 		&ciIDsJSON, &webhookURL, &labelsJSON, &t.TraceID,
@@ -497,6 +498,7 @@ func (s *PGStore) Get(ctx context.Context, id, tenantID string) (*model.Ticket, 
 
 	t.ProcessID = nullableStr(processID)
 	t.CatalogID = nullableStr(catalogID)
+	t.Number = nullableStr(number)
 	t.Description = nullableStr(desc)
 	t.ChangePlan = nullableStr(changePlan)
 	t.RollbackPlan = nullableStr(rollbackPlan)
@@ -647,6 +649,7 @@ func (s *PGStore) List(ctx context.Context, tenantID string, status model.Ticket
 		var customFieldsJSON sql.NullString
 		var processID sql.NullString
 		var assignee sql.NullString
+		var number sql.NullString
 		var assignedAt sql.NullTime
 		var satisfaction sql.NullInt32
 		var approvedAt, executedAt, completedAt, rolledBackAt sql.NullTime
@@ -663,7 +666,7 @@ func (s *PGStore) List(ctx context.Context, tenantID string, status model.Ticket
 		var approvalChainJSON, approvalStatusJSON sql.NullString
 
 		if err := rows.Scan(
-			&t.ID, &t.Number, &t.TenantID, &t.Title, &desc, &t.RiskLevel, &t.Status,
+			&t.ID, &number, &t.TenantID, &t.Title, &desc, &t.RiskLevel, &t.Status,
 			&changePlan, &rollbackPlan, &t.CreatedBy, &t.CreatedByType,
 			&approvedBy, &rejectReason, &completedBy, &rolledBackBy, &rollbackReason,
 			&ciIDsJSON, &webhookURL, &labelsJSON, &t.TraceID,
@@ -679,6 +682,7 @@ func (s *PGStore) List(ctx context.Context, tenantID string, status model.Ticket
 
 		t.ProcessID = nullableStr(processID)
 		t.Description = nullableStr(desc)
+		t.Number = nullableStr(number)
 		t.ChangePlan = nullableStr(changePlan)
 		t.RollbackPlan = nullableStr(rollbackPlan)
 		t.ApprovedBy = nullableStr(approvedBy)
@@ -780,6 +784,7 @@ func (s *PGStore) ListPaged(ctx context.Context, tenantID string, status model.T
 		var customFieldsJSON sql.NullString
 		var processID sql.NullString
 		var assignee sql.NullString
+		var number sql.NullString
 		var assignedAt sql.NullTime
 		var satisfaction sql.NullInt32
 		var approvedAt, executedAt, completedAt, rolledBackAt sql.NullTime
@@ -796,7 +801,7 @@ func (s *PGStore) ListPaged(ctx context.Context, tenantID string, status model.T
 		var approvalChainJSON, approvalStatusJSON sql.NullString
 
 		if err := rows.Scan(
-			&t.ID, &t.Number, &t.TenantID, &t.Title, &desc, &t.RiskLevel, &t.Status,
+			&t.ID, &number, &t.TenantID, &t.Title, &desc, &t.RiskLevel, &t.Status,
 			&changePlan, &rollbackPlan, &t.CreatedBy, &t.CreatedByType,
 			&approvedBy, &rejectReason, &completedBy, &rolledBackBy, &rollbackReason,
 			&ciIDsJSON, &webhookURL, &labelsJSON, &t.TraceID,
@@ -812,6 +817,7 @@ func (s *PGStore) ListPaged(ctx context.Context, tenantID string, status model.T
 
 		t.ProcessID = nullableStr(processID)
 		t.Description = nullableStr(desc)
+		t.Number = nullableStr(number)
 		t.ChangePlan = nullableStr(changePlan)
 		t.RollbackPlan = nullableStr(rollbackPlan)
 		t.ApprovedBy = nullableStr(approvedBy)
@@ -1320,7 +1326,7 @@ func (s *PGStore) ListActiveTicketsWithDeadline(ctx context.Context, tenantID st
 		// 而这两个查询只服务后台巡检（SLA/OLA），失败只体现为一行 ERROR 日志，
 		// 表现为 SLA 预警/违约与 OLA 超时升级整体静默失效，接口侧看不出任何异常。
 		var desc, approvedBy, rejectReason, completedBy, rolledBackBy, rollbackReason, webhookURL sql.NullString
-		var processID, assignee, changePlan, rollbackPlan, catalogID, holdReason, relatedJSON sql.NullString
+		var processID, assignee, changePlan, rollbackPlan, catalogID, holdReason, relatedJSON, number sql.NullString
 		var scheduledAt, deadlineAt, approvedAt, executedAt, completedAt, rolledBackAt, slaBreachedAt sql.NullTime
 		var holdAt, holdUntilAt, assignedAt sql.NullTime
 		var holdSeconds, slaEscalationLevel sql.NullInt64
@@ -1328,7 +1334,7 @@ func (s *PGStore) ListActiveTicketsWithDeadline(ctx context.Context, tenantID st
 		var slaWarningNotified, slaBreached, onHold sql.NullBool
 		var satisfaction sql.NullInt32
 		err := rows.Scan(
-			&t.ID, &t.Number, &t.TenantID, &t.Title, &desc, &t.RiskLevel, &t.Status,
+			&t.ID, &number, &t.TenantID, &t.Title, &desc, &t.RiskLevel, &t.Status,
 			&changePlan, &rollbackPlan, &t.CreatedBy, &t.CreatedByType,
 			&approvedBy, &rejectReason, &completedBy, &rolledBackBy, &rollbackReason,
 			&ciIDsJSON, &webhookURL, &labelsJSON, &t.TraceID,
@@ -1411,6 +1417,7 @@ func (s *PGStore) ListActiveTicketsWithDeadline(ctx context.Context, tenantID st
 		}
 		t.ProcessID = nullableStr(processID)
 		t.Assignee = nullableStr(assignee)
+		t.Number = nullableStr(number)
 		result = append(result, t)
 	}
 	return result, nil
@@ -1441,7 +1448,7 @@ func (s *PGStore) ListOnHoldTicketsPastDue(ctx context.Context, tenantID string)
 		// 与 ListActiveTicketsWithDeadline 同因：可空文本列必须走 sql.NullString，
 		// 否则任一行是 NULL 就让整个「挂起到期自动恢复」巡检失败。
 		var desc, approvedBy, rejectReason, completedBy, rolledBackBy, rollbackReason, webhookURL sql.NullString
-		var processID, assignee, changePlan, rollbackPlan, catalogID, holdReason, relatedJSON sql.NullString
+		var processID, assignee, changePlan, rollbackPlan, catalogID, holdReason, relatedJSON, number sql.NullString
 		var slaBreachedAt, deadlineAt, holdUntilAt sql.NullTime
 		var slaEscalationLevel sql.NullInt64
 		var holdAt sql.NullTime
@@ -1451,7 +1458,7 @@ func (s *PGStore) ListOnHoldTicketsPastDue(ctx context.Context, tenantID string)
 		var satisfaction sql.NullInt32
 		var slaWarningNotified, slaBreached, onHold sql.NullBool
 		if err := rows.Scan(
-			&t.ID, &t.Number, &t.TenantID, &t.Title, &desc, &t.RiskLevel, &t.Status,
+			&t.ID, &number, &t.TenantID, &t.Title, &desc, &t.RiskLevel, &t.Status,
 			&changePlan, &rollbackPlan, &t.CreatedBy, &t.CreatedByType, &approvedBy,
 			&rejectReason, &completedBy, &rolledBackBy, &rollbackReason,
 			&ciIDsJSON, &webhookURL, &labelsJSON, &t.TraceID,
@@ -1519,6 +1526,7 @@ func (s *PGStore) ListOnHoldTicketsPastDue(ctx context.Context, tenantID string)
 		}
 		t.ProcessID = nullableStr(processID)
 		t.Assignee = nullableStr(assignee)
+		t.Number = nullableStr(number)
 		result = append(result, t)
 	}
 	return result, nil
@@ -1889,17 +1897,20 @@ func (s *PGStore) initDictTable(ctx context.Context) error {
 
 func (s *PGStore) GetFieldDict(ctx context.Context, tenantID, id string) (*form.FieldDict, error) {
 	var d form.FieldDict
-	var fieldsJSON string
+	var description, fieldsJSON sql.NullString
 	err := s.db.QueryRowContext(ctx, `
 		SELECT id, tenant_id, name, description, fields FROM itsm_form_dicts WHERE id = $1 AND tenant_id = $2`,
-		id, tenantID).Scan(&d.ID, &d.TenantID, &d.Name, &d.Description, &fieldsJSON)
+		id, tenantID).Scan(&d.ID, &d.TenantID, &d.Name, &description, &fieldsJSON)
 	if err == sql.ErrNoRows {
 		return nil, ErrNotFound
 	}
 	if err != nil {
 		return nil, err
 	}
-	json.Unmarshal([]byte(fieldsJSON), &d.Fields)
+	d.Description = nullableStr(description)
+	if fieldsJSON.Valid && fieldsJSON.String != "" {
+		json.Unmarshal([]byte(fieldsJSON.String), &d.Fields)
+	}
 	return &d, nil
 }
 
@@ -1913,11 +1924,14 @@ func (s *PGStore) ListFieldDicts(ctx context.Context, tenantID string) ([]*form.
 	var out []*form.FieldDict
 	for rows.Next() {
 		var d form.FieldDict
-		var fieldsJSON string
-		if err := rows.Scan(&d.ID, &d.TenantID, &d.Name, &d.Description, &fieldsJSON); err != nil {
+		var description, fieldsJSON sql.NullString
+		if err := rows.Scan(&d.ID, &d.TenantID, &d.Name, &description, &fieldsJSON); err != nil {
 			return nil, err
 		}
-		json.Unmarshal([]byte(fieldsJSON), &d.Fields)
+		d.Description = nullableStr(description)
+		if fieldsJSON.Valid && fieldsJSON.String != "" {
+			json.Unmarshal([]byte(fieldsJSON.String), &d.Fields)
+		}
 		out = append(out, &d)
 	}
 	return out, rows.Err()
@@ -1973,21 +1987,29 @@ func (s *PGStore) initTicketTemplateTable(ctx context.Context) error {
 
 func (s *PGStore) GetTicketTemplate(ctx context.Context, tenantID, id string) (*model.TicketTemplate, error) {
 	var tmpl model.TicketTemplate
-	var contentJSON string
+	var contentJSON sql.NullString
+	var remark, category, formScope, processID, catalogID, createdBy sql.NullString
 	err := s.db.QueryRowContext(ctx, `
 		SELECT id, tenant_id, name, remark, category, form_scope, process_id, catalog_id, content, created_by, created_at, updated_at
 		FROM itsm_ticket_templates WHERE id = $1 AND tenant_id = $2`, id, tenantID).
-		Scan(&tmpl.ID, &tmpl.TenantID, &tmpl.Name, &tmpl.Remark, &tmpl.Category, &tmpl.FormScope, &tmpl.ProcessID, &tmpl.CatalogID, &contentJSON, &tmpl.CreatedBy, &tmpl.CreatedAt, &tmpl.UpdatedAt)
+		Scan(&tmpl.ID, &tmpl.TenantID, &tmpl.Name, &remark, &category, &formScope, &processID, &catalogID, &contentJSON, &createdBy, &tmpl.CreatedAt, &tmpl.UpdatedAt)
 	if err == sql.ErrNoRows {
 		return nil, ErrNotFound
 	}
 	if err != nil {
 		return nil, err
 	}
-	if contentJSON == "" {
-		contentJSON = "{}"
+	tmpl.Remark = nullableStr(remark)
+	tmpl.Category = nullableStr(category)
+	tmpl.FormScope = nullableStr(formScope)
+	tmpl.ProcessID = nullableStr(processID)
+	tmpl.CatalogID = nullableStr(catalogID)
+	tmpl.CreatedBy = nullableStr(createdBy)
+	content := contentJSON.String
+	if !contentJSON.Valid || content == "" {
+		content = "{}"
 	}
-	_ = json.Unmarshal([]byte(contentJSON), &tmpl.Content)
+	_ = json.Unmarshal([]byte(content), &tmpl.Content)
 	return &tmpl, nil
 }
 
@@ -2002,14 +2024,22 @@ func (s *PGStore) ListTicketTemplates(ctx context.Context, tenantID string) ([]*
 	var out []*model.TicketTemplate
 	for rows.Next() {
 		var tmpl model.TicketTemplate
-		var contentJSON string
-		if err := rows.Scan(&tmpl.ID, &tmpl.TenantID, &tmpl.Name, &tmpl.Remark, &tmpl.Category, &tmpl.FormScope, &tmpl.ProcessID, &tmpl.CatalogID, &contentJSON, &tmpl.CreatedBy, &tmpl.CreatedAt, &tmpl.UpdatedAt); err != nil {
+		var contentJSON sql.NullString
+		var remark, category, formScope, processID, catalogID, createdBy sql.NullString
+		if err := rows.Scan(&tmpl.ID, &tmpl.TenantID, &tmpl.Name, &remark, &category, &formScope, &processID, &catalogID, &contentJSON, &createdBy, &tmpl.CreatedAt, &tmpl.UpdatedAt); err != nil {
 			return nil, err
 		}
-		if contentJSON == "" {
-			contentJSON = "{}"
+		tmpl.Remark = nullableStr(remark)
+		tmpl.Category = nullableStr(category)
+		tmpl.FormScope = nullableStr(formScope)
+		tmpl.ProcessID = nullableStr(processID)
+		tmpl.CatalogID = nullableStr(catalogID)
+		tmpl.CreatedBy = nullableStr(createdBy)
+		content := contentJSON.String
+		if !contentJSON.Valid || content == "" {
+			content = "{}"
 		}
-		_ = json.Unmarshal([]byte(contentJSON), &tmpl.Content)
+		_ = json.Unmarshal([]byte(content), &tmpl.Content)
 		out = append(out, &tmpl)
 	}
 	if out == nil {
@@ -2097,7 +2127,8 @@ const automationRuleCols = `id, tenant_id, name, event, enabled, conditions, act
 func scanAutomationRule(scanner interface{ Scan(dest ...any) error }) (*model.AutomationRule, error) {
 	var r model.AutomationRule
 	var condJSON, actJSON, schedJSON string
-	if err := scanner.Scan(&r.ID, &r.TenantID, &r.Name, &r.Event, &r.Enabled, &condJSON, &actJSON, &schedJSON, &r.CreatedBy, &r.CreatedAt, &r.UpdatedAt); err != nil {
+	var createdBy sql.NullString
+	if err := scanner.Scan(&r.ID, &r.TenantID, &r.Name, &r.Event, &r.Enabled, &condJSON, &actJSON, &schedJSON, &createdBy, &r.CreatedAt, &r.UpdatedAt); err != nil {
 		return nil, err
 	}
 	if condJSON == "" {
@@ -2114,6 +2145,7 @@ func scanAutomationRule(scanner interface{ Scan(dest ...any) error }) (*model.Au
 			r.Schedule = &rs
 		}
 	}
+	r.CreatedBy = nullableStr(createdBy)
 	return &r, nil
 }
 
@@ -2189,7 +2221,8 @@ const ticketButtonCols = `id, tenant_id, name, action_type, action_params, visib
 func scanTicketButton(scanner interface{ Scan(dest ...any) error }) (*model.TicketButton, error) {
 	var b model.TicketButton
 	var paramsJSON, visJSON, rolesJSON string
-	if err := scanner.Scan(&b.ID, &b.TenantID, &b.Name, &b.ActionType, &paramsJSON, &visJSON, &rolesJSON, &b.ConfirmText, &b.SortOrder, &b.Enabled, &b.CreatedBy, &b.CreatedAt, &b.UpdatedAt); err != nil {
+	var confirmText, createdBy sql.NullString
+	if err := scanner.Scan(&b.ID, &b.TenantID, &b.Name, &b.ActionType, &paramsJSON, &visJSON, &rolesJSON, &confirmText, &b.SortOrder, &b.Enabled, &createdBy, &b.CreatedAt, &b.UpdatedAt); err != nil {
 		return nil, err
 	}
 	if paramsJSON == "" {
@@ -2204,6 +2237,8 @@ func scanTicketButton(scanner interface{ Scan(dest ...any) error }) (*model.Tick
 	_ = json.Unmarshal([]byte(paramsJSON), &b.ActionParams)
 	_ = json.Unmarshal([]byte(visJSON), &b.VisibleStatuses)
 	_ = json.Unmarshal([]byte(rolesJSON), &b.Roles)
+	b.ConfirmText = nullableStr(confirmText)
+	b.CreatedBy = nullableStr(createdBy)
 	return &b, nil
 }
 

@@ -37,6 +37,10 @@ func (f *fakeCI) ListCIsByAttrs(_ context.Context, _, typeName string, attrs map
 	return []cmdb.CIRef{{ID: "ci-1", Name: "web-01", Type: typeName}}, nil
 }
 
+func (f *fakeCI) GetCIAttrByName(_ context.Context, _, _, _, _ string) (string, bool, error) {
+	return "", false, nil
+}
+
 func findOpt(opts []form.FieldOption, value string) *form.FieldOption {
 	for i := range opts {
 		if opts[i].Value == value {

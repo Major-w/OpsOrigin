@@ -79,6 +79,9 @@ func (s *Service) buildVarCtx(ctx context.Context, inst *ProcessInstance, output
 		}
 		varCtx["output"] = m
 	}
+	// 4) 流程级决策表绑定：按已发布版本求值，输出注入 decision.<alias> 命名空间。
+	//    放在最后，使绑定输入能看到本次 output，且 decision 为保留命名空间不被平铺覆盖。
+	s.applyDecisionBindings(ctx, inst, varCtx)
 	return varCtx
 }
 

@@ -248,25 +248,57 @@ export function normalizeStepFieldPerm(p: Partial<StepFieldPerm> & { key: string
  * - hidden 字段直接剔除（不下发到前端渲染，也就不会被填写）
  * - readonly/disabled 字段标记（DynamicForm 会禁用控件）
  * - editable 且 required 的字段标记必填（本节点动态必填）
+ * - group 分组容器递归投影（子字段同样按 key 匹配权限）
  * 未配置权限（perms 为空）时视为「全部可见可编辑」，保证老流程零改造仍能跑。
  */
 export function applyStepFieldPerms(schema: FormSchema | null | undefined, perms?: StepFieldPerm[]): FormSchema | null {
   if (!schema) return null
   if (!perms || perms.length === 0) return schema
   const byKey = new Map(perms.map(p => [normalizeStepFieldPerm(p).key, normalizeStepFieldPerm(p)]))
-  const fields: FormFieldDef[] = []
-  for (const f of schema.fields || []) {
+  return { ...schema, fields: applyPermsToFields(schema.fields || [], byKey) }
+}
+
+/** 递归投影：hidden 剔除 / readonly/disabled 标记 / editable+required 标必填（镜像后端 form.applyPermsToFields）。 */
+function applyPermsToFields(fields: FormFieldDef[], byKey: Map<string, StepFieldPerm>): FormFieldDef[] {
+  const out: FormFieldDef[] = []
+  for (const f of fields) {
+    let eff = f
     const p = byKey.get(f.key)
-    if (!p) { fields.push(f); continue }       // 未声明 = 沿用字段自身定义
-    if (p.mode === 'hidden') continue          // 本节点不可见 → 剔除
-    if (p.mode === 'editable') {
-      fields.push(p.required && !f.required ? { ...f, required: true } : f)
-      continue
+    if (p) {
+      if (p.mode === 'hidden') continue       // 本节点不可见 → 剔除
+      if (p.mode === 'editable') {
+        if (p.required && !f.required) eff = { ...f, required: true }
+      } else {
+        eff = { ...f, readonly: true, disabled: p.mode === 'disabled', required: false } // 只读不可填 → 豁免必填（镜像后端）
+      }
     }
-    // readonly / disabled：控件禁用
-    fields.push({ ...f, readonly: true, disabled: p.mode === 'disabled' })
+    if (eff.type === 'group' && eff.children?.length) {
+      eff = { ...eff, children: applyPermsToFields(eff.children, byKey) }
+    }
+    out.push(eff)
   }
-  return { ...schema, fields }
+  return out
+}
+
+/**
+ * 节点字段权限上限（cap）：行为规则(behavior_rules)在节点投影之后计算，
+ * 只可在权限边界内收紧（hide/optional/readonly），不得放宽节点权限。
+ * 返回值传给 DynamicForm 的 permCaps，在 effectiveFieldStates 结果后兜底（与后端
+ * form.EffectiveStatesForStep 镜像）：readonly/disabled → 强制只读并豁免必填；
+ * editable+required → 强制必填；hidden 已由 applyStepFieldPerms 剔除，无需 cap。
+ */
+export function stepPermCaps(
+  perms?: StepFieldPerm[],
+): Record<string, { readonly?: boolean; required?: boolean }> {
+  if (!perms || perms.length === 0) return {}
+  const caps: Record<string, { readonly?: boolean; required?: boolean }> = {}
+  for (const raw of perms) {
+    const p = normalizeStepFieldPerm(raw)
+    if (p.mode === 'hidden') continue // 投影层已剔除
+    if (p.mode === 'readonly' || p.mode === 'disabled') caps[p.key] = { readonly: true }
+    else if (p.mode === 'editable' && p.required) caps[p.key] = { required: true }
+  }
+  return caps
 }
 
 /** 获取树节点的所有后代 ID */

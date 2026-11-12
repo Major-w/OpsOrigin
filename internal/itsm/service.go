@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/opsorigin/core/internal/itsm/assets"
 	"github.com/opsorigin/core/internal/itsm/catalog"
 	"github.com/opsorigin/core/internal/itsm/form"
 	"github.com/opsorigin/core/internal/itsm/model"
@@ -51,6 +52,12 @@ type Notifier interface {
 	NotifyEvent(ctx context.Context, tenantID, event, title, content string) error
 }
 
+// ChannelNotifier 可选能力：直接向指定渠道 ID 列表投递通知（绕过 Policy 匹配）。
+// 由 notification.Service 实现；自动化 notify 动作指定 Channels 时通过类型断言使用。
+type ChannelNotifier interface {
+	NotifyChannels(ctx context.Context, tenantID string, channelIDs []string, event, title, content string) error
+}
+
 // ITSM 内部事件名, 取值与 notification 包 EventType 对齐, 用于匹配通知 Policy。
 const (
 	evTicketCreated  = "ticket.created"
@@ -75,9 +82,12 @@ type Service struct {
 	olaStore     *ola.Store
 	svcWindows   *servicehours.Store
 	formEngine   *form.Engine
-	wsHub        interface{ BroadcastToTenant(interface{}, string) }
-	stopCh       chan struct{}
-	stopOnce     sync.Once
+	// assetStore 决策表资产 / 动作模板存储。同时实现 form.DecisionTableResolver，
+	// 由 NewService 注入 formEngine，使 schema 中的 asset_ref 在求值前展开为已发布快照。
+	assetStore assets.Store
+	wsHub      interface{ BroadcastToTenant(interface{}, string) }
+	stopCh     chan struct{}
+	stopOnce   sync.Once
 	// objStore 对象存储(MinIO/COS/OSS): 附件二进制落对象存储; nil = 关闭, 二进制回退数据库。
 	objStore *objectstore.Client
 	// knowledgeArchiver 由 cmd/core 注入: 工单完成后将处置案例沉淀到知识库(nil=关闭)。
@@ -111,30 +121,54 @@ type catalogGetter interface {
 }
 
 func NewService(cfg *config.Config, db *sql.DB) *Service {
+	initCtx := context.Background() // 启动期无请求上下文，仅用于自愈 DDL
 	var s store.Store
+	var assetStore assets.Store
 	if db != nil {
 		pgStore := store.NewPGStore(db)
-		if err := pgStore.Init(context.Background()); err != nil {
+		if err := pgStore.Init(initCtx); err != nil {
 			slog.Error("failed to init itsm pg store, falling back to memory", "error", err)
 			s = store.NewMemoryStore()
 		} else {
 			s = pgStore
 			slog.Info("itsm: using postgresql store")
 		}
+		assetPG := assets.NewPGStore(db)
+		if err := assetPG.Init(initCtx); err != nil {
+			slog.Error("failed to init itsm asset store, falling back to memory", "error", err)
+			assetStore = assets.NewMemoryStore()
+		} else {
+			assetStore = assetPG
+			slog.Info("itsm: using postgresql asset store")
+		}
 	}
 	if s == nil {
 		s = store.NewMemoryStore()
 		slog.Info("itsm: using in-memory store")
 	}
+	if assetStore == nil {
+		assetStore = assets.NewMemoryStore()
+	}
 
+	engine := form.NewEngine(s)
+	engine.SetDecisionTableResolver(assetStore) // 分层单向：form 只认接口，实现在 assets
 	return &Service{
 		cfg:        cfg,
 		db:         db,
 		store:      s,
+		assetStore: assetStore,
 		risk:       risk.New(),
 		webhook:    webhook.New(),
-		formEngine: form.NewEngine(s),
+		formEngine: engine,
 		stopCh:     make(chan struct{}),
+	}
+}
+
+// SetAssetStore 注入资产存储（测试 / 手动装配用）；同步把引用解析器注入表单引擎。
+func (s *Service) SetAssetStore(as assets.Store) {
+	s.assetStore = as
+	if s.formEngine != nil {
+		s.formEngine.SetDecisionTableResolver(as)
 	}
 }
 
@@ -147,6 +181,20 @@ func (s *Service) SetFormEngine(e *form.Engine) {
 func (s *Service) SetSourceResolver(r form.SourceResolver) {
 	if s.formEngine != nil {
 		s.formEngine.SetSourceResolver(r)
+	}
+}
+
+// SetCIAttrResolver 注入 CMDB 属性回填通道（数据联动 ci_attr 模式），main.go 装配。
+func (s *Service) SetCIAttrResolver(r form.CIAttrResolver) {
+	if s.formEngine != nil {
+		s.formEngine.SetCIAttrResolver(r)
+	}
+}
+
+// SetSubmitterAttrResolver 注入提单人属性回填通道（数据联动 submitter_attr 模式），main.go 装配。
+func (s *Service) SetSubmitterAttrResolver(r form.SubmitterAttrResolver) {
+	if s.formEngine != nil {
+		s.formEngine.SetSubmitterAttrResolver(r)
 	}
 }
 
@@ -282,10 +330,29 @@ func (s *Service) RegisterRoutes(mux *http.ServeMux) {
 	// Form schemas (dynamic forms)
 	mux.HandleFunc("GET /api/v1/itsm/forms", s.handleListFormScopes)
 	mux.HandleFunc("PUT /api/v1/itsm/forms", s.handleUpsertFormSchema)
+	mux.HandleFunc("GET /api/v1/itsm/form/ci-attr", s.handleFormCIAttr)
+	mux.HandleFunc("GET /api/v1/itsm/form/submitter-attr", s.handleFormSubmitterAttr)
+	mux.HandleFunc("POST /api/v1/itsm/form/rules-preview", s.handleFormRulesPreview)
 	// 数据字典
 	mux.HandleFunc("GET /api/v1/itsm/form-dicts", s.handleListFieldDicts)
 	mux.HandleFunc("POST /api/v1/itsm/form-dicts", s.handleUpsertFieldDict)
 	mux.HandleFunc("DELETE /api/v1/itsm/form-dicts/{id}", s.handleDeleteFieldDict)
+	// 决策表资产（跨表单复用 / 版本 / 发布 / 回滚 / 独立试算）
+	mux.HandleFunc("GET /api/v1/itsm/decision-tables", s.handleListDecisionTables)
+	mux.HandleFunc("POST /api/v1/itsm/decision-tables", s.handleUpsertDecisionTable)
+	mux.HandleFunc("GET /api/v1/itsm/decision-tables/{id}", s.handleGetDecisionTable)
+	mux.HandleFunc("DELETE /api/v1/itsm/decision-tables/{id}", s.handleDeleteDecisionTable)
+	mux.HandleFunc("GET /api/v1/itsm/decision-tables/{id}/versions", s.handleListDecisionVersions)
+	mux.HandleFunc("POST /api/v1/itsm/decision-tables/{id}/publish", s.handlePublishDecisionTable)
+	mux.HandleFunc("POST /api/v1/itsm/decision-tables/{id}/rollback", s.handleRollbackDecisionTable)
+	mux.HandleFunc("POST /api/v1/itsm/decision-tables/{id}/preview", s.handlePreviewDecisionTable)
+	// 动作库模板（配置期快照 / 运行期引用两用，版本发布与回滚）
+	mux.HandleFunc("GET /api/v1/itsm/action-templates", s.handleListActionTemplates)
+	mux.HandleFunc("POST /api/v1/itsm/action-templates", s.handleUpsertActionTemplate)
+	mux.HandleFunc("DELETE /api/v1/itsm/action-templates/{id}", s.handleDeleteActionTemplate)
+	mux.HandleFunc("GET /api/v1/itsm/action-templates/{id}/versions", s.handleListActionTemplateVersions)
+	mux.HandleFunc("POST /api/v1/itsm/action-templates/{id}/publish", s.handlePublishActionTemplate)
+	mux.HandleFunc("POST /api/v1/itsm/action-templates/{id}/rollback", s.handleRollbackActionTemplate)
 	// 提单模板（预填工单字段，快速建单）
 	mux.HandleFunc("GET /api/v1/itsm/ticket-templates", s.handleListTicketTemplates)
 	mux.HandleFunc("POST /api/v1/itsm/ticket-templates", s.handleCreateTicketTemplate)

@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	"github.com/opsorigin/core/internal/itsm/form"
 )
 
 // StepType — BPMN 风格节点类型
@@ -62,6 +64,30 @@ type Dependency struct {
 	Condition string `json:"condition"` // success / failure / always
 }
 
+// DecisionBinding 流程级决策表资产绑定（流程引擎一等公民入口）。
+//
+// 运行期每次构建变量上下文时按已发布版本求值，输出写入 decision.<alias>.<输出列>
+// 命名空间，供网关 Condition（如 decision.route.target == "L2"）、派单 AssigneeVar
+// （decision.route.owner）与动作/脚本参数 ${decision.route.*} 直接引用，
+// 不必再绕道工单自定义表单字段。
+//
+// Inputs 把决策表条件列映射到流程变量表达式（${...} 点路径，见 resolveRefValue）；
+// 未显式映射的条件列按同名从 custom_fields / 变量上下文顶层取值。
+type DecisionBinding struct {
+	AssetID string            `json:"asset_id"`
+	Version int               `json:"version,omitempty"` // 0 = 跟随最新已发布版本
+	Alias   string            `json:"alias"`             // decision.<alias> 命名空间
+	Inputs  map[string]string `json:"inputs,omitempty"`  // 条件列 key -> ${...} 变量表达式
+}
+
+// ActionTemplateRef 服务步骤对动作模板资产的引用。
+// version=0 跟随最新已发布版本；>0 锁定到不可变快照。运行期由 ActionTemplateResolver
+// 解析，模板为权威来源，Step.Inputs 仅作同名覆盖；解析失败 fail-closed 走 failure 分支。
+type ActionTemplateRef struct {
+	TemplateID string `json:"template_id"`
+	Version    int    `json:"version,omitempty"`
+}
+
 // Step  — 流程步骤（前端 JSON 对齐 Web 版 WorkflowStep）
 type Step struct {
 	ID          string   `json:"id"`
@@ -103,6 +129,10 @@ type Step struct {
 	// 动作库: 非空时 service 步骤优先执行预置动作(action_params 为动作参数, 复用 Inputs 亦可)。
 	// 支持动作: http(请求外发) / notify(通知分发) / create_ticket(创建 ITSM 工单) / script(脚本, 等价 ScriptID)。
 	ActionType string `json:"action_type,omitempty"`
+	// TemplateRef 非空时运行期以动作模板为准：模板提供 action_type + 默认 inputs，
+	// 本步骤 Inputs 中同名键覆盖模板值，ActionType 字段被忽略。模板未发布/被删除/
+	// 解析器未装配时 fail-closed 走 failure 分支，避免静默用空参数执行动作。
+	TemplateRef *ActionTemplateRef `json:"template_ref,omitempty"`
 	// 服务任务失败重试策略（对齐 SN REST Step 内置重试）:
 	//   RetryCount    失败后最多重试次数（0=不重试, 上限 5）；
 	//   RetryInterval 重试间隔(如 10s / 1m), 空则立即重试。仅对动作/脚本执行失败生效,
@@ -157,6 +187,11 @@ type Step struct {
 	// 表单作用域：工单流转到本步骤时渲染的自定义表单 scope（如 process:<pid>:step:<step_id>）。
 	// 空表示本步骤不挂动态表单。
 	FormScope string `json:"form_scope,omitempty"`
+	// FormFields 节点字段权限（StepFieldPerm）：声明「流程主表单的某字段在本节点的状态」
+	// （hidden/readonly/disabled/editable，editable+required 为本节点必填）。
+	// 未声明字段沿用主表单字段自身定义。steps 为 JSONB 整体存储，本字段随定义自动持久化。
+	// 运行期与主表单 BehaviorRules 的叠加语义见 form.EffectiveStatesForStep（节点权限为上限）。
+	FormFields []form.StepFieldPerm `json:"form_fields,omitempty"`
 	// Actions 本节点允许展示的操作按钮 key（如 submit/approve/execute/complete/close...）。
 	// 非空时工单在该节点只显示这些按钮；空/缺省表示沿用默认（全部显示），保持向后兼容。
 	Actions []string `json:"actions,omitempty"`
@@ -231,6 +266,9 @@ type Process struct {
 	// Form 流程级主表单 Schema(工单创建时采集的自定义字段), JSON 结构对齐 internal/itsm/form.FormSchema。
 	// 与画布中「人工任务」节点的 form_schema 互补: 前者是工单入口表单, 后者是流转到该步骤时的补充表单。
 	Form json.RawMessage `json:"form,omitempty"`
+	// DecisionBindings 流程级决策表资产绑定：运行期求值结果注入 decision.<alias>
+	// 变量命名空间，供分支条件 / 派单 / 动作参数直接引用（与表单侧 custom_fields 链路并存）。
+	DecisionBindings []DecisionBinding `json:"decision_bindings,omitempty"`
 	// SlaPolicyID 关联 SLA 策略(id); 运行期工单启动时按 process_id 命中 GetByProcessID, 优先级高于风险级。
 	SlaPolicyID string `json:"sla_policy_id,omitempty"`
 	// NotifyConfig 流程级通知策略(JSON): { channels:[...], on_create:bool, on_complete:bool, template:string }。

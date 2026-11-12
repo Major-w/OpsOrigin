@@ -3,6 +3,7 @@ package process
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"io"
 	"log/slog"
@@ -32,6 +33,17 @@ type ActionExecutor interface {
 	ExecuteAction(ctx context.Context, actionType string, params map[string]any, tenantID, ticketID string, exprCtx map[string]any) (map[string]any, error)
 }
 
+// FormSchemaResolver 流程级主表单的决策表资产引用处理器（可选，由 cmd/core 注入 itsm.Service 实现）。
+//
+// 保存态的 Process.Form 只存纯引用标记（asset_ref），读取时必须展开成已发布版本的内容快照：
+// 否则前端工单页/服务门户直接 parseFormSchema(proc.form) 拿到空 rows，运行期联动静默失效。
+// 保存时反向归一，避免设计器把展开快照固化进流程定义，导致资产发布/回滚对该流程永久失效。
+// process 包只认此接口，不反向依赖 internal/itsm/assets 或 form 的具体实现。
+type FormSchemaResolver interface {
+	ExpandProcessForm(ctx context.Context, tenantID string, raw json.RawMessage) (json.RawMessage, error)
+	NormalizeProcessForm(ctx context.Context, tenantID string, raw json.RawMessage) (json.RawMessage, error)
+}
+
 type Service struct {
 	store Store
 	Name  string
@@ -39,6 +51,13 @@ type Service struct {
 	scriptExec ScriptExecutor
 	// actionExec 由 cmd/core 注入: StepService 步骤执行预置动作(nil=未配置动作库, 动作步骤按 success 直通)。
 	actionExec ActionExecutor
+	// formSchema 由 cmd/core 注入(itsm 实现): 流程主表单的决策表引用读取展开/保存归一。
+	// nil = 保留原行为(不做任何 form 变换)，存量部署与单测零改动。
+	formSchema FormSchemaResolver
+	// decisionEval / templateResolver 由 cmd/core 注入(itsm 实现): 流程级决策表求值
+	// (decision.* 变量) 与动作模板引用解析。nil = 能力关闭，存量流程零改动。
+	decisionEval     DecisionEvaluator
+	templateResolver ActionTemplateResolver
 	// ticketVars 由 cmd/core 注入(itsm 实现): 构建节点变量上下文(ticket.* / custom_fields.*),
 	// 是自动节点变量链路的工单侧数据源(nil=变量仅含步骤输出与当次 output)。
 	ticketVars TicketVarProvider
@@ -69,6 +88,11 @@ func (s *Service) SetScriptExecutor(e ScriptExecutor) {
 // SetActionExecutor 注入动作执行器, 使流程的 service 步骤能执行预置动作(http/notify/create_ticket 等)。
 func (s *Service) SetActionExecutor(e ActionExecutor) {
 	s.actionExec = e
+}
+
+// SetFormSchemaResolver 注入流程主表单的决策表引用处理器(itsm.Service 实现)。
+func (s *Service) SetFormSchemaResolver(r FormSchemaResolver) {
+	s.formSchema = r
 }
 
 // SetNotifier 注入通知回调(OLA 节点超时升级用)。
@@ -297,7 +321,57 @@ func (s *Service) handleList(w http.ResponseWriter, r *http.Request) {
 		httputil.WriteError(w, 500, err.Error())
 		return
 	}
+	// 工单页从流程列表快照取主表单(processes store)，故列表也必须展开，
+	// 否则前端 applyDataRules 拿到纯引用(空 rows)，决策表实时联动不生效。
+	processes = s.expandForms(r, tenant, processes)
 	httputil.WriteJSON(w, 200, processes)
+}
+
+// expandForms 读取路径统一展开流程主表单的决策表引用。
+// 展开结果写进 Process 结构体副本，绝不就地修改 store 返回的对象
+// （内存态 Store 可能返回内部指针，就地改会把快照写回存储）。
+func (s *Service) expandForms(r *http.Request, tenant string, list []*Process) []*Process {
+	if s.formSchema == nil || len(list) == 0 {
+		return list
+	}
+	out := make([]*Process, 0, len(list))
+	for _, p := range list {
+		if p == nil || len(p.Form) == 0 {
+			out = append(out, p)
+			continue
+		}
+		expanded, err := s.formSchema.ExpandProcessForm(r.Context(), tenant, p.Form)
+		if err != nil {
+			slog.Warn("itsm process form expand failed", "id", p.ID, "error", err)
+			out = append(out, p)
+			continue
+		}
+		cp := *p
+		cp.Form = expanded
+		out = append(out, &cp)
+	}
+	return out
+}
+
+// normalizeForm 保存路径统一校验并归一流程主表单的决策表引用，同时校验
+// 流程级决策绑定与动作模板引用（create/update 共用，避免两处漏校验）。
+// 校验失败返回 400；归一保证落库只有 asset_ref，资产发布/回滚对所有引用它的流程立即生效。
+func (s *Service) normalizeForm(r *http.Request, p *Process) error {
+	if p == nil {
+		return nil
+	}
+	if err := ValidateDecisionBindings(p); err != nil {
+		return err
+	}
+	if s.formSchema == nil || len(p.Form) == 0 {
+		return nil
+	}
+	normalized, err := s.formSchema.NormalizeProcessForm(r.Context(), p.TenantID, p.Form)
+	if err != nil {
+		return err
+	}
+	p.Form = normalized
+	return nil
 }
 
 func (s *Service) handleCreate(w http.ResponseWriter, r *http.Request) {
@@ -313,6 +387,10 @@ func (s *Service) handleCreate(w http.ResponseWriter, r *http.Request) {
 	p.TenantID = r.Header.Get("X-Tenant-ID")
 	if p.TenantID == "" {
 		p.TenantID = "default"
+	}
+	if err := s.normalizeForm(r, &p); err != nil {
+		httputil.WriteError(w, 400, err.Error())
+		return
 	}
 	if err := s.checkNumberRuleConflict(&p); err != nil {
 		httputil.WriteError(w, 409, err.Error())
@@ -341,6 +419,8 @@ func (s *Service) handleGet(w http.ResponseWriter, r *http.Request) {
 		httputil.WriteError(w, 404, "not found")
 		return
 	}
+	// 服务门户 getProcess 走此端点：展开后前端才能实时推导决策表输出。
+	p = s.expandForms(r, tenant, []*Process{p})[0]
 	httputil.WriteJSON(w, 200, p)
 }
 
@@ -406,6 +486,10 @@ func (s *Service) handleUpdate(w http.ResponseWriter, r *http.Request) {
 	p.ID = id
 	p.TenantID = tenant
 	p.CreatedAt = existing.CreatedAt
+	if err := s.normalizeForm(r, &p); err != nil {
+		httputil.WriteError(w, 400, err.Error())
+		return
+	}
 	// 编号格式唯一性：与全局默认/其他启用规则的流程撞型会生成相同工单号，保存时拦截。
 	if err := s.checkNumberRuleConflict(&p); err != nil {
 		httputil.WriteError(w, 409, err.Error())

@@ -3,9 +3,11 @@
 // 与 FormDesigner 配套：FormDesigner 管字段布局，本组件管 schema.behavior_rules / combo_rules。
 // 条件求值内核复用 DynamicForm 的 evalCondition（与后端 form 包语义一致）。
 
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { Button, Input, Select } from 'antd'
-import { ChevronDown, ChevronRight, Plus, Trash2 } from 'lucide-react'
+import { ArrowDown, ArrowUp, ChevronDown, ChevronRight, Copy, Package, Play, Plus, Trash2 } from 'lucide-react'
+import { apiFetch, apiList } from '@/lib/utils'
+import { getMessage } from '@/lib/message'
 import {
   CONDITION_OPS,
   type BehaviorRule,
@@ -14,10 +16,19 @@ import {
   type DataLinkRule,
   type DecisionTable,
   type DecisionRow,
+  type DecisionTableAssetRef,
   type FormCondition,
   type FormSchema,
   type FormFieldDef,
 } from './DynamicForm'
+
+interface AssetOption {
+  id: string
+  name: string
+  status: string
+  version: number
+  table?: DecisionTable
+}
 
 const ACTION_OPTIONS: { value: BehaviorAction; label: string; hint: string }[] = [
   { value: 'show', label: '显示', hint: '条件命中时显示目标字段' },
@@ -126,6 +137,128 @@ export function FormRulesEditor({ schema, onChange }: Props) {
   const setCombo = (rules: ComboRule[]) => onChange({ ...schema, combo_rules: rules })
   const setDataLinks = (rules: DataLinkRule[]) => onChange({ ...schema, data_links: rules })
   const setDecisionTables = (tables: DecisionTable[]) => onChange({ ...schema, decision_tables: tables })
+
+  // 决策表试算：直接把当前草稿 schema + 样例值送后端走与提交时相同的推导通道。
+  const [previewOpen, setPreviewOpen] = useState(false)
+  const [previewValues, setPreviewValues] = useState<Record<string, string>>({})
+  const [previewResult, setPreviewResult] = useState<{
+    values: Record<string, unknown>
+    fired: string[]
+    warnings: string[]
+  } | null>(null)
+  const [previewLoading, setPreviewLoading] = useState(false)
+
+  // ---- 决策表资产引用 ----
+  // schema 落库只保存 asset_ref 标记；内容由后端按已发布版本展开（GET schema / 试算 / 提交）。
+  // 设计器里引用态只读，避免把展开快照当成本表单内容编辑（保存会被后端归一剥离）。
+  const [assetOptions, setAssetOptions] = useState<AssetOption[]>([])
+  const [assetLoading, setAssetLoading] = useState(false)
+  const [refPicker, setRefPicker] = useState<string | undefined>(undefined)
+  const [refVersions, setRefVersions] = useState<Record<string, number[]>>({})
+
+  const loadAssets = async () => {
+    setAssetLoading(true)
+    try {
+      const list = await apiList<AssetOption>('/itsm/decision-tables')
+      setAssetOptions((list || []).filter(a => a.status === 'published'))
+    } catch (e) {
+      getMessage().error(`加载决策表资产失败: ${String(e)}`)
+    } finally {
+      setAssetLoading(false)
+    }
+  }
+  useEffect(() => { loadAssets() }, [])
+
+  const loadVersions = async (id: string) => {
+    if (refVersions[id]) return
+    try {
+      const list = await apiList<{ version: number }>(`/itsm/decision-tables/${id}/versions`)
+      setRefVersions(v => ({ ...v, [id]: (list || []).map(x => x.version).sort((a, b) => b - a) }))
+    } catch {
+      setRefVersions(v => ({ ...v, [id]: [] }))
+    }
+  }
+
+  const addAssetRef = async (id: string) => {
+    setRefPicker(undefined)
+    if (!id) return
+    const meta = assetOptions.find(a => a.id === id)
+    let table = meta?.table
+    try {
+      const detail = await apiFetch<{ table: DecisionTable }>(`/itsm/decision-tables/${id}`)
+      if (detail?.table) table = detail.table
+    } catch { /* 列表缓存兜底 */ }
+    setDecisionTables([...decisionTables, {
+      name: meta?.name || '决策表资产',
+      condition_keys: table?.condition_keys || [],
+      output_keys: table?.output_keys || [],
+      rows: table?.rows || [],
+      asset_ref: { asset_id: id, version: 0 },
+    }])
+    loadVersions(id)
+    getMessage().success('已引用资产；保存后按已发布版本实时展开')
+  }
+
+  const setRefVersion = async (i: number, version: number) => {
+    const dt = decisionTables[i]
+    const ref: DecisionTableAssetRef = { asset_id: dt.asset_ref!.asset_id, version }
+    let next: DecisionTable = { ...dt, asset_ref: ref }
+    try {
+      if (version > 0) {
+        const list = await apiList<{ version: number; table: DecisionTable }>(
+          `/itsm/decision-tables/${ref.asset_id}/versions`)
+        const v = (list || []).find(x => x.version === version)
+        if (v?.table) next = { ...next, ...v.table }
+      } else {
+        const detail = await apiFetch<{ table: DecisionTable }>(`/itsm/decision-tables/${ref.asset_id}`)
+        if (detail?.table) next = { ...next, ...detail.table }
+      }
+    } catch (e) {
+      getMessage().error(`读取版本内容失败: ${String(e)}`)
+    }
+    setDecisionTables(decisionTables.map((x, j) => (j === i ? next : x)))
+  }
+
+  const previewFields = Array.from(new Set(decisionTables.flatMap(dt => dt.condition_keys || [])))
+  const runPreview = async () => {
+    setPreviewLoading(true)
+    try {
+      const res = await apiFetch<{ values: Record<string, unknown>; fired: string[]; warnings: string[] }>(
+        '/itsm/form/rules-preview',
+        { method: 'POST', body: JSON.stringify({ schema, values: previewValues }) },
+      )
+      setPreviewResult({
+        values: res.values || {},
+        fired: res.fired || [],
+        warnings: res.warnings || [],
+      })
+    } catch (e) {
+      setPreviewResult({ values: {}, fired: [], warnings: [`试算失败: ${String(e)}`] })
+    } finally {
+      setPreviewLoading(false)
+    }
+  }
+
+  // 行顺序决定「首个命中」，因此提供上移/下移/复制/插入/删除本行。
+  const moveRow = (dt: DecisionTable, i: number, ri: number, to: number) => {
+    const rows = [...(dt.rows || [])]
+    if (to < 0 || to >= rows.length) return
+    const [r] = rows.splice(ri, 1)
+    rows.splice(to, 0, r)
+    setDecisionTables(decisionTables.map((x, j) => (j === i ? { ...x, rows } : x)))
+  }
+  const duplicateRow = (dt: DecisionTable, i: number, ri: number) => {
+    const rows = [...(dt.rows || [])]
+    const src = rows[ri]
+    const copy: DecisionRow = { cells: { ...(src.cells || {}) }, outputs: { ...(src.outputs || {}) } }
+    if (src.enabled !== undefined) copy.enabled = src.enabled
+    rows.splice(ri + 1, 0, copy) // 不带 id，避免复制行与源行 React key 冲突
+    setDecisionTables(decisionTables.map((x, j) => (j === i ? { ...x, rows } : x)))
+  }
+  const deleteRow = (dt: DecisionTable, i: number, ri: number) => {
+    const rows = (dt.rows || []).filter((_, j) => j !== ri)
+    setDecisionTables(decisionTables.map((x, j) => (j === i ? { ...x, rows } : x)))
+  }
 
   return (
     <div className="space-y-2">
@@ -279,14 +412,42 @@ export function FormRulesEditor({ schema, onChange }: Props) {
                         <Select size="small" className="min-w-28 flex-1" placeholder="目标字段" showSearch optionFilterProp="label"
                           value={s.target || undefined} onChange={v => updateSet({ target: v })} options={fieldOptions} />
                         <Select size="small" className="w-28 shrink-0" value={mode}
-                          onChange={v => updateSet({ mode: v, value: '' })}
-                          options={[{ value: 'fixed', label: '固定为' }, { value: 'copy_from', label: '复制字段' }]} />
+                          onChange={v => updateSet({
+                            mode: v,
+                            value: '',
+                            ci_attr: v === 'ci_attr' ? (s.ci_attr || { ci_type: '', name_field: '' }) : undefined,
+                            submitter: v === 'submitter_attr' ? (s.submitter || { attr: 'department' }) : undefined,
+                          })}
+                          options={[{ value: 'fixed', label: '固定为' }, { value: 'copy_from', label: '复制字段' }, { value: 'ci_attr', label: 'CI属性' }, { value: 'submitter_attr', label: '提单人属性' }]} />
                         {mode === 'fixed' ? (
                           <Input size="small" className="w-36 shrink-0" placeholder="写入值" value={s.value || ''}
                             onChange={e => updateSet({ value: e.target.value })} />
-                        ) : (
+                        ) : mode === 'copy_from' ? (
                           <Select size="small" className="w-36 shrink-0" placeholder="来源字段" showSearch optionFilterProp="label"
                             value={s.value || undefined} onChange={v => updateSet({ value: v })} options={fieldOptions} />
+                        ) : mode === 'submitter_attr' ? (
+                          <div className="flex gap-1.5 flex-1">
+                            <Select size="small" className="flex-1" placeholder="提单人属性" value={s.value || s.submitter?.attr || undefined}
+                              onChange={v => updateSet({ value: v, submitter: { ...(s.submitter || {}), attr: v } })}
+                              options={[{ value: 'department', label: '部门(department)' }, { value: 'email', label: '邮箱(email)' }]} />
+                            <Input size="small" className="flex-1" placeholder="兜底值(可选)" value={s.submitter?.fallback || ''}
+                              onChange={e => updateSet({ submitter: { ...(s.submitter || { attr: s.value || 'department' }), fallback: e.target.value } })} />
+                          </div>
+                        ) : (
+                          <div className="flex flex-col gap-1 flex-1">
+                            <div className="flex gap-1.5">
+                              <Input size="small" className="flex-1" placeholder="CMDB 属性(如 owner)" value={s.value || ''}
+                                onChange={e => updateSet({ value: e.target.value })} />
+                              <Input size="small" className="flex-1" placeholder="模型类型名(如 门店)" value={s.ci_attr?.ci_type || ''}
+                                onChange={e => updateSet({ ci_attr: { ...(s.ci_attr || { name_field: '' }), ci_type: e.target.value } })} />
+                            </div>
+                            <div className="flex gap-1.5">
+                              <Select size="small" className="flex-1" placeholder="名称来源字段(其值=CI名)" showSearch optionFilterProp="label"
+                                value={s.ci_attr?.name_field || undefined} onChange={v => updateSet({ ci_attr: { ...(s.ci_attr || { ci_type: '' }), name_field: v } })} options={fieldOptions} />
+                              <Input size="small" className="flex-1" placeholder="兜底值(可选)" value={s.ci_attr?.fallback || ''}
+                                onChange={e => updateSet({ ci_attr: { ...(s.ci_attr || { ci_type: '', name_field: '' }), fallback: e.target.value } })} />
+                            </div>
+                          </div>
                         )}
                         <button type="button" className="text-muted-foreground hover:text-destructive shrink-0"
                           onClick={() => setDataLinks(dataLinks.map((x, j) => (j === i ? { ...x, sets: (x.sets || []).filter((_, sj) => sj !== si) } : x)))} aria-label="删除赋值">
@@ -323,9 +484,53 @@ export function FormRulesEditor({ schema, onChange }: Props) {
         {openDecision && (
           <div className="px-3 pb-3 space-y-3 border-t pt-3">
             <p className="text-[11px] text-muted-foreground">
-              典型用法：环境 ∈ 生产,预发 且 影响范围 = 全局 → 级别=P1、生效时间=非工作时间。单元格留空表示不限；多个候选值用英文逗号分隔。自上而下首个命中行生效，✓/✕ 启停行。
+              典型用法：环境 ∈ 生产,预发 且 影响范围 = 全局 → 级别=P1、生效时间=非工作时间。单元格留空表示不限；多个候选值用英文逗号分隔。自上而下首个命中行生效，✓/✕ 启停行，↑↓ 调整行序。输出列支持 {'${字段名}'} 插值（如 {'${门店}-${工种}-l1'}），可拼出动态组名。
             </p>
             {decisionTables.map((dt, i) => {
+              // 资产引用态：内容由后端展开，本表单只持有引用标记 → 只读展示 + 版本模式 + 转内嵌。
+              if (dt.asset_ref) {
+                const ref = dt.asset_ref
+                const meta = assetOptions.find(a => a.id === ref.asset_id)
+                const versions = refVersions[ref.asset_id] || []
+                return (
+                  <div key={dt.id || i} className="rounded-md border bg-muted/20 p-2.5 space-y-2">
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <Package className="h-3.5 w-3.5 text-primary shrink-0" />
+                      <span className="text-[11px] font-medium truncate">{meta?.name || dt.name || ref.asset_id}</span>
+                      <span className="text-[10px] px-1.5 py-0.5 rounded border text-muted-foreground">资产引用</span>
+                      <div className="ml-auto flex items-center gap-1">
+                        <Select size="small" className="w-36 text-[11px]"
+                          value={ref.version || 0}
+                          onOpenChange={open => { if (open) loadVersions(ref.asset_id) }}
+                          onChange={v => setRefVersion(i, v)}
+                          options={[
+                            { value: 0, label: '跟随最新版' },
+                            ...versions.filter(v => v !== 0).map(v => ({ value: v, label: `锁定 v${v}` })),
+                          ]} />
+                        <Button size="small" type="text" className="text-[11px] h-6"
+                          title="把当前展开快照复制成本表单内嵌决策表（此后不再跟随资产升级）"
+                          onClick={() => setDecisionTables(decisionTables.map((x, j) =>
+                            j === i ? { ...x, asset_ref: undefined } : x))}>
+                          <Copy className="h-3 w-3 mr-0.5" />转内嵌
+                        </Button>
+                        <button type="button" className="text-muted-foreground hover:text-destructive"
+                          onClick={() => setDecisionTables(decisionTables.filter((_, j) => j !== i))} aria-label="移除引用">
+                          <Trash2 className="h-3.5 w-3.5" />
+                        </button>
+                      </div>
+                    </div>
+                    <p className="text-[10px] text-muted-foreground">
+                      由已发布版本实时展开，本表单不保存行矩阵；
+                      {(dt.condition_keys || []).length} 条件列 / {(dt.output_keys || []).length} 输出列 / {(dt.rows || []).length} 行。
+                      {!meta && <span className="text-amber-600 dark:text-amber-400">资产可能已下线或当前无权限，请检查。</span>}
+                    </p>
+                    <div className="flex flex-wrap gap-1">
+                      {(dt.condition_keys || []).map(k => <span key={k} className="text-[10px] px-1.5 py-0.5 rounded border">{k}</span>)}
+                      {(dt.output_keys || []).map(k => <span key={k} className="text-[10px] px-1.5 py-0.5 rounded border text-blue-600 dark:text-blue-400">{k}</span>)}
+                    </div>
+                  </div>
+                )
+              }
               const update = (patch: Partial<DecisionTable>) => setDecisionTables(decisionTables.map((x, j) => (j === i ? { ...x, ...patch } : x)))
               const ckeys = dt.condition_keys || []
               const okeys = dt.output_keys || []
@@ -354,7 +559,7 @@ export function FormRulesEditor({ schema, onChange }: Props) {
                         <tr className="border-b bg-muted/40 text-muted-foreground">
                           {ckeys.map(k => <th key={k} className="px-2 py-1.5 text-left font-medium whitespace-nowrap">{nameOf(k)}</th>)}
                           {okeys.map(k => <th key={k} className="px-2 py-1.5 text-left font-medium whitespace-nowrap text-blue-600 dark:text-blue-400">{nameOf(k)}</th>)}
-                          <th className="w-8" />
+                          <th className="w-24 px-1 py-1.5 text-center font-medium whitespace-nowrap">行操作</th>
                         </tr>
                       </thead>
                       <tbody>
@@ -377,12 +582,26 @@ export function FormRulesEditor({ schema, onChange }: Props) {
                                     onChange={e => updateRow({ outputs: { ...(row.outputs || {}), [k]: e.target.value } })} />
                                 </td>
                               ))}
-                              <td className="px-1 text-center">
-                                <button type="button" title={enabled ? '停用该行' : '启用该行'}
-                                  className={`text-xs ${enabled ? 'text-blue-600 dark:text-blue-400' : 'text-muted-foreground'}`}
-                                  onClick={() => updateRow({ enabled: !enabled })}>
-                                  {enabled ? '✓' : '✕'}
-                                </button>
+                              <td className="px-1 text-center whitespace-nowrap">
+                                <div className="flex items-center justify-center gap-0.5">
+                                  <button type="button" title="上移（首个命中行优先）" disabled={ri === 0}
+                                    className="text-muted-foreground hover:text-primary disabled:opacity-30"
+                                    onClick={() => moveRow(dt, i, ri, ri - 1)}><ArrowUp className="h-3 w-3" /></button>
+                                  <button type="button" title="下移" disabled={ri === (dt.rows || []).length - 1}
+                                    className="text-muted-foreground hover:text-primary disabled:opacity-30"
+                                    onClick={() => moveRow(dt, i, ri, ri + 1)}><ArrowDown className="h-3 w-3" /></button>
+                                  <button type="button" title="复制该行到下方"
+                                    className="text-muted-foreground hover:text-primary"
+                                    onClick={() => duplicateRow(dt, i, ri)}><Copy className="h-3 w-3" /></button>
+                                  <button type="button" title={enabled ? '停用该行' : '启用该行'}
+                                    className={`text-xs ${enabled ? 'text-blue-600 dark:text-blue-400' : 'text-muted-foreground'}`}
+                                    onClick={() => updateRow({ enabled: !enabled })}>
+                                    {enabled ? '✓' : '✕'}
+                                  </button>
+                                  <button type="button" title="删除本行"
+                                    className="text-muted-foreground hover:text-destructive"
+                                    onClick={() => deleteRow(dt, i, ri)}><Trash2 className="h-3 w-3" /></button>
+                                </div>
                               </td>
                             </tr>
                           )
@@ -408,10 +627,72 @@ export function FormRulesEditor({ schema, onChange }: Props) {
                 </div>
               )
             })}
-            <Button size="small" type="dashed" className="w-full"
-              onClick={() => setDecisionTables([...decisionTables, { name: '', condition_keys: [], output_keys: [], rows: [{ cells: {}, outputs: {} }] }])}>
-              <Plus className="h-3.5 w-3.5 mr-1" />添加决策表
-            </Button>
+            <div className="flex gap-2">
+              <Button size="small" type="dashed" className="flex-1"
+                onClick={() => setDecisionTables([...decisionTables, { name: '', condition_keys: [], output_keys: [], rows: [{ cells: {}, outputs: {} }] }])}>
+                <Plus className="h-3.5 w-3.5 mr-1" />添加内嵌决策表
+              </Button>
+              <Select size="small" className="flex-1" placeholder="引用决策表资产（已发布）"
+                value={refPicker} loading={assetLoading} showSearch optionFilterProp="label"
+                onOpenChange={open => { if (open) loadAssets() }}
+                onChange={v => addAssetRef(v)}
+                options={assetOptions.map(a => ({
+                  value: a.id,
+                  label: `${a.name} (v${a.version} · ${a.table?.condition_keys?.length || 0}条件列)`,
+                }))}
+                notFoundContent="暂无已发布资产，请先到「决策表资产」页发布" />
+            </div>
+            <p className="text-[10px] text-muted-foreground">
+              引用资产后本表单只保存引用标记，资产发布新版本时所有「跟随最新版」的表单自动生效；
+              也可「锁定 vN」固定到不可变快照。资产列必须在本表单字段中声明。
+            </p>
+
+            {/* 试算：用样例值走后端同一推导通道，验证命中行与输出值 */}
+            <div className="rounded-md border bg-muted/20 p-2.5 space-y-2">
+              <button type="button" className="flex items-center gap-1.5 text-[11px] font-medium"
+                onClick={() => setPreviewOpen(v => !v)}>
+                {previewOpen ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />}
+                试算（样例值验证命中行与输出）
+              </button>
+              {previewOpen && (
+                <div className="space-y-2">
+                  <div className="flex flex-wrap items-center gap-2">
+                    {previewFields.length === 0 && <span className="text-[11px] text-muted-foreground">决策表还没有条件列</span>}
+                    {previewFields.map(k => (
+                      <label key={k} className="flex items-center gap-1 text-[11px]">
+                        <span className="text-muted-foreground">{nameOf(k)}</span>
+                        <Input size="small" className="h-6 w-32 text-[11px]" placeholder="样例值"
+                          value={previewValues[k] || ''}
+                          onChange={e => setPreviewValues({ ...previewValues, [k]: e.target.value })} />
+                      </label>
+                    ))}
+                    <Button size="small" type="primary" className="h-6 text-[11px]" loading={previewLoading} onClick={runPreview}>
+                      <Play className="h-3 w-3 mr-0.5" />运行试算
+                    </Button>
+                  </div>
+                  {previewResult && (
+                    <div className="space-y-1 text-[11px]">
+                      <div className="text-muted-foreground">触发规则（含命中行号）：</div>
+                      {previewResult.fired.length
+                        ? previewResult.fired.map((f, n) => <div key={n} className="text-blue-600 dark:text-blue-400">· {f}</div>)
+                        : <div className="text-muted-foreground">无规则命中</div>}
+                      {previewResult.warnings.length > 0 && (
+                        <div className="text-amber-600 dark:text-amber-400">
+                          {previewResult.warnings.map((w, n) => <div key={n}>· {w}</div>)}
+                        </div>
+                      )}
+                      <div className="text-muted-foreground">推导后的输出列：</div>
+                      <div className="rounded border bg-background p-1.5 font-mono">
+                        {Array.from(new Set(decisionTables.flatMap(dt => dt.output_keys || []))).map(k => (
+                          <div key={k}>{nameOf(k)} = {String(previewResult.values[k] ?? '（未赋值）')}</div>
+                        ))}
+                        {decisionTables.length === 0 && <div>尚未配置决策表</div>}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
           </div>
         )}
       </div>
@@ -422,7 +703,7 @@ export function FormRulesEditor({ schema, onChange }: Props) {
           已配置 {behaviorRules.length} 条联动规则（{behaviorRules.map(r => `${nameOf(r.targets?.[0] || '')}${ACTION_LABEL[r.action] || r.action}`).join('、')}）
           {comboRules.length > 0 && `，${comboRules.length} 条组合校验`}
           {dataLinks.length > 0 && `，${dataLinks.length} 条数据联动`}
-          {decisionTables.length > 0 && `，${decisionTables.length} 张决策表`}。运行期前端实时生效，提交时后端同样校验。
+          {decisionTables.length > 0 && `，${decisionTables.length} 张决策表（其中 ${decisionTables.filter(d => d.asset_ref).length} 张引用资产）`}。运行期前端实时生效，提交时后端同样校验。
         </p>
       )}
     </div>

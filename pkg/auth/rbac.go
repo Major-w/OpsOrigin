@@ -50,6 +50,9 @@ const (
 	// PermissionAIWrite 管理 AI 会话/智能体/提示词/技能, 发起对话与巡检。
 	// 注意: 「执行」类动作(工具执行/修复执行/剧本执行)仍由 PermissionAIToolExec 把关。
 	PermissionAIWrite = "ai:write"
+	// PermissionAITraceRead 查看数字员工运行轨迹(含工具入参与结果)与 OTel 导出。
+	// 轨迹属运行态敏感观测数据, 收敛到具备工具执行权的角色, 只读账号不可见。
+	PermissionAITraceRead = "ai:trace:read"
 
 	// ---- 自动化: 脚本 ----
 	// PermissionScriptRead 查看脚本与执行历史。
@@ -116,7 +119,7 @@ var AllPermissions = []string{
 	PermissionAIToolExec, PermissionAPIKeySelf,
 	PermissionVulnRead, PermissionVulnWrite,
 	PermissionKnowledgeRead, PermissionKnowledgeWrite, PermissionKnowledgeManage,
-	PermissionAIRead, PermissionAIWrite,
+	PermissionAIRead, PermissionAIWrite, PermissionAITraceRead,
 	PermissionScriptRead, PermissionScriptWrite, PermissionScriptExec,
 	PermissionWorkflowRead, PermissionWorkflowWrite, PermissionWorkflowExec,
 	PermissionScheduleRead, PermissionScheduleWrite,
@@ -146,7 +149,7 @@ var RolePermissions = map[string][]string{
 		PermissionAIToolExec, PermissionAPIKeySelf,
 		PermissionVulnRead, PermissionVulnWrite,
 		PermissionKnowledgeRead, PermissionKnowledgeWrite, PermissionKnowledgeManage,
-		PermissionAIRead, PermissionAIWrite,
+		PermissionAIRead, PermissionAIWrite, PermissionAITraceRead,
 		PermissionScriptRead, PermissionScriptWrite, PermissionScriptExec,
 		PermissionWorkflowRead, PermissionWorkflowWrite, PermissionWorkflowExec,
 		PermissionScheduleRead, PermissionScheduleWrite,
@@ -165,7 +168,7 @@ var RolePermissions = map[string][]string{
 		PermissionAuditRead, PermissionAIToolExec, PermissionAPIKeySelf,
 		PermissionVulnRead, PermissionVulnWrite,
 		PermissionKnowledgeRead, PermissionKnowledgeWrite,
-		PermissionAIRead, PermissionAIWrite,
+		PermissionAIRead, PermissionAIWrite, PermissionAITraceRead,
 		PermissionScriptRead, PermissionScriptWrite, PermissionScriptExec,
 		PermissionWorkflowRead, PermissionWorkflowWrite, PermissionWorkflowExec,
 		PermissionScheduleRead, PermissionScheduleWrite,
@@ -245,9 +248,10 @@ var ModuleGrantRules = []ModuleGrantRule{
 		},
 	},
 	{
-		// 具备工具执行权的角色: 保留受管主机脚本/工作流执行能力(高危)。
+		// 具备工具执行权的角色: 保留受管主机脚本/工作流执行能力(高危),
+		// 并补齐运行轨迹查看权(轨迹含工具入参与结果, 与执行权同级)。
 		Requires: []string{PermissionAIToolExec},
-		Grants:   []string{PermissionScriptExec, PermissionWorkflowExec},
+		Grants:   []string{PermissionScriptExec, PermissionWorkflowExec, PermissionAITraceRead},
 	},
 }
 
@@ -498,6 +502,9 @@ var PathPermissionMapping = map[string]string{
 	"PUT /api/v1/ai":    PermissionAIWrite,
 	"PATCH /api/v1/ai":  PermissionAIWrite,
 	"DELETE /api/v1/ai": PermissionAIWrite,
+	// 运行轨迹含工具入参与结果: 显式收敛到 ai:trace:read, 不回落 ai:read。
+	// 子路径 /trajectories/{id} 与 /trajectories/{id}/otel 逐级回退命中本条。
+	"GET /api/v1/ai/trajectories": PermissionAITraceRead,
 
 	// 自动化 - 脚本:查看(script:read) / 编辑(script:write),
 	// 执行由 ActionPermissionMapping 提升到 script:exec(受管主机远程代码执行)。
@@ -580,6 +587,14 @@ var PathPermissionMapping = map[string]string{
 	"PUT /api/v1/itsm/ticket-buttons":             PermissionITSMWrite,
 	"DELETE /api/v1/itsm/ticket-buttons":          PermissionITSMWrite,
 	"POST /api/v1/itsm/tickets/{id}/add-approver": PermissionITSMWrite,
+	// 表单设计器决策表试算（只读推导，但属配置域操作）
+	"POST /api/v1/itsm/form/rules-preview": PermissionITSMWrite,
+	// 决策表资产 / 动作库模板：查看 itsm:read，编辑·发布·回滚·删除 itsm:write。
+	// 带 {id} 的动作形态另见 ActionPermissionMapping（"*" 段通配）。
+	"GET /api/v1/itsm/decision-tables":   PermissionITSMRead,
+	"POST /api/v1/itsm/decision-tables":  PermissionITSMWrite,
+	"GET /api/v1/itsm/action-templates":  PermissionITSMRead,
+	"POST /api/v1/itsm/action-templates": PermissionITSMWrite,
 	// 状态流转规则(P2-⑯)
 	"GET /api/v1/itsm/status-flows":    PermissionITSMRead,
 	"PUT /api/v1/itsm/status-flows":    PermissionITSMWrite,
@@ -608,10 +623,27 @@ var ActionPermissionMapping = map[string]string{
 	"POST /api/v1/workflows/*/execute":           PermissionWorkflowExec,
 	"POST /api/v1/workflows/executions/*/cancel": PermissionWorkflowExec,
 
+	// ITSM 配置资产：带资产 ID 的路径按段数精确匹配（"*" 匹配单个 ID 段）。
+	"GET /api/v1/itsm/decision-tables/*":            PermissionITSMRead,
+	"DELETE /api/v1/itsm/decision-tables/*":         PermissionITSMWrite,
+	"GET /api/v1/itsm/decision-tables/*/versions":   PermissionITSMRead,
+	"POST /api/v1/itsm/decision-tables/*/publish":   PermissionITSMWrite,
+	"POST /api/v1/itsm/decision-tables/*/rollback":  PermissionITSMWrite,
+	"POST /api/v1/itsm/decision-tables/*/preview":   PermissionITSMWrite,
+	"DELETE /api/v1/itsm/action-templates/*":        PermissionITSMWrite,
+	"GET /api/v1/itsm/action-templates/*/versions":  PermissionITSMRead,
+	"POST /api/v1/itsm/action-templates/*/publish":  PermissionITSMWrite,
+	"POST /api/v1/itsm/action-templates/*/rollback": PermissionITSMWrite,
+
 	// 脚本审核动作属编辑态变更。
 	"POST /api/v1/scripts/*/publish": PermissionScriptWrite,
 	"POST /api/v1/scripts/*/approve": PermissionScriptWrite,
 	"POST /api/v1/scripts/*/reject":  PermissionScriptWrite,
+
+	// 数字员工分享: 显式登记, 避免将来新增 /ai/agents/{id} 细粒度规则时静默漏映射。
+	"GET /api/v1/ai/agents/*/shares":      PermissionAIRead,
+	"POST /api/v1/ai/agents/*/shares":     PermissionAIWrite,
+	"DELETE /api/v1/ai/agents/*/shares/*": PermissionAIWrite,
 
 	// AI 执行类动作统一收敛到 ai:tool:exec(与 handler 内的二次校验形成纵深防御)。
 	"POST /api/v1/ai/tools/*/execute":     PermissionAIToolExec,

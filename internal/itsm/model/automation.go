@@ -21,6 +21,10 @@ type RuleAction struct {
 	Type    string `json:"type"`
 	Target  string `json:"target"`
 	Message string `json:"message,omitempty"`
+	// Channels 仅 Type=notify 时生效：显式指定通知渠道 ID 列表（直接投递，绕过
+	// 通知 Policy 匹配与免打扰）。为空走默认路径：NotifyEvent("ticket.automation")
+	// 由通知中心 Policy 决定投递到哪些渠道。
+	Channels []string `json:"channels,omitempty"`
 }
 
 // RuleSchedule 定时调度配置（Event="schedule" 时必填，对标 SN Schedule 触发器）。

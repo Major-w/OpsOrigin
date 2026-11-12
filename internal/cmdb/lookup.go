@@ -197,6 +197,51 @@ func (s *Service) ListCIsByAttrs(ctx context.Context, tenantID, typeName string,
 	return out, nil
 }
 
+// GetCIAttrByName 按模型类型名 + CI 名称取单个属性值（表单数据联动 ci_attr 回填）。
+// found=false 表示 CI 不存在 / 属性为空；口径与 ListCIsByAttrs 一致（排除归档/删除、
+// 名称精确等值、attrScanLimit 扫描上限——表单回填对象量级远低于此）。
+func (s *Service) GetCIAttrByName(ctx context.Context, tenantID, typeName, name, attr string) (string, bool, error) {
+	name, attr = strings.TrimSpace(name), strings.TrimSpace(attr)
+	if typeName == "" || name == "" || attr == "" {
+		return "", false, fmt.Errorf("typeName/name/attr 均不能为空")
+	}
+	var full []*model.CIModel
+	if s.pg == nil {
+		full = s.mem.listCIs(tenantID, typeName)
+	} else {
+		typeID := ""
+		types, terr := s.pg.ListCIModelTypes(ctx, tenantID, 0, 0)
+		if terr != nil {
+			return "", false, terr
+		}
+		for _, t := range types {
+			if strings.EqualFold(t.Name, typeName) {
+				typeID = t.ID
+				break
+			}
+		}
+		if typeID == "" {
+			return "", false, fmt.Errorf("CI 模型类型 %q 不存在", typeName)
+		}
+		if full, terr = s.pg.ListCIFiltered(ctx, tenantID, typeID, "", "name", "asc", attrScanLimit, 0); terr != nil {
+			return "", false, terr
+		}
+	}
+	for _, ci := range full {
+		if ci == nil || ci.Status == model.CIStatusArchived || ci.Status == model.CIStatusDeleted {
+			continue
+		}
+		if ci.Name != name {
+			continue
+		}
+		if v, ok := ci.Attributes[attr]; ok && v != nil && fmt.Sprintf("%v", v) != "" {
+			return fmt.Sprintf("%v", v), true, nil
+		}
+		return "", false, nil // CI 存在但属性为空
+	}
+	return "", false, nil
+}
+
 func toCIRefs(cis []*model.CIModel, typeNameByID map[string]string, keyword string, limit int) []CIRef {
 	kw := strings.ToLower(strings.TrimSpace(keyword))
 	out := make([]CIRef, 0, len(cis))

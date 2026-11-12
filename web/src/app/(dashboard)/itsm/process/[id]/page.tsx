@@ -14,7 +14,7 @@ import {
 } from '@xyflow/react'
 import type { Node, NodeProps, EdgeProps, Connection, Edge } from '@xyflow/react'
 import { useProcessStore } from '@/stores/itsm/processes'
-import type { Process, ProcessStep, TicketNumberRule, DryRunResult } from '@/stores/itsm/types'
+import type { Process, ProcessStep, TicketNumberRule, DryRunResult, DecisionBinding } from '@/stores/itsm/types'
 import { useAgentStore } from '@/stores/agent'
 import { useScriptStore } from '@/stores/script'
 import { useNotificationStore } from '@/stores/notification'
@@ -29,13 +29,15 @@ import { FormRulesEditor } from '@/components/itsm/FormRulesEditor'
 import { type FormSchema } from '@/components/itsm/DynamicForm'
 import { parseFormSchema, normalizeStepFieldPerm, type StepFieldPerm } from '@/lib/itsm-constants'
 import { getMessage } from '@/lib/message'
+import { ConfirmDialog } from '@/components/ui/confirm-dialog'
 import {
   Plus, Trash2, Save, X, Pencil, ChevronLeft, Loader2,
   PlayCircle, StopCircle, UserCheck, GitBranch, Hourglass, Hash,
   Clock, Bell, Server, FolderTree, FileText, Settings2, ChevronRight, ChevronLeft as CL,
-  Grid3x3, Undo2, Redo2, Users, Search, Route, AlertTriangle, Wand2, GitMerge, UserPlus, Variable, FlaskConical,
+  Grid3x3, Undo2, Redo2, Users, Search, Route, AlertTriangle, Wand2, GitMerge, UserPlus, Variable, FlaskConical, Table2,
 } from 'lucide-react'
 import { App, Button, Form, Input, Modal, Popover, Tag } from 'antd'
+import { ErrorState } from '@/components/ui/error-state'
 
 // ---- types & meta ----
 type ItStepType = ProcessStep['type']
@@ -76,6 +78,91 @@ const ACTION_OPTIONS: { key: string; label: string }[] = [
   { key: 'change', label: '变更' },
   { key: 'convert', label: '转知识' },
 ]
+
+// ---- 流程引擎动作库（与 internal/automation/actions 常量及参数描述符一一对齐）----
+// service 步骤声明 action_type 后，参数统一写入 step.inputs：引擎先 substMap 展开 ${...}
+// （instance.go:358），动作执行器再对字符串值做一次 tpl 兜底；缺失变量替换为空串，不阻断流程。
+type ActionParamKind = 'text' | 'textarea' | 'select' | 'script' | 'kv'
+interface ActionParamDef {
+  key: string
+  label: string
+  kind: ActionParamKind
+  required?: boolean
+  placeholder?: string
+  hint?: string
+  options?: { value: string; label: string }[]
+  /** kv 且 nested=true：值存为 inputs[key] 对象；否则为顶层额外参数（脚本入参 / create_ticket 自定义字段） */
+  nested?: boolean
+  kvKeyPlaceholder?: string
+  kvValuePlaceholder?: string
+}
+interface ActionDef {
+  type: string
+  label: string
+  desc: string
+  params: ActionParamDef[]
+}
+const ACTION_DEFS: ActionDef[] = [
+  {
+    type: 'http', label: 'HTTP 请求',
+    desc: '外发 HTTP 请求。url / body / headers 值支持 ${...} 变量；输出 status_code、body，可由下游 ${steps.<节点ID>.result.body} 引用。',
+    params: [
+      { key: 'method', label: '请求方法', kind: 'select', options: [
+        { value: 'GET', label: 'GET' }, { value: 'POST', label: 'POST' }, { value: 'PUT', label: 'PUT' },
+        { value: 'PATCH', label: 'PATCH' }, { value: 'DELETE', label: 'DELETE' },
+      ], hint: '默认 GET；带请求体时自动补 Content-Type: application/json。' },
+      { key: 'url', label: '请求 URL', kind: 'text', required: true, placeholder: 'https://api.example.com/hooks/${ticket.number}' },
+      { key: 'body', label: '请求体', kind: 'textarea', placeholder: '{"title": "${ticket.title}"}' },
+      { key: 'headers', label: '请求头', kind: 'kv', nested: true, kvKeyPlaceholder: 'Header 名', kvValuePlaceholder: '值（支持 ${...}）' },
+    ],
+  },
+  {
+    type: 'notify', label: '通知分发',
+    desc: '经通知中心按事件订阅策略分发。event 为事件名，title / content 支持 ${...} 变量。',
+    params: [
+      { key: 'event', label: '事件名', kind: 'text', required: true, placeholder: '如 ticket.created / custom.alert' },
+      { key: 'title', label: '通知标题', kind: 'text', placeholder: '${ticket.title}' },
+      { key: 'content', label: '通知内容', kind: 'textarea', placeholder: '工单 ${ticket.number} 已流转' },
+    ],
+  },
+  {
+    type: 'create_ticket', label: '创建工单',
+    desc: '按参数创建一张 ITSM 工单，输出 ticket_id。保留字段之外的额外参数会写入新工单的 custom_fields。',
+    params: [
+      { key: 'title', label: '工单标题', kind: 'text', required: true, placeholder: '由 ${ticket.title} 派生的工单' },
+      { key: 'description', label: '描述', kind: 'textarea' },
+      { key: 'risk_level', label: '风险等级', kind: 'select', options: [
+        { value: '', label: '不指定' }, { value: 'low', label: '低' }, { value: 'medium', label: '中' },
+        { value: 'high', label: '高' }, { value: 'critical', label: '紧急' },
+      ] },
+      { key: 'change_plan', label: '变更方案', kind: 'textarea' },
+      { key: 'created_by', label: '创建人', kind: 'text', placeholder: '留空默认 action' },
+      { key: '__extra__', label: '额外字段（写入 custom_fields）', kind: 'kv', kvKeyPlaceholder: '字段名', kvValuePlaceholder: '值（支持 ${...}）' },
+    ],
+  },
+  {
+    type: 'script', label: '执行脚本（动作库通道）',
+    desc: '走动作库 script 通道执行脚本库脚本；除 script_id 外的参数全部作为脚本入参下发（对齐 ScriptExecutor.Execute）。',
+    params: [
+      { key: 'script_id', label: '关联脚本', kind: 'script', required: true },
+      { key: '__extra__', label: '脚本入参', kind: 'kv', kvKeyPlaceholder: '参数名', kvValuePlaceholder: '值（支持 ${...}）' },
+    ],
+  },
+  {
+    type: 'cmdb_update', label: '更新 CMDB 配置项',
+    desc: '更新指定 CI 的属性；fields 的值支持 ${...} 变量。输出 ci_id、updated。',
+    params: [
+      { key: 'ci_id', label: 'CI ID', kind: 'text', required: true, placeholder: 'CI ID 或 ${custom_fields.ci_id}' },
+      { key: 'fields', label: '更新字段', kind: 'kv', nested: true, kvKeyPlaceholder: '属性名', kvValuePlaceholder: '属性值（支持 ${...}）' },
+    ],
+  },
+]
+function actionDef(type?: string): ActionDef | undefined {
+  return ACTION_DEFS.find(d => d.type === type)
+}
+function actionLabel(type?: string): string {
+  return actionDef(type)?.label || type || ''
+}
 
 // 横向 BPMN 泳道：新节点沿 X 轴顺次排布，超过 5 个折行，避免竖向堆叠
 function newStep(type: ItStepType, idx: number): ProcessStep {
@@ -283,6 +370,21 @@ function validateFlow(steps: ProcessStep[]): string | null {
     if (outbound.length !== 1) return `汇聚网关「${j.name}」应当只有 1 条出口连线（当前 ${outbound.length} 条）：汇聚后沿单线继续`
   }
 
+  // 动作库必填参数校验：service 节点声明 action_type 后，参数缺失会在运行期报错并走 failure 分支，
+  // 因此在保存前按与后端 ExecuteAction 一致的参数描述符做一次硬校验（旧 script_id 路径不做要求）。
+  for (const s of steps.filter(s => s.type === 'service' && s.action_type)) {
+    const def = actionDef(s.action_type)
+    if (!def) return `流程未设计完整：服务任务「${s.name}」使用了未知动作类型「${s.action_type}」`
+    const inputs = (s.inputs || {}) as Record<string, any>
+    for (const p of def.params) {
+      if (!p.required) continue
+      const v = inputs[p.key]
+      if (typeof v !== 'string' || !v.trim()) {
+        return `流程未设计完整：服务任务「${s.name}」的动作「${def.label}」缺少必填参数「${p.label}」`
+      }
+    }
+  }
+
   return null
 }
 
@@ -394,7 +496,8 @@ function BPMNBox({ color, icon, data, children }: { color: string; icon: React.R
 }
 function BPMNService({ data }: FlowNodeProps) {
   return <BPMNBox color={META.service.color} icon={<Server className="h-3.5 w-3.5"/>} data={data}>
-    {data.scriptName && <p className="text-[10px] truncate">{data.scriptName}</p>}
+    {data.actionTypeLabel && <p className="text-[10px] truncate font-medium">⚙ {data.actionTypeLabel}</p>}
+    {(data.actionScriptName || data.scriptName) && <p className="text-[10px] truncate">{data.actionScriptName || data.scriptName}</p>}
   </BPMNBox>
 }
 function BPMNNotify({ data }: FlowNodeProps) {
@@ -693,6 +796,414 @@ function VarPillPicker({ steps, mainFields, currentStepId, onInsert }: {
   )
 }
 
+// ---- 键值对参数编辑器（headers / fields / 脚本入参 / 自定义字段）----
+// 行数据存于本地 state，保证「新增空行」在填写 key 期间不会被父级 inputs 过滤掉而消失；
+// 提交时同步 emitted 指纹，外部变更（撤销/重做、切换动作类型）才会覆盖本地行。
+function KVEditor({ rows, onChange, steps, mainFields, currentStepId, keyPlaceholder, valuePlaceholder }: {
+  rows: [string, string][]
+  onChange: (rows: [string, string][]) => void
+  steps: ProcessStep[]
+  mainFields: { key: string; label?: string }[]
+  currentStepId?: string
+  keyPlaceholder?: string
+  valuePlaceholder?: string
+}) {
+  const [local, setLocal] = useState<[string, string][]>(() => rows.length ? rows : [['', '']])
+  const emitted = useRef<string>(JSON.stringify(rows))
+  useEffect(() => {
+    const sig = JSON.stringify(rows)
+    if (sig !== emitted.current) {
+      emitted.current = sig
+      setLocal(rows.length ? rows : [['', '']])
+    }
+  }, [rows])
+
+  const commit = (next: [string, string][]) => {
+    setLocal(next)
+    const kept: [string, string][] = next.filter(([k]) => k.trim()).map(([k, v]) => [k.trim(), v])
+    emitted.current = JSON.stringify(kept)
+    onChange(kept)
+  }
+  const setRow = (i: number, patch: { k?: string; v?: string }) => {
+    commit(local.map(([k, v], j) => (j === i ? [patch.k ?? k, patch.v ?? v] : [k, v]) as [string, string]))
+  }
+
+  return <div className="space-y-1">
+    {local.map(([k, v], i) => (
+      <div key={i} className="flex items-center gap-1.5">
+        <Input className="h-7 w-28 font-mono text-[11px]" value={k} placeholder={keyPlaceholder || '参数名'}
+          onChange={e => setRow(i, { k: e.target.value })}/>
+        <Input className="h-7 flex-1 font-mono text-[11px]" value={v} placeholder={valuePlaceholder || '值'}
+          onChange={e => setRow(i, { v: e.target.value })}/>
+        <VarPillPicker steps={steps} mainFields={mainFields} currentStepId={currentStepId}
+          onInsert={t => setRow(i, { v: v + '${' + t + '}' })}/>
+        <button type="button" className="text-red-400 hover:text-red-600 text-xs shrink-0" title="删除该行"
+          onClick={() => commit(local.filter((_, j) => j !== i))}>×</button>
+      </div>
+    ))}
+    <button type="button" className="text-[11px] text-blue-500 hover:underline"
+      onClick={() => commit([...local, ['', '']])}>+ 添加一行</button>
+  </div>
+}
+
+// ---- 服务任务动作库配置面板：action_type 下拉 + 按类型生成的参数表单 ----
+// 参数统一写入 step.inputs（后端 instance.go 用 substMap(cur.Inputs) 作为动作参数）；
+// action_type 留空时退回 Step.script_id 旧路径，并暴露脚本入参 KV（此前只能选脚本、不能传参）。
+function ActionConfigPanel({ step, steps, scripts, mainFields, onChange }: {
+  step: ProcessStep; steps: ProcessStep[]; scripts: any[]
+  mainFields: { key: string; label?: string }[]
+  onChange: (p: Partial<ProcessStep>) => void
+}) {
+  // 动作模板：两种消费方式并存 —— 引用（运行期按已发布版本解析）/ 复制为快照（配置期解耦）。
+  interface ActionTemplateOption {
+    id: string; name: string; action_type: string; inputs: Record<string, any>
+    enabled: boolean; status?: string; version?: number
+  }
+  type TemplateMode = 'ref' | 'copy'
+  const [templates, setTemplates] = useState<ActionTemplateOption[]>([])
+  const [tplLoading, setTplLoading] = useState(false)
+  const [tplId, setTplId] = useState('')
+  const [pendingTpl, setPendingTpl] = useState<{ t: ActionTemplateOption; mode: TemplateMode } | null>(null)
+  const loadTemplates = async () => {
+    setTplLoading(true)
+    try {
+      setTemplates((await apiList<ActionTemplateOption>('/itsm/action-templates')) || [])
+    } catch (e) {
+      getMessage().error(`加载动作模板失败: ${String(e)}`)
+    } finally {
+      setTplLoading(false)
+    }
+  }
+  useEffect(() => { loadTemplates() }, [])
+
+  const commitTemplate = (t: ActionTemplateOption, mode: TemplateMode) => {
+    if (mode === 'ref') {
+      if (t.status !== 'published') {
+        getMessage().error('该模板尚未发布，请先在「动作库」页面发布后再引用')
+        return
+      }
+      onChange({ template_ref: { template_id: t.id, version: 0 }, action_type: t.action_type, inputs: {} })
+      getMessage().success(`已引用模板「${t.name}」（跟随最新已发布版本）`)
+    } else {
+      onChange({ template_ref: undefined, action_type: t.action_type, inputs: { ...(t.inputs || {}) } })
+      getMessage().success(`已复制模板「${t.name}」为节点快照（此后与模板解耦）`)
+    }
+    setPendingTpl(null)
+    setTplId('')
+  }
+  const applyTemplate = (id: string, mode: TemplateMode) => {
+    if (!id) return
+    const t = templates.find(x => x.id === id)
+    if (!t) return
+    // 覆盖已有配置属于破坏性操作 → 二次确认（无配置时直接应用）。
+    const hasConfig = !!step.action_type || !!step.template_ref || Object.keys((step.inputs || {})).length > 0
+    if (hasConfig) setPendingTpl({ t, mode })
+    else commitTemplate(t, mode)
+  }
+
+  const def = actionDef(step.action_type)
+  const inputs = (step.inputs || {}) as Record<string, any>
+  // 保留键 = 标量参数 + 嵌套 KV 参数；其余 inputs 键即「顶层额外参数」
+  const reserved = new Set<string>((def?.params || []).filter(p => p.kind !== 'kv' || p.nested).map(p => p.key))
+  const extras: [string, string][] = Object.entries(inputs)
+    .filter(([k]) => !reserved.has(k))
+    .map(([k, v]) => [k, typeof v === 'string' ? v : String(v ?? '')] as [string, string])
+
+  const setParam = (key: string, value: string) => {
+    const base = { ...inputs }
+    if (value === '') delete base[key]
+    else base[key] = value
+    onChange({ inputs: base })
+  }
+  const writeExtras = (rows: [string, string][]) => {
+    const base: Record<string, any> = { ...inputs }
+    for (const k of Object.keys(base)) if (!reserved.has(k)) delete base[k]
+    for (const [k, v] of rows) if (k.trim()) base[k.trim()] = v
+    onChange({ inputs: base })
+  }
+  const writeNested = (key: string, rows: [string, string][]) => {
+    const base: Record<string, any> = { ...inputs }
+    const obj: Record<string, string> = {}
+    for (const [k, v] of rows) if (k.trim()) obj[k.trim()] = v
+    if (Object.keys(obj).length) base[key] = obj
+    else delete base[key]
+    onChange({ inputs: base })
+  }
+  const changeType = (v: string) => {
+    if (v === (step.action_type || '')) return
+    // 参数集随动作类型变化，切换时清空旧 inputs；切到 script 通道时沿用已选脚本 ID。
+    const next: Record<string, any> = {}
+    if (v === 'script' && step.script_id) next.script_id = step.script_id
+    // 切换动作类型意味着不再以模板为准，解除引用避免后端仍用模板覆盖用户新选类型。
+    const patch: Partial<ProcessStep> = { action_type: v || undefined, inputs: next, template_ref: undefined }
+    // 从动作库 script 通道退回旧路径时，把已选脚本带回 script_id，避免要重新选一次。
+    if (!v && step.action_type === 'script' && typeof inputs.script_id === 'string' && inputs.script_id) {
+      patch.script_id = inputs.script_id
+    }
+    onChange(patch)
+  }
+
+  const renderParam = (p: ActionParamDef) => {
+    const val = typeof inputs[p.key] === 'string' ? (inputs[p.key] as string) : ''
+    if (p.kind === 'kv') {
+      const rows: [string, string][] = p.nested
+        ? Object.entries((inputs[p.key] as Record<string, any>) || {})
+            .map(([k, v]) => [k, String(v ?? '')] as [string, string])
+        : extras
+      return <div key={p.key} className="space-y-1">
+        <div className="flex items-center justify-between gap-2">
+          <label className="text-xs font-medium">{p.label}</label>
+        </div>
+        <KVEditor key={`${step.id}:${step.action_type || 'legacy'}:${p.key}`} rows={rows}
+          onChange={rs => p.nested ? writeNested(p.key, rs) : writeExtras(rs)}
+          steps={steps} mainFields={mainFields} currentStepId={step.id}
+          keyPlaceholder={p.kvKeyPlaceholder} valuePlaceholder={p.kvValuePlaceholder}/>
+      </div>
+    }
+    return <div key={p.key} className="space-y-1">
+      <div className="flex items-center justify-between gap-2">
+        <label className="text-xs font-medium">{p.label}{p.required && <span className="text-destructive ml-0.5">*</span>}</label>
+        {(p.kind === 'text' || p.kind === 'textarea') &&
+          <VarPillPicker steps={steps} mainFields={mainFields} currentStepId={step.id}
+            onInsert={t => setParam(p.key, val + '${' + t + '}')}/>}
+      </div>
+      {p.kind === 'select' ? (
+        <select className="flex h-8 w-full rounded-md border border-input bg-background px-2 text-xs"
+          value={val} onChange={e => setParam(p.key, e.target.value)}>
+          {p.options?.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+        </select>
+      ) : p.kind === 'script' ? (
+        <select className="flex h-8 w-full rounded-md border border-input bg-background px-2 text-xs"
+          value={val} onChange={e => setParam(p.key, e.target.value)}>
+          <option value="">选择脚本</option>
+          {scripts.map((s: any) => <option key={s.id} value={s.id}>{s.name}</option>)}
+        </select>
+      ) : p.kind === 'textarea' ? (
+        <Input.TextArea rows={2} value={val} onChange={e => setParam(p.key, e.target.value)}
+          className="font-mono text-xs" placeholder={p.placeholder}/>
+      ) : (
+        <Input value={val} onChange={e => setParam(p.key, e.target.value)} className="h-8 font-mono text-xs" placeholder={p.placeholder}/>
+      )}
+      {p.hint && <p className="text-[10px] text-muted-foreground">{p.hint}</p>}
+    </div>
+  }
+
+  return <div className="rounded-md border border-border/60 p-2 space-y-2 bg-muted/20">
+    <div className="flex items-center gap-2">
+      <label className="text-xs font-medium whitespace-nowrap">动作模板</label>
+      <select className="flex h-8 w-full rounded-md border border-input bg-background px-2 text-xs"
+        value={tplId} disabled={tplLoading} onChange={e => setTplId(e.target.value)}>
+        <option value="">{tplLoading ? '加载模板中...' : '选择动作模板（可选）'}</option>
+        {templates.filter(t => t.enabled !== false).map(t => (
+          <option key={t.id} value={t.id}>
+            {t.name} · {actionLabel(t.action_type)}{t.status === 'published' ? ` · v${t.version || 1}` : ' · 草稿'}
+          </option>
+        ))}
+      </select>
+      <button type="button" title="刷新模板列表" className="text-muted-foreground hover:text-primary shrink-0"
+        onClick={loadTemplates}><Wand2 className="h-3.5 w-3.5"/></button>
+    </div>
+    <div className="flex items-center gap-2 flex-wrap">
+      <Button size="small" disabled={!tplId} onClick={() => applyTemplate(tplId, 'ref')}>引用模板（跟随版本）</Button>
+      <Button size="small" disabled={!tplId} onClick={() => applyTemplate(tplId, 'copy')}>复制为快照</Button>
+      {step.template_ref && (
+        <Button size="small" danger onClick={() => onChange({ template_ref: undefined })}>解除引用</Button>
+      )}
+    </div>
+    <p className="text-[10px] text-muted-foreground -mt-1">
+      「引用模板」运行期按已发布版本解析，模板改版后跟随版流程立即生效（仅已发布模板可引用）；
+      「复制为快照」把参数写进本节点，此后与模板解耦。引用时下方参数留空即用模板值，填写则覆盖。
+    </p>
+    {step.template_ref && (
+      <div className="rounded-md bg-blue-500/10 px-2 py-1.5 text-[11px] text-foreground">
+        已引用「{templates.find(t => t.id === step.template_ref?.template_id)?.name || step.template_ref.template_id}」
+        · {step.template_ref.version ? `锁定 v${step.template_ref.version}` : '跟随最新已发布版本'}。
+        切换下方动作类型会自动解除引用。
+      </div>
+    )}
+    <div>
+      <label className="text-xs font-medium">动作类型（流程引擎动作库）</label>
+      <select className="flex h-8 w-full rounded-md border border-input bg-background px-2 text-xs mt-1"
+        value={step.action_type || ''} onChange={e => changeType(e.target.value)}>
+        <option value="">不启用 — 执行「关联脚本」旧路径</option>
+        {ACTION_DEFS.map(d => <option key={d.type} value={d.type}>{d.label}</option>)}
+      </select>
+      <p className="text-[10px] text-muted-foreground mt-1">
+        {def ? def.desc : '留空时走 Step.script_id 脚本路径；动作参数写入 inputs，运行期先按 ${...} 变量上下文展开。切换动作类型会清空已填参数。'}
+      </p>
+    </div>
+
+    {def ? def.params.map(renderParam) : <>
+      <div>
+        <label className="text-xs font-medium">关联脚本</label>
+        <select className="flex h-8 w-full rounded-md border border-input bg-background px-2 text-xs mt-1"
+          value={step.script_id || ''} onChange={e => onChange({ script_id: e.target.value })}>
+          <option value="">选择脚本</option>
+          {scripts.map((s: any) => <option key={s.id} value={s.id}>{s.name}</option>)}
+        </select>
+      </div>
+      <div className="space-y-1">
+        <label className="text-xs font-medium">脚本入参（键值对）</label>
+        <KVEditor key={`${step.id}:legacy:extras`} rows={extras} onChange={writeExtras}
+          steps={steps} mainFields={mainFields} currentStepId={step.id}
+          keyPlaceholder="参数名" valuePlaceholder="值（支持 ${...}）"/>
+        <p className="text-[10px] text-muted-foreground">键为脚本参数名；值支持 {'${...}'} 变量。特殊键 run_as 可指定执行身份。</p>
+      </div>
+    </>}
+    <ConfirmDialog
+      open={!!pendingTpl}
+      onClose={() => setPendingTpl(null)}
+      onConfirm={() => pendingTpl && commitTemplate(pendingTpl.t, pendingTpl.mode)}
+      title={`${pendingTpl?.mode === 'ref' ? '引用' : '载入'}模板「${pendingTpl?.t.name || ''}」`}
+      description="会覆盖当前节点已配置的动作类型与全部参数，且不保留原配置。确定继续？"
+      confirmLabel="覆盖并继续"
+    />
+  </div>
+}
+
+// ---- 流程级决策表绑定：输出注入 decision.<alias> 变量命名空间 ----
+// 与表单内嵌决策表（走 custom_fields）并存：让网关分支 / 派单 / 动作参数能直接引用资产。
+interface DecisionAssetOption {
+  id: string; name: string; status?: string; version?: number
+}
+
+function textToInputs(text: string): Record<string, string> {
+  const out: Record<string, string> = {}
+  for (const line of text.split('\n')) {
+    const idx = line.indexOf('=')
+    if (idx < 1) continue
+    const k = line.slice(0, idx).trim()
+    if (k) out[k] = line.slice(idx + 1).trim()
+  }
+  return out
+}
+function inputsToText(m?: Record<string, string>): string {
+  return Object.entries(m || {}).map(([k, v]) => `${k}=${v}`).join('\n')
+}
+
+function DecisionBindingsPanel({ bindings, onChange }: {
+  bindings: DecisionBinding[]
+  onChange: (next: DecisionBinding[]) => void
+}) {
+  const [assets, setAssets] = useState<DecisionAssetOption[]>([])
+  const [loading, setLoading] = useState(false)
+  const [loadError, setLoadError] = useState<string | null>(null)
+  const [sample, setSample] = useState('{}')
+  const [testingIdx, setTestingIdx] = useState<number | null>(null)
+  const [testResult, setTestResult] = useState('')
+  const [deleteIdx, setDeleteIdx] = useState<number | null>(null)
+
+  const loadAssets = useCallback(async () => {
+    setLoading(true); setLoadError(null)
+    try {
+      setAssets((await apiList<DecisionAssetOption>('/itsm/decision-tables')) || [])
+    } catch (e: any) {
+      setLoadError(e.message || '加载决策表资产失败')
+    } finally { setLoading(false) }
+  }, [])
+  useEffect(() => { loadAssets() }, [loadAssets])
+
+  const patch = (i: number, p: Partial<DecisionBinding>) =>
+    onChange(bindings.map((b, j) => (j === i ? { ...b, ...p } : b)))
+  const add = () => onChange([...bindings, { asset_id: '', alias: '', version: 0, inputs: {} }])
+  const remove = (i: number) => {
+    onChange(bindings.filter((_, j) => j !== i))
+    setDeleteIdx(null)
+  }
+
+  const preview = async (i: number) => {
+    const b = bindings[i]
+    if (!b.asset_id) { getMessage().error('请先选择决策表资产'); return }
+    let values: Record<string, any> = {}
+    try { values = JSON.parse(sample || '{}') }
+    catch { getMessage().error('试算样例值不是合法 JSON'); return }
+    setTestingIdx(i); setTestResult('')
+    try {
+      const res: any = await apiFetch(`/itsm/decision-tables/${b.asset_id}/preview`, {
+        method: 'POST',
+        body: JSON.stringify({ version: b.version || 0, values }),
+      })
+      setTestResult(`命中：${(res.fired || []).join('、') || '无'}；推导值：${JSON.stringify(res.values || {})}`)
+    } catch (e: any) {
+      getMessage().error(`试算失败: ${e.message}`)
+    } finally { setTestingIdx(null) }
+  }
+
+  return (
+    <Card><CardContent className="p-4 space-y-3">
+      <div className="flex items-center justify-between flex-wrap gap-2">
+        <div className="flex items-center gap-2 text-sm font-semibold"><Table2 className="h-4 w-4"/>流程级决策表绑定</div>
+        <Button size="small" onClick={add}><Plus className="w-3.5 h-3.5 mr-1"/>添加绑定</Button>
+      </div>
+      <p className="text-[11px] text-muted-foreground">
+        运行期按已发布版本求值，输出写入 <code>decision.&lt;别名&gt;.&lt;输出列&gt;</code>。
+        网关条件可写 <code>decision.route.target == "L2"</code>，派单受派人可写 <code>decision.route.owner</code>，
+        动作参数可用 <code>{'${decision.route.owner}'}</code>。版本 0 = 跟随最新已发布版本；表单内嵌决策表仍按原 custom_fields 链路工作。
+      </p>
+      {loadError && <ErrorState message={`加载决策表资产失败: ${loadError}`} onRetry={loadAssets} />}
+      {bindings.length === 0 ? (
+        <div className="border rounded-md py-6 text-center text-xs text-muted-foreground">
+          暂无绑定。无需按决策结果分支/派单时可保持为空。
+        </div>
+      ) : (
+        <div className="space-y-2">
+          {bindings.map((b, i) => (
+            <div key={i} className="rounded-md border border-border/60 p-3 space-y-2 bg-muted/20">
+              <div className="grid grid-cols-12 gap-2 items-end">
+                <div className="col-span-5">
+                  <label className="text-[11px] font-medium">决策表资产（仅已发布）</label>
+                  <select className="flex h-8 w-full rounded-md border border-input bg-background px-2 text-xs mt-1"
+                    value={b.asset_id} onChange={e => patch(i, { asset_id: e.target.value })}>
+                    <option value="">{loading ? '加载中...' : '选择资产'}</option>
+                    {assets.filter(a => a.status === 'published').map(a => (
+                      <option key={a.id} value={a.id}>{a.name} · v{a.version || 1}</option>
+                    ))}
+                  </select>
+                </div>
+                <div className="col-span-3">
+                  <label className="text-[11px] font-medium">别名（decision.&lt;别名&gt;）</label>
+                  <Input size="small" className="h-8 mt-1" value={b.alias} placeholder="如 route"
+                    onChange={e => patch(i, { alias: e.target.value.trim() })} />
+                </div>
+                <div className="col-span-2">
+                  <label className="text-[11px] font-medium">版本（0=跟随）</label>
+                  <Input type="number" min={0} size="small" className="h-8 mt-1" value={b.version ?? 0}
+                    onChange={e => patch(i, { version: Number(e.target.value) || 0 })} />
+                </div>
+                <div className="col-span-2 flex gap-1 justify-end">
+                  <Button size="small" loading={testingIdx === i} onClick={() => preview(i)}>试算</Button>
+                  <Button size="small" danger onClick={() => setDeleteIdx(i)} aria-label="移除绑定">
+                    <Trash2 className="w-3.5 h-3.5" /></Button>
+                </div>
+              </div>
+              <div>
+                <label className="text-[11px] font-medium">条件列输入映射（每行「条件列名=变量表达式」，留空按同名字段取值）</label>
+                <Input.TextArea key={`${i}:inputs`} rows={2} className="font-mono text-xs mt-1"
+                  defaultValue={inputsToText(b.inputs)} placeholder={'env=${custom_fields.env}\nrisk_level=${ticket.risk_level}'}
+                  onBlur={e => patch(i, { inputs: textToInputs(e.target.value) })} />
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+      <div>
+        <label className="text-[11px] font-medium">试算样例值（JSON，作为条件列取值）</label>
+        <Input.TextArea rows={2} value={sample} onChange={e => setSample(e.target.value)}
+          placeholder={'{"env":"prod","risk_level":"high"}'} className="font-mono text-xs mt-1" />
+        {testResult && <p className="text-[11px] text-muted-foreground mt-1 font-mono break-all">{testResult}</p>}
+      </div>
+      <ConfirmDialog
+        open={deleteIdx !== null}
+        onClose={() => setDeleteIdx(null)}
+        onConfirm={() => deleteIdx !== null && remove(deleteIdx)}
+        title="移除决策表绑定"
+        description="移除后引用该别名的网关条件 / 派单变量将取不到值，请确认下游配置已调整。"
+        confirmLabel="移除"
+      />
+    </CardContent></Card>
+  )
+}
+
 // ---- 分支网关属性：一进多出，条件挂在出口连线上（节点自身不再持有条件）----
 function GatewayPanel({ step, steps, onPickEdge }: {
   step: ProcessStep; steps: ProcessStep[]
@@ -939,7 +1450,8 @@ function StepPanel({ step, steps, scripts, channels, mainForm, users, groups, on
         </div><Input.TextArea rows={3} value={step.notify_body||''} onChange={e=>onChange({notify_body:e.target.value})} className="mt-1"/></div>
       </>}
       {step.type === 'service' && <>
-        <div><label className="text-xs font-medium">关联脚本</label><select className="flex h-8 w-full rounded-md border border-input bg-background px-2 text-xs mt-1" value={step.script_id||''} onChange={e=>onChange({script_id:e.target.value})}><option value="">选择脚本</option>{scripts.map((s:any)=><option key={s.id} value={s.id}>{s.name}</option>)}</select></div>
+        <ActionConfigPanel step={step} steps={steps} scripts={scripts} mainFields={mainFields}
+          onChange={onChange}/>
         <div className="rounded-md border border-border/60 p-2 space-y-2 bg-muted/20">
           <p className="text-[10px] font-semibold text-muted-foreground">失败重试策略</p>
           <div className="grid grid-cols-2 gap-2">
@@ -1169,6 +1681,8 @@ function BPMNCanvas({ steps, scripts, channels, mainForm, users, groups, selId, 
         timeoutActionLabel: s.timeout_action === 'auto_approve' ? '超时自动通过' : s.timeout_action === 'auto_reject' ? '超时自动驳回' : '超时催办',
         reminderInterval: s.reminder_interval,
         script_id: s.script_id, scriptName: scripts.find(sc=>sc.id===s.script_id)?.name,
+        actionTypeLabel: s.action_type ? actionLabel(s.action_type) : undefined,
+        actionScriptName: scripts.find(sc => sc.id === (s.inputs as Record<string, any> | undefined)?.script_id)?.name,
         duration: s.duration,
         outCount: outCount.get(s.id) || 0,
         inCount: (s.depends_on || []).length,
@@ -1254,7 +1768,7 @@ function BPMNCanvas({ steps, scripts, channels, mainForm, users, groups, selId, 
 }
 
 // ---- 高级设置：SLA/OLA/通知 ----
-function AdvancedSettings({ proc, slaPolicies, olaPolicies, slaPolicyId, setSlaPolicyId, olaPolicyId, setOlaPolicyId, notifyConfig, setNotifyConfig, numberRule, setNumberRule }: {
+function AdvancedSettings({ proc, slaPolicies, olaPolicies, slaPolicyId, setSlaPolicyId, olaPolicyId, setOlaPolicyId, notifyConfig, setNotifyConfig, numberRule, setNumberRule, decisionBindings, setDecisionBindings }: {
   proc: Process
   slaPolicies: { id: string; name: string; risk_level: string }[]
   olaPolicies: { id: string; name: string }[]
@@ -1266,6 +1780,8 @@ function AdvancedSettings({ proc, slaPolicies, olaPolicies, slaPolicyId, setSlaP
   setNotifyConfig: (v: { channels: string[]; on_create: boolean; on_complete: boolean; template: string }) => void
   numberRule: TicketNumberRule
   setNumberRule: (v: TicketNumberRule) => void
+  decisionBindings: DecisionBinding[]
+  setDecisionBindings: (v: DecisionBinding[]) => void
 }) {
   const chLabels = NOTIFY_CHANNEL_LABELS
   const toggleChannel = (c: string) => {
@@ -1328,6 +1844,8 @@ function AdvancedSettings({ proc, slaPolicies, olaPolicies, slaPolicyId, setSlaP
           <code className="font-mono text-foreground">{previewTicketNumber(proc.name, numberRule)}</code>
         </div>
       </CardContent></Card>
+
+      <DecisionBindingsPanel bindings={decisionBindings} onChange={setDecisionBindings} />
     </div>
   )
 }
@@ -1525,6 +2043,8 @@ export default function ITSMProcessDetailPage() {
   const [notifyConfig, setNotifyConfig] = useState<{ channels: string[]; on_create: boolean; on_complete: boolean; template: string }>({ channels: [], on_create: true, on_complete: true, template: '' })
   // 工单编号规则（流程级自定义；关闭则回退全局默认 TK-YYYY-NNNN）
   const [numberRule, setNumberRule] = useState<TicketNumberRule>({ enabled: false, prefix: '', date_format: 'YYYY', separator: '-', seq_scope: 'year', seq_width: 4 })
+  // 流程级决策表绑定：运行期求值结果注入 decision.* 变量命名空间
+  const [decisionBindings, setDecisionBindings] = useState<DecisionBinding[]>([])
   const [slaPolicies, setSlaPolicies] = useState<{ id: string; name: string; risk_level: string }[]>([])
   const [olaPolicies, setOlaPolicies] = useState<{ id: string; name: string }[]>([])
 
@@ -1558,6 +2078,7 @@ export default function ITSMProcessDetailPage() {
     setOlaPolicyId('')
     setNotifyConfig(parseNotify(proc.notify_config))
     setNumberRule(proc.number_rule || { enabled: false, prefix: '', date_format: 'YYYY', separator: '-', seq_scope: 'year', seq_width: 4 })
+    setDecisionBindings(proc.decision_bindings || [])
     setDirty(false)
     setSelId(null)
     setSelEdge(null)
@@ -1700,10 +2221,11 @@ export default function ITSMProcessDetailPage() {
       sla_policy_id: slaPolicyId,
       notify_config: notifyConfig,
       number_rule: numberRule,
+      decision_bindings: decisionBindings,
       version: (proc.version || 1) + 1,
     }
     const ok = await updateProcess(proc.id, payload)
-    if (ok) { setProc({ ...proc, steps, form: processForm as any, sla_policy_id: slaPolicyId, notify_config: notifyConfig as any, number_rule: numberRule }); setDirty(false); }
+    if (ok) { setProc({ ...proc, steps, form: processForm as any, sla_policy_id: slaPolicyId, notify_config: notifyConfig as any, number_rule: numberRule, decision_bindings: decisionBindings }); setDirty(false); }
   }
 
   const discard = () => {
@@ -1713,6 +2235,7 @@ export default function ITSMProcessDetailPage() {
     setSlaPolicyId(proc.sla_policy_id || '')
     setNotifyConfig(parseNotify(proc.notify_config))
     setNumberRule(proc.number_rule || { enabled: false, prefix: '', date_format: 'YYYY', separator: '-', seq_scope: 'year', seq_width: 4 })
+    setDecisionBindings(proc.decision_bindings || [])
     setDirty(false)
   }
 
@@ -1798,6 +2321,8 @@ export default function ITSMProcessDetailPage() {
           setNotifyConfig={v => { setNotifyConfig(v); markFormDirty() }}
           numberRule={numberRule}
           setNumberRule={v => { setNumberRule(v); markFormDirty() }}
+          decisionBindings={decisionBindings}
+          setDecisionBindings={v => { setDecisionBindings(v); markFormDirty() }}
         />
         <div className="flex justify-between">
           <Button onClick={() => setStep(1)}><CL className="h-4 w-4 mr-1"/>上一步</Button>

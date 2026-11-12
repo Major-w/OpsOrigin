@@ -2,6 +2,7 @@ package itsm
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -53,7 +54,19 @@ func (s *Service) handleListFormScopes(w http.ResponseWriter, r *http.Request) {
 			httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
+		// MemoryStore 返回内部指针，dict_ref / asset_ref 的展开都是就地改写；
+		// 不先深拷贝的话，GET 一次就会把展开快照写回存储，保存态不再是纯引用，
+		// 资产发布新版本后跟随版表单会永久停在旧快照（PGStore 每次新建对象，故只在内存态暴露）。
+		if schema != nil {
+			if raw, mErr := json.Marshal(schema); mErr == nil {
+				var cloned form.FormSchema
+				if uErr := json.Unmarshal(raw, &cloned); uErr == nil {
+					schema = &cloned
+				}
+			}
+		}
 		s.expandSchemaDicts(r.Context(), tenantID, schema)
+		s.expandSchemaDecisionRefs(r.Context(), tenantID, schema)
 		httputil.WriteJSON(w, http.StatusOK, map[string]any{"scope": scope, "schema": schema})
 		return
 	}
@@ -90,11 +103,25 @@ func (s *Service) handleUpsertFormSchema(w http.ResponseWriter, r *http.Request)
 		req.Schema.Version = 1
 	}
 	tenantID := auth.TenantFromContext(r.Context())
+	// 决策表配置校验：拦截「列未声明 / 空列 / 无行」等运行期静默失效的错配。
+	// 资产引用表在展开态校验（用已发布版本的真实列），确保资产的列也在本表单字段中声明；
+	// 校验后立刻归一回纯引用，避免把版本快照固化进 schema。
+	s.expandSchemaDecisionRefs(r.Context(), tenantID, &req.Schema)
+	warns, verr := form.ValidateDecisionTables(&req.Schema)
+	if verr != nil {
+		httputil.WriteError(w, http.StatusBadRequest, verr.Error())
+		return
+	}
+	form.NormalizeDecisionRefs(&req.Schema)
 	if err := s.store.UpsertFormSchema(r.Context(), tenantID, req.Scope, req.Schema); err != nil {
 		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	httputil.WriteJSON(w, http.StatusOK, map[string]any{"status": "ok", "scope": req.Scope})
+	resp := map[string]any{"status": "ok", "scope": req.Scope}
+	if len(warns) > 0 {
+		resp["warnings"] = warns
+	}
+	httputil.WriteJSON(w, http.StatusOK, resp)
 }
 
 // expandSchemaDicts 展开 schema 中的 dict_ref 引用: 从数据字典拉取字段定义替换引用字段。
@@ -119,6 +146,26 @@ func (s *Service) expandSchemaDicts(ctx context.Context, tenantID string, schema
 		}
 	}
 	form.ExpandDictRefs(schema, dicts)
+}
+
+// expandSchemaDecisionRefs 把 schema 中的「决策表资产引用」展开成已发布版本内容，
+// 但保留 AssetRef 标记（引用式展开，与 dict_ref 同范式）。
+//
+// GET schema 时调用：前端运行期 applyDataRules 直接拿到完整行矩阵，实时推导隐藏字段，
+// 与后端提交时的求值结果一致；设计器保存后由 NormalizeDecisionRefs 归一回纯引用，
+// 不会把版本快照固化进表单，资产发布新版本后所有跟随版表单立即生效。
+func (s *Service) expandSchemaDecisionRefs(ctx context.Context, tenantID string, schema *form.FormSchema) {
+	if schema == nil || !form.HasDecisionRefs(schema) {
+		return
+	}
+	if s.formEngine == nil || s.formEngine.DecisionTableResolver() == nil {
+		return
+	}
+	expanded, err := form.ExpandDecisionRefs(ctx, tenantID, schema, s.formEngine.DecisionTableResolver())
+	if err != nil || expanded == nil || expanded == schema {
+		return
+	}
+	*schema = *expanded
 }
 
 func (s *Service) handleListFieldDicts(w http.ResponseWriter, r *http.Request) {
@@ -341,7 +388,40 @@ func (s *Service) handleUpdateCustomFields(w http.ResponseWriter, r *http.Reques
 	if req.Fields == nil {
 		req.Fields = map[string]any{}
 	}
-	if req.Scope != "" && s.formEngine != nil {
+	// 流程主表单 + 节点权限感知校验（优先路径）：主表单模式下前端传空 scope，
+	// 此处是节点保存唯一的服务端校验入口——按「流程主表单 + 当前节点字段权限」
+	// 校验（ValidateValuesFullForStep：节点权限投影 + 行为规则联动 + cap），
+	// 与前端运行期「applyStepFieldPerms 投影 → effectiveFieldStates 联动」完全镜像。
+	// 无流程 / 无主表单 / 解析失败时回退下方 scope 路径或直接合并（保守放行，与创建路径策略一致）。
+	stepValidated := false
+	if ticket.ProcessID != "" && s.processStore != nil && s.formEngine != nil {
+		if proc, perr := s.processStore.Get(r.Context(), ticket.ProcessID, tenantID); perr == nil && proc != nil && len(proc.Form) > 0 {
+			var fs form.FormSchema
+			if jerr := json.Unmarshal(proc.Form, &fs); jerr == nil && len(fs.Fields) > 0 {
+				var perms []form.StepFieldPerm
+				if inst, ierr := s.processStore.GetInstance(r.Context(), ticket.ID, tenantID); ierr == nil && inst != nil && inst.CurrentStep != "" {
+					for i := range proc.Steps {
+						if proc.Steps[i].ID == inst.CurrentStep {
+							perms = proc.Steps[i].FormFields
+							break
+						}
+					}
+				}
+				form.MergeDefaultsAs(&fs, req.Fields, auth.UserIDFromContext(r.Context()))
+				_, computed, verr := s.formEngine.ValidateValuesFullForStep(r.Context(), tenantID, &fs, req.Fields, perms)
+				if verr != nil {
+					httputil.WriteError(w, http.StatusBadRequest, fmt.Sprintf("表单校验失败: %v", verr))
+					return
+				}
+				// 计算字段/联动派生值合并回写（服务端落定, 与前端展示一致）
+				for k, v := range computed {
+					req.Fields[k] = v
+				}
+				stepValidated = true
+			}
+		}
+	}
+	if !stepValidated && req.Scope != "" && s.formEngine != nil {
 		if schema, serr := s.formEngine.ResolveSchema(r.Context(), tenantID, req.Scope); serr == nil && schema != nil {
 			form.MergeDefaultsAs(schema, req.Fields, auth.UserIDFromContext(r.Context()))
 			_, computed, verr := s.formEngine.ValidateValuesFull(r.Context(), tenantID, schema, req.Fields)
@@ -368,4 +448,107 @@ func (s *Service) handleUpdateCustomFields(w http.ResponseWriter, r *http.Reques
 		s.advanceProcess(r.Context(), ticket, "success")
 	}
 	httputil.WriteJSON(w, http.StatusOK, map[string]any{"status": "ok", "custom_fields": ticket.CustomFields})
+}
+
+// handleFormCIAttr 数据联动 ci_attr 回填端点：按「模型类型名 + CI 名称」取单个属性。
+// 前端在用户选中来源字段（如门店）后实时调用，把 CMDB 属性（如负责人）回填进表单；
+// 后端提交校验时也会经 ciAttrResolver 再次落定（前后端一致）。
+// GET /api/v1/itsm/form/ci-attr?type_name=&name=&attr=
+func (s *Service) handleFormCIAttr(w http.ResponseWriter, r *http.Request) {
+	if s.formEngine == nil || s.formEngine.CIAttrResolver() == nil {
+		httputil.WriteError(w, http.StatusNotImplemented, "ci_attr resolver not configured")
+		return
+	}
+	tenantID := auth.TenantFromContext(r.Context())
+	if tenantID == "" {
+		tenantID = "default"
+	}
+	q := r.URL.Query()
+	typeName := strings.TrimSpace(q.Get("type_name"))
+	name := strings.TrimSpace(q.Get("name"))
+	attr := strings.TrimSpace(q.Get("attr"))
+	if typeName == "" || name == "" || attr == "" {
+		httputil.WriteError(w, http.StatusBadRequest, "type_name/name/attr 均不能为空")
+		return
+	}
+	v, found, err := s.formEngine.CIAttrResolver().ResolveCIAttr(r.Context(), tenantID, typeName, name, attr)
+	if err != nil {
+		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	resp := map[string]any{"found": found}
+	if found {
+		resp["value"] = v
+	}
+	httputil.WriteJSON(w, http.StatusOK, resp)
+}
+
+// POST /api/v1/itsm/form/rules-preview
+// 表单设计器「试算」：用当前草稿 schema + 样例值跑一遍数据联动/决策表推导，
+// 返回推导后的完整值、触发规则（含决策表命中行号）与配置校验提示。
+// 与提交时走同一条 ApplyDataRulesFull 通道（含 ci_attr / submitter_attr 实时解析）。
+func (s *Service) handleFormRulesPreview(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Schema form.FormSchema `json:"schema"`
+		Values map[string]any  `json:"values"`
+	}
+	if err := httputil.BindJSON(r, &req); err != nil {
+		httputil.WriteError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	warns, verr := form.ValidateDecisionTables(&req.Schema)
+	if verr != nil {
+		// 草稿允许未配完：校验错误也作为提示返回，不阻断试算。
+		warns = append([]string{verr.Error()}, warns...)
+	}
+	tenantID := auth.TenantFromContext(r.Context())
+	if tenantID == "" {
+		tenantID = "default"
+	}
+	values := req.Values
+	if values == nil {
+		values = map[string]any{}
+	}
+	var computed map[string]any
+	var fired []string
+	if s.formEngine != nil {
+		computed, fired = s.formEngine.PreviewRules(r.Context(), tenantID, &req.Schema, values)
+	} else {
+		computed, fired = form.ApplyDataRules(&req.Schema, values)
+	}
+	httputil.WriteJSON(w, http.StatusOK, map[string]any{
+		"values":   computed,
+		"fired":    fired,
+		"warnings": warns,
+	})
+}
+
+// handleFormSubmitterAttr 数据联动 submitter_attr 回填端点：取当前登录用户（提单人）
+// 的单个属性（如 department=部门/门店）。前端打开表单时实时调用回填隐藏字段；
+// 后端提交校验时也会经 submitterAttrResolver 再次落定（前后端一致）。
+// GET /api/v1/itsm/form/submitter-attr?attr=department
+func (s *Service) handleFormSubmitterAttr(w http.ResponseWriter, r *http.Request) {
+	if s.formEngine == nil || s.formEngine.SubmitterAttrResolver() == nil {
+		httputil.WriteError(w, http.StatusNotImplemented, "submitter_attr resolver not configured")
+		return
+	}
+	tenantID := auth.TenantFromContext(r.Context())
+	if tenantID == "" {
+		tenantID = "default"
+	}
+	attr := strings.TrimSpace(r.URL.Query().Get("attr"))
+	if attr == "" {
+		httputil.WriteError(w, http.StatusBadRequest, "attr 不能为空")
+		return
+	}
+	v, found, err := s.formEngine.SubmitterAttrResolver().ResolveSubmitterAttr(r.Context(), tenantID, attr)
+	if err != nil {
+		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	resp := map[string]any{"found": found}
+	if found {
+		resp["value"] = v
+	}
+	httputil.WriteJSON(w, http.StatusOK, resp)
 }

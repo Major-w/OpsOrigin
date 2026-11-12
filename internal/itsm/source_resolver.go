@@ -12,6 +12,7 @@ import (
 	"github.com/opsorigin/core/internal/iam"
 	"github.com/opsorigin/core/internal/itsm/form"
 	"github.com/opsorigin/core/internal/user"
+	"github.com/opsorigin/core/pkg/auth"
 )
 
 // 动态选项来源前缀约定：
@@ -39,6 +40,8 @@ type CIProvider interface {
 	ListCITypeTree(ctx context.Context, tenantID string) ([]cmdb.CITypeNode, error)
 	// ListCIsByAttrs 按类型+属性等值过滤（表单级联: 机房→机柜 场景）。缺省实现见 cmdb.Service。
 	ListCIsByAttrs(ctx context.Context, tenantID, typeName string, attrs map[string]string, limit int) ([]cmdb.CIRef, error)
+	// GetCIAttrByName 按类型名+CI 名称取单个属性（数据联动 ci_attr 回填通道）。
+	GetCIAttrByName(ctx context.Context, tenantID, typeName, name, attr string) (string, bool, error)
 }
 
 // UserProvider 用户中心只读能力（由 *user.Service 实现）。
@@ -66,6 +69,39 @@ type cmdbIAMResolver struct {
 type cachedOptions struct {
 	opts     []form.FieldOption
 	expireAt time.Time
+}
+
+// NewCIAttrResolver 构造数据联动 ci_attr 回填通道（把 CIProvider.GetCIAttrByName
+// 转为 form.CIAttrResolver，注入 formEngine 后提交校验/落库时自动执行回填）。
+func NewCIAttrResolver(ci CIProvider) form.CIAttrResolver {
+	return &ciAttrResolverAdapter{ci: ci}
+}
+
+type ciAttrResolverAdapter struct{ ci CIProvider }
+
+func (a *ciAttrResolverAdapter) ResolveCIAttr(ctx context.Context, tenantID, typeName, ciName, attr string) (string, bool, error) {
+	return a.ci.GetCIAttrByName(ctx, tenantID, typeName, ciName, attr)
+}
+
+// UserAttrProvider 用户属性只读能力（由 *user.Service 实现，submitter_attr 回填用）。
+type UserAttrProvider interface {
+	GetUserAttr(ctx context.Context, tenantID, userID, attr string) (string, bool, error)
+}
+
+// NewSubmitterAttrResolver 构造数据联动 submitter_attr 回填通道：从请求 ctx 解析
+// 提单人身份（pkg/auth 中间件已写入 user_id），查其属性（如 department）回填目标字段。
+func NewSubmitterAttrResolver(users UserAttrProvider) form.SubmitterAttrResolver {
+	return &submitterAttrResolverAdapter{users: users}
+}
+
+type submitterAttrResolverAdapter struct{ users UserAttrProvider }
+
+func (a *submitterAttrResolverAdapter) ResolveSubmitterAttr(ctx context.Context, tenantID, attr string) (string, bool, error) {
+	userID := auth.UserIDFromContext(ctx)
+	if userID == "" || strings.TrimSpace(attr) == "" {
+		return "", false, nil
+	}
+	return a.users.GetUserAttr(ctx, tenantID, userID, attr)
 }
 
 // NewCMDBIAMResolver 构造动态选项解析器。任一 provider 可为 nil，对应前缀直接报错（上层按宽松策略放行）。

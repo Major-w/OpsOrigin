@@ -3,6 +3,7 @@ import { useEffect, useState, useRef, useCallback, useMemo, type ChangeEvent } f
 import { useNavigate, useParams } from 'react-router-dom'
 import { useTicketStore } from '@/stores/itsm/tickets'
 import { useProcessStore } from '@/stores/itsm/processes'
+import { useNotificationStore } from '@/stores/notification'
 import type { Ticket, TicketEvent, ITSMStats, ProcessInstance, TicketTemplate, AutomationRule, TicketButton } from '@/stores/itsm/types'
 import { DynamicForm, withBuiltinFields, BUILTIN_KEYS, type FormSchema } from '@/components/itsm/DynamicForm'
 import { FormBuilder } from '@/components/itsm/FormBuilder'
@@ -16,7 +17,7 @@ import { useAuthStore } from '@/stores/auth'
 import { useUserStore } from '@/stores/user'
 import { useWebSocket } from '@/lib/useWebSocket'
 import { Plus, Check, X, Play, RotateCcw, Clock, FileText, Activity, ChevronLeft, Paperclip, MessageSquare, Upload, Download, Trash2, FileUp, FileDown, BookOpen, Send, UserPlus, CheckCircle2, ListChecks, Bell, Link2, Zap } from 'lucide-react'
-import { RISK_LABELS, STATUS_LABELS, RISK_BADGE_VARIANT, parseFormSchema, applyStepFieldPerms, validateComboRules, initStatusLabelOverrides } from '@/lib/itsm-constants'
+import { RISK_LABELS, STATUS_LABELS, RISK_BADGE_VARIANT, parseFormSchema, applyStepFieldPerms, stepPermCaps, validateComboRules, initStatusLabelOverrides, type StepFieldPerm } from '@/lib/itsm-constants'
 import { getMessage } from '@/lib/message'
 const SLA_BY_RISK: Record<string, string> = { critical: '4小时', high: '24小时', medium: '48小时', low: '72小时' }
 
@@ -93,6 +94,8 @@ export default function ITSMPage() {
   const [currentStepActions, setCurrentStepActions] = useState<string[] | undefined>(undefined)
   const { tickets, stats, loading, fetch, create, approve, reject, execute, complete, rollback, submit, assign, close, withdraw, reopen, hold, resume, remind, relate, addApprover, getTicket, getEvents, fetchStats, templates, fetchTemplates, saveTemplate, deleteTemplate, rules, fetchRules, saveRule, deleteRule, buttons, fetchButtons, saveButton, deleteButton } = useTicketStore()
   const { processes, fetchProcesses, getFormSchema, upsertFormSchema, getFormOptions, getFormOptionSources, getTicketProcess, updateTicketCustomFields } = useProcessStore()
+  const notifChannels = useNotificationStore(s => s.channels)
+  const fetchNotifChannels = useNotificationStore(s => s.fetchChannels)
   const canWrite = useCan('itsm:write')
   const canApprove = useCanAny(['itsm:approve', 'itsm:write'])
   const me = useAuthStore(s => s.user)
@@ -118,6 +121,8 @@ export default function ITSMPage() {
   const [stepScope, setStepScope] = useState('')
   const [stepName, setStepName] = useState('')
   const [stepEditable, setStepEditable] = useState(false)
+  // 当前节点字段权限（step.form_fields）：供 permCaps 兜底——行为规则不得放宽节点权限
+  const [stepPerms, setStepPerms] = useState<StepFieldPerm[]>([])
   const [stepFields, setStepFields] = useState<Record<string, any>>({})
   const [stepSaving, setStepSaving] = useState(false)
   const [ticketEvents, setTicketEvents] = useState<TicketEvent[]>([])
@@ -244,7 +249,7 @@ export default function ITSMPage() {
     } catch { setSubtasks([]); getMessage().error('加载子任务失败') }
   }, [])
 
-  useEffect(() => { fetch(); fetchStats(); fetchProcesses(); fetchTemplates(); fetchRules(); fetchButtons(); initStatusLabelOverrides() }, [])
+  useEffect(() => { fetch(); fetchStats(); fetchProcesses(); fetchTemplates(); fetchRules(); fetchButtons(); fetchNotifChannels(); initStatusLabelOverrides() }, [])
 
   // 评论/子任务的「用户」下拉：确保用户列表已加载（评论 @ 与子任务处理人共用）。
   useEffect(() => {
@@ -422,6 +427,7 @@ export default function ITSMPage() {
     let scope = ticket.form_scope || 'ticket:default'
     let schema: FormSchema | null = null
     setCurrentStepActions(undefined) // 默认全部显示，绑定流程且节点配置 actions 时再收窄
+    setStepPerms([]) // 默认无节点权限 cap，绑定流程且节点配置 form_fields 时再设置
     if (ticket.process_id) {
       // 直接读 store 快照：深链 ?id= 场景下 render 闭包里的 processes 可能还没拉回来
       const procList = useProcessStore.getState().processes
@@ -442,6 +448,7 @@ export default function ITSMPage() {
             const editable = (projected?.fields || []).some(f => !f.readonly)
             setStepEditable(isUserStep && editable)
             setStepScope(ticket.form_scope || '')
+            setStepPerms(step.form_fields || [])
           } else if (step.form_scope) {
             // 存量流程：节点仍挂着独立表单作用域
             scope = step.form_scope
@@ -1290,6 +1297,7 @@ export default function ITSMPage() {
                           loadOptions={loadOptions}
                           readOnly={!stepEditable}
                           ticketId={selectedTicket.id}
+                          permCaps={stepPermCaps(stepPerms)}
                         />
                         {stepEditable && (
                           <div className="pt-1">
@@ -1973,8 +1981,13 @@ export default function ITSMPage() {
                               <Select size="small" style={{ width: 110 }} value={a.type} onChange={v => { const as = [...ruleForm.actions]; as[i] = { ...a, type: v, target: '' }; setRuleForm({ ...ruleForm, actions: as }) }}
                                 options={[{ value: 'notify', label: '通知' }, { value: 'assign', label: '自动指派' }, { value: 'webhook', label: 'Webhook' }, { value: 'start_process', label: '启动流程' }]} />
                               {a.type === 'notify'
-                                ? <Input className="text-xs flex-1" value={a.message || ''} placeholder="通知内容，支持 ${ticket.title} / ${custom_fields.x}"
-                                    onChange={e => { const as = [...ruleForm.actions]; as[i] = { ...a, message: e.target.value }; setRuleForm({ ...ruleForm, actions: as }) }} />
+                                ? <div className="flex-1 space-y-1">
+                                    <Input className="text-xs w-full" value={a.message || ''} placeholder="通知内容，支持 ${ticket.title} / ${custom_fields.x}"
+                                      onChange={e => { const as = [...ruleForm.actions]; as[i] = { ...a, message: e.target.value }; setRuleForm({ ...ruleForm, actions: as }) }} />
+                                    <Select className="text-xs w-full" size="small" mode="multiple" allowClear value={a.channels || []} placeholder="通知渠道（留空=按通知策略分发）"
+                                      onChange={v => { const as = [...ruleForm.actions]; as[i] = { ...a, channels: v }; setRuleForm({ ...ruleForm, actions: as }) }}
+                                      options={notifChannels.map(c => ({ value: c.id, label: `${c.name} (${c.type})` }))} />
+                                  </div>
                                 : a.type === 'start_process'
                                 ? <Select className="text-xs flex-1" size="small" value={a.target || undefined} placeholder="选择要启动的流程"
                                     onChange={v => { const as = [...ruleForm.actions]; as[i] = { ...a, target: v }; setRuleForm({ ...ruleForm, actions: as }) }}

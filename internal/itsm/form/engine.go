@@ -15,6 +15,12 @@ import (
 type Engine struct {
 	store    SchemaStore
 	resolver SourceResolver
+	// ciAttrResolver CMDB 属性回填通道（可选，ci_attr 联动用；nil=跳过该模式）。
+	ciAttrResolver CIAttrResolver
+	// submitterResolver 提单人属性回填通道（可选，submitter_attr 联动用；nil=跳过该模式）。
+	submitterResolver SubmitterAttrResolver
+	// decisionResolver 决策表资产引用解析器（可选，asset_ref 展开用；nil=引用表按空表跳过）。
+	decisionResolver DecisionTableResolver
 }
 
 func NewEngine(s SchemaStore) *Engine {
@@ -26,9 +32,56 @@ func (e *Engine) SetSourceResolver(r SourceResolver) {
 	e.resolver = r
 }
 
+// SetCIAttrResolver 注入 CMDB 属性回填通道（ci_attr 联动；nil = 该模式跳过）。
+func (e *Engine) SetCIAttrResolver(r CIAttrResolver) {
+	e.ciAttrResolver = r
+}
+
+// CIAttrResolver 返回已注入的 CMDB 属性回填通道（供上层 form 端点复用）。
+func (e *Engine) CIAttrResolver() CIAttrResolver {
+	return e.ciAttrResolver
+}
+
+// SetSubmitterAttrResolver 注入提单人属性回填通道（submitter_attr 联动；nil = 该模式跳过）。
+func (e *Engine) SetSubmitterAttrResolver(r SubmitterAttrResolver) {
+	e.submitterResolver = r
+}
+
+// SubmitterAttrResolver 返回已注入的提单人属性回填通道（供上层 form 端点复用）。
+func (e *Engine) SubmitterAttrResolver() SubmitterAttrResolver {
+	return e.submitterResolver
+}
+
+// SetDecisionTableResolver 注入决策表资产引用解析器（asset_ref 展开；nil = 引用表按空表跳过）。
+func (e *Engine) SetDecisionTableResolver(r DecisionTableResolver) {
+	e.decisionResolver = r
+}
+
+// DecisionTableResolver 返回已注入的决策表资产解析器（供上层端点复用）。
+func (e *Engine) DecisionTableResolver() DecisionTableResolver {
+	return e.decisionResolver
+}
+
 // SourceResolver 返回已注入的解析器（供上层 form-options 端点复用）。
 func (e *Engine) SourceResolver() SourceResolver {
 	return e.resolver
+}
+
+// expandSchema 求值/校验前的统一 schema 预处理：把决策表资产引用展开成已发布快照。
+// 解析失败按容错处理（退回原 schema，引用表等价空表），与 dict_ref 展开的宽松策略一致。
+func (e *Engine) expandSchema(ctx context.Context, tenantID string, schema *FormSchema) *FormSchema {
+	expanded, err := ExpandDecisionRefs(ctx, tenantID, schema, e.decisionResolver)
+	if err != nil {
+		return schema
+	}
+	return expanded
+}
+
+// PreviewRules 试算数据联动与决策表推导（不改入参、不做字段校验）。
+// 复用提交时同一条 ApplyDataRulesFull 通道（含 ci_attr / submitter_attr 实时解析），
+// 供表单设计器「试算」按钮验证命中行（fired 带 #第N行）与输出值，前后端结果一致。
+func (e *Engine) PreviewRules(ctx context.Context, tenantID string, schema *FormSchema, values map[string]any) (map[string]any, []string) {
+	return ApplyDataRulesFull(ctx, tenantID, e.expandSchema(ctx, tenantID, schema), values, e.ciAttrResolver, e.submitterResolver)
 }
 
 // ResolveSchema 取出某作用域的 schema（无则返回 nil，不报错）。
@@ -54,7 +107,21 @@ func (e *Engine) ValidateValues(ctx context.Context, tenantID string, schema *Fo
 	if schema == nil {
 		return nil
 	}
-	states := EffectiveStates(schema, values)
+	return e.validateWithStates(ctx, tenantID, schema, values, EffectiveStates(schema, values))
+}
+
+// ValidateValuesForStep 带节点字段权限的校验入口：字段级校验基于 EffectiveStatesForStep
+// （节点权限投影 + BehaviorRules 联动 + cap：联动不可放宽节点权限）。
+func (e *Engine) ValidateValuesForStep(ctx context.Context, tenantID string, schema *FormSchema, values map[string]any, perms []StepFieldPerm) error {
+	if schema == nil {
+		return nil
+	}
+	return e.validateWithStates(ctx, tenantID, ApplyStepPerms(schema, perms), values, EffectiveStatesForStep(schema, values, perms))
+}
+
+// validateWithStates 基于给定有效状态的字段级校验循环（ValidateValues / ValidateValuesForStep 共用）。
+// 隐藏字段跳过校验，只读/禁用字段不做取值范围校验（保留必填判定——只读但必填且为空仍拦截）。
+func (e *Engine) validateWithStates(ctx context.Context, tenantID string, schema *FormSchema, values map[string]any, states map[string]FieldState) error {
 	for _, f := range FlattenFields(schema.Fields) {
 		st, hasState := states[f.Key]
 		if hasState && !st.Visible {
@@ -98,12 +165,35 @@ func (e *Engine) ValidateValuesFull(ctx context.Context, tenantID string, schema
 	if schema == nil {
 		return nil, nil, nil
 	}
-	vals, _ := ApplyDataRules(schema, values)
+	// 先把决策表资产引用展开为已发布快照，推导/校验均基于展开后的 schema，
+	// 与 GET schema 返回给前端的内容一致（前后端同一求值结果）。
+	schema = e.expandSchema(ctx, tenantID, schema)
+	vals, _ := ApplyDataRulesFull(ctx, tenantID, schema, values, e.ciAttrResolver, e.submitterResolver)
 	ComputeExpressionFields(schema, vals) // 计算字段: 就地写入求值结果, 失败字段跳过不阻断
 	if err = e.ValidateValues(ctx, tenantID, schema, vals); err != nil {
 		return nil, nil, err
 	}
 	cr := ValidateComboRules(schema, vals)
+	return cr.Warnings, vals, cr.Err
+}
+
+// ValidateValuesFullForStep 带节点字段权限的完整校验：语义同 ValidateValuesFull，
+// 但推导、计算与字段校验均在「按节点权限投影后的 schema」上进行，字段级校验走
+// EffectiveStatesForStep（节点权限为上限）。节点隐藏的字段不参与推导与校验。
+// 返回 computed = 推导+计算后的完整值（调用方应合并落库）。
+func (e *Engine) ValidateValuesFullForStep(ctx context.Context, tenantID string, schema *FormSchema, values map[string]any, perms []StepFieldPerm) (warnings []string, computed map[string]any, err error) {
+	if schema == nil {
+		return nil, nil, nil
+	}
+	schema = e.expandSchema(ctx, tenantID, schema)
+	projected := ApplyStepPerms(schema, perms)
+	vals, _ := ApplyDataRulesFull(ctx, tenantID, projected, values, e.ciAttrResolver, e.submitterResolver)
+	ComputeExpressionFields(projected, vals) // 计算字段: 就地写入求值结果, 失败字段跳过不阻断
+	states := EffectiveStatesForStep(schema, vals, perms)
+	if err = e.validateWithStates(ctx, tenantID, projected, vals, states); err != nil {
+		return nil, nil, err
+	}
+	cr := ValidateComboRules(projected, vals)
 	return cr.Warnings, vals, cr.Err
 }
 

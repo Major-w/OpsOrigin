@@ -9,6 +9,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { Upload, X, Plus, FileText, AlertCircle, Star } from 'lucide-react'
 import { Tabs } from 'antd'
 import { RichTextEditor } from '@/components/rich-text-editor'
+import { apiFetch } from '@/lib/utils'
 
 export type FormFieldType =
   | 'text'
@@ -208,16 +209,32 @@ export interface ComboRule {
   severity?: 'block' | 'warn'
 }
 
-/** 赋值模式：fixed=固定值(默认) / copy_from=复制其它字段当前值（与后端 form 包语义一致） */
-export type DataSetMode = 'fixed' | 'copy_from'
+/** 赋值模式：fixed=固定值(默认) / copy_from=复制其它字段当前值 / ci_attr=从 CMDB CI 属性回填 /
+ *  submitter_attr=从提单人属性回填（如 department=部门/门店）（与后端 form 包语义一致） */
+export type DataSetMode = 'fixed' | 'copy_from' | 'ci_attr' | 'submitter_attr'
+
+/** ci_attr 模式的来源声明：以 name_field 字段当前值作为 CI 名称，在 ci_type 类型下取 attr 属性 */
+export interface DataSetCIAttr {
+  ci_type: string
+  name_field: string
+  fallback?: string
+}
+
+/** submitter_attr 模式的来源声明：取当前提单人（登录用户）的 attr 属性（如 department） */
+export interface DataSetSubmitter {
+  attr: string
+  fallback?: string
+}
 
 /** 单个赋值动作：条件命中后把值写入 target 字段 */
 export interface DataSet {
   target: string
-  /** fixed(默认) / copy_from */
+  /** fixed(默认) / copy_from / ci_attr / submitter_attr */
   mode?: DataSetMode
-  /** fixed=写入的值；copy_from=来源字段 key */
+  /** fixed=写入的值；copy_from=来源字段 key；ci_attr=CI 属性名（如 owner）；submitter_attr=提单人属性名（如 department） */
   value?: string
+  ci_attr?: DataSetCIAttr
+  submitter?: DataSetSubmitter
 }
 
 /** 数据联动规则："选 A 自动带出 B"。规则按声明顺序执行，后者覆盖前者 */
@@ -238,6 +255,13 @@ export interface DecisionRow {
   enabled?: boolean
 }
 
+/** 决策表资产引用：非空时本表内容由后端按已发布版本展开，保存态只保留引用标记 */
+export interface DecisionTableAssetRef {
+  asset_id: string
+  /** 0 / 缺省 = 跟随资产最新已发布版本；>0 = 锁定该不可变版本快照 */
+  version?: number
+}
+
 /** 决策表：条件列 × 输出列的规则矩阵，自上而下首个命中且启用的行生效 */
 export interface DecisionTable {
   id?: string
@@ -245,6 +269,7 @@ export interface DecisionTable {
   condition_keys: string[]
   output_keys: string[]
   rows: DecisionRow[]
+  asset_ref?: DecisionTableAssetRef
 }
 
 export interface FieldState {
@@ -328,6 +353,21 @@ function decisionCellHits(cell: string | undefined, raw: unknown): boolean {
   return vals.some(v => set.includes(v))
 }
 
+/** 决策表输出 ${path} 插值（与后端 form.interpolate 语义一致）：按点路径下钻取值，
+ *  变量缺失替换为空串，未闭合占位符原样保留。用于拼出动态组名等组合值。 */
+function interpolateValue(s: string, values: Record<string, unknown>): string {
+  if (!s.includes('${')) return s
+  return s.replace(/\$\{([^}]+)\}/g, (_m, path: string) => {
+    let cur: unknown = values
+    for (const seg of path.split('.')) {
+      if (!cur || typeof cur !== 'object' || Array.isArray(cur)) return ''
+      cur = (cur as Record<string, unknown>)[seg]
+      if (cur === undefined) return ''
+    }
+    return cur === null || cur === undefined ? '' : String(cur)
+  })
+}
+
 /**
  * 应用数据联动与决策表推导（与后端 form.ApplyDataRules 语义一致）。
  * 求值顺序：先 data_links（声明顺序），再 decision_tables（声明顺序，各自取首个命中行）。
@@ -348,24 +388,29 @@ export function applyDataRules(
     for (const s of r.sets) {
       const target = (s.target || '').trim()
       if (!target || !declared.has(target)) continue
-      if ((s.mode || 'fixed') === 'copy_from') {
+      const mode = s.mode || 'fixed'
+      if (mode === 'copy_from') {
         const src = (s.value || '').trim()
         if (!src || src === target) continue
         if (out[src] !== undefined && out[src] !== null) {
           out[target] = out[src]
           applied++
         }
-      } else {
+      } else if (mode === 'fixed') {
         out[target] = s.value ?? ''
         applied++
       }
+      // ci_attr / submitter_attr：需后端解析（CMDB/用户中心），前端镜像不本地推导，
+      // 由实时回填通道（字段变更 fetch / 挂载 fetch）写值，提交时后端仍会统一落定。
     }
     if (applied === 0) continue
     fired.push(`联动:${r.name || r.id || '未命名规则'}`)
   }
 
   for (const dt of schema.decision_tables || []) {
-    for (const row of dt.rows || []) {
+    const rows = dt.rows || []
+    for (let ri = 0; ri < rows.length; ri++) {
+      const row = rows[ri]
       if (row.enabled === false) continue
       let hit = true
       for (const k of dt.condition_keys || []) {
@@ -374,9 +419,9 @@ export function applyDataRules(
       if (!hit) continue
       for (const k of dt.output_keys || []) {
         if (!declared.has(k)) continue
-        if (row.outputs && k in row.outputs) out[k] = row.outputs[k]
+        if (row.outputs && k in row.outputs) out[k] = interpolateValue(String(row.outputs[k] ?? ''), out)
       }
-      fired.push(`决策表:${dt.name || dt.id || '未命名表'}`)
+      fired.push(`决策表:${dt.name || dt.id || '未命名表'}#第${ri + 1}行`)
       break
     }
   }
@@ -823,12 +868,15 @@ interface DynamicFormProps {
   loadOptions?: LoadOptionsFn
   // ticketId: 附件字段上传目标工单。传入后 attachment 字段可上传；未传（如创建表单）显示提示。
   ticketId?: string
+  // permCaps 节点字段权限上限（itsm-constants.stepPermCaps 产出）：
+  // readonly→强制只读并豁免必填；required→强制必填。行为规则(behavior_rules)只可在权限边界内收紧、不可放宽。
+  permCaps?: Record<string, { readonly?: boolean; required?: boolean }>
 }
 
 const fieldBaseCls =
   'flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring'
 
-export function DynamicForm({ schema, values, context, onChange, readOnly, loadOptions, ticketId }: DynamicFormProps) {
+export function DynamicForm({ schema, values, context, onChange, readOnly, loadOptions, ticketId, permCaps }: DynamicFormProps) {
   // 桌面端(>=640px)才应用显式 col_start：窄屏统一单列，避免强制定位导致横向溢出
   const [desktop, setDesktop] = useState(true)
   useEffect(() => {
@@ -838,6 +886,48 @@ export function DynamicForm({ schema, values, context, onChange, readOnly, loadO
     mq.addEventListener('change', sync)
     return () => mq.removeEventListener('change', sync)
   }, [])
+
+  // 异步回填（submitter_attr / ci_attr）落值后，必须基于「合并后的完整值」重跑一次
+  // 数据联动/决策表推导：否则依赖这些回填字段的决策表条件列在前端会先命中兜底行，
+  // 与提交时后端 ApplyDataRulesFull 的结果不一致（处理人显示错、实际派单正确）。
+  const rerunDerivedAfterAsyncFill = (filled: Record<string, unknown>) => {
+    const merged = { ...context, ...values, ...filled }
+    const { values: derived } = applyDataRules(schema, merged)
+    for (const [k, val] of Object.entries(derived)) {
+      if (k in filled) continue
+      if (merged[k] !== val) onChange(k, val)
+    }
+  }
+
+  // submitter_attr 回填：挂载 / schema 变化时取当前提单人属性（如 department=部门/门店）
+  // 回填目标字段（与后端提交校验的 ApplyDataRulesFull 同一通道；失败静默，提交时后端仍会落定）。
+  // 仅在目标字段为空时回填，不覆盖已有值；只读（详情）视图不回填。
+  useEffect(() => {
+    if (!schema || readOnly) return
+    const sets = (schema.data_links || [])
+      .flatMap(r => r.sets || [])
+      .filter(s => s.mode === 'submitter_attr' && (s.target || '').trim() && (s.submitter?.attr || '').trim())
+    if (!sets.length) return
+    for (const s of sets) {
+      const target = (s.target || '').trim()
+      const cur = values[target]
+      if (cur !== undefined && cur !== null && cur !== '') continue
+      apiFetch<{ found: boolean; value?: string }>(
+        `/itsm/form/submitter-attr?attr=${encodeURIComponent(s.submitter!.attr.trim())}`,
+      )
+        .then(res => {
+          if (res?.found && res.value) {
+            onChange(target, res.value)
+            rerunDerivedAfterAsyncFill({ [target]: res.value })
+          } else if (!res?.found && s.submitter?.fallback) {
+            onChange(target, s.submitter.fallback)
+            rerunDerivedAfterAsyncFill({ [target]: s.submitter.fallback })
+          }
+        })
+        .catch(() => { /* 回填失败静默：提交时后端仍会按同一联动落定 */ })
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [schema, readOnly])
 
   if (!schema || !schema.fields || schema.fields.length === 0) {
     return (
@@ -877,10 +967,43 @@ export function DynamicForm({ schema, values, context, onChange, readOnly, loadO
       if (k === key) continue
       if (values[k] !== val) onChange(k, val)
     }
+    // ci_attr 回填：数据联动声明了「以本字段值为 CI 名称取属性」时，异步查后端并回填
+    // （与后端提交校验的 ApplyDataRulesWithCI 同一通道；失败静默，不阻断填写）。
+    for (const r of schema?.data_links || []) {
+      for (const s of r.sets || []) {
+        if (s.mode !== 'ci_attr' || !s.ci_attr || s.ci_attr.name_field !== key) continue
+        const ciName = String(v ?? '').trim()
+        if (!ciName) continue
+        const attr = (s.value || '').trim()
+        const target = (s.target || '').trim()
+        if (!attr || !target) continue
+        const qs = new URLSearchParams({ type_name: s.ci_attr.ci_type || '', name: ciName, attr })
+        apiFetch<{ found: boolean; value?: string }>(`/itsm/form/ci-attr?${qs.toString()}`)
+          .then(res => {
+            if (res?.found && res.value && res.value !== values[target]) {
+              onChange(target, res.value)
+              rerunDerivedAfterAsyncFill({ [target]: res.value })
+            } else if (!res?.found && s.ci_attr?.fallback && values[target] !== s.ci_attr.fallback) {
+              onChange(target, s.ci_attr.fallback)
+              rerunDerivedAfterAsyncFill({ [target]: s.ci_attr.fallback })
+            }
+          })
+          .catch(() => { /* 回填失败静默：提交时后端仍会按同一联动落定 */ })
+      }
+    }
   }
   const fields = [...schema.fields].sort((a, b) => (a.order || 0) - (b.order || 0))
-  // 有效状态 = 字段自身规则 + behavior_rules 联动叠加（与后端校验口径一致）
+  // 有效状态 = 字段自身规则 + behavior_rules 联动叠加（与后端校验口径一致），
+  // 再按节点字段权限 cap 兜底（与后端 form.EffectiveStatesForStep 镜像）：联动不得放宽节点权限。
   const states = effectiveFieldStates(schema, ctx)
+  if (permCaps) {
+    for (const [k, cap] of Object.entries(permCaps)) {
+      const st = states[k]
+      if (!st) continue
+      if (cap.readonly) { st.readonly = true; st.required = false }
+      if (cap.required) st.required = true
+    }
+  }
   const visibleFields = fields.filter(f => states[f.key]?.visible !== false)
 
   if (visibleFields.length === 0) {

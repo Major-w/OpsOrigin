@@ -73,6 +73,38 @@ func decodeTicket(t *testing.T, w *httptest.ResponseRecorder) model.Ticket {
 	return tk
 }
 
+// 决策表：保存时配置校验 + 试算端点（命中行/输出值）
+func TestFormDecisionTableValidationAndPreview(t *testing.T) {
+	s := newTestService()
+	valid := `{"scope":"ticket:default","schema":{"version":1,"fields":[{"key":"env","label":"环境","type":"text"},{"key":"level","label":"级别","type":"text"}],"decision_tables":[{"name":"分级","condition_keys":["env"],"output_keys":["level"],"rows":[{"cells":{"env":"prod"},"outputs":{"level":"P1"}},{"outputs":{"level":"P3"}}]}]}}`
+	if w := callPut(t, s, "/api/v1/itsm/forms", valid); w.Code != http.StatusOK {
+		t.Fatalf("合法决策表配置应保存成功，code=%d body=%s", w.Code, w.Body.String())
+	}
+	bad := strings.Replace(valid, `"output_keys":["level"]`, `"output_keys":["ghost"]`, 1)
+	if w := callPut(t, s, "/api/v1/itsm/forms", bad); w.Code != http.StatusBadRequest {
+		t.Fatalf("未声明的输出列应被拦截，code=%d body=%s", w.Code, w.Body.String())
+	}
+
+	previewBody := `{"schema":{"version":1,"fields":[{"key":"env","label":"环境","type":"text"},{"key":"level","label":"级别","type":"text"}],"decision_tables":[{"name":"分级","condition_keys":["env"],"output_keys":["level"],"rows":[{"cells":{"env":"prod"},"outputs":{"level":"P1"}},{"outputs":{"level":"P3"}}]}]},"values":{"env":"prod"}}`
+	w := callPost(t, s, "/api/v1/itsm/form/rules-preview", previewBody)
+	if w.Code != http.StatusOK {
+		t.Fatalf("试算应成功，code=%d body=%s", w.Code, w.Body.String())
+	}
+	var resp struct {
+		Values map[string]any `json:"values"`
+		Fired  []string       `json:"fired"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode preview: %v", err)
+	}
+	if resp.Values["level"] != "P1" {
+		t.Fatalf("试算应命中 P1，实际 %v", resp.Values["level"])
+	}
+	if len(resp.Fired) != 1 || !strings.Contains(resp.Fired[0], "#第1行") {
+		t.Fatalf("试算应返回命中行号，实际 %v", resp.Fired)
+	}
+}
+
 // P0-1 + P0-2: 低/中风险工单 draft → submit → executing → complete → succeeded → close → closed
 func TestClosedLoopLowRisk(t *testing.T) {
 	s := newTestService()

@@ -274,6 +274,14 @@ func (s *Service) executeRuleAction(ctx context.Context, rule *model.AutomationR
 		if content == "" {
 			content = fmt.Sprintf("触发器 [%s] 命中工单 %s(%s)", rule.Name, ticket.Title, ticket.ID)
 		}
+		// 显式指定渠道：直接投递（绕过 Policy 匹配与免打扰）；未指定走 Policy 泛播。
+		if len(act.Channels) > 0 {
+			if cn, ok := s.notify.(ChannelNotifier); ok {
+				return cn.NotifyChannels(ctx, ticket.TenantID, act.Channels, "ticket.automation",
+					"自动化触发: "+rule.Name, content)
+			}
+			return fmt.Errorf("notify channels not supported by notifier")
+		}
 		return s.notify.NotifyEvent(ctx, ticket.TenantID, "ticket.automation",
 			"自动化触发: "+rule.Name, content)
 	case "assign":
