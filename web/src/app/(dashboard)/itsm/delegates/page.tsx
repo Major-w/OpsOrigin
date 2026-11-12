@@ -50,7 +50,7 @@ export default function DelegatesPage() {
     setLoading(true)
     setError('')
     try {
-      const list = await apiList<ApprovalDelegate>('/api/v1/itsm/approval-delegates')
+      const list = await apiList<ApprovalDelegate>('/itsm/approval-delegates')
       setItems(list || [])
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : '加载失败')
@@ -61,7 +61,7 @@ export default function DelegatesPage() {
 
   useEffect(() => {
     load()
-    apiFetch<UserOption[]>('/api/v1/itsm/form-options?source=iam:user')
+    apiFetch<UserOption[]>('/itsm/form-options?source=iam:user')
       .then(opts => setUsers(opts || []))
       .catch(() => setUsers([]))
   }, [load])
@@ -76,7 +76,7 @@ export default function DelegatesPage() {
     if (principal === delegate) { getMessage().warning('不能把审批权委托给自己'); return }
     setSubmitting(true)
     try {
-      const res = await apiFetch<ApprovalDelegate>('/api/v1/itsm/approval-delegates', {
+      const res = await apiFetch<ApprovalDelegate>('/itsm/approval-delegates', {
         method: 'POST',
         body: JSON.stringify({
           principal, delegate, enabled,
@@ -100,7 +100,7 @@ export default function DelegatesPage() {
   const doDelete = async () => {
     if (!confirmDelete) return
     try {
-      await apiFetch(`/api/v1/itsm/approval-delegates/${confirmDelete.id}`, { method: 'DELETE' })
+      await apiFetch(`/itsm/approval-delegates/${confirmDelete.id}`, { method: 'DELETE' })
       getMessage().success('委托已删除')
       setConfirmDelete(null)
       load()

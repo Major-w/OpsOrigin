@@ -258,7 +258,7 @@ const exporting = new Set<string>()
 /** 服务端确定性导出通道(POST /api/v1/ai/export, 后端 pandoc): 前端保险丝触发或转换失败时的 fallback。 */
 async function exportViaServer(md: string, fallbackName: string, fmt: 'docx' | 'pptx', note: string) {
   getMessage().info(note)
-  const res = await apiFetchRaw('/api/v1/ai/export', {
+  const res = await apiFetchRaw('/ai/export', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ format: fmt, title: titleFromMd(md, fallbackName), content: md }),

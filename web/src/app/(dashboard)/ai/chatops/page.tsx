@@ -129,7 +129,7 @@ export default function ChatOpsPage() {
     setChanLoading(true)
     setChanError(null)
     try {
-      const list = await apiFetch<Channel[]>('/api/v1/chatops/channels')
+      const list = await apiFetch<Channel[]>('/chatops/channels')
       setChannels(Array.isArray(list) ? list : [])
     } catch (e: any) {
       setChanError(e?.message || '加载渠道失败')
@@ -143,7 +143,7 @@ export default function ChatOpsPage() {
     setBindLoading(true)
     setBindError(null)
     try {
-      const list = await apiFetch<Binding[]>('/api/v1/chatops/bindings')
+      const list = await apiFetch<Binding[]>('/chatops/bindings')
       setBindings(Array.isArray(list) ? list : [])
     } catch (e: any) {
       setBindError(e?.message || '加载绑定失败')
@@ -162,7 +162,7 @@ export default function ChatOpsPage() {
   const toggleEnabled = async (ch: Channel, next: boolean) => {
     setTogglingId(ch.id)
     try {
-      await apiFetch(`/api/v1/chatops/channels/${ch.id}`, {
+      await apiFetch(`/chatops/channels/${ch.id}`, {
         method: 'PUT',
         body: JSON.stringify({ enabled: next }),
       })
@@ -229,7 +229,7 @@ export default function ChatOpsPage() {
       if (editing) {
         const body: any = { name: formName.trim() }
         if (Object.keys(settings).length > 0) body.settings = settings
-        await apiFetch(`/api/v1/chatops/channels/${editing.id}`, {
+        await apiFetch(`/chatops/channels/${editing.id}`, {
           method: 'PUT',
           body: JSON.stringify(body),
         })
@@ -237,7 +237,7 @@ export default function ChatOpsPage() {
         setModalOpen(false)
         loadChannels()
       } else {
-        const ch = await apiFetch<Channel>('/api/v1/chatops/channels', {
+        const ch = await apiFetch<Channel>('/chatops/channels', {
           method: 'POST',
           body: JSON.stringify({ platform: formPlatform, name: formName.trim(), settings }),
         })
@@ -268,7 +268,7 @@ export default function ChatOpsPage() {
     if (!delTarget) return
     setDelLoading(true)
     try {
-      await apiFetch(`/api/v1/chatops/channels/${delTarget.id}`, { method: 'DELETE' })
+      await apiFetch(`/chatops/channels/${delTarget.id}`, { method: 'DELETE' })
       getMessage().success(`渠道「${delTarget.name}」已删除`)
       setDelTarget(null)
       loadChannels()
@@ -286,7 +286,7 @@ export default function ChatOpsPage() {
     if (!testChatId.trim()) return getMessage().error('请填写 chat_id（在 IM 群里 @机器人 发任意消息后，从「会话绑定」页获取）')
     setTestLoading(true)
     try {
-      await apiFetch(`/api/v1/chatops/channels/${testTarget.id}/test`, {
+      await apiFetch(`/chatops/channels/${testTarget.id}/test`, {
         method: 'POST',
         body: JSON.stringify({ chat_id: testChatId.trim() }),
       })
@@ -304,7 +304,7 @@ export default function ChatOpsPage() {
     if (!unbindTarget) return
     setUnbindLoading(true)
     try {
-      await apiFetch(`/api/v1/chatops/bindings/${encodeURIComponent(unbindTarget.platform)}/${encodeURIComponent(unbindTarget.chat_id)}`, { method: 'DELETE' })
+      await apiFetch(`/chatops/bindings/${encodeURIComponent(unbindTarget.platform)}/${encodeURIComponent(unbindTarget.chat_id)}`, { method: 'DELETE' })
       getMessage().success('已解绑该会话')
       setUnbindTarget(null)
       loadBindings()
