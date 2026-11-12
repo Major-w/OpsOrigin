@@ -45,6 +45,7 @@ import (
 	"github.com/opsorigin/core/internal/deploy"
 	"github.com/opsorigin/core/internal/ent"
 	"github.com/opsorigin/core/internal/iam"
+	"github.com/opsorigin/core/internal/iam/ldapsync"
 	"github.com/opsorigin/core/internal/identity"
 	"github.com/opsorigin/core/internal/itsm"
 	"github.com/opsorigin/core/internal/itsm/catalog"
@@ -452,6 +453,9 @@ func main() {
 		server.RegisterService(processSvc)
 		processSvc.StartTimerChecker(ctx)
 		itsmSvc.SetProcessStore(processSvc)
+		processSvc.SetFormSchemaResolver(itsmSvc)                                // 流程主表单决策表引用: 读取展开 / 保存归一
+		processSvc.SetDecisionEvaluator(itsmSvc)                                 // 流程级决策绑定: 求值注入 decision.* 变量
+		processSvc.SetActionTemplateResolver(itsmSvc)                            // 动作模板运行期引用解析
 		processSvc.SetTicketVarProvider(itsmSvc)                                 // 自动节点变量链路: 工单字段注入流程变量上下文
 		processSvc.SetTicketAssigner(itsmSvc)                                    // 派单节点 auto 模式: 受派人落库走 itsm
 		processSvc.SetApprovalTimeoutHandler(itsmSvc.AutoTransitionApproval)     // 审批节点超时自动通过/驳回
@@ -730,10 +734,34 @@ func main() {
 		server.RegisterService(keySvc)
 
 		userSvc = user.NewService(db, authProvider)
+		userSvc.InitSchema(ctx) // 存储自愈 DDL（users.department 等，幂等）
 		server.RegisterService(userSvc)
 
 		iamSvc = iam.NewService(db)
 		server.RegisterService(iamSvc)
+
+		// AD/LDAP 目录同步引擎装配（LDAP 启用时）：用户建档走 userSvc，
+		// 组 Upsert 走 iamSvc；SyncIntervalMin>0 时启动定时同步。
+		if ldapProv != nil && cfg.LDAP.Enabled {
+			syncer := &ldapsync.Syncer{LDAP: ldapProv, Users: userSvc, Groups: iamSvc, Depts: iamSvc}
+			iamSvc.SetLdapSyncer(syncer)
+			if intervalMin := ldapProv.SyncIntervalMinutes(); intervalMin > 0 {
+				go func() {
+					ticker := time.NewTicker(time.Duration(intervalMin) * time.Minute)
+					defer ticker.Stop()
+					for {
+						select {
+						case <-ctx.Done():
+							return
+						case <-ticker.C:
+							if _, err := syncer.Sync(ctx, "default"); err != nil {
+								slog.Warn("ldap periodic sync failed", "error", err)
+							}
+						}
+					}
+				}()
+			}
+		}
 
 		notifySvc = notification.NewService(db)
 		server.RegisterService(notifySvc)
@@ -762,8 +790,11 @@ func main() {
 		processSvc = process.NewService(nil)
 		server.RegisterService(processSvc)
 		itsmSvc.SetProcessStore(processSvc)
-		processSvc.SetTicketVarProvider(itsmSvc) // 自动节点变量链路: 工单字段注入流程变量上下文
-		processSvc.SetTicketAssigner(itsmSvc)    // 派单节点 auto 模式: 受派人落库走 itsm
+		processSvc.SetFormSchemaResolver(itsmSvc)     // 流程主表单决策表引用: 读取展开 / 保存归一
+		processSvc.SetDecisionEvaluator(itsmSvc)      // 流程级决策绑定: 求值注入 decision.* 变量
+		processSvc.SetActionTemplateResolver(itsmSvc) // 动作模板运行期引用解析
+		processSvc.SetTicketVarProvider(itsmSvc)      // 自动节点变量链路: 工单字段注入流程变量上下文
+		processSvc.SetTicketAssigner(itsmSvc)         // 派单节点 auto 模式: 受派人落库走 itsm
 	}
 	if catalogStore == nil {
 		catalogStore = catalog.NewStore(nil)
@@ -891,6 +922,10 @@ func main() {
 		// ITSM 动态表单选项来源:cmdb:<type> 取配置项、iam:user/role/group 取人与角色。
 		// 解析器由 itsm 侧定义(form 包只认接口),此处在 cmdb/user/iam 就绪后装配,带 TTL 缓存。
 		itsmSvc.SetSourceResolver(itsm.NewCMDBIAMResolver(cmdbSvc, userSvc, iamSvc))
+		// 数据联动 ci_attr 回填通道: 提交校验/落库时按「类型名+CI 名称」取属性(如 门店→IT 处理人)。
+		itsmSvc.SetCIAttrResolver(itsm.NewCIAttrResolver(cmdbSvc))
+		// 数据联动 submitter_attr 回填通道: 按提单人(ctx 身份)取属性(如 department=部门/门店)。
+		itsmSvc.SetSubmitterAttrResolver(itsm.NewSubmitterAttrResolver(userSvc))
 
 		// 服务目录「服务对象」按用户组授权: catalog 不反向依赖 iam,由此处注入组解析器。
 		if catalogStore != nil {

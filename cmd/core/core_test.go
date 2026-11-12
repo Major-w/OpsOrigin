@@ -209,12 +209,25 @@ func TestITSMListEmpty(t *testing.T) {
 		t.Fatalf("expected 200, got %d", resp.StatusCode)
 	}
 
-	var items []any
-	if err := json.NewDecoder(resp.Body).Decode(&items); err != nil {
+	// 工单列表已迁移为分页契约 {items,total,page,page_size}（前端 apiList 兼容该形态）。
+	// 空列表时 items 必须是非 nil 数组，否则调用方 list.map() 会崩。
+	var page struct {
+		Items    []any `json:"items"`
+		Total    int   `json:"total"`
+		Page     int   `json:"page"`
+		PageSize int   `json:"page_size"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&page); err != nil {
 		t.Fatal(err)
 	}
-	if items == nil {
-		t.Fatal("expected non-nil items array")
+	if page.Items == nil {
+		t.Fatal("expected non-nil items array in paged response")
+	}
+	if page.Total != 0 || len(page.Items) != 0 {
+		t.Fatalf("expected empty page, got total=%d items=%d", page.Total, len(page.Items))
+	}
+	if page.Page != 1 || page.PageSize < 1 {
+		t.Fatalf("unexpected pagination defaults: page=%d page_size=%d", page.Page, page.PageSize)
 	}
 }
 

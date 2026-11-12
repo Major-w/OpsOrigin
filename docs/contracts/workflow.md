@@ -27,10 +27,13 @@ make contract
 2. 前端 `tsc --noEmit`——**FAIL 级**
 3. 前端 `web/` Vitest——**FAIL 级**
 4. 后端 `gofmt -l` + `go vet ./...`——**FAIL 级**
-5. 前端原生 `confirm(` 残留——**FAIL 级**（必须 0）
-6. 前端硬编码色（`bg-[#`/`text-[#`/`border-[#`）——**WARN 级**（SVG 图元必要除外）
-7. 后端裸 SQL / `context.Background()`——**WARN 级**（命中须人工确认在白名单场景）
+5. 后端单元测试：root `go test ./...` + **`go.work` 内全部独立模块**的 `go build` + `go test`——**FAIL 级**。模块清单从 `go.work` 的 `use` 块动态解析（新增模块无需改脚本），解析为空视为覆盖失效直接 FAIL。
+6. 前端原生 `confirm(` 残留——**FAIL 级**（必须 0）
+7. 前端硬编码色（`bg-[#`/`text-[#`/`border-[#`）——**WARN 级**（SVG 图元必要除外）
+8. 后端裸 SQL / `context.Background()`——**WARN 级**（命中须人工确认在白名单场景）
 
+> **W3.1** root 的 `go test ./...` **不会**覆盖 `go.work` 中的其它模块（workspace 只统一依赖解析，不扩大 `./...` 范围），必须逐个 `cd` 执行。历史上曾因此出现「契约全绿但 `cmd/core` 测试 FAIL」。
+>
 > 校验未通过 = 任务未完成。WARN 项需在提交说明中注明理由。
 
 ## W4 提交规范

@@ -14,6 +14,7 @@ import { Breadcrumb } from '@/components/ui/breadcrumb'
 import LocaleSwitcher from '@/components/ui/locale-switcher'
 import AIAssistant from '@/components/ai-assistant'
 import PureMode from '@/components/pure-mode'
+import PasswordExpiredGuard from '@/components/password-expired-guard'
 import { getAINavItems } from '@/components/ai-nav'
 import { t, useLocale } from '@/lib/i18n'
 import { useMemo } from 'react'
@@ -205,6 +206,8 @@ export function Layout({ children }: { children: React.ReactNode }) {
             { to: '/itsm/service-hours', label: t('itsm.serviceHours'), icon: CalendarClock },
             { to: '/itsm/sla-breached', label: t('itsm.slaBreached'), icon: AlertTriangle },
             { to: '/itsm/form-dicts', label: t('itsm.formDicts'), icon: Database },
+            { to: '/itsm/decision-tables', label: t('itsm.decisionTables'), icon: Blocks },
+            { to: '/itsm/action-templates', label: t('itsm.actionTemplates'), icon: Play },
             { to: '/itsm/status-flow', label: '状态流转规则', icon: ArrowRightLeft },
             { to: '/itsm/delegates', label: '审批委托', icon: UserCheck },
           ]
@@ -304,6 +307,7 @@ export function Layout({ children }: { children: React.ReactNode }) {
       label: t('system.title'), icon: Users, items: [
         { to: '/system/users', label: t('system.users'), icon: Users },
         { to: '/system/groups', label: t('system.groups'), icon: Users },
+        { to: '/system/departments', label: t('system.departments'), icon: Network },
         { to: '/system/roles', label: t('system.roles'), icon: Shield },
         { to: '/system/auth', label: t('system.auth'), icon: Key },
         { to: '/system/api-keys', label: t('system.apiKeys'), icon: Key },
@@ -494,6 +498,7 @@ export function Layout({ children }: { children: React.ReactNode }) {
         <ScrollToTop />
       </main>
       <AIAssistant />
+      <PasswordExpiredGuard />
     </div>
   )
 }

@@ -83,6 +83,7 @@ const KnowledgeNewPage = React.lazy(() => import('./app/(dashboard)/knowledge/ne
 const KnowledgeDetailPage = React.lazy(() => import('./app/(dashboard)/knowledge/[id]/page'))
 const SystemNotificationsPage = React.lazy(() => import('./app/(dashboard)/system/notifications/page'))
 const SystemGroupsPage = React.lazy(() => import('./app/(dashboard)/system/groups/page'))
+const SystemDepartmentsPage = React.lazy(() => import('./app/(dashboard)/system/departments/page'))
 const SystemHealthPage = React.lazy(() => import('./app/(dashboard)/system/health/page'))
 const SystemCollectionPolicyPage = React.lazy(() => import('./app/(dashboard)/system/collection-policy/page'))
 const SystemRolesPage = React.lazy(() => import('./app/(dashboard)/system/roles/page'))
@@ -104,6 +105,8 @@ const ITSMOverviewPage = React.lazy(() => import('./app/(dashboard)/itsm/overvie
 const ITSMChangeAssessPage = React.lazy(() => import('./app/(dashboard)/itsm/change-assess/page'))
 const ITSMSlaPage = React.lazy(() => import('./app/(dashboard)/itsm/sla/page'))
 const ITSMFormDictsPage = React.lazy(() => import('./app/(dashboard)/itsm/form-dicts/page'))
+const ITSMDecisionTablesPage = React.lazy(() => import('./app/(dashboard)/itsm/decision-tables/page'))
+const ITSMActionTemplatesPage = React.lazy(() => import('./app/(dashboard)/itsm/action-templates/page'))
 const ITSMServiceHoursPage = React.lazy(() => import('./app/(dashboard)/itsm/service-hours/page'))
 const ITSMInboundPage = React.lazy(() => import('./app/(dashboard)/itsm/inbound/page'))
 const ITSMKnowledgePage = React.lazy(() => import('./app/(dashboard)/itsm/knowledge/page'))
@@ -240,6 +243,7 @@ function App() {
                 <Route path="/knowledge/:id" element={<KnowledgeDetailPage />} />
                 <Route path="/system/notifications" element={<SystemNotificationsPage />} />
                 <Route path="/system/groups" element={<SystemGroupsPage />} />
+                <Route path="/system/departments" element={<SystemDepartmentsPage />} />
                 <Route path="/system/health" element={<SystemHealthPage />} />
                 <Route path="/system/collection-policy" element={<SystemCollectionPolicyPage />} />
                 <Route path="/system/roles" element={<SystemRolesPage />} />
@@ -261,6 +265,8 @@ function App() {
                 <Route path="/itsm/change-assess" element={<ITSMChangeAssessPage />} />
                 <Route path="/itsm/sla" element={<ITSMSlaPage />} />
                 <Route path="/itsm/form-dicts" element={<ITSMFormDictsPage />} />
+                <Route path="/itsm/decision-tables" element={<ITSMDecisionTablesPage />} />
+                <Route path="/itsm/action-templates" element={<ITSMActionTemplatesPage />} />
                 <Route path="/itsm/inbound" element={<ITSMInboundPage />} />
                 <Route path="/itsm/knowledge" element={<ITSMKnowledgePage />} />
                 <Route path="/itsm/sla-breached" element={<ITSMSlaBreachedPage />} />

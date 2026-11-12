@@ -52,5 +52,8 @@ grep -rn "context.Background()" internal/ pkg/ cmd/   # 应趋近 0（仅允许�
 grep -rnE "SELECT .* FROM" internal/ --include="*.go" # 命中须人工确认在 report 白名单体系内
 gofmt -l .                                            # 必须为空
 go vet ./...                                          # 必须通过
+go test ./...                                         # 必须通过（仅覆盖 root 模块）
 ```
+> `go.work` 内的独立模块（`cmd/agent`、`cmd/core`、`cmd/k8s-probe`、`cmd/proxy`）不在 root 的 `./...` 范围内，须逐个 `cd` 跑 `go build ./...` + `go test ./...`。`make contract` 会自动遍历 `go.work` 全部模块，手工自查不得只跑 root 一条。
+
 完整校验：`make contract`。
