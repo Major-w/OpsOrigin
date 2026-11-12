@@ -33,7 +33,9 @@ export default function AIPage() {
   const fetchAgents = useAgentAIStore(s => s.fetchAgents)
   const { theme } = useThemeStore()
   const navigate = useNavigate()
-  const canUseAI = useCan('ai:tool:exec')
+  // 与后端 POST /ai/chat 的 ai:write 对齐: 这里只判断「能否发起对话」, 工具执行由网关二次裁决。
+  // 注意 viewer 仅有 ai:read, 后端同样不允许发起对话; 如需开放 viewer 提问须另做权限决策。
+  const canUseAI = useCan('ai:write')
   const locale = useLocale()
 
   const QUICK_ACTIONS = useMemo(() => [
@@ -789,7 +791,7 @@ export default function AIPage() {
 
             {!canUseAI && (
               <p className="text-[10px] text-amber-600 dark:text-amber-400 flex items-center gap-1 px-4 pb-2">
-                <AlertTriangle className="h-3 w-3" />无 AI 工具执行权限，仅可查看历史对话。请联系管理员在角色中授予 ai:tool:exec。
+                <AlertTriangle className="h-3 w-3" />无 AI 对话权限，仅可查看历史对话。请联系管理员在角色中授予 ai:write。
               </p>
             )}
             {canUseAI && convPerm === 'view' && (

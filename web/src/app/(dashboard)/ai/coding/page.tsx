@@ -24,7 +24,8 @@ import { t, useLocale } from '@/lib/i18n'
 export default function AICodingPage() {
   const fetchAgents = useAgentAIStore(s => s.fetchAgents)
   const agents = useAgentAIStore(s => s.agents)
-  const canUseAI = useCan('ai:tool:exec')
+  // 与后端 POST /ai/chat 的 ai:write 对齐: 发起对话不需要 ai:tool:exec, 写类工具另由审批网关裁决。
+  const canUseAI = useCan('ai:write')
   const { theme } = useThemeStore()
   const locale = useLocale()
   const navigate = useNavigate()
@@ -130,7 +131,7 @@ export default function AICodingPage() {
           />
           {!canUseAI && (
             <p className="text-[10px] text-amber-600 dark:text-amber-400 flex items-center gap-1 px-4 pb-2">
-              <AlertTriangle className="h-3 w-3" />无 AI 工具执行权限，请联系管理员在角色中授予 ai:tool:exec。
+              <AlertTriangle className="h-3 w-3" />无 AI 对话权限，请联系管理员在角色中授予 ai:write。
             </p>
           )}
         </div>

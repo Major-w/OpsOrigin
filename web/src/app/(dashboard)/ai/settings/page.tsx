@@ -7,6 +7,7 @@ import { ReloadOutlined, PlusOutlined, DeleteOutlined, EditOutlined, ApiOutlined
 import { Bot, Plus, Trash2, Save, Wrench, Brain, Settings2, Terminal, Wand2, AlertCircle, CheckCircle2, Loader2, ChevronRight, ShieldCheck, Database, Download, RefreshCw, Sparkles, Copy, Pencil, Star, Search, Package, Eye, Rocket, Users } from 'lucide-react'
 import RoleTemplatesPanel from '@/components/ai/role-templates-panel'
 import { GovernancePanel } from '@/components/ai/governance-panel'
+import { PendingApprovalsPanel } from '@/components/ai/pending-approvals-panel'
 
 import { cn, apiFetch, apiFetchRaw, apiList } from '@/lib/utils'
 import { useThemeStore } from '@/stores/theme'
@@ -1071,6 +1072,9 @@ export default function AISettingsPage() {
             </div>
           </CardContent>
         </Card>
+
+        {/* 跨会话 / 跨设备的待审批队列: 与聊天窗口内的 SSE ask 弹窗互补 */}
+        <PendingApprovalsPanel />
       </div>
     )
   }

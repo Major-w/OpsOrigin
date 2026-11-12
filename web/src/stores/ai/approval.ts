@@ -47,11 +47,9 @@ export const useApprovalStore = create<ApprovalState>(() => ({
       return false
     }
   },
+  // 错误上抛由调用方渲染 ErrorState 四态; 吞错返回 [] 会把 403 / 网络故障伪装成「暂无数据」。
+  // 该方法此前无调用点, 故上抛不改变既有页面行为。
   listPendingApprovals: async () => {
-    try {
-      return await apiList<PendingApproval>('/ai/approvals/pending')
-    } catch {
-      return []
-    }
+    return await apiList<PendingApproval>('/ai/approvals/pending')
   },
 }))

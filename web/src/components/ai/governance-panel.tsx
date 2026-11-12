@@ -11,6 +11,7 @@ import { ConfirmDialog } from '@/components/ui/confirm-dialog'
 import { ErrorState } from '@/components/ui/error-state'
 import { apiFetch } from '@/lib/utils'
 import { getMessage } from '@/lib/message'
+import { useCan } from '@/stores/permissions'
 import { ShieldCheck, Users, Activity, RefreshCw, Trash2, Eye, FileJson } from 'lucide-react'
 
 // 数字员工治理面板(P0): 独立身份 / 可见性与分享 / 运行轨迹只读复盘。
@@ -52,6 +53,11 @@ const PERMISSION_LABEL: Record<string, string> = {
 }
 
 export function GovernancePanel() {
+  // F2.4: 轨迹含工具入参与结果, 后端显式收敛到 ai:trace:read(不回落 ai:read)。
+  // 只门控轨迹卡片, 不锁整个治理面板 —— /ai/agents 走 ai:read, viewer 仍可查看数字员工。
+  // useCan 在权限加载完成前乐观放行(项目既有约定), 加载完成后无权限即切到无权限态。
+  const canTrace = useCan('ai:trace:read')
+
   const [agents, setAgents] = useState<AgentRow[]>([])
   const [agentsLoading, setAgentsLoading] = useState(true)
   const [agentsError, setAgentsError] = useState('')
@@ -80,11 +86,14 @@ export function GovernancePanel() {
     }
   }, [])
 
-  const loadTurns = useCallback(async () => {
+  // cid 由调用方显式传入: 挂载时传空串拉全量, 查询/刷新传当前筛选值。
+  // 不闭包依赖 conversationId, 保证 useCallback 稳定 —— 挂载 effect 只跑一次, 筛选输入不会逐键发请求。
+  const loadTurns = useCallback(async (cid: string = '') => {
     setTurnsLoading(true)
     setTurnsError('')
     try {
-      const qs = conversationId.trim() ? `?conversation_id=${encodeURIComponent(conversationId.trim())}` : ''
+      const id = cid.trim()
+      const qs = id ? `?conversation_id=${encodeURIComponent(id)}` : ''
       const data = await apiFetch<any>(`/ai/trajectories${qs}`)
       setTurns(Array.isArray(data) ? data : [])
     } catch (e) {
@@ -92,9 +101,12 @@ export function GovernancePanel() {
     } finally {
       setTurnsLoading(false)
     }
-  }, [conversationId])
+  }, [])
 
+  // 挂载时同时拉取员工列表与全量轨迹: turnsLoading 初始为 true, 少了 loadTurns 会一直卡在「加载中…」。
+  // 两者拆开: 轨迹请求受 ai:trace:read 守卫, 无权限时不发请求, 也就不会撞 403 错误态。
   useEffect(() => { void loadAgents() }, [loadAgents])
+  useEffect(() => { if (canTrace) void loadTurns('') }, [loadTurns, canTrace])
 
   const changeVisibility = async (a: AgentRow, visibility: string) => {
     if (busy) return
@@ -240,44 +252,58 @@ export function GovernancePanel() {
             <CardTitle className="text-base flex items-center gap-2"><Activity className="h-4 w-4" />运行轨迹复盘</CardTitle>
             <CardDescription>每次请求的 LLM 轮次与工具调用均按租户留痕，可导出 OTel GenAI 语义约定格式。默认保留 30 天。</CardDescription>
           </div>
-          <Button variant="outline" size="sm" onClick={() => void loadTurns()} disabled={turnsLoading}>
-            <RefreshCw className="h-3.5 w-3.5 mr-1" />刷新
-          </Button>
+          {canTrace && (
+            <Button variant="outline" size="sm" onClick={() => void loadTurns(conversationId)} disabled={turnsLoading}>
+              <RefreshCw className="h-3.5 w-3.5 mr-1" />刷新
+            </Button>
+          )}
         </CardHeader>
         <CardContent className="space-y-3">
-          <div className="flex items-center gap-2">
-            <Input
-              className="max-w-xs"
-              placeholder="按会话 ID 筛选（留空查全部）"
-              value={conversationId}
-              onChange={e => setConversationId(e.target.value)}
-              onKeyDown={e => { if (e.key === 'Enter') void loadTurns() }}
-            />
-            <Button variant="outline" size="sm" onClick={() => void loadTurns()}>查询</Button>
-          </div>
-          {turnsLoading ? (
-            <p className="text-sm text-muted-foreground py-6 text-center">加载中…</p>
-          ) : turnsError ? (
-            <ErrorState message={turnsError} onRetry={() => void loadTurns()} />
-          ) : turns.length === 0 ? (
-            <p className="text-sm text-muted-foreground py-6 text-center">暂无运行轨迹（发起一次对话后即可看到）</p>
-          ) : (
-            <div className="space-y-2">
-              {turns.map(t => (
-                <div key={t.id} className="flex items-center justify-between gap-3 rounded-md border border-border px-3 py-2">
-                  <div className="min-w-0">
-                    <div className="text-sm font-medium truncate">{t.prompt || '(无提问文本)'}</div>
-                    <div className="text-xs text-muted-foreground mt-0.5">
-                      {new Date(t.started_at).toLocaleString()} · {t.steps?.length || 0} 轮 · 员工 {t.agent_id || '默认'}
-                      {t.error ? ' · 含错误' : ''}
+          {canTrace ? (
+            <>
+              <div className="flex items-center gap-2">
+                <Input
+                  className="max-w-xs"
+                  placeholder="按会话 ID 筛选（留空查全部）"
+                  value={conversationId}
+                  onChange={e => setConversationId(e.target.value)}
+                  onKeyDown={e => { if (e.key === 'Enter') void loadTurns(conversationId) }}
+                />
+                <Button variant="outline" size="sm" onClick={() => void loadTurns(conversationId)}>查询</Button>
+              </div>
+              {turnsLoading ? (
+                <p className="text-sm text-muted-foreground py-6 text-center">加载中…</p>
+              ) : turnsError ? (
+                <ErrorState message={turnsError} onRetry={() => void loadTurns(conversationId)} />
+              ) : turns.length === 0 ? (
+                <p className="text-sm text-muted-foreground py-6 text-center">暂无运行轨迹（发起一次对话后即可看到）</p>
+              ) : (
+                <div className="space-y-2">
+                  {turns.map(t => (
+                    <div key={t.id} className="flex items-center justify-between gap-3 rounded-md border border-border px-3 py-2">
+                      <div className="min-w-0">
+                        <div className="text-sm font-medium truncate">{t.prompt || '(无提问文本)'}</div>
+                        <div className="text-xs text-muted-foreground mt-0.5">
+                          {new Date(t.started_at).toLocaleString()} · {t.steps?.length || 0} 轮 · 员工 {t.agent_id || '默认'}
+                          {t.error ? ' · 含错误' : ''}
+                        </div>
+                      </div>
+                      <div className="flex items-center gap-1 shrink-0">
+                        <Button variant="ghost" size="sm" onClick={() => void openTurn(t)} title="查看详情"><Eye className="h-3.5 w-3.5" /></Button>
+                        <Button variant="ghost" size="sm" onClick={() => void exportOTel(t)} title="导出 OTel"><FileJson className="h-3.5 w-3.5" /></Button>
+                      </div>
                     </div>
-                  </div>
-                  <div className="flex items-center gap-1 shrink-0">
-                    <Button variant="ghost" size="sm" onClick={() => void openTurn(t)} title="查看详情"><Eye className="h-3.5 w-3.5" /></Button>
-                    <Button variant="ghost" size="sm" onClick={() => void exportOTel(t)} title="导出 OTel"><FileJson className="h-3.5 w-3.5" /></Button>
-                  </div>
+                  ))}
                 </div>
-              ))}
+              )}
+            </>
+          ) : (
+            <div className="flex items-start gap-2 rounded-md border border-border px-3 py-4 text-sm text-muted-foreground">
+              <ShieldCheck className="h-4 w-4 mt-0.5 shrink-0" />
+              <span>
+                当前角色无 ai:trace:read 权限，运行轨迹包含工具入参与结果，仅对获授权角色开放。
+                如需查看或导出，请联系管理员在角色中授予该权限；上方数字员工的可见范围与分享仍可管理。
+              </span>
             </div>
           )}
         </CardContent>
