@@ -21,7 +21,11 @@ internal/ent/*.go
 !internal/ent/generate.go
 internal/ent/*/
 !internal/ent/schema/
+# 各 go.work 模块的 go build 产物（契约脚本第 5 步逐个重建, 曾因被跟踪反复污染 status）
 cmd/core/core
+cmd/agent/agent
+cmd/k8s-probe/k8s-probe
+cmd/proxy/proxy
 
 # PRD 已移出仓库，仅保留在本地固定目录（如 ~/Documents/OpsOrigin/PRD.md），不入库。
 /PRD.md
