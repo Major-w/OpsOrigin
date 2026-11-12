@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"time"
 
 	"github.com/google/uuid"
@@ -16,6 +17,25 @@ type PostgresStore struct {
 
 func NewPostgresStore(db *sql.DB) *PostgresStore {
 	return &PostgresStore{db: db}
+}
+
+// Init 存储自愈 DDL（迁移无 runner：与 deploy/migrations 双写，幂等可重跑）。
+// department 列为 ITSM 提单人属性派单（submitter_attr 联动）所用；password_changed_at 为
+// 密码策略有效期检查基准。旧库补列。
+func (s *PostgresStore) Init(ctx context.Context) error {
+	if s.db == nil {
+		return nil
+	}
+	for _, ddl := range []string{
+		`ALTER TABLE users ADD COLUMN IF NOT EXISTS department TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE users ADD COLUMN IF NOT EXISTS password_changed_at TIMESTAMPTZ NULL`,
+		`UPDATE users SET password_changed_at = created_at WHERE password_changed_at IS NULL`,
+	} {
+		if _, err := s.db.ExecContext(ctx, ddl); err != nil {
+			return fmt.Errorf("users schema ensure: %w", err)
+		}
+	}
+	return nil
 }
 
 func (s *PostgresStore) Create(ctx context.Context, user *model.User) error {
@@ -46,16 +66,17 @@ func (s *PostgresStore) Create(ctx context.Context, user *model.User) error {
 	now := time.Now()
 	user.CreatedAt = now
 	user.UpdatedAt = now
+	user.PasswordChangedAt = &now
 
 	query := `
-		INSERT INTO users (id, tenant_id, username, password, email, role, status, created_at, updated_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+		INSERT INTO users (id, tenant_id, username, password, email, department, role, status, password_changed_at, created_at, updated_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
 		ON CONFLICT (tenant_id, username) DO NOTHING
 		RETURNING id`
 
 	return s.db.QueryRowContext(ctx, query,
 		user.ID, user.TenantID, user.Username, user.Password,
-		user.Email, user.Role, user.Status, user.CreatedAt, user.UpdatedAt,
+		user.Email, user.Department, user.Role, user.Status, user.PasswordChangedAt, user.CreatedAt, user.UpdatedAt,
 	).Scan(&user.ID)
 }
 
@@ -65,15 +86,15 @@ func (s *PostgresStore) GetByID(ctx context.Context, id, tenantID string) (*mode
 	}
 
 	query := `
-		SELECT id, tenant_id, username, password, email, role, status, last_login, created_at, updated_at
+		SELECT id, tenant_id, username, password, email, department, role, status, last_login, password_changed_at, created_at, updated_at
 		FROM users
 		WHERE id = $1 AND tenant_id = $2`
 
 	user := &model.User{}
 	err := s.db.QueryRowContext(ctx, query, id, tenantID).Scan(
 		&user.ID, &user.TenantID, &user.Username, &user.Password,
-		&user.Email, &user.Role, &user.Status, &user.LastLogin,
-		&user.CreatedAt, &user.UpdatedAt,
+		&user.Email, &user.Department, &user.Role, &user.Status, &user.LastLogin,
+		&user.PasswordChangedAt, &user.CreatedAt, &user.UpdatedAt,
 	)
 	if err == sql.ErrNoRows {
 		return nil, nil
@@ -90,15 +111,15 @@ func (s *PostgresStore) GetByUsername(ctx context.Context, username, tenantID st
 	}
 
 	query := `
-		SELECT id, tenant_id, username, password, email, role, status, last_login, created_at, updated_at
+		SELECT id, tenant_id, username, password, email, department, role, status, last_login, password_changed_at, created_at, updated_at
 		FROM users
 		WHERE username = $1 AND tenant_id = $2`
 
 	user := &model.User{}
 	err := s.db.QueryRowContext(ctx, query, username, tenantID).Scan(
 		&user.ID, &user.TenantID, &user.Username, &user.Password,
-		&user.Email, &user.Role, &user.Status, &user.LastLogin,
-		&user.CreatedAt, &user.UpdatedAt,
+		&user.Email, &user.Department, &user.Role, &user.Status, &user.LastLogin,
+		&user.PasswordChangedAt, &user.CreatedAt, &user.UpdatedAt,
 	)
 	if err == sql.ErrNoRows {
 		return nil, nil
@@ -115,15 +136,15 @@ func (s *PostgresStore) GetByEmail(ctx context.Context, email, tenantID string) 
 	}
 
 	query := `
-		SELECT id, tenant_id, username, password, email, role, status, last_login, created_at, updated_at
+		SELECT id, tenant_id, username, password, email, department, role, status, last_login, password_changed_at, created_at, updated_at
 		FROM users
 		WHERE email = $1 AND tenant_id = $2`
 
 	user := &model.User{}
 	err := s.db.QueryRowContext(ctx, query, email, tenantID).Scan(
 		&user.ID, &user.TenantID, &user.Username, &user.Password,
-		&user.Email, &user.Role, &user.Status, &user.LastLogin,
-		&user.CreatedAt, &user.UpdatedAt,
+		&user.Email, &user.Department, &user.Role, &user.Status, &user.LastLogin,
+		&user.PasswordChangedAt, &user.CreatedAt, &user.UpdatedAt,
 	)
 	if err == sql.ErrNoRows {
 		return nil, nil
@@ -145,7 +166,7 @@ func (s *PostgresStore) List(ctx context.Context, tenantID string) ([]*model.Use
 	}
 
 	query := `
-		SELECT id, tenant_id, username, password, email, role, status, last_login, created_at, updated_at
+		SELECT id, tenant_id, username, password, email, department, role, status, last_login, password_changed_at, created_at, updated_at
 		FROM users
 		WHERE tenant_id = $1
 		ORDER BY created_at DESC`
@@ -161,8 +182,8 @@ func (s *PostgresStore) List(ctx context.Context, tenantID string) ([]*model.Use
 		user := &model.User{}
 		err := rows.Scan(
 			&user.ID, &user.TenantID, &user.Username, &user.Password,
-			&user.Email, &user.Role, &user.Status, &user.LastLogin,
-			&user.CreatedAt, &user.UpdatedAt,
+			&user.Email, &user.Department, &user.Role, &user.Status, &user.LastLogin,
+			&user.PasswordChangedAt, &user.CreatedAt, &user.UpdatedAt,
 		)
 		if err != nil {
 			return nil, err
@@ -181,11 +202,11 @@ func (s *PostgresStore) Update(ctx context.Context, user *model.User) error {
 
 	query := `
 		UPDATE users
-		SET username = $1, email = $2, role = $3, status = $4, updated_at = $5
-		WHERE id = $6 AND tenant_id = $7`
+		SET username = $1, email = $2, department = $3, role = $4, status = $5, updated_at = $6
+		WHERE id = $7 AND tenant_id = $8`
 
 	_, err := s.db.ExecContext(ctx, query,
-		user.Username, user.Email, user.Role, user.Status, user.UpdatedAt,
+		user.Username, user.Email, user.Department, user.Role, user.Status, user.UpdatedAt,
 		user.ID, user.TenantID,
 	)
 	return err
@@ -203,10 +224,10 @@ func (s *PostgresStore) UpdatePassword(ctx context.Context, userID, tenantID, ne
 
 	query := `
 		UPDATE users
-		SET password = $1, updated_at = $2
-		WHERE id = $3 AND tenant_id = $4`
+		SET password = $1, password_changed_at = $2, updated_at = $3
+		WHERE id = $4 AND tenant_id = $5`
 
-	_, err = s.db.ExecContext(ctx, query, string(hashedPassword), time.Now(), userID, tenantID)
+	_, err = s.db.ExecContext(ctx, query, string(hashedPassword), time.Now(), time.Now(), userID, tenantID)
 	return err
 }
 

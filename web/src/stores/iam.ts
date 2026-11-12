@@ -1,6 +1,6 @@
 
 import { create } from 'zustand'
-import { apiFetch, apiList } from '@/lib/utils'
+import { apiFetch, apiList, apiFetchRaw } from '@/lib/utils'
 import { getMessage } from '@/lib/message'
 export interface Permission {
   id?: string
@@ -35,10 +35,30 @@ export interface UserRoles {
   roles?: Role[]
 }
 
+/** 部门批量导入结果 */
+export interface DeptImportResult {
+  created: number
+  reused: number
+  failed: number
+  errors?: { row: number; message: string }[]
+}
+
+export interface Department {
+  id: string
+  name: string
+  parent_id?: string
+  description?: string
+  source?: 'local' | 'ldap'
+  member_count?: number
+  created_at: string
+  updated_at: string
+}
+
 interface IAMState {
   permissions: Permission[]
   roles: Role[]
   groups: Group[]
+  departments: Department[]
   loading: boolean
   fetchPermissions: () => Promise<void>
   fetchRoles: () => Promise<void>
@@ -49,6 +69,12 @@ interface IAMState {
   createGroup: (data: { name: string; description?: string; user_ids: string[] }) => Promise<string | null>
   updateGroup: (id: string, data: { name: string; description?: string; user_ids: string[] }) => Promise<boolean>
   deleteGroup: (id: string) => Promise<boolean>
+  fetchDepartments: () => Promise<void>
+  createDepartment: (data: { name: string; parent_id?: string; description?: string }) => Promise<boolean>
+  updateDepartment: (id: string, data: { name: string; parent_id?: string; description?: string }) => Promise<boolean>
+  deleteDepartment: (id: string) => Promise<boolean>
+  /** CSV 批量导入部门（路径式 path 列），返回结果详情；失败返回 null */
+  importDepartments: (file: File) => Promise<DeptImportResult | null>
   fetchUserRoles: (userId: string) => Promise<UserRoles | null>
   assignUserRoles: (userId: string, roleIds: string[]) => Promise<boolean>
 }
@@ -57,6 +83,7 @@ export const useIAMStore = create<IAMState>((set, get) => ({
   permissions: [],
   roles: [],
   groups: [],
+  departments: [],
   loading: false,
 
   fetchPermissions: async () => {
@@ -159,6 +186,68 @@ export const useIAMStore = create<IAMState>((set, get) => ({
     } catch (e: any) {
       getMessage().error(`删除用户组失败: ${e.message}`)
       return false
+    }
+  },
+
+  fetchDepartments: async () => {
+    try {
+      const departments = await apiList<Department>('/iam/departments')
+      set({ departments })
+    } catch (e: any) {
+      getMessage().error(`加载组织架构失败: ${e.message}`)
+    }
+  },
+
+  createDepartment: async (data) => {
+    try {
+      await apiFetch('/iam/departments', { method: 'POST', body: JSON.stringify(data) })
+      getMessage().success('部门创建成功')
+      await get().fetchDepartments()
+      return true
+    } catch (e: any) {
+      getMessage().error(`创建部门失败: ${e.message}`)
+      return false
+    }
+  },
+
+  updateDepartment: async (id, data) => {
+    try {
+      await apiFetch(`/iam/departments/${id}`, { method: 'PUT', body: JSON.stringify(data) })
+      getMessage().success('部门更新成功')
+      await get().fetchDepartments()
+      return true
+    } catch (e: any) {
+      getMessage().error(`更新部门失败: ${e.message}`)
+      return false
+    }
+  },
+
+  deleteDepartment: async (id) => {
+    try {
+      await apiFetch(`/iam/departments/${id}`, { method: 'DELETE' })
+      await get().fetchDepartments()
+      getMessage().success('部门已删除')
+      return true
+    } catch (e: any) {
+      getMessage().error(`删除部门失败: ${e.message}`)
+      return false
+    }
+  },
+
+  importDepartments: async (file) => {
+    const fd = new FormData()
+    fd.append('file', file)
+    try {
+      const res = await apiFetchRaw('/iam/departments/import', { method: 'POST', body: fd })
+      if (!res.ok) {
+        throw new Error((await res.json().catch(() => ({}))).error || `HTTP ${res.status}`)
+      }
+      const data = await res.json() as DeptImportResult
+      await get().fetchDepartments()
+      return data
+    } catch (e: any) {
+      getMessage().error(`导入部门失败: ${e.message}`)
+      return null
     }
   },
 

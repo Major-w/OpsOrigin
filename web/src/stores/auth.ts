@@ -59,6 +59,12 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       const data = await res.json()
       localStorage.setItem('opsorigin_token', data.token)
       localStorage.setItem('opsorigin_user', JSON.stringify({ user_id: data.user_id, username: data.username, role: data.role, tenant_id: data.tenant_id }))
+      // 密码过期标志：dashboard 全局守卫读取后弹强制改密
+      if (data.password_expired) {
+        localStorage.setItem('opsorigin_password_expired', '1')
+      } else {
+        localStorage.removeItem('opsorigin_password_expired')
+      }
       // 同步 cookie（middleware 读取）
       document.cookie = `opsorigin_token=${data.token}; path=/; max-age=86400; SameSite=Lax`
       set({ token: data.token, user: { user_id: data.user_id, username: data.username, role: data.role, tenant_id: data.tenant_id }, loading: false })
@@ -72,6 +78,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
   logout: () => {
     localStorage.removeItem('opsorigin_token')
     localStorage.removeItem('opsorigin_user')
+    localStorage.removeItem('opsorigin_password_expired')
     // 清除 cookie
     document.cookie = 'opsorigin_token=; path=/; max-age=0'
     set({ token: null, user: null })

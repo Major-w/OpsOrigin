@@ -3,12 +3,14 @@ package iam
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"sync"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/opsorigin/core/internal/iam/ldapsync"
 	"github.com/opsorigin/core/pkg/auth"
 	"github.com/opsorigin/core/pkg/validate"
 
@@ -31,6 +33,14 @@ type Store interface {
 	ListGroups(ctx context.Context, tenantID string) ([]*Group, error)
 	UpdateGroup(ctx context.Context, g *Group) error
 	DeleteGroup(ctx context.Context, id, tenantID string) error
+	// 组织架构（部门树；成员经 users.department 名关联）
+	CreateDepartment(ctx context.Context, d *Department) error
+	GetDepartment(ctx context.Context, id, tenantID string) (*Department, error)
+	ListDepartments(ctx context.Context, tenantID string) ([]*Department, error)
+	UpdateDepartment(ctx context.Context, d *Department) error
+	DeleteDepartment(ctx context.Context, id, tenantID string) error
+	EnsureDepartment(ctx context.Context, tenantID, name, source string) (string, bool, error)
+	EnsureDepartmentUnder(ctx context.Context, tenantID, name, parentID, source string) (string, bool, error)
 	// 用户-角色分配
 	SetUserRoles(ctx context.Context, userID, tenantID string, roleIDs []string) error
 	GetUserRoles(ctx context.Context, userID, tenantID string) ([]string, error)
@@ -38,17 +48,19 @@ type Store interface {
 
 // MemoryStore 是并发安全的内存实现。
 type MemoryStore struct {
-	mu        sync.RWMutex
-	roles     map[string]*Role
-	groups    map[string]*Group
-	userRoles map[string][]string // userID -> roleIDs
+	mu          sync.RWMutex
+	roles       map[string]*Role
+	groups      map[string]*Group
+	departments map[string]*Department
+	userRoles   map[string][]string // userID -> roleIDs
 }
 
 func NewMemoryStore() *MemoryStore {
 	return &MemoryStore{
-		roles:     make(map[string]*Role),
-		groups:    make(map[string]*Group),
-		userRoles: make(map[string][]string),
+		roles:       make(map[string]*Role),
+		groups:      make(map[string]*Group),
+		departments: make(map[string]*Department),
+		userRoles:   make(map[string][]string),
 	}
 }
 
@@ -189,6 +201,117 @@ func (s *MemoryStore) DeleteGroup(ctx context.Context, id, tenantID string) erro
 	return nil
 }
 
+func (s *MemoryStore) CreateDepartment(ctx context.Context, d *Department) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, e := range s.departments {
+		if e.TenantID == d.TenantID && e.Name == d.Name {
+			return fmt.Errorf("部门 %q 已存在", d.Name)
+		}
+	}
+	d.ID = uuid.New().String()
+	now := time.Now()
+	d.CreatedAt = now
+	d.UpdatedAt = now
+	s.departments[d.ID] = d
+	return nil
+}
+
+func (s *MemoryStore) GetDepartment(ctx context.Context, id, tenantID string) (*Department, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	d, ok := s.departments[id]
+	if !ok || d.TenantID != tenantID {
+		return nil, nil
+	}
+	return d, nil
+}
+
+// EnsureDepartmentUnder 按名+父幂等建档（批量导入用）：同名已存在时校验父一致。
+func (s *MemoryStore) EnsureDepartmentUnder(ctx context.Context, tenantID, name, parentID, source string) (string, bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, e := range s.departments {
+		if e.TenantID == tenantID && e.Name == name {
+			if e.ParentID != parentID {
+				return "", false, fmt.Errorf("部门 %q 已存在但上级不一致（已有挂载与导入路径冲突）", name)
+			}
+			return e.ID, false, nil
+		}
+	}
+	d := &Department{TenantID: tenantID, Name: name, ParentID: parentID, Source: source, ID: uuid.New().String()}
+	now := time.Now()
+	d.CreatedAt = now
+	d.UpdatedAt = now
+	s.departments[d.ID] = d
+	return d.ID, true, nil
+}
+
+func (s *MemoryStore) ListDepartments(ctx context.Context, tenantID string) ([]*Department, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	var result []*Department
+	for _, d := range s.departments {
+		if d.TenantID == tenantID {
+			result = append(result, d)
+		}
+	}
+	return result, nil
+}
+
+func (s *MemoryStore) UpdateDepartment(ctx context.Context, d *Department) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	existing, ok := s.departments[d.ID]
+	if !ok || existing.TenantID != d.TenantID {
+		return fmt.Errorf("部门不存在")
+	}
+	// 同名冲突（改名撞别的部门）
+	for _, e := range s.departments {
+		if e.ID != d.ID && e.TenantID == d.TenantID && e.Name == d.Name {
+			return fmt.Errorf("部门 %q 已存在", d.Name)
+		}
+	}
+	d.CreatedAt = existing.CreatedAt
+	d.UpdatedAt = time.Now()
+	s.departments[d.ID] = d
+	return nil
+}
+
+func (s *MemoryStore) DeleteDepartment(ctx context.Context, id, tenantID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	d, ok := s.departments[id]
+	if !ok || d.TenantID != tenantID {
+		return nil
+	}
+	for _, e := range s.departments {
+		if e.TenantID == tenantID && e.ParentID == id {
+			return fmt.Errorf("存在子部门，无法删除")
+		}
+	}
+	delete(s.departments, id)
+	return nil
+}
+
+// EnsureDepartment 按名幂等建档（AD 镜像/本地引用归档共用）：存在直接返回。
+func (s *MemoryStore) EnsureDepartment(ctx context.Context, tenantID, name, source string) (string, bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, e := range s.departments {
+		if e.TenantID == tenantID && e.Name == name {
+			return e.ID, false, nil
+		}
+	}
+	d := &Department{TenantID: tenantID, Name: name, Source: source}
+	d.ID = uuid.New().String()
+	now := time.Now()
+	d.CreatedAt = now
+	d.UpdatedAt = now
+	s.departments[d.ID] = d
+	return d.ID, true, nil
+}
+
 func (s *MemoryStore) SetUserRoles(ctx context.Context, userID, tenantID string, roleIDs []string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -221,6 +344,9 @@ type Service struct {
 	// onPermChange 权限配置变更时的外部通知钩子(如鉴权链的身份富化器缓存)。
 	// 仅在装配期设置一次,运行期只读,故不加锁。
 	onPermChange func()
+
+	// ldapSyncer AD/LDAP 目录同步引擎(装配期注入; nil=同步端点返回 501)。
+	ldapSyncer *ldapsync.Syncer
 }
 
 // SetPermissionChangeHook 注册权限配置变更回调。角色被增删改后触发,
@@ -250,6 +376,11 @@ func (s *Service) ListRoles(ctx context.Context, tenantID string) ([]*Role, erro
 
 func (s *Service) ListGroups(ctx context.Context, tenantID string) ([]*Group, error) {
 	return s.store.ListGroups(ctx, tenantID)
+}
+
+// EnsureDepartment 按名幂等建档（实现 ldapsync.DepartmentWriter：AD 部门属性镜像）。
+func (s *Service) EnsureDepartment(ctx context.Context, tenantID, name, source string) (string, bool, error) {
+	return s.store.EnsureDepartment(ctx, tenantID, name, source)
 }
 
 // ResolvePermissions 按 (tenantID, roleName) 解析角色权限,供 RBAC 中间件鉴权使用。
@@ -316,6 +447,7 @@ func seedPermissions() []Permission {
 		{Name: "knowledge:manage", Description: "删除文章/分类、导入、重建向量索引(高危)", Category: "知识库"},
 		{Name: "ai:read", Description: "查看 AI 会话/智能体/提示词/技能", Category: "AI 助手"},
 		{Name: "ai:write", Description: "管理 AI 会话/智能体/提示词/技能, 发起对话与巡检", Category: "AI 助手"},
+		{Name: "ai:trace:read", Description: "查看数字员工运行轨迹与 OTel 导出(含工具入参与结果)", Category: "AI 助手"},
 		{Name: "script:read", Description: "查看脚本与执行历史", Category: "自动化"},
 		{Name: "script:write", Description: "新建/编辑/审核脚本", Category: "自动化"},
 		{Name: "script:exec", Description: "在受管主机执行脚本(高危)", Category: "自动化"},
@@ -356,7 +488,7 @@ func (s *Service) seedBuiltinRoles() {
 			"audit:read", "system:admin", "ai:tool:exec",
 			"vuln:read", "vuln:write",
 			"knowledge:read", "knowledge:write", "knowledge:manage",
-			"ai:read", "ai:write",
+			"ai:read", "ai:write", "ai:trace:read",
 			"script:read", "script:write", "script:exec",
 			"workflow:read", "workflow:write", "workflow:exec",
 			"schedule:read", "schedule:write",
@@ -375,7 +507,7 @@ func (s *Service) seedBuiltinRoles() {
 			"audit:read", "ai:tool:exec",
 			"vuln:read", "vuln:write",
 			"knowledge:read", "knowledge:write",
-			"ai:read", "ai:write",
+			"ai:read", "ai:write", "ai:trace:read",
 			"script:read", "script:write", "script:exec",
 			"workflow:read", "workflow:write", "workflow:exec",
 			"schedule:read", "schedule:write",
@@ -492,9 +624,17 @@ func (s *Service) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/v1/iam/groups/{id}", s.handleGetGroup)
 	mux.HandleFunc("PUT /api/v1/iam/groups/{id}", s.handleUpdateGroup)
 	mux.HandleFunc("DELETE /api/v1/iam/groups/{id}", s.handleDeleteGroup)
+
+	// 组织架构（部门树）
+	mux.HandleFunc("GET /api/v1/iam/departments", s.handleListDepartments)
+	mux.HandleFunc("POST /api/v1/iam/departments", s.handleCreateDepartment)
+	mux.HandleFunc("POST /api/v1/iam/departments/import", s.handleImportDepartments)
+	mux.HandleFunc("PUT /api/v1/iam/departments/{id}", s.handleUpdateDepartment)
+	mux.HandleFunc("DELETE /api/v1/iam/departments/{id}", s.handleDeleteDepartment)
 	// 用户-角色分配
 	mux.HandleFunc("GET /api/v1/iam/users/{user_id}/roles", s.handleGetUserRoles)
 	mux.HandleFunc("PUT /api/v1/iam/users/{user_id}/roles", s.handleAssignUserRoles)
+	mux.HandleFunc("POST /api/v1/iam/ldap/sync", s.handleLdapSync)
 	// 当前用户自身权限(供前端权限感知,任意已登录用户可读)
 	mux.HandleFunc("GET /api/v1/iam/me/permissions", s.handleGetMyPermissions)
 }
@@ -704,6 +844,54 @@ func (s *Service) handleDeleteGroup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	httputil.WriteJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
+}
+
+// ---------- AD/LDAP 目录同步 ----------
+
+// SetLdapSyncer 注入目录同步引擎（main.go 装配；nil = 同步端点不可用）。
+func (s *Service) SetLdapSyncer(sy *ldapsync.Syncer) { s.ldapSyncer = sy }
+
+// EnsureGroup 按组名 Upsert 组织架构（实现 ldapsync.GroupWriter）：
+// 同名组存在则全量覆盖成员与描述，否则新建。description 存目录 DN 便于溯源。
+func (s *Service) EnsureGroup(ctx context.Context, tenantID, name, description string, memberIDs []string) error {
+	if memberIDs == nil {
+		memberIDs = []string{}
+	}
+	groups, err := s.store.ListGroups(ctx, tenantID)
+	if err != nil {
+		return err
+	}
+	for _, g := range groups {
+		if g.Name == name {
+			g.Description = description
+			g.UserIDs = memberIDs
+			return s.store.UpdateGroup(ctx, g)
+		}
+	}
+	return s.store.CreateGroup(ctx, &Group{
+		TenantID:    tenantID,
+		Name:        name,
+		Description: description,
+		UserIDs:     memberIDs,
+	})
+}
+
+// handleLdapSync 手动触发一轮 AD/LDAP 用户与组织架构同步（user:write 权限经 RBAC 链校验）。
+func (s *Service) handleLdapSync(w http.ResponseWriter, r *http.Request) {
+	if s.ldapSyncer == nil {
+		httputil.WriteError(w, http.StatusNotImplemented, "ldap sync not configured")
+		return
+	}
+	tenantID := auth.TenantFromContext(r.Context())
+	if tenantID == "" {
+		tenantID = "default"
+	}
+	res, err := s.ldapSyncer.Sync(r.Context(), tenantID)
+	if err != nil {
+		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	httputil.WriteJSON(w, http.StatusOK, res)
 }
 
 // ---------- 用户-角色分配 ----------

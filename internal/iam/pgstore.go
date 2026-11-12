@@ -32,6 +32,13 @@ func (s *pgStore) init(ctx context.Context) {
 			id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, name TEXT, description TEXT,
 			user_ids TEXT DEFAULT '[]', created_at TIMESTAMPTZ NOT NULL, updated_at TIMESTAMPTZ NOT NULL)`,
 		`CREATE INDEX IF NOT EXISTS idx_iam_groups_tenant ON iam_groups(tenant_id)`,
+		`CREATE TABLE IF NOT EXISTS iam_departments (
+			id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, name TEXT NOT NULL,
+			parent_id TEXT NOT NULL DEFAULT '', description TEXT NOT NULL DEFAULT '',
+			source TEXT NOT NULL DEFAULT 'local',
+			created_at TIMESTAMPTZ NOT NULL, updated_at TIMESTAMPTZ NOT NULL)`,
+		`CREATE INDEX IF NOT EXISTS idx_iam_departments_tenant ON iam_departments(tenant_id)`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS uq_iam_departments_tenant_name ON iam_departments(tenant_id, name)`,
 		`CREATE TABLE IF NOT EXISTS iam_user_roles (
 			user_id TEXT NOT NULL,
 			tenant_id TEXT NOT NULL,

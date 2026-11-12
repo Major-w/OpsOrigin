@@ -25,6 +25,7 @@ type Config struct {
 	RedisPoolSize int             `json:"redis_pool_size"`
 	LDAP          LDAPConfig      `json:"ldap"`
 	SSO           SSOConfig       `json:"sso"`
+	Security      SecurityConfig  `json:"security"` // 密码策略等平台安全配置
 	Tunnel        TunnelConfig    `json:"tunnel"`
 	FileStore     FileStoreConfig `json:"file_store"` // §5 文件分发中心存储配置
 	S3            S3Config        `json:"s3"`         // 对象存储(MinIO/COS/OSS/S3): ITSM 附件等二进制落对象存储
@@ -46,6 +47,16 @@ type LDAPConfig struct {
 	BindDN     string `json:"bind_dn"`
 	BindPass   string `json:"bind_pass"`
 	UserFilter string `json:"user_filter"`
+	// 用户/组织架构同步（AD/LDAP 目录同步）扩展配置。
+	// AD 部署示例：UserAttr=sAMAccountName、SyncUserFilter=(objectClass=user)、
+	// GroupFilter=(objectClass=group)、GroupUserAttr=member。
+	UserAttr        string `json:"user_attr"`         // 用户名属性（uid / sAMAccountName），空=uid
+	DepartmentAttr  string `json:"department_attr"`   // 用户部门属性（AD 原生 department），空=department
+	SyncUserFilter  string `json:"sync_user_filter"`  // 全量用户同步过滤器，空=不同步用户
+	GroupBaseDN     string `json:"group_base_dn"`     // 组搜索基准 DN，空=BaseDN
+	GroupFilter     string `json:"group_filter"`      // 组同步过滤器，空=不同步组
+	GroupUserAttr   string `json:"group_user_attr"`   // 组成员属性（member / memberUid），空=member
+	SyncIntervalMin int    `json:"sync_interval_min"` // 定时同步间隔（分钟），0=仅手动触发
 }
 
 type SSOConfig struct {
@@ -55,6 +66,13 @@ type SSOConfig struct {
 	ClientSecret string `json:"client_secret"`
 	RedirectURL  string `json:"redirect_url"`
 	IssuerURL    string `json:"issuer_url"`
+}
+
+// SecurityConfig 平台安全策略（密码策略等，sysconfig security 类别热更）。
+type SecurityConfig struct {
+	PasswordMinLen     int `json:"password_min_len"`      // 密码最小长度（默认 8）
+	PasswordMinClasses int `json:"password_min_classes"`  // 至少覆盖字符类别数（小写/大写/数字/符号，默认 2）
+	PasswordMaxAgeDays int `json:"password_max_age_days"` // 密码有效期天数，0=不过期
 }
 
 type CoreConfig struct {
@@ -252,12 +270,18 @@ func Load() (*Config, error) {
 		},
 		RedisAddr: envStr("OPSORIGIN_REDIS_ADDR", "localhost:6379"), RedisPoolSize: envInt("OPSORIGIN_REDIS_POOL_SIZE", 50),
 		LDAP: LDAPConfig{
-			Enabled:    envBool("OPSORIGIN_LDAP_ENABLED", false),
-			Addr:       envStr("OPSORIGIN_LDAP_ADDR", "ldap://localhost:389"),
-			BaseDN:     envStr("OPSORIGIN_LDAP_BASE_DN", "dc=example,dc=org"),
-			BindDN:     envStr("OPSORIGIN_LDAP_BIND_DN", "cn=admin,dc=example,dc=org"),
-			BindPass:   envStr("OPSORIGIN_LDAP_BIND_PASS", ""),
-			UserFilter: envStr("OPSORIGIN_LDAP_USER_FILTER", "(uid=%s)"),
+			Enabled:         envBool("OPSORIGIN_LDAP_ENABLED", false),
+			Addr:            envStr("OPSORIGIN_LDAP_ADDR", "ldap://localhost:389"),
+			BaseDN:          envStr("OPSORIGIN_LDAP_BASE_DN", "dc=example,dc=org"),
+			BindDN:          envStr("OPSORIGIN_LDAP_BIND_DN", "cn=admin,dc=example,dc=org"),
+			BindPass:        envStr("OPSORIGIN_LDAP_BIND_PASS", ""),
+			UserFilter:      envStr("OPSORIGIN_LDAP_USER_FILTER", "(uid=%s)"),
+			UserAttr:        envStr("OPSORIGIN_LDAP_USER_ATTR", ""),
+			SyncUserFilter:  envStr("OPSORIGIN_LDAP_SYNC_USER_FILTER", ""),
+			GroupBaseDN:     envStr("OPSORIGIN_LDAP_GROUP_BASE_DN", ""),
+			GroupFilter:     envStr("OPSORIGIN_LDAP_GROUP_FILTER", ""),
+			GroupUserAttr:   envStr("OPSORIGIN_LDAP_GROUP_USER_ATTR", ""),
+			SyncIntervalMin: envInt("OPSORIGIN_LDAP_SYNC_INTERVAL_MINUTES", 0),
 		},
 		SSO: SSOConfig{
 			Enabled:      envBool("OPSORIGIN_SSO_ENABLED", false),
@@ -331,6 +355,11 @@ func Load() (*Config, error) {
 
 	cfg.Env = envStr("OPSORIGIN_ENV", "development")
 	cfg.MultiTenant = envBool("OPSORIGIN_MULTI_TENANT", false)
+
+	// 密码策略（security 类别，sysconfig 可热更）
+	cfg.Security.PasswordMinLen = envInt("OPSORIGIN_PASSWORD_MIN_LEN", 8)
+	cfg.Security.PasswordMinClasses = envInt("OPSORIGIN_PASSWORD_MIN_CLASSES", 2)
+	cfg.Security.PasswordMaxAgeDays = envInt("OPSORIGIN_PASSWORD_MAX_AGE_DAYS", 0)
 
 	// 生产环境凭据强度校验 (fail-fast): 默认/占位/弱密钥直接拒绝启动。
 	if err := cfg.ValidateSecrets(); err != nil {

@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/opsorigin/core/internal/ai"
+	"github.com/opsorigin/core/internal/user"
 	"github.com/opsorigin/core/pkg/auth"
 	"github.com/opsorigin/core/pkg/config"
 	"github.com/opsorigin/core/pkg/llm"
@@ -112,6 +113,8 @@ func (s *Service) LoadFromDB(ctx context.Context) error {
 	for _, e := range all {
 		s.applyUpdate(e.k, e.v)
 	}
+	// 密码策略统一回灌一次（DB 未存过的 key 走 env 默认值）
+	pushPasswordPolicy(s.cfg)
 	slog.Info("sysconfig loaded from db", "count", len(all))
 	return nil
 }
@@ -229,6 +232,13 @@ func (s *Service) buildConfigItems() []ConfigGroup {
 				{Key: "OPSORIGIN_LDAP_BIND_DN", Category: "ldap", Label: "Bind DN", Description: "LDAP 绑定 DN", Type: "string", CurrentValue: cfg.LDAP.BindDN, DefaultValue: "cn=admin,dc=example,dc=org", RequiresRestart: false},
 				{Key: "OPSORIGIN_LDAP_BIND_PASS", Category: "ldap", Label: "Bind 密码", Description: "LDAP 绑定密码", Type: "secret", CurrentValue: maskSensitive(cfg.LDAP.BindPass), DefaultValue: "", RequiresRestart: false, Sensitive: true},
 				{Key: "OPSORIGIN_LDAP_USER_FILTER", Category: "ldap", Label: "用户过滤器", Description: "LDAP 用户搜索过滤器", Type: "string", CurrentValue: cfg.LDAP.UserFilter, DefaultValue: "(uid=%s)", RequiresRestart: false},
+				{Key: "OPSORIGIN_LDAP_USER_ATTR", Category: "ldap", Label: "用户名属性", Description: "目录用户名属性（AD 用 sAMAccountName，OpenLDAP 用 uid），空=uid", Type: "string", CurrentValue: cfg.LDAP.UserAttr, DefaultValue: "", RequiresRestart: true},
+				{Key: "OPSORIGIN_LDAP_DEPARTMENT_ATTR", Category: "ldap", Label: "部门属性", Description: "目录用户部门属性（AD 原生 department），同步与登录时写入用户部门，空=department", Type: "string", CurrentValue: cfg.LDAP.DepartmentAttr, DefaultValue: "", RequiresRestart: true},
+				{Key: "OPSORIGIN_LDAP_SYNC_USER_FILTER", Category: "ldap", Label: "用户同步过滤器", Description: "全量用户同步过滤器（如 (objectClass=person) / AD: (objectClass=user)），空=不同步用户", Type: "string", CurrentValue: cfg.LDAP.SyncUserFilter, DefaultValue: "", RequiresRestart: true},
+				{Key: "OPSORIGIN_LDAP_GROUP_FILTER", Category: "ldap", Label: "组同步过滤器", Description: "组织架构同步过滤器（如 (objectClass=groupOfNames) / AD: (objectClass=group)），空=不同步组", Type: "string", CurrentValue: cfg.LDAP.GroupFilter, DefaultValue: "", RequiresRestart: true},
+				{Key: "OPSORIGIN_LDAP_GROUP_BASE_DN", Category: "ldap", Label: "组 Base DN", Description: "组搜索基准 DN，空=Base DN", Type: "string", CurrentValue: cfg.LDAP.GroupBaseDN, DefaultValue: "", RequiresRestart: true},
+				{Key: "OPSORIGIN_LDAP_GROUP_USER_ATTR", Category: "ldap", Label: "组成员属性", Description: "组成员属性（member=DN 列表 / memberUid=用户名列表），空=member", Type: "string", CurrentValue: cfg.LDAP.GroupUserAttr, DefaultValue: "", RequiresRestart: true},
+				{Key: "OPSORIGIN_LDAP_SYNC_INTERVAL_MINUTES", Category: "ldap", Label: "定时同步间隔(分钟)", Description: "目录定时同步间隔，0=仅手动触发（系统管理 → 触发同步）", Type: "string", CurrentValue: fmt.Sprintf("%d", cfg.LDAP.SyncIntervalMin), DefaultValue: "0", RequiresRestart: true},
 			},
 		},
 		{
@@ -241,6 +251,15 @@ func (s *Service) buildConfigItems() []ConfigGroup {
 				{Key: "OPSORIGIN_SSO_CLIENT_SECRET", Category: "sso", Label: "Client Secret", Description: "SSO 客户端密钥", Type: "secret", CurrentValue: maskSensitive(cfg.SSO.ClientSecret), DefaultValue: "", RequiresRestart: false, Sensitive: true},
 				{Key: "OPSORIGIN_SSO_REDIRECT_URL", Category: "sso", Label: "回调地址", Description: "SSO 登录回调地址", Type: "string", CurrentValue: cfg.SSO.RedirectURL, DefaultValue: "http://localhost:8080/api/v1/auth/callback", RequiresRestart: false},
 				{Key: "OPSORIGIN_SSO_ISSUER_URL", Category: "sso", Label: "Issuer URL", Description: "SSO Issuer URL", Type: "string", CurrentValue: cfg.SSO.IssuerURL, DefaultValue: "", RequiresRestart: false},
+			},
+		},
+		{
+			Category: "security",
+			Label:    "密码策略",
+			Items: []ConfigItem{
+				{Key: "OPSORIGIN_PASSWORD_MIN_LEN", Category: "security", Label: "最小长度", Description: "密码最小长度（下限 4，默认 8）；创建用户/修改密码/批量导入统一校验", Type: "string", CurrentValue: fmt.Sprintf("%d", cfg.Security.PasswordMinLen), DefaultValue: "8", RequiresRestart: false},
+				{Key: "OPSORIGIN_PASSWORD_MIN_CLASSES", Category: "security", Label: "最少字符类别", Description: "密码至少需覆盖的字符类别数（小写/大写/数字/符号，1-4，默认 2）", Type: "string", CurrentValue: fmt.Sprintf("%d", cfg.Security.PasswordMinClasses), DefaultValue: "2", RequiresRestart: false},
+				{Key: "OPSORIGIN_PASSWORD_MAX_AGE_DAYS", Category: "security", Label: "有效期(天)", Description: "密码有效期天数，过期后登录时提示强制修改；0=不过期", Type: "string", CurrentValue: fmt.Sprintf("%d", cfg.Security.PasswordMaxAgeDays), DefaultValue: "0", RequiresRestart: false},
 			},
 		},
 	}
@@ -436,7 +455,26 @@ func (s *Service) applyUpdate(key, value string) {
 		cfg.SSO.RedirectURL = value
 	case "OPSORIGIN_SSO_ISSUER_URL":
 		cfg.SSO.IssuerURL = value
+	// 密码策略（security 类别）：更新内存并推送到 user 包策略
+	case "OPSORIGIN_PASSWORD_MIN_LEN":
+		cfg.Security.PasswordMinLen = atoiSafe(value, 8)
+		pushPasswordPolicy(cfg)
+	case "OPSORIGIN_PASSWORD_MIN_CLASSES":
+		cfg.Security.PasswordMinClasses = atoiSafe(value, 2)
+		pushPasswordPolicy(cfg)
+	case "OPSORIGIN_PASSWORD_MAX_AGE_DAYS":
+		cfg.Security.PasswordMaxAgeDays = atoiSafe(value, 0)
+		pushPasswordPolicy(cfg)
 	}
+}
+
+// pushPasswordPolicy 将密码策略推送到 user 包（热更即时生效，无需重启）。
+func pushPasswordPolicy(cfg *config.Config) {
+	user.SetPolicy(user.Policy{
+		MinLen:     cfg.Security.PasswordMinLen,
+		MinClasses: cfg.Security.PasswordMinClasses,
+		MaxAgeDays: cfg.Security.PasswordMaxAgeDays,
+	})
 }
 
 func pushLLMUpdate(cfg *config.Config) {

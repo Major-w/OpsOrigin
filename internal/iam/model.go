@@ -36,6 +36,22 @@ type Group struct {
 	UpdatedAt   time.Time `json:"updated_at"`
 }
 
+// Department 表示组织架构中的部门节点（树形：公司→部门→门店）。
+// 与用户组（权限集合）语义不同：部门是组织维度，供 ITSM 派单联动、
+// 按部门通知/报表等场景消费；绑定关系经 users.department（部门名）关联。
+// Source 标记数据来源：local=本地维护 / ldap=AD/LDAP 目录镜像（主数据在目录时本地只读兜底）。
+type Department struct {
+	ID          string    `json:"id"`
+	TenantID    string    `json:"tenant_id"`
+	Name        string    `json:"name"`
+	ParentID    string    `json:"parent_id,omitempty"` // 空串=根节点
+	Description string    `json:"description,omitempty"`
+	Source      string    `json:"source,omitempty"`
+	MemberCount int       `json:"member_count,omitempty"` // List 时按 users.department 统计填充
+	CreatedAt   time.Time `json:"created_at"`
+	UpdatedAt   time.Time `json:"updated_at"`
+}
+
 // CreateRoleRequest 创建角色的请求体。
 type CreateRoleRequest struct {
 	Name        string   `json:"name"`

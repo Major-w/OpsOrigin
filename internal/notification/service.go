@@ -621,33 +621,55 @@ func (s *Service) dispatchEvent(ctx context.Context, tenantID string, event Even
 		}
 		// 应用模板
 		t, c := applyTemplate(p.Template, title, content)
-		for _, cid := range p.ChannelIDs {
-			ch, err := s.store.GetChannel(ctx, cid, tenantID)
-			if err != nil || ch == nil || !ch.Enabled {
-				continue
-			}
-			sender, ok := s.senders[ch.Type]
-			if !ok {
-				continue
-			}
-			n := &Notification{
-				TenantID:  tenantID,
-				ChannelID: ch.ID,
-				Event:     event,
-				Title:     t,
-				Content:   c,
-				Status:    "sent",
-			}
-			if err := sender.Send(ch, t, c); err != nil {
-				n.Status = "failed"
-				n.Error = err.Error()
-				failed++
-				slog.Warn("notification send failed", "channel", ch.Name, "error", err)
-			} else {
-				sent++
-			}
-			s.store.SaveNotification(ctx, n)
+		sn, sf := s.sendToChannels(ctx, tenantID, p.ChannelIDs, event, t, c)
+		sent += sn
+		failed += sf
+	}
+	return sent, failed
+}
+
+// NotifyChannels 把通知直接发送到指定渠道列表（绕过 Policy 匹配与免打扰时段）。
+// 供自动化规则等「显式指定收件渠道」的场景；渠道不存在/禁用/无对应 sender 时跳过。
+// 返回错误仅当渠道列表为空（调用方配置缺陷）。
+func (s *Service) NotifyChannels(ctx context.Context, tenantID string, channelIDs []string, event string, title, content string) error {
+	if len(channelIDs) == 0 {
+		return fmt.Errorf("no channels specified")
+	}
+	sent, failed := s.sendToChannels(ctx, tenantID, channelIDs, EventType(event), title, content)
+	if sent > 0 || failed > 0 {
+		slog.Info("notification sent to channels", "event", event, "sent", sent, "failed", failed)
+	}
+	return nil
+}
+
+// sendToChannels 按渠道 ID 列表发送并落审计记录（dispatchEvent 与 NotifyChannels 的公共投递层）。
+func (s *Service) sendToChannels(ctx context.Context, tenantID string, channelIDs []string, event EventType, title, content string) (sent, failed int) {
+	for _, cid := range channelIDs {
+		ch, err := s.store.GetChannel(ctx, cid, tenantID)
+		if err != nil || ch == nil || !ch.Enabled {
+			continue
 		}
+		sender, ok := s.senders[ch.Type]
+		if !ok {
+			continue
+		}
+		n := &Notification{
+			TenantID:  tenantID,
+			ChannelID: ch.ID,
+			Event:     event,
+			Title:     title,
+			Content:   content,
+			Status:    "sent",
+		}
+		if err := sender.Send(ch, title, content); err != nil {
+			n.Status = "failed"
+			n.Error = err.Error()
+			failed++
+			slog.Warn("notification send failed", "channel", ch.Name, "error", err)
+		} else {
+			sent++
+		}
+		s.store.SaveNotification(ctx, n)
 	}
 	return sent, failed
 }

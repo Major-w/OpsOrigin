@@ -1,23 +1,33 @@
 
 import { useEffect, useState } from 'react'
-import { useUserStore, type User } from '@/stores/user'
+import { useUserStore, type User, type UserImportResult } from '@/stores/user'
 import { useIAMStore, type Role } from '@/stores/iam'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
-import { Modal, Input, Select, Button, Table, Tag, Space, Popconfirm } from 'antd'
-import { PlusOutlined, EditOutlined, DeleteOutlined, SearchOutlined, SafetyOutlined } from '@ant-design/icons'
-import { formatTime } from '@/lib/utils'
+import { Modal, Input, Select, Button, Table, Tag, Space, Popconfirm, AutoComplete, Upload, Alert } from 'antd'
+import { PlusOutlined, EditOutlined, DeleteOutlined, SearchOutlined, SafetyOutlined, ImportOutlined, DownloadOutlined } from '@ant-design/icons'
+import { formatTime, apiFetch } from '@/lib/utils'
 import { useCan } from '@/stores/permissions'
 import type { ColumnsType } from 'antd/es/table'
+import type { UploadFile } from 'antd/es/upload/interface'
+
+interface PasswordPolicy {
+  min_len: number
+  min_classes: number
+  max_age_days: number
+}
 
 export default function SystemUsersPage() {
-  const { users, fetch, create, update, remove } = useUserStore()
-  const { roles, fetchRoles, fetchUserRoles, assignUserRoles } = useIAMStore()
+  const { users, fetch, create, update, remove, importUsers } = useUserStore()
+  const { roles, fetchRoles, fetchUserRoles, assignUserRoles, departments, fetchDepartments } = useIAMStore()
   const canWrite = useCan('user:write')
 
   const [searchQ, setSearchQ] = useState('')
   const [dialogOpen, setDialogOpen] = useState(false)
   const [editId, setEditId] = useState<string | null>(null)
-  const [form, setForm] = useState({ username: '', email: '', role: 'viewer', status: 'active', password: '' })
+  const [form, setForm] = useState({ username: '', email: '', department: '', role: 'viewer', status: 'active', password: '' })
+  const [importing, setImporting] = useState(false)
+  const [importResult, setImportResult] = useState<UserImportResult | null>(null)
+  const [pwdPolicy, setPwdPolicy] = useState<PasswordPolicy | null>(null)
 
   const [roleDialogUser, setRoleDialogUser] = useState<User | null>(null)
   const [assignedRoleIds, setAssignedRoleIds] = useState<string[]>([])
@@ -26,6 +36,8 @@ export default function SystemUsersPage() {
   useEffect(() => {
     fetch()
     fetchRoles()
+    fetchDepartments()
+    apiFetch<PasswordPolicy>('/users/password-policy').then(setPwdPolicy).catch(() => setPwdPolicy(null))
   }, [])
 
   const filtered = users.filter(u =>
@@ -35,13 +47,13 @@ export default function SystemUsersPage() {
 
   const openCreate = () => {
     setEditId(null)
-    setForm({ username: '', email: '', role: 'viewer', status: 'active', password: '' })
+    setForm({ username: '', email: '', department: '', role: 'viewer', status: 'active', password: '' })
     setDialogOpen(true)
   }
 
   const openEdit = (user: User) => {
     setEditId(user.id)
-    setForm({ username: user.username, email: user.email || '', role: user.role, status: user.status, password: '' })
+    setForm({ username: user.username, email: user.email || '', department: user.department || '', role: user.role, status: user.status, password: '' })
     setDialogOpen(true)
   }
 
@@ -49,6 +61,7 @@ export default function SystemUsersPage() {
     if (editId) {
       await update(editId, {
         email: form.email,
+        department: form.department,
         role: form.role,
         status: form.status,
       })
@@ -60,6 +73,7 @@ export default function SystemUsersPage() {
         username: form.username,
         password: form.password,
         email: form.email,
+        department: form.department,
         role: form.role,
       })
     }
@@ -76,6 +90,30 @@ export default function SystemUsersPage() {
     setRoleDialogUser(user)
     const ur = await fetchUserRoles(user.id)
     setAssignedRoleIds(ur?.role_ids || [])
+  }
+
+  /** CSV 上传（手动发请求，beforeUpload 拦截 antd 自动上传） */
+  const handleImportUpload = async (file: UploadFile) => {
+    if (!file.originFileObj) return false
+    setImporting(true)
+    try {
+      const result = await importUsers(file.originFileObj)
+      if (result) setImportResult(result)
+    } finally {
+      setImporting(false)
+    }
+    return false // 阻断 antd 默认上传
+  }
+
+  /** 下载导入模板 */
+  const downloadTemplate = () => {
+    const csv = '\uFEFFusername,email,department,role,status,password\nzhangsan,zhang@example.com,门店A,operator,active,\nlisi,,门店B,viewer,,\n'
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' })
+    const a = document.createElement('a')
+    a.href = URL.createObjectURL(blob)
+    a.download = 'users-template.csv'
+    a.click()
+    URL.revokeObjectURL(a.href)
   }
 
   const toggleRole = (roleId: string) => {
@@ -103,6 +141,12 @@ export default function SystemUsersPage() {
       title: '邮箱',
       dataIndex: 'email',
       key: 'email',
+      render: (text: string) => text || '-',
+    },
+    {
+      title: '部门',
+      dataIndex: 'department',
+      key: 'department',
       render: (text: string) => text || '-',
     },
     {
@@ -150,7 +194,13 @@ export default function SystemUsersPage() {
           <h1 className="text-2xl font-bold">用户管理</h1>
           <p className="text-sm text-muted-foreground">管理系统用户、主角色与权限分配</p>
         </div>
-        <Button size="middle" icon={<PlusOutlined />} onClick={openCreate} disabled={!canWrite}>添加用户</Button>
+        <Space>
+          <Upload accept=".csv" maxCount={1} showUploadList={false} beforeUpload={(_, fileList) => handleImportUpload(fileList[0] as UploadFile)} disabled={!canWrite}>
+            <Button size="middle" icon={<ImportOutlined />} loading={importing} disabled={!canWrite}>CSV 导入</Button>
+          </Upload>
+          <Button size="middle" type="text" icon={<DownloadOutlined />} onClick={downloadTemplate}>模板</Button>
+          <Button size="middle" icon={<PlusOutlined />} onClick={openCreate} disabled={!canWrite}>添加用户</Button>
+        </Space>
       </div>
 
       <div className="flex gap-2">
@@ -179,11 +229,24 @@ export default function SystemUsersPage() {
             <div>
               <label className="text-sm font-medium">密码 *</label>
               <Input.Password value={form.password} onChange={e => setForm(f => ({ ...f, password: e.target.value }))} placeholder="初始密码" />
+              <p className="text-xs text-muted-foreground mt-1">
+                策略要求：至少 {pwdPolicy?.min_len ?? 8} 位、{pwdPolicy?.min_classes ?? 2} 类字符（小写/大写/数字/符号）
+              </p>
             </div>
           )}
           <div>
             <label className="text-sm font-medium">邮箱</label>
             <Input value={form.email} onChange={e => setForm(f => ({ ...f, email: e.target.value }))} placeholder="user@example.com" />
+          </div>
+          <div>
+            <label className="text-sm font-medium">部门/门店</label>
+            <AutoComplete
+              className="w-full"
+              value={form.department}
+              onChange={v => setForm(f => ({ ...f, department: v }))}
+              options={departments.map(d => ({ value: d.name }))}
+              placeholder="如 门店A（组织架构候选 + 自由输入；ITSM 提单人属性派单用，LDAP 可自动同步）"
+            />
           </div>
           <div className="grid grid-cols-2 gap-3">
             <div>
@@ -220,6 +283,36 @@ export default function SystemUsersPage() {
             {editId ? '保存' : '创建'}
           </Button>
         </div>
+      </Modal>
+
+      {/* 导入结果（初始密码仅本次展示，提示管理员分发） */}
+      <Modal open={!!importResult} onCancel={() => setImportResult(null)} footer={<Button type="primary" onClick={() => setImportResult(null)}>知道了</Button>} title="用户导入结果" width={640}>
+        {importResult && (
+          <div className="space-y-3">
+            <Alert
+              type={importResult.failed > 0 ? 'warning' : 'success'}
+              message={`新建 ${importResult.created} 个，跳过 ${importResult.skipped} 个（已存在），失败 ${importResult.failed} 行`}
+              showIcon
+            />
+            {(importResult.accounts?.length ?? 0) > 0 && (
+              <div>
+                <p className="text-xs font-medium mb-1 text-orange-500">自动生成的初始密码（仅本次显示，请及时分发给用户）：</p>
+                <ul className="text-xs space-y-1 max-h-48 overflow-auto border rounded p-2">
+                  {importResult.accounts!.filter(a => a.initial_password).map(a => (
+                    <li key={a.username} className="font-mono">{a.username}: <span className="font-bold">{a.initial_password}</span></li>
+                  ))}
+                </ul>
+              </div>
+            )}
+            {(importResult.errors?.length ?? 0) > 0 && (
+              <ul className="text-xs space-y-1 max-h-40 overflow-auto">
+                {importResult.errors!.map(e => (
+                  <li key={e.row} className="text-red-500">第 {e.row} 行：{e.message}</li>
+                ))}
+              </ul>
+            )}
+          </div>
+        )}
       </Modal>
 
       {/* 角色分配 */}

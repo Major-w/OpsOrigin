@@ -1,11 +1,12 @@
 
 import { create } from 'zustand'
-import { apiFetch, apiList } from '@/lib/utils'
+import { apiFetch, apiList, apiFetchRaw } from '@/lib/utils'
 import { getMessage } from '@/lib/message'
 export interface User {
   id: string
   username: string
   email?: string
+  department?: string
   role: string
   status: string
   last_login?: string
@@ -13,14 +14,25 @@ export interface User {
   updated_at: string
 }
 
+/** 用户批量导入结果（accounts 仅含自动生成初始密码的新账号） */
+export interface UserImportResult {
+  created: number
+  skipped: number
+  failed: number
+  errors?: { row: number; message: string }[]
+  accounts?: { username: string; initial_password?: string }[]
+}
+
 interface UserState {
   users: User[]
   loading: boolean
   fetch: () => Promise<void>
-  create: (data: { username: string; password: string; email?: string; role?: string }) => Promise<boolean>
+  create: (data: { username: string; password: string; email?: string; department?: string; role?: string }) => Promise<boolean>
   update: (id: string, data: Partial<User>) => Promise<boolean>
   remove: (id: string) => Promise<boolean>
   changePassword: (id: string, oldPassword: string, newPassword: string) => Promise<boolean>
+  /** CSV 批量导入用户（username,email,department,role,status,password），返回结果详情；失败返回 null */
+  importUsers: (file: File) => Promise<UserImportResult | null>
 }
 
 export const useUserStore = create<UserState>((set, get) => ({
@@ -85,6 +97,23 @@ export const useUserStore = create<UserState>((set, get) => ({
     } catch (e: any) {
       getMessage().error(`修改密码失败: ${e.message}`)
       return false
+    }
+  },
+
+  importUsers: async (file) => {
+    const fd = new FormData()
+    fd.append('file', file)
+    try {
+      const res = await apiFetchRaw('/users/import', { method: 'POST', body: fd })
+      if (!res.ok) {
+        throw new Error((await res.json().catch(() => ({}))).error || `HTTP ${res.status}`)
+      }
+      const data = await res.json() as UserImportResult
+      await get().fetch()
+      return data
+    } catch (e: any) {
+      getMessage().error(`导入用户失败: ${e.message}`)
+      return null
     }
   },
 }))
