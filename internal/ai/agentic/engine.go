@@ -142,7 +142,12 @@ type Engine struct {
 	// ——— 敏感操作审批 (PRD 5.2.5) ———
 	approvals *ApprovalManager
 	// approvalPolicies 全局默认 + Agent 级覆盖策略: "default" 键为全局, 其余键为 agent_id。
+	// 仅作为持久化策略未装配/查询失败时的内存兜底, 不再是权威来源。
 	approvalPolicies map[string]ApprovalPolicy
+	// policyStore 持久化审批策略提供者(P0 治理层); nil = 纯内存。
+	policyStore ApprovalPolicyStore
+	// approvalGrants 网关审批通过后的一次性凭证, 供工具内置 checker 消费, 避免双弹窗。
+	approvalGrants sync.Map
 
 	// ——— 自定义 MCP 工具 (PRD 5.2.2) ———
 	// customTools 用户注册的自定义工具(ID -> 定义), enabled 的工具动态注册到 reg。
@@ -227,6 +232,8 @@ func NewEngine(reg *mcp.Registry, lim ratelimit.RateLimiter, llmClient *llm.Clie
 	// 后续护栏/观测/计费上限以 Hook 追加, 无需改动主循环。
 	e.hookChain = NewHookChain()
 	e.hookChain.Add(Hook{PreToolCall: e.rbacGate})
+	// 平台层统一审批闸门: 策略来自持久化 provider, 对所有工具调用生效(不依赖工具自接 checker)。
+	e.hookChain.Add(Hook{PreToolCall: e.approvalGate})
 	e.hookChain.Add(Hook{PreToolCall: e.controlledGate})
 	e.hookChain.Add(Hook{PreToolCall: e.dryRunGate})
 	// 连接器生命周期钩子链: 注册时先能力校验(fail-closed)再自动播种安全默认审批策略,
@@ -350,6 +357,94 @@ func (e *Engine) streamLLM(ctx context.Context, req llm.ChatRequest) (<-chan llm
 		return e.router.StreamChat(ctx, req)
 	}
 	return e.llmClient.Load().StreamChat(ctx, req)
+}
+
+// GenerateOpts 控制纯生成路径的可选参数(未来可扩展模型白名单/PII 红脱/速率上限)。
+type GenerateOpts struct {
+	Model       string // 留空 → 走 router 默认
+	MaxTokens   int
+	Temperature float64
+}
+
+// ModelConfigured 报告 Engine 是否已具备可用的 LLM 出口(单 client 或 router 任一就绪)。
+// handler 可据此在模型未配置时给出 503/业务态, 与 s.LLMClient()==nil 等价。
+func (e *Engine) ModelConfigured() bool {
+	return e.llmClient.Load() != nil || e.router != nil
+}
+
+// GenerateRaw 统一「无工具纯文本生成」底层入口: 经模型路由(router 优先, 否则单 client)
+// + 轨迹审计。与 ChatStream 不同: 不发起工具调用、不套工具钩子(无 approvalGate),
+// 因此不会弹出审批。返回完整 ChatResponse 以兼容需要结构化输出(如 aiworkspace 的
+// function calling)的调用方。Engine/router/llmClient 为 nil 时返回 error, 不 panic。
+func (e *Engine) GenerateRaw(ctx context.Context, tenantID, agentID string, req llm.ChatRequest) (*llm.ChatResponse, error) {
+	if !e.ModelConfigured() {
+		return nil, fmt.Errorf("ai: model not configured")
+	}
+	started := time.Now()
+	resp, err := e.chatLLM(ctx, req)
+	turn := &TrajectoryTurn{
+		ID:             uuid.NewString(),
+		AgentID:        agentID,
+		ConversationID: "gen:" + agentID,
+		StartedAt:      started,
+		EndedAt:        time.Now(),
+		Prompt:         lastUserPrompt(req.Messages),
+		FinalContent:   safeChoiceContent(resp),
+		Error:          errString(err),
+		Attributes:     map[string]any{"gen_ai.operation": "generate", "gen_ai.request.model": req.Model},
+	}
+	if resp != nil {
+		turn.Attributes["gen_ai.response.model"] = resp.Model
+	}
+	e.recordTrajectory(ctx, turn)
+	if err != nil {
+		return nil, err
+	}
+	return resp, nil
+}
+
+// Generate 统一「无工具纯文本生成」入口(返回拼接后的文本)。仅做身份归属 + 轨迹审计
+// + 模型路由 + 成本计量; 不套工具钩子。agentID 为逻辑身份(如 content-presentation)。
+// 模型返回空内容时返回 error, 调用方据此给出可重试业务态。
+func (e *Engine) Generate(ctx context.Context, tenantID, agentID string, messages []llm.Message, opts GenerateOpts) (string, error) {
+	req := llm.ChatRequest{
+		Messages:    messages,
+		MaxTokens:   opts.MaxTokens,
+		Temperature: opts.Temperature,
+	}
+	if opts.Model != "" {
+		req.Model = opts.Model
+	}
+	resp, err := e.GenerateRaw(ctx, tenantID, agentID, req)
+	if err != nil {
+		return "", err
+	}
+	if len(resp.Choices) == 0 || strings.TrimSpace(resp.Choices[0].Message.Content) == "" {
+		return "", fmt.Errorf("model returned empty content")
+	}
+	return resp.Choices[0].Message.Content, nil
+}
+
+// lastUserPrompt 从消息列表取最后一条 user 消息作为轨迹 prompt(截断到轨迹文本上限)。
+func lastUserPrompt(msgs []llm.Message) string {
+	for i := len(msgs) - 1; i >= 0; i-- {
+		if msgs[i].Role == "user" {
+			r := []rune(msgs[i].Content)
+			if len(r) > maxTrajectoryText {
+				return string(r[:maxTrajectoryText])
+			}
+			return msgs[i].Content
+		}
+	}
+	return ""
+}
+
+// safeChoiceContent 安全取首个 choice 的文本(用于轨迹记录, 返回空字符串而非 panic)。
+func safeChoiceContent(resp *llm.ChatResponse) string {
+	if resp == nil || len(resp.Choices) == 0 {
+		return ""
+	}
+	return resp.Choices[0].Message.Content
 }
 
 // PartResolver 多模态片段解析器: 输入持久化态引用(attachment://<id>#<name>),
@@ -515,6 +610,8 @@ func (e *Engine) loadFromStore() error {
 			KnowledgeCategories: a.KnowledgeCategories,
 			Tools:               a.Tools,
 			Skills:              a.Skills,
+			OwnerID:             a.OwnerID,
+			Visibility:          model.NormalizeVisibility(a.Visibility),
 		}
 	}
 	// 平台内置预设 Agent 注入: coding-assistant / doc-assistant 属于 PresetAgentTemplates
@@ -2014,7 +2111,11 @@ func (e *Engine) Approvals() *ApprovalManager {
 //   - 需要时发起 SSE ask 事件并挂起等待用户批准/拒绝(超时视为拒绝, fail-closed);
 //   - 批准返回 (true, ""), 拒绝/超时返回 (false, 人类可读原因), 策略放行直接返回 (true, "")。
 func (e *Engine) ScriptApprovalChecker(ctx context.Context, scriptID, targetAgentID string, args map[string]any) (bool, string) {
-	policy := e.GetApprovalPolicy(agentIDFrom(ctx))
+	// 网关层已批过: 消费一次性凭证直接放行, 避免同一次调用弹两次审批窗。
+	if e.consumeApprovalGrant(ctx, agentIDFrom(ctx), "script_run") {
+		return true, ""
+	}
+	policy := e.GetApprovalPolicyCtx(ctx, agentIDFrom(ctx))
 	if !policy.NeedsApproval("script_run") {
 		return true, ""
 	}
@@ -2042,8 +2143,13 @@ func (e *Engine) ScriptApprovalChecker(ctx context.Context, scriptID, targetAgen
 // 与 ScriptApprovalChecker 同走 SSE ask 事件 + 超时 fail-closed; 但 coding 写/执行类始终要求确认(不依赖策略放行),
 // 因为直接改动本仓库代码风险高, 必须人点确认才执行。只读类(coding_read/list/grep)不走此审批。
 func (e *Engine) CodingApprovalChecker(ctx context.Context, tool, agentID string, args map[string]any, summary string) (bool, string) {
+	// 网关层已批过(always_ask 策略下会命中): 不再重复弹窗; 否则保持 coding 写/执行类
+	// 「始终人工确认」的硬红线, 不受策略放行影响。
+	if e.consumeApprovalGrant(ctx, agentIDFrom(ctx), tool) {
+		return true, ""
+	}
 	argsJSON, _ := json.Marshal(args)
-	policy := e.GetApprovalPolicy(agentIDFrom(ctx))
+	policy := e.GetApprovalPolicyCtx(ctx, agentIDFrom(ctx))
 	timeout := time.Duration(policy.AskTimeoutSec) * time.Second
 	resp := e.approvals.Request(ctx, tenantOf(ctx), agentIDFrom(ctx), tool, string(argsJSON), summary, timeout)
 	if resp == nil {
@@ -2444,10 +2550,15 @@ func (e *Engine) SetSkillEvolver(ev SkillEvolver) { e.skillEvolver = ev }
 
 // recordTrajectory 安全记录一次运行轨迹(nil 记录器时跳过)。
 func (e *Engine) recordTrajectory(ctx context.Context, t *TrajectoryTurn) {
-	if e.traj != nil {
-		if terr := e.traj.RecordTurn(ctx, t); terr != nil {
-			slog.Warn("ai: record trajectory failed", "err", terr)
-		}
+	if e.traj == nil || t == nil {
+		return
+	}
+	// 两条主循环共用: 补全 OTel 标识/属性 + 脱敏 + 租户/用户身份, 落盘前统一收口。
+	t.TenantID = tenantOf(ctx)
+	t.UserID = auth.UserIDFromContext(ctx)
+	FinalizeTrajectory(t)
+	if terr := e.traj.RecordTurn(ctx, t); terr != nil {
+		slog.Warn("ai: record trajectory failed", "err", terr)
 	}
 }
 
@@ -2626,11 +2737,13 @@ func (e *Engine) CreateAgent(ctx context.Context, a *model.AgentInstance) error 
 	if a.Status == "" {
 		a.Status = "active"
 	}
+	// 未显式声明可见性时按存量兼容回落 public; 新建实例由 handler 显式写 private。
+	a.Visibility = model.NormalizeVisibility(a.Visibility)
 	e.mu.Lock()
 	e.agents[a.ID] = a
 	e.mu.Unlock()
 	if e.store != nil {
-		_ = e.store.CreateAgent(ctx, &AgentRecord{ID: a.ID, TenantID: a.TenantID, Name: a.Name, ModelName: a.ModelName, SystemPrompt: a.SystemPrompt, Status: a.Status, CreatedAt: a.CreatedAt, UpdatedAt: a.UpdatedAt, KnowledgeCategories: a.KnowledgeCategories, Tools: a.Tools, Skills: a.Skills})
+		_ = e.store.CreateAgent(ctx, &AgentRecord{ID: a.ID, TenantID: a.TenantID, Name: a.Name, ModelName: a.ModelName, SystemPrompt: a.SystemPrompt, Status: a.Status, CreatedAt: a.CreatedAt, UpdatedAt: a.UpdatedAt, KnowledgeCategories: a.KnowledgeCategories, Tools: a.Tools, Skills: a.Skills, OwnerID: a.OwnerID, Visibility: a.Visibility})
 	}
 	slog.Info("agent created", "id", a.ID, "name", a.Name, "model", a.ModelName, "knowledge", a.KnowledgeCategories, "tools", a.Tools)
 	return nil
@@ -2647,6 +2760,12 @@ func (e *Engine) UpdateAgent(ctx context.Context, a *model.AgentInstance) error 
 	if !ok {
 		return fmt.Errorf("agent not found: %s", a.ID)
 	}
+	// 租户隔离: 内存态此前只按 ID 查, 存在跨租户越权面(PG 分支一直带 tenant)。
+	// 内部调用未带 tenant 时回落到 existing, 不误伤既有链路。
+	if a.TenantID != "" && a.TenantID != existing.TenantID {
+		return fmt.Errorf("agent not found: %s", a.ID)
+	}
+	a.TenantID = existing.TenantID
 	if a.Name != "" {
 		existing.Name = a.Name
 	}
@@ -2666,9 +2785,13 @@ func (e *Engine) UpdateAgent(ctx context.Context, a *model.AgentInstance) error 
 	if a.Skills != nil {
 		existing.Skills = a.Skills
 	}
+	// 可见范围可改; 属主(OwnerID)不通过通用更新转移, 避免越权改写归属。
+	if a.Visibility != "" {
+		existing.Visibility = model.NormalizeVisibility(a.Visibility)
+	}
 	existing.UpdatedAt = time.Now()
 	if e.store != nil {
-		_ = e.store.UpdateAgent(ctx, &AgentRecord{ID: existing.ID, TenantID: existing.TenantID, Name: existing.Name, ModelName: existing.ModelName, SystemPrompt: existing.SystemPrompt, Status: existing.Status, UpdatedAt: existing.UpdatedAt, KnowledgeCategories: existing.KnowledgeCategories, Tools: existing.Tools, Skills: existing.Skills})
+		_ = e.store.UpdateAgent(ctx, &AgentRecord{ID: existing.ID, TenantID: existing.TenantID, Name: existing.Name, ModelName: existing.ModelName, SystemPrompt: existing.SystemPrompt, Status: existing.Status, UpdatedAt: existing.UpdatedAt, KnowledgeCategories: existing.KnowledgeCategories, Tools: existing.Tools, Skills: existing.Skills, OwnerID: existing.OwnerID, Visibility: existing.Visibility})
 	}
 	slog.Info("agent updated", "id", a.ID, "name", existing.Name)
 	return nil
@@ -2691,8 +2814,8 @@ func (e *Engine) AgentKnowledgeCategories(agentID string) []string {
 func (e *Engine) DeleteAgent(ctx context.Context, id, tenantID string) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	_, ok := e.agents[id]
-	if !ok {
+	existing, ok := e.agents[id]
+	if !ok || (tenantID != "" && existing.TenantID != tenantID) {
 		return fmt.Errorf("agent not found: %s", id)
 	}
 	delete(e.agents, id)

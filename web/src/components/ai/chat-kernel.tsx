@@ -1085,7 +1085,31 @@ export function useAIChat(opts: UseAIChatOptions) {
       }))
     }
 
-    await teamApi.streamTeamChat(selectedTeamId, content, history, onEvent)
+    // M2: 团队流统一走 /ai/chat + executor=team(v1 帧), 替代旧 streamTeamChat(P2 纯 data 协议)。
+    // onEvent 契约(TeamStreamEvent)保持不变 —— chat.ts 负责把 v1 帧翻译回 TeamStreamEvent, 团队状态机零改动。
+    await streamChat(
+      content,
+      () => {},
+      () => {},
+      history,
+      undefined,
+      true,
+      undefined,
+      true,
+      undefined,
+      undefined,
+      enableAbort ? abortRef.current?.signal : undefined,
+      selectedModel,
+      undefined,
+      undefined,
+      knowledgeCategories.length ? knowledgeCategories : undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      { type: 'team', id: selectedTeamId },
+      onEvent,
+    )
     setTeamStreaming(false)
   }
 

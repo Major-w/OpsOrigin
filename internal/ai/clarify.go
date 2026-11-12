@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/opsorigin/core/pkg/auth"
 	"github.com/opsorigin/core/pkg/llm"
 )
 
@@ -95,27 +96,20 @@ func shouldGenerateClarify(prompt string) bool {
 // generateClarify 调用 LLM 一次性产出模糊判定 + 追问问题 + 继续追问建议。
 // 返回 (nil, nil) 表示未启用 LLM 或生成失败(调用方应静默忽略, 不影响主回答)。
 func (s *Service) generateClarify(ctx context.Context, prompt string) (*ClarificationResult, error) {
-	client := s.LLMClient()
-	if client == nil {
+	if s.Engine == nil {
 		return nil, nil
 	}
-	resp, err := client.Chat(ctx, llm.ChatRequest{
-		Messages: []llm.Message{
+	out, err := s.Engine.Generate(ctx, auth.TenantFromContext(ctx), "content-clarify",
+		[]llm.Message{
 			{Role: "system", Content: clarifySystemPrompt},
 			{Role: "user", Content: "用户消息：" + prompt},
 		},
-		// 推理模型(如 glm-4.6v-flash)会先消耗 token 输出 reasoning_content,
-		// max_tokens 给太小会导致 content 为空; 这里给足余量, JSON 不限制超长。
-		MaxTokens:   1024,
-		Temperature: 0.3,
-	})
+		GenerateOpts{MaxTokens: 1024, Temperature: 0.3},
+	)
 	if err != nil {
 		return nil, err
 	}
-	if len(resp.Choices) == 0 {
-		return nil, nil
-	}
-	return parseClarification(resp.Choices[0].Message.Content)
+	return parseClarification(out)
 }
 
 // parseClarification 从模型输出中稳健提取 JSON(容忍模型偶尔夹杂的注释/代码围栏/前后文)。

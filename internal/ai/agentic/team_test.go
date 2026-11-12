@@ -325,3 +325,66 @@ func TestTeamSupervisorVerify(t *testing.T) {
 		t.Errorf("expected a supervisor_review event; events=%#v", events)
 	}
 }
+
+// TestTeamChatRecordsTeamTrajectory 验证 M2: RunTeamChat 在编排收尾补一条团队级 TrajectoryTurn
+// (AgentID="team:<id>", 各成员产出 + 最终答复作为 step), 在子 agent 轨迹之外补上团队级审计证据链。
+// e.traj 为 nil 时 recordTrajectory 自动跳过, 故此处显式注入内存记录器。
+func TestTeamChatRecordsTeamTrajectory(t *testing.T) {
+	e := newTeamTestEngine(t, func(req llm.ChatRequest) (int, string) {
+		return 200, ansResp("member-answer")
+	})
+	rec := NewMemTrajectoryRecorder()
+	e.traj = rec
+
+	team := &model.AgentTeam{
+		ID:   "t-traj",
+		Name: "T",
+		Mode: model.TeamModeParallel,
+		Members: []model.TeamMember{
+			{AgentID: "m1", AgentName: "M1", Role: model.TeamRoleMember},
+			{AgentID: "m2", AgentName: "M2", Role: model.TeamRoleMember},
+			{AgentID: "f", AgentName: "F", Role: model.TeamRoleFinalizer, CanFinalize: true},
+		},
+	}
+	final, _, err := e.RunTeamChat(context.Background(), team, "团队审计问题", nil, func(model.TeamStreamEvent) {}, "")
+	if err != nil {
+		t.Fatalf("RunTeamChat error: %v", err)
+	}
+	if !strings.Contains(final, "member-answer") {
+		t.Fatalf("final=%q", final)
+	}
+
+	turns, terr := rec.ListTurns(context.Background(), "default", "", 0, 0)
+	if terr != nil {
+		t.Fatalf("ListTurns error: %v", terr)
+	}
+	var teamTurn *TrajectoryTurn
+	for _, tr := range turns {
+		if tr.AgentID == "team:t-traj" {
+			teamTurn = tr
+			break
+		}
+	}
+	if teamTurn == nil {
+		t.Fatalf("expected a team-level trajectory (AgentID=team:t-traj); got turns=%#v", turns)
+	}
+	if teamTurn.ConversationID != "team:t-traj" {
+		t.Errorf("team turn ConversationID=%q, want team:t-traj", teamTurn.ConversationID)
+	}
+	if teamTurn.Prompt != "团队审计问题" {
+		t.Errorf("team turn Prompt=%q, want 团队审计问题", teamTurn.Prompt)
+	}
+	if len(teamTurn.Steps) < 3 {
+		t.Errorf("expected >=3 steps (2 members + finalizer), got %d: %#v", len(teamTurn.Steps), teamTurn.Steps)
+	}
+	last := teamTurn.Steps[len(teamTurn.Steps)-1]
+	if last.Model != "team:finalizer" {
+		t.Errorf("last step model=%q, want team:finalizer", last.Model)
+	}
+	if last.Assistant != final {
+		t.Errorf("finalizer step assistant=%q, want %q", last.Assistant, final)
+	}
+	if teamTurn.FinalContent != final {
+		t.Errorf("FinalContent=%q, want %q", teamTurn.FinalContent, final)
+	}
+}

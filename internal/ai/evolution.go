@@ -382,8 +382,7 @@ func (s *Service) handleEvolutionFetch(w http.ResponseWriter, r *http.Request) {
 
 // fetchAndAnalyze 抓取单个数据源 → LLM 提炼(打分过滤) → 沉淀知识库。
 func (s *Service) fetchAndAnalyze(ctx context.Context, tenantID string, src EvolutionSource) (string, error) {
-	lc := s.LLMClient()
-	if lc == nil {
+	if s.Engine == nil || !s.Engine.ModelConfigured() {
 		return "", fmt.Errorf("LLM 未配置, 跳过提炼(请先在 模型 页配置 API Key)")
 	}
 	if src.Type == "keyword" {
@@ -403,7 +402,7 @@ func (s *Service) fetchAndAnalyze(ctx context.Context, tenantID string, src Evol
 	if src.TargetCategory != "" {
 		category = src.TargetCategory
 	}
-	articles := summarizeArticles(ctx, lc, raw)
+	articles := summarizeArticles(ctx, engineLLMClient{eng: s.Engine, agentID: "content-evolution"}, raw)
 	if len(articles) == 0 {
 		return "", fmt.Errorf("LLM 未提炼出有效知识")
 	}
@@ -519,7 +518,7 @@ type evolvedArticle struct {
 }
 
 // summarizeArticles 用 LLM 从原始文本提炼 1-3 条运维知识(带价值分 0-1)。
-func summarizeArticles(ctx context.Context, lc *llm.Client, raw string) []evolvedArticle {
+func summarizeArticles(ctx context.Context, lc llmChatter, raw string) []evolvedArticle {
 	prompt := `你是运维知识提炼助手。从下面的内容中提炼出 1~3 条最有价值的运维知识。
 要求: 只输出 JSON 数组, 格式 [{"title":"简短标题","content":"Markdown 正文(含背景/步骤/注意事项)","score":0.0}],
 score 为该条知识对运维人员的价值评分(0~1, 与运维场景相关性越高分越高), 不要任何额外说明。

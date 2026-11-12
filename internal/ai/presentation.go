@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/opsorigin/core/pkg/auth"
 	"github.com/opsorigin/core/pkg/httputil"
 	"github.com/opsorigin/core/pkg/llm"
 )
@@ -80,21 +81,15 @@ func (s *Service) handleGeneratePresentation(w http.ResponseWriter, r *http.Requ
 
 	ctx, cancel := context.WithTimeout(r.Context(), presentationTimeout)
 	defer cancel()
-	resp, err := s.LLMClient().Chat(ctx, llm.ChatRequest{
-		Messages:    []llm.Message{{Role: "system", Content: sysPrompt}, msg},
-		MaxTokens:   5000,
-		Temperature: 0.4,
-		Stream:      false,
-	})
+	out, err := s.Engine.Generate(ctx, auth.TenantFromContext(r.Context()), "content-presentation",
+		[]llm.Message{{Role: "system", Content: sysPrompt}, msg},
+		GenerateOpts{MaxTokens: 5000, Temperature: 0.4},
+	)
 	if err != nil {
 		httputil.WriteError(w, http.StatusBadGateway, "演示大纲生成失败: "+err.Error())
 		return
 	}
-	if len(resp.Choices) == 0 || strings.TrimSpace(resp.Choices[0].Message.Content) == "" {
-		httputil.WriteError(w, http.StatusBadGateway, "模型未返回内容(可能 max_tokens 不足或推理中断), 请重试")
-		return
-	}
-	out := stripCodeFence(resp.Choices[0].Message.Content)
+	out = stripCodeFence(out)
 	var outline presentationOutline
 	if err := json.Unmarshal([]byte(out), &outline); err != nil || len(outline.Slides) == 0 {
 		httputil.WriteError(w, http.StatusUnprocessableEntity, "模型输出不是有效的演示大纲, 请重试")

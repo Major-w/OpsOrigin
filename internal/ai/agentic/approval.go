@@ -140,6 +140,15 @@ func (m *ApprovalManager) SetOnRequest(fn func(*PendingApproval)) {
 	m.mu.Unlock()
 }
 
+// HasSink 判断是否装配了全局审批通知回调(ChatOps/企微等)。
+// 与 ctx 内的 WithApprovalNotify 共同决定「审批请求能否送达人」, 无通道时不应发起
+// 注定超时(默认 60s)的请求 —— 见 approvalGate 的 fail-closed 分支。
+func (m *ApprovalManager) HasSink() bool {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.onRequest != nil
+}
+
 // Request 创建一个审批请求并挂起等待响应。
 // 返回 nil 表示被拒绝或超时(fail-closed); 返回响应且 Action=="approve" 表示批准。
 // ctx 取消/超时同样视为拒绝并清理挂起状态。

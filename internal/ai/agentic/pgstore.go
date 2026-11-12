@@ -94,6 +94,10 @@ type AgentRecord struct {
 	CreatedAt    time.Time       `json:"created_at"`
 	UpdatedAt    time.Time       `json:"updated_at"`
 
+	// 数字员工身份(P0 治理): 正式列, 不经 extra JSONB, 便于 SQL 按属主/可见性过滤。
+	OwnerID    string `json:"owner_id,omitempty"`
+	Visibility string `json:"visibility"`
+
 	// KnowledgeCategories 绑定的知识库分类列表, 经 extra JSONB 持久化。
 	KnowledgeCategories []string `json:"knowledge_categories,omitempty"`
 	// Tools 允许使用的 MCP 工具白名单(空=全部), 经 extra JSONB 持久化。
@@ -176,8 +180,21 @@ func (s *PGStore) migrate() {
 		id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL DEFAULT 'default',
 		name TEXT NOT NULL, model_name TEXT DEFAULT 'deepseek-chat',
 		system_prompt TEXT DEFAULT '', status TEXT DEFAULT 'active',
-		extra JSONB DEFAULT '{}', created_at TIMESTAMPTZ DEFAULT NOW(), updated_at TIMESTAMPTZ DEFAULT NOW()
+		extra JSONB DEFAULT '{}', created_at TIMESTAMPTZ DEFAULT NOW(), updated_at TIMESTAMPTZ DEFAULT NOW(),
+		owner_id TEXT NOT NULL DEFAULT '', visibility TEXT NOT NULL DEFAULT 'public'
 	)`)
+	// 存量库幂等补列(数字员工身份): 老数据一律 owner='' + public, 保持历史全租户可见语义。
+	s.db.Exec(`ALTER TABLE ai_agents ADD COLUMN IF NOT EXISTS owner_id TEXT NOT NULL DEFAULT ''`)
+	s.db.Exec(`ALTER TABLE ai_agents ADD COLUMN IF NOT EXISTS visibility TEXT NOT NULL DEFAULT 'public'`)
+	s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_ai_agents_tenant_owner ON ai_agents(tenant_id, owner_id, visibility)`)
+	s.db.Exec(`CREATE TABLE IF NOT EXISTS ai_agent_shares (
+		id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL DEFAULT 'default',
+		agent_id TEXT NOT NULL, target_type TEXT NOT NULL, target_id TEXT NOT NULL,
+		permission TEXT NOT NULL DEFAULT 'view', shared_by TEXT NOT NULL DEFAULT '',
+		created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+		UNIQUE (tenant_id, agent_id, target_type, target_id)
+	)`)
+	s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_ai_agent_shares_agent ON ai_agent_shares(tenant_id, agent_id)`)
 	s.db.Exec(`CREATE TABLE IF NOT EXISTS ai_teams (
 		id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL DEFAULT 'default',
 		name TEXT NOT NULL, members JSONB DEFAULT '[]',
@@ -1013,18 +1030,19 @@ func (s *PGStore) CreateAgent(ctx context.Context, a *AgentRecord) error {
 	if a.Status == "" {
 		a.Status = "active"
 	}
+	a.Visibility = model.NormalizeVisibility(a.Visibility)
 	extra := a.encodeExtra()
 	_, err := s.db.ExecContext(ctx,
-		`INSERT INTO ai_agents(id,tenant_id,name,model_name,system_prompt,status,extra,created_at,updated_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
-		a.ID, a.TenantID, a.Name, a.ModelName, a.SystemPrompt, a.Status, extra, a.CreatedAt, a.UpdatedAt)
+		`INSERT INTO ai_agents(id,tenant_id,name,model_name,system_prompt,status,extra,created_at,updated_at,owner_id,visibility) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
+		a.ID, a.TenantID, a.Name, a.ModelName, a.SystemPrompt, a.Status, extra, a.CreatedAt, a.UpdatedAt, a.OwnerID, a.Visibility)
 	return err
 }
 
 func (s *PGStore) GetAgent(ctx context.Context, id, tenantID string) (*AgentRecord, error) {
 	a := &AgentRecord{}
 	err := s.db.QueryRowContext(ctx,
-		`SELECT id,tenant_id,name,model_name,system_prompt,status,extra,created_at,updated_at FROM ai_agents WHERE id=$1 AND tenant_id=$2`, id, tenantID).
-		Scan(&a.ID, &a.TenantID, &a.Name, &a.ModelName, &a.SystemPrompt, &a.Status, &a.Extra, &a.CreatedAt, &a.UpdatedAt)
+		`SELECT id,tenant_id,name,model_name,system_prompt,status,extra,created_at,updated_at,owner_id,visibility FROM ai_agents WHERE id=$1 AND tenant_id=$2`, id, tenantID).
+		Scan(&a.ID, &a.TenantID, &a.Name, &a.ModelName, &a.SystemPrompt, &a.Status, &a.Extra, &a.CreatedAt, &a.UpdatedAt, &a.OwnerID, &a.Visibility)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -1036,7 +1054,7 @@ func (s *PGStore) GetAgent(ctx context.Context, id, tenantID string) (*AgentReco
 
 func (s *PGStore) ListAgents(ctx context.Context, tenantID string) ([]*AgentRecord, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT id,tenant_id,name,model_name,system_prompt,status,extra,created_at,updated_at FROM ai_agents WHERE tenant_id=$1 ORDER BY created_at`, tenantID)
+		`SELECT id,tenant_id,name,model_name,system_prompt,status,extra,created_at,updated_at,owner_id,visibility FROM ai_agents WHERE tenant_id=$1 ORDER BY created_at`, tenantID)
 	if err != nil {
 		return nil, err
 	}
@@ -1044,7 +1062,7 @@ func (s *PGStore) ListAgents(ctx context.Context, tenantID string) ([]*AgentReco
 	var out []*AgentRecord
 	for rows.Next() {
 		a := &AgentRecord{}
-		if err := rows.Scan(&a.ID, &a.TenantID, &a.Name, &a.ModelName, &a.SystemPrompt, &a.Status, &a.Extra, &a.CreatedAt, &a.UpdatedAt); err != nil {
+		if err := rows.Scan(&a.ID, &a.TenantID, &a.Name, &a.ModelName, &a.SystemPrompt, &a.Status, &a.Extra, &a.CreatedAt, &a.UpdatedAt, &a.OwnerID, &a.Visibility); err != nil {
 			return nil, err
 		}
 		a.decodeExtra()
@@ -1055,10 +1073,11 @@ func (s *PGStore) ListAgents(ctx context.Context, tenantID string) ([]*AgentReco
 
 func (s *PGStore) UpdateAgent(ctx context.Context, a *AgentRecord) error {
 	a.UpdatedAt = time.Now()
+	a.Visibility = model.NormalizeVisibility(a.Visibility)
 	extra := a.encodeExtra()
 	_, err := s.db.ExecContext(ctx,
-		`UPDATE ai_agents SET name=$1,model_name=$2,system_prompt=$3,status=$4,extra=$5,updated_at=$6 WHERE id=$7 AND tenant_id=$8`,
-		a.Name, a.ModelName, a.SystemPrompt, a.Status, extra, a.UpdatedAt, a.ID, a.TenantID)
+		`UPDATE ai_agents SET name=$1,model_name=$2,system_prompt=$3,status=$4,extra=$5,updated_at=$6,owner_id=$9,visibility=$10 WHERE id=$7 AND tenant_id=$8`,
+		a.Name, a.ModelName, a.SystemPrompt, a.Status, extra, a.UpdatedAt, a.ID, a.TenantID, a.OwnerID, a.Visibility)
 	return err
 }
 

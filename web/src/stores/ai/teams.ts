@@ -73,6 +73,10 @@ export const useTeamStore = create<TeamState>((set, get) => ({
       return false
     }
   },
+  /**
+   * @deprecated M2 起团队流统一走 `useChatStore.streamChat` + executor={type:'team',id},
+   * 经 /ai/chat 输出 v1 帧(见 target-ai-assistant-c-convergence.md §3)。本方法保留作回滚通道, M4 观察期后回收。
+   */
   streamTeamChat: async (teamId, msg, history, onEvent) => {
     try {
       const resp = await apiFetchRaw(

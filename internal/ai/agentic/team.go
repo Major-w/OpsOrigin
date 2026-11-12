@@ -61,6 +61,17 @@ func (e *Engine) RunTeamChat(
 		return "", nil, fmt.Errorf("rate limit exceeded for team %s", team.ID)
 	}
 
+	// M2 治理补全: 团队级轨迹(编排层聚合)。子 agent 各自经 runOneMemberRound 落自己的轨迹,
+	// 这里补一条团队级 TrajectoryTurn, 把"用户问题 → 各成员产出 → 最终答复"聚合为可审计证据链。
+	// 纯编排层、不套工具钩子/死循环防护; 仅做身份归属 + 轨迹审计。e.traj 为 nil 时 recordTrajectory 自动跳过。
+	startedAt := time.Now()
+	teamTurn := &TrajectoryTurn{
+		AgentID:        "team:" + team.ID,
+		ConversationID: "team:" + team.ID,
+		Prompt:         message,
+		StartedAt:      startedAt,
+	}
+
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Minute)
 	defer cancel()
 
@@ -83,6 +94,34 @@ func (e *Engine) RunTeamChat(
 		mu         sync.Mutex
 		workerOuts = map[string]string{} // agentID -> 最终产出
 	)
+
+	// finalizeTeamTurn 在编排收尾处调用一次: 汇总 workerOuts + 最终答复为 step 后落盘团队级轨迹。
+	// 调用点均在 wg.Wait / 顺序 / 辩论收尾之后, 此时所有 worker goroutine 已结束, 读取 workerOuts 安全。
+	finalizeTeamTurn := func(errMsg string) {
+		idx := 0
+		for _, m := range workers {
+			c := workerOuts[m.AgentID]
+			if c == "" {
+				continue
+			}
+			teamTurn.Steps = append(teamTurn.Steps, TrajectoryStep{
+				Index:     idx,
+				Model:     "team:" + string(m.Role),
+				Assistant: c,
+				Finished:  true,
+			})
+			idx++
+		}
+		teamTurn.Steps = append(teamTurn.Steps, TrajectoryStep{
+			Index:     idx,
+			Model:     "team:finalizer",
+			Assistant: final,
+			Finished:  true,
+		})
+		teamTurn.FinalContent = final
+		teamTurn.Error = errMsg
+		e.recordTrajectory(ctx, teamTurn)
+	}
 
 	// runTurn 执行单个成员的单次作答(含工具循环 + 超时 + 重试)。
 	// 调用方负责发射 agent_start / agent_end; 本函数仅发射 token / tool_call / tool_result。
@@ -207,6 +246,7 @@ func (e *Engine) RunTeamChat(
 	}
 
 	if len(workerOuts) == 0 {
+		finalizeTeamTurn("all team members failed")
 		return "", nil, fmt.Errorf("all team members failed")
 	}
 
@@ -254,11 +294,13 @@ func (e *Engine) RunTeamChat(
 		final = strings.TrimSpace(sb.String())
 		emit(model.TeamStreamEvent{Type: "final", Content: final, Done: true})
 		emit(model.TeamStreamEvent{Type: "agent_end", AgentID: finalizer.AgentID, AgentName: finalizer.AgentName, Role: finalizer.Role, Content: final})
+		finalizeTeamTurn("")
 		return final, interactions, nil
 	}
 	final = finContent
 	emit(model.TeamStreamEvent{Type: "agent_end", AgentID: finalizer.AgentID, AgentName: finalizer.AgentName, Role: finalizer.Role, Content: final})
 	emit(model.TeamStreamEvent{Type: "final", Content: final, Done: true})
+	finalizeTeamTurn("")
 	return final, interactions, nil
 }
 

@@ -1,7 +1,13 @@
 
 import { create } from 'zustand'
 import { apiFetch, apiList, apiFetchRaw } from '@/lib/utils'
-import type { ModelInfo, PendingApproval } from './types'
+import type { ModelInfo, PendingApproval, TeamStreamEvent } from './types'
+
+/** 统一入口执行者(对应后端 chatRequest.executor)。团队流传 {type:'team',id} 即走 /ai/chat 团队分支(v1 帧)。 */
+export interface ChatExecutorSpec {
+  type: 'default' | 'agent' | 'team'
+  id?: string
+}
 import { getMessage } from '@/lib/message'
 
 interface ChatState {
@@ -35,6 +41,10 @@ interface ChatState {
     onClarify?: (question: string) => void,
     /** SSE event:suggestions — 可点击的继续追问建议。 */
     onSuggestions?: (items: string[]) => void,
+    /** 团队/智能体执行者(统一入口)。传 {type:'team',id} 即走 /ai/chat 团队流(v1 帧), 由 onTeamEvent 消费; 普通模式省略。 */
+    executor?: ChatExecutorSpec,
+    /** 团队流事件回调: 接收由 v1 帧(agent/agent_token/tool/final/error)翻译回的 TeamStreamEvent, 与旧 streamTeamChat 的 onEvent 契约一致。 */
+    onTeamEvent?: (ev: TeamStreamEvent) => void,
   ) => Promise<void>
   loadConversations: (agentId?: string) => Promise<any[]>
   submitFeedback: (params: { conversation_id?: string; message_id?: string; rating: 'up' | 'down'; comment?: string; cited_articles?: string[] }) => Promise<boolean>
@@ -66,7 +76,7 @@ export const useChatStore = create<ChatState>((set) => ({
       return null
     }
   },
-  streamChat: async (prompt, onToken, onDone, history = [], agentId, reasoning, onThinking, explore, onAsk, serverConvId, signal, model, onError, onToolCall, knowledgeCategories, onTruncated?: (note: string) => void, attachments?: { id?: string; name: string; type: string }[], onClarify?: (question: string) => void, onSuggestions?: (items: string[]) => void) => {
+  streamChat: async (prompt, onToken, onDone, history = [], agentId, reasoning, onThinking, explore, onAsk, serverConvId, signal, model, onError, onToolCall, knowledgeCategories, onTruncated?: (note: string) => void, attachments?: { id?: string; name: string; type: string }[], onClarify?: (question: string) => void, onSuggestions?: (items: string[]) => void, executor?: ChatExecutorSpec, onTeamEvent?: (ev: TeamStreamEvent) => void) => {
     try {
       const messageId = `msg_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`
       const body: any = { prompt, history, stream: true, message_id: messageId }
@@ -77,6 +87,7 @@ export const useChatStore = create<ChatState>((set) => ({
       if (knowledgeCategories?.length) body.knowledge_categories = knowledgeCategories
       if (attachments?.length) body.attachments = attachments.map(a => ({ id: a.id, name: a.name, type: a.type }))
       if (serverConvId) body.conversation_id = serverConvId
+      if (executor) body.executor = executor
       const resp = await apiFetchRaw('/ai/chat', {
         method: 'POST',
         body: JSON.stringify(body),
@@ -147,8 +158,17 @@ export const useChatStore = create<ChatState>((set) => ({
           }
           if (currentEvent === 'tool') {
             try {
-              const tc = JSON.parse(data) as { name: string; args: any; status: 'running' | 'done'; result?: string }
-              onToolCall?.(tc)
+              const tc = JSON.parse(data) as { name: string; args: any; result?: string; agent_id?: string; status: 'running' | 'done' }
+              // 团队流: tool 事件带 agent_id, 翻译成 TeamStreamEvent 走 onTeamEvent(路由到具体成员的工具链)。
+              if (tc.agent_id && onTeamEvent) {
+                if (tc.status === 'done') {
+                  onTeamEvent({ type: 'tool_result', agent_id: tc.agent_id, agent_name: '', role: '', tool_name: tc.name, tool_result: tc.result ?? '' })
+                } else {
+                  onTeamEvent({ type: 'tool_call', agent_id: tc.agent_id, agent_name: '', role: '', tool_name: tc.name, tool_args: tc.args })
+                }
+              } else {
+                onToolCall?.(tc)
+              }
             } catch {}
             currentEvent = ''
             continue
@@ -165,6 +185,8 @@ export const useChatStore = create<ChatState>((set) => ({
             const msg = `AI 调用失败：${String(m).replace(/^AI 调用失败[：:]\s*/, '')}`
             getMessage().error(msg)
             onError?.(msg)
+            // 团队流: 同一错误帧也翻译给 onTeamEvent(团队 turn 会标记 error 状态)。
+            if (onTeamEvent) onTeamEvent({ type: 'error', error: msg })
             continue
           }
           // 输出被 max_tokens 截断(上游 finish_reason=length): 内容是真的, 不算错误——
@@ -193,6 +215,35 @@ export const useChatStore = create<ChatState>((set) => ({
             try {
               const arr = JSON.parse(data) as string[]
               if (Array.isArray(arr) && arr.length) onSuggestions?.(arr)
+            } catch {}
+            currentEvent = ''
+            continue
+          }
+          // —— 团队流 v1 帧(由 /ai/chat + executor=team 产生) ——
+          // 仅在 onTeamEvent 存在时消费, 翻译回 TeamStreamEvent 喂给既有团队状态机, 与普通模式正文 token 完全隔离。
+          if (currentEvent === 'agent') {
+            try {
+              const a = JSON.parse(data) as { phase: 'start' | 'end'; agent_id: string; agent_name?: string; role?: string; content?: string }
+              if (a.phase === 'start') onTeamEvent?.({ type: 'agent_start', agent_id: a.agent_id, agent_name: a.agent_name ?? '', role: a.role ?? '' })
+              else onTeamEvent?.({ type: 'agent_end', agent_id: a.agent_id, agent_name: a.agent_name ?? '', role: a.role ?? '', content: a.content ?? '' })
+            } catch {}
+            currentEvent = ''
+            continue
+          }
+          if (currentEvent === 'agent_token') {
+            try {
+              const a = JSON.parse(data) as { agent_id: string; content: string; agent_name?: string; role?: string }
+              // supervisor_review 经 adapter 映射为 agent_token + role:"supervisor"(见 §3.4)。
+              if (a.role === 'supervisor') onTeamEvent?.({ type: 'supervisor_review', agent_id: a.agent_id, agent_name: a.agent_name ?? '', role: a.role ?? '', content: a.content })
+              else onTeamEvent?.({ type: 'token', agent_id: a.agent_id, agent_name: a.agent_name ?? '', role: a.role ?? '', content: a.content })
+            } catch {}
+            currentEvent = ''
+            continue
+          }
+          if (currentEvent === 'final') {
+            try {
+              const f = JSON.parse(data) as { content: string; done: boolean }
+              onTeamEvent?.({ type: 'final', content: f.content, done: f.done })
             } catch {}
             currentEvent = ''
             continue

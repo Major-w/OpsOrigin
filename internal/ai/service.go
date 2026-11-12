@@ -39,6 +39,8 @@ type Service struct {
 	db            *sql.DB                                                                      // 统计/管理查询直连(会话删除、进化闭环等)
 	objStore      *objectstore.Client                                                          // 对话产物/文件归档(MinIO), 未配置为 nil
 	userGroupsFn  UserGroupsFn                                                                 // 用户组查询(会话共享按组匹配), nil=不支持组共享
+	policyStore   *PGApprovalPolicyStore                                                       // 审批策略持久化(P0 治理层), nil=纯内存
+	trajRecorder  agentic.TrajectoryRecorder                                                   // 运行轨迹记录器(P0 治理层), 生产装配 PG, 本地装配内存
 
 	// 任务级 Agent(T1): 后台 Runner 的取消句柄与事件总线。taskCancels 生命周期由 tasks.go 管理。
 	taskMu      sync.Mutex
@@ -127,6 +129,24 @@ func NewService(cfg *config.Config, llmClient *llm.Client, redisClient *rediscli
 		taskRunning:   map[string]bool{},
 		taskQueue:     []string{},
 	}
+	// P0 治理层装配: 审批策略 / 运行轨迹一律在此处装配, 不依赖 main.go 的两处分支,
+	// 避免「生产忘记 Set → traj==nil 一次都不记」的哑火。
+	svc.initAgentIdentityDDL(context.Background())
+	if db != nil {
+		ps := NewPGApprovalPolicyStore(db)
+		svc.policyStore = ps
+		eng.SetApprovalPolicyStore(ps)
+		tr := agentic.NewPGTrajectoryRecorder(db)
+		svc.trajRecorder = tr
+		eng.SetTrajectoryRecorder(tr)
+		slog.Info("ai governance: using postgres approval policy + trajectory stores")
+	} else {
+		tr := agentic.NewMemTrajectoryRecorder()
+		svc.trajRecorder = tr
+		eng.SetTrajectoryRecorder(tr)
+		slog.Info("ai governance: using in-memory trajectory store (approval policy stays in-memory)")
+	}
+
 	svc.initEvolutionDDL(context.Background())
 	svc.initArtifactDDL(context.Background())
 	svc.initAttachmentDDL(context.Background())
@@ -146,6 +166,25 @@ func (s *Service) LLMClient() *llm.Client {
 	s.llmMu.RLock()
 	defer s.llmMu.RUnlock()
 	return s.llmClient
+}
+
+// llmChatter 最小 LLM 调用面, 供 evolution 等内容生成适配到 Engine 统一入口。
+type llmChatter interface {
+	Chat(ctx context.Context, req llm.ChatRequest) (*llm.ChatResponse, error)
+}
+
+// GenerateOpts 复用 agentic.Engine.Generate 的可选参数类型(类型别名, 调用方无需显式带包名)。
+type GenerateOpts = agentic.GenerateOpts
+
+// engineLLMClient 把 agentic.Engine 适配为 llmChatter / aiworkspace.LLMClient 接口,
+// 让 workspace / evolution 等内容生成走统一模型路由 + 轨迹审计(而非 s.LLMClient() 直连)。
+type engineLLMClient struct {
+	eng     *agentic.Engine
+	agentID string
+}
+
+func (c engineLLMClient) Chat(ctx context.Context, req llm.ChatRequest) (*llm.ChatResponse, error) {
+	return c.eng.GenerateRaw(ctx, auth.TenantFromContext(ctx), c.agentID, req)
 }
 
 // LLMConfigHook 在 sysconfig 修改 LLM 设置后被调用(热生效)。nil 表示未设置。
@@ -231,6 +270,10 @@ func (s *Service) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/v1/ai/agents/{id}", s.handleGetAgent)
 	mux.HandleFunc("PUT /api/v1/ai/agents/{id}", s.handleUpdateAgent)
 	mux.HandleFunc("DELETE /api/v1/ai/agents/{id}", s.handleDeleteAgent)
+	// 数字员工身份与分享(P0 治理层): 仅属主可增删分享项。
+	mux.HandleFunc("GET /api/v1/ai/agents/{id}/shares", s.handleListAgentShares)
+	mux.HandleFunc("POST /api/v1/ai/agents/{id}/shares", s.handleAddAgentShare)
+	mux.HandleFunc("DELETE /api/v1/ai/agents/{id}/shares/{sid}", s.handleDeleteAgentShare)
 	mux.HandleFunc("GET /api/v1/ai/tools", s.handleListTools)
 	mux.HandleFunc("GET /api/v1/ai/mcp/servers", s.handleMCPServers)
 	mux.HandleFunc("POST /api/v1/ai/tools/{name}/execute", s.handleExecuteTool)
@@ -408,6 +451,10 @@ func (s *Service) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("PUT /api/v1/ai/approval-policy", s.handlePutApprovalPolicy)
 	mux.HandleFunc("GET /api/v1/ai/approvals/pending", s.handleListPendingApprovals)
 	mux.HandleFunc("POST /api/v1/ai/approvals/{id}/respond", s.handleRespondApproval)
+	// 运行轨迹只读回放(P0 治理层): 端点强制按租户过滤, 权限点 ai:trace:read。
+	mux.HandleFunc("GET /api/v1/ai/trajectories", s.handleListTrajectories)
+	mux.HandleFunc("GET /api/v1/ai/trajectories/{id}", s.handleGetTrajectory)
+	mux.HandleFunc("GET /api/v1/ai/trajectories/{id}/otel", s.handleGetTrajectoryOTel)
 }
 
 func (s *Service) Start(ctx context.Context) error {
@@ -446,6 +493,34 @@ type chatRequest struct {
 		Type string `json:"type,omitempty"`
 	} `json:"attachments"` // 本轮随消息上传的附件(图片/文档), 后端解析为多模态片段
 	Parts []llm.ContentPart `json:"-"` // 已解析的多模态片段(服务端内部传递, 不接受客户端输入)
+
+	// C 收拢(2026-11-10): 统一入口执行器。优先级高于 agent_id/team_id(详见 resolveExecutor)。
+	Executor ExecutorSpec `json:"executor,omitempty"`
+	TeamID   string       `json:"team_id,omitempty"` // 兼容别名: 等价 executor{type:"team", id:team_id}
+}
+
+// ExecutorSpec 统一对话入口的执行器选择(default=默认助手 / agent=指定智能体 / team=团队编排)。
+type ExecutorSpec struct {
+	Type string `json:"type"`         // default | agent | team
+	ID   string `json:"id,omitempty"` // agent/team 时为对应 ID
+}
+
+// resolveExecutor 按确定性优先级裁决本次请求的执行器(详见 target-ai-assistant-c-convergence.md §3.2):
+//  1. executor 非空 → 以它为准(忽略 agent_id/team_id);
+//  2. 仅 team_id → 等价 executor{team};
+//  3. 仅 agent_id → 等价 executor{agent};
+//  4. 三者皆空 → default(保持现有零工具默认助手行为, 不得顺手改变)。
+func (s *Service) resolveExecutor(req *chatRequest) (typ, id string) {
+	if req.Executor.Type != "" {
+		return req.Executor.Type, req.Executor.ID
+	}
+	if req.TeamID != "" {
+		return "team", req.TeamID
+	}
+	if req.AgentID != "" {
+		return "agent", req.AgentID
+	}
+	return "default", ""
 }
 
 // isNativeReasoner 判断模型是否原生支持 reasoning_content 推理字段。
@@ -498,6 +573,28 @@ func (s *Service) handleChat(w http.ResponseWriter, r *http.Request) {
 	if req.Prompt == "" {
 		httputil.WriteError(w, http.StatusBadRequest, "prompt is required")
 		return
+	}
+
+	// C 收拢(2026-11-10): 统一入口执行器裁决。团队走独立 v1 帧路径(见 handleTeamStreamUnified),
+	// 在抵达单员工公共逻辑(会话权限/RAG/clarify)之前分流, 避免把单员工假设强加给团队。
+	execType, execID := s.resolveExecutor(&req)
+	if execType == "team" {
+		// §3.2 rule 5: 团队只支持流式。
+		if !req.Stream {
+			httputil.WriteError(w, http.StatusBadRequest, "team chat requires stream:true")
+			return
+		}
+		team, ok := s.Engine.GetTeam(execID)
+		if !ok || team.TenantID != auth.TenantFromContext(r.Context()) {
+			httputil.WriteError(w, http.StatusNotFound, "team not found")
+			return
+		}
+		s.handleTeamStreamUnified(w, r, team, &req)
+		return
+	}
+	if execType == "agent" {
+		// §3.2 rule 1: 以 executor 为准, 覆盖 agent_id。
+		req.AgentID = execID
 	}
 
 	// 会话权限: 续接已有会话时, 非属主且无 edit 共享 → 拒绝(用户隔离); view 共享只读不能继续对话。
@@ -883,12 +980,22 @@ func (s *Service) handleCreateAgent(w http.ResponseWriter, r *http.Request) {
 		KnowledgeCategories []string           `json:"knowledge_categories"`
 		Tools               []string           `json:"tools"`
 		Skills              []model.AgentSkill `json:"skills"`
+		Visibility          string             `json:"visibility"`
 	}
 	if err := httputil.BindJSON(r, &req); err != nil {
 		httputil.WriteError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
 
+	ownerID := auth.UserIDFromContext(r.Context())
+	visibility := req.Visibility
+	if visibility == "" {
+		visibility = model.AgentVisibilityPrivate
+	}
+	if ownerID == "" {
+		// 无身份上下文(内部调用/本地调试): 退化为存量兼容的无主 public 实例。
+		visibility = model.AgentVisibilityPublic
+	}
 	agent := &model.AgentInstance{
 		Name:                req.Name,
 		ModelName:           req.ModelName,
@@ -897,6 +1004,8 @@ func (s *Service) handleCreateAgent(w http.ResponseWriter, r *http.Request) {
 		Tools:               req.Tools,
 		Skills:              req.Skills,
 		TenantID:            auth.TenantFromContext(r.Context()),
+		OwnerID:             ownerID,
+		Visibility:          model.NormalizeVisibility(visibility),
 	}
 
 	if err := s.Engine.CreateAgent(r.Context(), agent); err != nil {
@@ -909,13 +1018,8 @@ func (s *Service) handleCreateAgent(w http.ResponseWriter, r *http.Request) {
 
 func (s *Service) handleListAgents(w http.ResponseWriter, r *http.Request) {
 	tenantID := auth.TenantFromContext(r.Context())
-	all := s.Engine.ListAgents()
-	filtered := make([]*model.AgentInstance, 0)
-	for _, a := range all {
-		if a.TenantID == tenantID {
-			filtered = append(filtered, a)
-		}
-	}
+	userID := auth.UserIDFromContext(r.Context())
+	filtered := s.filterVisibleAgents(r.Context(), tenantID, userID, s.Engine.ListAgents())
 	if filtered == nil {
 		filtered = []*model.AgentInstance{}
 	}
@@ -924,12 +1028,21 @@ func (s *Service) handleListAgents(w http.ResponseWriter, r *http.Request) {
 
 func (s *Service) handleGetAgent(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
+	tenantID := auth.TenantFromContext(r.Context())
+	userID := auth.UserIDFromContext(r.Context())
 	agent, ok := s.Engine.GetAgent(id)
-	if !ok || agent.TenantID != auth.TenantFromContext(r.Context()) {
+	if !ok || agent.TenantID != tenantID {
 		httputil.WriteError(w, http.StatusNotFound, "agent not found")
 		return
 	}
-	httputil.WriteJSON(w, http.StatusOK, agent)
+	perm := s.agentAccess(r.Context(), tenantID, userID, agent, s.userGroups(r.Context(), userID))
+	if perm == "" {
+		httputil.WriteError(w, http.StatusNotFound, "agent not found")
+		return
+	}
+	cp := *agent
+	cp.Permission = perm
+	httputil.WriteJSON(w, http.StatusOK, cp)
 }
 
 func (s *Service) handleListTools(w http.ResponseWriter, r *http.Request) {
@@ -1172,7 +1285,8 @@ func (s *Service) handleGetRateLimit(w http.ResponseWriter, r *http.Request) {
 // 不传时返回全局默认。
 func (s *Service) handleGetApprovalPolicy(w http.ResponseWriter, r *http.Request) {
 	agentID := r.URL.Query().Get("agent_id")
-	policy := s.Engine.GetApprovalPolicy(agentID)
+	// 权威来源是持久化策略层; 内存 map 仅在未装配/查询失败时兜底。
+	policy := s.Engine.GetApprovalPolicyCtx(r.Context(), agentID)
 	httputil.WriteJSON(w, http.StatusOK, map[string]any{
 		"agent_id": agentID,
 		"policy":   policy,
@@ -1198,7 +1312,7 @@ func (s *Service) handlePutApprovalPolicy(w http.ResponseWriter, r *http.Request
 	if key == "" {
 		key = "default"
 	}
-	cur := s.Engine.GetApprovalPolicy(key)
+	cur := s.Engine.GetApprovalPolicyCtx(r.Context(), req.AgentID)
 
 	switch req.Mode {
 	case string(agentic.ApprovalAlwaysAsk), string(agentic.ApprovalAlwaysAllow), string(agentic.ApprovalSensitiveOnly):
@@ -1216,8 +1330,20 @@ func (s *Service) handlePutApprovalPolicy(w http.ResponseWriter, r *http.Request
 		cur.AskTimeoutSec = req.AskTimeoutSec
 	}
 
+	// 先落库(权威来源), 失败直接报错 —— 不能静默退化成「只改了内存、重启即丢」。
+	if s.policyStore != nil {
+		persistKey := req.AgentID
+		if persistKey == "default" {
+			persistKey = "" // 持久化层用空 agent_id 表示租户级全局
+		}
+		if err := s.policyStore.SaveApprovalPolicy(r.Context(), auth.TenantFromContext(r.Context()),
+			persistKey, cur, auth.UserIDFromContext(r.Context())); err != nil {
+			httputil.WriteError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+	}
 	s.Engine.SetApprovalPolicy(key, cur)
-	slog.Info("ai approval policy updated", "agent_id", key, "mode", cur.Mode)
+	slog.Info("ai approval policy updated", "agent_id", key, "mode", cur.Mode, "persisted", s.policyStore != nil)
 	httputil.WriteJSON(w, http.StatusOK, map[string]any{
 		"agent_id": agentID,
 		"policy":   cur,
@@ -1470,18 +1596,52 @@ func (s *Service) handleUpdateAgent(w http.ResponseWriter, r *http.Request) {
 		httputil.WriteError(w, http.StatusBadRequest, "invalid body")
 		return
 	}
+	tenantID := auth.TenantFromContext(r.Context())
+	userID := auth.UserIDFromContext(r.Context())
+	existing, ok := s.Engine.GetAgent(id)
+	if !ok || existing.TenantID != tenantID {
+		httputil.WriteError(w, http.StatusNotFound, "agent not found")
+		return
+	}
+	perm := s.agentAccess(r.Context(), tenantID, userID, existing, s.userGroups(r.Context(), userID))
+	if perm != "owner" && perm != "edit" {
+		if perm == "" {
+			httputil.WriteError(w, http.StatusNotFound, "agent not found")
+		} else {
+			httputil.WriteError(w, http.StatusForbidden, "view-only access: cannot modify this agent")
+		}
+		return
+	}
 	ag.ID = id
-	ag.TenantID = auth.TenantFromContext(r.Context())
+	ag.TenantID = tenantID
 	if err := s.Engine.UpdateAgent(r.Context(), &ag); err != nil {
 		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	httputil.WriteJSON(w, http.StatusOK, ag)
+	updated, _ := s.Engine.GetAgent(id)
+	cp := *updated
+	cp.Permission = perm
+	httputil.WriteJSON(w, http.StatusOK, cp)
 }
 
 func (s *Service) handleDeleteAgent(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	tenant := auth.TenantFromContext(r.Context())
+	userID := auth.UserIDFromContext(r.Context())
+	existing, ok := s.Engine.GetAgent(id)
+	if !ok || existing.TenantID != tenant {
+		httputil.WriteError(w, http.StatusNotFound, "agent not found")
+		return
+	}
+	perm := s.agentAccess(r.Context(), tenant, userID, existing, s.userGroups(r.Context(), userID))
+	if perm == "" {
+		httputil.WriteError(w, http.StatusNotFound, "agent not found")
+		return
+	}
+	if perm != "owner" {
+		httputil.WriteError(w, http.StatusForbidden, "only the owner or an admin can delete this agent")
+		return
+	}
 	if err := s.Engine.DeleteAgent(r.Context(), id, tenant); err != nil {
 		httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -1628,6 +1788,57 @@ func (s *Service) handleTeamChat(w http.ResponseWriter, r *http.Request) {
 
 	// RunTeamChat 已发射 final 事件; 保险再发一次确保闭合
 	_ = final
+	fmt.Fprint(w, "data: [DONE]\n\n")
+	flusher.Flush()
+}
+
+// handleTeamStreamUnified 团队对话(SSE 流式)的**统一入口实现**: 复用 RunTeamChat,
+// 经 team_stream_adapter 把 TeamStreamEvent 转成 v1 帧协议(event: X + data:), 与单员工主聊天同源。
+//
+// 与旧 handleTeamChat(P2 纯 data: 协议)并行存在, 双写期互不干扰; 旧端点由 M0 帧契约测试守护不变。
+// 团队可见性(team.TenantID)已由调用方(handleChat 分流处)校验, 此处不再重复。
+func (s *Service) handleTeamStreamUnified(w http.ResponseWriter, r *http.Request, team *model.AgentTeam, req *chatRequest) {
+	// F4-D1: 逻辑会话计数在入口, 与物理 LLM 槽位解耦
+	agentic.AIConcurrentSessions.Inc()
+	defer agentic.AIConcurrentSessions.Dec()
+
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		httputil.WriteError(w, http.StatusInternalServerError, "streaming not supported")
+		return
+	}
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+
+	// emit 必须串行化: 并行团队模式下多个 worker goroutine 会并发调用 emit,
+	// 而 http.ResponseWriter 并非并发安全; 经 adapter 写 v1 帧同样须加锁。
+	var emitMu sync.Mutex
+	emit := func(ev model.TeamStreamEvent) {
+		writeTeamEventV1(w, &emitMu, ev)
+		flusher.Flush()
+	}
+
+	// 加载该团队的历史对话(跨轮记忆), 本轮结束后追加 user+assistant 一轮。
+	history := s.Engine.LoadTeamHistory(team.ID, 20)
+	tenantID := auth.TenantFromContext(r.Context())
+
+	// RAG 上下文注入: 团队场景无单一 Agent, 检索全部知识库(绑定过滤按成员 Agent 在工具链内生效)。
+	var ragCtx string
+	if s.ragFn != nil {
+		ragCtx = s.ragFn(r.Context(), req.Prompt, "", nil)
+	}
+
+	final, _, err := s.Engine.RunTeamChat(r.Context(), team, req.Prompt, history, emit, ragCtx)
+	if err != nil {
+		emit(model.TeamStreamEvent{Type: "error", Content: chatFriendlyError(err.Error())})
+		fmt.Fprint(w, "data: [DONE]\n\n")
+		flusher.Flush()
+		return
+	}
+	// 持久化本轮对话,供下一轮作为历史注入
+	s.Engine.AppendTeamTurn(team.ID, tenantID, req.Prompt, final)
+	// RunTeamChat 已通过 adapter 发射 event: final {content,done:true}; 统一以 [DONE] 闭流。
 	fmt.Fprint(w, "data: [DONE]\n\n")
 	flusher.Flush()
 }

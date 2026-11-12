@@ -4,8 +4,9 @@ import { Link } from 'react-router-dom'
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card'
 import { Button, Input, Select, Tag, Space, Tabs, Popconfirm, Switch, Modal } from 'antd'
 import { ReloadOutlined, PlusOutlined, DeleteOutlined, EditOutlined, ApiOutlined, SettingOutlined, SaveOutlined, ThunderboltOutlined } from '@ant-design/icons'
-import { Bot, Plus, Trash2, Save, Wrench, Brain, Settings2, Terminal, Wand2, AlertCircle, CheckCircle2, Loader2, ChevronRight, ShieldCheck, Database, Download, RefreshCw, Sparkles, Copy, Pencil, Star, Search, Package, Eye, Rocket } from 'lucide-react'
+import { Bot, Plus, Trash2, Save, Wrench, Brain, Settings2, Terminal, Wand2, AlertCircle, CheckCircle2, Loader2, ChevronRight, ShieldCheck, Database, Download, RefreshCw, Sparkles, Copy, Pencil, Star, Search, Package, Eye, Rocket, Users } from 'lucide-react'
 import RoleTemplatesPanel from '@/components/ai/role-templates-panel'
+import { GovernancePanel } from '@/components/ai/governance-panel'
 
 import { cn, apiFetch, apiFetchRaw, apiList } from '@/lib/utils'
 import { useThemeStore } from '@/stores/theme'
@@ -129,7 +130,7 @@ export default function AISettingsPage() {
   const { theme } = useThemeStore()
   const locale = useLocale()
   const [activeTab, setActiveTab] = useState('agents')
-  const [form, setForm] = useState<{ name: string; model_name: string; system_prompt: string; knowledge_categories: string[]; tools: string[]; skills: SkillFormItem[] }>({ name: '', model_name: '', system_prompt: '', knowledge_categories: [], tools: [], skills: [] })
+  const [form, setForm] = useState<{ name: string; model_name: string; system_prompt: string; knowledge_categories: string[]; tools: string[]; skills: SkillFormItem[]; visibility: string }>({ name: '', model_name: '', system_prompt: '', knowledge_categories: [], tools: [], skills: [], visibility: 'private' })
   const [sysConfig, setSysConfig] = useState<any>(null)
   const [modelPool, setModelPool] = useState<{ name: string; model: string; base_url: string; weight: number; healthy: boolean }[]>([])
   // 进化闭环概览
@@ -479,9 +480,10 @@ export default function AISettingsPage() {
       knowledge_categories: form.knowledge_categories,
       tools: form.tools,
       skills: form.skills.filter(s => s.name.trim()),
+      visibility: form.visibility,
     })
     setSaving(false)
-    if (ok) { setForm({ name: '', model_name: '', system_prompt: '', knowledge_categories: [], tools: [], skills: [] }); fetchAgents() }
+    if (ok) { setForm({ name: '', model_name: '', system_prompt: '', knowledge_categories: [], tools: [], skills: [], visibility: 'private' }); fetchAgents() }
   }
 
   const handleDeleteAgent = async () => {
@@ -519,6 +521,21 @@ export default function AISettingsPage() {
           <CardContent className="space-y-3">
             <Input placeholder="Agent 名称 (如: 运维助手)" value={form.name} onChange={e => setForm({...form, name: e.target.value})} />
             <Input list="model-pool" placeholder="模型名 (如: deepseek-chat / provider 名, 留空使用默认)" value={form.model_name} onChange={e => setForm({...form, model_name: e.target.value})} />
+            <div>
+              <label className="text-xs font-medium mb-1.5 block">
+                可见范围 <span className="text-muted-foreground font-normal">(新建默认私有，仅自己可见；可在「治理与轨迹」中调整与分享)</span>
+              </label>
+              <Select
+                className="w-full"
+                value={form.visibility}
+                onChange={v => setForm({ ...form, visibility: v })}
+                options={[
+                  { value: 'private', label: '私有（仅自己）' },
+                  { value: 'shared', label: '按分享名单' },
+                  { value: 'public', label: '同租户公开' },
+                ]}
+              />
+            </div>
             <div>
               <div className="flex items-center justify-between mb-1.5">
                 <label className="text-xs font-medium">系统提示词 <span className="text-muted-foreground font-normal">(留空 = 使用默认系统提示词)</span></label>
@@ -1275,6 +1292,11 @@ export default function AISettingsPage() {
           key: 'approval',
           label: <span><ShieldCheck className="h-4 w-4 mr-1.5 inline" />{t('ai.settings.approval')}</span>,
           children: <ApprovalContent />,
+        },
+        {
+          key: 'governance',
+          label: <span><Users className="h-4 w-4 mr-1.5 inline" />{t('ai.settings.governance')}</span>,
+          children: <GovernancePanel />,
         },
         {
           key: 'evolution',

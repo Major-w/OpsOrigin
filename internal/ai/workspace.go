@@ -43,8 +43,7 @@ func (s *Service) handleGenerateWorkspace(w http.ResponseWriter, r *http.Request
 		httputil.WriteError(w, http.StatusBadRequest, "需求描述过长，请精简到 1000 字以内")
 		return
 	}
-	client := s.LLMClient()
-	if client == nil {
+	if s.Engine == nil || !s.Engine.ModelConfigured() {
 		httputil.WriteError(w, http.StatusServiceUnavailable, "尚未配置 AI 模型，请先在系统设置中完成配置")
 		return
 	}
@@ -56,7 +55,7 @@ func (s *Service) handleGenerateWorkspace(w http.ResponseWriter, r *http.Request
 	ctx, cancel := context.WithTimeout(r.Context(), generateWorkspaceTimeout)
 	defer cancel()
 
-	draft, err := aiworkspace.New(client, model).Generate(ctx, report.Default(), req.Prompt)
+	draft, err := aiworkspace.New(engineLLMClient{eng: s.Engine, agentID: "content-workspace"}, model).Generate(ctx, report.Default(), req.Prompt)
 	if err != nil {
 		// 生成失败多半是"模型没听懂/数据集覆盖不到"，属于可重试的业务态，不是 5xx。
 		httputil.WriteError(w, http.StatusUnprocessableEntity, err.Error())

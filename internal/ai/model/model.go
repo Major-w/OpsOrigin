@@ -2,6 +2,23 @@ package model
 
 import "time"
 
+// 数字员工可见性(资产层, 与 scope.go 的知识检索可见性是两套语义)。
+const (
+	AgentVisibilityPrivate = "private" // 仅属主可见可用
+	AgentVisibilityShared  = "shared"  // 属主 + ai_agent_shares 中显式分享的用户/组
+	AgentVisibilityPublic  = "public"  // 同租户全部可见可用(存量数据默认值)
+)
+
+// NormalizeVisibility 收敛非法值; 空串按存量兼容回落 public。
+func NormalizeVisibility(s string) string {
+	switch s {
+	case AgentVisibilityPrivate, AgentVisibilityShared, AgentVisibilityPublic:
+		return s
+	default:
+		return AgentVisibilityPublic
+	}
+}
+
 type AgentInstance struct {
 	ID           string    `json:"id"`
 	TenantID     string    `json:"tenant_id"`
@@ -11,6 +28,13 @@ type AgentInstance struct {
 	Status       string    `json:"status"`
 	CreatedAt    time.Time `json:"created_at"`
 	UpdatedAt    time.Time `json:"updated_at"`
+
+	// OwnerID 数字员工属主(创建者 user_id)。空串 = 存量系统级员工, 按 public 兼容。
+	OwnerID string `json:"owner_id,omitempty"`
+	// Visibility 资产可见范围: private / shared / public。
+	Visibility string `json:"visibility"`
+	// Permission 响应态字段(不落库): owner / edit / view, 由列表/详情接口按调用者身份计算。
+	Permission string `json:"permission,omitempty"`
 
 	// KnowledgeCategories 绑定的知识库分类列表(PRD 5.2.6)。
 	// 非空时, 该 Agent 的 RAG 检索(系统提示注入与 knowledge_search 工具)仅在这些分类内进行;
