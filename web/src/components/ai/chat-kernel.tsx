@@ -33,6 +33,7 @@ import {
   Eye, FileEdit, FilePlus2, FileDiff, FolderTree,
 } from 'lucide-react'
 import { CodingToolCard } from './coding-tool-card'
+import { applyTeamErrorEvent } from './team-error-reducer'
 
 // ---------------------------------------------------------------------------
 // 共享类型
@@ -1071,14 +1072,9 @@ export function useAIChat(opts: UseAIChatOptions) {
           }
           case 'final':
             return { ...t, final: ev.content, done: ev.done }
-          case 'error': {
-            const agents = [...t.agents]
-            if (ev.agent_id) {
-              const idx = agents.findIndex(a => a.agent_id === ev.agent_id)
-              if (idx >= 0) agents[idx] = { ...agents[idx], status: 'error', error: ev.error }
-            }
-            return { ...t, error: ev.agent_id ? t.error : ev.error }
-          }
+          case 'error':
+            // 成员级错误必须回写 agents 才会被 a.status === 'error' 渲染; 顶层错误标整轮。
+            return applyTeamErrorEvent(t, ev)
           default:
             return t
         }

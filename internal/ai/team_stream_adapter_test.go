@@ -22,12 +22,13 @@ func TestTeamEventV1Mapping(t *testing.T) {
 	}{
 		{"agent_start", model.TeamStreamEvent{Type: "agent_start", AgentID: "m1", AgentName: "M1", Role: "member"}, "agent", []string{"phase", "agent_id", "agent_name", "role"}},
 		{"agent_end", model.TeamStreamEvent{Type: "agent_end", AgentID: "m1", AgentName: "M1", Role: "member", Content: "c"}, "agent", []string{"phase", "content"}},
-		{"token", model.TeamStreamEvent{Type: "token", AgentID: "m1", Content: "c"}, "agent_token", []string{"agent_id", "content"}},
+		{"token", model.TeamStreamEvent{Type: "token", AgentID: "m1", AgentName: "M1", Role: "member", Content: "c"}, "agent_token", []string{"agent_id", "agent_name", "role", "content"}},
 		{"tool_call", model.TeamStreamEvent{Type: "tool_call", ToolName: "t", ToolArgs: "{}"}, "tool", []string{"name", "args", "status", "agent_id"}},
 		{"tool_result", model.TeamStreamEvent{Type: "tool_result", ToolName: "t", ToolResult: "{}"}, "tool", []string{"name", "result", "status", "agent_id"}},
-		{"supervisor_review", model.TeamStreamEvent{Type: "supervisor_review", AgentID: "s", Content: "c"}, "agent_token", []string{"agent_id", "content", "role"}},
+		{"supervisor_review", model.TeamStreamEvent{Type: "supervisor_review", AgentID: "s", AgentName: "S", Role: "supervisor", Content: "c"}, "agent_token", []string{"agent_id", "agent_name", "content", "role", "member_role"}},
 		{"final", model.TeamStreamEvent{Type: "final", Content: "f", Done: true}, "final", []string{"content", "done"}},
 		{"error", model.TeamStreamEvent{Type: "error", Error: "boom"}, "error", nil},
+		{"error_member", model.TeamStreamEvent{Type: "error", AgentID: "m1", AgentName: "M1", Role: "member", Error: "boom"}, "error", []string{"message", "agent_id", "agent_name", "role"}},
 		{"unknown_defaults_to_error", model.TeamStreamEvent{Type: "weird", Error: "x"}, "error", nil},
 	}
 	for _, c := range cases {
@@ -55,6 +56,48 @@ func TestTeamEventV1Mapping(t *testing.T) {
 				t.Errorf("frame format unexpected:\n got %q\nwant %q", sb.String(), wantFrame)
 			}
 		})
+	}
+}
+
+// TestTeamEventV1ErrorMessage 防止团队失败被写成空错误帧:
+// 两条 handler 的顶层失败历史上把友好文案放在 Content, RunTeamChat 的成员级错误放在 Error;
+// 顶层帧必须是可读文本, 成员级帧必须连身份一起下发, 否则前端无法标红具体成员。
+func TestTeamEventV1ErrorMessage(t *testing.T) {
+	cases := []struct {
+		name string
+		ev   model.TeamStreamEvent
+		want string
+	}{
+		{"content_fallback", model.TeamStreamEvent{Type: "error", Content: "模型不可用"}, "模型不可用"},
+		{"error_wins", model.TeamStreamEvent{Type: "error", Error: "限流", Content: "旧文案"}, "限流"},
+		{"empty_guard", model.TeamStreamEvent{Type: "error"}, "团队运行失败"},
+		{"unknown_type_fallback", model.TeamStreamEvent{Type: "weird", Content: "未知事件"}, "未知事件"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			evName, payload := teamEventV1(c.ev)
+			if evName != "error" {
+				t.Fatalf("event = %q, want error", evName)
+			}
+			var msg string
+			if err := json.Unmarshal([]byte(payload), &msg); err != nil {
+				t.Fatalf("顶层 error 帧必须是 JSON 字符串, got %q: %v", payload, err)
+			}
+			if msg != c.want {
+				t.Errorf("message = %q, want %q", msg, c.want)
+			}
+		})
+	}
+
+	_, payload := teamEventV1(model.TeamStreamEvent{Type: "error", AgentID: "m1", AgentName: "M1", Role: "member", Error: "boom"})
+	var obj map[string]any
+	if err := json.Unmarshal([]byte(payload), &obj); err != nil {
+		t.Fatalf("成员级 error 帧必须是 JSON 对象, got %q: %v", payload, err)
+	}
+	for k, want := range map[string]string{"message": "boom", "agent_id": "m1", "agent_name": "M1", "role": "member"} {
+		if obj[k] != want {
+			t.Errorf("%s = %v, want %q", k, obj[k], want)
+		}
 	}
 }
 

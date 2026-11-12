@@ -1778,7 +1778,9 @@ func (s *Service) handleTeamChat(w http.ResponseWriter, r *http.Request) {
 
 	final, _, err := s.Engine.RunTeamChat(r.Context(), team, req.Message, history, emit, ragCtx)
 	if err != nil {
-		emit(model.TeamStreamEvent{Type: "error", Content: chatFriendlyError(err.Error())})
+		// Error 供 v1 adapter 读取; Content 保留给旧 P2 客户端(其解析只看 content)。
+		friendly := chatFriendlyError(err.Error())
+		emit(model.TeamStreamEvent{Type: "error", Error: friendly, Content: friendly})
 		fmt.Fprint(w, "data: [DONE]\n\n")
 		flusher.Flush()
 		return
@@ -1831,7 +1833,9 @@ func (s *Service) handleTeamStreamUnified(w http.ResponseWriter, r *http.Request
 
 	final, _, err := s.Engine.RunTeamChat(r.Context(), team, req.Prompt, history, emit, ragCtx)
 	if err != nil {
-		emit(model.TeamStreamEvent{Type: "error", Content: chatFriendlyError(err.Error())})
+		// Error 供 v1 adapter 读取; Content 保留给旧 P2 客户端(其解析只看 content)。
+		friendly := chatFriendlyError(err.Error())
+		emit(model.TeamStreamEvent{Type: "error", Error: friendly, Content: friendly})
 		fmt.Fprint(w, "data: [DONE]\n\n")
 		flusher.Flush()
 		return

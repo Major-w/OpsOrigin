@@ -50,8 +50,10 @@ func teamEventV1(ev model.TeamStreamEvent) (string, string) {
 		return "agent", string(b)
 	case "token":
 		b, _ := json.Marshal(map[string]any{
-			"agent_id": ev.AgentID,
-			"content":  ev.Content,
+			"agent_id":   ev.AgentID,
+			"agent_name": ev.AgentName,
+			"role":       ev.Role,
+			"content":    ev.Content,
 		})
 		return "agent_token", string(b)
 	case "tool_call":
@@ -71,10 +73,14 @@ func teamEventV1(ev model.TeamStreamEvent) (string, string) {
 		})
 		return "tool", string(b)
 	case "supervisor_review":
+		// role:"supervisor" 是前端区分「主管点评」与普通 token 的帧标记, 不可改成成员真实角色;
+		// 成员真实角色另放 member_role, 让首帧即带完整身份, 不依赖先收到 agent_start。
 		b, _ := json.Marshal(map[string]any{
-			"agent_id": ev.AgentID,
-			"content":  ev.Content,
-			"role":     "supervisor",
+			"agent_id":    ev.AgentID,
+			"agent_name":  ev.AgentName,
+			"role":        "supervisor",
+			"member_role": ev.Role,
+			"content":     ev.Content,
 		})
 		return "agent_token", string(b)
 	case "final":
@@ -84,11 +90,33 @@ func teamEventV1(ev model.TeamStreamEvent) (string, string) {
 		})
 		return "final", string(b)
 	case "error":
-		// 复用 P1 error 语义: payload 为可读错误文本(前端 chatFriendlyError 同源)。
-		b, _ := json.Marshal(ev.Error)
-		return "error", string(b)
+		return "error", teamErrorPayloadV1(ev)
 	default:
-		b, _ := json.Marshal(ev.Error)
-		return "error", string(b)
+		return "error", teamErrorPayloadV1(ev)
 	}
+}
+
+// teamErrorPayloadV1 统一团队错误帧: 顶层错误沿用 P1 的纯文本语义; 成员级错误输出结构化
+// 对象(message + 成员身份), 让前端标红具体成员而不是弹全局 toast。
+// 文案同时兼容 Error 与 Content: RunTeamChat 的成员级错误写 Error, 而两条 handler 的
+// 顶层失败历史上写 Content(service.go handleTeamChat / handleTeamStreamUnified)。
+func teamErrorPayloadV1(ev model.TeamStreamEvent) string {
+	msg := ev.Error
+	if msg == "" {
+		msg = ev.Content
+	}
+	if msg == "" {
+		msg = "团队运行失败"
+	}
+	if ev.AgentID == "" {
+		b, _ := json.Marshal(msg)
+		return string(b)
+	}
+	b, _ := json.Marshal(map[string]any{
+		"message":    msg,
+		"agent_id":   ev.AgentID,
+		"agent_name": ev.AgentName,
+		"role":       ev.Role,
+	})
+	return string(b)
 }

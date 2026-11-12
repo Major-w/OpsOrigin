@@ -176,17 +176,30 @@ export const useChatStore = create<ChatState>((set) => ({
           // 流内错误事件(模型调用失败/限流/超时等): 必须转成 onError 展示, 不能吞掉或当普通 token 上屏
           if (currentEvent === 'error') {
             let m = data
+            let member: { agent_id?: string; agent_name?: string; role?: string } = {}
             try {
               const j = JSON.parse(data)
               if (typeof j === 'string') m = j
-              else if (j && (j.message || j.error)) m = j.message || j.error
+              else if (j) {
+                m = j.message || j.error || data
+                // 团队 v1 帧的成员级 error 带身份, 用于标红具体成员
+                if (j.agent_id) member = {
+                  agent_id: String(j.agent_id),
+                  agent_name: String(j.agent_name ?? ''),
+                  role: String(j.role ?? ''),
+                }
+              }
             } catch { /* data 为纯文本 */ }
             currentEvent = ''
             const msg = `AI 调用失败：${String(m).replace(/^AI 调用失败[：:]\s*/, '')}`
-            getMessage().error(msg)
-            onError?.(msg)
-            // 团队流: 同一错误帧也翻译给 onTeamEvent(团队 turn 会标记 error 状态)。
-            if (onTeamEvent) onTeamEvent({ type: 'error', error: msg })
+            // 成员级错误只在团队卡片内标红: 不弹全局 toast, 也不升级成整轮失败。
+            const memberError = !!member.agent_id
+            if (!memberError) {
+              getMessage().error(msg)
+              onError?.(msg)
+            }
+            // 团队流: 同一错误帧也翻译给 onTeamEvent(顶层错误标记 turn, 成员错误标记具体成员)。
+            if (onTeamEvent) onTeamEvent({ type: 'error', error: msg, ...member })
             continue
           }
           // 输出被 max_tokens 截断(上游 finish_reason=length): 内容是真的, 不算错误——
@@ -232,10 +245,15 @@ export const useChatStore = create<ChatState>((set) => ({
           }
           if (currentEvent === 'agent_token') {
             try {
-              const a = JSON.parse(data) as { agent_id: string; content: string; agent_name?: string; role?: string }
-              // supervisor_review 经 adapter 映射为 agent_token + role:"supervisor"(见 §3.4)。
-              if (a.role === 'supervisor') onTeamEvent?.({ type: 'supervisor_review', agent_id: a.agent_id, agent_name: a.agent_name ?? '', role: a.role ?? '', content: a.content })
-              else onTeamEvent?.({ type: 'token', agent_id: a.agent_id, agent_name: a.agent_name ?? '', role: a.role ?? '', content: a.content })
+              const a = JSON.parse(data) as { agent_id: string; content: string; agent_name?: string; role?: string; member_role?: string }
+              // supervisor 帧的 role 是帧标记, 成员真实角色在 member_role; 普通 token 直接用 role。
+              const identity = {
+                agent_id: a.agent_id,
+                agent_name: a.agent_name ?? '',
+                role: a.member_role ?? a.role ?? '',
+              }
+              if (a.role === 'supervisor') onTeamEvent?.({ type: 'supervisor_review', ...identity, content: a.content })
+              else onTeamEvent?.({ type: 'token', ...identity, content: a.content })
             } catch {}
             currentEvent = ''
             continue
